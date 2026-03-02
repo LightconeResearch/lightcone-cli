@@ -1,38 +1,68 @@
 ---
 name: prism-build
 description: >
-  Autonomous build loop for ASP analyses. You are inside a loop -- survey,
-  contribute, commit, exit. Activated automatically inside prism-build loops.
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(asp:*), Bash(prism:*), Bash(python:*), Bash(git:*), Bash(pip:*), Bash(mkdir:*)
+  Build an ASP analysis from spec to materialized results. Plans interactively,
+  then loops autonomously via ralph-wiggum until all outputs are verified.
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(asp:*), Bash(prism:*), Bash(python:*), Bash(git:*), Bash(pip:*), Bash(mkdir:*), Bash(setup-prism-build:*), Agent, AskUserQuestion
+argument-hint: "[--universe NAME] [--max-iterations N]"
 ---
 
 # /prism-build
 
-You are inside a loop. `CLAUDE.md` is your spec -- it's in the system prompt above. Each iteration: survey freely, work substantially, update state discoverably, exit.
+Two-phase build: plan interactively with the user, then loop autonomously until done.
+
+## Phase 1: Setup & Plan
+
+### 1. Validate prerequisites
+
+Run the setup script in validate mode:
+
+```
+bash <skill-scripts>/setup-prism-build.sh --validate --universe <UNIVERSE> --max-iterations <N>
+```
+
+Default universe is `baseline`, default max-iterations is `25`. Parse these from the user's arguments.
+
+If validation fails, fix issues before proceeding (create `asp.yaml` via `/prism-new`, fix validation errors, etc.).
+
+### 2. Create implementation plan
+
+Spawn a Plan sub-agent to produce an ordered implementation plan:
+
+```
+Agent tool, subagent_type: Plan
+Prompt: "Read asp.yaml, CLAUDE.md, and any existing scripts/ directory. Produce an ordered implementation plan for building this analysis in universe <UNIVERSE>. For each output in asp.yaml, determine: what script needs to be written, what decisions it must parameterize, what its dependencies are, and what order to build them in. Write the plan to .claude/build-plan-<UNIVERSE>.md as a markdown checklist."
+```
+
+### 3. Present plan for approval
+
+Read `.claude/build-plan-<UNIVERSE>.md` and present it to the user via `AskUserQuestion`:
+
+- Show the plan contents
+- Ask: "Does this build plan look good? You can approve it, request changes, or edit `.claude/build-plan-<UNIVERSE>.md` directly."
+- Options: "Approve and start building", "Let me edit the plan first"
+
+If the user wants changes, iterate until they approve.
+
+## Phase 2: Activate Loop
+
+Once the user approves the plan, activate the autonomous loop:
+
+```
+bash <skill-scripts>/setup-prism-build.sh --activate --universe <UNIVERSE> --max-iterations <N>
+```
+
+This creates `.claude/ralph-loop.local.md` — the ralph-wiggum state file. The stop hook will now intercept exits and re-inject the build prompt.
+
+**Begin the first iteration immediately.** Read `.claude/ralph-loop.local.md` — the rendered loop prompt is everything after the YAML frontmatter. Follow it: survey, decide what to do, work, commit, exit. On exit, the stop hook re-invokes you with the same prompt for subsequent iterations until you output `<promise>BUILD_COMPLETE</promise>` or hit max iterations.
 
 ## References
 
-- [Prism Verify](./../prism-verify/SKILL.md) -- verification checks
+- [Loop Prompt](./assets/loop-prompt.md) — the invariant prompt for each iteration
+- [Prism Verify](../prism-verify/SKILL.md) — verification checks
 
-## Loop
+## Notes
 
-1. **Survey** -- Fresh eyes. Read `asp.yaml`, check `git log`, explore. You decide what to check.
-2. **Contribute** -- Work on 1-3 substantial pieces. Do NOT try to clear the whole queue in one iteration.
-3. **Update** -- Commit your work. Update `CLAUDE.md` if warranted.
-4. **Exit** -- Stop. The outer loop re-invokes you with fresh context.
-
-## Rules
-
-**Exit before compaction.** After each substantial piece of work, introspect: how much context have I used? If past 50%, wrap up and exit. The next iteration starts fresh.
-
-**State, not checklist.** The spec describes what "done" looks like. Survey reality, decide what's highest value, work on that.
-
-**Discoverable updates.** Commits, test results, documentation -- not progress files. The next iteration finds what changed by inspecting the system.
-
-**You have authority.** Trust the spec, don't ask permission. Make substantial contributions.
-
-## Closing
-
-If you cannot find remaining work, check success criteria from `asp.yaml`. Each criterion has a `claim` and optionally `output` and `condition`. For criteria with an output and condition (e.g. `output: accuracy`, `condition: "value > 0.95"`), read the result file and evaluate. For claim-only criteria, use your judgment. If all are met, set `build: closed` in the `CLAUDE.md` YAML frontmatter.
-
-If you're stuck, add to the Open Questions section of `CLAUDE.md` so the user can resolve it after the loop.
+- The setup script will attempt to install the ralph-loop plugin if missing (via marketplace update). If installation fails, it errors and cleans up — the loop cannot run without the stop hook.
+- The build plan file (`.claude/build-plan-<UNIVERSE>.md`) persists across crashes for easy resumption. It's deleted on successful completion.
+- To cancel mid-loop: `/cancel-ralph`

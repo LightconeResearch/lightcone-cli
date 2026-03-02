@@ -14,6 +14,23 @@ fi
 
 cd "$cwd" 2>/dev/null || exit 0
 
+# Check for active prism-build loop (crash recovery)
+if [ -f ".claude/ralph-loop.local.md" ]; then
+    loop_iter=$(grep '^iteration:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
+    loop_max=$(grep '^max_iterations:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
+    loop_promise=$(grep '^completion_promise:' .claude/ralph-loop.local.md 2>/dev/null | sed 's/completion_promise: *"\?\([^"]*\)"\?/\1/')
+    # Try to detect universe from prompt body
+    loop_universe=$(grep -o 'universe: [a-zA-Z0-9_-]*' .claude/ralph-loop.local.md 2>/dev/null | head -1 | awk '{print $2}')
+    loop_universe="${loop_universe:-unknown}"
+
+    loop_warning="Active prism-build loop detected (universe: ${loop_universe}, iteration ${loop_iter:-?}/${loop_max:-?})
+  Resume: /prism-build --universe ${loop_universe}    Cancel: /cancel-ralph"
+
+    escaped_warning=$(echo "$loop_warning" | jq -Rs .)
+    echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $escaped_warning}}"
+    exit 0
+fi
+
 # Check if this is an ASP project (has asp.yaml)
 if [ ! -f "asp.yaml" ]; then
     exit 0
