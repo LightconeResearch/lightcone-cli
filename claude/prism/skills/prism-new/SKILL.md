@@ -6,11 +6,10 @@ allowed-tools: Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md), Ed
 
 # /prism-new
 
-Create a new ASTRA analysis project through conversation. Build the spec iteratively so the user sees progress in the navigator. Literature search and decision identification happen in distinct phases -- talk first, then extract papers, then identify decisions informed by both conversation and literature.
+Create a new ASTRA analysis project through conversation. Build the spec iteratively -- write to `astra.yaml` after each phase so the user sees progress. Literature search and decision identification happen in distinct phases -- talk first, then extract papers, then identify decisions informed by both conversation and literature.
 
 ## References
 
-- [Prism Reference](./../prism/SKILL.md) -- core concepts, CLI, validation
 - [Decision Guide](./decision-guide.md) -- decision identification, prioritization, blind-spot checklist
 - [Literature Extraction](./literature-extraction.md) -- subagent prompt template for paper processing
 - [UI Brand](./../ui-brand.md) -- visual formatting patterns
@@ -32,7 +31,7 @@ Then sharpen:
 - "What would a clear answer look like?" (becomes success criteria)
 - "Why does this matter?" (context for decisions)
 
-**Write to astra.yaml immediately** with `version`, `name`, `description`, `success_criteria`. This gives the user something visible in the navigator right away.
+**Write to astra.yaml immediately** with `version`, `name`, `description`, `success_criteria`. This gives the user something visible right away.
 
 ---
 
@@ -79,7 +78,7 @@ Use the conversation and literature to identify decisions. Apply [decision-guide
 - Where did papers disagree or compare alternatives?
 - Where did the user express uncertainty?
 
-Write candidate decisions to astra.yaml as a batch for user review in Prism-UI. Keep chat output concise (summary + decision IDs), and avoid dumping full decision details in chat.
+Write candidate decisions to astra.yaml as a batch for user review. Keep chat output concise (summary + decision IDs), and avoid dumping full decision details in chat.
 
 **Probe for blind spots** -- analysts over-focus on methods and neglect data handling. Probe 1-3 areas: data exclusion, variable operationalization, inference criteria.
 
@@ -114,7 +113,7 @@ astra universe generate -n baseline
 
 ### Populate CLAUDE.md
 
-Read the existing `CLAUDE.md` (created by `prism init`). Replace the `## Analysis Details` section with context that is NOT already visible in `astra.yaml`. The spec is the source of truth for structure, decisions, and evidence -- CLAUDE.md captures only what would be lost after `/clear`:
+Read the existing `CLAUDE.md` (created by `prism init`). Replace the `## Analysis Context` section with context that is NOT already visible in `astra.yaml`. The spec is the source of truth for structure, decisions, and evidence -- CLAUDE.md captures only what would be lost after `/clear`:
 
 - **Domain Context**: important things the user explained during scoping -- data characteristics, constraints, why certain approaches were preferred. This is conversational context not captured in the spec.
 - **Implementation Notes**: domain-specific guidance from the conversation (libraries, data formats, gotchas)
@@ -171,9 +170,9 @@ You MUST spawn subagents (via Task) for paper processing. One paper per subagent
 - **Waiting to write** -- Update astra.yaml after each decision crystallizes, not in bulk at the end
 - **Accepting vague goals** -- "Analyze this data" is not a research question; push back
 - **Method-only decisions** -- Actively probe for data handling and exclusion criteria, not just method choices
-- **Literature as afterthought** -- Do not defer all literature to the end. Collect papers during conversation (Mode 1) and extract before identifying decisions (Mode 2 before Mode 3)
+- **Literature as afterthought** -- Do not defer all literature to the end. Collect paper candidates during conversation (Phases 1-2) and extract them before identifying decisions (Extraction before Decision Identification in Phase 3)
 - **Too many papers** -- ~2 papers per topic area, max 10 per section; do not try to be exhaustive
-- **Background interruptions** -- Never spawn search or extraction subagents during conversation. Collect candidates in Mode 1, process them in Mode 2
+- **Background interruptions** -- Never spawn search or extraction subagents during conversation phases. Collect candidates first, then process them during Phase 3 Extraction
 - **Reading PDFs in main context** -- Always delegate to subagents; PDFs consume too much context
-- **Chat dump of decisions** -- Do not dump full candidate decision content in chat; write decisions to astra.yaml and use Prism-UI for detailed review
+- **Chat dump of decisions** -- Do not dump full candidate decision content in chat; write decisions to astra.yaml for review
 - **Skipping verification** -- If quotes were extracted, always run `astra validate --verify-evidence`

@@ -11,6 +11,7 @@ ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built
 | `/prism-new` | Scope question, structure decisions, integrate literature |
 | `/prism-build` | Build loop -- spec to materialized results |
 | `/prism-verify` | Verify results, decision-code alignment, success criteria |
+| `/prism-feedback` | File a bug report from the current session |
 
 **Workflow:** `/prism-new` --> `/prism-build` --> `/prism-verify`
 
@@ -38,8 +39,8 @@ results/<universe>/   # Outputs by universe (produced by prism run)
 Three overlapping phases:
 
 1. **Write & Debug** -- Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
-2. **Integrate** -- Add `recipe:` blocks to outputs in `astra.yaml`. Track with `prism status` (`no recipe` / `pending` / `ok`).
-3. **Materialize** -- `prism run` executes via Dagster in containers. Done when `prism status` shows all `ok`.
+2. **Integrate** -- Add `recipe:` blocks to outputs in `astra.yaml`. Track with `prism status` (`no recipe` / `pending` / `ok`). Container build specs (Containerfile or image string) can be set at the analysis level or per-recipe.
+3. **Materialize** -- `prism run` executes via Dagster in containers (Docker or SLURM). Falls back to local execution if Docker is unavailable. Done when `prism status` shows all `ok`.
 
 **An output is not done until `prism run` produces it.** Running scripts directly is for debugging only — final results must always come from `prism run` so they are reproducible inside containers.
 
@@ -202,9 +203,13 @@ astra schema show analysis                    # Show JSON schema
 
 # prism -- execution operations
 prism run [OUTPUT] [--universe NAME]        # Execute recipes via Dagster (auto-builds)
+prism run --target perlmutter-gpu           # Execute on a specific SLURM target
+prism run --no-build                        # Skip automatic container builds
+prism build [--force] [--runtime docker]    # Build container images from specs
 prism status [--universe NAME]              # Materialization + container status
-prism dev                                   # Dagster webserver UI
-prism target --help                         # Configure HPC execution target
+prism dev [--port 3000]                     # Dagster webserver UI
+prism target [--set NAME] [--list]          # Manage execution targets
+prism setup                                 # Interactive target setup wizard
 ```
 
 ### Universe Management

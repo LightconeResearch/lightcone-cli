@@ -34,9 +34,8 @@ The user should have provided a description inline (e.g., `/prism-feedback pipel
 ## Step 2: Draft and Confirm
 
 Triage the repo from context:
-- **ASTRA** — `astra` CLI, schema validation, YAML parsing
-- **Prism** — `prism` CLI, pipeline execution, recipes, dagster, scaffolding, skills
-- **Prism-UI** — visualization, Prism-UI, VS Code extension
+- **ASTRA** — `astra` CLI, schema validation, YAML parsing, helpers
+- **Prism** — `prism` CLI, Dagster execution, recipes, container builds, scaffolding, skills, telemetry hooks
 
 Default to **Prism** if ambiguous.
 

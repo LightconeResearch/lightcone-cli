@@ -48,20 +48,10 @@ For every **output**, check that `results/<universe_id>/<output_id>.<ext>` exist
 prism status --universe <universe_id>
 ```
 
-Cross-reference `prism status` output with the file-based check above. If `prism status` shows "ok" but files are missing (or vice versa), flag the inconsistency.
+Cross-reference `prism status` output with the file-based check above:
 
----
-
-## Check 3: Run Metadata
-
-Check that `results/<universe_id>/run_metadata.yaml` exists and is consistent.
-
-1. **Exists** — file is present in the results directory
-2. **Universe ID matches** — `universe_id` field matches the results directory name
-3. **Decisions recorded** — `decisions` field is present and non-empty
-4. **Decisions match universe file** — compare recorded decisions against the
-   current universe file. If they differ, flag as a warning
-5. **Git commit recorded** — `git_commit` field is present
+1. **Status consistency** — if `prism status` shows "ok" but files are missing (or vice versa), flag the inconsistency
+2. **Universe file exists** — `universes/<universe_id>.yaml` is present and valid
 
 ---
 
@@ -120,7 +110,7 @@ Stage banner: VERIFICATION REPORT — <universe_id>
 | Schema validation        | ✓      |
 | Semantic validation      | ✓      |
 | Result files (5/5)       | ✓      |
-| Run metadata             | ✓      |
+| Materialization status   | ✓      |
 | Metric validation (2/2)  | ✓      |
 | Decision-code alignment  | ⚠      |
 | Success criteria (2/3)   | ⚠      |
