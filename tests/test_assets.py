@@ -83,7 +83,7 @@ class TestBuildAssetDefinitions:
         defs = build_definitions(sample_astra_yaml)
         assert isinstance(defs, dg.Definitions)
 
-    def test_container_flags_forwarded_to_runner(self, sample_asp_yaml):
+    def test_container_flags_forwarded_to_runner(self, sample_astra_yaml):
         """container_flags from target config should reach the runner's scheduler config."""
         target_config = {
             "backend": "slurm",
@@ -92,10 +92,10 @@ class TestBuildAssetDefinitions:
             "container_flags": ["--scratch", "--cfs"],
         }
         with unittest.mock.patch(
-            "prism.dagster.assets.ASPContainerRunner",
+            "prism.dagster.assets.ASTRAContainerRunner",
         ) as MockRunner:
             build_definitions(
-                sample_asp_yaml, target_config=target_config, no_build=True,
+                sample_astra_yaml, target_config=target_config, no_build=True,
             )
             call_kwargs = MockRunner.call_args[1]
             scheduler = call_kwargs["target_config"]["scheduler"]
@@ -194,8 +194,8 @@ class TestExternalInputsAssetSpecs:
         assert len(defs) == 1
 
     def test_external_inputs_in_definitions(self, tmp_path):
-        asp_yaml = tmp_path / "asp.yaml"
-        asp_yaml.write_text("""
+        astra_yaml = tmp_path / "astra.yaml"
+        astra_yaml.write_text("""
 version: "1.0"
 name: "Test"
 inputs:

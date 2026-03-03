@@ -114,7 +114,7 @@ astra universe generate -n baseline
 
 ### Populate CLAUDE.md
 
-Read the existing `CLAUDE.md` (created by `prism init`). Replace the `## Analysis Details` section with context that is NOT already visible in `asp.yaml`. The spec is the source of truth for structure, decisions, and evidence -- CLAUDE.md captures only what would be lost after `/clear`:
+Read the existing `CLAUDE.md` (created by `prism init`). Replace the `## Analysis Details` section with context that is NOT already visible in `astra.yaml`. The spec is the source of truth for structure, decisions, and evidence -- CLAUDE.md captures only what would be lost after `/clear`:
 
 - **Domain Context**: important things the user explained during scoping -- data characteristics, constraints, why certain approaches were preferred. This is conversational context not captured in the spec.
 - **Implementation Notes**: domain-specific guidance from the conversation (libraries, data formats, gotchas)
