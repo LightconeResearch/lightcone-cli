@@ -1,5 +1,5 @@
 #!/bin/bash
-# SessionStart hook: Show ASP analysis summary when entering a project
+# SessionStart hook: Show ASTRA analysis summary when entering a project
 # Provides context about the current analysis state
 
 # Read JSON input from stdin
@@ -14,31 +14,31 @@ fi
 
 cd "$cwd" 2>/dev/null || exit 0
 
-# Check if this is an ASP project (has asp.yaml)
-if [ ! -f "asp.yaml" ]; then
+# Check if this is an ASTRA project (has astra.yaml)
+if [ ! -f "astra.yaml" ]; then
     exit 0
 fi
 
-# Check if asp command is available
-if ! command -v asp &> /dev/null; then
+# Check if astra command is available
+if ! command -v astra &> /dev/null; then
     # Provide minimal info without CLI
-    echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"This is an ASP project. The asp CLI is not installed - run 'pip install asp' to enable validation and other commands.\"}}"
+    echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"This is an ASTRA project. The astra CLI is not installed - run 'pip install astra' to enable validation and other commands.\"}}"
     exit 0
 fi
 
 # Gather analysis information
-analysis_name=$(grep -m1 "^  name:" asp.yaml 2>/dev/null | sed 's/.*name: *"\?\([^"]*\)"\?/\1/' | tr -d '"')
+analysis_name=$(grep -m1 "^  name:" astra.yaml 2>/dev/null | sed 's/.*name: *"\?\([^"]*\)"\?/\1/' | tr -d '"')
 
 # Count decisions
-decision_count=$(grep -c "^  [a-z_]*:$" asp.yaml 2>/dev/null | head -1)
+decision_count=$(grep -c "^  [a-z_]*:$" astra.yaml 2>/dev/null | head -1)
 # More accurate: count keys under 'decisions:'
-decision_count=$(awk '/^decisions:/{found=1; next} found && /^  [a-z_]+:/{count++} found && /^[a-z]/{exit} END{print count}' asp.yaml 2>/dev/null)
+decision_count=$(awk '/^decisions:/{found=1; next} found && /^  [a-z_]+:/{count++} found && /^[a-z]/{exit} END{print count}' astra.yaml 2>/dev/null)
 
 # Count universes
 universe_count=$(ls -1 universes/*.yaml 2>/dev/null | wc -l | tr -d ' ')
 
 # Check validation status
-validation_result=$(asp validate asp.yaml 2>&1)
+validation_result=$(astra validate astra.yaml 2>&1)
 if [ $? -eq 0 ]; then
     validation_status="valid"
 else
@@ -46,7 +46,7 @@ else
 fi
 
 # Build summary
-summary="ASP Project: ${analysis_name:-unnamed}
+summary="ASTRA Project: ${analysis_name:-unnamed}
 - Decisions: ${decision_count:-0}
 - Universes: ${universe_count:-0}
 - Validation: ${validation_status}"
@@ -57,7 +57,7 @@ if [ "$validation_status" = "has errors" ]; then
     error_preview=$(echo "$validation_result" | head -5)
     summary="$summary
 
-Validation errors (run 'asp validate asp.yaml' for details):
+Validation errors (run 'astra validate astra.yaml' for details):
 $error_preview"
 fi
 

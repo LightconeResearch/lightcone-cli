@@ -1,9 +1,9 @@
-"""Materialization status queries for ASP outputs."""
+"""Materialization status queries for ASTRA outputs."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from asp.helpers import get_outputs, load_yaml
+from astra.helpers import get_outputs, load_yaml
 
 
 def _output_is_materialized(results_dir: Path, output_id: str) -> bool:
@@ -36,7 +36,7 @@ def get_output_status(
     - "pending": has recipe, not yet materialized
     - "materialized": has recipe and results exist
     """
-    spec = load_yaml(project_path / "asp.yaml")
+    spec = load_yaml(project_path / "astra.yaml")
     outputs = get_outputs(spec)
     results_dir = project_path / "results" / universe_id
 

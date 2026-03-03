@@ -7,8 +7,8 @@ from prism.dagster.status import get_all_universe_status, get_output_status
 class TestOutputStatus:
     def test_no_results_dir(self, tmp_path):
         """Status should show 'pending' when recipe exists but no results."""
-        asp_yaml = tmp_path / "asp.yaml"
-        asp_yaml.write_text("""
+        astra_yaml = tmp_path / "astra.yaml"
+        astra_yaml.write_text("""
 version: "1.0"
 name: test
 inputs: []
@@ -23,8 +23,8 @@ outputs:
 
     def test_results_exist(self, tmp_path):
         """Status should show 'materialized' when output files exist."""
-        asp_yaml = tmp_path / "asp.yaml"
-        asp_yaml.write_text("""
+        astra_yaml = tmp_path / "astra.yaml"
+        astra_yaml.write_text("""
 version: "1.0"
 name: test
 inputs: []
@@ -42,8 +42,8 @@ outputs:
 
     def test_output_without_recipe(self, tmp_path):
         """Output with no recipe should show 'no_recipe'."""
-        asp_yaml = tmp_path / "asp.yaml"
-        asp_yaml.write_text("""
+        astra_yaml = tmp_path / "astra.yaml"
+        astra_yaml.write_text("""
 version: "1.0"
 name: test
 inputs: []
@@ -57,8 +57,8 @@ outputs:
 
     def test_mixed_states(self, tmp_path):
         """All three states should coexist."""
-        asp_yaml = tmp_path / "asp.yaml"
-        asp_yaml.write_text("""
+        astra_yaml = tmp_path / "astra.yaml"
+        astra_yaml.write_text("""
 version: "1.0"
 name: test
 inputs: []
@@ -89,8 +89,8 @@ outputs:
 class TestAllUniverseStatus:
     def test_no_universes_dir(self, tmp_path):
         """Should return empty dict when no universes directory exists."""
-        asp_yaml = tmp_path / "asp.yaml"
-        asp_yaml.write_text("""
+        astra_yaml = tmp_path / "astra.yaml"
+        astra_yaml.write_text("""
 version: "1.0"
 name: test
 inputs: []
@@ -105,8 +105,8 @@ outputs:
 
     def test_multiple_universes(self, tmp_path):
         """Should return status for each universe YAML file."""
-        asp_yaml = tmp_path / "asp.yaml"
-        asp_yaml.write_text("""
+        astra_yaml = tmp_path / "astra.yaml"
+        astra_yaml.write_text("""
 version: "1.0"
 name: test
 inputs: []

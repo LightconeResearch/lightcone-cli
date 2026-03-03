@@ -20,8 +20,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Configure git credentials for private ASP repo
-        run: git config --global url."https://x-access-token:${{ secrets.ASP_TOKEN }}@github.com/".insteadOf "https://github.com/"
+      - name: Configure git credentials for private ASTRA repo
+        run: git config --global url."https://x-access-token:${{ secrets.ASTRA_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Install dependencies
         run: pip install -e ".[dev]"

@@ -1,12 +1,12 @@
 ---
 name: prism-verify
-description: Verify a completed ASP analysis — check that results exist, decisions match code, success criteria are met, and the spec is up to date. Run after building an analysis.
-allowed-tools: Read, Glob, Grep, Bash(asp:*), Bash(python:*), Bash(ls:*), Bash(cat:*), AskUserQuestion
+description: Verify a completed ASTRA analysis — check that results exist, decisions match code, success criteria are met, and the spec is up to date. Run after building an analysis.
+allowed-tools: Read, Glob, Grep, Bash(astra:*), Bash(python:*), Bash(ls:*), Bash(cat:*), AskUserQuestion
 ---
 
 # /prism-verify
 
-Verify a completed ASP analysis. Checks that implementation matches specification, results are present and valid, and success criteria are met.
+Verify a completed ASTRA analysis. Checks that implementation matches specification, results are present and valid, and success criteria are met.
 
 ## References
 
@@ -14,7 +14,7 @@ Verify a completed ASP analysis. Checks that implementation matches specificatio
 
 ## Setup
 
-1. Read `asp.yaml`
+1. Read `astra.yaml`
 2. Read universe file — default `universes/baseline.yaml`, or user-specified
 3. Read `CLAUDE.md` for project context
 4. Ask: "Should I also check success criteria against results, or just verify spec-implementation alignment?"
@@ -28,8 +28,8 @@ Run all checks. Collect findings and present the full report at the end.
 ## Check 1: Schema & Semantic Validation
 
 ```bash
-asp validate asp.yaml
-asp universe check universes/<universe_id>.yaml
+astra validate astra.yaml
+astra universe check universes/<universe_id>.yaml
 ```
 
 Record pass/fail. Continue with remaining checks even if validation fails.
@@ -90,7 +90,7 @@ Be pragmatic — the code may parse option IDs into internal representations (e.
 
 **Skip if the user opted out during Setup.**
 
-For each success criterion in `asp.yaml`:
+For each success criterion in `astra.yaml`:
 1. If the criterion has `output` and `condition` fields, read the referenced output's result file and evaluate the condition. Report pass/fail.
 2. If the criterion has only a `claim` (no `output` reference), use judgment: check if any result can verify it. Note "needs manual review" for qualitative criteria.
 3. If no results relate to it, flag as unverifiable.
@@ -102,7 +102,7 @@ For each success criterion in `asp.yaml`:
 Scan for drift between spec and implementation:
 
 1. **Undeclared outputs** — files in `results/<universe_id>/` not declared as outputs
-2. **Stale descriptions** — implementation plans describe an approach that diverges from asp.yaml
+2. **Stale descriptions** — implementation plans describe an approach that diverges from astra.yaml
 
 Only flag things you're reasonably confident about.
 

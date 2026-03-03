@@ -1,4 +1,4 @@
-"""Tests for ASP asset factory."""
+"""Tests for ASTRA asset factory."""
 from __future__ import annotations
 
 import unittest.mock
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import dagster as dg
 import pytest
-from asp.helpers import load_yaml
+from astra.helpers import load_yaml
 
 from prism.dagster.assets import (
     build_asset_definitions,
@@ -17,15 +17,15 @@ from prism.dagster.assets import (
 
 @pytest.fixture
 def mock_runner():
-    """Create a mock ASPContainerRunner."""
+    """Create a mock ASTRAContainerRunner."""
     return MagicMock()
 
 
 @pytest.fixture
-def sample_asp_yaml(tmp_path):
-    """Create a sample asp.yaml with inline recipes."""
-    asp_yaml = tmp_path / "asp.yaml"
-    asp_yaml.write_text("""
+def sample_astra_yaml(tmp_path):
+    """Create a sample astra.yaml with inline recipes."""
+    astra_yaml = tmp_path / "astra.yaml"
+    astra_yaml.write_text("""
 version: "1.0"
 name: "Test Analysis"
 inputs:
@@ -52,24 +52,24 @@ decisions: {}
 
 class TestBuildAssetDefinitions:
     def test_generates_assets_for_outputs_with_recipes(
-        self, sample_asp_yaml, mock_runner,
+        self, sample_astra_yaml, mock_runner,
     ):
-        spec = load_yaml(sample_asp_yaml / "asp.yaml")
+        spec = load_yaml(sample_astra_yaml / "astra.yaml")
         assets = build_asset_definitions(spec, runner=mock_runner)
         asset_keys = {a.key.path[-1] for a in assets}
         assert "cleaned" in asset_keys
         assert "result" in asset_keys
 
     def test_skips_outputs_without_recipes(
-        self, sample_asp_yaml, mock_runner,
+        self, sample_astra_yaml, mock_runner,
     ):
-        spec = load_yaml(sample_asp_yaml / "asp.yaml")
+        spec = load_yaml(sample_astra_yaml / "astra.yaml")
         assets = build_asset_definitions(spec, runner=mock_runner)
         asset_keys = {a.key.path[-1] for a in assets}
         assert "external" not in asset_keys
 
-    def test_asset_dependencies(self, sample_asp_yaml, mock_runner):
-        spec = load_yaml(sample_asp_yaml / "asp.yaml")
+    def test_asset_dependencies(self, sample_astra_yaml, mock_runner):
+        spec = load_yaml(sample_astra_yaml / "astra.yaml")
         assets = build_asset_definitions(spec, runner=mock_runner)
         result_asset = next(a for a in assets if a.key.path[-1] == "result")
         # Check dependencies via specs
@@ -79,8 +79,8 @@ class TestBuildAssetDefinitions:
                 dep_keys.add(dep.asset_key.path[-1])
         assert "cleaned" in dep_keys
 
-    def test_build_definitions_returns_definitions(self, sample_asp_yaml):
-        defs = build_definitions(sample_asp_yaml)
+    def test_build_definitions_returns_definitions(self, sample_astra_yaml):
+        defs = build_definitions(sample_astra_yaml)
         assert isinstance(defs, dg.Definitions)
 
     def test_container_flags_forwarded_to_runner(self, sample_asp_yaml):

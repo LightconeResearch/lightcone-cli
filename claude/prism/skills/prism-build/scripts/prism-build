@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run a prism-build loop using CLAUDE.md as the spec
-# Autonomous iteration from asp.yaml to materialized results
+# Autonomous iteration from astra.yaml to materialized results
 # Usage: prism-build [--max-iterations N] [--backend claude|codex] [-- extra-flags...]
 
 set -e

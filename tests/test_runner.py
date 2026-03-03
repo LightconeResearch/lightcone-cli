@@ -1,10 +1,10 @@
-"""Tests for ASP Container Runner."""
+"""Tests for ASTRA Container Runner."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 from prism.dagster.runner import (
-    ASPContainerRunner,
+    ASTRAContainerRunner,
     _check_sacct,
     _normalise_time_limit,
     _parse_sbatch_job_id,
@@ -41,7 +41,7 @@ class TestResourceTranslation:
 class TestDockerRunner:
     def test_execute_local_fallback(self, tmp_path):
         """Without Docker, execute falls back to local subprocess."""
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="docker",
         )
@@ -56,7 +56,7 @@ class TestDockerRunner:
 
     def test_execute_with_container_string(self, tmp_path):
         """Runner stores default_container from init."""
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="docker",
             default_container="myimage:latest",
@@ -371,7 +371,7 @@ class TestHelpers:
 class TestSlurmRunner:
     def test_slurm_submit_sbatch_not_found(self, tmp_path):
         """When sbatch is not found, return exit code 127."""
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="slurm",
             target_config={
@@ -400,7 +400,7 @@ class TestSlurmRunner:
         # Mock successful poll
         mock_poll.return_value = (0, {"slurm_state": "COMPLETED", "elapsed": "00:05:00"})
 
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="slurm",
             target_config={
@@ -432,7 +432,7 @@ class TestSlurmRunner:
         mock_submit.stderr = "sbatch: error: invalid account"
         mock_run.return_value = mock_submit
 
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="slurm",
             target_config={
@@ -456,7 +456,7 @@ class TestSlurmRunner:
         mock_submit.stderr = "error"
         mock_run.return_value = mock_submit
 
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="slurm",
             target_config={
@@ -488,7 +488,7 @@ class TestSlurmRunner:
         mock_submit.stderr = "error"
         mock_run.return_value = mock_submit
 
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="slurm",
             target_config={

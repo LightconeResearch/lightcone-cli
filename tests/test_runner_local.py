@@ -1,13 +1,13 @@
 """Tests for local backend execution."""
 from pathlib import Path
 
-from prism.dagster.runner import ASPContainerRunner
+from prism.dagster.runner import ASTRAContainerRunner
 
 
 class TestLocalBackend:
     def test_local_backend_runs_command(self, tmp_path: Path):
         (tmp_path / "results").mkdir()
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="local",
         )
@@ -21,7 +21,7 @@ class TestLocalBackend:
 
     def test_local_backend_ignores_container(self, tmp_path: Path):
         (tmp_path / "results").mkdir()
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="local",
         )

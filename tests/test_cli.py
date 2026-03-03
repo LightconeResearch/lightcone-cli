@@ -26,18 +26,18 @@ class TestInitCommand:
             ["init", str(project_dir), "--no-git", "--no-venv", "--permissions", "recommended"],
         )
         assert result.exit_code == 0
-        assert "Created ASP analysis project" in result.output
+        assert "Created ASTRA analysis project" in result.output
 
         # Check directory structure
-        assert (project_dir / "asp.yaml").exists()
+        assert (project_dir / "astra.yaml").exists()
         assert (project_dir / ".gitignore").exists()
         assert (project_dir / "universes").is_dir()
         assert (project_dir / "universes" / "baseline.yaml").exists()
         assert (project_dir / "scripts").is_dir()
         assert (project_dir / "results").is_dir()
 
-    def test_init_asp_yaml_content(self, runner: CliRunner, tmp_path: Path):
-        """Test that the generated asp.yaml has the expected content."""
+    def test_init_astra_yaml_content(self, runner: CliRunner, tmp_path: Path):
+        """Test that the generated astra.yaml has the expected content."""
         project_dir = tmp_path / "content-test"
         result = runner.invoke(
             main,
@@ -45,7 +45,7 @@ class TestInitCommand:
         )
         assert result.exit_code == 0
 
-        content = (project_dir / "asp.yaml").read_text()
+        content = (project_dir / "astra.yaml").read_text()
         assert "content-test" in content
         assert "version:" in content
         assert "name:" in content
@@ -65,21 +65,21 @@ class TestInitCommand:
         assert "results/" in gitignore
         assert "__pycache__/" in gitignore
 
-    def test_init_refuses_if_asp_yaml_exists(self, runner: CliRunner, tmp_path: Path):
-        """Test that init refuses to run in an existing ASP project."""
+    def test_init_refuses_if_astra_yaml_exists(self, runner: CliRunner, tmp_path: Path):
+        """Test that init refuses to run in an existing ASTRA project."""
         project_dir = tmp_path / "already-init"
         runner.invoke(main, [
             "init", str(project_dir), "--no-git", "--no-venv",
             "--permissions", "recommended",
         ])
-        assert (project_dir / "asp.yaml").exists()
+        assert (project_dir / "astra.yaml").exists()
 
         result = runner.invoke(main, [
             "init", str(project_dir), "--no-git", "--no-venv",
             "--permissions", "recommended",
         ])
         assert result.exit_code == 1
-        assert "already an ASP project" in result.output
+        assert "already an ASTRA project" in result.output
 
     def test_init_existing_nonempty_dir_decline(self, runner: CliRunner, tmp_path: Path):
         """Test declining to overwrite existing non-empty directory."""
@@ -93,7 +93,7 @@ class TestInitCommand:
             input="n\n",
         )
         assert result.exit_code == 0
-        assert not (project_dir / "asp.yaml").exists()
+        assert not (project_dir / "astra.yaml").exists()
 
     def test_init_existing_nonempty_dir_confirm(self, runner: CliRunner, tmp_path: Path):
         """Test confirming to overwrite existing non-empty directory."""
@@ -107,7 +107,7 @@ class TestInitCommand:
             input="y\n",
         )
         assert result.exit_code == 0
-        assert (project_dir / "asp.yaml").exists()
+        assert (project_dir / "astra.yaml").exists()
 
     def test_init_creates_dagster_yaml(self, runner: CliRunner, tmp_path: Path):
         """Test that init creates dagster.yaml."""
@@ -494,7 +494,7 @@ class TestAutoTrigger:
              "--permissions", "recommended"],
         )
         assert result.exit_code == 0
-        assert "Created ASP analysis project" in result.output
+        assert "Created ASTRA analysis project" in result.output
 
 
 class TestTargetCommand:
@@ -585,8 +585,8 @@ class TestTargetResolution:
         monkeypatch.chdir(tmp_path)
         import yaml
 
-        # Create minimal asp.yaml with no outputs (just metadata)
-        (tmp_path / "asp.yaml").write_text(yaml.dump({
+        # Create minimal astra.yaml with no outputs (just metadata)
+        (tmp_path / "astra.yaml").write_text(yaml.dump({
             "name": "test-project",
             "version": "0.1.0",
             "description": "Test",
@@ -614,7 +614,7 @@ class TestTargetResolution:
         monkeypatch.chdir(tmp_path)
         import yaml
 
-        (tmp_path / "asp.yaml").write_text(yaml.dump({
+        (tmp_path / "astra.yaml").write_text(yaml.dump({
             "name": "test-project",
             "version": "0.1.0",
             "description": "Test",

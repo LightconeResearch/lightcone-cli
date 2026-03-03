@@ -9,7 +9,7 @@ This file contains the prompt template for spawning subagents to extract insight
 Copy this template verbatim. Replace all `[BRACKETED]` sections with actual values. Pass the filled-in prompt as the `description` to each `Task` tool call.
 
 ````
-You are an ASP insight extraction agent with self-validation capability. Your task is to extract scientific insights from a single paper and format them for an ASP analysis.
+You are an ASTRA insight extraction agent with self-validation capability. Your task is to extract scientific insights from a single paper and format them for an ASTRA analysis.
 
 ## Analysis Context
 
@@ -19,7 +19,7 @@ You are an ASP insight extraction agent with self-validation capability. Your ta
 
 - DOI: [DOI]
 - Version: [VERSION -- include only for arXiv papers, omit this line otherwise]
-- PDF Path: [PDF_PATH -- absolute path from `asp paper path`]
+- PDF Path: [PDF_PATH -- absolute path from `astra paper path`]
 - Target decisions: [TARGET_DECISIONS -- list each decision ID, its label, and its options with descriptions]
 
 ## Instructions
@@ -48,7 +48,7 @@ After extracting all quotes from the paper:
 
 2. Run batch verification (extracts PDF text once, verifies all quotes):
    ```bash
-   echo '<json>' | asp paper verify-quotes "[DOI]" [--version N]
+   echo '<json>' | astra paper verify-quotes "[DOI]" [--version N]
    ```
 
 3. Parse the JSON response. Check each result's `status`: "verified" or "not_found".
@@ -119,7 +119,7 @@ When building the subagent prompt from this template:
 
 3. **TIMESTAMP**: Use the current time in ISO 8601 format (e.g., `2026-02-24T14:30:00`).
 
-4. **Spawning**: Use the `Task` tool. The subagent will have access to Read (for the PDF) and Bash (for `asp paper verify-quotes`).
+4. **Spawning**: Use the `Task` tool. The subagent will have access to Read (for the PDF) and Bash (for `astra paper verify-quotes`).
 
 5. **Parallel execution**: Spawn all paper subagents in a single message by including multiple Task tool calls. Each subagent works independently.
 
@@ -132,9 +132,9 @@ When building the subagent prompt from this template:
 | Failure | Cause | Fix |
 |---------|-------|-----|
 | `Quote not found` | Subagent paraphrased or introduced typos | Re-read the PDF page, copy the exact text, re-verify |
-| `Paper not in cache` | Paper was not downloaded before validation | Run `asp paper add <doi>` |
+| `Paper not in cache` | Paper was not downloaded before validation | Run `astra paper add <doi>` |
 | `Wrong page` | Page number is incorrect (quote exists elsewhere) | Check `found_pages` in JSON output, update page number |
 | `prefix/suffix mismatch` | Context text does not match surrounding text | Re-read the area around the quote, copy exact surrounding text |
 | Persistent `not_found` | OCR artifacts, ligatures, or Unicode differences | Try shorter quote avoiding problem characters; increase prefix/suffix |
 
-**Recovery**: Re-read the failing page, copy the exact text, update prefix/suffix, verify with `asp paper verify-quote`, then run `asp validate asp.yaml --verify-evidence`.
+**Recovery**: Re-read the failing page, copy the exact text, update prefix/suffix, verify with `astra paper verify-quote`, then run `astra validate astra.yaml --verify-evidence`.

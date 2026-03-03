@@ -1,4 +1,4 @@
-"""Prism - Lightcone Research's ASP-compliant Agentic Layer."""
+"""Prism - Lightcone Research's ASTRA-compliant Agentic Layer."""
 
 from __future__ import annotations
 

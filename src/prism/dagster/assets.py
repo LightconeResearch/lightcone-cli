@@ -1,4 +1,4 @@
-"""Asset factory — generates Dagster assets from asp.yaml output recipes."""
+"""Asset factory — generates Dagster assets from astra.yaml output recipes."""
 from __future__ import annotations
 
 import logging
@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Any
 
 import dagster as dg
-from asp.helpers import get_inputs, get_outputs, load_yaml
+from astra.helpers import get_inputs, get_outputs, load_yaml
 
 from prism.container import resolve_container_for_slurm, resolve_container_spec
-from prism.dagster.runner import ASPContainerRunner
+from prism.dagster.runner import ASTRAContainerRunner
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def _resolve_container(
 
 def build_asset_definitions(
     spec: dict[str, Any],
-    runner: ASPContainerRunner | None = None,
+    runner: ASTRAContainerRunner | None = None,
     universe_id: str = "baseline",
     project_path: Path | None = None,
     project_name: str | None = None,
@@ -108,7 +108,7 @@ def _load_universe_params(
 def _build_single_asset(
     output_id: str,
     recipe: dict[str, Any],
-    runner: ASPContainerRunner | None = None,
+    runner: ASTRAContainerRunner | None = None,
     universe_id: str = "baseline",
     project_path: Path | None = None,
     project_name: str | None = None,
@@ -181,13 +181,13 @@ def build_definitions(
     universe_id: str = "baseline",
     no_build: bool = False,
 ) -> dg.Definitions:
-    """Build complete Dagster Definitions from an ASP project.
+    """Build complete Dagster Definitions from an ASTRA project.
 
     This is the main entry point for the Dagster integration.  When a SLURM
     target is provided, container images are automatically built (podman-hpc)
     or pulled before asset definitions are constructed.
     """
-    spec = load_yaml(project_path / "asp.yaml")
+    spec = load_yaml(project_path / "astra.yaml")
     project_name = spec.get("name") or project_path.name
 
     # Build runner config from target
@@ -222,14 +222,14 @@ def build_definitions(
 
     # Build runner from target config
     if runner_config:
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(project_path),
             backend=backend,
             default_container=default_container,
             target_config=runner_config,
         )
     else:
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(project_path),
             backend="docker",
             default_container=default_container,

@@ -1,4 +1,4 @@
-"""ASP Container Runner — executes recipes in Docker, locally, or via SLURM."""
+"""ASTRA Container Runner — executes recipes in Docker, locally, or via SLURM."""
 from __future__ import annotations
 
 import logging
@@ -31,7 +31,7 @@ def _build_cli_args(params: dict[str, Any], universe_id: str) -> list[str]:
 
 
 def translate_resources_to_docker_flags(resources: dict[str, Any]) -> list[str]:
-    """Translate ASP resource requirements to Docker CLI flags."""
+    """Translate ASTRA resource requirements to Docker CLI flags."""
     flags: list[str] = []
     if cpus := resources.get("cpus"):
         flags.append(f"--cpus={cpus}")
@@ -42,8 +42,8 @@ def translate_resources_to_docker_flags(resources: dict[str, Any]) -> list[str]:
     return flags
 
 
-class ASPContainerRunner:
-    """Executes ASP recipes via Docker, local subprocess, or SLURM.
+class ASTRAContainerRunner:
+    """Executes ASTRA recipes via Docker, local subprocess, or SLURM.
 
     When backend is "docker", attempts Docker execution first.  If Docker
     fails (missing image, daemon not running, non-zero exit), falls back to
@@ -343,7 +343,7 @@ def translate_resources_to_slurm_directives(
     *,
     resource_limits: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Translate ASP resource requirements to SLURM #SBATCH directives.
+    """Translate ASTRA resource requirements to SLURM #SBATCH directives.
 
     Returns a list of directive strings (without the ``#SBATCH`` prefix).
 
@@ -453,7 +453,7 @@ def generate_sbatch_script(
         lines.append(f"#SBATCH {d}")
 
     lines.append("")
-    lines.append("# --- Prism / ASP recipe execution ---")
+    lines.append("# --- Prism / ASTRA recipe execution ---")
     lines.append(f"cd {project_root}")
     lines.append("")
 

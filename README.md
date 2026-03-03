@@ -9,7 +9,7 @@ curl -fsSL https://lightconeresearch.github.io/lightcone.dev/install.sh | bash
 
 ## What is Prism?
 
-Prism is the agentic layer for ASP (Agentic Science Protocol). While ASP provides the core specification format — schemas, validation, insights, and evidence verification — Prism adds the full agent experience:
+Prism is the agentic layer for ASTRA (Agentic Schema for Transparent Research Analysis). While ASTRA provides the core specification format — schemas, validation, insights, and evidence verification — Prism adds the full agent experience:
 
 - **Project scaffolding** with Claude Code integration (`prism init`)
 - **Claude Code skills** for analysis creation, insight extraction, and verification
@@ -47,31 +47,31 @@ prism remote show perlmutter
 prism canvas
 prism navigator
 
-# Spec operations (via ASP CLI):
-asp validate asp.yaml
-asp info
-asp universe generate -n baseline
-asp viz
-asp paper add <doi>
+# Spec operations (via ASTRA CLI):
+astra validate astra.yaml
+astra info
+astra universe generate -n baseline
+astra viz
+astra paper add <doi>
 ```
 
 ## Claude Code Skills
 
 | Skill | Purpose |
 |-------|---------|
-| `/prism` | Reference guide for working with ASP analyses |
+| `/prism` | Reference guide for working with ASTRA analyses |
 | `/prism-new` | Scope a research question and structure the analysis |
 | `/prism-verify` | Verify implementation matches specification |
 
 ## Architecture
 
 ```
-ASP (core)          →  Schema, validation, insights, verification, minimal CLI
+ASTRA (core)        →  Schema, validation, insights, verification, minimal CLI
 Prism (agent layer) →  Skills, scaffolding, remote config, visual editors
 Spectrum (future)   →  UI layer
 ```
 
-Prism depends on ASP. All spec operations (`asp validate`, `asp info`, etc.) are provided by ASP.
+Prism depends on ASTRA. All spec operations (`astra validate`, `astra info`, etc.) are provided by ASTRA.
 
 ## License
 

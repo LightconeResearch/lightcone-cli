@@ -1,4 +1,4 @@
-"""Command-line interface for Prism — the ASP-compliant agentic layer."""
+"""Command-line interface for Prism — the ASTRA-compliant agentic layer."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ PERMISSION_TIERS = {
     },
     "recommended": {
         "allow": [
-            "Bash(asp:*)",
+            "Bash(astra:*)",
             "Bash(prism:*)",
             "Bash(python:*)",
             "Bash(pip:*)",
@@ -80,7 +80,7 @@ def _get_plugin_source_dir() -> Path | None:
 @click.version_option()
 @click.pass_context
 def main(ctx: click.Context) -> None:
-    """Prism - ASP-compliant Agentic Layer CLI."""
+    """Prism - ASTRA-compliant Agentic Layer CLI."""
     ctx.ensure_object(dict)
     if ctx.invoked_subcommand in ("setup", "target"):
         return
@@ -115,9 +115,9 @@ def init(
     directory: Path, no_git: bool, no_venv: bool,
     target: str | None, permissions: str | None,
 ) -> None:
-    """Create a new ASP analysis project with full agentic scaffolding.
+    """Create a new ASTRA analysis project with full agentic scaffolding.
 
-    Creates the project with ASP specification files, Claude Code plugin
+    Creates the project with ASTRA specification files, Claude Code plugin
     configuration, skills, hooks, and a Python virtual environment.
 
     DIRECTORY is the project folder to create (default: current directory).
@@ -127,13 +127,13 @@ def init(
         prism init my-analysis --target perlmutter-gpu
         prism init my-analysis --no-git --no-venv
     """
-    # Check if this is already an ASP project
-    if (directory / "asp.yaml").exists():
+    # Check if this is already an ASTRA project
+    if (directory / "astra.yaml").exists():
         console.print(
-            f"[red]Error:[/red] [cyan]{directory}[/cyan] is already an ASP project "
-            f"(asp.yaml exists)."
+            f"[red]Error:[/red] [cyan]{directory}[/cyan] is already an ASTRA project "
+            f"(astra.yaml exists)."
         )
-        console.print("Use [cyan]asp validate[/cyan] to check it, or delete asp.yaml to re-init.")
+        console.print("Use [cyan]astra validate[/cyan] to check it, or delete astra.yaml to re-init.")
         raise SystemExit(1)
 
     # Create project directory
@@ -167,7 +167,7 @@ def init(
     )
 
     # Create .gitignore
-    gitignore = """# ASP Analysis
+    gitignore = """# ASTRA Analysis
 results/
 results/.dagster/
 __pycache__/
@@ -178,8 +178,8 @@ __pycache__/
 """
     (directory / ".gitignore").write_text(gitignore)
 
-    # Create boilerplate asp.yaml
-    _create_boilerplate_asp_yaml(directory)
+    # Create boilerplate astra.yaml
+    _create_boilerplate_astra_yaml(directory)
 
     # Create CLAUDE.md with project conventions
     _create_claude_md(directory)
@@ -215,7 +215,7 @@ __pycache__/
     _init_git_repo(directory, no_git)
 
     # Print success message
-    console.print(f"[green]✓[/green] Created ASP analysis project: [cyan]{directory}[/cyan]")
+    console.print(f"[green]✓[/green] Created ASTRA analysis project: [cyan]{directory}[/cyan]")
     if target:
         console.print(f"  Target: [cyan]{target}[/cyan]")
 
@@ -230,13 +230,13 @@ __pycache__/
     console.print("Then run [cyan]/prism-new[/cyan] to scope your research question.")
 
 
-def _create_boilerplate_asp_yaml(directory: Path) -> None:
-    """Create boilerplate asp.yaml with TODOs."""
+def _create_boilerplate_astra_yaml(directory: Path) -> None:
+    """Create boilerplate astra.yaml with TODOs."""
 
     name = directory.name if directory != Path(".") else "My Analysis"
 
-    asp_yaml = f"""# ASP Analysis Specification
-# Documentation: https://github.com/LightconeResearch/ASP
+    astra_yaml = f"""# ASTRA Analysis Specification
+# Documentation: https://github.com/LightconeResearch/ASTRA
 
 version: "1.0"
 name: "{name}"
@@ -279,7 +279,7 @@ decisions:
         label: "Option B"
         description: "TODO: Describe option B"
 """
-    (directory / "asp.yaml").write_text(asp_yaml)
+    (directory / "astra.yaml").write_text(astra_yaml)
 
     # Create Containerfile
     containerfile = """\
@@ -321,7 +321,7 @@ def _create_readme(directory: Path, name: str) -> None:
     """Create a README.md for the project."""
     readme = f"""# {name}
 
-An ASP (Agentic Science Protocol) analysis project, built with Prism.
+An ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built with Prism.
 
 ## Quick Start
 
@@ -337,7 +337,7 @@ claude
 
 ## Structure
 
-- `asp.yaml` — Analysis specification (source of truth)
+- `astra.yaml` — Analysis specification (source of truth)
 - `prism.yaml` — Prism config (compute profiles)
 - `CLAUDE.md` — Build conventions and project context for Claude Code
 - `universes/` — Decision selections (one YAML per universe)
@@ -346,7 +346,7 @@ claude
 
 ## Documentation
 
-See [ASP documentation](https://github.com/LightconeResearch/ASP) for the specification.
+See [ASTRA documentation](https://github.com/LightconeResearch/ASTRA) for the specification.
 See [Prism documentation](https://github.com/LightconeResearch/Prism) for the agentic layer.
 """
     (directory / "README.md").write_text(readme)
@@ -367,7 +367,7 @@ def _create_claude_md(directory: Path) -> None:
         # Fallback: minimal CLAUDE.md if template not found
         content = (
             f"# CLAUDE.md\n\n## Project: {name}\n\n"
-            "This is an ASP analysis project. Read `asp.yaml` for the specification.\n\n"
+            "This is an ASTRA analysis project. Read `astra.yaml` for the specification.\n\n"
             "Run `/prism-new` to scope a research question.\n\n"
             "---\n\n"
             "<!-- AUTOGENERATED: /prism-new populates below during specification -->\n"
@@ -613,7 +613,7 @@ def _init_git_repo(directory: Path, no_git: bool) -> None:
         try:
             subprocess.run(["git", "add", "."], cwd=directory, capture_output=True, check=True)
             subprocess.run(
-                ["git", "commit", "-m", "Initial ASP analysis structure"],
+                ["git", "commit", "-m", "Initial ASTRA analysis structure"],
                 cwd=directory,
                 capture_output=True,
                 check=True,
@@ -653,7 +653,7 @@ def _get_lightcone_venv_site_packages() -> Path | None:
 
 
 def _create_venv(directory: Path, no_venv: bool) -> bool:
-    """Create a virtual environment with asp and prism installed."""
+    """Create a virtual environment with astra and prism installed."""
     if no_venv:
         return False
 
@@ -703,8 +703,8 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
         lightcone_dir = Path.home() / ".lightcone"
         env = {**os.environ, "SETUPTOOLS_SCM_PRETEND_VERSION": "0.1.0"}
         try:
-            if (lightcone_dir / "ASP").is_dir() and (lightcone_dir / "Prism").is_dir():
-                install_targets = ["-e", str(lightcone_dir / "ASP")]
+            if (lightcone_dir / "ASTRA").is_dir() and (lightcone_dir / "Prism").is_dir():
+                install_targets = ["-e", str(lightcone_dir / "ASTRA")]
                 install_targets += ["-e", str(lightcone_dir / "Prism")]
                 subprocess.run(
                     [str(pip_path), "install", *install_targets],
@@ -746,7 +746,7 @@ def run(
     target: str | None,
     no_build: bool,
 ) -> None:
-    """Materialize ASP outputs via Dagster.
+    """Materialize ASTRA outputs via Dagster.
 
     Runs recipes to produce outputs. Without arguments, materializes all
     outputs for all universes. Container build specs are automatically
@@ -764,8 +764,8 @@ def run(
     from prism.dagster.targets import load_target
 
     project_path = Path.cwd()
-    if not (project_path / "asp.yaml").exists():
-        console.print("[red]Error:[/red] No asp.yaml found in current directory.")
+    if not (project_path / "astra.yaml").exists():
+        console.print("[red]Error:[/red] No astra.yaml found in current directory.")
         raise SystemExit(1)
 
     # Resolve target: --target flag > prism.yaml > default from user config
@@ -836,7 +836,7 @@ def run(
     help="Container runtime to build with (auto-detected from target config)",
 )
 def build(force: bool, runtime: str | None) -> None:
-    """Build container images from Containerfile specs in asp.yaml.
+    """Build container images from Containerfile specs in astra.yaml.
 
     Scans the analysis specification for container build specs (both
     analysis-level and per-recipe) and builds any missing images.
@@ -852,7 +852,7 @@ def build(force: bool, runtime: str | None) -> None:
         prism build --runtime docker     # force docker
         prism build --force              # rebuild all images
     """
-    from asp.helpers import get_outputs, load_yaml
+    from astra.helpers import get_outputs, load_yaml
 
     from prism.container import (
         ContainerBuildError,
@@ -861,8 +861,8 @@ def build(force: bool, runtime: str | None) -> None:
     )
 
     project_path = Path.cwd()
-    if not (project_path / "asp.yaml").exists():
-        console.print("[red]Error:[/red] No asp.yaml found in current directory.")
+    if not (project_path / "astra.yaml").exists():
+        console.print("[red]Error:[/red] No astra.yaml found in current directory.")
         raise SystemExit(1)
 
     # Resolve runtime from target config if not explicitly provided
@@ -883,7 +883,7 @@ def build(force: bool, runtime: str | None) -> None:
         if runtime is None:
             runtime = "docker"
 
-    spec = load_yaml(project_path / "asp.yaml")
+    spec = load_yaml(project_path / "astra.yaml")
     project_name = spec.get("name") or project_path.name
 
     # Collect all unique container build specs.
@@ -910,7 +910,7 @@ def build(force: bool, runtime: str | None) -> None:
                 build_specs.append((label, raw))
 
     if not build_specs:
-        console.print("[dim]No container build specs found in asp.yaml.[/dim]")
+        console.print("[dim]No container build specs found in astra.yaml.[/dim]")
         return
 
     console.print(
@@ -944,16 +944,16 @@ def status(universe: str | None) -> None:
         prism status
         prism status --universe baseline
     """
-    from asp.helpers import get_outputs, load_yaml
+    from astra.helpers import get_outputs, load_yaml
 
     from prism.dagster.status import get_all_universe_status, get_output_status
 
     project_path = Path.cwd()
-    if not (project_path / "asp.yaml").exists():
-        console.print("[red]Error:[/red] No asp.yaml found in current directory.")
+    if not (project_path / "astra.yaml").exists():
+        console.print("[red]Error:[/red] No astra.yaml found in current directory.")
         raise SystemExit(1)
 
-    spec = load_yaml(project_path / "asp.yaml")
+    spec = load_yaml(project_path / "astra.yaml")
     name = spec.get("name", "Unknown")
     outputs = get_outputs(spec)
 
@@ -1043,8 +1043,8 @@ def dev(port: int, universe: str) -> None:
     import tempfile
 
     project_path = Path.cwd()
-    if not (project_path / "asp.yaml").exists():
-        console.print("[red]Error:[/red] No asp.yaml found in current directory.")
+    if not (project_path / "astra.yaml").exists():
+        console.print("[red]Error:[/red] No astra.yaml found in current directory.")
         raise SystemExit(1)
 
     console.print(f"[bold]Starting Dagster webserver on port {port}...[/bold]")
@@ -1052,7 +1052,7 @@ def dev(port: int, universe: str) -> None:
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
     # Generate a temporary Python file that builds Dagster Definitions from
-    # the current ASP project.  dagster-webserver discovers assets via -f.
+    # the current ASTRA project.  dagster-webserver discovers assets via -f.
     defs_code = (
         "from pathlib import Path\n"
         "from prism.dagster.assets import build_definitions\n"

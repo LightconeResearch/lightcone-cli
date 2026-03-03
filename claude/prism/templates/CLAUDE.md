@@ -2,7 +2,7 @@
 
 ## Project: {{name}}
 
-ASP (Agentic Science Protocol) analysis project, built with Prism.
+ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built with Prism.
 
 ### Skill Commands
 
@@ -16,13 +16,13 @@ ASP (Agentic Science Protocol) analysis project, built with Prism.
 
 ### Source of Truth
 
-- `asp.yaml` -- The analysis specification. Read this first.
+- `astra.yaml` -- The analysis specification. Read this first.
 - `universes/` -- Decision selections (one YAML per universe).
 
 ### Project Layout
 
 ```
-asp.yaml              # Specification: decisions, inputs, outputs
+astra.yaml              # Specification: decisions, inputs, outputs
 prism.yaml            # Prism config (default target, etc.)
 CLAUDE.md             # This file
 Containerfile         # Container image for execution
@@ -38,19 +38,19 @@ results/<universe>/   # Outputs by universe (produced by prism run)
 Three overlapping phases:
 
 1. **Write & Debug** -- Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
-2. **Integrate** -- Add `recipe:` blocks to outputs in `asp.yaml`. Track with `prism status` (`no recipe` / `pending` / `ok`).
+2. **Integrate** -- Add `recipe:` blocks to outputs in `astra.yaml`. Track with `prism status` (`no recipe` / `pending` / `ok`).
 3. **Materialize** -- `prism run` executes via Dagster in containers. Done when `prism status` shows all `ok`.
 
 **An output is not done until `prism run` produces it.** Running scripts directly is for debugging only — final results must always come from `prism run` so they are reproducible inside containers.
 
 ### Spec-Code Invariant
 
-**`asp.yaml` must always reflect the code and vice versa.** When you change one, update the other immediately:
-- Add a decision to code? Add it to `asp.yaml` and all universe files.
-- Add an output or change a script? Update the `recipe:` block in `asp.yaml`.
-- Remove or rename something? Update both sides and run `asp validate asp.yaml`.
+**`astra.yaml` must always reflect the code and vice versa.** When you change one, update the other immediately:
+- Add a decision to code? Add it to `astra.yaml` and all universe files.
+- Add an output or change a script? Update the `recipe:` block in `astra.yaml`.
+- Remove or rename something? Update both sides and run `astra validate astra.yaml`.
 
-### asp.yaml Structure
+### astra.yaml Structure
 
 The spec is **self-similar** -- every level (top or sub-analysis) has the same fields: `name`, `description`, `version`, `authors`, `tags`, `inputs`, `outputs`, `decisions`, `insights`, `analyses`, `container`, `success_criteria`.
 
@@ -64,7 +64,7 @@ Default to a **single analysis**. Split into sub-analyses only when a stage is a
 
 Do **not** split just because the workflow has multiple implementation steps. If all steps jointly serve one objective and one end product, keep it as one analysis.
 
-If boundaries are unclear, start single-analysis and split later only when boundaries become explicit in `asp.yaml`:
+If boundaries are unclear, start single-analysis and split later only when boundaries become explicit in `astra.yaml`:
 - separate stage outputs,
 - explicit `from` links between stages,
 - clear decision ownership (shared at top-level vs stage-specific under each sub-analysis).
@@ -152,7 +152,7 @@ analyses:
 
 **Every decision must be parameterized in code** -- never hardcode a decision value. Accept all decisions as CLI args.
 
-**Underscore convention:** IDs use underscores in `asp.yaml` (`prior_range`). Prism passes `--prior_range wide`. Scripts must match: `parser.add_argument('--prior_range')`, **not** `--prior-range`.
+**Underscore convention:** IDs use underscores in `astra.yaml` (`prior_range`). Prism passes `--prior_range wide`. Scripts must match: `parser.add_argument('--prior_range')`, **not** `--prior-range`.
 
 ### Decision Constraints
 
@@ -191,14 +191,14 @@ Set `container:` at analysis level (all recipes inherit); per-recipe `container:
 ### CLI Reference
 
 ```bash
-# asp -- spec operations
-asp validate asp.yaml                       # Validate (run after every change)
-asp validate asp.yaml --verify-evidence     # + verify insight quotes against PDFs
-asp info [--decisions]                      # Analysis summary / decision details
-asp universe generate -n NAME [-d "desc"]   # Generate universe from defaults
-asp universe check universes/x.yaml         # Check universe constraints
-asp viz                                     # Visualize decision space
-asp schema show analysis                    # Show JSON schema
+# astra -- spec operations
+astra validate astra.yaml                       # Validate (run after every change)
+astra validate astra.yaml --verify-evidence     # + verify insight quotes against PDFs
+astra info [--decisions]                      # Analysis summary / decision details
+astra universe generate -n NAME [-d "desc"]   # Generate universe from defaults
+astra universe check universes/x.yaml         # Check universe constraints
+astra viz                                     # Visualize decision space
+astra schema show analysis                    # Show JSON schema
 
 # prism -- execution operations
 prism run [OUTPUT] [--universe NAME]        # Execute recipes via Dagster (auto-builds)
@@ -212,11 +212,11 @@ prism target --help                         # Configure HPC execution target
 A universe selects one option per decision -- a defensible alternative analysis path. Bug fixes and refactors are normal commits, not universes.
 
 ```bash
-asp universe generate -n experiment1 -d "Testing hypothesis X"
+astra universe generate -n experiment1 -d "Testing hypothesis X"
 # Edit universes/experiment1.yaml, then: prism run --universe experiment1
 ```
 
-**Adding a new decision:** (1) add to `asp.yaml` with options/default/rationale, (2) add parameter to code, (3) add to all existing universe files with default, (4) create new universe, (5) `asp validate asp.yaml`.
+**Adding a new decision:** (1) add to `astra.yaml` with options/default/rationale, (2) add parameter to code, (3) add to all existing universe files with default, (4) create new universe, (5) `astra validate astra.yaml`.
 
 ### Status Interpretation
 
@@ -275,9 +275,9 @@ After failure: fix, then `prism run <output_id> --universe <name>`.
 
 ### Validation
 
-Run `asp validate asp.yaml` after **every** spec change. Additional checks:
-- Universe files: `asp universe check universes/<name>.yaml`
-- Evidence quotes: `asp validate asp.yaml --verify-evidence`
+Run `astra validate astra.yaml` after **every** spec change. Additional checks:
+- Universe files: `astra universe check universes/<name>.yaml`
+- Evidence quotes: `astra validate astra.yaml --verify-evidence`
 
 ---
 

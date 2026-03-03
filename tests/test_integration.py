@@ -17,8 +17,8 @@ def project_dir(tmp_path, runner):
     project = tmp_path / "test-project"
     runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
 
-    # Overwrite asp.yaml with recipes
-    (project / "asp.yaml").write_text("""
+    # Overwrite astra.yaml with recipes
+    (project / "astra.yaml").write_text("""
 version: "1.0"
 name: "Integration Test"
 inputs:
@@ -46,7 +46,7 @@ class TestIntegration:
         assert (project_dir / "dagster.yaml").exists()
 
     def test_init_creates_project_structure(self, project_dir):
-        assert (project_dir / "asp.yaml").exists()
+        assert (project_dir / "astra.yaml").exists()
         assert (project_dir / "universes").is_dir()
         assert (project_dir / "results").is_dir()
         assert (project_dir / "scripts").is_dir()
@@ -123,17 +123,17 @@ class TestIntegration:
 
     def test_io_manager_paths(self, project_dir):
         """IO manager should produce correct paths."""
-        from prism.dagster.io_manager import ASPIOManager
+        from prism.dagster.io_manager import ASTRAIOManager
 
-        mgr = ASPIOManager(project_root=str(project_dir))
+        mgr = ASTRAIOManager(project_root=str(project_dir))
         path = mgr.get_output_path("cleaned", "baseline")
         assert path == project_dir / "results" / "baseline" / "cleaned"
 
     def test_runner_executes_locally(self, project_dir):
         """Runner should fall back to local execution without Docker."""
-        from prism.dagster.runner import ASPContainerRunner
+        from prism.dagster.runner import ASTRAContainerRunner
 
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(project_dir),
             backend="docker",
         )

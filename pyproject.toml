@@ -1,7 +1,7 @@
 [project]
 name = "prism"
 dynamic = ["version"]
-description = "Lightcone Research's ASP-compliant Agentic Layer"
+description = "Lightcone Research's ASTRA-compliant Agentic Layer"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
@@ -20,7 +20,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "asp @ git+https://github.com/LightconeResearch/ASP.git",
+    "astra @ git+https://github.com/LightconeResearch/ASTRA.git",
     "click>=8.0",
     "pyyaml>=6.0",
     "rich>=13.0",

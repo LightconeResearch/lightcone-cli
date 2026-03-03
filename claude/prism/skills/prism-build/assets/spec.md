@@ -19,8 +19,8 @@ Body section:
     ### Evidence
 
     - `prism status` shows all outputs materialized
-    - `asp validate asp.yaml` passes
-    - Success criteria in `asp.yaml` are met
+    - `astra validate astra.yaml` passes
+    - Success criteria in `astra.yaml` are met
     - `/prism-verify` finds no failures
 
     ### Open Questions

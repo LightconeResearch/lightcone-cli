@@ -1,6 +1,6 @@
 #!/bin/bash
 # PostToolUse hook: Warn when agent runs a Python script that has an integrated recipe
-# Triggers on Bash commands matching "python". Uses asp.helpers for correct YAML parsing.
+# Triggers on Bash commands matching "python". Uses astra.helpers for correct YAML parsing.
 # Only fires on specific recipe matches — silent otherwise (no Tier 2 noise).
 # Parses --universe from the command to check the targeted universe; falls back to baseline.
 
@@ -20,31 +20,31 @@ if ! echo "$command" | grep -qE 'python[23]?\s'; then
     exit 0
 fi
 
-# Skip prism/asp commands
-if echo "$command" | grep -qE '(prism|asp)\s'; then
+# Skip prism/astra commands
+if echo "$command" | grep -qE '(prism|astra)\s'; then
     exit 0
 fi
 
-# Must be in an ASP project
-if [ ! -f "asp.yaml" ]; then
+# Must be in an ASTRA project
+if [ ! -f "astra.yaml" ]; then
     exit 0
 fi
 
-# Use Python + asp.helpers to extract recipe commands and match against the agent's command.
+# Use Python + astra.helpers to extract recipe commands and match against the agent's command.
 # This correctly handles all YAML variants (block, inline, sub-analyses).
 # Outputs a warning message if a match is found, or nothing if no match.
 msg=$(python3 -c "
 import sys, os, re
 
 try:
-    from asp.helpers import load_yaml, get_outputs_with_recipes
+    from astra.helpers import load_yaml, get_outputs_with_recipes
     from prism.dagster.status import get_output_status
     from pathlib import Path
 except ImportError:
     sys.exit(0)
 
 try:
-    data = load_yaml('asp.yaml')
+    data = load_yaml('astra.yaml')
 except Exception:
     sys.exit(0)
 
