@@ -1,6 +1,6 @@
 # Prism
 
-[![CI](https://github.com/LightconeResearch/Prism/actions/workflows/ci.yml/badge.svg)](https://github.com/LightconeResearch/Prism/actions/workflows/ci.yml)
+[![Tests](https://github.com/LightconeResearch/Prism/actions/workflows/tests.yml/badge.svg)](https://github.com/LightconeResearch/Prism/actions/workflows/tests.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
