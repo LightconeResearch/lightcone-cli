@@ -7,11 +7,11 @@ set -euo pipefail
 MODE=""
 UNIVERSE="baseline"
 MAX_ITERATIONS=25
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --validate) MODE="validate"; shift ;;
         --activate) MODE="activate"; shift ;;
+        --resume) MODE="resume"; shift ;;
         --universe)
             UNIVERSE="$2"
             shift 2
@@ -98,8 +98,8 @@ if [[ "$MODE" == "activate" ]]; then
     fi
 
     # Check build plan exists
-    if [[ ! -f ".claude/build-plan-${UNIVERSE}.md" ]]; then
-        echo "Warning: No build plan found at .claude/build-plan-${UNIVERSE}.md"
+    if [[ ! -f "plans/build-plan-${UNIVERSE}.md" ]]; then
+        echo "Warning: No build plan found at plans/build-plan-${UNIVERSE}.md"
         echo "The loop will proceed without a plan."
     fi
 
@@ -160,6 +160,7 @@ active: true
 iteration: 1
 max_iterations: ${MAX_ITERATIONS}
 completion_promise: "BUILD_COMPLETE"
+session_id: ${CLAUDE_CODE_SESSION_ID:-}
 started_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ---
 
@@ -173,6 +174,37 @@ EOF
     echo ""
     echo "The stop hook will re-inject the build prompt on each exit."
     echo "To cancel: /cancel-ralph"
+
+    exit 0
+fi
+
+# ─── Resume mode ────────────────────────────────────────────────────
+
+if [[ "$MODE" == "resume" ]]; then
+
+    RALPH_STATE_FILE=".claude/ralph-loop.local.md"
+
+    if [[ ! -f "$RALPH_STATE_FILE" ]]; then
+        echo "No active loop to resume (state file not found)."
+        echo "Run /prism-build to start a new build."
+        exit 1
+    fi
+
+    # Read current iteration from state file
+    CURRENT_ITER=$(grep '^iteration:' "$RALPH_STATE_FILE" | awk '{print $2}')
+    OLD_SESSION=$(grep '^session_id:' "$RALPH_STATE_FILE" | sed 's/session_id: *//')
+
+    # Update session_id to claim this loop for the current session
+    TEMP_FILE="${RALPH_STATE_FILE}.tmp.$$"
+    sed "s/^session_id: .*/session_id: ${CLAUDE_CODE_SESSION_ID:-}/" "$RALPH_STATE_FILE" > "$TEMP_FILE"
+    mv "$TEMP_FILE" "$RALPH_STATE_FILE"
+
+    # Detect universe from prompt body
+    LOOP_UNIVERSE=$(grep -o 'universe: [a-zA-Z0-9_-]*' "$RALPH_STATE_FILE" | head -1 | awk '{print $2}')
+
+    echo "Resumed loop for universe: ${LOOP_UNIVERSE:-unknown}"
+    echo "  Continuing from iteration: ${CURRENT_ITER:-?}"
+    echo "  Session updated: ${OLD_SESSION} -> ${CLAUDE_CODE_SESSION_ID:-<unset>}"
 
     exit 0
 fi

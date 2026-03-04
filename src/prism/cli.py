@@ -150,6 +150,7 @@ def init(
         "universes",
         "scripts",
         "results",
+        "plans",
     ]
     for subdir in subdirs:
         (directory / subdir).mkdir(parents=True, exist_ok=True)

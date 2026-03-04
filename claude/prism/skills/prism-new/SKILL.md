@@ -139,15 +139,17 @@ Show summary table:
 | sub_analysis  | ...       | ...     | ...      |
 ```
 
-Then show a Next Up block (see ui-brand.md) with:
+Then show a Next Up block (see ui-brand.md) with two paths:
 
-- Run `/clear` to free up context, then start building
-- Write scripts recipe-ready (parameterized, results to convention paths). See CLAUDE.md for conventions
-- When scripts work, integrate: add `recipe:` blocks to outputs, `prism status`, `prism run`
-- Every decision becomes a parameter -- no hardcoded values
-- Also available: `/prism-verify`
+- **Autonomous:** Run `/prism-build` to have the agent plan the implementation, estimate costs, and loop autonomously until all outputs are materialized and verified
+- **Interactive:** Run `/clear` to free up context, then build iteratively -- write scripts, add recipes, run `prism run`, one output at a time
 
-Prompt the user to `/clear` before starting implementation. The scoping conversation consumes significant context. Everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
+Both paths use the same conventions:
+- Every decision becomes a CLI parameter -- no hardcoded values
+- Scripts write results to convention paths
+- `/prism-verify` available anytime to check progress
+
+Prompt the user to `/clear` before starting either path. The scoping conversation consumes significant context. Everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
 
 ---
 
