@@ -1,9 +1,9 @@
 ---
 name: prism-build
 description: >
-  Build an ASP analysis from spec to materialized results. Plans interactively,
+  Build an ASTRA analysis from spec to materialized results. Plans interactively,
   then loops autonomously via ralph-wiggum until all outputs are verified.
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(asp:*), Bash(prism:*), Bash(python:*), Bash(git:*), Bash(pip:*), Bash(mkdir:*), Bash(setup-prism-build:*), Agent, AskUserQuestion
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(astra:*), Bash(prism:*), Bash(python:*), Bash(git:*), Bash(pip:*), Bash(mkdir:*), Bash(setup-prism-build:*), Agent, AskUserQuestion
 argument-hint: "[--universe NAME] [--max-iterations N]"
 ---
 
@@ -23,7 +23,7 @@ bash <skill-scripts>/setup-prism-build.sh --validate --universe <UNIVERSE> --max
 
 Default universe is `baseline`, default max-iterations is `25`. Parse these from the user's arguments.
 
-If validation fails, fix issues before proceeding (create `asp.yaml` via `/prism-new`, fix validation errors, etc.).
+If validation fails, fix issues before proceeding (create `astra.yaml` via `/prism-new`, fix validation errors, etc.).
 
 ### 2. Create implementation plan
 
@@ -31,7 +31,7 @@ Spawn a Plan sub-agent to produce an ordered implementation plan:
 
 ```
 Agent tool, subagent_type: Plan
-Prompt: "Read asp.yaml, CLAUDE.md, and any existing scripts/ directory. Produce an ordered implementation plan for building this analysis in universe <UNIVERSE>. For each output in asp.yaml, determine: what script needs to be written, what decisions it must parameterize, what its dependencies are, and what order to build them in. Write the plan to .claude/build-plan-<UNIVERSE>.md as a markdown checklist."
+Prompt: "Read astra.yaml, CLAUDE.md, and any existing scripts/ directory. Produce an ordered implementation plan for building this analysis in universe <UNIVERSE>. For each output in astra.yaml, determine: what script needs to be written, what decisions it must parameterize, what its dependencies are, and what order to build them in. Write the plan to .claude/build-plan-<UNIVERSE>.md as a markdown checklist."
 ```
 
 ### 3. Present plan for approval

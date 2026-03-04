@@ -1,23 +1,22 @@
 ---
 name: prism-new
-description: Create a new ASP analysis project with integrated literature support. Scope the research question through conversation, structure outputs and decisions, search for and extract evidence from scientific papers, and build a complete asp.yaml specification. Use when starting a new analysis, when the user says "new project", "new analysis", or "scope". Triggers on "new", "scope", "research question", "start analysis".
-allowed-tools: Read, Write(asp.yaml), Write(universes/*), Write(CLAUDE.md), Edit(asp.yaml), Edit(universes/*), Edit(CLAUDE.md), Glob, Grep, Bash(asp:*), Bash(prism:*), Bash(mkdir:*), Bash(echo:*), WebSearch, WebFetch, AskUserQuestion, Task
+description: Create a new ASTRA analysis project with integrated literature support. Scope the research question through conversation, structure outputs and decisions, search for and extract evidence from scientific papers, and build a complete astra.yaml specification. Use when starting a new analysis, when the user says "new project", "new analysis", or "scope". Triggers on "new", "scope", "research question", "start analysis".
+allowed-tools: Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md), Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md), Glob, Grep, Bash(astra:*), Bash(prism:*), Bash(mkdir:*), Bash(echo:*), WebSearch, WebFetch, AskUserQuestion, Task
 ---
 
 # /prism-new
 
-Create a new ASP analysis project through conversation. Build the spec iteratively so the user sees progress in the navigator. Literature search and decision identification happen in distinct phases -- talk first, then extract papers, then identify decisions informed by both conversation and literature.
+Create a new ASTRA analysis project through conversation. Build the spec iteratively -- write to `astra.yaml` after each phase so the user sees progress. Literature search and decision identification happen in distinct phases -- talk first, then extract papers, then identify decisions informed by both conversation and literature.
 
 ## References
 
-- [Prism Reference](./../prism/SKILL.md) -- core concepts, CLI, validation
 - [Decision Guide](./decision-guide.md) -- decision identification, prioritization, blind-spot checklist
 - [Literature Extraction](./literature-extraction.md) -- subagent prompt template for paper processing
 - [UI Brand](./../ui-brand.md) -- visual formatting patterns
 
 ## Setup
 
-1. Read `asp.yaml` if it exists (to understand context or avoid overwriting)
+1. Read `astra.yaml` if it exists (to understand context or avoid overwriting)
 2. Note the analysis directory for later
 
 ---
@@ -32,7 +31,7 @@ Then sharpen:
 - "What would a clear answer look like?" (becomes success criteria)
 - "Why does this matter?" (context for decisions)
 
-**Write to asp.yaml immediately** with `version`, `name`, `description`, `success_criteria`. This gives the user something visible in the navigator right away.
+**Write to astra.yaml immediately** with `version`, `name`, `description`, `success_criteria`. This gives the user something visible right away.
 
 ---
 
@@ -44,7 +43,9 @@ Stage banner: ANALYSIS STRUCTURE
 
 **Guidance on sub-analyses:** Analyses should only be split into multiple sub-analyses if each sub analysis genuinely has materially different inputs and outputs, and if the scope may be too broad if there is just one analysis; we overall want a sub-analysis to feel like it should genuinely be a self-contained product. For example, training + evaluation would typically be one analysis, because the product would be the trained and validated neural network estimator. When in doubt, opt for a single analysis at this stage. If it does need to be multi-stage, ask the user for confirmation and how to split it. For multi-stage analyses, make sure you confirm stage boundaries. See CLAUDE.md template for YAML structure.
 
-**Update asp.yaml** with `inputs` and `outputs` (extending the spec from Phase 1).
+**One output per output.** Each output should be a single metric, a single plot, or a single artifact. Do not bundle multiple metrics into one output (e.g., "performance_metrics" containing accuracy, F1, and AUC). Each of those is its own output. Same for plots -- one figure per output.
+
+**Update astra.yaml** with `inputs` and `outputs` (extending the spec from Phase 1).
 
 ---
 
@@ -60,14 +61,14 @@ Ask if the user has specific papers they want to look into. Also search with Web
 
 ### Extraction
 
-For each approved paper: `asp paper add <doi>`, `asp paper path <doi>`, then spawn one Task subagent per paper using [literature-extraction.md](./literature-extraction.md). Spawn all in a single message (parallel). Show progress as results come in:
+For each approved paper: `astra paper add <doi>`, `astra paper path <doi>`, then spawn one Task subagent per paper using [literature-extraction.md](./literature-extraction.md). Spawn all in a single message (parallel). Show progress as results come in:
 
 ```
   ✓ Ba et al. 2016 -- 3 insights
   ○ Wu & He 2018 (reading...)
 ```
 
-Write extracted insights to asp.yaml immediately. Synthesize findings by topic for the user.
+Write extracted insights to astra.yaml immediately. Synthesize findings by topic for the user.
 
 ### Decision Identification
 
@@ -77,7 +78,7 @@ Use the conversation and literature to identify decisions. Apply [decision-guide
 - Where did papers disagree or compare alternatives?
 - Where did the user express uncertainty?
 
-Write candidate decisions to asp.yaml as a batch for user review in Canvas. Keep chat output concise (summary + decision IDs), and avoid dumping full decision details in chat.
+Write candidate decisions to astra.yaml as a batch for user review. Keep chat output concise (summary + decision IDs), and avoid dumping full decision details in chat.
 
 **Probe for blind spots** -- analysts over-focus on methods and neglect data handling. Probe 1-3 areas: data exclusion, variable operationalization, inference criteria.
 
@@ -91,7 +92,7 @@ During review, confirm or set each decision's `default`, keep option structure a
 
 > "Anything else that should inform this analysis?"
 
-Review the spec with the user. Update asp.yaml with any additions.
+Review the spec with the user. Update astra.yaml with any additions.
 
 ---
 
@@ -101,24 +102,20 @@ Stage banner: FINALIZING
 
 ### Validate
 
-1. `asp validate asp.yaml` -- fix errors, iterate until clean
-2. If insights exist: `asp validate asp.yaml --verify-evidence`
+1. `astra validate astra.yaml` -- fix errors, iterate until clean
+2. If insights exist: `astra validate astra.yaml --verify-evidence`
 
 ### Generate Baseline Universe
 
 ```bash
-asp universe generate -n baseline
+astra universe generate -n baseline
 ```
 
 ### Populate CLAUDE.md
 
-Read the existing `CLAUDE.md` (created by `prism init`). Replace the `## Analysis Details` section with project-specific content:
+Read the existing `CLAUDE.md` (created by `prism init`). Replace the `## Analysis Context` section with context that is NOT already visible in `astra.yaml`. The spec is the source of truth for structure, decisions, and evidence -- CLAUDE.md captures only what would be lost after `/clear`:
 
-- **Description**: from asp.yaml
-- **Structure**: for each section (top-level and sub-analyses), list decision IDs with labels and output IDs
-- **Key Decisions**: what each controls and its default
-- **Literature Support**: N insights from P papers, DOIs, which decisions they inform (or "No literature added during scoping")
-- **Domain Context**: important things the user explained during scoping -- data characteristics, constraints, why certain approaches were preferred. This is context that would be lost after `/clear`.
+- **Domain Context**: important things the user explained during scoping -- data characteristics, constraints, why certain approaches were preferred. This is conversational context not captured in the spec.
 - **Implementation Notes**: domain-specific guidance from the conversation (libraries, data formats, gotchas)
 
 ### Review with User
@@ -150,7 +147,7 @@ Then show a Next Up block (see ui-brand.md) with:
 - Every decision becomes a parameter -- no hardcoded values
 - Also available: `/prism-verify`
 
-Prompt the user to `/clear` before starting implementation. The scoping conversation consumes significant context. Everything needed to continue is captured in `asp.yaml` and `CLAUDE.md`.
+Prompt the user to `/clear` before starting implementation. The scoping conversation consumes significant context. Everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
 
 ---
 
@@ -160,9 +157,9 @@ Prompt the user to `/clear` before starting implementation. The scoping conversa
 
 You MUST NOT write Python, R, or other implementation code.
 
-You MUST ONLY create/modify: `asp.yaml`, `universes/*.yaml`, `CLAUDE.md` (Finalize only).
+You MUST ONLY create/modify: `astra.yaml`, `universes/*.yaml`, `CLAUDE.md` (Finalize only).
 
-You MUST NOT fabricate quotes -- all evidence must pass `asp validate --verify-evidence`.
+You MUST NOT fabricate quotes -- all evidence must pass `astra validate --verify-evidence`.
 
 You MUST spawn subagents (via Task) for paper processing. One paper per subagent. Never read a PDF in the main agent context.
 
@@ -170,12 +167,12 @@ You MUST spawn subagents (via Task) for paper processing. One paper per subagent
 
 ## Anti-Patterns
 
-- **Waiting to write** -- Update asp.yaml after each decision crystallizes, not in bulk at the end
+- **Waiting to write** -- Update astra.yaml after each decision crystallizes, not in bulk at the end
 - **Accepting vague goals** -- "Analyze this data" is not a research question; push back
 - **Method-only decisions** -- Actively probe for data handling and exclusion criteria, not just method choices
-- **Literature as afterthought** -- Do not defer all literature to the end. Collect papers during conversation (Mode 1) and extract before identifying decisions (Mode 2 before Mode 3)
+- **Literature as afterthought** -- Do not defer all literature to the end. Collect paper candidates during conversation (Phases 1-2) and extract them before identifying decisions (Extraction before Decision Identification in Phase 3)
 - **Too many papers** -- ~2 papers per topic area, max 10 per section; do not try to be exhaustive
-- **Background interruptions** -- Never spawn search or extraction subagents during conversation. Collect candidates in Mode 1, process them in Mode 2
+- **Background interruptions** -- Never spawn search or extraction subagents during conversation phases. Collect candidates first, then process them during Phase 3 Extraction
 - **Reading PDFs in main context** -- Always delegate to subagents; PDFs consume too much context
-- **Chat dump of decisions** -- Do not dump full candidate decision content in chat; write decisions to asp.yaml and use Canvas for detailed review
-- **Skipping verification** -- If quotes were extracted, always run `asp validate --verify-evidence`
+- **Chat dump of decisions** -- Do not dump full candidate decision content in chat; write decisions to astra.yaml for review
+- **Skipping verification** -- If quotes were extracted, always run `astra validate --verify-evidence`

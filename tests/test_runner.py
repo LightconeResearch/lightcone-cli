@@ -1,13 +1,14 @@
-"""Tests for ASP Container Runner."""
+"""Tests for ASTRA Container Runner."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 from prism.dagster.runner import (
-    ASPContainerRunner,
+    ASTRAContainerRunner,
     _check_sacct,
     _normalise_time_limit,
     _parse_sbatch_job_id,
+    _podman_hpc_run_command,
     _shell_quote,
     generate_sbatch_script,
     translate_resources_to_docker_flags,
@@ -40,7 +41,7 @@ class TestResourceTranslation:
 class TestDockerRunner:
     def test_execute_local_fallback(self, tmp_path):
         """Without Docker, execute falls back to local subprocess."""
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="docker",
         )
@@ -55,7 +56,7 @@ class TestDockerRunner:
 
     def test_execute_with_container_string(self, tmp_path):
         """Runner stores default_container from init."""
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="docker",
             default_container="myimage:latest",
@@ -247,6 +248,24 @@ class TestGenerateSbatchScript:
         assert "--mpi" in script
         assert "--nccl" in script
 
+    def test_podman_hpc_with_custom_flags(self, tmp_path):
+        """Custom container_flags like --scratch pass through to podman-hpc."""
+        script = generate_sbatch_script(
+            command="python scripts/train.py",
+            container="ghcr.io/proj/ml:latest",
+            container_runtime="podman-hpc",
+            project_root=tmp_path,
+            output_id="train",
+            universe_id="baseline",
+            resources={},
+            scheduler_config={
+                "account": "m1234",
+                "container_flags": ["--scratch", "--cfs"],
+            },
+        )
+        assert "--scratch" in script
+        assert "--cfs" in script
+
     def test_no_container(self, tmp_path):
         script = generate_sbatch_script(
             command="python scripts/train.py",
@@ -352,7 +371,7 @@ class TestHelpers:
 class TestSlurmRunner:
     def test_slurm_submit_sbatch_not_found(self, tmp_path):
         """When sbatch is not found, return exit code 127."""
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="slurm",
             target_config={
@@ -381,7 +400,7 @@ class TestSlurmRunner:
         # Mock successful poll
         mock_poll.return_value = (0, {"slurm_state": "COMPLETED", "elapsed": "00:05:00"})
 
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="slurm",
             target_config={
@@ -413,7 +432,7 @@ class TestSlurmRunner:
         mock_submit.stderr = "sbatch: error: invalid account"
         mock_run.return_value = mock_submit
 
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="slurm",
             target_config={
@@ -437,7 +456,7 @@ class TestSlurmRunner:
         mock_submit.stderr = "error"
         mock_run.return_value = mock_submit
 
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="slurm",
             target_config={
@@ -469,7 +488,7 @@ class TestSlurmRunner:
         mock_submit.stderr = "error"
         mock_run.return_value = mock_submit
 
-        runner = ASPContainerRunner(
+        runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="slurm",
             target_config={
@@ -535,3 +554,92 @@ class TestCheckSacct:
             exit_code, meta = _check_sacct("12345")
         assert exit_code is None
         assert meta == {}
+
+
+# ---------------------------------------------------------------------------
+# External inputs
+# ---------------------------------------------------------------------------
+
+
+class TestExternalInputs:
+    def test_podman_hpc_with_external_inputs(self, tmp_path):
+        """External inputs produce read-only volume mounts in podman-hpc command."""
+        cmd = _podman_hpc_run_command(
+            command="python scripts/analyze.py",
+            container="ghcr.io/proj/ml:latest",
+            project_root=tmp_path,
+            resources={},
+            scheduler_config={"account": "m1234"},
+            external_inputs={
+                "sim_data": "/pscratch/sd/f/francois/sim_42",
+                "obs_data": "/global/cfs/cdirs/m1234/obs",
+            },
+        )
+        assert "-v /global/cfs/cdirs/m1234/obs:/workspace/data/obs_data:ro" in cmd
+        assert "-v /pscratch/sd/f/francois/sim_42:/workspace/data/sim_data:ro" in cmd
+        # Volume mounts should come before the container image
+        img_pos = cmd.index("ghcr.io/proj/ml:latest")
+        assert cmd.index("/workspace/data/obs_data:ro") < img_pos
+        assert cmd.index("/workspace/data/sim_data:ro") < img_pos
+
+    def test_podman_hpc_no_external_inputs(self, tmp_path):
+        """No external inputs means no extra volume mounts."""
+        cmd = _podman_hpc_run_command(
+            command="python scripts/analyze.py",
+            container="ghcr.io/proj/ml:latest",
+            project_root=tmp_path,
+            resources={},
+            scheduler_config={},
+        )
+        assert "/workspace/data/" not in cmd
+
+    def test_sbatch_external_inputs_with_container(self, tmp_path):
+        """generate_sbatch_script forwards external_inputs to podman-hpc."""
+        script = generate_sbatch_script(
+            command="python scripts/analyze.py",
+            container="ghcr.io/proj/ml:latest",
+            container_runtime="podman-hpc",
+            project_root=tmp_path,
+            output_id="result",
+            universe_id="baseline",
+            resources={},
+            scheduler_config={"account": "m1234"},
+            external_inputs={"sim_data": "/pscratch/sim"},
+        )
+        assert "-v /pscratch/sim:/workspace/data/sim_data:ro" in script
+
+    def test_sbatch_external_inputs_no_container(self, tmp_path):
+        """Without container, external inputs create symlinks."""
+        script = generate_sbatch_script(
+            command="python scripts/analyze.py",
+            container=None,
+            container_runtime="podman-hpc",
+            project_root=tmp_path,
+            output_id="result",
+            universe_id="baseline",
+            resources={},
+            scheduler_config={"account": "m1234"},
+            external_inputs={
+                "sim_data": "/pscratch/sim",
+                "obs_data": "/global/cfs/obs",
+            },
+        )
+        assert "mkdir -p data" in script
+        assert "ln -sfn /global/cfs/obs data/obs_data" in script
+        assert "ln -sfn /pscratch/sim data/sim_data" in script
+        # No podman-hpc in the script
+        assert "podman-hpc" not in script
+
+    def test_sbatch_no_external_inputs_no_symlinks(self, tmp_path):
+        """Without external inputs, no symlink section appears."""
+        script = generate_sbatch_script(
+            command="python scripts/analyze.py",
+            container=None,
+            container_runtime="podman-hpc",
+            project_root=tmp_path,
+            output_id="result",
+            universe_id="baseline",
+            resources={},
+        )
+        assert "mkdir -p data" not in script
+        assert "ln -sfn" not in script

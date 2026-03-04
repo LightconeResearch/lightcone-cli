@@ -1,11 +1,11 @@
-"""ASP IO Manager for Dagster — maps (asset, universe) to filesystem paths."""
+"""ASTRA IO Manager for Dagster — maps (asset, universe) to filesystem paths."""
 from __future__ import annotations
 
 from pathlib import Path
 
 
-class ASPIOManager:
-    """Maps ASP outputs to filesystem paths following ASP conventions.
+class ASTRAIOManager:
+    """Maps ASTRA outputs to filesystem paths following ASTRA conventions.
 
     Path convention: results/<universe_id>/<output_id>/
     """

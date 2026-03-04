@@ -21,7 +21,7 @@ A decision matters if changing it changes the conclusion. If all options give qu
 
 ## Not Decisions
 
-Skip these: fixed requirements (constraints), implementation details (build phase), obvious best practices with no defensible alternative, purely cosmetic choices.
+Skip these: fixed requirements (constraints), implementation details (build phase), obvious best practices with no defensible alternative, purely cosmetic choices, **whether or not to include an output** (decisions control *how* something is computed, not *what* is produced -- outputs are fixed by the analysis structure).
 
 ---
 

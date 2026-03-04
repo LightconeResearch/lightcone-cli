@@ -1,4 +1,4 @@
-"""ASP Container Runner — executes recipes in Docker, locally, or via SLURM."""
+"""ASTRA Container Runner — executes recipes in Docker, locally, or via SLURM."""
 from __future__ import annotations
 
 import logging
@@ -31,7 +31,7 @@ def _build_cli_args(params: dict[str, Any], universe_id: str) -> list[str]:
 
 
 def translate_resources_to_docker_flags(resources: dict[str, Any]) -> list[str]:
-    """Translate ASP resource requirements to Docker CLI flags."""
+    """Translate ASTRA resource requirements to Docker CLI flags."""
     flags: list[str] = []
     if cpus := resources.get("cpus"):
         flags.append(f"--cpus={cpus}")
@@ -42,8 +42,8 @@ def translate_resources_to_docker_flags(resources: dict[str, Any]) -> list[str]:
     return flags
 
 
-class ASPContainerRunner:
-    """Executes ASP recipes via Docker, local subprocess, or SLURM.
+class ASTRAContainerRunner:
+    """Executes ASTRA recipes via Docker, local subprocess, or SLURM.
 
     When backend is "docker", attempts Docker execution first.  If Docker
     fails (missing image, daemon not running, non-zero exit), falls back to
@@ -71,6 +71,7 @@ class ASPContainerRunner:
         inputs: list[str] | None = None,
         resources: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        external_inputs: dict[str, str] | None = None,
     ) -> ExecutionResult:
         """Execute a recipe, dispatching to the configured backend.
 
@@ -93,6 +94,7 @@ class ASPContainerRunner:
                 output_id=output_id,
                 universe_id=universe_id,
                 resources=resources or {},
+                external_inputs=external_inputs,
             )
 
         # Docker backend — try Docker first, fall back to local
@@ -216,6 +218,7 @@ class ASPContainerRunner:
         output_id: str,
         universe_id: str,
         resources: dict[str, Any],
+        external_inputs: dict[str, str] | None = None,
     ) -> ExecutionResult:
         """Execute a recipe via SLURM on a login node.
 
@@ -242,6 +245,7 @@ class ASPContainerRunner:
             resources=resources,
             scheduler_config=scheduler,
             resource_limits=resource_limits,
+            external_inputs=external_inputs,
         )
 
         # Write script to a temp file inside the project so it's on the
@@ -339,7 +343,7 @@ def translate_resources_to_slurm_directives(
     *,
     resource_limits: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Translate ASP resource requirements to SLURM #SBATCH directives.
+    """Translate ASTRA resource requirements to SLURM #SBATCH directives.
 
     Returns a list of directive strings (without the ``#SBATCH`` prefix).
 
@@ -417,6 +421,7 @@ def generate_sbatch_script(
     resources: dict[str, Any],
     scheduler_config: dict[str, Any] | None = None,
     resource_limits: dict[str, Any] | None = None,
+    external_inputs: dict[str, str] | None = None,
 ) -> str:
     """Generate an sbatch script for a recipe execution.
 
@@ -448,7 +453,7 @@ def generate_sbatch_script(
         lines.append(f"#SBATCH {d}")
 
     lines.append("")
-    lines.append("# --- Prism / ASP recipe execution ---")
+    lines.append("# --- Prism / ASTRA recipe execution ---")
     lines.append(f"cd {project_root}")
     lines.append("")
 
@@ -456,9 +461,16 @@ def generate_sbatch_script(
     if container and container_runtime == "podman-hpc":
         lines.append(_podman_hpc_run_command(
             command, container, project_root, resources, scheduler_config,
+            external_inputs=external_inputs,
         ))
     else:
-        # No container — run directly
+        # No container — symlink external inputs into data/ directory
+        if external_inputs:
+            lines.append("mkdir -p data")
+            for input_id, source in sorted(external_inputs.items()):
+                lines.append(f"ln -sfn {source} data/{input_id}")
+            lines.append("")
+        # Run directly
         lines.append(command)
 
     lines.append("")
@@ -471,6 +483,7 @@ def _podman_hpc_run_command(
     project_root: Path,
     resources: dict[str, Any],
     scheduler_config: dict[str, Any],
+    external_inputs: dict[str, str] | None = None,
 ) -> str:
     """Build a podman-hpc run invocation for use inside an sbatch script.
 
@@ -503,6 +516,10 @@ def _podman_hpc_run_command(
 
     # Volume mount project root
     parts.extend(["-v", f"{project_root}:/workspace", "-w", "/workspace"])
+
+    # Read-only volume mounts for external inputs
+    for input_id, source in sorted((external_inputs or {}).items()):
+        parts.extend(["-v", f"{source}:/workspace/data/{input_id}:ro"])
 
     parts.append(container)
     parts.extend(["sh", "-c", _shell_quote(command)])

@@ -1,6 +1,6 @@
 """Container image building from Containerfiles.
 
-Resolves container specs in asp.yaml — either pre-built image strings
+Resolves container specs in astra.yaml — either pre-built image strings
 or build specs that point to a Containerfile. Build specs produce
 content-addressed image tags for automatic caching.
 """
