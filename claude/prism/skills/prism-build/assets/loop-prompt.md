@@ -6,7 +6,7 @@ Run these commands and read their output:
 
 1. `prism status --universe {{UNIVERSE}}` -- what's materialized, what's pending, what has no recipe
 2. `git log --oneline -10` -- what happened recently
-3. `asp validate asp.yaml` -- is the spec valid
+3. `astra validate astra.yaml` -- is the spec valid
 4. Read `.claude/build-plan-{{UNIVERSE}}.md` -- your implementation plan (cross off completed items as you go)
 
 ## Decide What to Do
@@ -15,7 +15,7 @@ Run these commands and read their output:
 
 If the plan is fully checked off or doesn't cover what `prism status` reveals, fall back to the status-based rules below.
 
-### `asp validate` fails → Fix the spec first
+### `astra validate` fails → Fix the spec first
 
 Always fix validation errors before doing anything else. Commit. Exit.
 
@@ -24,10 +24,10 @@ Always fix validation errors before doing anything else. Commit. Exit.
 All outputs are materialized. Time to verify.
 
 1. **Inline checks:**
-   - `asp validate asp.yaml` passes
+   - `astra validate astra.yaml` passes
    - `prism status --universe {{UNIVERSE}}` shows all `ok`
-   - For each success criterion in `asp.yaml`: read the result file, evaluate the condition
-   - Decision-code alignment: `grep -r "add_argument" scripts/` and compare against `asp info --decisions` — every decision must be a parameter, no hardcoded values
+   - For each success criterion in `astra.yaml`: read the result file, evaluate the condition
+   - Decision-code alignment: `grep -r "add_argument" scripts/` and compare against `astra info --decisions` — every decision must be a parameter, no hardcoded values
 2. **If any issues found:** fix them, re-materialize if needed, commit. Exit (loop continues).
 3. **If all clean:** Spawn a verification sub-agent:
    ```
@@ -43,15 +43,15 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 
 ### Writing scripts
 
-1. **Write the script.** Parameterize all decisions from `asp.yaml` as command-line arguments (underscore convention: `stellar_mass_cut` → `--stellar_mass_cut`).
+1. **Write the script.** Parameterize all decisions from `astra.yaml` as command-line arguments (underscore convention: `stellar_mass_cut` → `--stellar_mass_cut`).
 2. **Test locally:** `python scripts/<name>.py --decision1 value1 --decision2 value2` using values from `universes/{{UNIVERSE}}.yaml`.
-3. **Debug until it works.** Read tracebacks, check imports (`python -c "import module"`), verify decision parameter names match `asp.yaml`.
+3. **Debug until it works.** Read tracebacks, check imports (`python -c "import module"`), verify decision parameter names match `astra.yaml`.
 4. **Commit** with a message describing what the script does.
 
 ### Adding recipes & materializing
 
-1. **Add the recipe block** to `asp.yaml` under the output's `recipe:` key.
-2. **Validate:** `asp validate asp.yaml`
+1. **Add the recipe block** to `astra.yaml` under the output's `recipe:` key.
+2. **Validate:** `astra validate astra.yaml`
 3. **Run it:** `prism run <OUTPUT> --universe {{UNIVERSE}}`
 4. **If it fails:** Read the error output. Common causes:
    - Container not built → `prism build`
@@ -68,7 +68,7 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 
 **Commit messages are memory.** The next iteration discovers what you did via `git log`. Write descriptive commit messages.
 
-**Trust the spec.** `asp.yaml` is the source of truth. Don't ask permission, don't second-guess decisions. Build what it says.
+**Trust the spec.** `astra.yaml` is the source of truth. Don't ask permission, don't second-guess decisions. Build what it says.
 
 **Update the plan.** After completing work, edit `.claude/build-plan-{{UNIVERSE}}.md` to cross off completed items and add notes about what you learned.
 

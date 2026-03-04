@@ -37,22 +37,22 @@ fi
 
 if [[ "$MODE" == "validate" ]]; then
 
-    # Check asp.yaml exists
-    if [[ ! -f "asp.yaml" ]]; then
-        echo "Error: asp.yaml not found in $(pwd)"
+    # Check astra.yaml exists
+    if [[ ! -f "astra.yaml" ]]; then
+        echo "Error: astra.yaml not found in $(pwd)"
         echo "Run /prism-new to create an analysis specification first."
         exit 1
     fi
 
-    # Check asp CLI available
-    if ! command -v asp &>/dev/null; then
-        echo "Error: asp CLI not found. Run: pip install asp"
+    # Check astra CLI available
+    if ! command -v astra &>/dev/null; then
+        echo "Error: astra CLI not found. Run: pip install astra"
         exit 1
     fi
 
     # Validate spec
-    echo "Validating asp.yaml..."
-    validation_output=$(asp validate asp.yaml 2>&1) || {
+    echo "Validating astra.yaml..."
+    validation_output=$(astra validate astra.yaml 2>&1) || {
         echo "Validation failed:"
         echo "$validation_output"
         echo ""
@@ -64,7 +64,7 @@ if [[ "$MODE" == "validate" ]]; then
     # Check/create universe
     if [[ ! -f "universes/${UNIVERSE}.yaml" ]]; then
         echo "Universe '${UNIVERSE}' does not exist. Creating..."
-        asp universe generate -n "$UNIVERSE" 2>&1
+        astra universe generate -n "$UNIVERSE" 2>&1
         echo "Universe created: universes/${UNIVERSE}.yaml"
     else
         echo "Universe: ${UNIVERSE} (exists)"
