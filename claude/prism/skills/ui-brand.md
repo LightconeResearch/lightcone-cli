@@ -20,11 +20,6 @@ Use for major phase transitions. A markdown `###` heading.
 - `Specification Complete`
 - `Verify — <universe_id>`
 - `Verification Report — <universe_id>`
-- `Project Discovery`
-- `Inventory`
-- `Scaffolding`
-- `Migration Plan`
-- `Migration Complete`
 
 ---
 
