@@ -106,7 +106,7 @@ Decisions can be conditional on other choices (`when`), mutually exclusive (`inc
 
 ### Literature integration
 
-The agent can search for papers, download PDFs by DOI, and extract insights with exact quotes. Quotes are machine-verified against the source PDFs using fuzzy matching with Unicode normalization. Insights are linked to the decision options they support, creating a traceable evidence chain.
+The agent can search for papers, download PDFs by DOI, and extract insights with exact quotes. Quotes are machine-verified against the source PDFs using fuzzy matching with Unicode normalization. Insights are linked to the decision options they support, creating a traceable evidence chain.  
 
 ### Sub-analyses
 
