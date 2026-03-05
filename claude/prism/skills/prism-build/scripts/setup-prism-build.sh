@@ -35,6 +35,13 @@ if [[ -z "$MODE" ]]; then
     exit 1
 fi
 
+# Validate universe name — must be safe for sed substitution and file paths
+if [[ ! "$UNIVERSE" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "Error: Universe name must contain only letters, numbers, underscores, and hyphens." >&2
+    echo "Got: '${UNIVERSE}'" >&2
+    exit 1
+fi
+
 # ─── Validate mode ───────────────────────────────────────────────────
 
 if [[ "$MODE" == "validate" ]]; then

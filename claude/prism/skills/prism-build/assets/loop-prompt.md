@@ -41,7 +41,7 @@ All outputs are materialized. Time to verify.
    Report all findings with file paths and line numbers. If all checks pass, end your report with exactly: VERIFIED"
    ```
 4. **If sub-agent reports issues:** fix them, commit. Exit (loop continues).
-5. **If sub-agent says VERIFIED:** Clean up the build plan (`rm plans/build-plan-{{UNIVERSE}}.md`), then output exactly: `<promise>BUILD_COMPLETE</promise>`
+5. **If sub-agent says VERIFIED:** Output exactly: `<promise>BUILD_COMPLETE</promise>`, then clean up the build plan (`rm plans/build-plan-{{UNIVERSE}}.md`).
 
 ## Reference: How Work Gets Done
 

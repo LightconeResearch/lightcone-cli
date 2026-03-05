@@ -3,7 +3,7 @@ name: prism-build
 description: >
   Build an ASTRA analysis from spec to materialized results. Plans interactively,
   then loops autonomously via ralph-wiggum until all outputs are verified.
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(astra:*), Bash(prism:*), Bash(python:*), Bash(git:*), Bash(pip:*), Bash(mkdir:*), Bash(setup-prism-build:*), Agent, AskUserQuestion
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(astra:*), Bash(prism:*), Bash(python:*), Bash(git:*), Bash(pip:*), Bash(mkdir:*), Bash(rm:*), Bash(setup-prism-build:*), Agent, AskUserQuestion
 argument-hint: "[--universe NAME] [--max-iterations N]"
 ---
 
