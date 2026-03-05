@@ -82,7 +82,7 @@ def _get_plugin_source_dir() -> Path | None:
 def main(ctx: click.Context) -> None:
     """Prism - ASTRA-compliant Agentic Layer CLI."""
     ctx.ensure_object(dict)
-    if ctx.invoked_subcommand in ("setup", "target"):
+    if ctx.invoked_subcommand in ("setup", "target", "update"):
         return
     from prism.dagster.targets import get_config_path
     if not get_config_path().exists():
@@ -93,6 +93,16 @@ def main(ctx: click.Context) -> None:
             "  Prism needs a default target configured before you can use it.\n"
         )
         ctx.invoke(setup)
+        return
+
+    # Check for updates (cached, non-blocking)
+    try:
+        from prism.updater import check_for_updates
+        msg = check_for_updates()
+        if msg:
+            console.print(f"\n  [yellow]↑[/yellow] {msg}\n")
+    except Exception:
+        pass  # Never let update checks break normal usage
 
 
 # =============================================================================
@@ -1743,6 +1753,75 @@ def setup(
         _run_setup_menu()
     else:
         _run_setup_wizard()
+
+
+# =============================================================================
+# Update command
+# =============================================================================
+
+
+@main.command()
+@click.option("--check", is_flag=True, help="Only check for updates, don't install them")
+def update(check: bool) -> None:
+    """Update Lightcone packages to the latest version.
+
+    Pulls the latest code from all Lightcone repositories and
+    reinstalls Python packages.
+
+    Examples:
+        prism update          # pull & reinstall everything
+        prism update --check  # just check what's available
+    """
+    from prism.updater import _get_lightcone_root, check_for_updates, pull_repos, reinstall_packages
+
+    root = _get_lightcone_root()
+    if root is None:
+        console.print(
+            "[red]Error:[/red] Could not find Lightcone install directory.\n"
+            "  Expected repos as siblings of the Prism repo."
+        )
+        raise SystemExit(1)
+
+    if check:
+        console.print("[bold]Checking for updates...[/bold]\n")
+        msg = check_for_updates(quiet_if_current=False)
+        if msg:
+            console.print(f"  {msg}")
+        else:
+            console.print("  [green]Everything is up to date.[/green]")
+        return
+
+    console.print(f"[bold]Updating from:[/bold] {root}\n")
+
+    # Pull repos
+    results = pull_repos(root)
+    for name, success, message in results:
+        icon = "[green]✓[/green]" if success else "[red]✗[/red]"
+        console.print(f"  {icon} {name}: {message}")
+
+    any_failed = any(not s for _, s, _ in results)
+    any_updated = any(s and "updated" in m for _, s, m in results)
+
+    # Reinstall packages
+    if any_updated or not any_failed:
+        console.print("\n[bold]Reinstalling packages...[/bold]\n")
+        pkg_results = reinstall_packages(root)
+        for name, success, message in pkg_results:
+            icon = "[green]✓[/green]" if success else "[red]✗[/red]"
+            console.print(f"  {icon} {name}: {message}")
+        if any(not s for _, s, _ in pkg_results):
+            any_failed = True
+
+    # Clear the update-check cache so the nag goes away
+    from prism.updater import _CHECK_FILE
+    if _CHECK_FILE.exists():
+        _CHECK_FILE.unlink(missing_ok=True)
+
+    if any_failed:
+        console.print("\n[yellow]Some updates failed — see errors above.[/yellow]")
+        raise SystemExit(1)
+    else:
+        console.print("\n[green bold]All packages updated successfully.[/green bold]")
 
 
 if __name__ == "__main__":
