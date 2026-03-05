@@ -796,12 +796,15 @@ def run(
 
     import dagster as dg
 
-    # Select assets to materialize
+    # Select assets to materialize (exclude external/input-only assets)
     all_assets = list(defs.get_all_asset_specs())
     if outputs:
         selection = list(outputs)
     else:
-        selection = [spec.key.path[-1] for spec in all_assets]
+        selection = [
+            spec.key.path[-1] for spec in all_assets
+            if not (spec.metadata or {}).get('external', False)
+        ]
 
     # Use a persistent DagsterInstance so run history is recorded for the
     # Dagster webserver (prism dev) to display.

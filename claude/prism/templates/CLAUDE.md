@@ -9,11 +9,12 @@ ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built
 | Command | Purpose |
 |---------|---------|
 | `/prism-new` | Scope question, structure decisions, integrate literature |
+| `/prism-migrate` | Migrate an existing project into ASTRA/Prism framework |
 | `/prism-build` | Build loop -- spec to materialized results |
 | `/prism-verify` | Verify results, decision-code alignment, success criteria |
 | `/prism-feedback` | File a bug report from the current session |
 
-**Workflow:** `/prism-new` --> `/prism-build` --> `/prism-verify`
+**Workflow:** `/prism-new` or `/prism-migrate` --> `/prism-build` --> `/prism-verify`
 
 ### Source of Truth
 
