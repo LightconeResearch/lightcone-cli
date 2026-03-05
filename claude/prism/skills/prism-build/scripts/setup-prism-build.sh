@@ -7,6 +7,7 @@ set -euo pipefail
 MODE=""
 UNIVERSE="baseline"
 MAX_ITERATIONS=25
+MAX_ITERATIONS_EXPLICIT=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --validate) MODE="validate"; shift ;;
@@ -18,11 +19,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --max-iterations)
             MAX_ITERATIONS="$2"
+            MAX_ITERATIONS_EXPLICIT=true
             shift 2
             ;;
         *)
             echo "Unknown argument: $1" >&2
-            echo "Usage: setup-prism-build.sh --validate|--activate --universe NAME --max-iterations N" >&2
+            echo "Usage: setup-prism-build.sh --validate|--activate|--resume --universe NAME --max-iterations N" >&2
             exit 1
             ;;
     esac
@@ -103,13 +105,18 @@ if [[ "$MODE" == "activate" ]]; then
         echo "The loop will proceed without a plan."
     fi
 
-    # Warn if loop already active
+    # Fail hard if loop already active — don't silently overwrite a live loop
     if [[ -f ".claude/ralph-loop.local.md" ]]; then
         existing_iter=$(grep '^iteration:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}' || echo "?")
-        echo "Warning: Active loop detected (iteration ${existing_iter}). Overwriting."
+        echo "Error: An active loop state file already exists (iteration ${existing_iter})." >&2
+        echo "  To resume the interrupted loop: setup-prism-build.sh --resume" >&2
+        echo "  To start fresh: delete .claude/ralph-loop.local.md first, then re-run --activate" >&2
+        exit 1
     fi
 
     # Ensure ralph-loop plugin is available
+    # Update MARKETPLACE_URL if the official plugin repository moves.
+    MARKETPLACE_URL="https://github.com/anthropics/claude-plugins-official.git"
     RALPH_PLUGIN="$HOME/.claude/plugins/marketplaces/claude-plugins-official/plugins/ralph-loop"
     MARKETPLACE="$HOME/.claude/plugins/marketplaces/claude-plugins-official"
 
@@ -124,7 +131,7 @@ if [[ "$MODE" == "activate" ]]; then
             # No marketplace at all — clone it
             echo "Cloning plugin marketplace..."
             mkdir -p "$HOME/.claude/plugins/marketplaces"
-            git clone https://github.com/anthropics/claude-plugins-official.git "$MARKETPLACE" 2>&1 || true
+            git clone "$MARKETPLACE_URL" "$MARKETPLACE" 2>&1 || true
         fi
 
         # Check again after update/clone
@@ -161,6 +168,7 @@ iteration: 1
 max_iterations: ${MAX_ITERATIONS}
 completion_promise: "BUILD_COMPLETE"
 session_id: ${CLAUDE_CODE_SESSION_ID:-}
+universe: ${UNIVERSE}
 started_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ---
 
@@ -190,21 +198,36 @@ if [[ "$MODE" == "resume" ]]; then
         exit 1
     fi
 
-    # Read current iteration from state file
+    # Read current state from file
     CURRENT_ITER=$(grep '^iteration:' "$RALPH_STATE_FILE" | awk '{print $2}')
-    OLD_SESSION=$(grep '^session_id:' "$RALPH_STATE_FILE" | sed 's/session_id: *//')
+    OLD_SESSION=$(grep '^session_id:' "$RALPH_STATE_FILE" | awk '{print $2}')
+    CURRENT_MAX=$(grep '^max_iterations:' "$RALPH_STATE_FILE" | awk '{print $2}')
+
+    # Read universe from dedicated frontmatter field
+    LOOP_UNIVERSE=$(grep '^universe:' "$RALPH_STATE_FILE" | awk '{print $2}')
 
     # Update session_id to claim this loop for the current session
     TEMP_FILE="${RALPH_STATE_FILE}.tmp.$$"
     sed "s/^session_id: .*/session_id: ${CLAUDE_CODE_SESSION_ID:-}/" "$RALPH_STATE_FILE" > "$TEMP_FILE"
+
+    # If --max-iterations was explicitly passed, update it in the state file
+    if [[ "$MAX_ITERATIONS_EXPLICIT" == "true" ]]; then
+        sed -i "s/^max_iterations: .*/max_iterations: ${MAX_ITERATIONS}/" "$TEMP_FILE"
+        CURRENT_MAX="${MAX_ITERATIONS}"
+    fi
+
     mv "$TEMP_FILE" "$RALPH_STATE_FILE"
 
-    # Detect universe from prompt body
-    LOOP_UNIVERSE=$(grep -o 'universe: [a-zA-Z0-9_-]*' "$RALPH_STATE_FILE" | head -1 | awk '{print $2}')
+    # Compute remaining iterations
+    REMAINING=$(( ${CURRENT_MAX:-0} - ${CURRENT_ITER:-1} + 1 ))
 
     echo "Resumed loop for universe: ${LOOP_UNIVERSE:-unknown}"
-    echo "  Continuing from iteration: ${CURRENT_ITER:-?}"
-    echo "  Session updated: ${OLD_SESSION} -> ${CLAUDE_CODE_SESSION_ID:-<unset>}"
+    echo "  Continuing from iteration: ${CURRENT_ITER:-?} / ${CURRENT_MAX:-?}"
+    echo "  Remaining iterations: ${REMAINING}"
+    echo "  Session updated: ${OLD_SESSION:-<unset>} -> ${CLAUDE_CODE_SESSION_ID:-<unset>}"
+    if [[ "$MAX_ITERATIONS_EXPLICIT" == "true" ]]; then
+        echo "  Max iterations updated to: ${MAX_ITERATIONS}"
+    fi
 
     exit 0
 fi

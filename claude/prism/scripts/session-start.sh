@@ -18,16 +18,25 @@ cd "$cwd" 2>/dev/null || exit 0
 if [ -f ".claude/ralph-loop.local.md" ]; then
     loop_iter=$(grep '^iteration:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
     loop_max=$(grep '^max_iterations:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
-    loop_promise=$(grep '^completion_promise:' .claude/ralph-loop.local.md 2>/dev/null | sed 's/completion_promise: *"\?\([^"]*\)"\?/\1/')
-    # Try to detect universe from prompt body
-    loop_universe=$(grep -o 'universe: [a-zA-Z0-9_-]*' .claude/ralph-loop.local.md 2>/dev/null | head -1 | awk '{print $2}')
+    loop_session=$(grep '^session_id:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
+    # Read universe from dedicated frontmatter field (falls back gracefully for old state files)
+    loop_universe=$(grep '^universe:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
     loop_universe="${loop_universe:-unknown}"
 
-    loop_warning="Active prism-build loop detected (universe: ${loop_universe}, iteration ${loop_iter:-?}/${loop_max:-?})
-  Resume: /prism-build --universe ${loop_universe}    Cancel: /cancel-ralph"
+    current_session="${CLAUDE_CODE_SESSION_ID:-}"
 
-    escaped_warning=$(echo "$loop_warning" | jq -Rs .)
-    echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $escaped_warning}}"
+    # If the loop belongs to a different active session, show informational message only.
+    # This prevents a concurrent session from accidentally resuming or cancelling another session's loop.
+    if [ -n "$loop_session" ] && [ -n "$current_session" ] && [ "$loop_session" != "$current_session" ]; then
+        loop_info="prism-build loop active in another session (universe: ${loop_universe}, iteration ${loop_iter:-?}/${loop_max:-?}). This session is unaffected — manage the loop from its original session."
+        escaped_info=$(echo "$loop_info" | jq -Rs .)
+        echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $escaped_info}}"
+    else
+        loop_warning="Active prism-build loop detected (universe: ${loop_universe}, iteration ${loop_iter:-?}/${loop_max:-?})
+  Resume: /prism-build --universe ${loop_universe}    Cancel: /cancel-ralph"
+        escaped_warning=$(echo "$loop_warning" | jq -Rs .)
+        echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $escaped_warning}}"
+    fi
     exit 0
 fi
 

@@ -47,11 +47,11 @@ If validation fails, fix issues before proceeding (create `astra.yaml` via `/pri
 
 ### 2. Create implementation plan
 
-Spawn a Plan sub-agent to produce an ordered implementation plan:
+Spawn a general-purpose sub-agent to produce an ordered implementation plan:
 
 ```
-Agent tool, subagent_type: Plan
-Prompt: "Read astra.yaml, CLAUDE.md, and any existing scripts/ directory. Produce an ordered implementation plan for building this analysis in universe <UNIVERSE>. For each output in astra.yaml, determine: what script needs to be written, what decisions it must parameterize, what its dependencies are, and what order to build them in. Include a rough estimate of computational costs (e.g. node-hours, GPU-hours, expected walltime) based on the recipes, resource requests, and data sizes where possible. Write the plan to plans/build-plan-<UNIVERSE>.md as a markdown checklist."
+Agent tool, subagent_type: general-purpose
+Prompt: "Read astra.yaml, CLAUDE.md, and any existing scripts/ directory. Produce an ordered implementation plan for building this analysis in universe <UNIVERSE>. For each output in astra.yaml, determine: what script needs to be written, what decisions it must parameterize, what its dependencies are, and what order to build them in. Include a rough estimate of computational costs (e.g. node-hours, GPU-hours, expected walltime) based on the recipes, resource requests, and data sizes where possible — caveat these estimates clearly as they may be unreliable. Write the plan to plans/build-plan-<UNIVERSE>.md as a markdown checklist."
 ```
 
 ### 3. Present plan for approval

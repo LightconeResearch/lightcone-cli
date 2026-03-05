@@ -29,10 +29,16 @@ All outputs are materialized. Time to verify.
    - For each success criterion in `astra.yaml`: read the result file, evaluate the condition
    - Decision-code alignment: `grep -r "add_argument" scripts/` and compare against `astra info --decisions` — every decision must be a parameter, no hardcoded values
 2. **If any issues found:** fix them, re-materialize if needed, commit. Exit (loop continues).
-3. **If all clean:** Spawn a verification sub-agent:
+3. **If all clean:** Spawn a verification sub-agent with explicit steps (do not rely on skill dispatch — the sub-agent cannot invoke `/prism-verify` directly):
    ```
    Agent tool, subagent_type: general-purpose
-   Prompt: "Run /prism-verify on universe {{UNIVERSE}}. Report all findings. If everything passes, say VERIFIED. If issues exist, list them concretely with file paths and line numbers."
+   Prompt: "Verify the spec, code, and results all agree for universe {{UNIVERSE}}. Run these checks in order:
+   1. Spec validation: run `astra validate astra.yaml` — must pass with no errors.
+   2. Materialization status: run `prism status --universe {{UNIVERSE}}` — every output must show `ok`.
+   3. Decision-code alignment (most important): run `astra info --decisions` and `grep -r 'add_argument' scripts/`. Every decision in the spec must be accepted as a CLI parameter in the code, with no hardcoded values.
+   4. Results match spec: for every output in astra.yaml, confirm `results/{{UNIVERSE}}/<output_id>.<ext>` exists and looks well-formed. For `type: metric` outputs, check for valid `{'value': ...}` JSON.
+   5. Success criteria: for each criterion in astra.yaml, read the result file and evaluate the condition. Report pass/fail. Flag any criterion that can't be evaluated automatically as 'needs manual review'.
+   Report all findings with file paths and line numbers. If all checks pass, end your report with exactly: VERIFIED"
    ```
 4. **If sub-agent reports issues:** fix them, commit. Exit (loop continues).
 5. **If sub-agent says VERIFIED:** Clean up the build plan (`rm plans/build-plan-{{UNIVERSE}}.md`), then output exactly: `<promise>BUILD_COMPLETE</promise>`
@@ -64,7 +70,7 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 
 **Work on 1-3 things per iteration.** Do NOT try to clear the entire queue. Exit after substantial progress so the next iteration gets fresh context.
 
-**Exit before compaction.** After each substantial piece of work, introspect on context usage. If past 50%, wrap up and exit immediately.
+**Exit before compaction.** After substantial work, consider whether you're approaching context limits. If you've read many large files, processed extensive output, or done deep reasoning this iteration, wrap up and exit. Err on the side of exiting early — the next iteration gets fresh context.
 
 **Commit messages are memory.** The next iteration discovers what you did via `git log`. Write descriptive commit messages.
 
