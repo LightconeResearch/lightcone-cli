@@ -502,7 +502,7 @@ def _update_extractor_agent_model(agents_dir: Path) -> None:
         return
 
     user_config = load_user_config()
-    extraction_model = user_config.get("extraction_model", "")
+    extraction_model = user_config.get("extraction_model", "sonnet")
 
     content = extractor_path.read_text()
 
@@ -1496,7 +1496,7 @@ def _run_setup_menu() -> None:
     user_config = load_user_config()
     default = user_config.get("default_target", "local")
     tier = user_config.get("default_permission_tier", "recommended")
-    extraction_model = user_config.get("extraction_model", "")
+    extraction_model = user_config.get("extraction_model", "sonnet")
     extraction_display = extraction_model if extraction_model else "inherit"
     targets = list_targets()
     target_names = ["local"] + [t for t in targets if t != "local"]
@@ -1754,8 +1754,10 @@ def _run_setup_wizard() -> list[Path]:
     save_user_config(user_config)
     console.print(f"\n  [green]✓[/green] Default target: {default_target}")
 
-    # --- Extraction model ---
-    _prompt_extraction_model()
+    # --- Extraction model (default to sonnet) ---
+    if "extraction_model" not in user_config:
+        user_config["extraction_model"] = "sonnet"
+        save_user_config(user_config)
 
     console.print(
         "\n  To list configured targets:  [cyan]prism target --list[/cyan]"
@@ -1949,6 +1951,7 @@ def _prompt_sync_projects() -> None:
     console.print()
     for p in paths:
         _sync_project_plugins(p)
+
 
 @main.command()
 @click.option("--check", is_flag=True, help="Only check for updates, don't install them")

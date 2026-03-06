@@ -43,6 +43,8 @@ fi
 # Sync extraction model from ~/.prism/config.yaml to .claude/agents/prism-extractor.md
 if [ -f ".claude/agents/prism-extractor.md" ] && [ -f "$HOME/.prism/config.yaml" ]; then
     ext_model=$(grep '^extraction_model:' "$HOME/.prism/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d "'\"")
+    # Default to sonnet if not configured
+    [ -z "$ext_model" ] && ext_model="sonnet"
     if [ -n "$ext_model" ]; then
         if ! grep -q "^model:" .claude/agents/prism-extractor.md 2>/dev/null; then
             # Insert model field after description line

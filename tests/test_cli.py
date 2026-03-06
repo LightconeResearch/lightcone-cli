@@ -239,8 +239,8 @@ class TestSetupCommand:
 
         # hpc=yes, site=1(perlmutter), username, account,
         # node_type=1(gpu), qos=2(debug), target_name=default,
-        # resource limits=defaults (4x Enter), extraction_model=1(inherit)
-        input_lines = "y\n1\ntestuser\nm1234\n1\n2\n\n\n\n\n\n1\n"
+        # resource limits=defaults (4x Enter)
+        input_lines = "y\n1\ntestuser\nm1234\n1\n2\n\n\n\n\n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
         assert "Default target: perlmutter-gpu" in result.output
@@ -274,8 +274,8 @@ class TestSetupCommand:
         monkeypatch.setattr("prism.dagster.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
 
-        # hpc=no, extraction_model=1(inherit)
-        input_lines = "n\n1\n"
+        # hpc=no
+        input_lines = "n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
         assert "local" in result.output
@@ -301,8 +301,8 @@ class TestSetupCommand:
 
         # hpc=yes, site=1(perlmutter), username, account,
         # node_type=1(gpu), qos=2(debug), target_name=default,
-        # resource limits=defaults (4x Enter), extraction_model=1(inherit)
-        input_lines = "y\n1\ntestuser\nm1234\n1\n2\n\n\n\n\n\n1\n"
+        # resource limits=defaults (4x Enter)
+        input_lines = "y\n1\ntestuser\nm1234\n1\n2\n\n\n\n\n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
 
@@ -361,8 +361,8 @@ class TestSetupCommand:
         monkeypatch.setattr("prism.dagster.targets.get_config_path",
                             lambda: config_path)
 
-        # action 6 (re-run wizard), then wizard: no HPC, extraction_model=1(inherit)
-        input_lines = "6\nn\n1\n"
+        # action 6 (re-run wizard), then wizard: no HPC
+        input_lines = "6\nn\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
         assert "Change permission level" in result.output

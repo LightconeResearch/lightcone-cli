@@ -80,6 +80,8 @@ prism target add perlmutter-preempt # gpu, qos: preempt (0.25x cost)
 
 Resolution order: `--target` flag > `prism.yaml` > `~/.prism/config.yaml` > local.
 
+**Extraction model:** Literature extraction subagents default to Sonnet. To change this, run `prism setup` and select "Change extraction model", or edit `extraction_model` in `~/.prism/config.yaml` directly (options: `sonnet`, `haiku`, or empty for inherit).
+
 ### Execution and monitoring
 
 The agent runs these during `/prism-build`, but you can also run them directly:
