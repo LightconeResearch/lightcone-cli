@@ -30,10 +30,12 @@ PERMISSION_TIERS = {
     },
     "recommended": {
         "allow": [
+            "Read",
             "Bash(astra:*)",
             "Bash(prism:*)",
             "Bash(python:*)",
             "Bash(pip:*)",
+            "Bash(echo:*)",
             "Bash(git status:*)",
             "Bash(git log:*)",
             "Bash(git diff:*)",
@@ -430,6 +432,37 @@ def _prompt_permission_tier() -> str:
     return tier
 
 
+def _prompt_extraction_model() -> str:
+    """Interactively prompt the user to choose a model for literature extraction subagents.
+
+    Returns a model name (e.g. 'haiku', 'sonnet') or empty string for inherit.
+    Saves the choice to ~/.prism/config.yaml.
+    """
+    from prism.dagster.targets import load_user_config, save_user_config
+
+    console.print("\n[bold]Literature extraction model[/bold]")
+    console.print("  Model used for paper-reading subagents during /prism-new.\n")
+    console.print("    1. inherit — Use the same model as the main session (default)")
+    console.print("    2. haiku  — Fast and cheap, good for straightforward extraction")
+    console.print("    3. sonnet — Balanced cost and capability")
+
+    choice_map = {"1": "", "2": "haiku", "3": "sonnet"}
+    raw = click.prompt(
+        "\n  Select extraction model",
+        type=click.Choice(["1", "2", "3"]),
+        default="1",
+    )
+    model = choice_map.get(raw, "")
+
+    global_config = load_user_config()
+    global_config["extraction_model"] = model
+    save_user_config(global_config)
+
+    display = model if model else "inherit"
+    console.print(f"  [green]✓[/green] Extraction model: {display}")
+    return model
+
+
 def _resolve_permission_tier(flag_value: str | None) -> str:
     """Resolve which permission tier to use.
 
@@ -453,6 +486,40 @@ def _resolve_permission_tier(flag_value: str | None) -> str:
 
     # 3. Interactive prompt
     return _prompt_permission_tier()
+
+
+def _update_extractor_agent_model(agents_dir: Path) -> None:
+    """Update the prism-extractor agent definition with the configured extraction model.
+
+    Reads extraction_model from ~/.prism/config.yaml and sets the model field
+    in the agent's YAML frontmatter. If empty/missing, removes the model field
+    so the agent inherits the parent model.
+    """
+    from prism.dagster.targets import load_user_config
+
+    extractor_path = agents_dir / "prism-extractor.md"
+    if not extractor_path.exists():
+        return
+
+    user_config = load_user_config()
+    extraction_model = user_config.get("extraction_model", "")
+
+    content = extractor_path.read_text()
+
+    # Insert or remove model field in frontmatter
+    if extraction_model:
+        # Add model field after description line
+        if "model:" not in content:
+            content = content.replace(
+                "\ntools: Read, Bash",
+                f"\nmodel: {extraction_model}\ntools: Read, Bash",
+            )
+        else:
+            # Update existing model field
+            import re
+            content = re.sub(r"model: \w+", f"model: {extraction_model}", content)
+
+    extractor_path.write_text(content)
 
 
 def _create_claude_settings(directory: Path, tier: str = "recommended") -> None:
@@ -498,6 +565,15 @@ def _create_claude_settings(directory: Path, tier: str = "recommended") -> None:
         if skills_dst.exists():
             shutil.rmtree(skills_dst)
         shutil.copytree(skills_src, skills_dst)
+
+    # Copy agents and apply extraction model config
+    agents_src = plugin_source / "agents"
+    agents_dst = claude_dir / "agents"
+    if agents_src.exists():
+        if agents_dst.exists():
+            shutil.rmtree(agents_dst)
+        shutil.copytree(agents_src, agents_dst)
+        _update_extractor_agent_model(agents_dst)
 
     permissions = PERMISSION_TIERS[tier]
 
@@ -1420,35 +1496,41 @@ def _run_setup_menu() -> None:
     user_config = load_user_config()
     default = user_config.get("default_target", "local")
     tier = user_config.get("default_permission_tier", "recommended")
+    extraction_model = user_config.get("extraction_model", "")
+    extraction_display = extraction_model if extraction_model else "inherit"
     targets = list_targets()
     target_names = ["local"] + [t for t in targets if t != "local"]
 
     console.print("\n[bold]Prism Setup[/bold]")
-    console.print(f"  Default target:    {default}")
-    console.print(f"  Permission level:  {tier}")
-    console.print(f"  Targets:           {', '.join(target_names)}")
+    console.print(f"  Default target:      {default}")
+    console.print(f"  Permission level:    {tier}")
+    console.print(f"  Extraction model:    {extraction_display}")
+    console.print(f"  Targets:             {', '.join(target_names)}")
 
     console.print("\n  1. Change permission level")
-    console.print("  2. Add a target")
-    console.print("  3. Edit a target")
-    console.print("  4. Change default target")
-    console.print("  5. Re-run setup wizard")
-    console.print("  6. Exit")
+    console.print("  2. Change extraction model")
+    console.print("  3. Add a target")
+    console.print("  4. Edit a target")
+    console.print("  5. Change default target")
+    console.print("  6. Re-run setup wizard")
+    console.print("  7. Exit")
 
     choice = click.prompt(
         "\n  Select action",
-        type=click.Choice(["1", "2", "3", "4", "5", "6"]),
-        default="6",
+        type=click.Choice(["1", "2", "3", "4", "5", "6", "7"]),
+        default="7",
     )
 
-    if choice == "6":
+    if choice == "7":
         return
     elif choice == "1":
         _prompt_permission_tier()
     elif choice == "2":
+        _prompt_extraction_model()
+    elif choice == "3":
         ctx = click.get_current_context()
         ctx.invoke(target_add)
-    elif choice == "3":
+    elif choice == "4":
         console.print("\n  [bold]Targets:[/bold]")
         for i, t in enumerate(target_names, 1):
             console.print(f"    {i}. {t}")
@@ -1460,7 +1542,7 @@ def _run_setup_menu() -> None:
         chosen = target_names[int(idx) - 1]
         ctx = click.get_current_context()
         ctx.invoke(target_edit, name=chosen)
-    elif choice == "4":
+    elif choice == "5":
         console.print("\n  [bold]Targets:[/bold]")
         for i, t in enumerate(target_names, 1):
             console.print(f"    {i}. {t}")
@@ -1473,7 +1555,7 @@ def _run_setup_menu() -> None:
         user_config["default_target"] = chosen
         save_user_config(user_config)
         console.print(f"  [green]✓[/green] Default target: {chosen}")
-    elif choice == "5":
+    elif choice == "6":
         _run_setup_wizard()
 
 
@@ -1671,6 +1753,9 @@ def _run_setup_wizard() -> list[Path]:
     user_config["default_target"] = default_target
     save_user_config(user_config)
     console.print(f"\n  [green]✓[/green] Default target: {default_target}")
+
+    # --- Extraction model ---
+    _prompt_extraction_model()
 
     console.print(
         "\n  To list configured targets:  [cyan]prism target --list[/cyan]"

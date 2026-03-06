@@ -11,7 +11,6 @@ Create a new ASTRA analysis project through conversation. Build the spec iterati
 ## References
 
 - [Decision Guide](./decision-guide.md) -- decision identification, prioritization, blind-spot checklist
-- [Literature Extraction](./literature-extraction.md) -- subagent prompt template for paper processing
 - [UI Brand](./../ui-brand.md) -- visual formatting patterns
 
 ## Setup
@@ -61,7 +60,15 @@ Ask if the user has specific papers they want to look into. Also search with Web
 
 ### Extraction
 
-For each approved paper: `astra paper add <doi>`, `astra paper path <doi>`, then spawn one Task subagent per paper using [literature-extraction.md](./literature-extraction.md). Spawn all in a single message (parallel). Show progress as results come in:
+For each approved paper: `astra paper add <doi>`, `astra paper path <doi>`, then spawn one `prism-extractor` agent per paper. The agent definition already contains extraction instructions, output format, and verification logic -- you just fill in the paper-specific context.
+
+**Spawning each agent:** Use `Agent(subagent_type="prism-extractor", prompt="...")`. In the prompt, provide:
+- **Analysis context**: the analysis description, success criteria, and decisions this paper might inform
+- **Paper details**: DOI, version (arXiv only), PDF path (from `astra paper path`)
+- **Target decisions**: each decision ID, label, and options with descriptions
+- **Timestamp**: current time in ISO 8601
+
+The agent type is pre-configured with the user's preferred extraction model (set via `prism setup`). Spawn all in a single message (parallel). Show progress as results come in:
 
 ```
   ✓ Ba et al. 2016 -- 3 insights
@@ -159,7 +166,7 @@ You MUST ONLY create/modify: `astra.yaml`, `universes/*.yaml`, `CLAUDE.md` (Fina
 
 You MUST NOT fabricate quotes -- all evidence must pass `astra validate --verify-evidence`.
 
-You MUST spawn subagents (via Task) for paper processing. One paper per subagent. Never read a PDF in the main agent context.
+You MUST spawn `prism-extractor` agents for paper processing. One paper per agent. Never read a PDF in the main agent context.
 
 ---
 

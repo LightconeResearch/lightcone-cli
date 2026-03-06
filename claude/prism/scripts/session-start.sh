@@ -40,6 +40,24 @@ if [ -f ".claude/ralph-loop.local.md" ]; then
     exit 0
 fi
 
+# Sync extraction model from ~/.prism/config.yaml to .claude/agents/prism-extractor.md
+if [ -f ".claude/agents/prism-extractor.md" ] && [ -f "$HOME/.prism/config.yaml" ]; then
+    ext_model=$(grep '^extraction_model:' "$HOME/.prism/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d "'\"")
+    if [ -n "$ext_model" ]; then
+        if ! grep -q "^model:" .claude/agents/prism-extractor.md 2>/dev/null; then
+            # Insert model field after description line
+            sed -i.bak '/^tools:/i\
+model: '"$ext_model" .claude/agents/prism-extractor.md 2>/dev/null && rm -f .claude/agents/prism-extractor.md.bak
+        else
+            # Update existing model field
+            sed -i.bak 's/^model: .*/model: '"$ext_model"'/' .claude/agents/prism-extractor.md 2>/dev/null && rm -f .claude/agents/prism-extractor.md.bak
+        fi
+    else
+        # Empty model = inherit, remove model line if present
+        sed -i.bak '/^model: /d' .claude/agents/prism-extractor.md 2>/dev/null && rm -f .claude/agents/prism-extractor.md.bak
+    fi
+fi
+
 # Check if this is an ASTRA project (has astra.yaml)
 if [ ! -f "astra.yaml" ]; then
     exit 0

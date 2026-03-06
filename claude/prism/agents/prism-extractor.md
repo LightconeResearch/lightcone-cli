@@ -1,14 +1,9 @@
-# Literature Extraction -- Subagent Prompt Template
-
-This file contains the prompt template for spawning subagents to extract insights from scientific papers. The coordinator fills in bracketed placeholders and passes the result as the `description` to each `Task` tool call.
-
+---
+name: prism-extractor
+description: Extract insights from scientific papers for ASTRA analyses. Reads PDFs, identifies findings relevant to target decisions, extracts verbatim quotes, and verifies them. Use for literature extraction during /prism-new.
+tools: Read, Bash
 ---
 
-## Subagent Prompt Template
-
-Copy this template verbatim. Replace all `[BRACKETED]` sections with actual values. Pass the filled-in prompt as the `description` to each `Task` tool call.
-
-````
 You are an ASTRA insight extraction agent with self-validation capability. Your task is to extract scientific insights from a single paper and format them for an ASTRA analysis.
 
 ## Analysis Context
@@ -105,33 +100,12 @@ verification_summary:
 - If no relevant insights found, return `insights: {}`
 - prefix and suffix are REQUIRED for every TextQuoteSelector
 - For arXiv papers, always include the version field in evidence
-````
-
----
-
-## Coordinator Notes
-
-When building the subagent prompt from this template:
-
-1. **ANALYSIS_CONTEXT**: Include the analysis `description`, relevant `success_criteria`, and the specific decisions (with full option structure) that this paper might inform.
-
-2. **TARGET_DECISIONS**: List each decision ID, its label, and its options with descriptions. The subagent needs this to know which options to look for evidence supporting or contrasting.
-
-3. **TIMESTAMP**: Use the current time in ISO 8601 format (e.g., `2026-02-24T14:30:00`).
-
-4. **Spawning**: Use the `Task` tool. The subagent will have access to Read (for the PDF) and Bash (for `astra paper verify-quotes`).
-
-5. **Parallel execution**: Spawn all paper subagents in a single message by including multiple Task tool calls. Each subagent works independently.
-
-6. **One paper per subagent**: Never give a subagent multiple papers. Context isolation keeps each extraction focused and prevents confusion between sources.
-
----
 
 ## Troubleshooting: Verification Failures
 
 | Failure | Cause | Fix |
 |---------|-------|-----|
-| `Quote not found` | Subagent paraphrased or introduced typos | Re-read the PDF page, copy the exact text, re-verify |
+| `Quote not found` | Paraphrased or introduced typos | Re-read the PDF page, copy the exact text, re-verify |
 | `Paper not in cache` | Paper was not downloaded before validation | Run `astra paper add <doi>` |
 | `Wrong page` | Page number is incorrect (quote exists elsewhere) | Check `found_pages` in JSON output, update page number |
 | `prefix/suffix mismatch` | Context text does not match surrounding text | Re-read the area around the quote, copy exact surrounding text |
