@@ -114,6 +114,29 @@ The agent can search for papers, download PDFs by DOI, and extract insights with
 
 Complex analyses can be decomposed into nested stages, each with their own inputs, outputs, decisions, and recipes. Sub-analyses use the same schema as the top level, and can reference each other's outputs.
 
+### Data staging
+
+Input data can come from anywhere — local paths, relative paths, or remote URIs. Prism resolves all sources to local filesystem paths before execution, so recipes always see the same local paths regardless of where the data lives.
+
+```yaml
+inputs:
+  - id: sim_catalog
+    type: data
+    source: https://zenodo.org/records/12345/files/catalog.hdf5
+    checksum:
+      algorithm: sha256
+      value: a1b2c3d4e5f6...
+```
+
+Supported sources:
+- **Local/shared filesystem**: `/pscratch/sd/f/francois/data` (absolute) or `./data/input.fits` (relative to project)
+- **HTTP/HTTPS**: `https://example.com/data.tar` (built into fsspec)
+- **S3**: `s3://bucket/key` (install with `pip install 'prism[s3]'`)
+- **SSH/SFTP**: `ssh://host/path` (install with `pip install 'prism[ssh]'`)
+- **GCS**: `gs://bucket/key` (install with `pip install 'prism[gcs]'`)
+
+Remote data is cached locally in `~/.prism/cache/` and content-addressed by checksum when available. Checksums declared in `astra.yaml` are verified on download.
+
 ### Execution backends
 
 Recipes run via Docker, local subprocess, or SLURM batch submission depending on your target configuration. Recipe dependencies are resolved automatically — if output B depends on output A, A runs first. Per-recipe resource requests (CPUs, GPUs, memory, time limit) are translated to the appropriate backend flags.

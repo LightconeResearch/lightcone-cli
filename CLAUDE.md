@@ -17,9 +17,11 @@ src/prism/
 ├── container.py         # Content-addressed container builds (Docker, podman-hpc)
 └── dagster/
     ├── assets.py        # Asset factory — turns astra.yaml recipes into Dagster assets
+    ├── data_store.py    # DataStore — resolves input sources (local, remote) to local paths
     ├── io_manager.py    # Maps (output, universe) → results/{universe}/{output}/
     ├── runner.py         # Execution backends: Docker, local, SLURM
     ├── site_registry.py # Known HPC site defaults (Perlmutter, etc.)
+    ├── staging.py       # fsspec-based staging — fetches remote data to local cache
     ├── status.py        # Materialization status queries
     └── targets.py       # Target config management (~/.prism/targets/)
 
@@ -49,10 +51,12 @@ mypy src/
 astra.yaml → build_definitions() → Dagster assets → ASTRAContainerRunner → results/{universe}/{output}/
                                          ↑                    ↑
                                     ASTRAIOManager        Docker / local / SLURM
+                                    DataStore (stage gate)
 ```
 
 - `build_definitions()` (assets.py) loads astra.yaml, creates one Dagster asset per output with a recipe
 - Asset dependencies come from `recipe.inputs` — Dagster resolves execution order
+- `DataStore` (data_store.py) resolves input sources to local paths before execution — local paths pass through, remote URIs (HTTP, S3, SSH, etc.) are staged to `~/.prism/cache/` via fsspec
 - `ASTRAContainerRunner` (runner.py) dispatches to Docker, local subprocess, or SLURM based on target config
 - Docker backend falls back to local execution on failure (with warning)
 - SLURM backend generates sbatch scripts, submits via `sbatch`, polls via `sacct`/`squeue`
@@ -65,6 +69,9 @@ astra.yaml → build_definitions() → Dagster assets → ASTRAContainerRunner �
 - Container image tags are deterministic: SHA256(Containerfile + dependency files) → `prism-{name}-{hash}`
 - Universe decision parameters are injected as CLI args: `--key value` passed to recipe commands
 - Per-recipe container specs override analysis-level defaults
+- Input sources can be local paths, relative paths, or remote URIs — DataStore resolves all to local paths before execution
+- Checksums in `astra.yaml` are verified on resolve (warning on mismatch, not failure)
+- Remote data is cached in `~/.prism/cache/` keyed by checksum (content-addressed) or URI hash
 
 **Config resolution (used everywhere):**
 - Target: `--target` flag > `prism.yaml` > `~/.prism/config.yaml` > `"local"`
@@ -93,6 +100,7 @@ All commands use Click. Key patterns:
 | Add an HPC site | `site_registry.py` | Add to `SITE_DEFAULTS` dict with hostname_patterns, node_types, qos_options |
 | Add an execution backend | `runner.py` | Add `_run_{backend}()` method, update `execute()` dispatch |
 | Add container features | `container.py` | `DEPENDENCY_FILES` tuple, `compute_image_tag()`, build/resolve functions |
+| Add a data source protocol | `staging.py` | Add fsspec-compatible filesystem; DataStore handles dispatch via `upath.UPath` |
 | Create a skill | `claude/prism/skills/` | SKILL.md with YAML frontmatter (`name`, `description`, `allowed-tools`) |
 | Add a telemetry hook | `claude/prism/hooks/` | Follow `langfuse_hook.py` pattern: read JSON payload, emit to Langfuse |
 

@@ -28,9 +28,14 @@ dependencies = [
     "dagster-webserver>=1.9",
     "dagster-docker>=0.25",
     "langfuse>=2.0",
+    "fsspec>=2024.1",
+    "universal-pathlib>=0.2",
 ]
 
 [project.optional-dependencies]
+ssh = ["sshfs>=2024.1"]
+s3 = ["s3fs>=2024.1"]
+gcs = ["gcsfs>=2024.1"]
 dev = [
     "pytest>=8.0",
     "pytest-cov",

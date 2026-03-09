@@ -9,13 +9,26 @@ import dagster as dg
 from astra.helpers import get_inputs, get_outputs, load_yaml
 
 from prism.container import resolve_container_for_slurm, resolve_container_spec
+from prism.dagster.data_store import DataStore
 from prism.dagster.runner import ASTRAContainerRunner
 
 logger = logging.getLogger(__name__)
 
 
-def get_external_inputs(spec: dict[str, Any]) -> dict[str, str]:
-    """Return {input_id: source_path} for inputs with a filesystem source."""
+def get_external_inputs(
+    spec: dict[str, Any],
+    data_store: DataStore | None = None,
+    universe_id: str = "baseline",
+) -> dict[str, str]:
+    """Return {input_id: source_path} for inputs with a source.
+
+    When *data_store* is provided, resolves all source types (local paths,
+    relative paths, remote URIs) via the DataStore.  Without a DataStore,
+    preserves backward-compatible behavior: only absolute paths.
+    """
+    if data_store:
+        return data_store.resolve_external_inputs(spec, universe_id)
+    # Backward compat: only absolute paths
     result = {}
     for inp in get_inputs(spec):
         source = inp.get("source")
@@ -52,6 +65,7 @@ def build_asset_definitions(
     project_name: str | None = None,
     no_build: bool = False,
     container_runtime: str | None = None,
+    data_store: DataStore | None = None,
 ) -> list[dg.AssetsDefinition | dg.AssetSpec]:
     """Generate one @asset per output with a recipe."""
     outputs = get_outputs(spec)
@@ -68,7 +82,7 @@ def build_asset_definitions(
         default_container = raw_default if isinstance(raw_default, str) else None
 
     # Collect external inputs (inputs with filesystem source paths)
-    external = get_external_inputs(spec)
+    external = get_external_inputs(spec, data_store=data_store, universe_id=universe_id)
     asset_specs = [
         dg.AssetSpec(inp_id, metadata={"source": source, "external": True})
         for inp_id, source in external.items()
@@ -235,10 +249,18 @@ def build_definitions(
             default_container=default_container,
         )
 
+    # Create DataStore for input resolution
+    cache_dir: Path | None = None
+    if target_config:
+        data_config = target_config.get("data", {})
+        if isinstance(data_config, dict) and data_config.get("cache_dir"):
+            cache_dir = Path(data_config["cache_dir"])
+    data_store = DataStore(project_root=project_path, cache_dir=cache_dir)
+
     assets = build_asset_definitions(
         spec, runner=runner, universe_id=universe_id, project_path=project_path,
         project_name=project_name, no_build=no_build,
-        container_runtime=container_runtime,
+        container_runtime=container_runtime, data_store=data_store,
     )
 
     return dg.Definitions(assets=assets)
