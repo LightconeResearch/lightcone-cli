@@ -48,17 +48,42 @@ class EvalSandbox:
     task_id: str = ""
     variant_id: str = ""
     trial_id: str = ""
-    sandbox_image: str = "ghcr.io/lightconeresearch/prism-eval:latest"
+    sandbox_image: str | Any = None  # str for pre-built, Image for dynamic, None for default
     env_vars: dict[str, str] = field(default_factory=dict)
 
     _daytona: Any = field(default=None, repr=False)
     _sandbox: Any = field(default=None, repr=False)
 
     def create(self) -> None:
-        """Create an ephemeral Daytona sandbox."""
-        from daytona_sdk import CreateSandboxParams, Daytona
+        """Create an ephemeral Daytona sandbox.
+
+        Uses Daytona's Image API for the sandbox environment:
+        - None (default): Image.debian_slim("3.12") with git and Claude Code pre-installed
+        - str: Pre-built Docker image reference (e.g. "python:3.12-slim")
+        - Image: A daytona_sdk.Image object for custom dynamic builds
+        """
+        from daytona_sdk import (
+            CreateSandboxFromImageParams,
+            Daytona,
+            Image,
+        )
 
         self._daytona = Daytona()
+
+        # Build the sandbox image
+        if self.sandbox_image is None:
+            image = (
+                Image.debian_slim("3.12")
+                .run_commands(
+                    "apt-get update && apt-get install -y git curl",
+                    "curl -fsSL https://claude.ai/install.sh | sh",
+                    "pip install astra prism",
+                )
+            )
+        elif isinstance(self.sandbox_image, str):
+            image = Image.base(self.sandbox_image)
+        else:
+            image = self.sandbox_image
 
         labels = {
             "prism-eval": "true",
@@ -86,8 +111,8 @@ class EvalSandbox:
                 sandbox_env[key] = val
         sandbox_env.update(self.env_vars)
 
-        params = CreateSandboxParams(
-            image=self.sandbox_image,
+        params = CreateSandboxFromImageParams(
+            image=image,
             labels=labels,
             env_vars=sandbox_env,
             auto_stop_interval=30,

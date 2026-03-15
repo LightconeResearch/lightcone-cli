@@ -106,7 +106,7 @@ class EvalRunConfig(BaseModel):
     variants: list[str] = Field(default_factory=list)
     num_trials: int = 3
     max_concurrency: int = 4
-    sandbox_image: str = "ghcr.io/lightconeresearch/prism-eval:latest"
+    sandbox_image: str | None = None
     output_dir: str = "eval-results"
 
 
