@@ -1,0 +1,20 @@
+id: stellar-mass
+description: "Build a stellar mass function analysis"
+seed_project: stellar-mass
+universe: baseline
+max_iterations: 15
+max_turns: 25
+iteration_timeout: 600
+trial_timeout: 7200
+graders:
+  - name: spec_valid
+    type: command
+    command: "astra validate astra.yaml"
+  - name: all_materialized
+    type: status
+    weight: 3.0
+  - name: results_exist
+    type: files_exist
+    paths:
+      - results/baseline/stellar_mass_function/
+      - results/baseline/model_fit/

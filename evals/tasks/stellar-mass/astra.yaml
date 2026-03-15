@@ -1,0 +1,23 @@
+version: "1.0"
+name: stellar-mass
+description: "Stellar mass function analysis"
+
+papers: []
+
+decisions:
+  imf_model:
+    description: "Initial mass function model"
+    options: [kroupa, chabrier, salpeter]
+    default: kroupa
+
+outputs:
+  stellar_mass_function:
+    description: "Compute the stellar mass function"
+    recipe:
+      command: "python scripts/compute_smf.py"
+      inputs: []
+  model_fit:
+    description: "Fit a model to the stellar mass function"
+    recipe:
+      command: "python scripts/fit_model.py"
+      inputs: [stellar_mass_function]

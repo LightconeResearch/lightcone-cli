@@ -1,0 +1,9 @@
+id: example
+tasks:
+  - stellar-mass
+variants:
+  - baseline
+num_trials: 3
+max_concurrency: 2
+sandbox_image: "ghcr.io/lightconeresearch/prism-eval:latest"
+output_dir: "eval-results"
