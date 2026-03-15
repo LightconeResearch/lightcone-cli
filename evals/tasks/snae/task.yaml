@@ -1,0 +1,34 @@
+id: snae
+description: >
+  Fit Union2.1 Type Ia supernova data to flat LCDM using MCMC.
+  Agent must write 4 scripts (fit, plot, diagnostics, summarize),
+  materialize all outputs, and pass convergence criteria.
+seed_project: snae
+universe: baseline
+max_iterations: 15
+max_turns: 25
+iteration_timeout: 600
+trial_timeout: 7200
+graders:
+  - name: spec_valid
+    type: command
+    command: "astra validate astra.yaml"
+  - name: all_materialized
+    type: status
+    weight: 3.0
+  - name: chain_exists
+    type: files_exist
+    paths:
+      - results/baseline/chain/
+  - name: posterior_exists
+    type: files_exist
+    paths:
+      - results/baseline/posterior/
+  - name: convergence_exists
+    type: files_exist
+    paths:
+      - results/baseline/convergence/
+  - name: best_fit_exists
+    type: files_exist
+    paths:
+      - results/baseline/best_fit/

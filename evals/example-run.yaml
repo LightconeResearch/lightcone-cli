@@ -1,6 +1,6 @@
 id: example
 tasks:
-  - stellar-mass
+  - snae
 variants:
   - baseline
 num_trials: 3
