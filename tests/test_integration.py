@@ -77,19 +77,24 @@ class TestIntegration:
         assert status["cleaned"] == "pending"
         assert status["result"] == "pending"
 
-    def test_status_shows_materialized(self, project_dir):
-        """Status should show 'materialized' when output files exist."""
+    def test_status_shows_materialized(self, project_dir, monkeypatch):
+        """Status should show 'materialized' when Dagster event exists."""
+        import dagster as dg
+        from conftest import materialize_via_dagster
+
         (project_dir / "universes" / "baseline.yaml").write_text(
             "id: baseline\ndecisions: {}\n"
         )
-        # Simulate materialized output
-        result_dir = project_dir / "results" / "baseline" / "cleaned"
-        result_dir.mkdir(parents=True)
-        (result_dir / "data.csv").write_text("col1,col2\n1,2\n")
+
+        # chdir so relative paths in dagster.yaml resolve to project_dir
+        monkeypatch.chdir(project_dir)
+
+        instance = dg.DagsterInstance.from_config(str(project_dir))
+        materialize_via_dagster(instance, "baseline", "cleaned")
 
         from prism.dagster.status import get_output_status
 
-        status = get_output_status(project_dir, "baseline")
+        status = get_output_status(project_dir, "baseline", instance=instance)
         assert status["cleaned"] == "materialized"
         assert status["result"] == "pending"
 

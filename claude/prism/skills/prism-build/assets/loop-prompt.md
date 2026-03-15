@@ -51,6 +51,8 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 
 1. **Write the script.** Parameterize all decisions from `astra.yaml` as command-line arguments (underscore convention: `stellar_mass_cut` → `--stellar_mass_cut`).
 2. **Test locally:** `python scripts/<name>.py --decision1 value1 --decision2 value2` using values from `universes/{{UNIVERSE}}.yaml`.
+   Note: manual script runs may write to `results/` but do NOT register as materialized.
+   Only `prism run` creates the Dagster events that `prism status` recognizes.
 3. **Debug until it works.** Read tracebacks, check imports (`python -c "import module"`), verify decision parameter names match `astra.yaml`.
 4. **Commit** with a message describing what the script does.
 

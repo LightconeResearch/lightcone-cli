@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+import dagster as dg
 import pytest
+
+
+def materialize_via_dagster(
+    instance: dg.DagsterInstance, universe_id: str, output_id: str
+) -> None:
+    """Create a Dagster materialization event for the given output."""
+
+    @dg.asset(name=output_id, key_prefix=[universe_id])
+    def _trivial_asset():
+        return dg.MaterializeResult()
+
+    dg.materialize([_trivial_asset], instance=instance)
 
 
 @pytest.fixture(autouse=True)

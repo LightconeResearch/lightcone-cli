@@ -60,6 +60,16 @@ class TestBuildAssetDefinitions:
         assert "cleaned" in asset_keys
         assert "result" in asset_keys
 
+    def test_asset_keys_scoped_by_universe(
+        self, sample_astra_yaml, mock_runner,
+    ):
+        spec = load_yaml(sample_astra_yaml / "astra.yaml")
+        assets = build_asset_definitions(
+            spec, runner=mock_runner, universe_id="baseline",
+        )
+        for a in assets:
+            assert a.key.path[0] == "baseline"
+
     def test_skips_outputs_without_recipes(
         self, sample_astra_yaml, mock_runner,
     ):

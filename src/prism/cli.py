@@ -885,20 +885,24 @@ def run(
     # Select assets to materialize (exclude external/input-only assets)
     all_assets = list(defs.get_all_asset_specs())
     if outputs:
-        selection = list(outputs)
+        selection = [dg.AssetKey([universe_id, o]) for o in outputs]
     else:
         selection = [
-            spec.key.path[-1] for spec in all_assets
+            spec.key for spec in all_assets
             if not (spec.metadata or {}).get('external', False)
         ]
 
-    # Use a persistent DagsterInstance so run history is recorded for the
-    # Dagster webserver (prism dev) to display.
+    # Ensure dagster.yaml exists so materialization events are persisted.
+    # Without this, events are lost and prism status can't detect them.
     dagster_yaml = project_path / "dagster.yaml"
-    if dagster_yaml.exists():
-        instance = dg.DagsterInstance.from_config(str(project_path))
-    else:
-        instance = None
+    if not dagster_yaml.exists():
+        dagster_yaml_content = {
+            "storage": {"sqlite": {"base_dir": "results/.dagster"}},
+        }
+        dagster_yaml.write_text(
+            yaml.dump(dagster_yaml_content, default_flow_style=False, sort_keys=False)
+        )
+    instance = dg.DagsterInstance.from_config(str(project_path))
 
     # Execute
     try:
