@@ -50,6 +50,7 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 ### Writing scripts
 
 1. **Write the script.** Parameterize all decisions from `astra.yaml` as command-line arguments (underscore convention: `stellar_mass_cut` → `--stellar_mass_cut`).
+   The script must contain real, functional logic that produces genuine results from actual input data. No `# TODO` stubs, no hardcoded dummy values standing in for computation, no `pass` in place of real logic, no synthetic/mock data generation when real data is specified. If you cannot implement the full logic (e.g., missing a library or unclear algorithm), document the blocker in the build plan and move on — do not ship a fake version.
 2. **Test locally:** `python scripts/<name>.py --decision1 value1 --decision2 value2` using values from `universes/{{UNIVERSE}}.yaml`.
 3. **Debug until it works.** Read tracebacks, check imports (`python -c "import module"`), verify decision parameter names match `astra.yaml`.
 4. **Commit** with a message describing what the script does.
@@ -59,10 +60,11 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 1. **Add the recipe block** to `astra.yaml` under the output's `recipe:` key.
 2. **Validate:** `astra validate astra.yaml`
 3. **Run it:** `prism run <OUTPUT> --universe {{UNIVERSE}}`
-4. **If it fails:** Read the error output. Common causes:
+4. **If it fails:** Read the error output carefully and diagnose the root cause before retrying. Never re-run the same command without changing something first. Common causes:
    - Container not built → `prism build`
    - Upstream not materialized → materialize dependency first
-   - Script error inside container → fix script, re-run
+   - Script error inside container → fix the script, then re-run
+   If a second attempt also fails, note the failure in your commit message and in the build plan, then move on to other work. Come back to it in a later iteration with fresh context.
 5. **If it succeeds:** Verify the result file exists at `results/{{UNIVERSE}}/<output_id>.<ext>` and looks well-formed.
 6. **Commit** with a message noting what was materialized.
 
@@ -70,7 +72,13 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 
 **Work on 1-3 things per iteration.** Do NOT try to clear the entire queue. Exit after substantial progress so the next iteration gets fresh context.
 
-**Exit before compaction.** After substantial work, consider whether you're approaching context limits. If you've read many large files, processed extensive output, or done deep reasoning this iteration, wrap up and exit. Err on the side of exiting early — the next iteration gets fresh context.
+**Exit before compaction.** Exit the iteration when ANY of these apply:
+- You have materialized an output or made a failed attempt at one
+- You have written or substantially modified more than 2 scripts
+- A command produced more than ~200 lines of output
+- You are on your 3rd or later `prism run` invocation this iteration
+- You have read the same file more than once this iteration
+Do not wait until context feels tight. Exit early and often — the next iteration gets fresh context and costs nothing.
 
 **Commit messages are memory.** The next iteration discovers what you did via `git log`. Write descriptive commit messages.
 
@@ -79,3 +87,5 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 **Update the plan.** After completing work, edit `plans/build-plan-{{UNIVERSE}}.md` to cross off completed items and add notes about what you learned.
 
 **Document blockers.** If you hit something you can't resolve (missing data, ambiguous spec, external dependency), add it to the Open Questions section in `CLAUDE.md` and move on to other work.
+
+**No placeholders.** Every script must perform real computation on real data. Code that fakes results — hardcoded return values, TODO stubs, synthetic data standing in for real inputs — is worse than no code at all. If you cannot implement something fully, skip it and document why in the build plan.
