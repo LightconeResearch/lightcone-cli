@@ -6,7 +6,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash(astra:*), Bash(prism:*), Bash
 
 # /prism-migrate
 
-End-to-end migration: scan existing code, generate the ASTRA spec, parameterize decisions in the code, and run until everything materializes. The user's existing logic stays intact -- changes are limited to adding argument parsing and replacing hardcoded values with parameters.
+End-to-end migration: scan existing code, generate the ASTRA spec, parameterize decisions in the code, and run until everything materializes. The user's existing logic stays intact — changes should be minimal.
 
 ## References
 
@@ -44,43 +44,28 @@ And a separate list of candidate decisions with file:line references.
 
 Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `CLAUDE.md`. Use the [Decision Guide](../../guides/decision-guide.md) to filter candidate decisions — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
 
-Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
+Include `recipe:` blocks on each output pointing to the script that produces it. Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
 
 Write to `astra.yaml` and `universes/baseline.yaml`, then validate: `astra validate astra.yaml`. Fix any errors.
 
-Tell the user to review the spec — they can open `astra.yaml` directly or right-click it and open in Prism-UI. Ask if they want any changes before proceeding.
+Use `AskUserQuestion` to ask the user to review the spec — they can open `astra.yaml` directly or right-click it and open in Prism-UI. Wait for confirmation before proceeding to implementation.
 
 ## Phase 2: Implement
 
-For each script that has decisions, make minimal edits:
+Parameterize the code so decisions can be varied across universes. The goal is minimal changes to user code. Use your best judgement for the approach — the options below are not exhaustive:
 
-1. **Add argument parsing** at the top (or extend existing argparse):
-   ```python
-   parser = argparse.ArgumentParser()
-   parser.add_argument('--outlier_sigma', type=float, default=3.0)
-   parser.add_argument('--scaling_method', type=str, default='standard')
-   args = parser.parse_args()
-   ```
+**For scripts with hardcoded values:** Add argparse (or extend existing argument parsing) and replace hardcoded values with the parsed args. This is the simplest case.
 
-2. **Replace hardcoded values** with the parsed args:
-   ```python
-   # Before: sigma_cut = 3.0
-   # After:
-   sigma_cut = args.outlier_sigma
-   ```
+**For notebooks:** Move the `.ipynb` to `notebooks/` (preserving it as reference), then create a `.py` script that does the parameterized version. The recipe points to the new script.
 
-3. **Update output paths** to write to `results/{universe}/{output_id}.ext`:
-   ```python
-   import os
-   universe = os.environ.get('PRISM_UNIVERSE', 'baseline')
-   output_dir = f'results/{universe}'
-   os.makedirs(output_dir, exist_ok=True)
-   ```
+**For config-file-driven projects:** Create a thin wrapper script that accepts ASTRA decision args, writes/updates the config file, then calls the original entry point. The user's config-driven code stays untouched.
 
-That's it. Don't refactor, don't restructure, don't improve the code. Just add the parameter plumbing and output path convention.
+Whatever approach you use:
 
-**Underscore convention:** Decision IDs use underscores in `astra.yaml` (`outlier_sigma`). Prism passes `--outlier_sigma`. argparse must match: `parser.add_argument('--outlier_sigma')`.
-
+- **Don't refactor, restructure, or improve the code.** Just add the parameter plumbing.
+- **Underscore convention:** Decision IDs use underscores in `astra.yaml` (`outlier_sigma`). Prism passes `--outlier_sigma`. Argument parsing must match.
+- **Update output paths** to write to `results/{universe}/{output_id}.ext` following the convention in `CLAUDE.md`.
+- **Update recipes** in `astra.yaml` if the entry point or command changed.
 
 ## Phase 3: Run & Debug
 
@@ -96,8 +81,7 @@ Then validate: `astra validate astra.yaml`. Present summary to user.
 
 ## Rules
 
-- **Minimal changes.** Only add argparse and replace hardcoded values. Do not refactor, rename, reorganize, or "improve" existing code.
+- **Minimal changes.** Do not refactor, rename, reorganize, or "improve" existing code.
 - **Don't guess.** Read every script before making claims about what it does.
 - **Filter decisions aggressively.** Most hardcoded values are implementation details, not analytical choices.
 - **Preserve behavior.** The baseline universe with default values must reproduce the original behavior exactly.
-- **One thing at a time.** Parameterize one script, then move to the next.
