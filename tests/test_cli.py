@@ -159,17 +159,16 @@ class TestInitCommand:
 class TestInitExistingProject:
     """Tests for prism init --existing-project."""
 
-    def test_existing_project_adds_infrastructure(self, runner: CliRunner, tmp_path: Path):
-        """Test that --existing-project adds Prism files without astra.yaml boilerplate."""
+    def test_existing_project_in_place(self, runner: CliRunner, tmp_path: Path):
+        """Test --existing-project . adds infrastructure in place."""
         project_dir = tmp_path / "my-existing-code"
         project_dir.mkdir()
-        # Simulate existing code
         (project_dir / "train.py").write_text("print('hello')\n")
         (project_dir / "requirements.txt").write_text("torch\n")
 
         result = runner.invoke(
             main,
-            ["init", str(project_dir), "--existing-project",
+            ["init", str(project_dir), "--existing-project", str(project_dir),
              "--no-git", "--no-venv", "--permissions", "yolo"],
         )
         assert result.exit_code == 0
@@ -190,6 +189,34 @@ class TestInitExistingProject:
         assert (project_dir / "train.py").read_text() == "print('hello')\n"
         assert (project_dir / "requirements.txt").read_text() == "torch\n"
 
+    def test_existing_project_copy_from_source(self, runner: CliRunner, tmp_path: Path):
+        """Test --existing-project copies code from source to target."""
+        source_dir = tmp_path / "old-code"
+        source_dir.mkdir()
+        (source_dir / "analysis.py").write_text("x = 1\n")
+        (source_dir / "data").mkdir()
+        (source_dir / "data" / "input.csv").write_text("a,b\n1,2\n")
+
+        target_dir = tmp_path / "new-astra-project"
+
+        result = runner.invoke(
+            main,
+            ["init", str(target_dir), "--existing-project", str(source_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+
+        # Code was copied
+        assert (target_dir / "analysis.py").read_text() == "x = 1\n"
+        assert (target_dir / "data" / "input.csv").exists()
+
+        # Infrastructure added
+        assert (target_dir / ".prism" / "prism.yaml").exists()
+        assert (target_dir / "CLAUDE.md").exists()
+
+        # Source untouched
+        assert not (source_dir / ".prism").exists()
+
     def test_existing_project_preserves_gitignore(self, runner: CliRunner, tmp_path: Path):
         """Test that --existing-project appends to existing .gitignore."""
         project_dir = tmp_path / "has-gitignore"
@@ -198,16 +225,14 @@ class TestInitExistingProject:
 
         result = runner.invoke(
             main,
-            ["init", str(project_dir), "--existing-project",
+            ["init", str(project_dir), "--existing-project", str(project_dir),
              "--no-git", "--no-venv", "--permissions", "yolo"],
         )
         assert result.exit_code == 0
 
         gitignore = (project_dir / ".gitignore").read_text()
-        # Original lines preserved
         assert "*.log" in gitignore
         assert "node_modules/" in gitignore
-        # Prism lines appended
         assert "results/" in gitignore
 
     def test_existing_project_skips_existing_claude_md(self, runner: CliRunner, tmp_path: Path):
@@ -218,7 +243,7 @@ class TestInitExistingProject:
 
         result = runner.invoke(
             main,
-            ["init", str(project_dir), "--existing-project",
+            ["init", str(project_dir), "--existing-project", str(project_dir),
              "--no-git", "--no-venv", "--permissions", "yolo"],
         )
         assert result.exit_code == 0
@@ -234,16 +259,7 @@ class TestInitExistingProject:
 
         result = runner.invoke(
             main,
-            ["init", str(project_dir), "--existing-project",
-             "--no-git", "--no-venv", "--permissions", "yolo"],
-        )
-        assert result.exit_code == 1
-
-    def test_existing_project_fails_if_dir_missing(self, runner: CliRunner, tmp_path: Path):
-        """Test that --existing-project errors if directory doesn't exist."""
-        result = runner.invoke(
-            main,
-            ["init", str(tmp_path / "nonexistent"), "--existing-project",
+            ["init", str(project_dir), "--existing-project", str(project_dir),
              "--no-git", "--no-venv", "--permissions", "yolo"],
         )
         assert result.exit_code == 1
@@ -255,7 +271,7 @@ class TestInitExistingProject:
 
         result = runner.invoke(
             main,
-            ["init", str(project_dir), "--existing-project",
+            ["init", str(project_dir), "--existing-project", str(project_dir),
              "--no-git", "--no-venv", "--permissions", "yolo"],
         )
         assert result.exit_code == 0

@@ -160,33 +160,37 @@ def _load_prism_config(project_path: Path) -> dict:
     help="Claude Code permission tier (default: prompt or saved default)",
 )
 @click.option(
-    "--existing-project", "existing_project", is_flag=True, default=False,
-    help="Add Prism infrastructure to an existing project (skips astra.yaml boilerplate)",
+    "--existing-project", "existing_project",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to existing code to migrate (copies into DIRECTORY, adds Prism infrastructure)",
 )
 def init(
     directory: Path, no_git: bool, no_venv: bool,
     target: str | None, permissions: str | None,
-    existing_project: bool,
+    existing_project: Path | None,
 ) -> None:
     """Create a new ASTRA analysis project with full agentic scaffolding.
 
     Creates the project with ASTRA specification files, Claude Code plugin
     configuration, skills, hooks, and a Python virtual environment.
 
-    Use --existing-project to add Prism infrastructure to a directory that
-    already contains code. This skips boilerplate generation (astra.yaml,
-    Containerfile, etc.) and sets you up to run /prism-migrate in Claude Code.
+    Use --existing-project to migrate existing code into ASTRA. If the
+    source path differs from DIRECTORY, code is copied in. Then run
+    /prism-migrate in Claude Code to generate the spec.
 
     DIRECTORY is the project folder to create (default: current directory).
 
     Examples:
         prism init my-analysis
         prism init my-analysis --target perlmutter-gpu
-        prism init . --existing-project
+        prism init . --existing-project .
+        prism init my-analysis --existing-project ../old-code
     """
-    if existing_project:
+    if existing_project is not None:
         _init_existing_project(
-            directory, no_git=no_git, no_venv=no_venv,
+            directory, source=existing_project,
+            no_git=no_git, no_venv=no_venv,
             target=target, permissions=permissions,
         )
         return
@@ -323,17 +327,43 @@ def _create_or_append_gitignore(directory: Path) -> None:
 def _init_existing_project(
     directory: Path,
     *,
+    source: Path,
     no_git: bool,
     no_venv: bool,
     target: str | None,
     permissions: str | None,
 ) -> None:
-    """Add Prism infrastructure to an existing project directory.
+    """Add Prism infrastructure to an existing project.
 
+    If source != directory, copies source contents into directory first.
     Adds .prism/, .claude/, universes/, CLAUDE.md, and .gitignore entries
     without creating boilerplate astra.yaml or overwriting existing files.
     The user then runs /prism-migrate in Claude Code to generate the spec.
     """
+    source = source.resolve()
+    directory = directory if directory == Path(".") else directory
+
+    # Copy source into directory if they differ
+    if source.resolve() != directory.resolve():
+        directory.mkdir(parents=True, exist_ok=True)
+        # Copy all files from source, skipping hidden dirs and __pycache__
+        for item in source.iterdir():
+            if item.name.startswith(".") or item.name == "__pycache__":
+                continue
+            dest = directory / item.name
+            if dest.exists():
+                continue
+            if item.is_dir():
+                shutil.copytree(item, dest, ignore=shutil.ignore_patterns(
+                    "__pycache__", "*.pyc", ".git",
+                ))
+            else:
+                shutil.copy2(item, dest)
+        console.print(
+            f"[green]✓[/green] Copied project from [cyan]{source}[/cyan] "
+            f"to [cyan]{directory}[/cyan]"
+        )
+
     # Check if this is already an ASTRA project
     if (directory / "astra.yaml").exists():
         console.print(
@@ -342,16 +372,6 @@ def _init_existing_project(
         console.print(
             "Use [cyan]astra validate[/cyan] to check it, "
             "or delete astra.yaml and re-run."
-        )
-        raise SystemExit(1)
-
-    if not directory.exists():
-        console.print(
-            f"[red]Error:[/red] Directory [cyan]{directory}[/cyan] does not exist."
-        )
-        console.print(
-            "Use [cyan]prism init {directory}[/cyan] (without --existing-project) "
-            "to create a new project."
         )
         raise SystemExit(1)
 
