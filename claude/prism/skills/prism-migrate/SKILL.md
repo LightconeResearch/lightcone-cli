@@ -57,16 +57,16 @@ For each script that has decisions, make minimal edits:
 1. **Add argument parsing** at the top (or extend existing argparse):
    ```python
    parser = argparse.ArgumentParser()
-   parser.add_argument('--learning_rate', type=float, default=0.001)
-   parser.add_argument('--threshold', type=float, default=0.5)
+   parser.add_argument('--outlier_sigma', type=float, default=3.0)
+   parser.add_argument('--scaling_method', type=str, default='standard')
    args = parser.parse_args()
    ```
 
 2. **Replace hardcoded values** with the parsed args:
    ```python
-   # Before: lr = 0.001
+   # Before: sigma_cut = 3.0
    # After:
-   lr = args.learning_rate
+   sigma_cut = args.outlier_sigma
    ```
 
 3. **Update output paths** to write to `results/{universe}/{output_id}.ext`:
@@ -79,7 +79,7 @@ For each script that has decisions, make minimal edits:
 
 That's it. Don't refactor, don't restructure, don't improve the code. Just add the parameter plumbing and output path convention.
 
-**Underscore convention:** Decision IDs use underscores in `astra.yaml` (`learning_rate`). Prism passes `--learning_rate`. argparse must match: `parser.add_argument('--learning_rate')`.
+**Underscore convention:** Decision IDs use underscores in `astra.yaml` (`outlier_sigma`). Prism passes `--outlier_sigma`. argparse must match: `parser.add_argument('--outlier_sigma')`.
 
 Commit after each script is parameterized.
 
