@@ -14,9 +14,35 @@ End-to-end migration: scan existing code, generate the ASTRA spec, parameterize 
 
 ## Phase 1: Scan & Spec
 
-Read every script and notebook in the project. For each, note what it does (read it, don't guess), what it reads and writes, hardcoded analytical choices (file, line, value), how it's invoked, and dependencies.
+Spawn an Explore subagent to scan the project:
 
-Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory table, then immediately draft `astra.yaml`:
+```
+Agent(subagent_type="Explore", prompt="""
+Scan this project thoroughly and return a structured inventory.
+
+For every script and notebook, report:
+- File path
+- What it does (read the code, don't guess)
+- What files it reads (data, configs, other scripts' outputs)
+- What files it writes (results, plots, models, etc.)
+- Hardcoded analytical choices: magic numbers, commented alternatives,
+  method-selecting branches, config dicts. Include file, line number,
+  current value, and what it controls.
+- How it's currently invoked (argparse, config file, nothing)
+
+Also report:
+- Dependencies (requirements.txt, pyproject.toml, environment.yml, etc.)
+- Data files present in the project
+- Any existing container setup (Dockerfile, Containerfile)
+
+Return the results as a markdown table:
+| Script | Purpose | Reads | Writes | Hardcoded choices |
+
+And a separate list of candidate decisions with file:line references.
+""")
+```
+
+Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml`:
 
 - **name/description**: derive from what the code does
 - **inputs**: data files and external sources the code reads
