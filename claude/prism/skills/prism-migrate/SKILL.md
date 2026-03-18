@@ -16,6 +16,8 @@ End-to-end migration: scan existing code, generate the ASTRA spec, parameterize 
 
 Spawn an Explore subagent to scan the project:
 
+First, read the [Decision Guide](../../guides/decision-guide.md), then spawn an Explore subagent. Include the decision guide content in the prompt so the subagent can classify candidates:
+
 ```
 Agent(subagent_type="Explore", prompt="""
 Scan this project thoroughly and return a structured inventory.
@@ -38,11 +40,18 @@ Also report:
 Return the results as a markdown table:
 | Script | Purpose | Reads | Writes | Hardcoded choices |
 
-And a separate list of candidate decisions with file:line references.
+And a separate list of ALL candidate decisions with file:line references.
+Err on the side of completeness — include anything that could plausibly
+be an analytical choice. The orchestrator will filter down later.
+
+For reference, here is the decision guide for classifying candidates:
+<decision-guide>
+{paste decision guide content here}
+</decision-guide>
 """)
 ```
 
-Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `CLAUDE.md`. Use the [Decision Guide](../../guides/decision-guide.md) to filter candidate decisions — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
+Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `CLAUDE.md`. Use the [Decision Guide](../../guides/decision-guide.md) to filter the subagent's candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
 
 Include `recipe:` blocks on each output pointing to the script that produces it. Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
 
