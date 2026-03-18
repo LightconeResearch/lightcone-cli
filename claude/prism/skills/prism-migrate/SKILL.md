@@ -88,13 +88,7 @@ That's it. Don't refactor, don't restructure, don't improve the code. Just add t
 prism run --universe baseline
 ```
 
-If it fails, read the error, fix it, and retry. Common issues:
-- Missing dependency -- add to requirements.txt
-- Import error -- check the script runs from the project root
-- File not found -- check input paths relative to project root
-- Output not where expected -- check output path convention
-
-Iterate until `prism status` shows all outputs as `ok`.
+If it fails, read the error, fix it, and retry. Iterate until `prism status` shows all outputs as `ok`.
 
 Then validate: `astra validate astra.yaml`. Present summary to user.
 
