@@ -42,18 +42,11 @@ And a separate list of candidate decisions with file:line references.
 """)
 ```
 
-Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml`:
-
-- **name/description**: derive from what the code does
-- **inputs**: data files and external sources the code reads
-- **outputs**: files the code produces, typed as `metric`, `figure`, `table`, `data`, or `report`. One output per file.
-- **decisions**: hardcoded values that are analytical choices (apply the [Decision Guide](../../guides/decision-guide.md)). Filter aggressively -- not a decision unless changing it could change the conclusion. Use the current hardcoded values as defaults.
-- **recipes**: `command:` pointing to existing scripts. Add `inputs:` for cross-output dependencies.
-- **container**: reference existing Containerfile, or `python:3.12-slim` as default
+Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `CLAUDE.md`. Use the [Decision Guide](../../guides/decision-guide.md) to filter candidate decisions — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
 
 Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
 
-**Present the draft spec to the user for review.** Walk through the decisions specifically -- these are the most subjective part. Write to `astra.yaml` and `universes/baseline.yaml` after confirmation.
+**Present the draft spec to the user for review.** Walk through the decisions specifically — these are the most subjective part. Write to `astra.yaml` and `universes/baseline.yaml` after confirmation.
 
 Validate: `astra validate astra.yaml`. Fix any errors.
 
