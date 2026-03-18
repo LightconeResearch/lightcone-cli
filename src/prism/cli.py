@@ -159,22 +159,38 @@ def _load_prism_config(project_path: Path) -> dict:
     default=None,
     help="Claude Code permission tier (default: prompt or saved default)",
 )
+@click.option(
+    "--existing-project", "existing_project", is_flag=True, default=False,
+    help="Add Prism infrastructure to an existing project (skips astra.yaml boilerplate)",
+)
 def init(
     directory: Path, no_git: bool, no_venv: bool,
     target: str | None, permissions: str | None,
+    existing_project: bool,
 ) -> None:
     """Create a new ASTRA analysis project with full agentic scaffolding.
 
     Creates the project with ASTRA specification files, Claude Code plugin
     configuration, skills, hooks, and a Python virtual environment.
 
+    Use --existing-project to add Prism infrastructure to a directory that
+    already contains code. This skips boilerplate generation (astra.yaml,
+    Containerfile, etc.) and sets you up to run /prism-migrate in Claude Code.
+
     DIRECTORY is the project folder to create (default: current directory).
 
     Examples:
         prism init my-analysis
         prism init my-analysis --target perlmutter-gpu
-        prism init my-analysis --no-git --no-venv
+        prism init . --existing-project
     """
+    if existing_project:
+        _init_existing_project(
+            directory, no_git=no_git, no_venv=no_venv,
+            target=target, permissions=permissions,
+        )
+        return
+
     # Check if this is already an ASTRA project
     if (directory / "astra.yaml").exists():
         console.print(
@@ -204,28 +220,10 @@ def init(
         (directory / subdir).mkdir(parents=True, exist_ok=True)
 
     # Create dagster.yaml inside .prism/
-    dagster_yaml_content = {
-        "storage": {
-            "sqlite": {
-                "base_dir": "results/.dagster",
-            },
-        },
-    }
-    (directory / ".prism" / "dagster.yaml").write_text(
-        yaml.dump(dagster_yaml_content, default_flow_style=False, sort_keys=False)
-    )
+    _create_dagster_yaml(directory)
 
     # Create .gitignore
-    gitignore = """# ASTRA Analysis
-results/
-results/.dagster/
-__pycache__/
-*.py[cod]
-.venv/
-.ipynb_checkpoints/
-.DS_Store
-"""
-    (directory / ".gitignore").write_text(gitignore)
+    _create_or_append_gitignore(directory)
 
     # Create boilerplate astra.yaml
     _create_boilerplate_astra_yaml(directory)
@@ -277,6 +275,168 @@ __pycache__/
 
     console.print(f"\n[bold]cd {directory}[/bold] && [bold]claude[/bold]")
     console.print("Then run [cyan]/prism-new[/cyan] to scope your research question.")
+
+
+_GITIGNORE_LINES = [
+    "results/",
+    "results/.dagster/",
+    "__pycache__/",
+    "*.py[cod]",
+    ".venv/",
+    ".ipynb_checkpoints/",
+    ".DS_Store",
+]
+
+
+def _create_dagster_yaml(directory: Path) -> None:
+    """Create .prism/dagster.yaml for Dagster instance configuration."""
+    dagster_yaml_content = {
+        "storage": {
+            "sqlite": {
+                "base_dir": "results/.dagster",
+            },
+        },
+    }
+    prism_dir = directory / ".prism"
+    prism_dir.mkdir(parents=True, exist_ok=True)
+    (prism_dir / "dagster.yaml").write_text(
+        yaml.dump(dagster_yaml_content, default_flow_style=False, sort_keys=False)
+    )
+
+
+def _create_or_append_gitignore(directory: Path) -> None:
+    """Create .gitignore or append missing Prism entries to an existing one."""
+    gitignore_path = directory / ".gitignore"
+    if gitignore_path.exists():
+        existing = gitignore_path.read_text()
+        existing_lines = {line.strip() for line in existing.splitlines()}
+        missing = [line for line in _GITIGNORE_LINES if line not in existing_lines]
+        if missing:
+            addition = "\n# Prism / ASTRA\n" + "\n".join(missing) + "\n"
+            with open(gitignore_path, "a") as f:
+                f.write(addition)
+    else:
+        content = "# ASTRA Analysis\n" + "\n".join(_GITIGNORE_LINES) + "\n"
+        gitignore_path.write_text(content)
+
+
+def _init_existing_project(
+    directory: Path,
+    *,
+    no_git: bool,
+    no_venv: bool,
+    target: str | None,
+    permissions: str | None,
+) -> None:
+    """Add Prism infrastructure to an existing project directory.
+
+    Adds .prism/, .claude/, universes/, CLAUDE.md, and .gitignore entries
+    without creating boilerplate astra.yaml or overwriting existing files.
+    The user then runs /prism-migrate in Claude Code to generate the spec.
+    """
+    # Check if this is already an ASTRA project
+    if (directory / "astra.yaml").exists():
+        console.print(
+            f"[red]Error:[/red] [cyan]{directory}[/cyan] already has an astra.yaml."
+        )
+        console.print(
+            "Use [cyan]astra validate[/cyan] to check it, "
+            "or delete astra.yaml and re-run."
+        )
+        raise SystemExit(1)
+
+    if not directory.exists():
+        console.print(
+            f"[red]Error:[/red] Directory [cyan]{directory}[/cyan] does not exist."
+        )
+        console.print(
+            "Use [cyan]prism init {directory}[/cyan] (without --existing-project) "
+            "to create a new project."
+        )
+        raise SystemExit(1)
+
+    console.print(f"[bold]Adding Prism infrastructure to: [cyan]{directory}[/cyan][/bold]\n")
+
+    # Create directories that don't exist yet
+    for subdir in ["universes", "results", ".prism"]:
+        d = directory / subdir
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True)
+
+    # .prism/ internals
+    _create_dagster_yaml(directory)
+
+    # .gitignore — append if exists, create if not
+    _create_or_append_gitignore(directory)
+
+    # CLAUDE.md — only if it doesn't exist
+    if not (directory / "CLAUDE.md").exists():
+        _create_claude_md(directory)
+    else:
+        console.print("  [dim]CLAUDE.md already exists, skipping[/dim]")
+
+    # Containerfile — only if it doesn't exist
+    if not (directory / "Containerfile").exists():
+        containerfile = """\
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+"""
+        (directory / "Containerfile").write_text(containerfile)
+    else:
+        console.print("  [dim]Containerfile already exists, skipping[/dim]")
+
+    # requirements.txt — don't touch if it exists
+    if not (directory / "requirements.txt").exists():
+        (directory / "requirements.txt").write_text("")
+    else:
+        console.print("  [dim]requirements.txt already exists, skipping[/dim]")
+
+    # Claude Code settings
+    tier = _resolve_permission_tier(permissions)
+    _create_claude_settings(directory, tier)
+
+    # prism.yaml
+    effective_target = target
+    if not effective_target:
+        from prism.dagster.targets import load_user_config
+        effective_target = load_user_config().get("default_target", "local")
+    _create_prism_config(directory, effective_target)
+
+    if target and target != "local":
+        from prism.dagster.targets import load_target
+        if load_target(target) is None:
+            console.print(
+                f"\n[yellow]Target [cyan]{target}[/cyan] "
+                "is not configured yet.[/yellow]"
+            )
+            console.print(
+                "  Run [cyan]prism setup[/cyan] to configure execution targets."
+            )
+
+    # Virtual environment
+    _create_venv(directory, no_venv)
+
+    # Git
+    _init_git_repo(directory, no_git)
+
+    # Success
+    console.print(
+        f"\n[green]✓[/green] Added Prism infrastructure to: [cyan]{directory}[/cyan]"
+    )
+
+    console.print(
+        "\n[bold]Next steps:[/bold]"
+    )
+    if directory != Path("."):
+        console.print(f"  [bold]cd {directory}[/bold]")
+    console.print("  [bold]claude[/bold]")
+    console.print("  [cyan]/prism-migrate[/cyan]")
 
 
 def _create_boilerplate_astra_yaml(directory: Path) -> None:
