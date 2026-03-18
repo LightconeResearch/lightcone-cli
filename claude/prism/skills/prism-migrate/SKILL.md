@@ -12,29 +12,11 @@ End-to-end migration: scan existing code, generate the ASTRA spec, parameterize 
 
 - [Decision Guide](../../guides/decision-guide.md) -- when a hardcoded value is vs. isn't a decision
 
-## Phase 1: Scan
+## Phase 1: Scan & Spec
 
-Read every script and notebook in the project. For each, note:
-- What it does (read it, don't guess)
-- What it reads (data files, configs) and writes (results, plots, models)
-- Hardcoded analytical choices: magic numbers, commented alternatives, method-selecting branches, config dicts. Note file, line number, current value.
-- How it's invoked (argparse, config file, nothing)
-- Dependencies (requirements.txt, pyproject.toml, etc.)
+Read every script and notebook in the project. For each, note what it does (read it, don't guess), what it reads and writes, hardcoded analytical choices (file, line, value), how it's invoked, and dependencies.
 
-Present a summary table:
-
-```
-| Script       | Purpose      | Reads          | Writes            | Hardcoded choices          |
-|--------------|--------------|----------------|-------------------|----------------------------|
-| train.py     | Train model  | data/train.csv | models/best.pt    | lr=0.001 (L23), epochs=50  |
-| evaluate.py  | Evaluate     | models/best.pt | results/acc.json  | threshold=0.5 (L8)        |
-```
-
-Ask the user: "Does this look right? Anything missing or wrong?"
-
-## Phase 2: Spec
-
-From the scan, draft `astra.yaml`:
+Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory table, then immediately draft `astra.yaml`:
 
 - **name/description**: derive from what the code does
 - **inputs**: data files and external sources the code reads
@@ -45,11 +27,11 @@ From the scan, draft `astra.yaml`:
 
 Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
 
-**Present the draft to the user for review.** Walk through the decisions specifically -- these are the most subjective part. Write to `astra.yaml` and `universes/baseline.yaml` after confirmation.
+**Present the draft spec to the user for review.** Walk through the decisions specifically -- these are the most subjective part. Write to `astra.yaml` and `universes/baseline.yaml` after confirmation.
 
 Validate: `astra validate astra.yaml`. Fix any errors.
 
-## Phase 3: Implement
+## Phase 2: Implement
 
 For each script that has decisions, make minimal edits:
 
@@ -82,7 +64,7 @@ That's it. Don't refactor, don't restructure, don't improve the code. Just add t
 
 Commit after each script is parameterized.
 
-## Phase 4: Run & Debug
+## Phase 3: Run & Debug
 
 ```bash
 prism run --universe baseline
@@ -96,15 +78,7 @@ If it fails, read the error, fix it, and retry. Common issues:
 
 Iterate until `prism status` shows all outputs as `ok`.
 
-## Phase 5: Finalize
-
-1. Validate: `astra validate astra.yaml`
-2. Update `CLAUDE.md` Analysis Context section with:
-   - **Domain Context**: what the user explained about the project
-   - **Migration Notes**: what was parameterized, any structural changes made
-3. Commit all changes.
-
-Present summary and confirm with the user.
+Then validate: `astra validate astra.yaml`. Commit all changes. Present summary to user.
 
 ## Rules
 
