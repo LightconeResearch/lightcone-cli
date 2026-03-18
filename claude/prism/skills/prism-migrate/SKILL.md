@@ -1,174 +1,115 @@
 ---
 name: prism-migrate
-description: Migrate an existing project into the ASTRA/Prism framework. Walks through a guided migration that identifies existing scripts, data, configs, and decisions, then scaffolds the ASTRA structure around them. Use when the user has existing analysis code they want to bring into ASTRA. Triggers on "migrate", "convert", "port", "import project", "existing project".
-allowed-tools: Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md), Write(.claude/migration-plan.md), Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md), Glob, Grep, Bash(astra:*), Bash(prism:*), Bash(mkdir:*), Bash(echo:*), Bash(ls:*), Bash(cp:*), Bash(mv:*), Bash(git:*), Bash(python:*), WebSearch, WebFetch, AskUserQuestion, Task
-argument-hint: "[path | github-url]"
+description: Migrate an existing project into ASTRA/Prism. Scans code, generates astra.yaml, parameterizes decisions, and runs until outputs materialize. Use after `prism init . --existing-project`. Triggers on "migrate", "convert", "existing project".
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(astra:*), Bash(prism:*), Bash(python:*), Bash(pip:*), Bash(git:*), Bash(mkdir:*), Bash(ls:*), Agent, AskUserQuestion
 ---
 
 # /prism-migrate
 
-Discover what exists in an existing project and wrap it in ASTRA structure -- preserving the user's work while adding specification, decision tracking, and reproducibility.
+End-to-end migration: scan existing code, generate the ASTRA spec, parameterize decisions in the code, and run until everything materializes. The user's existing logic stays intact -- changes are limited to adding argument parsing and replacing hardcoded values with parameters.
 
 ## References
 
-- [Decision Guide](../../guides/decision-guide.md) -- decision identification, prioritization, blind-spot checklist
-- [CLAUDE.md Template](../../templates/CLAUDE.md) -- project CLAUDE.md structure
+- [Decision Guide](../../guides/decision-guide.md) -- when a hardcoded value is vs. isn't a decision
 
-## Setup
+## Phase 1: Scan
 
-1. Read `astra.yaml` if it exists. Abort if it already has outputs with recipes and decisions with options -- suggest editing `astra.yaml` directly or running `/prism-build`.
-2. Note the working directory.
+Read every script and notebook in the project. For each, note:
+- What it does (read it, don't guess)
+- What it reads (data files, configs) and writes (results, plots, models)
+- Hardcoded analytical choices: magic numbers, commented alternatives, method-selecting branches, config dicts. Note file, line number, current value.
+- How it's invoked (argparse, config file, nothing)
+- Dependencies (requirements.txt, pyproject.toml, etc.)
 
----
-
-## Phase 1: Locate the Project
-
-Stage banner: PROJECT DISCOVERY
-
-Ask where the project lives: local path, GitHub URL, paper with code, or already in this directory. Clone or copy as needed.
-
-Scan and classify the project type (Python, R, notebook, pipeline, paper-with-code, mixed). Report what you found and ask the user to confirm.
-
----
-
-## Phase 2: Inventory
-
-Stage banner: INVENTORY
-
-Systematically scan the project. Read scripts to understand what they do -- do not guess.
-
-### 2a. Scripts & Entry Points
-
-For each script: what it does, what it reads, what it writes, what parameters it uses. Present as a table with ASTRA output types:
+Present a summary table:
 
 ```
-| Script          | Purpose         | Inputs         | Output (ASTRA type) | Parameters      |
-|-----------------|-----------------|----------------|---------------------|-----------------|
-| train.py        | Train model     | data/train.csv | best.pt (data)      | lr, epochs, ... |
-| evaluate.py     | Evaluate model  | models/best.pt | acc.json (metric)   | threshold       |
-| plot_results.py | Generate figures | results/*.json | fig1.png (figure)   | --              |
+| Script       | Purpose      | Reads          | Writes            | Hardcoded choices          |
+|--------------|--------------|----------------|-------------------|----------------------------|
+| train.py     | Train model  | data/train.csv | models/best.pt    | lr=0.001 (L23), epochs=50  |
+| evaluate.py  | Evaluate     | models/best.pt | results/acc.json  | threshold=0.5 (L8)        |
 ```
 
-### 2b. Data, Outputs, Dependencies
+Ask the user: "Does this look right? Anything missing or wrong?"
 
-- **Inputs**: data files, configs, external sources. Classify as `data`, `parameter`, or `reference`.
-- **Outputs**: files produced by scripts. Classify as `metric`, `figure`, `table`, `data`, or `report`. **One output per output** -- don't bundle multiple metrics or plots.
-- **Dependencies**: `requirements.txt`, `pyproject.toml`, `environment.yml`, `Dockerfile`, etc.
+## Phase 2: Spec
 
-### 2c. Hardcoded Decisions
+From the scan, draft `astra.yaml`:
 
-Scan for hardcoded analytical choices: magic numbers, commented alternatives, config dicts, method-selecting branches. Note file, line, current value, what it controls.
+- **name/description**: derive from what the code does
+- **inputs**: data files and external sources the code reads
+- **outputs**: files the code produces, typed as `metric`, `figure`, `table`, `data`, or `report`. One output per file.
+- **decisions**: hardcoded values that are analytical choices (apply the [Decision Guide](../../guides/decision-guide.md)). Filter aggressively -- not a decision unless changing it could change the conclusion. Use the current hardcoded values as defaults.
+- **recipes**: `command:` pointing to existing scripts. Add `inputs:` for cross-output dependencies.
+- **container**: reference existing Containerfile, or `python:3.12-slim` as default
 
-### Review
+Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
 
-Present inventory to user. Ask what's missing, miscategorized, or should be ignored.
+**Present the draft to the user for review.** Walk through the decisions specifically -- these are the most subjective part. Write to `astra.yaml` and `universes/baseline.yaml` after confirmation.
 
----
+Validate: `astra validate astra.yaml`. Fix any errors.
 
-## Phase 3: Research Question & Structure
+## Phase 3: Implement
 
-Stage banner: ANALYSIS STRUCTURE
+For each script that has decisions, make minimal edits:
 
-The project already exists -- derive the research question and structure from what the code does.
+1. **Add argument parsing** at the top (or extend existing argparse):
+   ```python
+   parser = argparse.ArgumentParser()
+   parser.add_argument('--learning_rate', type=float, default=0.001)
+   parser.add_argument('--threshold', type=float, default=0.5)
+   args = parser.parse_args()
+   ```
 
-### 3a. Research Question
+2. **Replace hardcoded values** with the parsed args:
+   ```python
+   # Before: lr = 0.001
+   # After:
+   lr = args.learning_rate
+   ```
 
-Propose a research question, description, and success criteria. Ask the user to confirm or refine.
+3. **Update output paths** to write to `results/{universe}/{output_id}.ext`:
+   ```python
+   import os
+   universe = os.environ.get('PRISM_UNIVERSE', 'baseline')
+   output_dir = f'results/{universe}'
+   os.makedirs(output_dir, exist_ok=True)
+   ```
 
-### 3b. Analysis Boundaries
+That's it. Don't refactor, don't restructure, don't improve the code. Just add the parameter plumbing and output path convention.
 
-Single analysis by default. Split only if stages are genuinely standalone units with own objectives, artifacts, and decisions. Ask the user to confirm.
+**Underscore convention:** Decision IDs use underscores in `astra.yaml` (`learning_rate`). Prism passes `--learning_rate`. argparse must match: `parser.add_argument('--learning_rate')`.
 
-### 3c. Decision Identification
+Commit after each script is parameterized.
 
-Present hardcoded values from Phase 2c as candidate decisions. For each, propose an ID, label, options, and default. Apply the [Decision Guide](../../guides/decision-guide.md) -- the key question is whether each value was a deliberate analytical choice or just the first thing that worked. Filter aggressively: hardcoded values are not decisions unless changing them changes the conclusion.
-
-**Underscore convention:** Decision IDs use underscores (`learning_rate`). Prism passes `--learning_rate`. Name them correctly now.
-
-**Write initial astra.yaml** with `version`, `name`, `description`, `success_criteria`, `inputs`, `outputs`, and `decisions`. No recipes yet.
-
----
-
-## Phase 4: Scaffold
-
-Stage banner: SCAFFOLDING
-
-### 4a. Initialize
-
-Run `prism init .`. If scripts are in a non-standard location, ask the user: move to `scripts/` or keep in place and reference from recipes.
-
-### 4b. Add Recipes
-
-Extend astra.yaml with `recipe:` blocks on outputs. Use existing script paths. Note (but don't implement) where scripts need parameterization.
-
-### 4c. Validate
+## Phase 4: Run & Debug
 
 ```bash
-astra universe generate -n baseline -d "Default selections from existing codebase"
-astra validate astra.yaml
+prism run --universe baseline
 ```
 
-Fix validation errors. Iterate until clean.
+If it fails, read the error, fix it, and retry. Common issues:
+- Missing dependency -- add to requirements.txt
+- Import error -- check the script runs from the project root
+- File not found -- check input paths relative to project root
+- Output not where expected -- check output path convention
 
-### 4d. Populate CLAUDE.md
+Iterate until `prism status` shows all outputs as `ok`.
 
-Read the `CLAUDE.md` created by `prism init`. Replace `## Analysis Context` with:
+## Phase 5: Finalize
 
-- **Domain Context**: what the user explained, data characteristics, constraints
-- **Key Decisions**: what each controls, its default, where the hardcoded value lives in code
-- **Migration Notes**: what scripts need parameterization, file moves made, original structure
-- **Implementation Notes**: libraries, data formats, gotchas
+1. Validate: `astra validate astra.yaml`
+2. Update `CLAUDE.md` Analysis Context section with:
+   - **Domain Context**: what the user explained about the project
+   - **Migration Notes**: what was parameterized, any structural changes made
+3. Commit all changes.
 
----
+Present summary and confirm with the user.
 
-## Phase 5: Migration Plan
+## Rules
 
-Stage banner: MIGRATION PLAN
-
-For each decision, list which scripts need modification:
-
-```
-| Decision       | Script          | Current Code               | Needed Change              |
-|----------------|-----------------|----------------------------|----------------------------|
-| learning_rate  | train.py:23     | lr = 0.001                 | Accept --learning_rate arg |
-| scaling_method | preprocess.py:8 | scaler = StandardScaler()  | Accept --scaling_method    |
-```
-
-Also note file moves and container setup needs.
-
-Write the plan to `.claude/migration-plan.md` as a checklist. Add parameterization summary to CLAUDE.md's Implementation Notes so `/prism-build` can discover it.
-
----
-
-## Done
-
-Stage banner: MIGRATION COMPLETE
-
-Show summary table, then Next Up block:
-
-- **Parameterize your scripts** -- each decision becomes a CLI arg (`--learning_rate`). See `.claude/migration-plan.md`.
-- `/clear` then `/prism-build`
-- Also available: `/prism-verify`, `/prism-feedback`
-
-Prompt user to `/clear` before implementation. Everything needed is in `astra.yaml`, `CLAUDE.md`, and `.claude/migration-plan.md`.
-
----
-
-## Restrictions
-
-**You are a migration and specification agent, not an implementation agent.**
-
-- Do NOT modify implementation scripts (beyond moving/copying with user approval)
-- ONLY create/modify: `astra.yaml`, `universes/*.yaml`, `CLAUDE.md`, `.claude/migration-plan.md`, directory structure
-- Do NOT fabricate or guess what scripts do -- always read and verify
-- Preserve all existing files. Never delete without explicit confirmation.
-
----
-
-## Anti-Patterns
-
-- **Rewriting scripts** -- discover and document; `/prism-build` implements
-- **Inventing decisions** -- every candidate must trace to actual code or user input
-- **Moving files without asking** -- always get confirmation
-- **Bulk decisions** -- filter aggressively; not a decision unless changing it changes the conclusion
-- **Skipping inventory** -- thorough scanning prevents missed decisions and outputs
+- **Minimal changes.** Only add argparse and replace hardcoded values. Do not refactor, rename, reorganize, or "improve" existing code.
+- **Don't guess.** Read every script before making claims about what it does.
+- **Filter decisions aggressively.** Most hardcoded values are implementation details, not analytical choices.
+- **Preserve behavior.** The baseline universe with default values must reproduce the original behavior exactly.
+- **One thing at a time.** Parameterize one script, commit, move to the next.
