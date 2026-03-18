@@ -46,9 +46,9 @@ Write the scan results to `CLAUDE.md` under Analysis Context as a script invento
 
 Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
 
-**Present the draft spec to the user for review.** Walk through the decisions specifically — these are the most subjective part. Write to `astra.yaml` and `universes/baseline.yaml` after confirmation.
+Write to `astra.yaml` and `universes/baseline.yaml`, then validate: `astra validate astra.yaml`. Fix any errors.
 
-Validate: `astra validate astra.yaml`. Fix any errors.
+Tell the user to review the spec — they can open `astra.yaml` directly or right-click it and open in Prism-UI. Ask if they want any changes before proceeding.
 
 ## Phase 2: Implement
 
