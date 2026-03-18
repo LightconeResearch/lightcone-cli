@@ -16,7 +16,7 @@ from rich.console import Console
 
 console = Console()
 
-PERMISSION_TIERS = {
+PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
     "yolo": {
         "allow": [
             "Bash(*)",
@@ -31,22 +31,25 @@ PERMISSION_TIERS = {
     "recommended": {
         "allow": [
             "Read",
-            "Bash(astra:*)",
-            "Bash(prism:*)",
-            "Bash(python:*)",
-            "Bash(pip:*)",
-            "Bash(echo:*)",
-            "Bash(git status:*)",
-            "Bash(git log:*)",
-            "Bash(git diff:*)",
-            "Bash(git add:*)",
-            "Bash(git commit:*)",
-            "Bash(git branch:*)",
-            "Bash(git checkout:*)",
-            "Bash(git switch:*)",
             "Edit",
+            "Write",
+            "Bash(*)",
             "WebSearch",
             "WebFetch",
+        ],
+        "deny": [
+            # Sensitive dotfiles — don't silently modify credentials/keys
+            "Edit(~/.ssh/**)",
+            "Edit(~/.aws/**)",
+            "Edit(~/.gnupg/**)",
+            # Common HPC scratch filesystems
+            "Edit(//scratch/**)",
+            "Edit(//pscratch/**)",
+            # Dangerous bash — require explicit confirmation
+            "Bash(sudo *)",
+            "Bash(rm -rf /*)",
+            "Bash(git push *)",
+            "Bash(git push)",
         ],
     },
     "minimal": {
@@ -197,16 +200,16 @@ __pycache__/
     # Create CLAUDE.md with project conventions
     _create_claude_md(directory)
 
-    # Resolve permission tier and create Claude Code settings
-    tier = _resolve_permission_tier(permissions)
-    _create_claude_settings(directory, tier)
-
-    # Write prism.yaml project config — use --target flag, or fall back to
-    # the user's default target from ~/.prism/config.yaml
+    # Resolve target and permission tier, then create Claude Code settings
     effective_target = target
     if not effective_target:
         from prism.dagster.targets import load_user_config
         effective_target = load_user_config().get("default_target", "local")
+
+    tier = _resolve_permission_tier(permissions)
+    _create_claude_settings(directory, tier, target=effective_target)
+
+    # Write prism.yaml project config
     _create_prism_config(directory, effective_target)
 
     # If user explicitly passed --target, ensure it's been configured
@@ -411,8 +414,8 @@ def _prompt_permission_tier() -> str:
     """
     console.print("\n[bold]Claude Code permission level[/bold]")
     console.print("  Controls what Claude can do without asking.\n")
-    console.print("    1. yolo — Everything auto-allowed. No prompts.")
-    console.print("    2. recommended — Prism workflow auto-allowed. Prompts for the rest.")
+    console.print("    1. yolo — Everything including MCP. No guardrails.")
+    console.print("    2. recommended — Full access with guardrails (no sudo/push/scratch).")
     console.print("    3. minimal — Only file reading. Everything else prompts.")
 
     choice_map = {"1": "yolo", "2": "recommended", "3": "minimal"}
@@ -522,8 +525,14 @@ def _update_extractor_agent_model(agents_dir: Path) -> None:
     extractor_path.write_text(content)
 
 
-def _create_claude_settings(directory: Path, tier: str = "recommended") -> None:
-    """Create Claude Code settings with Prism skills and agents."""
+def _create_claude_settings(
+    directory: Path, tier: str = "recommended", target: str = "local",
+) -> None:
+    """Create Claude Code settings with Prism skills and agents.
+
+    If a non-local target maps to a known HPC site, site-specific deny rules
+    (e.g. scratch filesystem paths) are merged into the permissions.
+    """
     claude_dir = directory / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
 
@@ -575,7 +584,19 @@ def _create_claude_settings(directory: Path, tier: str = "recommended") -> None:
         shutil.copytree(agents_src, agents_dst)
         _update_extractor_agent_model(agents_dst)
 
-    permissions = PERMISSION_TIERS[tier]
+    # Build permissions: start from tier, then merge site-specific deny rules
+    permissions: dict[str, list[str]] = {
+        k: list(v) for k, v in PERMISSION_TIERS[tier].items()
+    }
+    if target != "local" and "deny" in permissions:
+        from prism.dagster.site_registry import detect_site, get_site_scratch_deny_rules
+        site_key = detect_site(target)
+        if site_key:
+            site_deny = get_site_scratch_deny_rules(site_key)
+            existing = set(permissions["deny"])
+            for rule in site_deny:
+                if rule not in existing:
+                    permissions["deny"].append(rule)
 
     # Build absolute paths for hook commands
     abs_hooks = str(directory.resolve() / ".claude" / "hooks")

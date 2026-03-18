@@ -59,6 +59,11 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
             "nodes": 1,
             "time_limit": "30m",
         },
+        "scratch_paths": [
+            "//pscratch/**",
+            "//global/cscratch1/**",
+            "//global/cfs/cdirs/**",
+        ],
     },
     "local": {
         "hostname_patterns": [],
@@ -102,3 +107,16 @@ def list_known_sites() -> list[tuple[str, str]]:
         (key, site.get("display_name", key))
         for key, site in SITE_DEFAULTS.items()
     ]
+
+
+def get_site_scratch_deny_rules(site_key: str) -> list[str]:
+    """Return Edit deny rules for a site's scratch/shared filesystem paths.
+
+    These are used in Claude Code permissions to prevent accidental writes
+    to shared HPC filesystems.
+    """
+    site = SITE_DEFAULTS.get(site_key)
+    if not site:
+        return []
+    scratch_paths = site.get("scratch_paths", [])
+    return [f"Edit({path})" for path in scratch_paths]
