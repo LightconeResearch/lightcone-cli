@@ -81,7 +81,6 @@ That's it. Don't refactor, don't restructure, don't improve the code. Just add t
 
 **Underscore convention:** Decision IDs use underscores in `astra.yaml` (`outlier_sigma`). Prism passes `--outlier_sigma`. argparse must match: `parser.add_argument('--outlier_sigma')`.
 
-Commit after each script is parameterized.
 
 ## Phase 3: Run & Debug
 
@@ -97,7 +96,7 @@ If it fails, read the error, fix it, and retry. Common issues:
 
 Iterate until `prism status` shows all outputs as `ok`.
 
-Then validate: `astra validate astra.yaml`. Commit all changes. Present summary to user.
+Then validate: `astra validate astra.yaml`. Present summary to user.
 
 ## Rules
 
@@ -105,4 +104,4 @@ Then validate: `astra validate astra.yaml`. Commit all changes. Present summary 
 - **Don't guess.** Read every script before making claims about what it does.
 - **Filter decisions aggressively.** Most hardcoded values are implementation details, not analytical choices.
 - **Preserve behavior.** The baseline universe with default values must reproduce the original behavior exactly.
-- **One thing at a time.** Parameterize one script, commit, move to the next.
+- **One thing at a time.** Parameterize one script, then move to the next.
