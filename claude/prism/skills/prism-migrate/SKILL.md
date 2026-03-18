@@ -69,6 +69,8 @@ Parameterize the code so decisions can be varied across universes. The goal is m
 
 **For config-file-driven projects:** Create a thin wrapper script that accepts ASTRA decision args, writes/updates the config file, then calls the original entry point. The user's config-driven code stays untouched.
 
+**Dependencies:** Check that `requirements.txt` includes all packages the code imports. If one doesn't exist, create it. If it's incomplete, add missing deps.
+
 Whatever approach you use:
 
 - **Don't refactor, restructure, or improve the code.** Just add the parameter plumbing.
