@@ -90,6 +90,8 @@ prism run --universe baseline
 
 If it fails, read the error, fix it, and retry. Iterate until `prism status` shows all outputs as `ok`.
 
+If the scan found existing results elsewhere in the project, compare them against the new outputs in `results/baseline/` to verify the migration preserved behavior.
+
 Then validate: `astra validate astra.yaml`. Present summary to user.
 
 ## Rules
