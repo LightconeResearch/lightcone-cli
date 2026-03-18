@@ -11,7 +11,7 @@ Discover what exists in an existing project and wrap it in ASTRA structure -- pr
 
 ## References
 
-- [Decision Guide](../prism-new/decision-guide.md) -- decision identification, prioritization, blind-spot checklist
+- [Decision Guide](../guides/decision-guide.md) -- decision identification, prioritization, blind-spot checklist
 - [CLAUDE.md Template](../../templates/CLAUDE.md) -- project CLAUDE.md structure
 
 ## Setup
@@ -81,7 +81,7 @@ Single analysis by default. Split only if stages are genuinely standalone units 
 
 ### 3c. Decision Identification
 
-Present hardcoded values from Phase 2c as candidate decisions. For each, propose an ID, label, options, and default. Apply the [Decision Guide](../prism-new/decision-guide.md) -- the key question is whether each value was a deliberate analytical choice or just the first thing that worked. Filter aggressively: hardcoded values are not decisions unless changing them changes the conclusion.
+Present hardcoded values from Phase 2c as candidate decisions. For each, propose an ID, label, options, and default. Apply the [Decision Guide](../guides/decision-guide.md) -- the key question is whether each value was a deliberate analytical choice or just the first thing that worked. Filter aggressively: hardcoded values are not decisions unless changing them changes the conclusion.
 
 **Underscore convention:** Decision IDs use underscores (`learning_rate`). Prism passes `--learning_rate`. Name them correctly now.
 
