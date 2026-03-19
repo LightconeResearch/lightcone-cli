@@ -785,17 +785,17 @@ class TestUpdateCommand:
         monkeypatch.setattr("prism.updater._CHECK_FILE", Path("/tmp/.fake_update_check"))
 
     def test_update_no_reinstall_when_up_to_date(self, runner: CliRunner, monkeypatch):
-        """When all repos are up to date, skip reinstall and project sync."""
+        """When all repos are up to date, skip reinstall but still offer project sync."""
         self._patch_updater(monkeypatch, [
             ("ASTRA", True, "already up to date"),
             ("Prism", True, "already up to date"),
             ("Prism-UI", True, "already up to date"),
         ])
 
-        result = runner.invoke(main, ["update"])
+        result = runner.invoke(main, ["update"], input="skip\n")
         assert result.exit_code == 0
         assert "Reinstalling" not in result.output
-        assert "Sync updated" not in result.output
+        assert "Sync updated" in result.output
 
     def test_update_reinstalls_when_updated(self, runner: CliRunner, monkeypatch):
         """When repos have updates, reinstall packages and prompt for sync."""
@@ -859,6 +859,11 @@ class TestSyncProjectPlugins:
         hooks = plugin / "hooks"
         hooks.mkdir()
         (hooks / "langfuse_hook.py").write_text("# hook v2\n")
+        # Guides
+        guides = plugin / "guides"
+        guides.mkdir()
+        (guides / "decision-guide.md").write_text("# Decision Guide\n")
+        (guides / "ui-brand.md").write_text("# UI Brand\n")
         # Template
         templates = plugin / "templates"
         templates.mkdir()
@@ -885,6 +890,8 @@ class TestSyncProjectPlugins:
         assert (project / ".claude" / "skills" / "prism-build" / "SKILL.md").exists()
         assert (project / ".claude" / "scripts" / "session-start.sh").exists()
         assert (project / ".claude" / "hooks" / "langfuse_hook.py").exists()
+        assert (project / ".claude" / "guides" / "decision-guide.md").exists()
+        assert (project / ".claude" / "guides" / "ui-brand.md").exists()
 
     def test_sync_scripts_executable(self, tmp_path: Path):
         """Synced scripts should be executable."""

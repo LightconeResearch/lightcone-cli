@@ -764,6 +764,14 @@ def _create_claude_settings(
         shutil.copytree(agents_src, agents_dst)
         _update_extractor_agent_model(agents_dst)
 
+    # Copy guides
+    guides_src = plugin_source / "guides"
+    guides_dst = claude_dir / "guides"
+    if guides_src.exists():
+        if guides_dst.exists():
+            shutil.rmtree(guides_dst)
+        shutil.copytree(guides_src, guides_dst)
+
     # Build permissions: start from tier, then merge site-specific deny rules
     permissions: dict[str, list[str]] = {
         k: list(v) for k, v in PERMISSION_TIERS[tier].items()
@@ -2070,8 +2078,8 @@ def _sync_project_plugins(project_dir: Path) -> bool:
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
 
-    # Sync directories: skills, hooks, scripts, agents
-    for subdir in ("scripts", "hooks", "skills", "agents"):
+    # Sync directories: skills, hooks, scripts, agents, guides
+    for subdir in ("scripts", "hooks", "skills", "agents", "guides"):
         src = plugin_source / subdir
         dst = claude_dir / subdir
         if not src.exists():
