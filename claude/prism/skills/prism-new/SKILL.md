@@ -10,8 +10,8 @@ Create a new ASTRA analysis project through conversation. Build the spec iterati
 
 ## References
 
-- [Decision Guide](./decision-guide.md) -- decision identification, prioritization, blind-spot checklist
-- [UI Brand](./../ui-brand.md) -- visual formatting patterns
+- [Decision Guide](../../guides/decision-guide.md) -- decision identification, prioritization, blind-spot checklist
+- [UI Brand](../../guides/ui-brand.md) -- visual formatting patterns
 
 ## Setup
 
@@ -79,7 +79,7 @@ Write extracted insights to astra.yaml immediately. Synthesize findings by topic
 
 ### Decision Identification
 
-Use the conversation and literature to identify decisions. Apply [decision-guide.md](./decision-guide.md):
+Use the conversation and literature to identify decisions. Apply [decision-guide.md](../../guides/decision-guide.md):
 
 - What could be done differently and still be defensible?
 - Where did papers disagree or compare alternatives?

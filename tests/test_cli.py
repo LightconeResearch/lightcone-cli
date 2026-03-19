@@ -156,6 +156,128 @@ class TestInitCommand:
         # conftest sets default_target: fake
         assert prism_cfg["target"] == "fake"
 
+class TestInitExistingProject:
+    """Tests for prism init --existing-project."""
+
+    def test_existing_project_in_place(self, runner: CliRunner, tmp_path: Path):
+        """Test --existing-project . adds infrastructure in place."""
+        project_dir = tmp_path / "my-existing-code"
+        project_dir.mkdir()
+        (project_dir / "train.py").write_text("print('hello')\n")
+        (project_dir / "requirements.txt").write_text("torch\n")
+
+        result = runner.invoke(
+            main,
+            ["init", str(project_dir), "--existing-project", str(project_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+
+        # Infrastructure created
+        assert (project_dir / ".prism" / "prism.yaml").exists()
+        assert (project_dir / ".prism" / "dagster.yaml").exists()
+        assert (project_dir / ".claude" / "settings.json").exists()
+        assert (project_dir / "CLAUDE.md").exists()
+        assert (project_dir / "universes").is_dir()
+        assert (project_dir / "results").is_dir()
+        assert (project_dir / "Containerfile").exists()
+
+        # astra.yaml NOT created — that's /prism-migrate's job
+        assert not (project_dir / "astra.yaml").exists()
+
+        # Existing files untouched
+        assert (project_dir / "train.py").read_text() == "print('hello')\n"
+        assert (project_dir / "requirements.txt").read_text() == "torch\n"
+
+    def test_existing_project_copy_from_source(self, runner: CliRunner, tmp_path: Path):
+        """Test --existing-project copies code from source to target."""
+        source_dir = tmp_path / "old-code"
+        source_dir.mkdir()
+        (source_dir / "analysis.py").write_text("x = 1\n")
+        (source_dir / "data").mkdir()
+        (source_dir / "data" / "input.csv").write_text("a,b\n1,2\n")
+
+        target_dir = tmp_path / "new-astra-project"
+
+        result = runner.invoke(
+            main,
+            ["init", str(target_dir), "--existing-project", str(source_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+
+        # Code was copied
+        assert (target_dir / "analysis.py").read_text() == "x = 1\n"
+        assert (target_dir / "data" / "input.csv").exists()
+
+        # Infrastructure added
+        assert (target_dir / ".prism" / "prism.yaml").exists()
+        assert (target_dir / "CLAUDE.md").exists()
+
+        # Source untouched
+        assert not (source_dir / ".prism").exists()
+
+    def test_existing_project_preserves_gitignore(self, runner: CliRunner, tmp_path: Path):
+        """Test that --existing-project appends to existing .gitignore."""
+        project_dir = tmp_path / "has-gitignore"
+        project_dir.mkdir()
+        (project_dir / ".gitignore").write_text("*.log\nnode_modules/\n")
+
+        result = runner.invoke(
+            main,
+            ["init", str(project_dir), "--existing-project", str(project_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+
+        gitignore = (project_dir / ".gitignore").read_text()
+        assert "*.log" in gitignore
+        assert "node_modules/" in gitignore
+        assert "results/" in gitignore
+
+    def test_existing_project_skips_existing_claude_md(self, runner: CliRunner, tmp_path: Path):
+        """Test that --existing-project doesn't overwrite existing CLAUDE.md."""
+        project_dir = tmp_path / "has-claude-md"
+        project_dir.mkdir()
+        (project_dir / "CLAUDE.md").write_text("# My custom docs\n")
+
+        result = runner.invoke(
+            main,
+            ["init", str(project_dir), "--existing-project", str(project_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+        assert (project_dir / "CLAUDE.md").read_text() == "# My custom docs\n"
+
+    def test_existing_project_fails_if_astra_yaml_exists(
+        self, runner: CliRunner, tmp_path: Path,
+    ):
+        """Test that --existing-project errors if astra.yaml already exists."""
+        project_dir = tmp_path / "already-astra"
+        project_dir.mkdir()
+        (project_dir / "astra.yaml").write_text("version: '1.0'\n")
+
+        result = runner.invoke(
+            main,
+            ["init", str(project_dir), "--existing-project", str(project_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 1
+
+    def test_existing_project_shows_next_steps(self, runner: CliRunner, tmp_path: Path):
+        """Test that output includes next steps with /prism-migrate."""
+        project_dir = tmp_path / "next-steps"
+        project_dir.mkdir()
+
+        result = runner.invoke(
+            main,
+            ["init", str(project_dir), "--existing-project", str(project_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+        assert "/prism-migrate" in result.output
+
+
 class TestVersionOption:
     """Tests for version option."""
 
