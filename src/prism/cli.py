@@ -2158,7 +2158,8 @@ def _prompt_sync_projects() -> None:
 
 @main.command()
 @click.option("--check", is_flag=True, help="Only check for updates, don't install them")
-def update(check: bool) -> None:
+@click.option("--sync", is_flag=True, help="Only sync plugin files to projects (skip pull/reinstall)")
+def update(check: bool, sync: bool) -> None:
     """Update Lightcone packages to the latest version.
 
     Pulls the latest code from all Lightcone repositories and
@@ -2167,6 +2168,7 @@ def update(check: bool) -> None:
     Examples:
         prism update          # pull & reinstall everything
         prism update --check  # just check what's available
+        prism update --sync   # just sync plugin files to projects
     """
     from prism.updater import _get_lightcone_root, check_for_updates, pull_repos, reinstall_packages
 
@@ -2177,6 +2179,10 @@ def update(check: bool) -> None:
             "  Expected repos as siblings of the Prism repo."
         )
         raise SystemExit(1)
+
+    if sync:
+        _prompt_sync_projects()
+        return
 
     if check:
         console.print("[bold]Checking for updates...[/bold]\n")
@@ -2219,9 +2225,9 @@ def update(check: bool) -> None:
     else:
         console.print("\n[green bold]All packages updated successfully.[/green bold]")
 
-    # Offer to sync plugin files into existing projects
-    if any_updated:
-        _prompt_sync_projects()
+    # Always offer to sync plugin files — project scaffolding can be stale
+    # even when packages are up to date
+    _prompt_sync_projects()
 
 
 if __name__ == "__main__":
