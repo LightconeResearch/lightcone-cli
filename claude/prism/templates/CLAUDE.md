@@ -25,10 +25,12 @@ ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built
 
 ```
 astra.yaml              # Specification: decisions, inputs, outputs
-prism.yaml            # Prism config (default target, etc.)
 CLAUDE.md             # This file
 Containerfile         # Container image for execution
 requirements.txt      # Python deps (keep in sync with scripts)
+.prism/               # Prism internals
+  prism.yaml          # Prism config (default target, etc.)
+  dagster.yaml        # Dagster instance config
 universes/
   baseline.yaml       # Default decision selections
 scripts/              # Implementation scripts

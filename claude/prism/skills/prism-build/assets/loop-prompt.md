@@ -7,11 +7,11 @@ Run these commands and read their output:
 1. `prism status --universe {{UNIVERSE}}` -- what's materialized, what's pending, what has no recipe
 2. `git log --oneline -10` -- what happened recently
 3. `astra validate astra.yaml` -- is the spec valid
-4. Read `plans/build-plan-{{UNIVERSE}}.md` -- your implementation plan (cross off completed items as you go)
+4. Read `.prism/plans/build-plan-{{UNIVERSE}}.md` -- your implementation plan (cross off completed items as you go)
 
 ## Decide What to Do
 
-**Follow the plan.** Read `plans/build-plan-{{UNIVERSE}}.md` and work on the next unchecked item. The plan was designed with the right ordering — shared utilities before scripts that use them, upstream outputs before downstream ones. Trust it.
+**Follow the plan.** Read `.prism/plans/build-plan-{{UNIVERSE}}.md` and work on the next unchecked item. The plan was designed with the right ordering — shared utilities before scripts that use them, upstream outputs before downstream ones. Trust it.
 
 If the plan is fully checked off or doesn't cover what `prism status` reveals, fall back to the status-based rules below.
 
@@ -41,7 +41,7 @@ All outputs are materialized. Time to verify.
    Report all findings with file paths and line numbers. If all checks pass, end your report with exactly: VERIFIED"
    ```
 4. **If sub-agent reports issues:** fix them, commit. Exit (loop continues).
-5. **If sub-agent says VERIFIED:** Output exactly: `<promise>BUILD_COMPLETE</promise>`, then clean up the build plan (`rm plans/build-plan-{{UNIVERSE}}.md`).
+5. **If sub-agent says VERIFIED:** Output exactly: `<promise>BUILD_COMPLETE</promise>`, then clean up the build plan (`rm .prism/plans/build-plan-{{UNIVERSE}}.md`).
 
 ## Reference: How Work Gets Done
 
@@ -52,6 +52,8 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 1. **Write the script.** Parameterize all decisions from `astra.yaml` as command-line arguments (underscore convention: `stellar_mass_cut` → `--stellar_mass_cut`).
    The script must contain real, functional logic that produces genuine results from actual input data. No `# TODO` stubs, no hardcoded dummy values standing in for computation, no `pass` in place of real logic, no synthetic/mock data generation when real data is specified. If you cannot implement the full logic (e.g., missing a library or unclear algorithm), document the blocker in the build plan and move on — do not ship a fake version.
 2. **Test locally:** `python scripts/<name>.py --decision1 value1 --decision2 value2` using values from `universes/{{UNIVERSE}}.yaml`.
+   Note: manual script runs may write to `results/` but do NOT register as materialized.
+   Only `prism run` creates the Dagster events that `prism status` recognizes.
 3. **Debug until it works.** Read tracebacks, check imports (`python -c "import module"`), verify decision parameter names match `astra.yaml`.
 4. **Commit** with a message describing what the script does.
 
@@ -84,7 +86,7 @@ Do not wait until context feels tight. Exit early and often — the next iterati
 
 **Trust the spec.** `astra.yaml` is the source of truth. Don't ask permission, don't second-guess decisions. Build what it says.
 
-**Update the plan.** After completing work, edit `plans/build-plan-{{UNIVERSE}}.md` to cross off completed items and add notes about what you learned.
+**Update the plan.** After completing work, edit `.prism/plans/build-plan-{{UNIVERSE}}.md` to cross off completed items and add notes about what you learned.
 
 **Document blockers.** If you hit something you can't resolve (missing data, ambiguous spec, external dependency), add it to the Open Questions section in `CLAUDE.md` and move on to other work.
 

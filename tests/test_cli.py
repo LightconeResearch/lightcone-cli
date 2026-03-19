@@ -35,6 +35,7 @@ class TestInitCommand:
         assert (project_dir / "universes" / "baseline.yaml").exists()
         assert (project_dir / "scripts").is_dir()
         assert (project_dir / "results").is_dir()
+        assert (project_dir / ".prism").is_dir()
 
     def test_init_astra_yaml_content(self, runner: CliRunner, tmp_path: Path):
         """Test that the generated astra.yaml has the expected content."""
@@ -110,7 +111,7 @@ class TestInitCommand:
         assert (project_dir / "astra.yaml").exists()
 
     def test_init_creates_dagster_yaml(self, runner: CliRunner, tmp_path: Path):
-        """Test that init creates dagster.yaml."""
+        """Test that init creates .prism/dagster.yaml."""
         project_dir = tmp_path / "dagster-test"
         result = runner.invoke(
             main,
@@ -118,10 +119,10 @@ class TestInitCommand:
              "--permissions", "recommended"],
         )
         assert result.exit_code == 0
-        assert (project_dir / "dagster.yaml").exists()
+        assert (project_dir / ".prism" / "dagster.yaml").exists()
 
     def test_init_with_target_creates_prism_yaml(self, runner: CliRunner, tmp_path: Path):
-        """Test that --target creates prism.yaml with a flat target key."""
+        """Test that --target creates .prism/prism.yaml with a flat target key."""
         project_dir = tmp_path / "target-test"
         with patch("prism.dagster.targets.load_target", return_value={"site": "perlmutter"}):
             result = runner.invoke(
@@ -131,14 +132,14 @@ class TestInitCommand:
                  "--permissions", "recommended"],
             )
         assert result.exit_code == 0
-        assert (project_dir / "prism.yaml").exists()
+        assert (project_dir / ".prism" / "prism.yaml").exists()
 
         import yaml
-        config = yaml.safe_load((project_dir / "prism.yaml").read_text())
+        config = yaml.safe_load((project_dir / ".prism" / "prism.yaml").read_text())
         assert config["target"] == "perlmutter-gpu"
 
     def test_init_without_target_uses_default(self, runner: CliRunner, tmp_path: Path):
-        """Test that without --target, prism.yaml uses default target from user config."""
+        """Test that without --target, .prism/prism.yaml uses default target from user config."""
         project_dir = tmp_path / "no-target-test"
         result = runner.invoke(
             main,
@@ -146,11 +147,11 @@ class TestInitCommand:
              "--permissions", "recommended"],
         )
         assert result.exit_code == 0
-        assert (project_dir / "prism.yaml").exists()
+        assert (project_dir / ".prism" / "prism.yaml").exists()
 
         import yaml
         prism_cfg = yaml.safe_load(
-            (project_dir / "prism.yaml").read_text()
+            (project_dir / ".prism" / "prism.yaml").read_text()
         )
         # conftest sets default_target: fake
         assert prism_cfg["target"] == "fake"
@@ -509,7 +510,8 @@ class TestTargetCommand:
     def test_target_shows_current(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import yaml
-        (tmp_path / "prism.yaml").write_text(yaml.dump({"target": "perlmutter-gpu"}))
+        (tmp_path / ".prism").mkdir()
+        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({"target": "perlmutter-gpu"}))
         with patch("prism.dagster.targets.load_target", return_value={
             "backend": "slurm", "connection": {"hostname": "perlmutter.nersc.gov"},
         }):
@@ -520,18 +522,20 @@ class TestTargetCommand:
     def test_target_set(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import yaml
-        (tmp_path / "prism.yaml").write_text(yaml.dump({"target": "local"}))
+        (tmp_path / ".prism").mkdir()
+        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({"target": "local"}))
         with patch("prism.dagster.targets.load_target", return_value={"backend": "slurm"}):
             result = runner.invoke(main, ["target", "--set", "perlmutter-gpu"])
         assert result.exit_code == 0
         assert "perlmutter-gpu" in result.output
-        config = yaml.safe_load((tmp_path / "prism.yaml").read_text())
+        config = yaml.safe_load((tmp_path / ".prism" / "prism.yaml").read_text())
         assert config["target"] == "perlmutter-gpu"
 
     def test_target_set_nonexistent(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import yaml
-        (tmp_path / "prism.yaml").write_text(yaml.dump({"target": "local"}))
+        (tmp_path / ".prism").mkdir()
+        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({"target": "local"}))
         with patch("prism.dagster.targets.load_target", return_value=None):
             with patch("prism.dagster.targets.list_targets", return_value=["local"]):
                 result = runner.invoke(main, ["target", "--set", "nonexistent"])
@@ -593,14 +597,14 @@ class TestTargetResolution:
             "decisions": [],
         }, sort_keys=False))
 
-        # Create prism.yaml with a local target
-        (tmp_path / "prism.yaml").write_text(yaml.dump({
+        # Create .prism/ with prism.yaml and dagster.yaml
+        (tmp_path / ".prism").mkdir()
+        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({
             "target": "local",
         }, sort_keys=False))
 
-        # Create dagster.yaml
         (tmp_path / "results").mkdir()
-        (tmp_path / "dagster.yaml").write_text(yaml.dump({
+        (tmp_path / ".prism" / "dagster.yaml").write_text(yaml.dump({
             "storage": {"sqlite": {"base_dir": str(tmp_path / "results" / ".dagster")}}
         }, sort_keys=False))
 
@@ -621,12 +625,13 @@ class TestTargetResolution:
             "decisions": [],
         }, sort_keys=False))
 
-        (tmp_path / "prism.yaml").write_text(yaml.dump({
+        (tmp_path / ".prism").mkdir()
+        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({
             "target": "local",
         }, sort_keys=False))
 
         (tmp_path / "results").mkdir()
-        (tmp_path / "dagster.yaml").write_text(yaml.dump({
+        (tmp_path / ".prism" / "dagster.yaml").write_text(yaml.dump({
             "storage": {"sqlite": {"base_dir": str(tmp_path / "results" / ".dagster")}}
         }, sort_keys=False))
 

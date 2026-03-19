@@ -70,7 +70,10 @@ def build_asset_definitions(
     # Collect external inputs (inputs with filesystem source paths)
     external = get_external_inputs(spec)
     asset_specs = [
-        dg.AssetSpec(inp_id, metadata={"source": source, "external": True})
+        dg.AssetSpec(
+            key=dg.AssetKey([universe_id, inp_id]),
+            metadata={"source": source, "external": True},
+        )
         for inp_id, source in external.items()
     ]
 
@@ -138,7 +141,8 @@ def _build_single_asset(
 
     @dg.asset(
         name=output_id,
-        deps=[dg.AssetKey(i) for i in input_ids],
+        key_prefix=[universe_id],
+        deps=[dg.AssetKey([universe_id, i]) for i in input_ids],
         metadata={
             "command": command,
             "container": container or "default",
