@@ -43,13 +43,14 @@ decisions: {}
 
 class TestIntegration:
     def test_init_creates_dagster_yaml(self, project_dir):
-        assert (project_dir / "dagster.yaml").exists()
+        assert (project_dir / ".prism" / "dagster.yaml").exists()
 
     def test_init_creates_project_structure(self, project_dir):
         assert (project_dir / "astra.yaml").exists()
         assert (project_dir / "universes").is_dir()
         assert (project_dir / "results").is_dir()
         assert (project_dir / "scripts").is_dir()
+        assert (project_dir / ".prism").is_dir()
 
     def test_init_creates_containerfile(self, tmp_path, runner):
         project = tmp_path / "container-project"

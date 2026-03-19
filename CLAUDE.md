@@ -67,7 +67,7 @@ astra.yaml → build_definitions() → Dagster assets → ASTRAContainerRunner �
 - Per-recipe container specs override analysis-level defaults
 
 **Config resolution (used everywhere):**
-- Target: `--target` flag > `prism.yaml` > `~/.prism/config.yaml` > `"local"`
+- Target: `--target` flag > `.prism/prism.yaml` > `~/.prism/config.yaml` > `"local"`
 - Permission tier: `--permissions` flag > saved default in `~/.prism/config.yaml` > interactive prompt
 - Most commands require `astra.yaml` in cwd; exceptions: `setup`, `target`
 

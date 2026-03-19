@@ -107,8 +107,8 @@ if [[ "$MODE" == "activate" ]]; then
     fi
 
     # Check build plan exists
-    if [[ ! -f "plans/build-plan-${UNIVERSE}.md" ]]; then
-        echo "Warning: No build plan found at plans/build-plan-${UNIVERSE}.md"
+    if [[ ! -f ".prism/plans/build-plan-${UNIVERSE}.md" ]]; then
+        echo "Warning: No build plan found at .prism/plans/build-plan-${UNIVERSE}.md"
         echo "The loop will proceed without a plan."
     fi
 
