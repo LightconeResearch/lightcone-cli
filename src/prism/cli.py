@@ -273,6 +273,22 @@ def init(
     if target:
         console.print(f"  Target: [cyan]{target}[/cyan]")
 
+    # Container runtime detection and guidance
+    from prism.container import detect_container_runtime
+    rt = detect_container_runtime()
+    if rt:
+        console.print(f"  Container runtime: [cyan]{rt}[/cyan]")
+    else:
+        console.print(
+            "\n[yellow]Note:[/yellow] No container runtime (Docker or Podman) detected.\n"
+            "  Recipes will run in the project venv "
+            "(dependencies from requirements.txt).\n"
+            "  For full container isolation, install one of:\n"
+            "    Podman: [cyan]https://podman.io/docs/installation[/cyan]"
+            "  (recommended — rootless, no daemon)\n"
+            "    Docker: [cyan]https://docs.docker.com/engine/install/[/cyan]"
+        )
+
     console.print(
         "\n[bold yellow]Note:[/bold yellow] Telemetry is enabled by default. "
         "Claude Code sessions in this project will be traced to Langfuse.\n"
@@ -1134,7 +1150,7 @@ def run(
 @click.option("--force", is_flag=True, help="Rebuild images even if they already exist")
 @click.option(
     "--runtime", "-r",
-    type=click.Choice(["docker", "podman-hpc"]),
+    type=click.Choice(["docker", "podman", "podman-hpc"]),
     default=None,
     help="Container runtime to build with (auto-detected from target config)",
 )
@@ -1180,7 +1196,14 @@ def build(force: bool, runtime: str | None) -> None:
             if target_config:
                 runtime = target_config.get("container_runtime", "docker")
         if runtime is None:
-            runtime = "docker"
+            from prism.container import detect_container_runtime
+            runtime = detect_container_runtime()
+            if runtime is None:
+                console.print(
+                    "[red]Error:[/red] No container runtime found (Docker or Podman).\n"
+                    "  Install Docker or Podman to build container images."
+                )
+                raise SystemExit(1)
 
     spec = load_yaml(project_path / "astra.yaml")
     project_name = spec.get("name") or project_path.name
@@ -1225,7 +1248,7 @@ def build(force: bool, runtime: str | None) -> None:
                 )
             else:
                 tag = resolve_container_spec(
-                    bspec, project_path, project_name, force=force,
+                    bspec, project_path, project_name, force=force, runtime=runtime,
                 )
             console.print(f"  [green]ready[/green]  {label} -> {tag}")
         except ContainerBuildError as e:
@@ -1302,10 +1325,11 @@ def status(universe: str | None) -> None:
     console.print(f"  Materialized: {materialized}/{total_cells} runs")
 
     # Show container status
-    from prism.container import get_container_status
+    from prism.container import detect_container_runtime, get_container_status
 
     raw_container = spec.get("container")
-    cstatus = get_container_status(raw_container, project_path, name)
+    rt = detect_container_runtime() or "docker"
+    cstatus = get_container_status(raw_container, project_path, name, runtime=rt)
     if cstatus.type == "prebuilt":
         console.print(f"  Container: prebuilt [cyan]{cstatus.image}[/cyan]")
     elif cstatus.type == "build":

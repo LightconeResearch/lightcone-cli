@@ -135,13 +135,22 @@ class TestIntegration:
         path = mgr.get_output_path("cleaned", "baseline")
         assert path == project_dir / "results" / "baseline" / "cleaned"
 
-    def test_runner_executes_locally(self, project_dir):
-        """Runner should fall back to local execution without Docker."""
+    def test_runner_executes_in_venv(self, project_dir):
+        """Runner should fall back to venv execution without a container runtime."""
+        import subprocess
+        import sys
+
         from prism.dagster.runner import ASTRAContainerRunner
+
+        # Create a minimal .venv so the venv backend can use it
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(project_dir / ".venv")],
+            check=True, capture_output=True,
+        )
 
         runner = ASTRAContainerRunner(
             project_root=str(project_dir),
-            backend="docker",
+            backend="venv",
         )
         result = runner.execute(
             command="python -c 'print(1)'",
@@ -149,4 +158,4 @@ class TestIntegration:
             universe_id="baseline",
         )
         assert result.exit_code == 0
-        assert result.metadata.get("backend") == "local"
+        assert result.metadata.get("backend") == "venv"

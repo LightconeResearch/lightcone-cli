@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +28,21 @@ DEPENDENCY_FILES = (
     "poetry.lock",
     "Pipfile.lock",
 )
+
+
+def detect_container_runtime() -> str | None:
+    """Detect which container runtime is available locally.
+
+    Checks for Docker first, then Podman.  Returns the binary name
+    (``"docker"`` or ``"podman"``) or ``None`` if neither is found.
+
+    This does **not** check for ``podman-hpc``, which is only relevant
+    for SLURM targets and handled separately.
+    """
+    for runtime in ("docker", "podman"):
+        if shutil.which(runtime) is not None:
+            return runtime
+    return None
 
 
 class ContainerBuildError(Exception):
@@ -54,6 +70,14 @@ def find_dependency_files(project_path: Path) -> list[Path]:
     return sorted(found)
 
 
+def hash_file_contents(files: list[Path]) -> str:
+    """Return a SHA-256 hex digest of the concatenated contents of *files*."""
+    h = hashlib.sha256()
+    for f in files:
+        h.update(f.read_bytes())
+    return h.hexdigest()
+
+
 def compute_image_tag(
     project_name: str,
     containerfile: Path,
@@ -65,27 +89,22 @@ def compute_image_tag(
     the Containerfile contents plus any dependency files found in the
     project root.
     """
-    h = hashlib.sha256()
-    h.update(containerfile.read_bytes())
-    for dep in find_dependency_files(project_path):
-        h.update(dep.read_bytes())
-    digest = h.hexdigest()[:12]
+    digest = hash_file_contents([containerfile, *find_dependency_files(project_path)])[:12]
     # Sanitise project name for use as a Docker tag component.
     safe_name = project_name.lower().replace(" ", "-")
     return f"prism-{safe_name}-{digest}"
 
 
-def image_exists_locally(tag: str) -> bool:
-    """Check whether *tag* exists in the local Docker image store."""
+def image_exists_locally(tag: str, runtime: str = "docker") -> bool:
+    """Check whether *tag* exists in the local container image store."""
     try:
         result = subprocess.run(
-            ["docker", "image", "inspect", tag],
+            [runtime, "image", "inspect", tag],
             capture_output=True,
             check=False,
         )
         return result.returncode == 0
     except FileNotFoundError:
-        # Docker CLI not installed.
         return False
 
 
@@ -94,13 +113,14 @@ def build_image(
     containerfile: Path,
     context: Path,
     build_args: dict[str, str] | None = None,
+    runtime: str = "docker",
 ) -> ContainerBuildResult:
-    """Build a container image with ``docker build``.
+    """Build a container image with the specified runtime (Docker or Podman).
 
     Raises :class:`ContainerBuildError` on failure.
     """
     cmd: list[str] = [
-        "docker", "build",
+        runtime, "build",
         "-t", tag,
         "-f", str(containerfile),
     ]
@@ -112,13 +132,13 @@ def build_image(
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     except FileNotFoundError:
         raise ContainerBuildError(
-            "Docker is not installed or not on PATH. "
-            "Install Docker to build container images."
+            f"{runtime} is not installed or not on PATH. "
+            f"Install {runtime} to build container images."
         )
 
     if proc.returncode != 0:
         raise ContainerBuildError(
-            f"docker build failed (exit code {proc.returncode}):\n{proc.stderr}"
+            f"{runtime} build failed (exit code {proc.returncode}):\n{proc.stderr}"
         )
 
     return ContainerBuildResult(
@@ -137,6 +157,7 @@ def resolve_container_spec(
     *,
     force: bool = False,
     dry_run: bool = False,
+    runtime: str = "docker",
 ) -> str | None:
     """Resolve a container spec to an image tag string.
 
@@ -170,7 +191,7 @@ def resolve_container_spec(
     if dry_run:
         return tag
 
-    if not force and image_exists_locally(tag):
+    if not force and image_exists_locally(tag, runtime=runtime):
         logger.info("Image %s already exists, skipping build.", tag)
         return tag
 
@@ -179,7 +200,7 @@ def resolve_container_spec(
         context_dir = project_path / spec["context"]
 
     logger.info("Building image %s from %s ...", tag, containerfile)
-    build_image(tag, containerfile, context_dir, build_args=spec.get("args"))
+    build_image(tag, containerfile, context_dir, build_args=spec.get("args"), runtime=runtime)
     return tag
 
 
@@ -335,6 +356,7 @@ def get_container_status(
     spec: str | dict[str, Any] | None,
     project_path: Path,
     project_name: str,
+    runtime: str = "docker",
 ) -> ContainerStatus:
     """Return status information for a container spec without building."""
     if spec is None:
@@ -356,7 +378,7 @@ def get_container_status(
         )
 
     tag = compute_image_tag(project_name, containerfile, project_path)
-    exists = image_exists_locally(tag)
+    exists = image_exists_locally(tag, runtime=runtime)
     return ContainerStatus(
         type="build",
         image=tag,

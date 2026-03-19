@@ -29,19 +29,26 @@ def _resolve_container(
     project_path: Path,
     project_name: str,
     container_runtime: str | None = None,
+    local_runtime: str | None = None,
 ) -> str | None:
     """Resolve a container spec, dispatching to the right builder.
 
     When *container_runtime* is set (i.e. we are targeting SLURM), uses
     ``resolve_container_for_slurm`` which handles podman-hpc build/migrate
-    and podman-hpc migrate automatically.  Otherwise falls back to the
-    default Docker-based ``resolve_container_spec``.
+    and podman-hpc migrate automatically.  When *local_runtime* is set
+    (Docker or Podman detected locally), uses ``resolve_container_spec``
+    with that runtime.  Returns ``None`` if no runtime is available.
     """
     if container_runtime:
         return resolve_container_for_slurm(
             spec, project_path, project_name, container_runtime,
         )
-    return resolve_container_spec(spec, project_path, project_name)
+    if local_runtime:
+        return resolve_container_spec(
+            spec, project_path, project_name, runtime=local_runtime,
+        )
+    # No container runtime available — skip building
+    return None
 
 
 def build_asset_definitions(
@@ -52,17 +59,18 @@ def build_asset_definitions(
     project_name: str | None = None,
     no_build: bool = False,
     container_runtime: str | None = None,
+    local_runtime: str | None = None,
 ) -> list[dg.AssetsDefinition | dg.AssetSpec]:
     """Generate one @asset per output with a recipe."""
     outputs = get_outputs(spec)
 
     # Resolve analysis-level container spec once.
     raw_default = spec.get("container")
-    if raw_default is not None and not no_build:
+    if raw_default is not None and not no_build and (container_runtime or local_runtime):
         _name = project_name or spec.get("name") or "project"
         _path = project_path or Path.cwd()
         default_container = _resolve_container(
-            raw_default, _path, _name, container_runtime,
+            raw_default, _path, _name, container_runtime, local_runtime,
         )
     else:
         default_container = raw_default if isinstance(raw_default, str) else None
@@ -88,7 +96,7 @@ def build_asset_definitions(
                 output_id, recipe, runner, universe_id, project_path,
                 project_name=project_name, default_container=default_container,
                 no_build=no_build, container_runtime=container_runtime,
-                external_inputs=external,
+                local_runtime=local_runtime, external_inputs=external,
             )
         )
 
@@ -118,6 +126,7 @@ def _build_single_asset(
     default_container: str | None = None,
     no_build: bool = False,
     container_runtime: str | None = None,
+    local_runtime: str | None = None,
     external_inputs: dict[str, str] | None = None,
 ) -> dg.AssetsDefinition:
     """Build a single Dagster asset from an output recipe."""
@@ -129,10 +138,12 @@ def _build_single_asset(
     } or None
     raw_container = recipe.get("container")
     # Resolve per-recipe container spec; fall back to analysis-level default.
-    if raw_container is not None and not no_build:
+    if raw_container is not None and not no_build and (container_runtime or local_runtime):
         _name = project_name or "project"
         _path = project_path or Path.cwd()
-        container = _resolve_container(raw_container, _path, _name, container_runtime)
+        container = _resolve_container(
+            raw_container, _path, _name, container_runtime, local_runtime,
+        )
     elif raw_container is not None and isinstance(raw_container, str):
         container = raw_container
     else:
@@ -197,6 +208,7 @@ def build_definitions(
     # Build runner config from target
     runner_config = None
     container_runtime: str | None = None
+    local_runtime: str | None = None
     backend = "docker"
 
     if target_config:
@@ -212,14 +224,21 @@ def build_definitions(
                 scheduler[key] = target_config[key]
         if scheduler:
             runner_config["scheduler"] = scheduler
+    else:
+        # No target config → local target.  Detect available container runtime.
+        from prism.container import detect_container_runtime
+        local_runtime = detect_container_runtime()
+        backend = "docker" if local_runtime else "venv"
 
     # Resolve analysis-level container spec to a string for the runner.
     # For SLURM targets this triggers podman-hpc build/migrate or
-    # podman-hpc migrate automatically.
+    # podman-hpc migrate automatically.  Skipped entirely when no
+    # container runtime is available.
     raw_container = spec.get("container")
-    if not no_build:
+    if not no_build and (container_runtime or local_runtime):
         default_container = _resolve_container(
-            raw_container, project_path, project_name, container_runtime,
+            raw_container, project_path, project_name,
+            container_runtime, local_runtime,
         )
     else:
         default_container = raw_container if isinstance(raw_container, str) else None
@@ -235,14 +254,15 @@ def build_definitions(
     else:
         runner = ASTRAContainerRunner(
             project_root=str(project_path),
-            backend="docker",
+            backend=backend,
             default_container=default_container,
+            container_runtime=local_runtime,
         )
 
     assets = build_asset_definitions(
         spec, runner=runner, universe_id=universe_id, project_path=project_path,
         project_name=project_name, no_build=no_build,
-        container_runtime=container_runtime,
+        container_runtime=container_runtime, local_runtime=local_runtime,
     )
 
     return dg.Definitions(assets=assets)

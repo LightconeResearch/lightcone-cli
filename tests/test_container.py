@@ -11,6 +11,7 @@ from prism.container import (
     build_image,
     build_image_podman_hpc,
     compute_image_tag,
+    detect_container_runtime,
     find_dependency_files,
     get_container_status,
     image_exists_locally,
@@ -133,11 +134,11 @@ class TestBuildImage:
             returncode=1, stdout="", stderr="some error"
         )
         with pytest.raises(ContainerBuildError, match="docker build failed"):
-            build_image("prism-test-abc123", project / "Containerfile", project)
+            build_image("prism-test-abc123", project / "Containerfile", project, runtime="docker")
 
     @patch("prism.container.subprocess.run", side_effect=FileNotFoundError)
     def test_docker_not_installed(self, mock_run, project):
-        with pytest.raises(ContainerBuildError, match="Docker is not installed"):
+        with pytest.raises(ContainerBuildError, match="docker is not installed"):
             build_image("prism-test-abc123", project / "Containerfile", project)
 
     @patch("prism.container.subprocess.run")
@@ -325,3 +326,65 @@ class TestResolveContainerForSlurm:
         spec = {"build": "NoSuchFile"}
         with pytest.raises(ContainerBuildError, match="Containerfile not found"):
             resolve_container_for_slurm(spec, tmp_path, "test", "podman-hpc")
+
+
+class TestDetectContainerRuntime:
+    @patch("prism.container.shutil.which")
+    def test_docker_found(self, mock_which):
+        mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
+        assert detect_container_runtime() == "docker"
+
+    @patch("prism.container.shutil.which")
+    def test_podman_only(self, mock_which):
+        mock_which.side_effect = lambda name: "/usr/bin/podman" if name == "podman" else None
+        assert detect_container_runtime() == "podman"
+
+    @patch("prism.container.shutil.which")
+    def test_docker_preferred_over_podman(self, mock_which):
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        assert detect_container_runtime() == "docker"
+
+    @patch("prism.container.shutil.which", return_value=None)
+    def test_neither_found(self, mock_which):
+        assert detect_container_runtime() is None
+
+
+class TestPodmanSupport:
+    @pytest.fixture()
+    def project(self, tmp_path):
+        (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
+        (tmp_path / "requirements.txt").write_text("numpy\n")
+        return tmp_path
+
+    @patch("prism.container.subprocess.run")
+    def test_image_exists_with_podman(self, mock_run, project):
+        mock_run.return_value = MagicMock(returncode=0)
+        assert image_exists_locally("some-tag", runtime="podman") is True
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0][0] == "podman"
+
+    @patch("prism.container.subprocess.run")
+    def test_build_image_with_podman(self, mock_run, project):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        result = build_image(
+            "test-tag", project / "Containerfile", project, runtime="podman",
+        )
+        assert result.tag == "test-tag"
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "podman"
+        assert cmd[1] == "build"
+
+    @patch("prism.container.subprocess.run", side_effect=FileNotFoundError)
+    def test_build_image_podman_not_installed(self, mock_run, project):
+        with pytest.raises(ContainerBuildError, match="podman is not installed"):
+            build_image("test-tag", project / "Containerfile", project, runtime="podman")
+
+    @patch("prism.container.subprocess.run")
+    def test_resolve_container_spec_with_podman(self, mock_run, project):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        spec = {"build": "Containerfile"}
+        tag = resolve_container_spec(spec, project, "test", runtime="podman")
+        assert tag is not None
+        # First call should be image inspect, second should be build
+        calls = mock_run.call_args_list
+        assert calls[0][0][0][0] == "podman"
