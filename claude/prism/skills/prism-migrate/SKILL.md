@@ -61,7 +61,7 @@ Use `AskUserQuestion` to ask the user to review the spec — they can open `astr
 
 ## Phase 2: Implement
 
-Parameterize the code so decisions can be varied across universes. The goal is minimal changes to user code. Use your best judgement for the approach — the options below are not exhaustive:
+Parameterize the code so decisions can be varied across universes. The goal is minimal changes to user code. **Edit files where they are** — do not move scripts into `scripts/` or create copies. Recipes should point to the original file paths (e.g., `command: python src/train.py`). Only create new wrapper scripts when the original can't be directly parameterized. Use your best judgement for the approach — the options below are not exhaustive:
 
 **For scripts with hardcoded values:** Add argparse (or extend existing argument parsing) and replace hardcoded values with the parsed args. This is the simplest case.
 
@@ -93,6 +93,7 @@ Then validate: `astra validate astra.yaml`. Present summary to user.
 ## Rules
 
 - **Minimal changes.** Do not refactor, rename, reorganize, or "improve" existing code.
+- **Edit in place.** Modify scripts where they are. Do not move files into `scripts/` or create copies. Only create new files for notebooks and config-file wrappers.
 - **Don't guess.** Read every script before making claims about what it does.
 - **Filter decisions aggressively.** Most hardcoded values are implementation details, not analytical choices.
 - **Preserve behavior.** The baseline universe with default values must reproduce the original behavior exactly.
