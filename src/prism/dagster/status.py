@@ -20,13 +20,17 @@ def _get_dagster_instance(project_path: Path) -> dg.DagsterInstance | None:
     Temporarily changes to project_path so that relative paths in dagster.yaml
     (e.g. ``base_dir: results/.dagster``) resolve correctly.
     """
-    dagster_yaml = project_path / "dagster.yaml"
+    # Check .prism/ first, then root for backwards compat
+    dagster_yaml = project_path / ".prism" / "dagster.yaml"
+    if not dagster_yaml.exists():
+        dagster_yaml = project_path / "dagster.yaml"
     if not dagster_yaml.exists():
         return None
+    config_dir = dagster_yaml.parent
     old_cwd = os.getcwd()
     try:
         os.chdir(project_path)
-        return dg.DagsterInstance.from_config(str(project_path))
+        return dg.DagsterInstance.from_config(str(config_dir))
     except Exception:
         logger.warning("Failed to load Dagster instance from %s", project_path, exc_info=True)
         return None

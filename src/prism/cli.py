@@ -16,7 +16,7 @@ from rich.console import Console
 
 console = Console()
 
-PERMISSION_TIERS = {
+PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
     "yolo": {
         "allow": [
             "Bash(*)",
@@ -31,22 +31,25 @@ PERMISSION_TIERS = {
     "recommended": {
         "allow": [
             "Read",
-            "Bash(astra:*)",
-            "Bash(prism:*)",
-            "Bash(python:*)",
-            "Bash(pip:*)",
-            "Bash(echo:*)",
-            "Bash(git status:*)",
-            "Bash(git log:*)",
-            "Bash(git diff:*)",
-            "Bash(git add:*)",
-            "Bash(git commit:*)",
-            "Bash(git branch:*)",
-            "Bash(git checkout:*)",
-            "Bash(git switch:*)",
             "Edit",
+            "Write",
+            "Bash(*)",
             "WebSearch",
             "WebFetch",
+        ],
+        "deny": [
+            # Sensitive dotfiles — don't silently modify credentials/keys
+            "Edit(~/.ssh/**)",
+            "Edit(~/.aws/**)",
+            "Edit(~/.gnupg/**)",
+            # Common HPC scratch filesystems
+            "Edit(//scratch/**)",
+            "Edit(//pscratch/**)",
+            # Dangerous bash — require explicit confirmation
+            "Bash(sudo *)",
+            "Bash(rm -rf /*)",
+            "Bash(git push *)",
+            "Bash(git push)",
         ],
     },
     "minimal": {
@@ -108,6 +111,42 @@ def main(ctx: click.Context) -> None:
 
 
 # =============================================================================
+# Path helpers
+# =============================================================================
+
+
+def _find_prism_yaml(project_path: Path) -> Path | None:
+    """Find prism.yaml, checking .prism/ first then root for backwards compat."""
+    candidate = project_path / ".prism" / "prism.yaml"
+    if candidate.exists():
+        return candidate
+    candidate = project_path / "prism.yaml"
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def _find_dagster_yaml(project_path: Path) -> Path | None:
+    """Find dagster.yaml, checking .prism/ first then root for backwards compat."""
+    candidate = project_path / ".prism" / "dagster.yaml"
+    if candidate.exists():
+        return candidate
+    candidate = project_path / "dagster.yaml"
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def _load_prism_config(project_path: Path) -> dict:
+    """Load prism.yaml config, returning empty dict if not found."""
+    path = _find_prism_yaml(project_path)
+    if path is None:
+        return {}
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+# =============================================================================
 # Init command
 # =============================================================================
 
@@ -162,12 +201,12 @@ def init(
         "universes",
         "scripts",
         "results",
-        "plans",
+        ".prism",
     ]
     for subdir in subdirs:
         (directory / subdir).mkdir(parents=True, exist_ok=True)
 
-    # Create dagster.yaml for Dagster instance configuration
+    # Create dagster.yaml inside .prism/
     dagster_yaml_content = {
         "storage": {
             "sqlite": {
@@ -175,7 +214,7 @@ def init(
             },
         },
     }
-    (directory / "dagster.yaml").write_text(
+    (directory / ".prism" / "dagster.yaml").write_text(
         yaml.dump(dagster_yaml_content, default_flow_style=False, sort_keys=False)
     )
 
@@ -197,16 +236,16 @@ __pycache__/
     # Create CLAUDE.md with project conventions
     _create_claude_md(directory)
 
-    # Resolve permission tier and create Claude Code settings
-    tier = _resolve_permission_tier(permissions)
-    _create_claude_settings(directory, tier)
-
-    # Write prism.yaml project config — use --target flag, or fall back to
-    # the user's default target from ~/.prism/config.yaml
+    # Resolve target and permission tier, then create Claude Code settings
     effective_target = target
     if not effective_target:
         from prism.dagster.targets import load_user_config
         effective_target = load_user_config().get("default_target", "local")
+
+    tier = _resolve_permission_tier(permissions)
+    _create_claude_settings(directory, tier, target=effective_target)
+
+    # Write prism.yaml project config
     _create_prism_config(directory, effective_target)
 
     # If user explicitly passed --target, ensure it's been configured
@@ -326,44 +365,6 @@ decisions:
 """
     (directory / "universes" / "baseline.yaml").write_text(baseline_universe)
 
-    # Create README
-    _create_readme(directory, name)
-
-
-def _create_readme(directory: Path, name: str) -> None:
-    """Create a README.md for the project."""
-    readme = f"""# {name}
-
-An ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built with Prism.
-
-## Quick Start
-
-```bash
-# Open in Claude Code
-claude
-
-# Scope the analysis
-/prism-new
-
-# Then start building (Claude reads CLAUDE.md for conventions)
-```
-
-## Structure
-
-- `astra.yaml` — Analysis specification (source of truth)
-- `prism.yaml` — Prism config (compute profiles)
-- `CLAUDE.md` — Build conventions and project context for Claude Code
-- `universes/` — Decision selections (one YAML per universe)
-- `scripts/` — Implementation scripts
-- `results/` — Execution outputs (gitignored)
-
-## Documentation
-
-See [ASTRA documentation](https://github.com/LightconeResearch/ASTRA) for the specification.
-See [Prism documentation](https://github.com/LightconeResearch/Prism) for the agentic layer.
-"""
-    (directory / "README.md").write_text(readme)
-
 
 def _create_claude_md(directory: Path) -> None:
     """Create CLAUDE.md from the template in the plugin source."""
@@ -392,14 +393,16 @@ def _create_claude_md(directory: Path) -> None:
 
 
 def _create_prism_config(directory: Path, target_name: str) -> None:
-    """Create prism.yaml with target reference."""
+    """Create .prism/prism.yaml with target reference."""
     config = {
         "target": target_name,
     }
-    (directory / "prism.yaml").write_text(
+    prism_dir = directory / ".prism"
+    prism_dir.mkdir(parents=True, exist_ok=True)
+    (prism_dir / "prism.yaml").write_text(
         yaml.dump(config, default_flow_style=False, sort_keys=False)
     )
-    console.print(f"[green]✓[/green] Created prism.yaml (target: {target_name})")
+    console.print(f"[green]✓[/green] Created .prism/prism.yaml (target: {target_name})")
 
 
 
@@ -411,8 +414,8 @@ def _prompt_permission_tier() -> str:
     """
     console.print("\n[bold]Claude Code permission level[/bold]")
     console.print("  Controls what Claude can do without asking.\n")
-    console.print("    1. yolo — Everything auto-allowed. No prompts.")
-    console.print("    2. recommended — Prism workflow auto-allowed. Prompts for the rest.")
+    console.print("    1. yolo — Everything including MCP. No guardrails.")
+    console.print("    2. recommended — Full access with guardrails (no sudo/push/scratch).")
     console.print("    3. minimal — Only file reading. Everything else prompts.")
 
     choice_map = {"1": "yolo", "2": "recommended", "3": "minimal"}
@@ -522,8 +525,14 @@ def _update_extractor_agent_model(agents_dir: Path) -> None:
     extractor_path.write_text(content)
 
 
-def _create_claude_settings(directory: Path, tier: str = "recommended") -> None:
-    """Create Claude Code settings with Prism skills and agents."""
+def _create_claude_settings(
+    directory: Path, tier: str = "recommended", target: str = "local",
+) -> None:
+    """Create Claude Code settings with Prism skills and agents.
+
+    If a non-local target maps to a known HPC site, site-specific deny rules
+    (e.g. scratch filesystem paths) are merged into the permissions.
+    """
     claude_dir = directory / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
 
@@ -575,7 +584,19 @@ def _create_claude_settings(directory: Path, tier: str = "recommended") -> None:
         shutil.copytree(agents_src, agents_dst)
         _update_extractor_agent_model(agents_dst)
 
-    permissions = PERMISSION_TIERS[tier]
+    # Build permissions: start from tier, then merge site-specific deny rules
+    permissions: dict[str, list[str]] = {
+        k: list(v) for k, v in PERMISSION_TIERS[tier].items()
+    }
+    if target != "local" and "deny" in permissions:
+        from prism.dagster.site_registry import detect_site, get_site_scratch_deny_rules
+        site_key = detect_site(target)
+        if site_key:
+            site_deny = get_site_scratch_deny_rules(site_key)
+            existing = set(permissions["deny"])
+            for rule in site_deny:
+                if rule not in existing:
+                    permissions["deny"].append(rule)
 
     # Build absolute paths for hook commands
     abs_hooks = str(directory.resolve() / ".claude" / "hooks")
@@ -855,14 +876,11 @@ def run(
         console.print("[red]Error:[/red] No astra.yaml found in current directory.")
         raise SystemExit(1)
 
-    # Resolve target: --target flag > prism.yaml > default from user config
+    # Resolve target: --target flag > .prism/prism.yaml > default from user config
     target_name = target
     if not target_name:
-        prism_yaml = project_path / "prism.yaml"
-        if prism_yaml.exists():
-            with open(prism_yaml) as f:
-                prism_data = yaml.safe_load(f) or {}
-            target_name = prism_data.get("target")
+        prism_data = _load_prism_config(project_path)
+        target_name = prism_data.get("target")
         if not target_name:
             from prism.dagster.targets import load_user_config
             target_name = load_user_config().get("default_target")
@@ -894,15 +912,18 @@ def run(
 
     # Ensure dagster.yaml exists so materialization events are persisted.
     # Without this, events are lost and prism status can't detect them.
-    dagster_yaml = project_path / "dagster.yaml"
-    if not dagster_yaml.exists():
+    dagster_yaml_path = _find_dagster_yaml(project_path)
+    if dagster_yaml_path is None:
+        prism_dir = project_path / ".prism"
+        prism_dir.mkdir(parents=True, exist_ok=True)
+        dagster_yaml_path = prism_dir / "dagster.yaml"
         dagster_yaml_content = {
             "storage": {"sqlite": {"base_dir": "results/.dagster"}},
         }
-        dagster_yaml.write_text(
+        dagster_yaml_path.write_text(
             yaml.dump(dagster_yaml_content, default_flow_style=False, sort_keys=False)
         )
-    instance = dg.DagsterInstance.from_config(str(project_path))
+    instance = dg.DagsterInstance.from_config(str(dagster_yaml_path.parent))
 
     # Execute
     try:
@@ -938,7 +959,7 @@ def build(force: bool, runtime: str | None) -> None:
     Containerfile or dependency files change.
 
     The container runtime is auto-detected from the project's target
-    config (prism.yaml → ~/.prism/targets/). Use --runtime to override.
+    config (.prism/prism.yaml → ~/.prism/targets/). Use --runtime to override.
 
     Examples:
         prism build                      # auto-detect runtime from target
@@ -962,12 +983,8 @@ def build(force: bool, runtime: str | None) -> None:
     # Resolve runtime from target config if not explicitly provided
     if runtime is None:
         from prism.dagster.targets import load_target, load_user_config
-        target_name = None
-        prism_yaml = project_path / "prism.yaml"
-        if prism_yaml.exists():
-            with open(prism_yaml) as f:
-                prism_data = yaml.safe_load(f) or {}
-            target_name = prism_data.get("target")
+        prism_data = _load_prism_config(project_path)
+        target_name = prism_data.get("target")
         if not target_name:
             target_name = load_user_config().get("default_target")
         if target_name and target_name != "local":
@@ -1161,7 +1178,9 @@ def dev(port: int, universe: str) -> None:
             f.write(defs_code)
             defs_file = f.name
 
-        env = {**os.environ, "DAGSTER_HOME": str(project_path)}
+        dagster_yaml_path = _find_dagster_yaml(project_path)
+        dagster_home = str(dagster_yaml_path.parent) if dagster_yaml_path else str(project_path)
+        env = {**os.environ, "DAGSTER_HOME": dagster_home}
         subprocess.run(
             ["dagster-webserver", "-f", defs_file, "-h", "0.0.0.0", "-p", str(port)],
             check=True,
@@ -1204,10 +1223,10 @@ def target(
     from prism.dagster.targets import list_targets, load_target
 
     if set_target:
-        # Update target key in prism.yaml
+        # Update target key in .prism/prism.yaml
         project_path = Path.cwd()
-        prism_yaml = project_path / "prism.yaml"
-        if not prism_yaml.exists():
+        prism_yaml = _find_prism_yaml(project_path)
+        if prism_yaml is None:
             console.print("[red]Error:[/red] No prism.yaml found. Run 'prism init' first.")
             raise SystemExit(1)
 
@@ -1258,8 +1277,8 @@ def target(
 
     # Default: show current project target
     project_path = Path.cwd()
-    prism_yaml = project_path / "prism.yaml"
-    if not prism_yaml.exists():
+    prism_yaml = _find_prism_yaml(project_path)
+    if prism_yaml is None:
         console.print("No prism.yaml found. Run [cyan]prism init[/cyan] first.")
         return
 
@@ -1575,7 +1594,7 @@ def _run_setup_wizard() -> list[Path]:
     console.print("\n[bold]Prism Setup — Target Configuration[/bold]")
     console.print(
         "  These settings are stored in [cyan]~/.prism/targets/[/cyan] and "
-        "referenced by projects via prism.yaml.\n"
+        "referenced by projects via .prism/prism.yaml.\n"
     )
 
     saved_paths: list[Path] = []
@@ -1786,7 +1805,7 @@ def setup(
     execution backends (SLURM). Creates one target per node type.
 
     Settings are stored at the user level (~/.prism/targets/) and
-    referenced by projects via prism.yaml.
+    referenced by projects via .prism/prism.yaml.
 
     Examples:
         prism setup                        # interactive wizard

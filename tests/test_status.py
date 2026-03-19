@@ -169,15 +169,17 @@ outputs:
             'id: alt\ndecisions: {}\n'
         )
 
-        # Create dagster.yaml — use absolute base_dir so it works regardless of CWD
+        # Create .prism/dagster.yaml — use absolute base_dir so it works regardless of CWD
+        prism_dir = tmp_path / ".prism"
+        prism_dir.mkdir(parents=True, exist_ok=True)
         dagster_dir = tmp_path / "results" / ".dagster"
         dagster_dir.mkdir(parents=True, exist_ok=True)
-        (tmp_path / "dagster.yaml").write_text(
+        (prism_dir / "dagster.yaml").write_text(
             f"storage:\n  sqlite:\n    base_dir: {dagster_dir}\n"
         )
         # chdir so DagsterInstance resolves paths correctly
         monkeypatch.chdir(tmp_path)
-        instance = dg.DagsterInstance.from_config(str(tmp_path))
+        instance = dg.DagsterInstance.from_config(str(prism_dir))
         materialize_via_dagster(instance, "baseline", "result")
 
         result = get_all_universe_status(tmp_path)
