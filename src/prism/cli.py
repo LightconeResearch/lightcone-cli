@@ -284,7 +284,7 @@ def init(
             "  Recipes will run in the project venv "
             "(dependencies from requirements.txt).\n"
             "  For full container isolation, install one of:\n"
-            "    Podman: [cyan]https://podman.io/docs/installation[/cyan]"
+            "    Podman: [cyan]https://podman.io/docs/installation[/cyan]\n"
             "  (recommended — rootless, no daemon)\n"
             "    Docker: [cyan]https://docs.docker.com/engine/install/[/cyan]"
         )

@@ -111,7 +111,11 @@ class ASTRAContainerRunner:
         if self.backend == "venv":
             return self._run_venv(full_command, output_id, universe_id)
 
-        # Container backend — try container runtime, fall back to venv
+        # Container backend — try container runtime, fall back to venv or local.
+        # Note: the explicit "local" backend (set via target config) skips dep
+        # installation and runs in the current Python env.  The implicit fallback
+        # here goes to _run_venv (with dep installation) when .venv is present,
+        # and only falls back to _run_local when .venv is absent.
         effective_container = container or self.default_container
         if effective_container:
             result = self._run_container(
@@ -123,7 +127,7 @@ class ASTRAContainerRunner:
             )
             if result.exit_code == 0:
                 return result
-            # Container failed — fall back to venv
+            # Container failed — fall back to venv (or local if venv is absent)
             logger.warning(
                 "%s execution failed for '%s' (exit code %d). "
                 "Falling back to venv execution.\n  stderr: %s",
@@ -131,7 +135,24 @@ class ASTRAContainerRunner:
                 result.metadata.get("stderr", "")[:200],
             )
 
-        return self._run_venv(
+        venv_python = self.project_root / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            return self._run_venv(
+                command=full_command,
+                output_id=output_id,
+                universe_id=universe_id,
+                warn=effective_container is not None,
+            )
+
+        # No .venv available — fall back to the current Python environment so
+        # that projects without a venv (e.g. pre-existing installs that predate
+        # prism init) continue to work rather than surfacing a confusing error.
+        logger.warning(
+            "No .venv found for '%s'; executing locally without dep isolation. "
+            "Run 'prism init' to create a project venv with dependencies installed.",
+            output_id,
+        )
+        return self._run_local(
             command=full_command,
             output_id=output_id,
             universe_id=universe_id,
@@ -313,6 +334,7 @@ class ASTRAContainerRunner:
             return
 
         pip_path = venv_path / "bin" / "pip"
+        all_installed = True
         for req_file in req_files:
             logger.info("Installing dependencies from %s into .venv ...", req_file.name)
             install_result = subprocess.run(
@@ -326,8 +348,12 @@ class ASTRAContainerRunner:
                     "pip install -r %s failed: %s",
                     req_file.name, install_result.stderr[:200],
                 )
+                all_installed = False
 
-        marker.write_text(current_hash + "\n")
+        # Only record the hash when all installs succeeded — a failed install
+        # that wrote the marker would be silently skipped on the next run.
+        if all_installed:
+            marker.write_text(current_hash + "\n")
         self._venv_deps_checked = True
 
     def _run_slurm(

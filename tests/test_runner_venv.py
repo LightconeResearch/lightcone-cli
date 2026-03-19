@@ -66,21 +66,22 @@ class TestVenvBackend:
         assert "No .venv found" in result.metadata["stderr"]
 
     def test_venv_installs_requirements(self, venv_project):
-        (venv_project / "requirements.txt").write_text("six\n")
+        # pip is always present in any venv — safe to use as a test dep
+        (venv_project / "requirements.txt").write_text("pip\n")
 
         runner = ASTRAContainerRunner(
             project_root=str(venv_project),
             backend="venv",
         )
         result = runner.execute(
-            command="python -c 'import six; print(six.__version__)'",
+            command="python -c 'import pip; print(pip.__version__)'",
             output_id="test",
             universe_id="baseline",
         )
         assert result.exit_code == 0
 
     def test_venv_deps_hash_skips_reinstall(self, venv_project):
-        (venv_project / "requirements.txt").write_text("six\n")
+        (venv_project / "requirements.txt").write_text("pip\n")
 
         runner = ASTRAContainerRunner(
             project_root=str(venv_project),
@@ -105,7 +106,7 @@ class TestVenvBackend:
         assert marker.read_text().strip() == first_hash
 
     def test_venv_deps_hash_changes_on_new_requirements(self, venv_project):
-        (venv_project / "requirements.txt").write_text("six\n")
+        (venv_project / "requirements.txt").write_text("pip\n")
 
         runner = ASTRAContainerRunner(
             project_root=str(venv_project),
@@ -120,7 +121,7 @@ class TestVenvBackend:
         first_hash = marker.read_text().strip()
 
         # Change requirements and create a new runner (cache is per-instance)
-        (venv_project / "requirements.txt").write_text("six\nchardet\n")
+        (venv_project / "requirements.txt").write_text("pip\nsetuptools\n")
         runner2 = ASTRAContainerRunner(
             project_root=str(venv_project),
             backend="venv",
@@ -148,3 +149,35 @@ class TestContainerToVenvFallback:
         )
         assert result.exit_code == 0
         assert result.metadata["backend"] == "venv"
+
+    def test_docker_no_venv_falls_back_to_local(self, tmp_path):
+        """When .venv is absent, docker backend falls back to local execution."""
+        (tmp_path / "results" / "baseline").mkdir(parents=True)
+        runner = ASTRAContainerRunner(
+            project_root=str(tmp_path),
+            backend="docker",
+            default_container="nonexistent-image:latest",
+        )
+        result = runner.execute(
+            command="python -c 'print(1)'",
+            output_id="test",
+            universe_id="baseline",
+        )
+        # Should not error — falls back to local when .venv is missing
+        assert result.exit_code == 0
+        assert result.metadata["backend"] == "local"
+
+    def test_docker_no_container_no_venv_falls_back_to_local(self, tmp_path):
+        """When no container and no .venv, docker backend runs locally."""
+        (tmp_path / "results" / "baseline").mkdir(parents=True)
+        runner = ASTRAContainerRunner(
+            project_root=str(tmp_path),
+            backend="docker",
+        )
+        result = runner.execute(
+            command="python -c 'print(1)'",
+            output_id="test",
+            universe_id="baseline",
+        )
+        assert result.exit_code == 0
+        assert result.metadata["backend"] == "local"
