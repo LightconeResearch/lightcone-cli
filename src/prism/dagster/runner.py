@@ -14,6 +14,73 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of characters to keep from stdout/stderr for metadata.
+_TAIL_CHARS = 2000
+
+
+def _run_streaming(
+    cmd: list[str] | str,
+    *,
+    shell: bool = False,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    """Run a command, streaming stdout/stderr to the terminal in real time.
+
+    Returns ``(returncode, stdout_tail, stderr_tail)`` where each tail
+    contains at most the last ``_TAIL_CHARS`` characters of output.
+    """
+    import selectors
+
+    stream_env = dict(env) if env else dict(os.environ)
+    stream_env["PYTHONUNBUFFERED"] = "1"
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=shell,
+        cwd=cwd,
+        env=stream_env,
+    )
+
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ)
+    sel.register(proc.stderr, selectors.EVENT_READ)
+
+    stdout_tail: list[str] = []
+    stderr_tail: list[str] = []
+    stdout_len = 0
+    stderr_len = 0
+
+    open_streams = 2
+    while open_streams > 0:
+        for key, _ in sel.select():
+            line = key.fileobj.readline()
+            if not line:
+                sel.unregister(key.fileobj)
+                open_streams -= 1
+                continue
+            if key.fileobj is proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                stdout_tail.append(line)
+                stdout_len += len(line)
+                while stdout_len > _TAIL_CHARS and len(stdout_tail) > 1:
+                    stdout_len -= len(stdout_tail.pop(0))
+            else:
+                sys.stderr.write(line)
+                sys.stderr.flush()
+                stderr_tail.append(line)
+                stderr_len += len(line)
+                while stderr_len > _TAIL_CHARS and len(stderr_tail) > 1:
+                    stderr_len -= len(stderr_tail.pop(0))
+
+    proc.wait()
+    sel.close()
+    return proc.returncode, "".join(stdout_tail), "".join(stderr_tail)
+
 
 def _substitute_python(command: str, python_path: str) -> str:
     """Replace a leading ``python `` with a specific interpreter path."""
@@ -182,7 +249,7 @@ class ASTRAContainerRunner:
         ])
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            returncode, stdout_tail, stderr_tail = _run_streaming(cmd)
         except FileNotFoundError:
             return ExecutionResult(
                 exit_code=127,
@@ -191,11 +258,11 @@ class ASTRAContainerRunner:
             )
 
         return ExecutionResult(
-            exit_code=result.returncode,
+            exit_code=returncode,
             output_path=self.project_root / "results" / universe_id,
             metadata={
-                "stdout": result.stdout[-2000:] if result.stdout else "",
-                "stderr": result.stderr[-2000:] if result.stderr else "",
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
                 "backend": runtime,
                 "container_command": " ".join(cmd),
             },
@@ -222,21 +289,17 @@ class ASTRAContainerRunner:
 
         full_command = _substitute_python(command, sys.executable)
 
-        result = subprocess.run(
-            full_command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=str(self.project_root),
+        returncode, stdout_tail, stderr_tail = _run_streaming(
+            full_command, shell=True, cwd=str(self.project_root),
         )
 
         output_path = self.project_root / "results" / universe_id
         return ExecutionResult(
-            exit_code=result.returncode,
+            exit_code=returncode,
             output_path=output_path,
             metadata={
-                "stdout": result.stdout[-2000:] if result.stdout else "",
-                "stderr": result.stderr[-2000:] if result.stderr else "",
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
                 "backend": "local",
             },
         )
@@ -288,22 +351,17 @@ class ASTRAContainerRunner:
             "PATH": f"{venv_path / 'bin'}:{os.environ.get('PATH', '')}",
         }
 
-        result = subprocess.run(
-            full_command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=str(self.project_root),
-            env=env,
+        returncode, stdout_tail, stderr_tail = _run_streaming(
+            full_command, shell=True, cwd=str(self.project_root), env=env,
         )
 
         output_path = self.project_root / "results" / universe_id
         return ExecutionResult(
-            exit_code=result.returncode,
+            exit_code=returncode,
             output_path=output_path,
             metadata={
-                "stdout": result.stdout[-2000:] if result.stdout else "",
-                "stderr": result.stderr[-2000:] if result.stderr else "",
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
                 "backend": "venv",
                 "venv_path": str(venv_path),
             },
