@@ -51,9 +51,11 @@ Three overlapping phases:
 
 If `SLURM_JOB_ID` is set in the environment, `prism run` automatically uses `srun` (instant) instead of `sbatch` (queued). This means the user is inside an interactive allocation and execution will be fast.
 
-If `SLURM_JOB_ID` is not set and the target is SLURM, `prism run` submits via `sbatch`. Pass scheduling flags:
+If `SLURM_JOB_ID` is not set and the target is SLURM, `prism run` submits via `sbatch`. Any unknown flags are passed through as SLURM directives:
 ```bash
-prism run --qos shared --constraint gpu
+prism run --qos shared --constraint gpu      # NERSC
+prism run --partition gpu-a100               # TACC, SDSC, etc.
+prism run --gres=gpu:4 --partition batch     # any cluster
 ```
 
 Recipe `resources` (gpus, memory, cpus, time_limit) are portable and used for batch scheduling. They are ignored in interactive mode since the allocation already provides them.
@@ -217,7 +219,7 @@ astra schema show analysis                    # Show JSON schema
 
 # prism -- execution operations
 prism run [OUTPUT] [--universe NAME]        # Execute recipes via Dagster (auto-builds)
-prism run --qos shared --constraint gpu     # Batch with specific scheduling
+prism run --partition gpu --qos shared      # Extra flags passed to SLURM
 prism run --no-build                        # Skip automatic container builds
 prism build [--force] [--runtime docker]    # Build container images from specs
 prism status [--universe NAME]              # Materialization + container status

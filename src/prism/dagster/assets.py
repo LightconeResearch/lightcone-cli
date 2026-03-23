@@ -219,7 +219,7 @@ def build_definitions(
         scheduler = {}
         for key in ("site", "account", "qos", "constraint", "node_type",
                      "container_runtime", "container_flags",
-                     "nodes", "time_limit"):
+                     "nodes", "time_limit", "extra_slurm_args"):
             if target_config.get(key) is not None:
                 scheduler[key] = target_config[key]
         if scheduler:

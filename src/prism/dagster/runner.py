@@ -582,22 +582,36 @@ def translate_resources_to_slurm_directives(
     scheduler_config = scheduler_config or {}
     directives: list[str] = []
 
-    account = scheduler_config.get("account")
-    constraint = scheduler_config.get("constraint")
+    # Extra SLURM args from CLI passthrough (e.g. --partition, --qos, --constraint)
+    extra_args = scheduler_config.get("extra_slurm_args", [])
 
+    # Helper to check if a flag is already in extra args (CLI overrides target)
+    def _in_extra(flag: str) -> bool:
+        return any(a.startswith(flag) for a in extra_args)
+
+    # Extract constraint from extra args for account suffix resolution
+    constraint = scheduler_config.get("constraint")
+    for arg in extra_args:
+        if arg.startswith("--constraint"):
+            constraint = arg.split("=", 1)[1] if "=" in arg else None
+
+    account = scheduler_config.get("account")
     # Apply site-specific account suffix (e.g. _g for GPU on Perlmutter)
-    if account:
+    if account and not _in_extra("--account"):
         site_key = scheduler_config.get("site")
         if site_key and constraint:
             from prism.dagster.site_registry import resolve_account
             account = resolve_account(site_key, account, constraint)
         directives.append(f"--account={account}")
-    if partition := scheduler_config.get("partition"):
-        directives.append(f"--partition={partition}")
-    if qos := scheduler_config.get("qos"):
-        directives.append(f"--qos={qos}")
-    if constraint:
-        directives.append(f"--constraint={constraint}")
+    if not _in_extra("--partition"):
+        if partition := scheduler_config.get("partition"):
+            directives.append(f"--partition={partition}")
+    if not _in_extra("--qos"):
+        if qos := scheduler_config.get("qos"):
+            directives.append(f"--qos={qos}")
+    if not _in_extra("--constraint"):
+        if constraint:
+            directives.append(f"--constraint={constraint}")
 
     if nodes := resources.get("nodes"):
         directives.append(f"--nodes={nodes}")
@@ -605,8 +619,9 @@ def translate_resources_to_slurm_directives(
         directives.append(f"--cpus-per-task={cpus}")
     if memory := resources.get("memory"):
         directives.append(f"--mem={memory}")
-    if gpus := resources.get("gpus"):
-        directives.append(f"--gpus={gpus}")
+    if not _in_extra("--gpus"):
+        if gpus := resources.get("gpus"):
+            directives.append(f"--gpus={gpus}")
     if time_limit := resources.get("time_limit"):
         directives.append(f"--time={_normalise_time_limit(time_limit)}")
     elif resource_limits is not None:
@@ -619,6 +634,9 @@ def translate_resources_to_slurm_directives(
             default_minutes,
         )
         directives.append(f"--time={_normalise_time_limit(default_minutes)}")
+
+    # Append any extra SLURM flags passed through from the CLI
+    directives.extend(extra_args)
 
     return directives
 

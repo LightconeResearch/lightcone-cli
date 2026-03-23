@@ -1047,19 +1047,20 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
 # =============================================================================
 
 
-@main.command()
-@click.argument("outputs", nargs=-1)
+@main.command(context_settings={
+    "ignore_unknown_options": True,
+    "allow_extra_args": True,
+})
+@click.argument("outputs", nargs=-1, type=click.UNPROCESSED)
 @click.option("--universe", "-u", default=None, help="Universe to materialize for")
 @click.option("--target", "-t", default=None, help="Execution target name")
-@click.option("--qos", default=None, help="SLURM QOS (e.g. shared, debug, regular)")
-@click.option("--constraint", default=None, help="SLURM constraint (e.g. gpu, cpu)")
 @click.option("--no-build", is_flag=True, help="Skip automatic container image builds")
+@click.pass_context
 def run(
+    ctx: click.Context,
     outputs: tuple[str, ...],
     universe: str | None,
     target: str | None,
-    qos: str | None,
-    constraint: str | None,
     no_build: bool,
 ) -> None:
     """Materialize ASTRA outputs via Dagster.
@@ -1068,17 +1069,26 @@ def run(
     outputs for all universes. Container build specs are automatically
     built before execution unless --no-build is given.
 
+    Any unknown flags are passed through as SLURM scheduling directives
+    (e.g. --partition, --qos, --constraint, --gres).
+
     Examples:
         prism run                           # all outputs, all universes
         prism run accuracy                  # specific output
         prism run --universe baseline       # specific universe
         prism run accuracy -u baseline      # specific output + universe
         prism run --target perlmutter       # run on SLURM
-        prism run --qos shared --constraint gpu  # override scheduling
+        prism run --qos shared --constraint gpu  # SLURM scheduling flags
+        prism run --partition gpu-a100      # works for any cluster
         prism run --no-build                # skip container builds
     """
     from prism.dagster.assets import build_definitions
     from prism.dagster.targets import load_target
+
+    # Separate output names from SLURM flags in the combined args
+    all_args = list(outputs) + ctx.args
+    output_names = [a for a in all_args if not a.startswith("-")]
+    slurm_args = [a for a in all_args if a.startswith("-")]
 
     project_path = Path.cwd()
     if not (project_path / "astra.yaml").exists():
@@ -1099,28 +1109,9 @@ def run(
     if target_name and target_name != "local":
         target_config = load_target(target_name)
 
-    # Apply CLI overrides for scheduling
-    if (qos or constraint) and target_config:
-        if qos:
-            target_config["qos"] = qos
-        if constraint:
-            target_config["constraint"] = constraint
-
-    # Warn if submitting a batch job without qos/constraint specified
-    import os
-    if (target_config and target_config.get("backend") == "slurm"
-            and not os.environ.get("SLURM_JOB_ID")):
-        if not target_config.get("qos"):
-            console.print(
-                "[yellow]Warning:[/yellow] No --qos specified for batch submission. "
-                "SLURM may reject the job or use site defaults. "
-                "Use --qos (e.g. shared, debug) or run from an interactive salloc session."
-            )
-        if not target_config.get("constraint"):
-            console.print(
-                "[yellow]Warning:[/yellow] No --constraint specified for batch submission. "
-                "Use --constraint (e.g. gpu, cpu) or run from an interactive salloc session."
-            )
+    # Pass through any extra SLURM flags
+    if slurm_args and target_config:
+        target_config["extra_slurm_args"] = slurm_args
 
     universe_id = universe or "baseline"
     defs = build_definitions(
@@ -1134,8 +1125,8 @@ def run(
 
     # Select assets to materialize (exclude external/input-only assets)
     all_assets = list(defs.get_all_asset_specs())
-    if outputs:
-        selection = [dg.AssetKey([universe_id, o]) for o in outputs]
+    if output_names:
+        selection = [dg.AssetKey([universe_id, o]) for o in output_names]
     else:
         selection = [
             spec.key for spec in all_assets
