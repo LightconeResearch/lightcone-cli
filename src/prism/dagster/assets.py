@@ -217,7 +217,7 @@ def build_definitions(
         # Transform flat target_config into the shape the runner expects
         runner_config = {"connection": target_config.get("connection", {})}
         scheduler = {}
-        for key in ("account", "qos", "constraint", "node_type",
+        for key in ("site", "account", "qos", "constraint", "node_type",
                      "container_runtime", "container_flags",
                      "nodes", "time_limit"):
             if target_config.get(key) is not None:

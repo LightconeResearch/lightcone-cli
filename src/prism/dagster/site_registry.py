@@ -59,6 +59,10 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
             "nodes": 1,
             "time_limit": "30m",
         },
+        "account_suffixes": {
+            "gpu": "_g",
+            "gpu&hbm80g": "_g",
+        },
         "scratch_paths": [
             "//pscratch/**",
             "//global/cscratch1/**",
@@ -107,6 +111,22 @@ def list_known_sites() -> list[tuple[str, str]]:
         (key, site.get("display_name", key))
         for key, site in SITE_DEFAULTS.items()
     ]
+
+
+def resolve_account(site_key: str, account: str, constraint: str | None) -> str:
+    """Apply site-specific account suffix based on constraint.
+
+    For example, on Perlmutter GPU jobs require ``m4031_g`` instead of
+    ``m4031``.  If the account already has the suffix, it is not added again.
+    """
+    site = SITE_DEFAULTS.get(site_key)
+    if not site or not constraint:
+        return account
+    suffixes = site.get("account_suffixes", {})
+    suffix = suffixes.get(constraint)
+    if suffix and not account.endswith(suffix):
+        return account + suffix
+    return account
 
 
 def get_site_scratch_deny_rules(site_key: str) -> list[str]:

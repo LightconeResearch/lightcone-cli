@@ -582,13 +582,21 @@ def translate_resources_to_slurm_directives(
     scheduler_config = scheduler_config or {}
     directives: list[str] = []
 
-    if account := scheduler_config.get("account"):
+    account = scheduler_config.get("account")
+    constraint = scheduler_config.get("constraint")
+
+    # Apply site-specific account suffix (e.g. _g for GPU on Perlmutter)
+    if account:
+        site_key = scheduler_config.get("site")
+        if site_key and constraint:
+            from prism.dagster.site_registry import resolve_account
+            account = resolve_account(site_key, account, constraint)
         directives.append(f"--account={account}")
     if partition := scheduler_config.get("partition"):
         directives.append(f"--partition={partition}")
     if qos := scheduler_config.get("qos"):
         directives.append(f"--qos={qos}")
-    if constraint := scheduler_config.get("constraint"):
+    if constraint:
         directives.append(f"--constraint={constraint}")
 
     if nodes := resources.get("nodes"):
