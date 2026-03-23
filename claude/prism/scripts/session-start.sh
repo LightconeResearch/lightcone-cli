@@ -132,6 +132,20 @@ ACTION REQUIRED: ${pending_count} output(s) have recipes but are not yet materia
     fi
 fi
 
+# Check if user should be on an interactive node
+if [ -z "${SLURM_JOB_ID:-}" ]; then
+    # Check if default target is SLURM
+    default_target=$(grep '^default_target:' "$HOME/.prism/config.yaml" 2>/dev/null | awk '{print $2}')
+    if [ -n "$default_target" ] && [ "$default_target" != "local" ]; then
+        target_backend=$(grep '^backend:' "$HOME/.prism/targets/${default_target}.yaml" 2>/dev/null | awk '{print $2}')
+        if [ "$target_backend" = "slurm" ]; then
+            summary="$summary
+
+NOTE: Your default target is SLURM but you are not inside an interactive allocation. For fast execution, start one with \`salloc\` before running \`prism run\`."
+        fi
+    fi
+fi
+
 # Output as JSON
 escaped_summary=$(echo "$summary" | jq -Rs .)
 echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $escaped_summary}}"
