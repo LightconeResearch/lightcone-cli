@@ -1850,69 +1850,107 @@ def _run_setup_wizard() -> list[Path]:
         # --- HPC site selection ---
         known = list_known_sites()
         hpc_sites = [(k, d) for k, d in known if k != "local"]
-        console.print("\n  [bold]Known HPC sites:[/bold]")
+        console.print("\n  [bold]HPC sites:[/bold]")
         for i, (_key, display) in enumerate(hpc_sites, 1):
             console.print(f"    {i}. {display}")
+        console.print(f"    {len(hpc_sites) + 1}. Other SLURM cluster")
 
-        site_choices = [str(i) for i in range(1, len(hpc_sites) + 1)]
+        site_choices = [str(i) for i in range(1, len(hpc_sites) + 2)]
         site_idx = click.prompt(
             "\n  Select site",
             type=click.Choice(site_choices),
             default="1",
         )
-        site_key = hpc_sites[int(site_idx) - 1][0]
-        site = get_site_defaults(site_key) or {}
+        selected_idx = int(site_idx) - 1
 
-        display = site.get("display_name", site_key)
-        hostname = site.get("connection", {}).get("hostname", "")
-        console.print(
-            f"  Detected: [cyan]{display}[/cyan] ({hostname})\n"
-        )
+        if selected_idx < len(hpc_sites):
+            # --- Known site ---
+            site_key = hpc_sites[selected_idx][0]
+            site = get_site_defaults(site_key) or {}
 
-        # --- Connection ---
-        username = click.prompt(
-            "  Username",
-            default=os.environ.get("USER", ""),
-        )
-        account = click.prompt("  Account/allocation")
-
-        # --- Container runtime ---
-        site_runtimes = site.get("container_runtimes", [])
-        if len(site_runtimes) > 1:
-            console.print("\n  [bold]Container runtime:[/bold]")
-            for i, rt in enumerate(site_runtimes, 1):
-                console.print(f"    {i}. {rt}")
-
-            rt_choices = [
-                str(i) for i in range(1, len(site_runtimes) + 1)
-            ]
-            rt_idx = click.prompt(
-                "  Select runtime",
-                type=click.Choice(rt_choices),
-                default="1",
+            display = site.get("display_name", site_key)
+            hostname = site.get("connection", {}).get("hostname", "")
+            console.print(
+                f"  Detected: [cyan]{display}[/cyan] ({hostname})\n"
             )
-            container_runtime = site_runtimes[int(rt_idx) - 1]
-        elif site_runtimes:
-            container_runtime = site_runtimes[0]
+
+            username = click.prompt(
+                "  Username",
+                default=os.environ.get("USER", ""),
+            )
+            account = click.prompt("  Account/allocation")
+
+            # Container runtime — auto-select if only one
+            site_runtimes = site.get("container_runtimes", [])
+            if len(site_runtimes) > 1:
+                console.print("\n  [bold]Container runtime:[/bold]")
+                for i, rt in enumerate(site_runtimes, 1):
+                    console.print(f"    {i}. {rt}")
+                rt_choices = [
+                    str(i) for i in range(1, len(site_runtimes) + 1)
+                ]
+                rt_idx = click.prompt(
+                    "  Select runtime",
+                    type=click.Choice(rt_choices),
+                    default="1",
+                )
+                container_runtime = site_runtimes[int(rt_idx) - 1]
+            elif site_runtimes:
+                container_runtime = site_runtimes[0]
+            else:
+                container_runtime = None
+
+            default_name = f"{site_key}-{account}"
+            target_name = click.prompt("  Target name", default=default_name)
+
+            target_config: dict[str, Any] = {
+                "site": site_key,
+                "backend": site.get("backend", "slurm"),
+                "connection": {
+                    "hostname": hostname,
+                    "username": username,
+                },
+                "account": account,
+            }
+            if container_runtime:
+                target_config["container_runtime"] = container_runtime
+
         else:
-            container_runtime = site.get(
-                "scheduler", {},
-            ).get("container_runtime", "docker")
+            # --- Custom SLURM cluster ---
+            console.print("\n  [bold]Custom SLURM cluster[/bold]\n")
 
-        # --- Target name ---
-        default_name = f"{site_key}-{account}"
-        target_name = click.prompt("  Target name", default=default_name)
+            cluster_name = click.prompt("  Cluster name (e.g. frontier, summit)")
+            hostname = click.prompt("  Hostname", default=cluster_name)
+            username = click.prompt(
+                "  Username",
+                default=os.environ.get("USER", ""),
+            )
+            account = click.prompt("  Account/allocation")
 
-        target_config: dict[str, Any] = {
-            "site": site_key,
-            "backend": site.get("backend", "slurm"),
-            "connection": {
-                "hostname": hostname,
-                "username": username,
-            },
-            "account": account,
-            "container_runtime": container_runtime,
-        }
+            use_containers = click.confirm(
+                "  Use a container runtime?",
+                default=False,
+            )
+            container_runtime = None
+            if use_containers:
+                container_runtime = click.prompt(
+                    "  Container runtime",
+                    default="singularity",
+                )
+
+            default_name = f"{cluster_name}-{account}"
+            target_name = click.prompt("  Target name", default=default_name)
+
+            target_config = {
+                "backend": "slurm",
+                "connection": {
+                    "hostname": hostname,
+                    "username": username,
+                },
+                "account": account,
+            }
+            if container_runtime:
+                target_config["container_runtime"] = container_runtime
 
         path = save_target(target_name, target_config)
         saved_paths.append(path)
