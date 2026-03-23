@@ -308,6 +308,8 @@ _GITIGNORE_LINES = [
     ".venv/",
     ".ipynb_checkpoints/",
     ".DS_Store",
+    ".langfuse/",
+    ".claude/",
 ]
 
 
