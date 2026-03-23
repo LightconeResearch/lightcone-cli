@@ -1900,7 +1900,8 @@ def _run_setup_wizard() -> list[Path]:
             ).get("container_runtime", "docker")
 
         # --- Target name ---
-        target_name = click.prompt("  Target name", default=site_key)
+        default_name = f"{site_key}-{account}"
+        target_name = click.prompt("  Target name", default=default_name)
 
         target_config: dict[str, Any] = {
             "site": site_key,
