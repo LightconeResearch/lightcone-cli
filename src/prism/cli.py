@@ -1899,62 +1899,8 @@ def _run_setup_wizard() -> list[Path]:
                 "scheduler", {},
             ).get("container_runtime", "docker")
 
-        # --- Node type selection ---
-        node_types = site.get("node_types", {})
-        resource_limits = site.get("resource_limits", {})
-        nt_keys = list(node_types.keys())
-
-        if len(nt_keys) > 1:
-            console.print("\n  [bold]Node types:[/bold]")
-            for i, nt_key in enumerate(nt_keys, 1):
-                desc = node_types[nt_key].get("description", nt_key)
-                console.print(f"    {i}. {nt_key} — {desc}")
-
-            nt_choices = [str(i) for i in range(1, len(nt_keys) + 1)]
-            nt_idx = click.prompt(
-                "  Select node type",
-                type=click.Choice(nt_choices),
-                default="1",
-            )
-            selected_nt = nt_keys[int(nt_idx) - 1]
-        elif nt_keys:
-            selected_nt = nt_keys[0]
-        else:
-            selected_nt = "default"
-
-        # --- QOS selection ---
-        qos_options = site.get("qos_options", {})
-        qos_keys = list(qos_options.keys())
-
-        if len(qos_keys) > 1:
-            # Find default QOS
-            qos_default_idx = "1"
-            for i, qk in enumerate(qos_keys, 1):
-                if qos_options[qk].get("default"):
-                    qos_default_idx = str(i)
-                    break
-
-            console.print("\n  [bold]QOS:[/bold]")
-            for i, qk in enumerate(qos_keys, 1):
-                desc = qos_options[qk].get("description", qk)
-                console.print(f"    {i}. {qk} — {desc}")
-
-            qos_choices = [str(i) for i in range(1, len(qos_keys) + 1)]
-            qos_idx = click.prompt(
-                "  Select QOS",
-                type=click.Choice(qos_choices),
-                default=qos_default_idx,
-            )
-            selected_qos = qos_keys[int(qos_idx) - 1]
-        elif qos_keys:
-            selected_qos = qos_keys[0]
-        else:
-            selected_qos = site.get("safe_defaults", {}).get("qos", "regular")
-
         # --- Target name ---
-        nt_info = node_types.get(selected_nt, {})
-        default_name = f"{site_key}-{selected_nt}"
-        target_name = click.prompt("  Target name", default=default_name)
+        target_name = click.prompt("  Target name", default=site_key)
 
         target_config: dict[str, Any] = {
             "site": site_key,
@@ -1965,35 +1911,7 @@ def _run_setup_wizard() -> list[Path]:
             },
             "account": account,
             "container_runtime": container_runtime,
-            "constraint": nt_info.get("constraint", selected_nt),
-            "qos": selected_qos,
         }
-
-        # --- Resource limits ---
-        console.print("\n  [bold]Resource limits[/bold]")
-        console.print("  (these cap what Claude can request per job)\n")
-
-        max_nodes = click.prompt(
-            "  Max nodes per job",
-            type=int,
-            default=resource_limits.get("max_nodes", 4),
-        )
-        target_config["max_nodes"] = max_nodes
-
-        max_walltime = click.prompt(
-            "  Max walltime (minutes)",
-            type=int,
-            default=resource_limits.get("max_walltime_minutes", 360),
-        )
-        target_config["max_walltime_minutes"] = max_walltime
-
-        max_concurrent = click.prompt(
-            "  Max concurrent jobs",
-            type=int,
-            default=resource_limits.get("max_concurrent_jobs", 8),
-        )
-        target_config["max_concurrent_jobs"] = max_concurrent
-
 
         path = save_target(target_name, target_config)
         saved_paths.append(path)
