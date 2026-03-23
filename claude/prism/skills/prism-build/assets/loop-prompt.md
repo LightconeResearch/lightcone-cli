@@ -61,14 +61,15 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 
 1. **Add the recipe block** to `astra.yaml` under the output's `recipe:` key.
 2. **Validate:** `astra validate astra.yaml`
-3. **Run it:** `prism run <OUTPUT> --universe {{UNIVERSE}}`
-4. **If it fails:** Read the error output carefully and diagnose the root cause before retrying. Never re-run the same command without changing something first. Common causes:
+3. **Check execution environment:** If the target is SLURM, check `echo $SLURM_JOB_ID`. If empty, you are on a login node — warn the user to start an interactive allocation (`salloc`) before running. Do not submit batch jobs during the build loop; interactive execution is required for fast iteration.
+4. **Run it:** `prism run <OUTPUT> --universe {{UNIVERSE}}`
+5. **If it fails:** Read the error output carefully and diagnose the root cause before retrying. Never re-run the same command without changing something first. Common causes:
    - Container not built → `prism build`
    - Upstream not materialized → materialize dependency first
    - Script error inside container → fix the script, then re-run
    If a second attempt also fails, note the failure in your commit message and in the build plan, then move on to other work. Come back to it in a later iteration with fresh context.
-5. **If it succeeds:** Verify the result file exists at `results/{{UNIVERSE}}/<output_id>.<ext>` and looks well-formed.
-6. **Commit** with a message noting what was materialized.
+6. **If it succeeds:** Verify the result file exists at `results/{{UNIVERSE}}/<output_id>.<ext>` and looks well-formed.
+7. **Commit** with a message noting what was materialized.
 
 ## Rules
 

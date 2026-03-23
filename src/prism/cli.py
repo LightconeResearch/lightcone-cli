@@ -1051,11 +1051,15 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
 @click.argument("outputs", nargs=-1)
 @click.option("--universe", "-u", default=None, help="Universe to materialize for")
 @click.option("--target", "-t", default=None, help="Execution target name")
+@click.option("--qos", default=None, help="SLURM QOS (e.g. shared, debug, regular)")
+@click.option("--constraint", default=None, help="SLURM constraint (e.g. gpu, cpu)")
 @click.option("--no-build", is_flag=True, help="Skip automatic container image builds")
 def run(
     outputs: tuple[str, ...],
     universe: str | None,
     target: str | None,
+    qos: str | None,
+    constraint: str | None,
     no_build: bool,
 ) -> None:
     """Materialize ASTRA outputs via Dagster.
@@ -1069,7 +1073,8 @@ def run(
         prism run accuracy                  # specific output
         prism run --universe baseline       # specific universe
         prism run accuracy -u baseline      # specific output + universe
-        prism run --target perlmutter-gpu   # run on SLURM
+        prism run --target perlmutter       # run on SLURM
+        prism run --qos shared --constraint gpu  # override scheduling
         prism run --no-build                # skip container builds
     """
     from prism.dagster.assets import build_definitions
@@ -1093,6 +1098,29 @@ def run(
     target_config = None
     if target_name and target_name != "local":
         target_config = load_target(target_name)
+
+    # Apply CLI overrides for scheduling
+    if (qos or constraint) and target_config:
+        if qos:
+            target_config["qos"] = qos
+        if constraint:
+            target_config["constraint"] = constraint
+
+    # Warn if submitting a batch job without qos/constraint specified
+    import os
+    if (target_config and target_config.get("backend") == "slurm"
+            and not os.environ.get("SLURM_JOB_ID")):
+        if not target_config.get("qos"):
+            console.print(
+                "[yellow]Warning:[/yellow] No --qos specified for batch submission. "
+                "SLURM may reject the job or use site defaults. "
+                "Use --qos (e.g. shared, debug) or run from an interactive salloc session."
+            )
+        if not target_config.get("constraint"):
+            console.print(
+                "[yellow]Warning:[/yellow] No --constraint specified for batch submission. "
+                "Use --constraint (e.g. gpu, cpu) or run from an interactive salloc session."
+            )
 
     universe_id = universe or "baseline"
     defs = build_definitions(

@@ -356,6 +356,76 @@ class ASTRAContainerRunner:
             marker.write_text(current_hash + "\n")
         self._venv_deps_checked = True
 
+    def _run_slurm_interactive(
+        self,
+        command: str,
+        container: str | None,
+        output_id: str,
+        universe_id: str,
+        resources: dict[str, Any],
+        external_inputs: dict[str, str] | None = None,
+    ) -> ExecutionResult:
+        """Execute a recipe via srun inside an existing interactive allocation.
+
+        Runs synchronously — no job submission or polling needed.
+        """
+        scheduler = self.target_config.get("scheduler", {})
+        container_runtime = scheduler.get("container_runtime", "podman-hpc")
+
+        output_path = self.project_root / "results" / universe_id
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # Build the execution command
+        if container and container_runtime == "podman-hpc":
+            exec_command = _podman_hpc_run_command(
+                command, container, self.project_root, resources, scheduler,
+                external_inputs=external_inputs,
+            )
+        else:
+            # No container — symlink external inputs into data/ directory
+            if external_inputs:
+                data_dir = self.project_root / "data"
+                data_dir.mkdir(parents=True, exist_ok=True)
+                for input_id, source in sorted(external_inputs.items()):
+                    link = data_dir / input_id
+                    if link.is_symlink() or link.exists():
+                        link.unlink()
+                    link.symlink_to(source)
+            exec_command = command
+
+        cmd = ["srun", "bash", "-c", exec_command]
+
+        logger.info(
+            "Running %s/%s interactively (SLURM_JOB_ID=%s)",
+            output_id, universe_id, os.environ.get("SLURM_JOB_ID"),
+        )
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(self.project_root),
+            )
+        except FileNotFoundError:
+            return ExecutionResult(
+                exit_code=127,
+                output_path=output_path,
+                metadata={"stderr": "srun: command not found"},
+            )
+
+        return ExecutionResult(
+            exit_code=result.returncode,
+            output_path=output_path,
+            metadata={
+                "backend": "slurm-interactive",
+                "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
+                "container_runtime": container_runtime if container else None,
+                "stdout": result.stdout[-2000:] if result.stdout else "",
+                "stderr": result.stderr[-2000:] if result.stderr else "",
+            },
+        )
+
     def _run_slurm(
         self,
         command: str,
@@ -366,13 +436,24 @@ class ASTRAContainerRunner:
         resources: dict[str, Any],
         external_inputs: dict[str, str] | None = None,
     ) -> ExecutionResult:
-        """Execute a recipe via SLURM on a login node.
+        """Execute a recipe via SLURM.
 
-        Generates an sbatch script with the appropriate container runtime
-        (podman-hpc or shifter), submits it, and polls for completion.
-        Assumes we are running on a login node with access to sbatch/squeue/sacct
-        and the project directory is on a shared filesystem.
+        When ``SLURM_JOB_ID`` is set (i.e. we are inside an interactive
+        ``salloc`` session), runs the command synchronously via ``srun``
+        for fast iteration.  Otherwise, generates an sbatch script,
+        submits it, and polls for completion.
         """
+        # Fast path: interactive allocation detected
+        if os.environ.get("SLURM_JOB_ID"):
+            return self._run_slurm_interactive(
+                command=command,
+                container=container,
+                output_id=output_id,
+                universe_id=universe_id,
+                resources=resources,
+                external_inputs=external_inputs,
+            )
+
         scheduler = self.target_config.get("scheduler", {})
         container_runtime = scheduler.get("container_runtime", "podman-hpc")
 
