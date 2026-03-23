@@ -361,27 +361,24 @@ class TestSetupCommand:
                             lambda: tmp_path / "config.yaml")
 
         # hpc=yes, site=1(perlmutter), username, account,
-        # node_type=1(gpu), qos=2(debug), target_name=default,
-        # resource limits=defaults (4x Enter)
-        input_lines = "y\n1\ntestuser\nm1234\n1\n2\n\n\n\n\n\n"
+        # target_name=default (accept perlmutter-m1234)
+        input_lines = "y\n1\ntestuser\nm1234\n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
-        assert "Default target: perlmutter-gpu" in result.output
+        assert "Default target: perlmutter-m1234" in result.output
 
-        # Should create only the selected node type + local
-        assert (targets_dir / "perlmutter-gpu.yaml").exists()
-        assert not (targets_dir / "perlmutter-gpu_hbm80.yaml").exists()
-        assert not (targets_dir / "perlmutter-cpu.yaml").exists()
+        # Should create the target + local
+        assert (targets_dir / "perlmutter-m1234.yaml").exists()
         assert (targets_dir / "local.yaml").exists()
         assert (tmp_path / "config.yaml").exists()
 
-        # Verify target shape — flat, no defaults nesting
+        # Verify target shape — site, backend, connection, account
         import yaml
-        target = yaml.safe_load((targets_dir / "perlmutter-gpu.yaml").read_text())
-        assert target["constraint"] == "gpu"
-        assert target["qos"] == "debug"
+        target = yaml.safe_load((targets_dir / "perlmutter-m1234.yaml").read_text())
+        assert target["site"] == "perlmutter"
         assert target["backend"] == "slurm"
-        assert target["max_nodes"] == 4
+        assert target["account"] == "m1234"
+        assert target["container_runtime"] == "podman-hpc"
 
         # Verify closing message
         assert "prism target --list" in result.output
@@ -423,15 +420,14 @@ class TestSetupCommand:
                             lambda: tmp_path / "config.yaml")
 
         # hpc=yes, site=1(perlmutter), username, account,
-        # node_type=1(gpu), qos=2(debug), target_name=default,
-        # resource limits=defaults (4x Enter)
-        input_lines = "y\n1\ntestuser\nm1234\n1\n2\n\n\n\n\n\n"
+        # target_name=default (accept perlmutter-m1234)
+        input_lines = "y\n1\ntestuser\nm1234\n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
 
         import yaml
         config = yaml.safe_load((tmp_path / "config.yaml").read_text())
-        assert config["default_target"] == "perlmutter-gpu"
+        assert config["default_target"] == "perlmutter-m1234"
 
     def test_setup_default_local(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         """Test --default local works without a target config file."""
