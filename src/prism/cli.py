@@ -306,13 +306,10 @@ def init(
             from prism.dagster.targets import load_target
             target_config = load_target(target_name)
             if target_config and target_config.get("backend") == "slurm":
-                account = target_config.get("account", "<account>")
                 console.print(
-                    "\n[bold]Tip:[/bold] You're on a SLURM cluster. For fast execution, "
-                    "start an interactive allocation before launching Claude Code:"
-                    f"\n\n  [cyan]salloc -A {account} -q interactive -t 30 -n 1[/cyan]"
-                    "\n  [cyan]claude[/cyan]"
-                    "\n\n  This lets [cyan]prism run[/cyan] execute instantly via srun "
+                    "\n[bold]Tip:[/bold] For fast execution, start an interactive "
+                    "allocation ([cyan]salloc[/cyan]) before launching Claude Code. "
+                    "This lets [cyan]prism run[/cyan] execute instantly via srun "
                     "instead of waiting in the batch queue."
                 )
 
