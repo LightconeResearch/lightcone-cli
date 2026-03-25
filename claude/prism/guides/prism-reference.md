@@ -67,6 +67,10 @@ container:
 
 ```yaml
 # Multi-stage -- sub-analyses with cross-references
+inputs:
+  - id: survey_catalog
+    type: data
+    source: "data/survey.parquet"
 decisions:
   cosmology_model:               # Shared across stages
     label: "Cosmological Model"
@@ -75,22 +79,13 @@ decisions:
     options:
       flat_lcdm: { label: "Flat LCDM" }
       wcdm: { label: "wCDM" }
+outputs:
+  - id: trained_model
+    type: data
+    from: train_network.trained_model   # Alias -- produced by sub-analysis
 analyses:
   build_mocks:
-    inputs:
-      - { id: survey_data, type: data, from: survey_catalog }   # Parent input
-    outputs:
-      - id: mock_catalog
-        type: data
-        recipe: { command: python src/generate_mocks.py }
-    decisions:
-      noise_model:
-        label: "Noise Model"
-        tags: [simulation]
-        default: heteroscedastic
-        options:
-          homoscedastic: { label: "Homoscedastic" }
-          heteroscedastic: { label: "Heteroscedastic" }
+    path: ./analyses/build_mocks        # External sub-analysis (loads its own astra.yaml)
   train_network:
     inputs:
       - { id: training_data, type: data, from: build_mocks.mock_catalog }  # Sibling output
@@ -98,7 +93,24 @@ analyses:
       - id: trained_model
         type: data
         recipe: { command: python src/train.py, resources: { gpus: 1, memory: "32GB" } }
+    decisions:
+      cosmology_model:
+        from: ../cosmology_model        # Inherit parent decision (value comes from universe)
+      noise_model:
+        label: "Noise Model"
+        default: heteroscedastic
+        options:
+          homoscedastic: { label: "Homoscedastic" }
+          heteroscedastic: { label: "Heteroscedastic" }
 ```
+
+### Sub-Analysis Composition
+
+- **`path:`** on a sub-analysis loads content from `<path>/astra.yaml`. Mutually exclusive with inline fields -- a `path:` entry is a stub only.
+- **Input `from:`** wires sub-analysis inputs. Two patterns: `from: parent_input_id` (parent input) or `from: sibling_id.output_id` (another sub-analysis's output).
+- **Decision `from: ../parent_id`** inherits a parent decision. The sub-analysis uses the parent's value -- do not set it in the sub-analysis universe.
+- **Output `from: sub.output`** at root level creates an alias to a sub-analysis output.
+- **`universe:` field** in universe files selects which sub-analysis universe to load: `build_mocks: { universe: baseline }` loads `./analyses/build_mocks/universes/baseline.yaml`.
 
 ## Decision Parameterization
 
@@ -110,7 +122,7 @@ analyses:
 
 - `incompatible_with: ["decision.option"]` -- cannot coexist in a universe
 - `requires: ["decision.option"]` -- must be selected together
-- `when: decision.option` -- conditional decision, only exists when that option is selected (see `n_components` example above)
+- `when: decision.option` -- conditional, only exists when that option is selected. Supports negation (`~decision.option` = NOT selected) and lists (`when: [cond1, cond2]` = AND, all must be true)
 - `excluded: true` + `excluded_reason: "..."` -- option considered but rejected (cannot be default or selected)
 
 ## Writing Results
@@ -140,6 +152,22 @@ outputs:
 
 Set `container:` at analysis level (all recipes inherit); per-recipe `container:` overrides. Accepts a build spec (`{ build: Containerfile }`) or image string (`"python:3.12-slim"`).
 
+### Conditional Outputs
+
+Outputs can have `when` conditions -- the output only exists when the condition is met for a given universe. Uses the same syntax as decision `when` (negation with `~`, lists AND'd).
+
+```yaml
+outputs:
+  - id: faint_metrics
+    type: metric
+    when: "~training_sample.bright_only"          # Only when NOT bright_only
+    recipe: { command: python scripts/evaluate.py }
+  - id: combined_report
+    type: report
+    when: ["~training_sample.bright_only", model.svm]  # AND: both must be true
+    recipe: { command: python scripts/combo.py }
+```
+
 ## CLI Reference
 
 ```bash
@@ -153,8 +181,9 @@ astra viz                                     # Visualize decision space
 astra schema show analysis                    # Show JSON schema
 
 # prism -- execution operations
+prism init [DIR] --sub-analysis             # Scaffold sub-analysis under analyses/
 prism run [OUTPUT] [--universe NAME]        # Execute recipes via Dagster (auto-builds)
-prism run --partition gpu --qos shared      # Extra flags passed to SLURM
+prism run --partition gpu --qos shared      # Unknown flags passed through to SLURM
 prism run --no-build                        # Skip automatic container builds
 prism build [--force] [--runtime docker]    # Build container images from specs
 prism status [--universe NAME]              # Materialization + container status
