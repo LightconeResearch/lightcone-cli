@@ -205,6 +205,7 @@ class ASTRAContainerRunner:
                 universe_id=universe_id,
                 resources=resources or {},
                 external_inputs=external_inputs,
+                cwd=effective_cwd,
             )
 
         if self.backend == "venv":
@@ -465,15 +466,17 @@ class ASTRAContainerRunner:
         universe_id: str,
         resources: dict[str, Any],
         external_inputs: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> ExecutionResult:
         """Execute a recipe via srun inside an existing interactive allocation.
 
         Runs synchronously — no job submission or polling needed.
         """
+        effective_cwd = cwd or str(self.project_root)
         scheduler = self.target_config.get("scheduler", {})
         container_runtime = scheduler.get("container_runtime", "podman-hpc")
 
-        output_path = self.project_root / "results" / universe_id
+        output_path = Path(effective_cwd) / "results" / universe_id
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Build the execution command
@@ -485,7 +488,7 @@ class ASTRAContainerRunner:
         else:
             # No container — symlink external inputs into data/ directory
             if external_inputs:
-                data_dir = self.project_root / "data"
+                data_dir = Path(effective_cwd) / "data"
                 data_dir.mkdir(parents=True, exist_ok=True)
                 for input_id, source in sorted(external_inputs.items()):
                     link = data_dir / input_id
@@ -503,7 +506,7 @@ class ASTRAContainerRunner:
 
         try:
             returncode, stdout_tail, stderr_tail = _run_streaming(
-                cmd, cwd=str(self.project_root),
+                cmd, cwd=effective_cwd,
             )
         except FileNotFoundError:
             return ExecutionResult(
@@ -533,6 +536,7 @@ class ASTRAContainerRunner:
         universe_id: str,
         resources: dict[str, Any],
         external_inputs: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> ExecutionResult:
         """Execute a recipe via SLURM.
 
@@ -550,6 +554,7 @@ class ASTRAContainerRunner:
                 universe_id=universe_id,
                 resources=resources,
                 external_inputs=external_inputs,
+                cwd=cwd,
             )
 
         scheduler = self.target_config.get("scheduler", {})
