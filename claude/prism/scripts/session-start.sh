@@ -95,7 +95,8 @@ fi
 summary="ASTRA Project: ${analysis_name:-unnamed}
 - Decisions: ${decision_count:-0}
 - Universes: ${universe_count:-0}
-- Validation: ${validation_status}"
+- Validation: ${validation_status}
+- Reference: For astra.yaml syntax, CLI usage, and recipe format, read .claude/guides/prism-reference.md"
 
 # If validation failed, add error summary
 if [ "$validation_status" = "has errors" ]; then

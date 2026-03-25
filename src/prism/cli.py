@@ -168,10 +168,17 @@ def _load_prism_config(project_path: Path) -> dict:
     default=None,
     help="Path to existing code to migrate (copies into DIRECTORY, adds Prism infrastructure)",
 )
+@click.option(
+    "--sub-analysis", "sub_analysis",
+    is_flag=True,
+    default=False,
+    help="Create a sub-analysis directory and wire it into the parent project",
+)
 def init(
     directory: Path, no_git: bool, no_venv: bool,
     target: str | None, permissions: str | None,
     existing_project: Path | None,
+    sub_analysis: bool,
 ) -> None:
     """Create a new ASTRA analysis project with full agentic scaffolding.
 
@@ -182,6 +189,9 @@ def init(
     source path differs from DIRECTORY, code is copied in. Then run
     /prism-migrate in Claude Code to generate the spec.
 
+    Use --sub-analysis to scaffold a sub-analysis directory and wire it
+    into the parent project's astra.yaml and universe files.
+
     DIRECTORY is the project folder to create (default: current directory).
 
     Examples:
@@ -189,7 +199,13 @@ def init(
         prism init my-analysis --target perlmutter-gpu
         prism init . --existing-project .
         prism init my-analysis --existing-project ../old-code
+        prism init analyses/new_stage --sub-analysis
+        prism init --sub-analysis new_stage
     """
+    if sub_analysis:
+        _init_sub_analysis(directory)
+        return
+
     if existing_project is not None:
         _init_existing_project(
             directory, source=existing_project,
@@ -577,6 +593,98 @@ decisions:
   example_method: option_a
 """
     (directory / "universes" / "baseline.yaml").write_text(baseline_universe)
+
+
+def _init_sub_analysis(directory: Path) -> None:
+    """Scaffold a sub-analysis directory and wire it into the parent project."""
+    from astra.helpers import load_yaml, save_yaml
+
+    # Resolve the sub-analysis path.
+    # If directory has no path separator (e.g. "new_stage"), default to analyses/<name>
+    sub_path = directory
+    if sub_path == Path("."):
+        console.print("[red]Error:[/red] Please provide a name or path for the sub-analysis.")
+        raise SystemExit(1)
+
+    # If the user gave a bare name (no directory separators), put it under analyses/
+    if len(sub_path.parts) == 1:
+        sub_path = Path("analyses") / sub_path
+
+    name = sub_path.name
+
+    # Find the project root by looking for astra.yaml
+    project_root = Path.cwd()
+    if not (project_root / "astra.yaml").exists():
+        console.print(
+            "[red]Error:[/red] No astra.yaml found in current directory. "
+            "Run this from the project root."
+        )
+        raise SystemExit(1)
+
+    abs_sub_path = project_root / sub_path
+
+    if abs_sub_path.exists() and (abs_sub_path / "astra.yaml").exists():
+        console.print(
+            f"[red]Error:[/red] Sub-analysis already exists at "
+            f"[cyan]{sub_path}[/cyan] (astra.yaml found)."
+        )
+        raise SystemExit(1)
+
+    # 1. Create the sub-analysis directory structure
+    abs_sub_path.mkdir(parents=True, exist_ok=True)
+    (abs_sub_path / "scripts").mkdir(exist_ok=True)
+    (abs_sub_path / "scripts" / ".gitkeep").touch()
+    (abs_sub_path / "universes").mkdir(exist_ok=True)
+    (abs_sub_path / "results").mkdir(exist_ok=True)
+
+    # Write the sub-analysis astra.yaml
+    label = name.replace("_", " ").replace("-", " ").title()
+    sub_spec = {
+        "name": label,
+        "description": "",
+        "inputs": [],
+        "outputs": [],
+        "decisions": {},
+    }
+    save_yaml(sub_spec, abs_sub_path / "astra.yaml")
+
+    # Write the sub-analysis baseline universe
+    sub_universe = {
+        "id": "baseline",
+        "description": "Default configuration",
+        "decisions": {},
+    }
+    save_yaml(sub_universe, abs_sub_path / "universes" / "baseline.yaml")
+
+    # Write CLAUDE.md
+    _create_claude_md(abs_sub_path)
+
+    # 2. Wire into the parent astra.yaml
+    root_spec = load_yaml(project_root / "astra.yaml")
+    if "analyses" not in root_spec or root_spec["analyses"] is None:
+        root_spec["analyses"] = {}
+    root_spec["analyses"][name] = {"path": f"./{sub_path}"}
+    save_yaml(root_spec, project_root / "astra.yaml")
+
+    # 3. Wire into all root universe files
+    universes_dir = project_root / "universes"
+    if universes_dir.is_dir():
+        for ufile in sorted(universes_dir.glob("*.yaml")):
+            udata = load_yaml(ufile)
+            if udata is None:
+                continue
+            if "analyses" not in udata or udata["analyses"] is None:
+                udata["analyses"] = {}
+            udata["analyses"][name] = {"universe": "baseline"}
+            save_yaml(udata, ufile)
+
+    console.print(f"[green]\u2713[/green] Created sub-analysis [cyan]{name}[/cyan] at [cyan]{sub_path}[/cyan]")
+    console.print(f"  - {sub_path}/astra.yaml")
+    console.print(f"  - {sub_path}/CLAUDE.md")
+    console.print(f"  - {sub_path}/scripts/")
+    console.print(f"  - {sub_path}/results/")
+    console.print(f"  - {sub_path}/universes/baseline.yaml")
+    console.print(f"  - Wired into root astra.yaml and universe files")
 
 
 def _create_claude_md(directory: Path) -> None:
@@ -1207,7 +1315,7 @@ def build(force: bool, runtime: str | None) -> None:
         prism build --runtime docker     # force docker
         prism build --force              # rebuild all images
     """
-    from astra.helpers import get_outputs, load_yaml
+    from astra.helpers import get_outputs, load_yaml, resolve_analysis_tree
 
     from prism.container import (
         ContainerBuildError,
@@ -1242,6 +1350,7 @@ def build(force: bool, runtime: str | None) -> None:
                 raise SystemExit(1)
 
     spec = load_yaml(project_path / "astra.yaml")
+    spec = resolve_analysis_tree(spec, project_path)
     project_name = spec.get("name") or project_path.name
 
     # Collect all unique container build specs.
@@ -1291,6 +1400,69 @@ def build(force: bool, runtime: str | None) -> None:
             console.print(f"  [red]fail[/red]   {label}: {e}")
 
 
+def _status_label(s: str) -> str:
+    """Format a status string for rich display."""
+    if s == "materialized":
+        return "[green]ok[/green]"
+    elif s == "pending":
+        return "[dim]pending[/dim]"
+    elif s == "alias":
+        return "[cyan]alias[/cyan]"
+    return "[yellow]no recipe[/yellow]"
+
+
+def _display_tree_status(
+    name: str,
+    groups: dict,
+    all_status: dict[str, dict[str, str]],
+) -> None:
+    """Display status grouped by sub-analysis as a tree."""
+    from rich.tree import Tree
+
+    for uid, universe_status in all_status.items():
+        tree = Tree(f"[bold]{name}[/bold]  universe: {uid}")
+
+        for analysis_id, outputs in groups.items():
+            if analysis_id is None:
+                # Root-level outputs
+                for out_id, out_def in outputs:
+                    s = universe_status.get(out_id, "no_recipe")
+                    tree.add(f"{out_id:40s} {_status_label(s)}")
+            else:
+                branch = tree.add(f"[bold cyan]{analysis_id}/[/bold cyan]")
+                for out_id, out_def in outputs:
+                    qualified = f"{analysis_id}/{out_id}"
+                    s = universe_status.get(qualified, "no_recipe")
+                    branch.add(f"{out_id:40s} {_status_label(s)}")
+
+        console.print(tree)
+
+
+def _display_flat_status(
+    name: str,
+    outputs: list[tuple[str, dict]],
+    all_status: dict[str, dict[str, str]],
+) -> None:
+    """Display status as a flat table (original behavior)."""
+    from rich.table import Table
+
+    table = Table(title=f"{name} -- Output Status")
+    table.add_column("Output", style="cyan")
+    for uid in all_status:
+        table.add_column(uid)
+
+    for out_id, out_def in outputs:
+        if not out_id:
+            continue
+        row = [out_id]
+        for uid, universe_status in all_status.items():
+            s = universe_status.get(out_id, "no_recipe")
+            row.append(_status_label(s))
+        table.add_row(*row)
+
+    console.print(table)
+
+
 @main.command()
 @click.option("--universe", "-u", default=None, help="Show status for specific universe")
 def status(universe: str | None) -> None:
@@ -1302,7 +1474,7 @@ def status(universe: str | None) -> None:
         prism status
         prism status --universe baseline
     """
-    from astra.helpers import get_outputs, load_yaml
+    from astra.helpers import get_outputs, load_yaml, resolve_analysis_tree
 
     from prism.dagster.status import get_all_universe_status, get_output_status
 
@@ -1312,8 +1484,8 @@ def status(universe: str | None) -> None:
         raise SystemExit(1)
 
     spec = load_yaml(project_path / "astra.yaml")
+    spec = resolve_analysis_tree(spec, project_path)
     name = spec.get("name", "Unknown")
-    outputs = get_outputs(spec)
 
     if universe:
         all_status = {universe: get_output_status(project_path, universe)}
@@ -1324,41 +1496,54 @@ def status(universe: str | None) -> None:
         console.print("[yellow]No universes found.[/yellow]")
         return
 
-    from rich.table import Table
+    # Collect all qualified output IDs grouped by sub-analysis
+    from prism.dagster.tree import collect_tree_outputs
 
-    table = Table(title=f"{name} — Output Status")
-    table.add_column("Output", style="cyan")
-    for uid in all_status:
-        table.add_column(uid)
+    tree_outputs = collect_tree_outputs(spec)
 
+    # Group outputs by analysis_id (None for root)
+    from collections import OrderedDict
+
+    groups: OrderedDict[str | None, list[tuple[str, dict]]] = OrderedDict()
+    for tree_out in tree_outputs:
+        gid = tree_out.analysis_id
+        if gid not in groups:
+            groups[gid] = []
+        groups[gid].append((tree_out.output_id, tree_out.output_def))
+
+    # Display as tree when sub-analyses exist
+    has_sub = any(k is not None for k in groups)
+
+    if has_sub:
+        _display_tree_status(name, groups, all_status)
+    else:
+        _display_flat_status(name, groups.get(None, []), all_status)
+
+    # Count totals across all groups
     recipe_count = 0
-    total_outputs = len(outputs)
-    materialized = 0
+    total_outputs = 0
+    materialized_count = 0
     total_cells = 0
-    for out in outputs:
-        out_id = out.get("id")
+    for tree_out in tree_outputs:
+        out_id = tree_out.output_id
         if not out_id:
             continue
-        has_recipe = bool(out.get("recipe"))
+        total_outputs += 1
+        has_recipe = bool(tree_out.output_def.get("recipe"))
         if has_recipe:
             recipe_count += 1
-        row = [out_id]
+        if tree_out.analysis_id:
+            qualified = f"{tree_out.analysis_id}/{out_id}"
+        else:
+            qualified = out_id
         for uid, universe_status in all_status.items():
-            s = universe_status.get(out_id, "no_recipe")
             if has_recipe:
                 total_cells += 1
-            if s == "materialized":
-                materialized += 1
-                row.append("[green]ok[/green]")
-            elif s == "pending":
-                row.append("[dim]pending[/dim]")
-            else:
-                row.append("[yellow]no recipe[/yellow]")
-        table.add_row(*row)
+            if universe_status.get(qualified) == "materialized":
+                materialized_count += 1
 
-    console.print(table)
     console.print(f"\n  Recipes: {recipe_count}/{total_outputs} outputs integrated")
-    console.print(f"  Materialized: {materialized}/{total_cells} runs")
+    console.print(f"  Materialized: {materialized_count}/{total_cells} runs")
 
     # Show container status
     from prism.container import detect_container_runtime, get_container_status

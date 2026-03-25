@@ -51,7 +51,7 @@ For reference, here is the decision guide for classifying candidates:
 """)
 ```
 
-Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `CLAUDE.md`. Use the [Decision Guide](../../guides/decision-guide.md) to filter the subagent's candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
+Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `.claude/guides/prism-reference.md`. Use the [Decision Guide](../../guides/decision-guide.md) to filter the subagent's candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
 
 Include `recipe:` blocks on each output pointing to the script that produces it. Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
 

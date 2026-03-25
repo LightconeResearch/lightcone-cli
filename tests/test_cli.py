@@ -962,3 +962,164 @@ class TestSyncProjectPlugins:
         content = (project / ".claude" / "skills" / "prism-build" / "SKILL.md").read_text()
         assert "v2" in content
         assert "v1" not in content
+
+
+class TestInitSubAnalysis:
+    """Tests for prism init --sub-analysis."""
+
+    @staticmethod
+    def _setup_project_root(project_dir: Path) -> None:
+        """Create a minimal ASTRA project root for sub-analysis tests."""
+        import yaml
+
+        project_dir.mkdir(parents=True, exist_ok=True)
+        spec = {
+            "version": "1.0",
+            "name": "Test Project",
+            "description": "Test",
+            "inputs": [],
+            "outputs": [],
+            "decisions": {},
+        }
+        (project_dir / "astra.yaml").write_text(
+            yaml.safe_dump(spec, sort_keys=False)
+        )
+        universes_dir = project_dir / "universes"
+        universes_dir.mkdir(exist_ok=True)
+        universe = {
+            "id": "baseline",
+            "description": "Default",
+            "decisions": {},
+        }
+        (universes_dir / "baseline.yaml").write_text(
+            yaml.safe_dump(universe, sort_keys=False)
+        )
+
+    def test_sub_analysis_creates_structure(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """Test that --sub-analysis creates the expected directory structure."""
+        project_dir = tmp_path / "proj"
+        self._setup_project_root(project_dir)
+        monkeypatch.chdir(project_dir)
+
+        result = runner.invoke(main, ["init", "analyses/hod_fitting", "--sub-analysis"])
+        assert result.exit_code == 0, result.output
+
+        sub = project_dir / "analyses" / "hod_fitting"
+        assert (sub / "astra.yaml").exists()
+        assert (sub / "scripts" / ".gitkeep").exists()
+        assert (sub / "universes" / "baseline.yaml").exists()
+
+    def test_sub_analysis_astra_yaml_content(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """Test sub-analysis astra.yaml has the right fields."""
+        import yaml
+
+        project_dir = tmp_path / "proj"
+        self._setup_project_root(project_dir)
+        monkeypatch.chdir(project_dir)
+
+        runner.invoke(main, ["init", "analyses/my_stage", "--sub-analysis"])
+
+        sub_spec = yaml.safe_load(
+            (project_dir / "analyses" / "my_stage" / "astra.yaml").read_text()
+        )
+        assert sub_spec["name"] == "My Stage"
+        assert sub_spec["inputs"] == []
+        assert sub_spec["outputs"] == []
+        assert sub_spec["decisions"] == {}
+
+    def test_sub_analysis_wires_root_astra_yaml(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """Test that root astra.yaml gets the analyses reference."""
+        import yaml
+
+        project_dir = tmp_path / "proj"
+        self._setup_project_root(project_dir)
+        monkeypatch.chdir(project_dir)
+
+        runner.invoke(main, ["init", "analyses/hod_fitting", "--sub-analysis"])
+
+        root_spec = yaml.safe_load((project_dir / "astra.yaml").read_text())
+        assert "analyses" in root_spec
+        assert root_spec["analyses"]["hod_fitting"] == {"path": "./analyses/hod_fitting"}
+
+    def test_sub_analysis_wires_root_universes(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """Test that root universe files get the analyses reference."""
+        import yaml
+
+        project_dir = tmp_path / "proj"
+        self._setup_project_root(project_dir)
+        monkeypatch.chdir(project_dir)
+
+        runner.invoke(main, ["init", "analyses/hod_fitting", "--sub-analysis"])
+
+        udata = yaml.safe_load(
+            (project_dir / "universes" / "baseline.yaml").read_text()
+        )
+        assert "analyses" in udata
+        assert udata["analyses"]["hod_fitting"] == {"universe": "baseline"}
+
+    def test_sub_analysis_bare_name_defaults_to_analyses_dir(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch
+    ):
+        """Test that a bare name (no path sep) goes under analyses/."""
+        import yaml
+
+        project_dir = tmp_path / "proj"
+        self._setup_project_root(project_dir)
+        monkeypatch.chdir(project_dir)
+
+        result = runner.invoke(main, ["init", "new_stage", "--sub-analysis"])
+        assert result.exit_code == 0, result.output
+
+        sub = project_dir / "analyses" / "new_stage"
+        assert (sub / "astra.yaml").exists()
+
+        root_spec = yaml.safe_load((project_dir / "astra.yaml").read_text())
+        assert root_spec["analyses"]["new_stage"] == {"path": "./analyses/new_stage"}
+
+    def test_sub_analysis_refuses_without_root_astra_yaml(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch
+    ):
+        """Test error when no astra.yaml in cwd."""
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(main, ["init", "analyses/foo", "--sub-analysis"])
+        assert result.exit_code == 1
+        assert "No astra.yaml found" in result.output
+
+    def test_sub_analysis_refuses_if_already_exists(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch
+    ):
+        """Test error when sub-analysis already exists."""
+        project_dir = tmp_path / "proj"
+        self._setup_project_root(project_dir)
+        monkeypatch.chdir(project_dir)
+
+        # Create it once
+        runner.invoke(main, ["init", "analyses/dup", "--sub-analysis"])
+        # Try again
+        result = runner.invoke(main, ["init", "analyses/dup", "--sub-analysis"])
+        assert result.exit_code == 1
+        assert "already exists" in result.output
+
+    def test_sub_analysis_multiple_universes(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch
+    ):
+        """Test that all universe files get wired, not just baseline."""
+        import yaml
+
+        project_dir = tmp_path / "proj"
+        self._setup_project_root(project_dir)
+        # Add a second universe
+        u2 = {"id": "alternate", "description": "Alt", "decisions": {}}
+        (project_dir / "universes" / "alternate.yaml").write_text(
+            yaml.safe_dump(u2, sort_keys=False)
+        )
+        monkeypatch.chdir(project_dir)
+
+        runner.invoke(main, ["init", "analyses/stage_a", "--sub-analysis"])
+
+        for ufile in ["baseline.yaml", "alternate.yaml"]:
+            udata = yaml.safe_load(
+                (project_dir / "universes" / ufile).read_text()
+            )
+            assert udata["analyses"]["stage_a"] == {"universe": "baseline"}

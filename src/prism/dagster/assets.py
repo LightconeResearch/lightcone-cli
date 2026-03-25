@@ -6,10 +6,14 @@ from pathlib import Path
 from typing import Any
 
 import dagster as dg
-from astra.helpers import get_inputs, get_outputs, load_yaml
+from astra.helpers import get_inputs, get_outputs, load_yaml, resolve_analysis_tree
 
 from prism.container import resolve_container_for_slurm, resolve_container_spec
 from prism.dagster.runner import ASTRAContainerRunner
+from prism.dagster.tree import (
+    TreeOutput,
+    collect_tree_outputs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +65,11 @@ def build_asset_definitions(
     container_runtime: str | None = None,
     local_runtime: str | None = None,
 ) -> list[dg.AssetsDefinition | dg.AssetSpec]:
-    """Generate one @asset per output with a recipe."""
-    outputs = get_outputs(spec)
+    """Generate one @asset per output with a recipe.
 
+    Walks the full analysis tree (including sub-analyses) to create assets
+    with hierarchical keys like ``[universe, sub_analysis_id, output_id]``.
+    """
     # Resolve analysis-level container spec once.
     raw_default = spec.get("container")
     if raw_default is not None and not no_build and (container_runtime or local_runtime):
@@ -86,21 +92,137 @@ def build_asset_definitions(
     ]
 
     assets: list[dg.AssetsDefinition | dg.AssetSpec] = list(asset_specs)
-    for output_def in outputs:
-        output_id = output_def.get("id")
+
+    # Collect outputs from the full tree (root + sub-analyses)
+    tree_outputs = collect_tree_outputs(spec)
+
+    for tree_out in tree_outputs:
+        output_id = tree_out.output_id
+        output_def = tree_out.output_def
         recipe = output_def.get("recipe")
+
         if not output_id or not recipe:
+            # Root-level alias outputs (from: sub.output) become AssetSpecs
+            from_ref = output_def.get("from")
+            if output_id and from_ref and tree_out.analysis_id is None:
+                # Alias: root output referencing a sub-analysis output
+                if "." in from_ref:
+                    sub_id, sub_out = from_ref.split(".", 1)
+                    assets.append(dg.AssetSpec(
+                        key=dg.AssetKey([universe_id, output_id]),
+                        deps=[dg.AssetKey([universe_id, sub_id, sub_out])],
+                        metadata={"alias_for": from_ref},
+                    ))
             continue
+
+        # Determine asset key prefix based on sub-analysis membership
+        if tree_out.analysis_id:
+            key_prefix = [universe_id, tree_out.analysis_id]
+            group_name = tree_out.analysis_id
+        else:
+            key_prefix = [universe_id]
+            group_name = None
+
+        # Resolve container for this sub-analysis (inheritance chain)
+        sub_container = _resolve_sub_container(
+            tree_out, spec, default_container, project_path,
+            project_name, no_build, container_runtime, local_runtime,
+        )
+
+        # Resolve dependencies: recipe.inputs may reference cross-sub-analysis outputs
+        dep_keys = _resolve_recipe_deps(
+            recipe, tree_out, spec, universe_id,
+        )
+
+        # Build the external inputs relevant to this sub-analysis
+        recipe_input_ids = recipe.get("inputs") or []
+        sub_external = {
+            k: v for k, v in external.items() if k in recipe_input_ids
+        } or None
+
         assets.append(
             _build_single_asset(
                 output_id, recipe, runner, universe_id, project_path,
-                project_name=project_name, default_container=default_container,
+                project_name=project_name, default_container=sub_container,
                 no_build=no_build, container_runtime=container_runtime,
-                local_runtime=local_runtime, external_inputs=external,
+                local_runtime=local_runtime, external_inputs=sub_external,
+                key_prefix=key_prefix, group_name=group_name,
+                dep_keys=dep_keys, tree_output=tree_out, spec=spec,
             )
         )
 
     return assets
+
+
+def _resolve_sub_container(
+    tree_out: TreeOutput,
+    spec: dict[str, Any],
+    default_container: str | None,
+    project_path: Path | None,
+    project_name: str | None,
+    no_build: bool,
+    container_runtime: str | None,
+    local_runtime: str | None,
+) -> str | None:
+    """Resolve container for a tree output with inheritance.
+
+    Order: recipe-level > sub-analysis-level > root-level (default_container).
+    """
+    # Check sub-analysis level container
+    if tree_out.analysis_id:
+        sub_raw = tree_out.analysis_spec.get("container")
+        if sub_raw is not None and not no_build and (container_runtime or local_runtime):
+            _name = project_name or "project"
+            _path = project_path or Path.cwd()
+            return _resolve_container(
+                sub_raw, _path, _name, container_runtime, local_runtime,
+            )
+        elif sub_raw is not None and isinstance(sub_raw, str):
+            return sub_raw
+
+    return default_container
+
+
+def _resolve_recipe_deps(
+    recipe: dict[str, Any],
+    tree_out: TreeOutput,
+    spec: dict[str, Any],
+    universe_id: str,
+) -> list[dg.AssetKey] | None:
+    """Resolve recipe input dependencies to Dagster asset keys.
+
+    Handles:
+    - Simple IDs within the same analysis scope
+    - ``from:`` references on sub-analysis inputs that point to siblings
+    """
+    input_ids = recipe.get("inputs") or []
+    if not input_ids:
+        return None
+
+    deps: list[dg.AssetKey] = []
+    analysis_inputs = {
+        inp.get("id"): inp
+        for inp in get_inputs(tree_out.analysis_spec)
+    }
+
+    for inp_id in input_ids:
+        inp_def = analysis_inputs.get(inp_id)
+        if inp_def and inp_def.get("from"):
+            from_ref = inp_def["from"]
+            # ../sibling.output_id -> [universe, sibling, output_id]
+            ref = from_ref.removeprefix("../").removeprefix("/")
+            if "." in ref:
+                sub_id, sub_out = ref.split(".", 1)
+                deps.append(dg.AssetKey([universe_id, sub_id, sub_out]))
+                continue
+
+        # Same-scope dependency
+        if tree_out.analysis_id:
+            deps.append(dg.AssetKey([universe_id, tree_out.analysis_id, inp_id]))
+        else:
+            deps.append(dg.AssetKey([universe_id, inp_id]))
+
+    return deps
 
 
 def _load_universe_params(
@@ -128,6 +250,11 @@ def _build_single_asset(
     container_runtime: str | None = None,
     local_runtime: str | None = None,
     external_inputs: dict[str, str] | None = None,
+    key_prefix: list[str] | None = None,
+    group_name: str | None = None,
+    dep_keys: list[dg.AssetKey] | None = None,
+    tree_output: TreeOutput | None = None,
+    spec: dict[str, Any] | None = None,
 ) -> dg.AssetsDefinition:
     """Build a single Dagster asset from an output recipe."""
     input_ids = recipe.get("inputs") or []
@@ -150,17 +277,34 @@ def _build_single_asset(
         container = default_container
     resources = recipe.get("resources") or {}
 
-    @dg.asset(
-        name=output_id,
-        key_prefix=[universe_id],
-        deps=[dg.AssetKey([universe_id, i]) for i in input_ids],
-        metadata={
+    # Use provided key_prefix or default to [universe_id]
+    effective_prefix = key_prefix or [universe_id]
+    # Use provided dep_keys or build from input_ids
+    effective_deps = dep_keys or [dg.AssetKey([universe_id, i]) for i in input_ids]
+
+    asset_kwargs: dict[str, Any] = {
+        "name": output_id,
+        "key_prefix": effective_prefix,
+        "deps": effective_deps,
+        "metadata": {
             "command": command,
             "container": container or "default",
         },
-    )
+    }
+    if group_name:
+        asset_kwargs["group_name"] = group_name
+
+    @dg.asset(**asset_kwargs)
     def _asset(context) -> dg.MaterializeResult:
         params = _load_universe_params(project_path, universe_id)
+
+        # Determine working directory for sub-analysis recipes
+        cwd_override = None
+        if tree_output and tree_output.analysis_path and project_path:
+            cwd_override = str(
+                (project_path / tree_output.analysis_path).resolve()
+            )
+
         result = runner.execute(
             command=command,
             container=container,
@@ -170,6 +314,7 @@ def _build_single_asset(
             resources=resources,
             params=params,
             external_inputs=recipe_external,
+            cwd_override=cwd_override,
         )
         if result.metadata.get("stdout"):
             context.log.info(result.metadata["stdout"])
@@ -203,6 +348,8 @@ def build_definitions(
     or pulled before asset definitions are constructed.
     """
     spec = load_yaml(project_path / "astra.yaml")
+    # Resolve sub-analysis tree: expand path: references
+    spec = resolve_analysis_tree(spec, project_path)
     project_name = spec.get("name") or project_path.name
 
     # Build runner config from target

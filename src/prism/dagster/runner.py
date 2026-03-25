@@ -14,6 +14,98 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of characters to keep from stdout/stderr for metadata.
+_TAIL_CHARS = 2000
+
+
+def _run_streaming(
+    cmd: list[str] | str,
+    *,
+    shell: bool = False,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    """Run a command, streaming stdout/stderr to the terminal in real time.
+
+    Returns ``(returncode, stdout_tail, stderr_tail)`` where each tail
+    contains at most the last ``_TAIL_CHARS`` characters of output.
+    """
+    import selectors
+
+    stream_env = dict(env) if env else dict(os.environ)
+    stream_env["PYTHONUNBUFFERED"] = "1"
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=shell,
+        cwd=cwd,
+        env=stream_env,
+    )
+
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ)
+    sel.register(proc.stderr, selectors.EVENT_READ)
+
+    stdout_tail: list[str] = []
+    stderr_tail: list[str] = []
+    stdout_len = 0
+    stderr_len = 0
+
+    open_streams = 2
+    while open_streams > 0:
+        for key, _ in sel.select():
+            line = key.fileobj.readline()
+            if not line:
+                sel.unregister(key.fileobj)
+                open_streams -= 1
+                continue
+            if key.fileobj is proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                stdout_tail.append(line)
+                stdout_len += len(line)
+                while stdout_len > _TAIL_CHARS and len(stdout_tail) > 1:
+                    stdout_len -= len(stdout_tail.pop(0))
+            else:
+                sys.stderr.write(line)
+                sys.stderr.flush()
+                stderr_tail.append(line)
+                stderr_len += len(line)
+                while stderr_len > _TAIL_CHARS and len(stderr_tail) > 1:
+                    stderr_len -= len(stderr_tail.pop(0))
+
+    proc.wait()
+    sel.close()
+    return proc.returncode, "".join(stdout_tail), "".join(stderr_tail)
+
+
+def _find_venv(cwd: str | None, project_root: Path) -> Path | None:
+    """Find .venv by checking cwd first, then walking up to project_root."""
+    if cwd:
+        cwd_path = Path(cwd)
+        venv = cwd_path / ".venv"
+        if (venv / "bin" / "python").exists():
+            return venv
+        # Walk up to project_root
+        current = cwd_path.parent
+        root_resolved = project_root.resolve()
+        while current >= root_resolved:
+            venv = current / ".venv"
+            if (venv / "bin" / "python").exists():
+                return venv
+            if current == root_resolved:
+                break
+            current = current.parent
+
+    # Fall back to project root
+    venv = project_root / ".venv"
+    if (venv / "bin" / "python").exists():
+        return venv
+    return None
+
 
 def _substitute_python(command: str, python_path: str) -> str:
     """Replace a leading ``python `` with a specific interpreter path."""
@@ -83,6 +175,7 @@ class ASTRAContainerRunner:
         resources: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         external_inputs: dict[str, str] | None = None,
+        cwd_override: str | None = None,
     ) -> ExecutionResult:
         """Execute a recipe, dispatching to the configured backend.
 
@@ -94,8 +187,14 @@ class ASTRAContainerRunner:
         results_dir = self.project_root / "results" / universe_id
         results_dir.mkdir(parents=True, exist_ok=True)
 
+        # Effective working directory: cwd_override (for sub-analysis recipes)
+        # or project_root
+        effective_cwd = cwd_override or str(self.project_root)
+
         if self.backend == "local":
-            return self._run_local(full_command, output_id, universe_id)
+            return self._run_local(
+                full_command, output_id, universe_id, cwd=effective_cwd,
+            )
 
         if self.backend == "slurm":
             return self._run_slurm(
@@ -109,7 +208,9 @@ class ASTRAContainerRunner:
             )
 
         if self.backend == "venv":
-            return self._run_venv(full_command, output_id, universe_id)
+            return self._run_venv(
+                full_command, output_id, universe_id, cwd=effective_cwd,
+            )
 
         # Container backend — try container runtime, fall back to venv or local.
         # Note: the explicit "local" backend (set via target config) skips dep
@@ -142,6 +243,7 @@ class ASTRAContainerRunner:
                 output_id=output_id,
                 universe_id=universe_id,
                 warn=effective_container is not None,
+                cwd=effective_cwd,
             )
 
         # No .venv available — fall back to the current Python environment so
@@ -157,6 +259,7 @@ class ASTRAContainerRunner:
             output_id=output_id,
             universe_id=universe_id,
             warn=effective_container is not None,
+            cwd=effective_cwd,
         )
 
     def _run_container(
@@ -182,7 +285,7 @@ class ASTRAContainerRunner:
         ])
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            returncode, stdout_tail, stderr_tail = _run_streaming(cmd)
         except FileNotFoundError:
             return ExecutionResult(
                 exit_code=127,
@@ -191,11 +294,11 @@ class ASTRAContainerRunner:
             )
 
         return ExecutionResult(
-            exit_code=result.returncode,
+            exit_code=returncode,
             output_path=self.project_root / "results" / universe_id,
             metadata={
-                "stdout": result.stdout[-2000:] if result.stdout else "",
-                "stderr": result.stderr[-2000:] if result.stderr else "",
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
                 "backend": runtime,
                 "container_command": " ".join(cmd),
             },
@@ -207,6 +310,7 @@ class ASTRAContainerRunner:
         output_id: str,
         universe_id: str,
         warn: bool = False,
+        cwd: str | None = None,
     ) -> ExecutionResult:
         """Execute a recipe as a local subprocess.
 
@@ -222,21 +326,17 @@ class ASTRAContainerRunner:
 
         full_command = _substitute_python(command, sys.executable)
 
-        result = subprocess.run(
-            full_command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=str(self.project_root),
+        returncode, stdout_tail, stderr_tail = _run_streaming(
+            full_command, shell=True, cwd=cwd or str(self.project_root),
         )
 
         output_path = self.project_root / "results" / universe_id
         return ExecutionResult(
-            exit_code=result.returncode,
+            exit_code=returncode,
             output_path=output_path,
             metadata={
-                "stdout": result.stdout[-2000:] if result.stdout else "",
-                "stderr": result.stderr[-2000:] if result.stderr else "",
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
                 "backend": "local",
             },
         )
@@ -247,12 +347,16 @@ class ASTRAContainerRunner:
         output_id: str,
         universe_id: str,
         warn: bool = False,
+        cwd: str | None = None,
     ) -> ExecutionResult:
         """Execute a recipe in the project's virtual environment.
 
         Uses the ``.venv/`` created by ``prism init``.  Ensures that
         dependencies from ``requirements*.txt`` are installed before
         running, using a hash-based marker to skip redundant installs.
+
+        For sub-analysis recipes, the venv is resolved by walking up from
+        the working directory to the project root.
         """
         if warn:
             logger.warning(
@@ -261,10 +365,10 @@ class ASTRAContainerRunner:
                 output_id,
             )
 
-        venv_path = self.project_root / ".venv"
-        venv_python = venv_path / "bin" / "python"
+        # Find venv: check cwd first, then walk up to project root
+        venv_path = _find_venv(cwd, self.project_root)
 
-        if not venv_python.exists():
+        if venv_path is None:
             return ExecutionResult(
                 exit_code=1,
                 output_path=self.project_root / "results" / universe_id,
@@ -277,6 +381,8 @@ class ASTRAContainerRunner:
                 },
             )
 
+        venv_python = venv_path / "bin" / "python"
+
         # Ensure dependencies are installed
         self._ensure_venv_deps(venv_path)
 
@@ -288,22 +394,17 @@ class ASTRAContainerRunner:
             "PATH": f"{venv_path / 'bin'}:{os.environ.get('PATH', '')}",
         }
 
-        result = subprocess.run(
-            full_command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=str(self.project_root),
-            env=env,
+        returncode, stdout_tail, stderr_tail = _run_streaming(
+            full_command, shell=True, cwd=cwd or str(self.project_root), env=env,
         )
 
         output_path = self.project_root / "results" / universe_id
         return ExecutionResult(
-            exit_code=result.returncode,
+            exit_code=returncode,
             output_path=output_path,
             metadata={
-                "stdout": result.stdout[-2000:] if result.stdout else "",
-                "stderr": result.stderr[-2000:] if result.stderr else "",
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
                 "backend": "venv",
                 "venv_path": str(venv_path),
             },
@@ -401,11 +502,8 @@ class ASTRAContainerRunner:
         )
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=str(self.project_root),
+            returncode, stdout_tail, stderr_tail = _run_streaming(
+                cmd, cwd=str(self.project_root),
             )
         except FileNotFoundError:
             return ExecutionResult(
@@ -415,14 +513,14 @@ class ASTRAContainerRunner:
             )
 
         return ExecutionResult(
-            exit_code=result.returncode,
+            exit_code=returncode,
             output_path=output_path,
             metadata={
                 "backend": "slurm-interactive",
                 "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
                 "container_runtime": container_runtime if container else None,
-                "stdout": result.stdout[-2000:] if result.stdout else "",
-                "stderr": result.stderr[-2000:] if result.stderr else "",
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
             },
         )
 

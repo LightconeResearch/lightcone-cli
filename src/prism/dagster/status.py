@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 
 import dagster as dg
-from astra.helpers import get_outputs, load_yaml
+from astra.helpers import get_outputs, load_yaml, resolve_analysis_tree
+
+from prism.dagster.tree import TreeOutput, collect_tree_outputs
 
 logger = logging.getLogger(__name__)
 
@@ -45,41 +47,67 @@ def get_output_status(
 ) -> dict[str, str]:
     """Get materialization status for all outputs in a universe.
 
-    Returns dict mapping output_id to status string:
+    Returns dict mapping qualified output_id to status string:
     - "no_recipe": output declared but has no recipe block
     - "pending": has recipe, not yet materialized
     - "materialized": has recipe and Dagster event log confirms materialization
+
+    For sub-analysis outputs, keys are qualified: "analysis_id/output_id".
+    Root-level outputs use just "output_id".
     """
     spec = load_yaml(project_path / "astra.yaml")
-    outputs = get_outputs(spec)
+    # Resolve sub-analysis tree
+    spec = resolve_analysis_tree(spec, project_path)
 
     if instance is None:
         instance = _get_dagster_instance(project_path)
 
-    # Collect asset keys for outputs with recipes, then batch-query Dagster
-    recipe_ids = [
-        out["id"] for out in outputs
-        if out.get("id") and out.get("recipe")
-    ]
+    # Collect all outputs from the tree
+    tree_outputs = collect_tree_outputs(spec)
+
+    # Build asset keys for outputs with recipes, then batch-query Dagster
+    recipe_keys: dict[str, dg.AssetKey] = {}  # qualified_id -> asset key
+    for tree_out in tree_outputs:
+        out_id = tree_out.output_id
+        if not out_id or not tree_out.output_def.get("recipe"):
+            continue
+        if tree_out.analysis_id:
+            qualified = f"{tree_out.analysis_id}/{out_id}"
+            key = dg.AssetKey([universe_id, tree_out.analysis_id, out_id])
+        else:
+            qualified = out_id
+            key = dg.AssetKey([universe_id, out_id])
+        recipe_keys[qualified] = key
+
     materialized: set[str] = set()
-    if instance is not None and recipe_ids:
-        keys = [dg.AssetKey([universe_id, oid]) for oid in recipe_ids]
-        events = instance.get_latest_materialization_events(keys)
-        materialized = {
-            k.path[-1] for k, v in events.items() if v is not None
-        }
+    if instance is not None and recipe_keys:
+        events = instance.get_latest_materialization_events(list(recipe_keys.values()))
+        materialized_asset_keys = {k for k, v in events.items() if v is not None}
+        for qualified, key in recipe_keys.items():
+            if key in materialized_asset_keys:
+                materialized.add(qualified)
 
     status: dict[str, str] = {}
-    for out in outputs:
-        out_id = out.get("id")
+    for tree_out in tree_outputs:
+        out_id = tree_out.output_id
         if not out_id:
             continue
-        if not out.get("recipe"):
-            status[out_id] = "no_recipe"
-        elif out_id in materialized:
-            status[out_id] = "materialized"
+        if tree_out.analysis_id:
+            qualified = f"{tree_out.analysis_id}/{out_id}"
         else:
-            status[out_id] = "pending"
+            qualified = out_id
+
+        if not tree_out.output_def.get("recipe"):
+            # Check for alias outputs (from: sub.output)
+            from_ref = tree_out.output_def.get("from")
+            if from_ref and tree_out.analysis_id is None:
+                status[qualified] = "alias"
+                continue
+            status[qualified] = "no_recipe"
+        elif qualified in materialized:
+            status[qualified] = "materialized"
+        else:
+            status[qualified] = "pending"
 
     return status
 
