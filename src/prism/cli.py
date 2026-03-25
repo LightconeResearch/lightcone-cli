@@ -1251,7 +1251,8 @@ def run(
     # Select assets to materialize (exclude external/input-only assets)
     all_assets = list(defs.get_all_asset_specs())
     if output_names:
-        selection = [dg.AssetKey([universe_id, o]) for o in output_names]
+        # Support dot-notation: hod_fitting.galaxy_mesh -> [universe, hod_fitting, galaxy_mesh]
+        selection = [dg.AssetKey([universe_id] + o.split(".")) for o in output_names]
     else:
         selection = [
             spec.key for spec in all_assets

@@ -216,8 +216,11 @@ def _resolve_recipe_deps(
                 deps.append(dg.AssetKey([universe_id, sub_id, sub_out]))
                 continue
 
-        # Same-scope dependency
-        if tree_out.analysis_id:
+        # Dot-notation cross-analysis reference (e.g. hod_fitting.galaxy_mesh)
+        if "." in inp_id:
+            sub_id, sub_out = inp_id.split(".", 1)
+            deps.append(dg.AssetKey([universe_id, sub_id, sub_out]))
+        elif tree_out.analysis_id:
             deps.append(dg.AssetKey([universe_id, tree_out.analysis_id, inp_id]))
         else:
             deps.append(dg.AssetKey([universe_id, inp_id]))
