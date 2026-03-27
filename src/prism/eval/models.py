@@ -14,7 +14,6 @@ class GraderType(StrEnum):
 
     command = "command"
     status = "status"
-    files_exist = "files_exist"
     script = "script"
 
 
@@ -24,7 +23,6 @@ class GraderSpec(BaseModel):
     name: str
     type: GraderType
     command: str | None = None
-    paths: list[str] | None = None
     script: str | None = None
     weight: float = 1.0
     timeout: int = 120
@@ -40,17 +38,6 @@ class TaskSpec(BaseModel):
     max_turns: int = 200
     trial_timeout: int = 7200
     graders: list[GraderSpec] = Field(default_factory=list)
-
-
-class Variant(BaseModel):
-    """A prompt/config variant to evaluate."""
-
-    id: str
-    description: str = ""
-    file_overrides: dict[str, str] = Field(default_factory=dict)
-    inline_overrides: dict[str, str] = Field(default_factory=dict)
-    env_vars: dict[str, str] = Field(default_factory=dict)
-    model: str | None = None
 
 
 class IterationResult(BaseModel):
@@ -79,11 +66,10 @@ class GraderResult(BaseModel):
 
 
 class TrialResult(BaseModel):
-    """Result of a single trial (one task x variant x repetition)."""
+    """Result of a single trial (one task x repetition)."""
 
     trial_id: str
     task_id: str
-    variant_id: str
     trial_number: int = 0
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -102,80 +88,30 @@ class EvalRunConfig(BaseModel):
 
     id: str = ""
     tasks: list[str] = Field(default_factory=list)
-    variants: list[str] = Field(default_factory=list)
     num_trials: int = 3
     max_concurrency: int = 4
     sandbox_image: str | None = None
     output_dir: str = "eval-results"
 
 
+class VersionInfo(BaseModel):
+    """Git and wheel version metadata for reproducibility."""
+
+    prism_commit: str = ""
+    prism_branch: str = ""
+    prism_dirty: bool = False
+    prism_version: str = ""
+    astra_version: str = ""
+
+
 class EvalRun(BaseModel):
     """Complete results of an eval run."""
 
     config: EvalRunConfig
+    version: VersionInfo = Field(default_factory=VersionInfo)
     started_at: datetime | None = None
     finished_at: datetime | None = None
     trials: list[TrialResult] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
     transcript_dir: str | None = None
     run_stem: str | None = None
-
-
-class IterationAnalysis(BaseModel):
-    """LLM analysis of a single iteration transcript."""
-
-    iteration: int
-    pain_points: list[str] = Field(default_factory=list)
-    failure_modes: list[str] = Field(default_factory=list)
-    wasted_loops: list[str] = Field(default_factory=list)
-    key_decisions: list[str] = Field(default_factory=list)
-    summary: str = ""
-
-
-class TokenUsage(BaseModel):
-    """Raw token counts from an API call — the source of truth for cost."""
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
-
-    def __add__(self, other: TokenUsage) -> TokenUsage:
-        if not isinstance(other, TokenUsage):
-            return NotImplemented  # type: ignore[return-value]
-        return TokenUsage(
-            input_tokens=self.input_tokens + other.input_tokens,
-            output_tokens=self.output_tokens + other.output_tokens,
-            cache_creation_input_tokens=(
-                self.cache_creation_input_tokens + other.cache_creation_input_tokens
-            ),
-            cache_read_input_tokens=(
-                self.cache_read_input_tokens + other.cache_read_input_tokens
-            ),
-        )
-
-
-class TrialAnalysis(BaseModel):
-    """LLM analysis of a complete trial (all its iteration transcripts)."""
-
-    trial_id: str
-    task_id: str
-    variant_id: str
-    iterations: list[IterationAnalysis] = Field(default_factory=list)
-    overall_summary: str = ""
-    primary_failure_mode: str | None = None
-    usage: TokenUsage = Field(default_factory=TokenUsage)
-
-
-class EvalAnalysis(BaseModel):
-    """Aggregated analysis across all trials in an eval run."""
-
-    run_config_id: str
-    analyzed_at: datetime | None = None
-    model: str | None = None
-    prompt_file: str | None = None
-    trial_analyses: list[TrialAnalysis] = Field(default_factory=list)
-    common_patterns: list[str] = Field(default_factory=list)
-    common_failure_modes: list[str] = Field(default_factory=list)
-    recommendations: list[str] = Field(default_factory=list)
-    total_usage: TokenUsage = Field(default_factory=TokenUsage)

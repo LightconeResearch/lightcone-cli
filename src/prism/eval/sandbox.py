@@ -11,8 +11,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from prism.eval.models import Variant
-
 logger = logging.getLogger(__name__)
 
 BUILD_COMPLETE_MARKER = "BUILD_COMPLETE"
@@ -48,7 +46,6 @@ class EvalSandbox:
     WORK_DIR = "/home/evaluser/project"
 
     task_id: str = ""
-    variant_id: str = ""
     trial_id: str = ""
     sandbox_image: str | Any = None  # str for pre-built, Image for dynamic, None for default
     env_vars: dict[str, str] = field(default_factory=dict)
@@ -110,7 +107,6 @@ class EvalSandbox:
         labels = {
             "prism-eval": "true",
             "task": self.task_id,
-            "variant": self.variant_id,
             "trial": self.trial_id,
         }
 
@@ -119,7 +115,6 @@ class EvalSandbox:
             "PRISM_EVAL": "true",
             "PRISM_EVAL_TRIAL_ID": self.trial_id,
             "PRISM_EVAL_TASK_ID": self.task_id,
-            "PRISM_EVAL_VARIANT_ID": self.variant_id,
         }
         # Pass through host API keys, OAuth token, and Langfuse config
         for key in (
@@ -138,7 +133,7 @@ class EvalSandbox:
             image=image,
             labels=labels,
             env_vars=sandbox_env,
-            auto_stop_interval=30,
+            auto_stop_interval=0,  # disable auto-stop; sandbox is deleted in teardown
         )
 
         def _on_build_log(line: str) -> None:
@@ -153,31 +148,19 @@ class EvalSandbox:
     def setup(
         self,
         seed_dir: Path,
-        variant: Variant,
-        evals_dir: Path,
         universe: str,
         loop_prompt_template: str,
+        wheels: list[Path] | None = None,
     ) -> None:
-        """Upload seed project, apply variant overrides, and template the loop prompt."""
+        """Upload seed project and template the loop prompt."""
         assert self._sandbox is not None, "Call create() first"
 
-        # Upload and install dependency wheels from evals/deps/
-        self._install_deps(evals_dir)
+        # Upload and install dependency wheels
+        if wheels:
+            self._install_wheels(wheels)
 
         # Upload seed project files
         self._upload_directory(seed_dir, self.WORK_DIR)
-
-        # Apply variant file overrides
-        for dest_rel, source_rel in variant.file_overrides.items():
-            source_path = evals_dir / "variants" / source_rel
-            if source_path.exists():
-                dest_path = f"{self.WORK_DIR}/{dest_rel}"
-                self.upload_file(dest_path, source_path.read_bytes())
-
-        # Apply inline overrides
-        for dest_rel, content in variant.inline_overrides.items():
-            dest_path = f"{self.WORK_DIR}/{dest_rel}"
-            self.upload_file(dest_path, content.encode())
 
         # Template the loop prompt
         prompt = loop_prompt_template.replace("{{UNIVERSE}}", universe)
@@ -291,20 +274,12 @@ class EvalSandbox:
             settings.encode(),
         )
 
-    def _install_deps(self, evals_dir: Path) -> None:
-        """Upload and install wheel files from evals/deps/.
+    def _install_wheels(self, wheels: list[Path]) -> None:
+        """Upload and install wheel files into the sandbox.
 
-        Third-party deps (requirements.txt) are pre-installed in the sandbox image.
+        Third-party deps are pre-installed in the sandbox image.
         Only the local astra/prism wheels need to be uploaded and installed here.
         """
-        deps_dir = evals_dir / "deps"
-        if not deps_dir.exists():
-            return
-
-        wheels = sorted(deps_dir.glob("*.whl"))
-        if not wheels:
-            return
-
         self.exec("mkdir -p /tmp/deps")
 
         remote_paths: list[str] = []
@@ -322,7 +297,7 @@ class EvalSandbox:
                 result.output[-2000:],
             )
         else:
-            logger.info("Installed deps: %s", [w.name for w in wheels])
+            logger.info("Installed wheels: %s", [w.name for w in wheels])
 
     def _upload_directory(self, local_dir: Path, remote_dir: str) -> None:
         """Upload a local directory tree to the sandbox."""

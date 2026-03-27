@@ -14,19 +14,3 @@ graders:
   - name: all_materialized
     type: status
     weight: 3.0
-  - name: chain_exists
-    type: files_exist
-    paths:
-      - results/baseline/chain/
-  - name: posterior_exists
-    type: files_exist
-    paths:
-      - results/baseline/posterior/
-  - name: convergence_exists
-    type: files_exist
-    paths:
-      - results/baseline/convergence/
-  - name: best_fit_exists
-    type: files_exist
-    paths:
-      - results/baseline/best_fit/

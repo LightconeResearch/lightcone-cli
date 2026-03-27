@@ -1,8 +1,6 @@
-id: example
+id: build
 tasks:
   - snae
-variants:
-  - baseline
 num_trials: 3
 max_concurrency: 2
 # sandbox_image: optional, defaults to Daytona's debian_slim("3.12")

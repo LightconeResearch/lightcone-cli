@@ -20,7 +20,7 @@ success_criteria:
 inputs:
   - id: union21
     type: data
-    path: data/SCPUnion2.1_mu_vs_z.txt
+    source: data/SCPUnion2.1_mu_vs_z.txt
     description: "Union2.1 SN Ia compilation: 580 supernovae with redshift, distance modulus, and uncertainties"
 
 outputs:
@@ -82,10 +82,10 @@ decisions:
     label: "MCMC Chain Length"
     tags: [inference]
     rationale: "Number of MCMC steps per walker. Shorter chains run faster but may not converge; longer chains are more reliable but slower."
-    default: "200"
+    default: "1000"
     options:
-      "200":
-        label: "200 steps"
+      "1000":
+        label: "100 steps"
         description: "Short chain for fast iteration"
       "2000":
         label: "2000 steps"

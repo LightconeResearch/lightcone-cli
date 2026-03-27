@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 from collections import defaultdict
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,22 +16,20 @@ from prism.eval.models import EvalRun, TrialResult
 
 
 def compute_summary(eval_run: EvalRun) -> dict[str, Any]:
-    """Group trials by (task, variant) and compute aggregate statistics."""
-    groups: dict[tuple[str, str], list[TrialResult]] = defaultdict(list)
+    """Group trials by task and compute aggregate statistics."""
+    groups: dict[str, list[TrialResult]] = defaultdict(list)
     for trial in eval_run.trials:
-        groups[(trial.task_id, trial.variant_id)].append(trial)
+        groups[trial.task_id].append(trial)
 
     summary: dict[str, Any] = {"groups": {}, "totals": {}}
 
     all_costs: list[float] = []
     all_durations: list[float] = []
 
-    for (task_id, variant_id), trials in groups.items():
-        # Single pass over trials to collect all stats
+    for task_id, trials in groups.items():
         scores: list[float] = []
         costs: list[float] = []
         durations: list[float] = []
-        iterations: list[int] = []
         completions = 0
         errors = 0
 
@@ -43,7 +40,6 @@ def compute_summary(eval_run: EvalRun) -> dict[str, Any]:
             scores.append(t.composite_score)
             costs.append(t.total_cost_usd)
             durations.append(t.total_duration_seconds)
-            iterations.append(len(t.iterations))
             if t.build_complete:
                 completions += 1
 
@@ -56,12 +52,9 @@ def compute_summary(eval_run: EvalRun) -> dict[str, Any]:
         )
         mean_cost = sum(costs) / n if n > 0 else 0.0
         mean_duration = sum(durations) / n if n > 0 else 0.0
-        mean_iterations = sum(iterations) / n if n > 0 else 0.0
 
-        key = f"{task_id}/{variant_id}"
-        summary["groups"][key] = {
+        summary["groups"][task_id] = {
             "task_id": task_id,
-            "variant_id": variant_id,
             "num_trials": len(trials),
             "num_errors": errors,
             "mean_score": round(mean_score, 4),
@@ -69,7 +62,6 @@ def compute_summary(eval_run: EvalRun) -> dict[str, Any]:
             "pass_at_k": completions / len(trials) if trials else 0.0,
             "mean_cost_usd": round(mean_cost, 4),
             "mean_duration_seconds": round(mean_duration, 1),
-            "mean_iterations": round(mean_iterations, 1),
         }
 
         all_costs.extend(costs)
@@ -82,29 +74,6 @@ def compute_summary(eval_run: EvalRun) -> dict[str, Any]:
     }
 
     return summary
-
-
-def _build_grid_table(
-    title: str,
-    task_ids: list[str],
-    variant_ids: list[str],
-    groups: dict[str, Any],
-    cell_fn: Callable[[dict[str, Any]], str],
-) -> Table:
-    """Build a Rich table with tasks as rows and variants as columns."""
-    table = Table(title=title, show_lines=True)
-    table.add_column("Task", style="bold")
-    for vid in variant_ids:
-        table.add_column(vid, justify="center")
-
-    for tid in task_ids:
-        row: list[str] = [tid]
-        for vid in variant_ids:
-            g = groups.get(f"{tid}/{vid}")
-            row.append(cell_fn(g) if g is not None else "-")
-        table.add_row(*row)
-
-    return table
 
 
 def _score_cell(g: dict[str, Any]) -> str:
@@ -130,15 +99,14 @@ def _cost_cell(g: dict[str, Any]) -> str:
     """Format a cost/duration cell."""
     cost = g["mean_cost_usd"]
     dur = g["mean_duration_seconds"]
-    iters = g["mean_iterations"]
-    return f"${cost:.2f}\n{dur:.0f}s\n{iters:.1f} iters"
+    return f"${cost:.2f}\n{dur:.0f}s"
 
 
 def print_comparison_table(
     eval_run: EvalRun,
     console: Console | None = None,
 ) -> None:
-    """Print a Rich comparison table of eval results."""
+    """Print a Rich summary table of eval results."""
     if console is None:
         console = Console()
 
@@ -149,22 +117,22 @@ def print_comparison_table(
         console.print("[yellow]No results to display.[/yellow]")
         return
 
-    # Collect unique tasks and variants (preserving insertion order)
-    task_ids: list[str] = []
-    variant_ids: list[str] = []
-    for g in groups.values():
-        if g["task_id"] not in task_ids:
-            task_ids.append(g["task_id"])
-        if g["variant_id"] not in variant_ids:
-            variant_ids.append(g["variant_id"])
+    # Scores table
+    score_table = Table(title="Eval Results: Scores", show_lines=True)
+    score_table.add_column("Task", style="bold")
+    score_table.add_column("Score", justify="center")
+    for task_id, g in groups.items():
+        score_table.add_row(task_id, _score_cell(g))
+    console.print(score_table)
 
-    console.print(
-        _build_grid_table("Eval Results: Scores", task_ids, variant_ids, groups, _score_cell)
-    )
+    # Cost table
     console.print()
-    console.print(_build_grid_table(
-        "Eval Results: Cost & Duration", task_ids, variant_ids, groups, _cost_cell,
-    ))
+    cost_table = Table(title="Eval Results: Cost & Duration", show_lines=True)
+    cost_table.add_column("Task", style="bold")
+    cost_table.add_column("Cost / Duration", justify="center")
+    for task_id, g in groups.items():
+        cost_table.add_row(task_id, _cost_cell(g))
+    console.print(cost_table)
 
     # Totals
     totals = summary.get("totals", {})
@@ -197,7 +165,7 @@ def print_comparison_between(
         return
 
     table = Table(title="Eval Comparison", show_lines=True)
-    table.add_column("Task/Variant", style="bold")
+    table.add_column("Task", style="bold")
     table.add_column("Run 1 Score", justify="center")
     table.add_column("Run 2 Score", justify="center")
     table.add_column("Delta", justify="center")
@@ -222,18 +190,18 @@ def print_comparison_between(
 
 
 def save_results(eval_run: EvalRun, output_dir: str | Path) -> Path:
-    """Save full EvalRun to JSON."""
+    """Save full EvalRun to JSON inside the run's sidecar directory."""
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     if eval_run.run_stem:
-        filename = f"{eval_run.run_stem}.json"
+        run_dir = output_dir / eval_run.run_stem
     else:
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         run_id = eval_run.config.id or "eval"
-        filename = f"{run_id}-{timestamp}.json"
+        run_dir = output_dir / f"{run_id}-{timestamp}"
 
-    output_path = output_dir / filename
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output_path = run_dir / "results.json"
     data = eval_run.model_dump(mode="json")
     output_path.write_text(json.dumps(data, indent=2, default=str))
 
@@ -244,35 +212,3 @@ def load_results(path: Path) -> EvalRun:
     """Load an EvalRun from a JSON file."""
     data = json.loads(path.read_text())
     return EvalRun.model_validate(data)
-
-
-def load_transcripts(
-    results_path: Path,
-    eval_run: EvalRun | None = None,
-) -> dict[str, dict[int, str]]:
-    """Load JSONL transcripts for a saved eval run.
-
-    Returns a dict mapping trial_id -> {iteration_number -> JSONL content}.
-    Discovers sidecar files via transcript_path fields on iterations,
-    falling back to the convention ``{results_stem}/logs/{trial_id}/``.
-    """
-    if eval_run is None:
-        eval_run = load_results(results_path)
-    sidecar_base = results_path.parent / results_path.stem / "logs"
-
-    transcripts: dict[str, dict[int, str]] = {}
-    for trial in eval_run.trials:
-        trial_transcripts: dict[int, str] = {}
-        for iteration in trial.iterations:
-            if iteration.transcript_path:
-                full_path = results_path.parent / iteration.transcript_path
-            else:
-                full_path = sidecar_base / trial.trial_id / "transcript.jsonl"
-
-            if full_path.exists():
-                trial_transcripts[iteration.iteration] = full_path.read_text()
-
-        if trial_transcripts:
-            transcripts[trial.trial_id] = trial_transcripts
-
-    return transcripts

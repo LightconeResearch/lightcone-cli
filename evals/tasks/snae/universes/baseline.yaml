@@ -3,5 +3,5 @@ description: Default configuration using standard practices
 decisions:
   sampler: emcee
   error_model: stat_and_sys
-  nsteps: "200"
+  nsteps: "1000"
   redshift_cut: z_min_001

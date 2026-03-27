@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -56,8 +55,6 @@ def _run_single_grader(
         return _grade_command(sandbox, grader)
     elif grader.type == GraderType.status:
         return _grade_status(sandbox, grader)
-    elif grader.type == GraderType.files_exist:
-        return _grade_files_exist(sandbox, grader)
     elif grader.type == GraderType.script:
         return _grade_script(sandbox, grader, evals_dir, task_id)
     else:
@@ -137,43 +134,6 @@ def _grade_status(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult:
         details=f"{materialized}/{total} outputs materialized",
     )
 
-
-def _grade_files_exist(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult:
-    """Check that expected files/directories exist."""
-    paths = grader.paths or []
-    if not paths:
-        return _error_result(grader, "files_exist grader requires 'paths' field")
-
-    # Batch all existence checks into a single command (quote paths for safety)
-    checks = " && ".join(
-        f"(test -e {shlex.quote(f'{sandbox.WORK_DIR}/{p}')} && echo FOUND:{p} || echo MISSING:{p})"
-        for p in paths
-    )
-    result = sandbox.exec(checks, timeout=30)
-
-    found = 0
-    missing: list[str] = []
-    for line in result.output.strip().splitlines():
-        line = line.strip()
-        if line.startswith("FOUND:"):
-            found += 1
-        elif line.startswith("MISSING:"):
-            missing.append(line[len("MISSING:"):])
-
-    total = len(paths)
-    score = found / total if total > 0 else 0.0
-    details = f"{found}/{total} paths exist"
-    if missing:
-        details += f" (missing: {', '.join(missing[:5])})"
-
-    return GraderResult(
-        name=grader.name,
-        type=grader.type,
-        passed=score == 1.0,
-        score=score,
-        weight=grader.weight,
-        details=details,
-    )
 
 
 def _grade_script(

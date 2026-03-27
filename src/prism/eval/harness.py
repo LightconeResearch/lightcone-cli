@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from prism.eval.build import build_eval_wheels
 from prism.eval.graders import compute_composite_score, run_graders
 from prism.eval.models import (
     EvalRun,
@@ -22,7 +23,7 @@ from prism.eval.models import (
     IterationResult,
     TaskSpec,
     TrialResult,
-    Variant,
+    VersionInfo,
 )
 from prism.eval.sandbox import BUILD_COMPLETE_MARKER, EvalSandbox
 
@@ -44,16 +45,6 @@ def load_task(evals_dir: Path, task_id: str) -> TaskSpec:
     return TaskSpec(**data)
 
 
-def load_variant(evals_dir: Path, variant_id: str) -> Variant:
-    """Load a Variant from evals/variants/<variant_id>.yaml."""
-    variant_file = evals_dir / "variants" / f"{variant_id}.yaml"
-    try:
-        data = yaml.safe_load(variant_file.read_text())
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Variant not found: {variant_file}") from None
-    return Variant(**data)
-
-
 def load_run_config(config_path: Path) -> EvalRunConfig:
     """Load an EvalRunConfig from a YAML file."""
     data = yaml.safe_load(config_path.read_text())
@@ -62,7 +53,6 @@ def load_run_config(config_path: Path) -> EvalRunConfig:
 
 def _get_loop_prompt(evals_dir: Path, task_id: str) -> str:
     """Get loop prompt template: task-specific or default."""
-    # Check for task-specific loop prompt
     task_prompt = evals_dir / "tasks" / task_id / "loop-prompt.md"
     if task_prompt.exists():
         return task_prompt.read_text()
@@ -71,34 +61,30 @@ def _get_loop_prompt(evals_dir: Path, task_id: str) -> str:
 
 def run_trial(
     task: TaskSpec,
-    variant: Variant,
     trial_number: int,
     *,
     evals_dir: Path,
     config: EvalRunConfig,
     run_id: str,
+    wheels: list[Path],
     sidecar_dir: Path | None = None,
 ) -> TrialResult:
-    """Run a single trial: create sandbox -> build loop -> grade -> teardown."""
-    trial_id = f"{run_id}-{task.id}-{variant.id}-{trial_number}"
+    """Run a single trial: create sandbox -> run /prism-build -> grade -> teardown."""
+    trial_id = f"{run_id}-{task.id}-{trial_number}"
     trial = TrialResult(
         trial_id=trial_id,
         task_id=task.id,
-        variant_id=variant.id,
         trial_number=trial_number,
         started_at=datetime.now(UTC),
     )
 
-    # Merge variant env vars with eval metadata
     env_vars = {
-        **variant.env_vars,
         "PRISM_EVAL_RUN_ID": run_id,
         "CLAUDE_CODE_SESSION_ID": f"eval-{trial_id}",
     }
 
     sandbox = EvalSandbox(
         task_id=task.id,
-        variant_id=variant.id,
         trial_id=trial_id,
         sandbox_image=config.sandbox_image,
         env_vars=env_vars,
@@ -112,10 +98,9 @@ def run_trial(
 
         sandbox.setup(
             seed_dir=seed_dir,
-            variant=variant,
-            evals_dir=evals_dir,
             universe=task.universe,
             loop_prompt_template=loop_prompt,
+            wheels=wheels,
         )
 
         # Single invocation: /prism-build handles its own loop internally
@@ -124,7 +109,6 @@ def run_trial(
             claude_result = sandbox.exec_claude(
                 max_turns=task.max_turns,
                 timeout=task.trial_timeout,
-                model=variant.model,
             )
             duration = time.monotonic() - start
 
@@ -190,19 +174,17 @@ def run_eval(
     progress_callback: Callable[[TrialResult], None] | None = None,
     dry_run: bool = False,
 ) -> EvalRun:
-    """Run all trials: tasks x variants x num_trials with ThreadPoolExecutor."""
+    """Run all trials: tasks x num_trials with ThreadPoolExecutor."""
     run_id = config.id or str(uuid.uuid4())[:8]
 
-    # Load all tasks and variants
+    # Load all tasks
     tasks = [load_task(evals_dir, tid) for tid in config.tasks]
-    variants = [load_variant(evals_dir, vid) for vid in config.variants]
 
     # Build trial schedule
     schedule: list[dict[str, Any]] = []
     for task in tasks:
-        for variant in variants:
-            for n in range(config.num_trials):
-                schedule.append({"task": task, "variant": variant, "trial_number": n})
+        for n in range(config.num_trials):
+            schedule.append({"task": task, "trial_number": n})
 
     if dry_run:
         return EvalRun(
@@ -210,19 +192,23 @@ def run_eval(
             started_at=datetime.now(UTC),
             finished_at=datetime.now(UTC),
             summary={"dry_run": True, "total_trials": len(schedule), "schedule": [
-                {"task": s["task"].id, "variant": s["variant"].id, "trial": s["trial_number"]}
+                {"task": s["task"].id, "trial": s["trial_number"]}
                 for s in schedule
             ]},
         )
 
-    # Compute run stem and sidecar directory for transcript logs
-    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    run_stem = f"{run_id}-{timestamp}"
+    # Build Prism wheel from current working tree + collect ASTRA wheel
+    version_info, wheels = build_eval_wheels(evals_dir)
+
+    # Compute run stem using git commit for traceability
+    commit_short = version_info.prism_commit[:8] or "unknown"
+    run_stem = f"{run_id}-{commit_short}"
     output_base = Path(config.output_dir)
     sidecar_dir = output_base / run_stem / "logs"
 
     eval_run = EvalRun(
         config=config,
+        version=version_info,
         started_at=datetime.now(UTC),
         run_stem=run_stem,
         transcript_dir=str(sidecar_dir),
@@ -247,11 +233,11 @@ def run_eval(
                 pool.submit(
                     run_trial,
                     s["task"],
-                    s["variant"],
                     s["trial_number"],
                     evals_dir=evals_dir,
                     config=config,
                     run_id=run_id,
+                    wheels=wheels,
                     sidecar_dir=sidecar_dir,
                 ): s
                 for s in schedule
@@ -268,7 +254,6 @@ def run_eval(
                     trial = TrialResult(
                         trial_id=f"{run_id}-error",
                         task_id=s["task"].id,
-                        variant_id=s["variant"].id,
                         trial_number=s["trial_number"],
                         error=str(exc),
                     )
