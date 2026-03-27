@@ -24,7 +24,7 @@ Then tell the agent `/prism-new` to scope your research question.
 Guides you from a research question to a complete `astra.yaml` specification through interactive conversation. The agent will:
 
 - Help you identify the key decisions (methodological choices) in your analysis
-- Search for and read relevant papers, extracting insights with exact verified quotes
+- Search for and read relevant papers, extracting prior insights with exact verified quotes
 - Structure decisions with options, defaults, and constraints between them
 - Build universe files representing defensible alternative analysis paths
 - Link literature evidence to the decision options it supports
@@ -108,7 +108,7 @@ Decisions can be conditional on other choices (`when`), mutually exclusive (`inc
 
 ### Literature integration
 
-The agent can search for papers, download PDFs by DOI, and extract insights with exact quotes. Quotes are machine-verified against the source PDFs using fuzzy matching with Unicode normalization. Insights are linked to the decision options they support, creating a traceable evidence chain.
+The agent can search for papers, download PDFs by DOI, and extract prior insights with exact quotes. Quotes are machine-verified against the source PDFs using fuzzy matching with Unicode normalization. Prior insights are linked to the decision options they support, creating a traceable evidence chain. After the analysis runs, findings capture what was learned from the outputs.
 
 ### Sub-analyses
 

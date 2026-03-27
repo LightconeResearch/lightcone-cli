@@ -4,7 +4,7 @@ Comprehensive reference for astra.yaml structure, decision parameterization, rec
 
 ## astra.yaml Structure
 
-The spec is **self-similar** -- every level (top or sub-analysis) has the same fields: `name`, `description`, `version`, `authors`, `tags`, `inputs`, `outputs`, `decisions`, `insights`, `analyses`, `container`, `success_criteria`.
+The spec is **self-similar** -- every level (top or sub-analysis) has the same fields: `name`, `description`, `version`, `authors`, `tags`, `inputs`, `outputs`, `decisions`, `prior_insights`, `findings`, `analyses`, `container`, `success_criteria`.
 
 ### When to Create Sub-Analyses
 
@@ -173,7 +173,7 @@ outputs:
 ```bash
 # astra -- spec operations
 astra validate astra.yaml                       # Validate (run after every change)
-astra validate astra.yaml --verify-evidence     # + verify insight quotes against PDFs
+astra validate astra.yaml --verify-evidence     # + verify prior insight quotes against PDFs
 astra info [--decisions]                      # Analysis summary / decision details
 astra universe generate -n NAME [-d "desc"]   # Generate universe from defaults
 astra universe check universes/x.yaml         # Check universe constraints
@@ -213,12 +213,19 @@ astra universe generate -n experiment1 -d "Testing hypothesis X"
 
 Container status: `prebuilt: image`, `build: Containerfile (built)`, or `(not built)` (needs `prism build`).
 
-## Insights Format
+## Prior Insights and Findings
 
-Insights link evidence to decisions using W3C selectors:
+ASTRA distinguishes two kinds of knowledge, both using the same `Insight` model. The placement determines direction:
+
+- **Prior insights** (`prior_insights:`) -- backward-looking. Knowledge from literature or prior artifacts that informs decisions. Has `evidence`.
+- **Findings** (`findings:`) -- forward-looking. Conclusions derived from analysis outputs. Has `outputs`.
+
+At least one of `evidence` or `outputs` must be non-empty. An insight can have both (e.g., a finding that also cites literature).
+
+### Prior Insights
 
 ```yaml
-insights:
+prior_insights:
   layer_norm_stability:
     id: layer_norm_stability
     claim: "Layer normalization improves training stability"
@@ -241,15 +248,19 @@ Link to decisions: `options: { layer_norm: { insights: [layer_norm_stability] } 
 
 Literature is integrated into `/prism-new` during scoping.
 
-Artifacts (computed outputs) use `artifact:` instead of `doi:`:
+### Findings
 
 ```yaml
-evidence:
-  - id: e1
-    artifact: "accuracy"
-    quote:
-      exact: "StandardScaler achieved 97% accuracy vs 91% for MinMaxScaler"
+findings:
+  scaling_result:
+    id: scaling_result
+    claim: "StandardScaler achieves 3% higher accuracy than MinMaxScaler across all models"
+    created_at: "2025-02-01T14:00:00"
+    outputs: [accuracy, model_comparison]
+    tags: [preprocessing, performance]
 ```
+
+Findings are written after the analysis produces outputs -- they summarize conclusions derived from the results, framed in terms of the analysis aims.
 
 ## Failure Diagnosis
 
