@@ -6,7 +6,6 @@ from unittest.mock import MagicMock
 
 from prism.eval.graders import (
     _grade_command,
-    _grade_files_exist,
     _grade_status,
     compute_composite_score,
     run_graders,
@@ -49,8 +48,12 @@ class TestGradeCommand:
 
 class TestGradeStatus:
     def test_all_materialized(self):
-        status_json = '[{"id": "a", "status": "ok"}, {"id": "b", "status": "ok"}]'
-        sandbox = _mock_sandbox({"prism status": ExecuteResult(exit_code=0, output=status_json)})
+        status_output = (
+            "┃ Output ┃ baseline ┃\n"
+            "│ chain  │ ok       │\n"
+            "│ plot   │ ok       │\n"
+        )
+        sandbox = _mock_sandbox({"prism status": ExecuteResult(exit_code=0, output=status_output)})
         grader = GraderSpec(name="status", type=GraderType.status, weight=3.0)
         result = _grade_status(sandbox, grader)
         assert result.passed is True
@@ -58,8 +61,12 @@ class TestGradeStatus:
         assert result.weight == 3.0
 
     def test_partial_materialization(self):
-        status_json = '[{"id": "a", "status": "ok"}, {"id": "b", "status": "pending"}]'
-        sandbox = _mock_sandbox({"prism status": ExecuteResult(exit_code=0, output=status_json)})
+        status_output = (
+            "┃ Output ┃ baseline ┃\n"
+            "│ chain  │ ok       │\n"
+            "│ plot   │ pending  │\n"
+        )
+        sandbox = _mock_sandbox({"prism status": ExecuteResult(exit_code=0, output=status_output)})
         grader = GraderSpec(name="status", type=GraderType.status)
         result = _grade_status(sandbox, grader)
         assert result.passed is False
@@ -69,37 +76,6 @@ class TestGradeStatus:
         sandbox = _mock_sandbox({"prism status": ExecuteResult(exit_code=1, output="error")})
         grader = GraderSpec(name="status", type=GraderType.status)
         result = _grade_status(sandbox, grader)
-        assert result.error is not None
-
-
-class TestGradeFilesExist:
-    def test_all_exist(self):
-        output = "FOUND:a/\nFOUND:b/\n"
-        sandbox = _mock_sandbox({"test -e": ExecuteResult(exit_code=0, output=output)})
-        grader = GraderSpec(
-            name="files", type=GraderType.files_exist, paths=["a/", "b/"]
-        )
-        result = _grade_files_exist(sandbox, grader)
-        assert result.passed is True
-        assert result.score == 1.0
-        # Single batched exec call
-        sandbox.exec.assert_called_once()
-
-    def test_some_missing(self):
-        output = "FOUND:a/\nMISSING:b/\n"
-        sandbox = _mock_sandbox({"test -e": ExecuteResult(exit_code=0, output=output)})
-        grader = GraderSpec(
-            name="files", type=GraderType.files_exist, paths=["a/", "b/"]
-        )
-        result = _grade_files_exist(sandbox, grader)
-        assert result.passed is False
-        assert result.score == 0.5
-        assert "b/" in result.details
-
-    def test_no_paths(self):
-        sandbox = _mock_sandbox()
-        grader = GraderSpec(name="files", type=GraderType.files_exist, paths=[])
-        result = _grade_files_exist(sandbox, grader)
         assert result.error is not None
 
 

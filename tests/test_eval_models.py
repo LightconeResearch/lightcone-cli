@@ -13,7 +13,7 @@ from prism.eval.models import (
     IterationResult,
     TaskSpec,
     TrialResult,
-    Variant,
+    VersionInfo,
 )
 
 
@@ -29,10 +29,6 @@ class TestGraderSpec:
         g = GraderSpec(name="status", type=GraderType.status, weight=3.0)
         assert g.weight == 3.0
 
-    def test_files_exist_grader(self):
-        g = GraderSpec(name="files", type=GraderType.files_exist, paths=["a/", "b/"])
-        assert g.paths == ["a/", "b/"]
-
     def test_script_grader(self):
         g = GraderSpec(name="custom", type=GraderType.script, script="check.py")
         assert g.script == "check.py"
@@ -41,8 +37,7 @@ class TestGraderSpec:
 class TestTaskSpec:
     def test_defaults(self):
         t = TaskSpec(id="test")
-        assert t.max_iterations == 15
-        assert t.max_turns == 25
+        assert t.max_turns == 200
         assert t.trial_timeout == 7200
         assert t.graders == []
 
@@ -51,27 +46,9 @@ class TestTaskSpec:
             id="stellar-mass",
             description="Test task",
             universe="baseline",
-            max_iterations=10,
             graders=[GraderSpec(name="g1", type=GraderType.command, command="true")],
         )
         assert len(t.graders) == 1
-
-
-class TestVariant:
-    def test_baseline(self):
-        v = Variant(id="baseline")
-        assert v.file_overrides == {}
-        assert v.model is None
-
-    def test_with_overrides(self):
-        v = Variant(
-            id="concise",
-            file_overrides={"a.md": "b.md"},
-            env_vars={"FOO": "bar"},
-            model="claude-sonnet-4-6",
-        )
-        assert v.file_overrides == {"a.md": "b.md"}
-        assert v.model == "claude-sonnet-4-6"
 
 
 class TestIterationResult:
@@ -92,7 +69,6 @@ class TestTrialResult:
         trial = TrialResult(
             trial_id="t-1",
             task_id="task1",
-            variant_id="baseline",
             started_at=datetime(2026, 3, 15, tzinfo=UTC),
             iterations=[IterationResult(iteration=0, cost_usd=0.1)],
             grader_results=[
@@ -119,11 +95,30 @@ class TestEvalRunConfig:
         config = EvalRunConfig(
             id="test-run",
             tasks=["t1"],
-            variants=["v1"],
             num_trials=5,
         )
         assert config.id == "test-run"
         assert config.tasks == ["t1"]
+
+
+class TestVersionInfo:
+    def test_defaults(self):
+        v = VersionInfo()
+        assert v.prism_commit == ""
+        assert v.prism_dirty is False
+
+    def test_roundtrip(self):
+        v = VersionInfo(
+            prism_commit="abc123",
+            prism_branch="main",
+            prism_dirty=True,
+            prism_version="0.0.2",
+            astra_version="0.0.8",
+        )
+        data = v.model_dump(mode="json")
+        restored = VersionInfo(**data)
+        assert restored.prism_commit == "abc123"
+        assert restored.prism_dirty is True
 
 
 class TestEvalRun:
@@ -134,13 +129,13 @@ class TestEvalRun:
 
     def test_roundtrip(self):
         run = EvalRun(
-            config=EvalRunConfig(id="r1", tasks=["t1"], variants=["v1"]),
+            config=EvalRunConfig(id="r1", tasks=["t1"]),
+            version=VersionInfo(prism_commit="abc123"),
             started_at=datetime(2026, 3, 15, tzinfo=UTC),
             trials=[
                 TrialResult(
                     trial_id="t-1",
                     task_id="t1",
-                    variant_id="v1",
                     composite_score=0.75,
                 )
             ],
@@ -149,3 +144,4 @@ class TestEvalRun:
         restored = EvalRun(**data)
         assert len(restored.trials) == 1
         assert restored.trials[0].composite_score == 0.75
+        assert restored.version.prism_commit == "abc123"

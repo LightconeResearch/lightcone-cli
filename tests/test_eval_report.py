@@ -27,7 +27,6 @@ from prism.eval.report import (
 
 def _make_trial(
     task_id: str = "t1",
-    variant_id: str = "v1",
     score: float = 0.8,
     cost: float = 0.1,
     duration: float = 60.0,
@@ -35,9 +34,8 @@ def _make_trial(
     error: str | None = None,
 ) -> TrialResult:
     return TrialResult(
-        trial_id=f"{task_id}-{variant_id}-0",
+        trial_id=f"{task_id}-0",
         task_id=task_id,
-        variant_id=variant_id,
         iterations=[IterationResult(iteration=0, cost_usd=cost, duration_seconds=duration)],
         grader_results=[
             GraderResult(name="g1", type=GraderType.command, score=score, weight=1.0)
@@ -52,7 +50,7 @@ def _make_trial(
 
 def _make_eval_run(trials: list[TrialResult] | None = None) -> EvalRun:
     return EvalRun(
-        config=EvalRunConfig(id="test", tasks=["t1"], variants=["v1"]),
+        config=EvalRunConfig(id="test", tasks=["t1"]),
         started_at=datetime(2026, 3, 15, tzinfo=UTC),
         trials=trials or [_make_trial()],
     )
@@ -63,8 +61,8 @@ class TestComputeSummary:
         run = _make_eval_run()
         summary = compute_summary(run)
         groups = summary["groups"]
-        assert "t1/v1" in groups
-        g = groups["t1/v1"]
+        assert "t1" in groups
+        g = groups["t1"]
         assert g["mean_score"] == 0.8
         assert g["pass_at_k"] == 1.0
         assert g["mean_cost_usd"] == 0.1
@@ -75,7 +73,7 @@ class TestComputeSummary:
             _make_trial(score=0.5, cost=0.2),
         ])
         summary = compute_summary(run)
-        g = summary["groups"]["t1/v1"]
+        g = summary["groups"]["t1"]
         assert g["mean_score"] == 0.75
         assert g["num_trials"] == 2
 
@@ -85,7 +83,7 @@ class TestComputeSummary:
             _make_trial(error="boom"),
         ])
         summary = compute_summary(run)
-        g = summary["groups"]["t1/v1"]
+        g = summary["groups"]["t1"]
         assert g["num_errors"] == 1
         # Error trials excluded from score calculation
         assert g["mean_score"] == 1.0
@@ -128,9 +126,12 @@ class TestPrintComparisonBetween:
 class TestSaveAndLoad:
     def test_roundtrip(self, tmp_path: Path):
         run = _make_eval_run()
+        run.run_stem = "test-abc123"
         run.summary = compute_summary(run)
         path = save_results(run, tmp_path)
         assert path.exists()
+        assert path.name == "results.json"
+        assert "test-abc123" in str(path.parent)
 
         loaded = load_results(path)
         assert loaded.config.id == "test"
@@ -139,6 +140,7 @@ class TestSaveAndLoad:
 
     def test_json_is_valid(self, tmp_path: Path):
         run = _make_eval_run()
+        run.run_stem = "test-abc123"
         run.summary = compute_summary(run)
         path = save_results(run, tmp_path)
         data = json.loads(path.read_text())
