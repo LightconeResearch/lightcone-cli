@@ -50,7 +50,7 @@ def compute_summary(eval_run: EvalRun) -> dict[str, Any]:
         n = len(scores)
         mean_score = sum(scores) / n if n > 0 else 0.0
         stderr_score = (
-            math.sqrt(sum((s - mean_score) ** 2 for s in scores) / n) / math.sqrt(n)
+            math.sqrt(sum((s - mean_score) ** 2 for s in scores) / (n - 1)) / math.sqrt(n)
             if n > 1
             else 0.0
         )
@@ -226,11 +226,14 @@ def save_results(eval_run: EvalRun, output_dir: str | Path) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    run_id = eval_run.config.id or "eval"
-    filename = f"{run_id}-{timestamp}.json"
-    output_path = output_dir / filename
+    if eval_run.run_stem:
+        filename = f"{eval_run.run_stem}.json"
+    else:
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        run_id = eval_run.config.id or "eval"
+        filename = f"{run_id}-{timestamp}.json"
 
+    output_path = output_dir / filename
     data = eval_run.model_dump(mode="json")
     output_path.write_text(json.dumps(data, indent=2, default=str))
 
@@ -240,4 +243,36 @@ def save_results(eval_run: EvalRun, output_dir: str | Path) -> Path:
 def load_results(path: Path) -> EvalRun:
     """Load an EvalRun from a JSON file."""
     data = json.loads(path.read_text())
-    return EvalRun(**data)
+    return EvalRun.model_validate(data)
+
+
+def load_transcripts(
+    results_path: Path,
+    eval_run: EvalRun | None = None,
+) -> dict[str, dict[int, str]]:
+    """Load JSONL transcripts for a saved eval run.
+
+    Returns a dict mapping trial_id -> {iteration_number -> JSONL content}.
+    Discovers sidecar files via transcript_path fields on iterations,
+    falling back to the convention ``{results_stem}/logs/{trial_id}/``.
+    """
+    if eval_run is None:
+        eval_run = load_results(results_path)
+    sidecar_base = results_path.parent / results_path.stem / "logs"
+
+    transcripts: dict[str, dict[int, str]] = {}
+    for trial in eval_run.trials:
+        trial_transcripts: dict[int, str] = {}
+        for iteration in trial.iterations:
+            if iteration.transcript_path:
+                full_path = results_path.parent / iteration.transcript_path
+            else:
+                full_path = sidecar_base / trial.trial_id / "transcript.jsonl"
+
+            if full_path.exists():
+                trial_transcripts[iteration.iteration] = full_path.read_text()
+
+        if trial_transcripts:
+            transcripts[trial.trial_id] = trial_transcripts
+
+    return transcripts

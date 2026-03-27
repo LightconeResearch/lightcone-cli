@@ -37,9 +37,7 @@ class TaskSpec(BaseModel):
     description: str = ""
     seed_project: str = ""
     universe: str = "baseline"
-    max_iterations: int = 15
-    max_turns: int = 25
-    iteration_timeout: int = 600
+    max_turns: int = 200
     trial_timeout: int = 7200
     graders: list[GraderSpec] = Field(default_factory=list)
 
@@ -65,6 +63,7 @@ class IterationResult(BaseModel):
     build_complete: bool = False
     output_summary: str = ""
     error: str | None = None
+    transcript_path: str | None = None
 
 
 class GraderResult(BaseModel):
@@ -118,3 +117,65 @@ class EvalRun(BaseModel):
     finished_at: datetime | None = None
     trials: list[TrialResult] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
+    transcript_dir: str | None = None
+    run_stem: str | None = None
+
+
+class IterationAnalysis(BaseModel):
+    """LLM analysis of a single iteration transcript."""
+
+    iteration: int
+    pain_points: list[str] = Field(default_factory=list)
+    failure_modes: list[str] = Field(default_factory=list)
+    wasted_loops: list[str] = Field(default_factory=list)
+    key_decisions: list[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+class TokenUsage(BaseModel):
+    """Raw token counts from an API call — the source of truth for cost."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        if not isinstance(other, TokenUsage):
+            return NotImplemented  # type: ignore[return-value]
+        return TokenUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_creation_input_tokens=(
+                self.cache_creation_input_tokens + other.cache_creation_input_tokens
+            ),
+            cache_read_input_tokens=(
+                self.cache_read_input_tokens + other.cache_read_input_tokens
+            ),
+        )
+
+
+class TrialAnalysis(BaseModel):
+    """LLM analysis of a complete trial (all its iteration transcripts)."""
+
+    trial_id: str
+    task_id: str
+    variant_id: str
+    iterations: list[IterationAnalysis] = Field(default_factory=list)
+    overall_summary: str = ""
+    primary_failure_mode: str | None = None
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+
+
+class EvalAnalysis(BaseModel):
+    """Aggregated analysis across all trials in an eval run."""
+
+    run_config_id: str
+    analyzed_at: datetime | None = None
+    model: str | None = None
+    prompt_file: str | None = None
+    trial_analyses: list[TrialAnalysis] = Field(default_factory=list)
+    common_patterns: list[str] = Field(default_factory=list)
+    common_failure_modes: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    total_usage: TokenUsage = Field(default_factory=TokenUsage)

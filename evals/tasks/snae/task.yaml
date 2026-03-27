@@ -5,9 +5,7 @@ description: >
   materialize all outputs, and pass convergence criteria.
 seed_project: snae
 universe: baseline
-max_iterations: 15
-max_turns: 25
-iteration_timeout: 600
+max_turns: 200
 trial_timeout: 7200
 graders:
   - name: spec_valid

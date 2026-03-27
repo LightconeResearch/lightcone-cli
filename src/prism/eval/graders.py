@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -66,9 +66,11 @@ def _run_single_grader(
 
 def _grade_command(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult:
     """Run a shell command; exit 0 = pass."""
-    assert grader.command is not None, "command grader requires 'command' field"
+    if grader.command is None:
+        raise ValueError("command grader requires 'command' field")
 
-    result = sandbox.exec(grader.command, timeout=grader.timeout)
+    cmd = f"cd {sandbox.WORK_DIR} && {grader.command}"
+    result = sandbox.exec(cmd, timeout=grader.timeout)
     passed = result.exit_code == 0
     return GraderResult(
         name=grader.name,
@@ -81,8 +83,11 @@ def _grade_command(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult:
 
 
 def _grade_status(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult:
-    """Check output materialization status via prism status --json."""
-    cmd = f"cd {sandbox.WORK_DIR} && prism status --json"
+    """Check output materialization status via prism status.
+
+    Parses the text table output, counting 'ok' vs 'pending'/'no_recipe' entries.
+    """
+    cmd = f"cd {sandbox.WORK_DIR} && prism status"
     result = sandbox.exec(cmd, timeout=grader.timeout)
 
     if result.exit_code != 0:
@@ -92,14 +97,26 @@ def _grade_status(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult:
             details=result.output[:2000],
         )
 
-    try:
-        data = json.loads(result.output)
-    except (json.JSONDecodeError, ValueError) as exc:
-        return _error_result(grader, f"Failed to parse status JSON: {exc}")
+    # Parse the Rich table output for status values
+    materialized = 0
+    total = 0
+    for line in result.output.splitlines():
+        # Table rows start with │ and contain status words
+        if "│" not in line:
+            continue
+        cells = [c.strip() for c in line.split("│") if c.strip()]
+        if len(cells) < 2:
+            continue
+        # Skip header row
+        if cells[0].lower() in ("output", ""):
+            continue
+        # Each non-header cell after the first is a status value
+        for cell in cells[1:]:
+            if cell in ("ok", "pending", "no_recipe"):
+                total += 1
+                if cell == "ok":
+                    materialized += 1
 
-    # Count materialized vs total outputs
-    outputs = data if isinstance(data, list) else data.get("outputs", [])
-    total = len(outputs)
     if total == 0:
         return GraderResult(
             name=grader.name,
@@ -107,10 +124,9 @@ def _grade_status(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult:
             passed=False,
             score=0.0,
             weight=grader.weight,
-            details="No outputs found",
+            details="No outputs found in prism status output",
         )
 
-    materialized = sum(1 for o in outputs if o.get("status") == "ok")
     score = materialized / total
     return GraderResult(
         name=grader.name,
@@ -128,9 +144,9 @@ def _grade_files_exist(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult
     if not paths:
         return _error_result(grader, "files_exist grader requires 'paths' field")
 
-    # Batch all existence checks into a single command
+    # Batch all existence checks into a single command (quote paths for safety)
     checks = " && ".join(
-        f"(test -e {sandbox.WORK_DIR}/{p} && echo FOUND:{p} || echo MISSING:{p})"
+        f"(test -e {shlex.quote(f'{sandbox.WORK_DIR}/{p}')} && echo FOUND:{p} || echo MISSING:{p})"
         for p in paths
     )
     result = sandbox.exec(checks, timeout=30)
@@ -167,7 +183,8 @@ def _grade_script(
     task_id: str,
 ) -> GraderResult:
     """Upload and run a custom grading script; exit 0 = pass, last stdout line as score."""
-    assert grader.script is not None, "script grader requires 'script' field"
+    if grader.script is None:
+        raise ValueError("script grader requires 'script' field")
 
     # Look for script in task graders dir
     script_path = evals_dir / "tasks" / task_id / "graders" / grader.script

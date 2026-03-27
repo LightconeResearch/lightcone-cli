@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -28,13 +29,8 @@ from prism.eval.sandbox import BUILD_COMPLETE_MARKER, EvalSandbox
 logger = logging.getLogger(__name__)
 
 DEFAULT_LOOP_PROMPT = """\
-Continue building this ASTRA analysis for universe {{UNIVERSE}}.
-
-Look at the current state via `prism status` and `astra validate astra.yaml`.
-Write or fix scripts for any outputs that are not yet materialized.
-Run `prism run --universe {{UNIVERSE}}` to execute.
-
-When ALL outputs are materialized and validation passes, respond with: BUILD_COMPLETE
+/prism-build this analysis and make sure to cover universe {{UNIVERSE}}.
+Do NOT ask for plan approval — skip straight to building. This is an automated eval run.
 """
 
 
@@ -81,6 +77,7 @@ def run_trial(
     evals_dir: Path,
     config: EvalRunConfig,
     run_id: str,
+    sidecar_dir: Path | None = None,
 ) -> TrialResult:
     """Run a single trial: create sandbox -> build loop -> grade -> teardown."""
     trial_id = f"{run_id}-{task.id}-{variant.id}-{trial_number}"
@@ -121,45 +118,51 @@ def run_trial(
             loop_prompt_template=loop_prompt,
         )
 
-        # Build loop
-        trial_start = time.monotonic()
-        for i in range(task.max_iterations):
-            elapsed = time.monotonic() - trial_start
-            if elapsed > task.trial_timeout:
-                logger.warning("Trial %s exceeded timeout after %d iterations", trial_id, i)
-                break
+        # Single invocation: /prism-build handles its own loop internally
+        start = time.monotonic()
+        try:
+            claude_result = sandbox.exec_claude(
+                max_turns=task.max_turns,
+                timeout=task.trial_timeout,
+                model=variant.model,
+            )
+            duration = time.monotonic() - start
 
-            iter_start = time.monotonic()
-            try:
-                claude_result = sandbox.exec_claude(
-                    max_turns=task.max_turns,
-                    timeout=task.iteration_timeout,
-                    model=variant.model,
+            build_complete = any(
+                line.strip() == BUILD_COMPLETE_MARKER
+                for line in claude_result.result_text.splitlines()
+            )
+            iteration = IterationResult(
+                iteration=0,
+                cost_usd=claude_result.cost_usd,
+                num_turns=claude_result.num_turns,
+                duration_seconds=duration,
+                build_complete=build_complete,
+                output_summary=(
+                    "" if claude_result.is_error else claude_result.result_text[:500]
+                ),
+                error=claude_result.result_text[:500] if claude_result.is_error else None,
+            )
+
+            # Save transcript sidecar
+            if sidecar_dir is not None and claude_result.raw_jsonl:
+                trial_log_dir = sidecar_dir / trial_id
+                trial_log_dir.mkdir(parents=True, exist_ok=True)
+                jsonl_path = trial_log_dir / "transcript.jsonl"
+                jsonl_path.write_text(claude_result.raw_jsonl)
+                iteration.transcript_path = str(
+                    jsonl_path.relative_to(sidecar_dir.parent)
                 )
-                iter_duration = time.monotonic() - iter_start
+        except Exception as exc:
+            duration = time.monotonic() - start
+            iteration = IterationResult(
+                iteration=0,
+                duration_seconds=duration,
+                error=str(exc),
+            )
 
-                iteration = IterationResult(
-                    iteration=i,
-                    cost_usd=claude_result.cost_usd,
-                    num_turns=claude_result.num_turns,
-                    duration_seconds=iter_duration,
-                    build_complete=BUILD_COMPLETE_MARKER in claude_result.result_text,
-                    output_summary=claude_result.result_text[:500],
-                    error=claude_result.result_text[:500] if claude_result.is_error else None,
-                )
-            except Exception as exc:
-                iter_duration = time.monotonic() - iter_start
-                iteration = IterationResult(
-                    iteration=i,
-                    duration_seconds=iter_duration,
-                    error=str(exc),
-                )
-
-            trial.iterations.append(iteration)
-
-            if iteration.build_complete:
-                trial.build_complete = True
-                break
+        trial.iterations.append(iteration)
+        trial.build_complete = iteration.build_complete
 
         # Run graders
         trial.grader_results = run_graders(sandbox, task.graders, evals_dir, task.id)
@@ -212,9 +215,17 @@ def run_eval(
             ]},
         )
 
+    # Compute run stem and sidecar directory for transcript logs
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    run_stem = f"{run_id}-{timestamp}"
+    output_base = Path(config.output_dir)
+    sidecar_dir = output_base / run_stem / "logs"
+
     eval_run = EvalRun(
         config=config,
         started_at=datetime.now(UTC),
+        run_stem=run_stem,
+        transcript_dir=str(sidecar_dir),
     )
 
     # Handle SIGINT: save partial results
@@ -225,8 +236,10 @@ def run_eval(
         interrupted = True
         logger.warning("SIGINT received — finishing current trials and saving partial results")
 
-    original_handler = signal.getsignal(signal.SIGINT)
-    signal.signal(signal.SIGINT, _signal_handler)
+    is_main_thread = threading.current_thread() is threading.main_thread()
+    if is_main_thread:
+        original_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, _signal_handler)
 
     try:
         with ThreadPoolExecutor(max_workers=config.max_concurrency) as pool:
@@ -239,6 +252,7 @@ def run_eval(
                     evals_dir=evals_dir,
                     config=config,
                     run_id=run_id,
+                    sidecar_dir=sidecar_dir,
                 ): s
                 for s in schedule
             }
@@ -263,7 +277,8 @@ def run_eval(
                 if progress_callback:
                     progress_callback(trial)
     finally:
-        signal.signal(signal.SIGINT, original_handler)
+        if is_main_thread:
+            signal.signal(signal.SIGINT, original_handler)
 
     eval_run.finished_at = datetime.now(UTC)
     return eval_run

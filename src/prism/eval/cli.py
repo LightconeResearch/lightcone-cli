@@ -13,6 +13,18 @@ console = Console()
 @click.group()
 def eval_group() -> None:
     """Evaluate the Prism build loop against seed tasks."""
+    import logging
+
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    # Configure logging so sandbox build logs and harness progress are visible
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 @eval_group.command("run")
@@ -150,3 +162,81 @@ def compare_cmd(results1: Path, results2: Path) -> None:
         run2.summary = compute_summary(run2)
 
     print_comparison_between(run1, run2, console=console)
+
+
+@eval_group.command("analyze")
+@click.argument("results_path", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--prompt",
+    "prompt_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Custom analysis prompt file",
+)
+@click.option(
+    "--model",
+    default=None,
+    help="Model for analysis (default: Sonnet)",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON analysis")
+def analyze_cmd(
+    results_path: Path,
+    prompt_path: Path | None,
+    model: str | None,
+    as_json: bool,
+) -> None:
+    """Analyze eval transcripts with LLM post-processing.
+
+    Reads sidecar JSONL transcripts from a previous eval run and sends them
+    to Claude for qualitative analysis of pain points, failure modes, and
+    cross-trial patterns.
+
+    Examples:
+        prism eval analyze eval-results/my-run-20260327.json
+        prism eval analyze eval-results/my-run.json --prompt custom-prompt.md
+        prism eval analyze eval-results/my-run.json --model claude-opus-4-20250514
+    """
+    import json as json_mod
+
+    from prism.eval.analysis import (
+        DEFAULT_ANALYSIS_MODEL,
+        print_analysis_summary,
+        run_analysis,
+        save_analysis,
+    )
+    from prism.eval.report import load_results, load_transcripts
+
+    if model is None:
+        model = DEFAULT_ANALYSIS_MODEL
+
+    eval_run = load_results(results_path)
+
+    console.print("[bold]Loading transcripts...[/bold]")
+    transcripts = load_transcripts(results_path, eval_run=eval_run)
+
+    if not transcripts:
+        console.print(
+            "[red]Error:[/red] No sidecar transcripts found. "
+            "Re-run the eval with the latest harness to capture transcripts."
+        )
+        raise SystemExit(1)
+
+    trial_count = len(transcripts)
+    iter_count = sum(len(v) for v in transcripts.values())
+    console.print(f"Found transcripts for {trial_count} trials ({iter_count} iterations)")
+
+    console.print("[bold]Analyzing transcripts...[/bold]")
+    analysis = run_analysis(
+        eval_run,
+        transcripts,
+        prompt_path=prompt_path,
+        model=model,
+    )
+
+    output_path = save_analysis(analysis, results_path)
+    console.print(f"\n[bold]Analysis saved to:[/bold] {output_path}")
+
+    if as_json:
+        console.print(json_mod.dumps(analysis.model_dump(mode="json"), indent=2, default=str))
+    else:
+        print_analysis_summary(analysis, console=console)
