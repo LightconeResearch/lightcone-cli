@@ -30,7 +30,7 @@ jobs:
         run: git config --global url."https://x-access-token:${{ secrets.ASP_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Install dependencies
-        run: pip install -e ".[eval]"
+        run: pip install -e ".[eval]" build
 
       - name: Run eval
         id: eval
