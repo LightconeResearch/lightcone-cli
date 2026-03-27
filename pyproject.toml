@@ -20,7 +20,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "astra @ git+https://github.com/LightconeResearch/ASTRA.git",
+    "astra @ git+https://github.com/LightconeResearch/ASTRA.git@feature/sub-analysis-redesign",
     "click>=8.0",
     "pyyaml>=6.0",
     "rich>=13.0",
