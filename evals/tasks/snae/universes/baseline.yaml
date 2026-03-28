@@ -1,7 +1,6 @@
 id: baseline
 description: Default configuration using standard practices
 decisions:
-  sampler: emcee
+  optimizer: nelder_mead
   error_model: stat_and_sys
-  nsteps: "1000"
   redshift_cut: z_min_001

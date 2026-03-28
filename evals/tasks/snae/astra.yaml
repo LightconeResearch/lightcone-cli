@@ -6,16 +6,16 @@ name: "snae"
 description: |
   Fit the Union2.1 Type Ia supernova distance modulus vs redshift data
   to a flat LCDM cosmological model with two free parameters (H0, Omega_L)
-  using MCMC posterior inference. This provides cosmological parameter
-  constraints as a building block for a larger analysis.
+  using maximum-likelihood (MAP) point estimation. This provides best-fit
+  cosmological parameters as a building block for a larger analysis.
 
 container:
   build: Containerfile
 
 success_criteria:
-  - claim: "MCMC chains are well converged"
-    output: convergence
-    condition: "Gelman-Rubin R-hat < 1.05 for both parameters"
+  - claim: "Best-fit parameters are physically reasonable"
+    output: best_fit
+    condition: "H0 in [60, 80] km/s/Mpc and Omega_L in [0.5, 0.9]"
 
 inputs:
   - id: union21
@@ -24,51 +24,44 @@ inputs:
     description: "Union2.1 SN Ia compilation: 580 supernovae with redshift, distance modulus, and uncertainties"
 
 outputs:
-  - id: chain
-    type: data
-    description: "MCMC posterior samples for H0 and Omega_L"
+  - id: best_fit
+    type: metric
+    description: "Best-fit H0 and Omega_L from chi-squared minimization, with reduced chi-squared"
     recipe:
       command: python scripts/fit.py
 
-  - id: posterior
+  - id: hubble_diagram
     type: figure
-    description: "2D posterior contour plot of H0 vs Omega_L"
+    description: "Hubble diagram: distance modulus vs redshift with best-fit model overlay"
     recipe:
-      command: python scripts/plot_posterior.py
-      inputs: [chain]
+      command: python scripts/plot_hubble.py
+      inputs: [best_fit]
 
-  - id: convergence
-    type: metric
-    description: "Convergence diagnostics: Gelman-Rubin R-hat and effective sample size for each parameter"
+  - id: residuals
+    type: figure
+    description: "Residuals plot: data minus best-fit model vs redshift"
     recipe:
-      command: python scripts/diagnostics.py
-      inputs: [chain]
-
-  - id: best_fit
-    type: metric
-    description: "Median parameter estimates with 68% credible intervals for H0 and Omega_L"
-    recipe:
-      command: python scripts/summarize.py
-      inputs: [chain]
+      command: python scripts/plot_residuals.py
+      inputs: [best_fit]
 
 decisions:
-  sampler:
-    label: "MCMC Sampler"
+  optimizer:
+    label: "Optimizer"
     tags: [inference]
-    rationale: "Ensemble MCMC (emcee) is the community default; nested sampling (dynesty) provides Bayesian evidence for model comparison, which may be useful downstream"
-    default: emcee
+    rationale: "Nelder-Mead is robust and derivative-free; L-BFGS-B supports bounds natively"
+    default: nelder_mead
     options:
-      emcee:
-        label: "emcee"
-        description: "Affine-invariant ensemble sampler"
-      dynesty:
-        label: "dynesty"
-        description: "Dynamic nested sampling; also yields Bayesian evidence"
+      nelder_mead:
+        label: "Nelder-Mead"
+        description: "Derivative-free simplex optimizer"
+      l_bfgs_b:
+        label: "L-BFGS-B"
+        description: "Bounded quasi-Newton optimizer"
 
   error_model:
     label: "Error Treatment"
     tags: [data]
-    rationale: "Union2.1 provides both statistical-only and systematics-included uncertainties; choice directly affects posterior width"
+    rationale: "Union2.1 provides both statistical-only and systematics-included uncertainties; choice directly affects fit quality"
     default: stat_and_sys
     options:
       stat_only:
@@ -77,19 +70,6 @@ decisions:
       stat_and_sys:
         label: "Statistical + systematic errors"
         description: "Include systematic uncertainty contributions"
-
-  nsteps:
-    label: "MCMC Chain Length"
-    tags: [inference]
-    rationale: "Number of MCMC steps per walker. Shorter chains run faster but may not converge; longer chains are more reliable but slower."
-    default: "1000"
-    options:
-      "1000":
-        label: "100 steps"
-        description: "Short chain for fast iteration"
-      "2000":
-        label: "2000 steps"
-        description: "Standard chain length for production runs"
 
   redshift_cut:
     label: "Low-Redshift Cut"

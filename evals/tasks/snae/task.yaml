@@ -1,8 +1,8 @@
 id: snae
 description: >
-  Fit Union2.1 Type Ia supernova data to flat LCDM using MCMC.
-  Agent must write 4 scripts (fit, plot, diagnostics, summarize),
-  materialize all outputs, and pass convergence criteria.
+  Fit Union2.1 Type Ia supernova data to flat LCDM using MAP estimation.
+  Agent must write 3 scripts (fit, plot_hubble, plot_residuals),
+  materialize all outputs, and produce physically reasonable parameters.
 seed_project: snae
 universe: baseline
 max_turns: 200

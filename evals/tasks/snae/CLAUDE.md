@@ -96,7 +96,7 @@ prism status [--universe NAME]              # Materialization + container status
 
 ### Domain Context
 
-- This analysis is a **building block** for a larger cosmological analysis — downstream work will consume the chains and possibly the evidence values (if dynesty is used).
+- This analysis is a **building block** for a larger cosmological analysis — downstream work will consume the best-fit parameters.
 - Union2.1 data file has 5 tab-delimited columns: SN name, redshift, distance modulus, statistical error, and a fifth column (systematic or probability-related). Header contains SALT2 light-curve fit parameters (alpha, beta, delta) and absolute magnitude M for h=0.7 with and without systematics.
 - Flat LCDM assumes Omega_M + Omega_L = 1, so the model is fully specified by H0 and Omega_L.
 - Luminosity distance integral in flat LCDM requires numerical integration (no closed-form); `scipy.integrate.quad` or similar is standard.
@@ -104,6 +104,6 @@ prism status [--universe NAME]              # Materialization + container status
 ### Implementation Notes
 
 - **Data**: download or bundle the Union2.1 text file. Parse with numpy/pandas, skip comment lines.
-- **Libraries**: `emcee` for ensemble MCMC, `dynesty` for nested sampling, `scipy` for cosmological integrals, `corner` for posterior plots.
-- **Priors**: flat priors are standard for this problem. Typical ranges: H0 in [50, 100] km/s/Mpc, Omega_L in [0, 1].
+- **Libraries**: `scipy.optimize.minimize` for MAP fitting, `scipy.integrate.quad` for cosmological integrals, `matplotlib` for plots.
+- **Bounds**: H0 in [50, 100] km/s/Mpc, Omega_L in [0, 1].
 - **Distance modulus**: mu = 5 * log10(d_L / 10pc), where d_L is luminosity distance in flat LCDM.
