@@ -309,7 +309,6 @@ _GITIGNORE_LINES = [
     ".ipynb_checkpoints/",
     ".DS_Store",
     ".langfuse/",
-    ".claude/",
 ]
 
 
