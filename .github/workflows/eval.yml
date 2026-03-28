@@ -1,0 +1,166 @@
+name: Eval
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# Only one eval per PR at a time — cancel in-progress runs
+concurrency:
+  group: eval-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure git credentials for private ASTRA repo
+        run: git config --global url."https://x-access-token:${{ secrets.ASP_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install dependencies
+        run: pip install -e ".[eval]" build
+
+      - name: Run eval
+        id: eval
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          prism eval run evals/build.yaml --num-trials 1 --concurrency 1 2>&1 | tee eval-output.txt
+
+          # Find the results JSON
+          results_json=$(find eval-results -name results.json -type f | head -1)
+          echo "results_json=$results_json" >> "$GITHUB_OUTPUT"
+
+          # Extract key metrics for the summary
+          python3 -c "
+          import json, sys
+          data = json.load(open('$results_json'))
+          v = data.get('version', {})
+          trials = data.get('trials', [])
+          if not trials:
+              print('No trials completed', file=sys.stderr)
+              sys.exit(1)
+          t = trials[0]
+          score = t['composite_score']
+          cost = t['total_cost_usd']
+          turns = t['total_turns']
+          duration = t['total_duration_seconds']
+          build_ok = t['build_complete']
+          error = t.get('error', '')
+
+          graders = []
+          for g in t.get('grader_results', []):
+              status = '✅' if g['passed'] else '❌'
+              graders.append(f'{status} {g[\"name\"]} ({g[\"score\"]:.2f})')
+
+          with open('$GITHUB_OUTPUT', 'a') as f:
+              f.write(f'score={score:.2f}\n')
+              f.write(f'cost={cost:.2f}\n')
+              f.write(f'turns={turns}\n')
+              f.write(f'duration={duration:.0f}\n')
+              f.write(f'build_complete={build_ok}\n')
+              f.write(f'prism_version={v.get(\"prism_version\", \"unknown\")}\n')
+              f.write(f'prism_commit={v.get(\"prism_commit\", \"unknown\")[:8]}\n')
+
+          # Write grader details to a file (multiline output is tricky)
+          with open('grader-details.txt', 'w') as f:
+              f.write('\n'.join(graders))
+
+          if score < 1.0 or error:
+              sys.exit(1)
+          "
+
+      - name: Upload results artifact
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: eval-results/
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const score = '${{ steps.eval.outputs.score }}' || 'N/A';
+            const cost = '${{ steps.eval.outputs.cost }}' || 'N/A';
+            const turns = '${{ steps.eval.outputs.turns }}' || 'N/A';
+            const duration = '${{ steps.eval.outputs.duration }}' || 'N/A';
+            const buildComplete = '${{ steps.eval.outputs.build_complete }}';
+            const prismVersion = '${{ steps.eval.outputs.prism_version }}' || 'unknown';
+            const prismCommit = '${{ steps.eval.outputs.prism_commit }}' || 'unknown';
+            const outcome = '${{ steps.eval.outcome }}';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const artifactId = '${{ steps.upload.outputs.artifact-id }}';
+            const artifactUrl = artifactId ? `${runUrl}/artifacts/${artifactId}` : '';
+
+            let graders = '';
+            try { graders = fs.readFileSync('grader-details.txt', 'utf8'); } catch {}
+
+            const icon = outcome === 'success' ? '✅' : '❌';
+            const body = [
+              `## ${icon} Eval Results`,
+              '',
+              `| Metric | Value |`,
+              `|--------|-------|`,
+              `| Score | **${score}** |`,
+              `| Build complete | ${buildComplete === 'True' ? '✅' : '❌'} |`,
+              `| Cost | $${cost} |`,
+              `| Turns | ${turns} |`,
+              `| Duration | ${duration}s |`,
+              `| Prism | \`${prismVersion}\` (\`${prismCommit}\`) |`,
+              artifactUrl ? `| Results | [Download](${artifactUrl}) |` : '',
+              '',
+              '### Graders',
+              graders || '_No grader results_',
+              '',
+              `<details><summary>Full output</summary>`,
+              '',
+              '```',
+              fs.readFileSync('eval-output.txt', 'utf8').slice(-3000),
+              '```',
+              '</details>',
+            ].join('\n');
+
+            // Find and update existing comment, or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const marker = '## ✅ Eval Results';
+            const marker2 = '## ❌ Eval Results';
+            const existing = comments.find(c =>
+              c.body.startsWith(marker) || c.body.startsWith(marker2)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

@@ -1,0 +1,85 @@
+# ASTRA Analysis Specification
+# Documentation: https://github.com/LightconeResearch/ASTRA
+
+version: "1.0"
+name: "snae"
+description: |
+  Fit the Union2.1 Type Ia supernova distance modulus vs redshift data
+  to a flat LCDM cosmological model with two free parameters (H0, Omega_L)
+  using maximum-likelihood (MAP) point estimation. This provides best-fit
+  cosmological parameters as a building block for a larger analysis.
+
+container:
+  build: Containerfile
+
+success_criteria:
+  - claim: "Best-fit parameters are physically reasonable"
+    output: best_fit
+    condition: "H0 in [60, 80] km/s/Mpc and Omega_L in [0.5, 0.9]"
+
+inputs:
+  - id: union21
+    type: data
+    source: data/SCPUnion2.1_mu_vs_z.txt
+    description: "Union2.1 SN Ia compilation: 580 supernovae with redshift, distance modulus, and uncertainties"
+
+outputs:
+  - id: best_fit
+    type: metric
+    description: "Best-fit H0 and Omega_L from chi-squared minimization, with reduced chi-squared"
+    recipe:
+      command: python scripts/fit.py
+
+  - id: hubble_diagram
+    type: figure
+    description: "Hubble diagram: distance modulus vs redshift with best-fit model overlay"
+    recipe:
+      command: python scripts/plot_hubble.py
+      inputs: [best_fit]
+
+  - id: residuals
+    type: figure
+    description: "Residuals plot: data minus best-fit model vs redshift"
+    recipe:
+      command: python scripts/plot_residuals.py
+      inputs: [best_fit]
+
+decisions:
+  optimizer:
+    label: "Optimizer"
+    tags: [inference]
+    rationale: "Nelder-Mead is robust and derivative-free; L-BFGS-B supports bounds natively"
+    default: nelder_mead
+    options:
+      nelder_mead:
+        label: "Nelder-Mead"
+        description: "Derivative-free simplex optimizer"
+      l_bfgs_b:
+        label: "L-BFGS-B"
+        description: "Bounded quasi-Newton optimizer"
+
+  error_model:
+    label: "Error Treatment"
+    tags: [data]
+    rationale: "Union2.1 provides both statistical-only and systematics-included uncertainties; choice directly affects fit quality"
+    default: stat_and_sys
+    options:
+      stat_only:
+        label: "Statistical errors only"
+        description: "Use only the statistical distance modulus uncertainties"
+      stat_and_sys:
+        label: "Statistical + systematic errors"
+        description: "Include systematic uncertainty contributions"
+
+  redshift_cut:
+    label: "Low-Redshift Cut"
+    tags: [data]
+    rationale: "SNe at z < 0.01 are dominated by peculiar velocity scatter rather than cosmological signal; standard practice varies on whether to exclude them"
+    default: z_min_001
+    options:
+      none:
+        label: "No cut"
+        description: "Use all supernovae regardless of redshift"
+      z_min_001:
+        label: "z > 0.01"
+        description: "Exclude supernovae with z < 0.01 to mitigate peculiar velocity contamination"

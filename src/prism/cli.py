@@ -87,7 +87,7 @@ def _get_plugin_source_dir() -> Path | None:
 def main(ctx: click.Context) -> None:
     """Prism - ASTRA-compliant Agentic Layer CLI."""
     ctx.ensure_object(dict)
-    if ctx.invoked_subcommand in ("setup", "target", "update"):
+    if ctx.invoked_subcommand in ("setup", "target", "update", "eval"):
         return
     from prism.dagster.targets import get_config_path
     if not get_config_path().exists():
@@ -341,6 +341,7 @@ _GITIGNORE_LINES = [
     ".venv/",
     ".ipynb_checkpoints/",
     ".DS_Store",
+    ".langfuse/",
 ]
 
 
@@ -2439,6 +2440,15 @@ def update(check: bool, sync: bool) -> None:
     # Always offer to sync plugin files — project scaffolding can be stale
     # even when packages are up to date
     _prompt_sync_projects()
+
+
+# Register eval subgroup (requires optional 'eval' extra)
+try:
+    from prism.eval.cli import eval_group
+
+    main.add_command(eval_group, "eval")
+except ImportError:
+    pass
 
 
 if __name__ == "__main__":
