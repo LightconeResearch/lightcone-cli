@@ -39,8 +39,17 @@ class TestResourceTranslation:
 
 
 class TestDockerRunner:
-    def test_execute_local_fallback(self, tmp_path):
-        """Without Docker, execute falls back to local subprocess."""
+    def test_execute_venv_fallback(self, tmp_path):
+        """Without a container runtime, execute falls back to venv."""
+        import subprocess
+        import sys
+
+        # Create a minimal .venv for the fallback
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(tmp_path / ".venv")],
+            check=True, capture_output=True,
+        )
+
         runner = ASTRAContainerRunner(
             project_root=str(tmp_path),
             backend="docker",
@@ -50,9 +59,9 @@ class TestDockerRunner:
             output_id="test_out",
             universe_id="baseline",
         )
-        # Should succeed via local fallback
+        # Should succeed via venv fallback
         assert result.exit_code == 0
-        assert result.metadata.get("backend") == "local"
+        assert result.metadata.get("backend") == "venv"
 
     def test_execute_with_container_string(self, tmp_path):
         """Runner stores default_container from init."""

@@ -1,6 +1,9 @@
 """Tests for materialization status queries."""
 from __future__ import annotations
 
+import dagster as dg
+from conftest import materialize_via_dagster
+
 from prism.dagster.status import get_all_universe_status, get_output_status
 
 
@@ -22,7 +25,7 @@ outputs:
         assert status["result"] == "pending"
 
     def test_results_exist(self, tmp_path):
-        """Status should show 'materialized' when output files exist."""
+        """Status should show 'materialized' when Dagster event exists."""
         astra_yaml = tmp_path / "astra.yaml"
         astra_yaml.write_text("""
 version: "1.0"
@@ -34,10 +37,9 @@ outputs:
     recipe:
       command: python run.py
 """)
-        result_dir = tmp_path / "results" / "baseline" / "result"
-        result_dir.mkdir(parents=True)
-        (result_dir / "output.json").write_text("{}")
-        status = get_output_status(tmp_path, "baseline")
+        instance = dg.DagsterInstance.ephemeral()
+        materialize_via_dagster(instance, "baseline", "result")
+        status = get_output_status(tmp_path, "baseline", instance=instance)
         assert status["result"] == "materialized"
 
     def test_output_without_recipe(self, tmp_path):
@@ -75,15 +77,57 @@ outputs:
     type: figure
     description: "Not integrated yet"
 """)
-        # Materialize only done_output
-        result_dir = tmp_path / "results" / "baseline" / "done_output"
-        result_dir.mkdir(parents=True)
-        (result_dir / "output.json").write_text("{}")
+        # Materialize only done_output via Dagster
+        instance = dg.DagsterInstance.ephemeral()
+        materialize_via_dagster(instance, "baseline", "done_output")
 
-        status = get_output_status(tmp_path, "baseline")
+        status = get_output_status(tmp_path, "baseline", instance=instance)
         assert status["done_output"] == "materialized"
         assert status["pending_output"] == "pending"
         assert status["no_recipe_output"] == "no_recipe"
+
+    def test_files_without_dagster_event_still_pending(self, tmp_path):
+        """Files on disk without a Dagster event should show 'pending'."""
+        astra_yaml = tmp_path / "astra.yaml"
+        astra_yaml.write_text("""
+version: "1.0"
+name: test
+inputs: []
+outputs:
+  - id: result
+    type: metric
+    recipe:
+      command: python run.py
+""")
+        # Create files on disk (simulating manual script run)
+        result_dir = tmp_path / "results" / "baseline" / "result"
+        result_dir.mkdir(parents=True)
+        (result_dir / "output.json").write_text("{}")
+
+        # No Dagster instance / no events → should be pending
+        status = get_output_status(tmp_path, "baseline")
+        assert status["result"] == "pending"
+
+    def test_different_universes_independent(self, tmp_path):
+        """Materializing in one universe should not affect another."""
+        astra_yaml = tmp_path / "astra.yaml"
+        astra_yaml.write_text("""
+version: "1.0"
+name: test
+inputs: []
+outputs:
+  - id: result
+    type: metric
+    recipe:
+      command: python run.py
+""")
+        instance = dg.DagsterInstance.ephemeral()
+        materialize_via_dagster(instance, "baseline", "result")
+
+        baseline = get_output_status(tmp_path, "baseline", instance=instance)
+        assert baseline["result"] == "materialized"
+        alt = get_output_status(tmp_path, "alt", instance=instance)
+        assert alt["result"] == "pending"
 
 
 class TestAllUniverseStatus:
@@ -103,7 +147,7 @@ outputs:
         result = get_all_universe_status(tmp_path)
         assert result == {}
 
-    def test_multiple_universes(self, tmp_path):
+    def test_multiple_universes(self, tmp_path, monkeypatch):
         """Should return status for each universe YAML file."""
         astra_yaml = tmp_path / "astra.yaml"
         astra_yaml.write_text("""
@@ -124,10 +168,19 @@ outputs:
         (universes_dir / "alt.yaml").write_text(
             'id: alt\ndecisions: {}\n'
         )
-        # Materialize result for baseline only
-        result_dir = tmp_path / "results" / "baseline" / "result"
-        result_dir.mkdir(parents=True)
-        (result_dir / "output.json").write_text("{}")
+
+        # Create .prism/dagster.yaml — use absolute base_dir so it works regardless of CWD
+        prism_dir = tmp_path / ".prism"
+        prism_dir.mkdir(parents=True, exist_ok=True)
+        dagster_dir = tmp_path / "results" / ".dagster"
+        dagster_dir.mkdir(parents=True, exist_ok=True)
+        (prism_dir / "dagster.yaml").write_text(
+            f"storage:\n  sqlite:\n    base_dir: {dagster_dir}\n"
+        )
+        # chdir so DagsterInstance resolves paths correctly
+        monkeypatch.chdir(tmp_path)
+        instance = dg.DagsterInstance.from_config(str(prism_dir))
+        materialize_via_dagster(instance, "baseline", "result")
 
         result = get_all_universe_status(tmp_path)
         assert "baseline" in result

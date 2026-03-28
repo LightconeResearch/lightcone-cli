@@ -49,7 +49,7 @@ If validation fails, fix issues before proceeding (create `astra.yaml` via `/pri
 
 ### 2. Create implementation plan
 
-Read `astra.yaml`, `CLAUDE.md`, `universes/<UNIVERSE>.yaml`, and any existing `scripts/` directory. If the user provided a description (e.g. `/prism-build focus on the fitting script first`), use it to guide the plan's priorities and ordering. Produce an ordered implementation plan and write it to `plans/build-plan-<UNIVERSE>.md`.
+Read `astra.yaml`, `CLAUDE.md`, `universes/<UNIVERSE>.yaml`, and any existing `scripts/` directory. If the user provided a description (e.g. `/prism-build focus on the fitting script first`), use it to guide the plan's priorities and ordering. Produce an ordered implementation plan and write it to `.prism/plans/build-plan-<UNIVERSE>.md`.
 
 The plan must include:
 
@@ -66,7 +66,7 @@ Print the plan contents and ask the user via `AskUserQuestion`:
 - "Does this build plan look good?"
 - Options: "Approve and start building", "Let me edit the plan first"
 
-If the user wants changes, wait for them to edit `plans/build-plan-<UNIVERSE>.md` and re-present.
+If the user wants changes, wait for them to edit `.prism/plans/build-plan-<UNIVERSE>.md` and re-present.
 
 ## Phase 2: Activate Loop
 
@@ -88,5 +88,5 @@ This creates `.claude/ralph-loop.local.md` — the ralph-wiggum state file. The 
 ## Notes
 
 - The setup script will attempt to install the ralph-loop plugin if missing (via marketplace update). If installation fails, it errors and cleans up — the loop cannot run without the stop hook.
-- The build plan file (`plans/build-plan-<UNIVERSE>.md`) persists across crashes for easy resumption. It's deleted on successful completion.
+- The build plan file (`.prism/plans/build-plan-<UNIVERSE>.md`) persists across crashes for easy resumption. It's deleted on successful completion.
 - To cancel mid-loop: `/cancel-ralph`

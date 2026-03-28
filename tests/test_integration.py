@@ -43,13 +43,14 @@ decisions: {}
 
 class TestIntegration:
     def test_init_creates_dagster_yaml(self, project_dir):
-        assert (project_dir / "dagster.yaml").exists()
+        assert (project_dir / ".prism" / "dagster.yaml").exists()
 
     def test_init_creates_project_structure(self, project_dir):
         assert (project_dir / "astra.yaml").exists()
         assert (project_dir / "universes").is_dir()
         assert (project_dir / "results").is_dir()
         assert (project_dir / "scripts").is_dir()
+        assert (project_dir / ".prism").is_dir()
 
     def test_init_creates_containerfile(self, tmp_path, runner):
         project = tmp_path / "container-project"
@@ -77,19 +78,24 @@ class TestIntegration:
         assert status["cleaned"] == "pending"
         assert status["result"] == "pending"
 
-    def test_status_shows_materialized(self, project_dir):
-        """Status should show 'materialized' when output files exist."""
+    def test_status_shows_materialized(self, project_dir, monkeypatch):
+        """Status should show 'materialized' when Dagster event exists."""
+        import dagster as dg
+        from conftest import materialize_via_dagster
+
         (project_dir / "universes" / "baseline.yaml").write_text(
             "id: baseline\ndecisions: {}\n"
         )
-        # Simulate materialized output
-        result_dir = project_dir / "results" / "baseline" / "cleaned"
-        result_dir.mkdir(parents=True)
-        (result_dir / "data.csv").write_text("col1,col2\n1,2\n")
+
+        # chdir so relative paths in dagster.yaml resolve to project_dir
+        monkeypatch.chdir(project_dir)
+
+        instance = dg.DagsterInstance.from_config(str(project_dir / ".prism"))
+        materialize_via_dagster(instance, "baseline", "cleaned")
 
         from prism.dagster.status import get_output_status
 
-        status = get_output_status(project_dir, "baseline")
+        status = get_output_status(project_dir, "baseline", instance=instance)
         assert status["cleaned"] == "materialized"
         assert status["result"] == "pending"
 
@@ -129,13 +135,22 @@ class TestIntegration:
         path = mgr.get_output_path("cleaned", "baseline")
         assert path == project_dir / "results" / "baseline" / "cleaned"
 
-    def test_runner_executes_locally(self, project_dir):
-        """Runner should fall back to local execution without Docker."""
+    def test_runner_executes_in_venv(self, project_dir):
+        """Runner should fall back to venv execution without a container runtime."""
+        import subprocess
+        import sys
+
         from prism.dagster.runner import ASTRAContainerRunner
+
+        # Create a minimal .venv so the venv backend can use it
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(project_dir / ".venv")],
+            check=True, capture_output=True,
+        )
 
         runner = ASTRAContainerRunner(
             project_root=str(project_dir),
-            backend="docker",
+            backend="venv",
         )
         result = runner.execute(
             command="python -c 'print(1)'",
@@ -143,4 +158,4 @@ class TestIntegration:
             universe_id="baseline",
         )
         assert result.exit_code == 0
-        assert result.metadata.get("backend") == "local"
+        assert result.metadata.get("backend") == "venv"

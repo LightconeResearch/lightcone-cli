@@ -35,6 +35,7 @@ class TestInitCommand:
         assert (project_dir / "universes" / "baseline.yaml").exists()
         assert (project_dir / "scripts").is_dir()
         assert (project_dir / "results").is_dir()
+        assert (project_dir / ".prism").is_dir()
 
     def test_init_astra_yaml_content(self, runner: CliRunner, tmp_path: Path):
         """Test that the generated astra.yaml has the expected content."""
@@ -110,7 +111,7 @@ class TestInitCommand:
         assert (project_dir / "astra.yaml").exists()
 
     def test_init_creates_dagster_yaml(self, runner: CliRunner, tmp_path: Path):
-        """Test that init creates dagster.yaml."""
+        """Test that init creates .prism/dagster.yaml."""
         project_dir = tmp_path / "dagster-test"
         result = runner.invoke(
             main,
@@ -118,10 +119,10 @@ class TestInitCommand:
              "--permissions", "recommended"],
         )
         assert result.exit_code == 0
-        assert (project_dir / "dagster.yaml").exists()
+        assert (project_dir / ".prism" / "dagster.yaml").exists()
 
     def test_init_with_target_creates_prism_yaml(self, runner: CliRunner, tmp_path: Path):
-        """Test that --target creates prism.yaml with a flat target key."""
+        """Test that --target creates .prism/prism.yaml with a flat target key."""
         project_dir = tmp_path / "target-test"
         with patch("prism.dagster.targets.load_target", return_value={"site": "perlmutter"}):
             result = runner.invoke(
@@ -131,14 +132,14 @@ class TestInitCommand:
                  "--permissions", "recommended"],
             )
         assert result.exit_code == 0
-        assert (project_dir / "prism.yaml").exists()
+        assert (project_dir / ".prism" / "prism.yaml").exists()
 
         import yaml
-        config = yaml.safe_load((project_dir / "prism.yaml").read_text())
+        config = yaml.safe_load((project_dir / ".prism" / "prism.yaml").read_text())
         assert config["target"] == "perlmutter-gpu"
 
     def test_init_without_target_uses_default(self, runner: CliRunner, tmp_path: Path):
-        """Test that without --target, prism.yaml uses default target from user config."""
+        """Test that without --target, .prism/prism.yaml uses default target from user config."""
         project_dir = tmp_path / "no-target-test"
         result = runner.invoke(
             main,
@@ -146,14 +147,136 @@ class TestInitCommand:
              "--permissions", "recommended"],
         )
         assert result.exit_code == 0
-        assert (project_dir / "prism.yaml").exists()
+        assert (project_dir / ".prism" / "prism.yaml").exists()
 
         import yaml
         prism_cfg = yaml.safe_load(
-            (project_dir / "prism.yaml").read_text()
+            (project_dir / ".prism" / "prism.yaml").read_text()
         )
         # conftest sets default_target: fake
         assert prism_cfg["target"] == "fake"
+
+class TestInitExistingProject:
+    """Tests for prism init --existing-project."""
+
+    def test_existing_project_in_place(self, runner: CliRunner, tmp_path: Path):
+        """Test --existing-project . adds infrastructure in place."""
+        project_dir = tmp_path / "my-existing-code"
+        project_dir.mkdir()
+        (project_dir / "train.py").write_text("print('hello')\n")
+        (project_dir / "requirements.txt").write_text("torch\n")
+
+        result = runner.invoke(
+            main,
+            ["init", str(project_dir), "--existing-project", str(project_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+
+        # Infrastructure created
+        assert (project_dir / ".prism" / "prism.yaml").exists()
+        assert (project_dir / ".prism" / "dagster.yaml").exists()
+        assert (project_dir / ".claude" / "settings.json").exists()
+        assert (project_dir / "CLAUDE.md").exists()
+        assert (project_dir / "universes").is_dir()
+        assert (project_dir / "results").is_dir()
+        assert (project_dir / "Containerfile").exists()
+
+        # astra.yaml NOT created — that's /prism-migrate's job
+        assert not (project_dir / "astra.yaml").exists()
+
+        # Existing files untouched
+        assert (project_dir / "train.py").read_text() == "print('hello')\n"
+        assert (project_dir / "requirements.txt").read_text() == "torch\n"
+
+    def test_existing_project_copy_from_source(self, runner: CliRunner, tmp_path: Path):
+        """Test --existing-project copies code from source to target."""
+        source_dir = tmp_path / "old-code"
+        source_dir.mkdir()
+        (source_dir / "analysis.py").write_text("x = 1\n")
+        (source_dir / "data").mkdir()
+        (source_dir / "data" / "input.csv").write_text("a,b\n1,2\n")
+
+        target_dir = tmp_path / "new-astra-project"
+
+        result = runner.invoke(
+            main,
+            ["init", str(target_dir), "--existing-project", str(source_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+
+        # Code was copied
+        assert (target_dir / "analysis.py").read_text() == "x = 1\n"
+        assert (target_dir / "data" / "input.csv").exists()
+
+        # Infrastructure added
+        assert (target_dir / ".prism" / "prism.yaml").exists()
+        assert (target_dir / "CLAUDE.md").exists()
+
+        # Source untouched
+        assert not (source_dir / ".prism").exists()
+
+    def test_existing_project_preserves_gitignore(self, runner: CliRunner, tmp_path: Path):
+        """Test that --existing-project appends to existing .gitignore."""
+        project_dir = tmp_path / "has-gitignore"
+        project_dir.mkdir()
+        (project_dir / ".gitignore").write_text("*.log\nnode_modules/\n")
+
+        result = runner.invoke(
+            main,
+            ["init", str(project_dir), "--existing-project", str(project_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+
+        gitignore = (project_dir / ".gitignore").read_text()
+        assert "*.log" in gitignore
+        assert "node_modules/" in gitignore
+        assert "results/" in gitignore
+
+    def test_existing_project_skips_existing_claude_md(self, runner: CliRunner, tmp_path: Path):
+        """Test that --existing-project doesn't overwrite existing CLAUDE.md."""
+        project_dir = tmp_path / "has-claude-md"
+        project_dir.mkdir()
+        (project_dir / "CLAUDE.md").write_text("# My custom docs\n")
+
+        result = runner.invoke(
+            main,
+            ["init", str(project_dir), "--existing-project", str(project_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+        assert (project_dir / "CLAUDE.md").read_text() == "# My custom docs\n"
+
+    def test_existing_project_fails_if_astra_yaml_exists(
+        self, runner: CliRunner, tmp_path: Path,
+    ):
+        """Test that --existing-project errors if astra.yaml already exists."""
+        project_dir = tmp_path / "already-astra"
+        project_dir.mkdir()
+        (project_dir / "astra.yaml").write_text("version: '1.0'\n")
+
+        result = runner.invoke(
+            main,
+            ["init", str(project_dir), "--existing-project", str(project_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 1
+
+    def test_existing_project_shows_next_steps(self, runner: CliRunner, tmp_path: Path):
+        """Test that output includes next steps with /prism-migrate."""
+        project_dir = tmp_path / "next-steps"
+        project_dir.mkdir()
+
+        result = runner.invoke(
+            main,
+            ["init", str(project_dir), "--existing-project", str(project_dir),
+             "--no-git", "--no-venv", "--permissions", "yolo"],
+        )
+        assert result.exit_code == 0
+        assert "/prism-migrate" in result.output
+
 
 class TestVersionOption:
     """Tests for version option."""
@@ -509,7 +632,8 @@ class TestTargetCommand:
     def test_target_shows_current(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import yaml
-        (tmp_path / "prism.yaml").write_text(yaml.dump({"target": "perlmutter-gpu"}))
+        (tmp_path / ".prism").mkdir()
+        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({"target": "perlmutter-gpu"}))
         with patch("prism.dagster.targets.load_target", return_value={
             "backend": "slurm", "connection": {"hostname": "perlmutter.nersc.gov"},
         }):
@@ -520,18 +644,20 @@ class TestTargetCommand:
     def test_target_set(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import yaml
-        (tmp_path / "prism.yaml").write_text(yaml.dump({"target": "local"}))
+        (tmp_path / ".prism").mkdir()
+        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({"target": "local"}))
         with patch("prism.dagster.targets.load_target", return_value={"backend": "slurm"}):
             result = runner.invoke(main, ["target", "--set", "perlmutter-gpu"])
         assert result.exit_code == 0
         assert "perlmutter-gpu" in result.output
-        config = yaml.safe_load((tmp_path / "prism.yaml").read_text())
+        config = yaml.safe_load((tmp_path / ".prism" / "prism.yaml").read_text())
         assert config["target"] == "perlmutter-gpu"
 
     def test_target_set_nonexistent(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import yaml
-        (tmp_path / "prism.yaml").write_text(yaml.dump({"target": "local"}))
+        (tmp_path / ".prism").mkdir()
+        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({"target": "local"}))
         with patch("prism.dagster.targets.load_target", return_value=None):
             with patch("prism.dagster.targets.list_targets", return_value=["local"]):
                 result = runner.invoke(main, ["target", "--set", "nonexistent"])
@@ -593,14 +719,14 @@ class TestTargetResolution:
             "decisions": [],
         }, sort_keys=False))
 
-        # Create prism.yaml with a local target
-        (tmp_path / "prism.yaml").write_text(yaml.dump({
+        # Create .prism/ with prism.yaml and dagster.yaml
+        (tmp_path / ".prism").mkdir()
+        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({
             "target": "local",
         }, sort_keys=False))
 
-        # Create dagster.yaml
         (tmp_path / "results").mkdir()
-        (tmp_path / "dagster.yaml").write_text(yaml.dump({
+        (tmp_path / ".prism" / "dagster.yaml").write_text(yaml.dump({
             "storage": {"sqlite": {"base_dir": str(tmp_path / "results" / ".dagster")}}
         }, sort_keys=False))
 
@@ -621,12 +747,13 @@ class TestTargetResolution:
             "decisions": [],
         }, sort_keys=False))
 
-        (tmp_path / "prism.yaml").write_text(yaml.dump({
+        (tmp_path / ".prism").mkdir()
+        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({
             "target": "local",
         }, sort_keys=False))
 
         (tmp_path / "results").mkdir()
-        (tmp_path / "dagster.yaml").write_text(yaml.dump({
+        (tmp_path / ".prism" / "dagster.yaml").write_text(yaml.dump({
             "storage": {"sqlite": {"base_dir": str(tmp_path / "results" / ".dagster")}}
         }, sort_keys=False))
 
@@ -658,17 +785,17 @@ class TestUpdateCommand:
         monkeypatch.setattr("prism.updater._CHECK_FILE", Path("/tmp/.fake_update_check"))
 
     def test_update_no_reinstall_when_up_to_date(self, runner: CliRunner, monkeypatch):
-        """When all repos are up to date, skip reinstall and project sync."""
+        """When all repos are up to date, skip reinstall but still offer project sync."""
         self._patch_updater(monkeypatch, [
             ("ASTRA", True, "already up to date"),
             ("Prism", True, "already up to date"),
             ("Prism-UI", True, "already up to date"),
         ])
 
-        result = runner.invoke(main, ["update"])
+        result = runner.invoke(main, ["update"], input="skip\n")
         assert result.exit_code == 0
         assert "Reinstalling" not in result.output
-        assert "Sync updated" not in result.output
+        assert "Sync updated" in result.output
 
     def test_update_reinstalls_when_updated(self, runner: CliRunner, monkeypatch):
         """When repos have updates, reinstall packages and prompt for sync."""
@@ -732,6 +859,11 @@ class TestSyncProjectPlugins:
         hooks = plugin / "hooks"
         hooks.mkdir()
         (hooks / "langfuse_hook.py").write_text("# hook v2\n")
+        # Guides
+        guides = plugin / "guides"
+        guides.mkdir()
+        (guides / "decision-guide.md").write_text("# Decision Guide\n")
+        (guides / "ui-brand.md").write_text("# UI Brand\n")
         # Template
         templates = plugin / "templates"
         templates.mkdir()
@@ -758,6 +890,8 @@ class TestSyncProjectPlugins:
         assert (project / ".claude" / "skills" / "prism-build" / "SKILL.md").exists()
         assert (project / ".claude" / "scripts" / "session-start.sh").exists()
         assert (project / ".claude" / "hooks" / "langfuse_hook.py").exists()
+        assert (project / ".claude" / "guides" / "decision-guide.md").exists()
+        assert (project / ".claude" / "guides" / "ui-brand.md").exists()
 
     def test_sync_scripts_executable(self, tmp_path: Path):
         """Synced scripts should be executable."""
