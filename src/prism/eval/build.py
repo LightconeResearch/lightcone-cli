@@ -78,12 +78,48 @@ def _extract_version(wheel_path: Path) -> str:
     return match.group(1) if match else wheel_path.name
 
 
+def _build_astra_wheel(outdir: Path) -> Path:
+    """Build an ASTRA wheel from the version installed in the current environment.
+
+    Uses importlib.metadata to find the git URL and commit of the installed astra
+    package, then builds a wheel pinned to that exact commit via pip wheel.
+    """
+    import importlib.metadata
+    import json
+
+    dist = importlib.metadata.distribution("astra")
+    url_text = dist.read_text("direct_url.json")
+    if not url_text:
+        raise RuntimeError(
+            "Cannot determine ASTRA source — installed package has no direct_url.json. "
+            "Ensure astra is installed from its git repo (not a plain wheel)."
+        )
+    url_info = json.loads(url_text)
+    git_url = url_info["url"]
+    commit = url_info.get("vcs_info", {}).get("commit_id", "")
+    spec = f"astra @ git+{git_url}@{commit}" if commit else f"astra @ git+{git_url}"
+
+    logger.info("Building ASTRA wheel from %s (commit %s) ...", git_url, commit[:8] or "HEAD")
+    result = subprocess.run(
+        ["pip", "wheel", "--no-deps", "--wheel-dir", str(outdir), spec],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ASTRA wheel build failed:\n{result.stderr}")
+
+    wheels = list(outdir.glob("astra-*.whl"))
+    if not wheels:
+        raise RuntimeError(f"No astra wheel found in {outdir} after build")
+    return wheels[0]
+
+
 def build_eval_wheels(evals_dir: Path) -> tuple[VersionInfo, list[Path]]:
-    """Build the Prism wheel and collect all wheels for sandbox injection.
+    """Build the Prism and ASTRA wheels for sandbox injection.
 
     Returns (version_info, [wheel_paths]).
-    The Prism wheel is always built fresh from the current working tree.
-    The ASTRA wheel is expected in evals/deps/ (external repo, not auto-built).
+    Both wheels are built fresh from the current environment:
+    - Prism: built from the local git working tree
+    - ASTRA: built from the git URL/commit recorded in the installed package metadata
     """
     repo_root = _get_repo_root()
     version_info = _get_git_info(repo_root)
@@ -100,15 +136,13 @@ def build_eval_wheels(evals_dir: Path) -> tuple[VersionInfo, list[Path]]:
 
     wheels: list[Path] = [prism_wheel]
 
-    # Find ASTRA wheel in evals/deps/
-    deps_dir = evals_dir / "deps"
-    if deps_dir.exists():
-        for whl in sorted(deps_dir.glob("astra-*.whl")):
-            version_info.astra_version = _extract_version(whl)
-            wheels.append(whl)
-            logger.info("Using ASTRA wheel: %s", whl.name)
-
-    if not version_info.astra_version:
-        logger.warning("No ASTRA wheel found in %s — sandbox may not have astra CLI", deps_dir)
+    # Build ASTRA wheel from the installed package's git source
+    try:
+        astra_wheel = _build_astra_wheel(tmpdir)
+        version_info.astra_version = _extract_version(astra_wheel)
+        wheels.append(astra_wheel)
+        logger.info("Built %s", astra_wheel.name)
+    except Exception as exc:
+        logger.warning("Failed to build ASTRA wheel: %s — sandbox may not have astra CLI", exc)
 
     return version_info, wheels

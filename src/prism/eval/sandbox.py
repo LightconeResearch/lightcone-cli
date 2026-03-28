@@ -201,7 +201,11 @@ class EvalSandbox:
         timeout: int = 600,
         model: str | None = None,
     ) -> ClaudeResult:
-        """Run claude -p with the loop prompt and parse JSON output."""
+        """Run claude -p with the loop prompt and parse JSON output.
+
+        Uses Daytona's session API with async execution + polling to avoid
+        HTTP connection timeouts on long-running Claude Code invocations.
+        """
         assert self._sandbox is not None, "Call create() first"
 
         model_flag = f"--model {shlex.quote(model)}" if model else ""
@@ -215,10 +219,53 @@ class EvalSandbox:
         ).strip()
 
         start = time.monotonic()
-        result = self.exec(cmd, timeout=timeout)
+        result = self._exec_async_poll(cmd, timeout=timeout)
         duration_ms = int((time.monotonic() - start) * 1000)
 
         return _parse_claude_output(result.output, result.exit_code, duration_ms)
+
+    def _exec_async_poll(
+        self, cmd: str, timeout: int = 600, poll_interval: int = 10
+    ) -> ExecuteResult:
+        """Execute a command asynchronously via Daytona sessions and poll for completion.
+
+        Unlike process.exec() which makes a single blocking HTTP call (and drops
+        on long-running commands due to gateway timeouts), this uses:
+          1. create_session — establish a persistent session
+          2. execute_session_command(run_async=True) — fire-and-forget
+          3. get_session_command — poll until exit_code is set
+          4. get_session_command_logs — retrieve output
+        """
+        from daytona_sdk._sync.process import SessionExecuteRequest
+
+        session_id = f"claude-{self.trial_id}"
+        proc = self._sandbox.process
+
+        proc.create_session(session_id)
+        try:
+            req = SessionExecuteRequest(command=cmd, run_async=True)
+            resp = proc.execute_session_command(session_id, req, timeout=60)
+            cmd_id = resp.cmd_id
+
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                time.sleep(poll_interval)
+                cmd_info = proc.get_session_command(session_id, cmd_id)
+                if cmd_info.exit_code is not None:
+                    logs = proc.get_session_command_logs(session_id, cmd_id)
+                    return ExecuteResult(
+                        exit_code=cmd_info.exit_code,
+                        output=logs.stdout or logs.output or "",
+                    )
+
+            # Timeout reached — kill and return error
+            logger.warning("Command timed out after %ds in trial %s", timeout, self.trial_id)
+            return ExecuteResult(exit_code=1, output=f"Timed out after {timeout}s")
+        finally:
+            try:
+                proc.delete_session(session_id)
+            except Exception:
+                logger.debug("Failed to delete session %s", session_id, exc_info=True)
 
     def upload_file(self, remote_path: str, content: bytes) -> None:
         """Upload a file to the sandbox."""
