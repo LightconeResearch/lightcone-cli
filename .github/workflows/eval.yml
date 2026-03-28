@@ -83,6 +83,14 @@ jobs:
               sys.exit(1)
           "
 
+      - name: Upload results artifact
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: eval-results/
+
       - name: Comment on PR
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -97,6 +105,9 @@ jobs:
             const prismVersion = '${{ steps.eval.outputs.prism_version }}' || 'unknown';
             const prismCommit = '${{ steps.eval.outputs.prism_commit }}' || 'unknown';
             const outcome = '${{ steps.eval.outcome }}';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const artifactId = '${{ steps.upload.outputs.artifact-id }}';
+            const artifactUrl = artifactId ? `${runUrl}/artifacts/${artifactId}` : '';
 
             let graders = '';
             try { graders = fs.readFileSync('grader-details.txt', 'utf8'); } catch {}
@@ -113,6 +124,7 @@ jobs:
               `| Turns | ${turns} |`,
               `| Duration | ${duration}s |`,
               `| Prism | \`${prismVersion}\` (\`${prismCommit}\`) |`,
+              artifactUrl ? `| Results | [Download](${artifactUrl}) |` : '',
               '',
               '### Graders',
               graders || '_No grader results_',
@@ -152,10 +164,3 @@ jobs:
                 body,
               });
             }
-
-      - name: Upload results artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: eval-results
-          path: eval-results/

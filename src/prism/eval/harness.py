@@ -112,10 +112,7 @@ def run_trial(
             )
             duration = time.monotonic() - start
 
-            build_complete = any(
-                line.strip() == BUILD_COMPLETE_MARKER
-                for line in claude_result.result_text.splitlines()
-            )
+            build_complete = BUILD_COMPLETE_MARKER in claude_result.result_text
             iteration = IterationResult(
                 iteration=0,
                 cost_usd=claude_result.cost_usd,
