@@ -265,7 +265,7 @@ def query_user_associations(
 
     output = _run_command([
         "sacctmgr", "show", "association",
-        f"where user={user}",
+        "where", f"user={user}",
         "format=Account,QOS", "-P",
     ])
     if not output:
