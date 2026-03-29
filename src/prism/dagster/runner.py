@@ -459,6 +459,101 @@ class ASTRAContainerRunner:
             marker.write_text(current_hash + "\n")
         self._venv_deps_checked = True
 
+    def _validate_and_adjust_qos(
+        self,
+        scheduler: dict[str, Any],
+        resources: dict[str, Any],
+        target_name: str,
+    ) -> None:
+        """Check QoS eligibility against cached cluster info and auto-switch.
+
+        Mutates *scheduler* in-place if a QoS switch is needed.
+        """
+        from prism.dagster.targets import is_cache_stale, load_cluster_cache
+
+        if is_cache_stale(target_name):
+            logger.warning(
+                "Cluster cache for '%s' is stale or missing. "
+                "Run `prism target refresh %s` to update.",
+                target_name, target_name,
+            )
+
+        cluster = load_cluster_cache(target_name)
+        if not cluster:
+            return
+
+        from prism.dagster.slurm_info import recommend_qos
+
+        resolved_qos = scheduler.get("qos")
+        if not resolved_qos:
+            return
+
+        allowed_qos = scheduler.pop("_allowed_qos", None)
+        recipe_resources = {
+            "nodes": resources.get("nodes", 1),
+            "gpus_per_node": resources.get("gpus", 0),
+            "time_limit_minutes": self._parse_time_minutes(
+                resources.get("time_limit") or scheduler.get("time_limit")
+            ),
+        }
+
+        recommendations = recommend_qos(
+            cluster,
+            recipe_resources,
+            preferred_qos=resolved_qos,
+            qos_entries=allowed_qos,
+        )
+
+        current = next((r for r in recommendations if r.qos == resolved_qos), None)
+        if current and not current.eligible:
+            best = next((r for r in recommendations if r.eligible), None)
+            if best:
+                logger.warning(
+                    "QoS '%s' cannot handle this job (%s). Switching to '%s'.",
+                    resolved_qos,
+                    "; ".join(current.violations),
+                    best.qos,
+                )
+                scheduler["qos"] = best.qos
+                # Clamp time_limit if needed
+                qos_info = cluster.qos.get(best.qos)
+                if qos_info and qos_info.max_wall_minutes:
+                    t = recipe_resources.get("time_limit_minutes")
+                    if t and t > qos_info.max_wall_minutes:
+                        logger.warning(
+                            "Clamping time_limit from %d to %d min (max for %s).",
+                            t, qos_info.max_wall_minutes, best.qos,
+                        )
+                        scheduler["time_limit"] = f"{qos_info.max_wall_minutes}"
+            else:
+                logger.error(
+                    "No eligible QoS for this job (%s for '%s'). "
+                    "Job will likely be rejected.",
+                    "; ".join(current.violations), resolved_qos,
+                )
+
+    @staticmethod
+    def _parse_time_minutes(value: str | int | None) -> int | None:
+        """Parse a time value to minutes for QoS comparison."""
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        value = str(value).strip()
+        if value.endswith("m"):
+            try:
+                return int(value[:-1])
+            except ValueError:
+                return None
+        if value.endswith("h"):
+            try:
+                return int(value[:-1]) * 60
+            except ValueError:
+                return None
+        # Try HH:MM:SS
+        from prism.dagster.slurm_info import parse_slurm_walltime
+        return parse_slurm_walltime(value)
+
     def _run_slurm_interactive(
         self,
         command: str,
@@ -564,8 +659,22 @@ class ASTRAContainerRunner:
         output_path = self.project_root / "results" / universe_id
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Generate the sbatch script
+        # --- Resource limit clamping (target-level guardrails) ---
         resource_limits = self.target_config.get("resource_limits", {})
+        max_nodes = resource_limits.get("max_nodes")
+        if max_nodes and resources.get("nodes", 1) > max_nodes:
+            logger.warning(
+                "Clamping nodes from %d to %d (target resource_limits).",
+                resources["nodes"], max_nodes,
+            )
+            resources = {**resources, "nodes": max_nodes}
+
+        # --- QoS validation and auto-switch ---
+        target_name = scheduler.get("_target_name")
+        if target_name:
+            self._validate_and_adjust_qos(scheduler, resources, target_name)
+
+        # Generate the sbatch script
         script = generate_sbatch_script(
             command=command,
             container=container,
@@ -853,22 +962,22 @@ def _podman_hpc_run_command(
     """
     parts = ["podman-hpc", "run", "--rm"]
 
-    # GPU support
+    # GPU support — derived from recipe resources
     if resources.get("gpus"):
         parts.append("--gpu")
 
-    # MPI support — if the scheduler config opts in
-    container_flags = scheduler_config.get("container_flags", [])
-    if "--mpi" in container_flags:
+    # MPI support — derived from multi-node recipes
+    if resources.get("nodes", 1) > 1:
         parts.append("--mpi")
-    if "--nccl" in container_flags:
-        parts.append("--nccl")
-    if "--cuda-mpi" in container_flags:
-        parts.append("--cuda-mpi")
 
-    # Any extra user-specified flags
-    for flag in container_flags:
-        if flag not in ("--mpi", "--nccl", "--cuda-mpi", "--gpu"):
+    # Extra container flags (escape hatch for --nccl, --cuda-mpi, etc.)
+    # Also supports legacy container_flags key for backward compatibility.
+    extra_flags = scheduler_config.get(
+        "extra_container_flags",
+        scheduler_config.get("container_flags", []),
+    )
+    for flag in extra_flags:
+        if flag not in ("--gpu",):  # --gpu is derived above
             parts.append(flag)
 
     # Volume mount project root

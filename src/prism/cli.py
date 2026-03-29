@@ -1181,6 +1181,11 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
 @click.option("--universe", "-u", default=None, help="Universe to materialize for")
 @click.option("--target", "-t", default=None, help="Execution target name")
 @click.option("--no-build", is_flag=True, help="Skip automatic container image builds")
+@click.option("--qos", default=None, help="QoS override (e.g. gpu_debug, gpu_regular)")
+@click.option("--constraint", default=None, help="Node constraint (e.g. gpu, cpu)")
+@click.option("--time-limit", default=None, help="Walltime (e.g. 30m, 2h, 01:30:00)")
+@click.option("--account", default=None, help="Allocation account override")
+@click.option("--partition", default=None, help="SLURM partition override")
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -1188,6 +1193,11 @@ def run(
     universe: str | None,
     target: str | None,
     no_build: bool,
+    qos: str | None,
+    constraint: str | None,
+    time_limit: str | None,
+    account: str | None,
+    partition: str | None,
 ) -> None:
     """Materialize ASTRA outputs via Dagster.
 
@@ -1195,8 +1205,7 @@ def run(
     outputs for all universes. Container build specs are automatically
     built before execution unless --no-build is given.
 
-    Any unknown flags are passed through as SLURM scheduling directives
-    (e.g. --partition, --qos, --constraint, --gres).
+    Any unknown flags are passed through as extra SLURM scheduling directives.
 
     Examples:
         prism run                           # all outputs, all universes
@@ -1204,14 +1213,14 @@ def run(
         prism run --universe baseline       # specific universe
         prism run accuracy -u baseline      # specific output + universe
         prism run --target perlmutter       # run on SLURM
-        prism run --qos shared --constraint gpu  # SLURM scheduling flags
-        prism run --partition gpu-a100      # works for any cluster
+        prism run --qos gpu_regular         # override QoS
+        prism run --qos gpu_debug --time-limit 30m  # quick test
         prism run --no-build                # skip container builds
     """
     from prism.dagster.assets import build_definitions
     from prism.dagster.targets import load_target
 
-    # Separate output names from SLURM flags in the combined args
+    # Separate output names from extra SLURM flags in the combined args
     all_args = list(outputs) + ctx.args
     output_names = [a for a in all_args if not a.startswith("-")]
     slurm_args = [a for a in all_args if a.startswith("-")]
@@ -1239,10 +1248,24 @@ def run(
     if slurm_args and target_config:
         target_config["extra_slurm_args"] = slurm_args
 
+    # Build CLI overrides from named flags
+    cli_overrides: dict[str, Any] = {}
+    if qos:
+        cli_overrides["qos"] = qos
+    if constraint:
+        cli_overrides["constraint"] = constraint
+    if time_limit:
+        cli_overrides["time_limit"] = time_limit
+    if account:
+        cli_overrides["account"] = account
+    if partition:
+        cli_overrides["partition"] = partition
+
     universe_id = universe or "baseline"
     defs = build_definitions(
         project_path, target_config=target_config, universe_id=universe_id,
-        no_build=no_build,
+        no_build=no_build, cli_overrides=cli_overrides or None,
+        target_name=target_name,
     )
 
     console.print("[bold]Materializing outputs...[/bold]")
@@ -1686,8 +1709,7 @@ def target(
         if config is None:
             console.print(f"[red]Error:[/red] No configured target '{show_name}'.")
             raise SystemExit(1)
-        console.print(f"[bold]Target: {show_name}[/bold]\n")
-        console.print(yaml.dump(config, default_flow_style=False, sort_keys=False))
+        _display_target(show_name, config)
         return
 
     if list_flag:
@@ -1733,6 +1755,105 @@ def target(
         else:
             console.print("  [yellow]Warning: target not found in ~/.prism/targets/[/yellow]")
     console.print("\n  Use [cyan]prism target --set <name>[/cyan] to change.")
+
+
+def _display_target(name: str, config: dict) -> None:
+    """Pretty-print a target configuration."""
+    from prism.dagster.targets import (
+        get_qos_entries,
+        is_cache_stale,
+    )
+
+    console.print(f"[bold]Target: {name}[/bold]")
+    site = config.get("site", "unknown")
+    backend = config.get("backend", "unknown")
+    console.print(f"  Site: {site}  Backend: {backend}")
+    conn = config.get("connection", {})
+    if conn.get("hostname"):
+        console.print(f"  Host: {conn['hostname']}")
+    if config.get("container_runtime"):
+        console.print(f"  Container: {config['container_runtime']}")
+    if config.get("account"):
+        console.print(f"  Account: {config['account']}")
+
+    # Defaults
+    defaults = config.get("defaults", {})
+    if defaults:
+        parts = [f"{k}={v}" for k, v in defaults.items()]
+        console.print(f"\n  [bold]Defaults:[/bold] {', '.join(parts)}")
+
+    # QoS choices
+    qos_entries = get_qos_entries(config)
+    if qos_entries:
+        console.print("\n  [bold]QoS choices:[/bold]")
+        for entry in qos_entries:
+            name_str = entry.get("name", "?")
+            constraint_str = entry.get("constraint", "")
+            use_for = entry.get("use_for", "")
+            console.print(
+                f"    {name_str:<20} ({constraint_str}) "
+                f"[dim]→ {use_for}[/dim]"
+            )
+
+    # Resource limits
+    limits = config.get("resource_limits", {})
+    if limits:
+        parts = [f"{k}={v}" for k, v in limits.items()]
+        console.print(f"\n  [bold]Guardrails:[/bold] {', '.join(parts)}")
+
+    # Cache status
+    if backend == "slurm":
+        target_name_for_cache = name
+        if is_cache_stale(target_name_for_cache):
+            console.print(
+                "\n  [yellow]Cluster cache: stale or missing.[/yellow] "
+                f"Run [cyan]prism target refresh {name}[/cyan] to update."
+            )
+        else:
+            console.print("\n  [green]Cluster cache: current[/green]")
+
+
+@target.command("refresh")
+@click.argument("name")
+def target_refresh(name: str) -> None:
+    """Re-query SLURM scheduler and update cached QoS limits."""
+    from prism.dagster.targets import (
+        get_allowed_qos_names,
+        load_target,
+        refresh_cluster_cache,
+    )
+
+    config = load_target(name)
+    if config is None:
+        console.print(f"[red]Error:[/red] No configured target '{name}'.")
+        raise SystemExit(1)
+
+    if config.get("backend") != "slurm":
+        console.print(
+            f"Only SLURM targets support refresh ('{name}' is "
+            f"{config.get('backend')})."
+        )
+        return
+
+    info = refresh_cluster_cache(name)
+    console.print(
+        f"[green]✓[/green] Updated cluster cache for '{name}': "
+        f"{len(info.qos)} QoS, {len(info.partitions)} partitions."
+    )
+
+    # Warn about QoS in target but not on cluster
+    allowed = get_allowed_qos_names(config)
+    for qos_name in allowed:
+        if qos_name not in info.qos:
+            console.print(
+                f"  [yellow]⚠[/yellow] '{qos_name}' is in your target "
+                "but not available on this cluster."
+            )
+        elif qos_name not in info.user_qos:
+            console.print(
+                f"  [yellow]⚠[/yellow] '{qos_name}' exists but your "
+                "account doesn't have access."
+            )
 
 
 @target.command("add")
@@ -1781,64 +1902,47 @@ def target_add(name: str | None) -> None:
         account = click.prompt("  Account/allocation")
 
         # --- Container runtime ---
-        site_runtimes = site.get("container_runtimes", [])
-        if len(site_runtimes) > 1:
-            console.print("\n  [bold]Container runtime:[/bold]")
-            for i, rt in enumerate(site_runtimes, 1):
-                console.print(f"    {i}. {rt}")
-            rt_choices = [str(i) for i in range(1, len(site_runtimes) + 1)]
-            rt_idx = click.prompt(
-                "  Select runtime",
-                type=click.Choice(rt_choices),
-                default="1",
+        container_runtime = site.get(
+            "container_runtime",
+            site.get("scheduler", {}).get("container_runtime", "docker"),
+        )
+
+        # --- QoS selection from suggested_qos ---
+        safe = site.get("safe_defaults", {})
+        suggested = site.get("suggested_qos", [])
+        constraint = safe.get("constraint", "gpu")
+
+        target_name = name or site_key
+
+        qos_entries: list[dict] = []
+        if suggested:
+            console.print("\n  [bold]Available queues:[/bold]")
+            for i, entry in enumerate(suggested, 1):
+                console.print(
+                    f"    {i}. {entry['name']:<20} ({entry['constraint']}) "
+                    f"— {entry['use_for']}"
+                )
+            console.print(
+                "\n  Enter numbers to enable (comma-separated), "
+                "or press Enter for all:"
             )
-            container_runtime = site_runtimes[int(rt_idx) - 1]
-        elif site_runtimes:
-            container_runtime = site_runtimes[0]
-        else:
-            container_runtime = site.get(
-                "scheduler", {},
-            ).get("container_runtime", "docker")
+            selection = click.prompt("  Selection", default="")
+            if selection.strip():
+                indices = [int(s.strip()) - 1 for s in selection.split(",")
+                           if s.strip().isdigit()]
+                qos_entries = [suggested[i] for i in indices
+                               if 0 <= i < len(suggested)]
+            else:
+                qos_entries = list(suggested)
 
-        # --- Node type selection ---
-        node_types = site.get("node_types", {})
-        if node_types:
-            console.print("\n  [bold]Node type:[/bold]")
-            nt_list = list(node_types.items())
-            for i, (nt_key, nt_info) in enumerate(nt_list, 1):
-                console.print(f"    {i}. {nt_key} — {nt_info.get('description', '')}")
-            nt_choices = [str(i) for i in range(1, len(nt_list) + 1)]
-            nt_idx = click.prompt(
-                "  Select node type",
-                type=click.Choice(nt_choices),
-                default="1",
-            )
-            nt_key, nt_info = nt_list[int(nt_idx) - 1]
-            constraint = nt_info.get("constraint", nt_key)
-        else:
-            nt_key = "default"
-            constraint = ""
+        default_qos = safe.get("qos", "gpu_debug")
+        if qos_entries:
+            # Verify default is in selected list, otherwise use first
+            selected_names = [e["name"] for e in qos_entries]
+            if default_qos not in selected_names:
+                default_qos = selected_names[0]
 
-        target_name = name or f"{site_key}-{nt_key}"
-
-        # QOS selection
-        qos_options = site.get("qos_options", {})
-        qos = "regular"
-        if qos_options:
-            console.print("\n  [bold]QOS:[/bold]")
-            qos_list = list(qos_options.items())
-            for i, (qos_key, qos_info) in enumerate(qos_list, 1):
-                console.print(f"    {i}. {qos_key} — {qos_info.get('description', '')}")
-            qos_choices = [str(i) for i in range(1, len(qos_list) + 1)]
-            qos_idx = click.prompt(
-                "  Select QOS",
-                type=click.Choice(qos_choices),
-                default="1",
-            )
-            qos = qos_list[int(qos_idx) - 1][0]
-
-        resource_limits = site.get("resource_limits", {})
-        config = {
+        config: dict[str, Any] = {
             "site": site_key,
             "backend": site.get("backend", "slurm"),
             "connection": {
@@ -1847,29 +1951,27 @@ def target_add(name: str | None) -> None:
             },
             "account": account,
             "container_runtime": container_runtime,
-            "constraint": constraint,
-            "qos": qos,
+            "defaults": {
+                "qos": default_qos,
+                "constraint": constraint,
+                "time_limit": safe.get("time_limit", "00:30:00"),
+            },
         }
+        if qos_entries:
+            config["qos"] = qos_entries
 
         # --- Resource limits ---
         console.print("\n  [bold]Resource limits[/bold]")
         console.print("  (these cap what Claude can request per job)\n")
 
-        config["max_nodes"] = click.prompt(
-            "  Max nodes per job",
-            type=int,
-            default=resource_limits.get("max_nodes", 4),
-        )
-        config["max_walltime_minutes"] = click.prompt(
-            "  Max walltime (minutes)",
-            type=int,
-            default=resource_limits.get("max_walltime_minutes", 360),
-        )
-        config["max_concurrent_jobs"] = click.prompt(
-            "  Max concurrent jobs",
-            type=int,
-            default=resource_limits.get("max_concurrent_jobs", 8),
-        )
+        max_nodes = click.prompt("  Max nodes per job", type=int, default=4)
+        max_wall = click.prompt("  Max walltime (minutes)", type=int, default=360)
+        max_concurrent = click.prompt("  Max concurrent jobs", type=int, default=8)
+        config["resource_limits"] = {
+            "max_nodes": max_nodes,
+            "max_walltime_minutes": max_wall,
+            "max_concurrent_jobs": max_concurrent,
+        }
 
     path = save_target(target_name, config)
     console.print(f"\n  [green]✓[/green] Created target '{target_name}' at {path}")
@@ -2075,28 +2177,17 @@ def _run_setup_wizard() -> list[Path]:
             )
             account = click.prompt("  Account/allocation")
 
-            # Container runtime — auto-select if only one
-            site_runtimes = site.get("container_runtimes", [])
-            if len(site_runtimes) > 1:
-                console.print("\n  [bold]Container runtime:[/bold]")
-                for i, rt in enumerate(site_runtimes, 1):
-                    console.print(f"    {i}. {rt}")
-                rt_choices = [
-                    str(i) for i in range(1, len(site_runtimes) + 1)
-                ]
-                rt_idx = click.prompt(
-                    "  Select runtime",
-                    type=click.Choice(rt_choices),
-                    default="1",
-                )
-                container_runtime = site_runtimes[int(rt_idx) - 1]
-            elif site_runtimes:
-                container_runtime = site_runtimes[0]
-            else:
-                container_runtime = None
+            # Container runtime — use site default
+            container_runtime = site.get(
+                "container_runtime",
+                site.get("scheduler", {}).get("container_runtime"),
+            )
 
             default_name = f"{site_key}-{account}"
             target_name = click.prompt("  Target name", default=default_name)
+
+            safe = site.get("safe_defaults", {})
+            suggested = site.get("suggested_qos", [])
 
             target_config: dict[str, Any] = {
                 "site": site_key,
@@ -2109,6 +2200,19 @@ def _run_setup_wizard() -> list[Path]:
             }
             if container_runtime:
                 target_config["container_runtime"] = container_runtime
+            # Auto-populate defaults and QoS from site registry
+            target_config["defaults"] = {
+                "qos": safe.get("qos", "gpu_debug"),
+                "constraint": safe.get("constraint", "gpu"),
+                "time_limit": safe.get("time_limit", "00:30:00"),
+            }
+            if suggested:
+                target_config["qos"] = list(suggested)
+            target_config["resource_limits"] = {
+                "max_nodes": 4,
+                "max_walltime_minutes": 360,
+                "max_concurrent_jobs": 8,
+            }
 
         else:
             # --- Custom SLURM cluster ---
@@ -2143,6 +2247,7 @@ def _run_setup_wizard() -> list[Path]:
                     "username": username,
                 },
                 "account": account,
+                "defaults": {},
             }
             if container_runtime:
                 target_config["container_runtime"] = container_runtime

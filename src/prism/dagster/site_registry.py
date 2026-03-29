@@ -20,44 +20,31 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
         "connection": {
             "hostname": "perlmutter.nersc.gov",
         },
-        "scheduler": {
-            "container_runtime": "podman-hpc",
+        "container_runtime": "podman-hpc",
+        # Hardware descriptions for the agent (can't be discovered from SLURM)
+        "constraint_guidance": {
+            "gpu": "A100 40 GB — 1,536 nodes, 4 GPUs/node",
+            "gpu&hbm80g": "A100 80 GB — 256 nodes, 4 GPUs/node",
+            "cpu": "CPU only — 3,072 nodes, 128 cores/node",
         },
-        "node_types": {
-            "gpu": {
-                "description": "GPU (A100 40GB) — 1,536 nodes, 4 GPUs/node",
-                "constraint": "gpu",
-                "container_flags": ["--gpu"],
-            },
-            "gpu_hbm80": {
-                "description": "GPU (A100 80GB) — 256 nodes, 4 GPUs/node",
-                "constraint": "gpu&hbm80g",
-                "container_flags": ["--gpu"],
-            },
-            "cpu": {
-                "description": "CPU only — 3,072 nodes, 128 cores/node",
-                "constraint": "cpu",
-                "container_flags": [],
-            },
-        },
-        "qos_options": {
-            "regular": {"description": "Standard priority, max 48h", "default": True},
-            "debug": {"description": "Quick tests, max 30min, 8 nodes max"},
-            "shared": {"description": "Fractional GPU (1-2 GPUs), max 48h"},
-            "preempt": {"description": "0.25x cost, can be preempted after 2h"},
-        },
-        "container_runtimes": ["podman-hpc"],
-        "resource_limits": {
-            "max_nodes": 4,
-            "max_walltime_minutes": 360,
-            "max_concurrent_jobs": 8,
-        },
+        # Suggested QoS for setup wizard (pre-filled use_for descriptions)
+        "suggested_qos": [
+            {"name": "gpu_debug", "constraint": "gpu",
+             "use_for": "quick iteration, testing"},
+            {"name": "gpu_regular", "constraint": "gpu",
+             "use_for": "production runs, large jobs"},
+            {"name": "gpu_preempt", "constraint": "gpu",
+             "use_for": "cheap batch jobs, restartable"},
+            {"name": "debug", "constraint": "cpu",
+             "use_for": "quick CPU-only tests"},
+            {"name": "regular_1", "constraint": "cpu",
+             "use_for": "large CPU-only jobs"},
+        ],
         "safe_defaults": {
-            "node_type": "gpu",
+            "qos": "gpu_debug",
             "constraint": "gpu",
-            "qos": "debug",
             "nodes": 1,
-            "time_limit": "30m",
+            "time_limit": "00:30:00",
         },
         "account_suffixes": {
             "gpu": "_g",
@@ -74,11 +61,6 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
         "display_name": "Local",
         "backend": "local",
         "connection": {},
-        "scheduler": {},
-        "node_types": {},
-        "qos_options": {},
-        "container_runtimes": [],
-        "resource_limits": {},
     },
 }
 
