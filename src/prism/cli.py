@@ -1856,6 +1856,203 @@ def target_refresh(name: str) -> None:
             )
 
 
+@target.command("add-qos")
+@click.argument("target_name")
+@click.argument("qos_name", required=False)
+@click.option("--constraint", default=None, help="Hardware constraint (gpu/cpu)")
+@click.option("--use-for", default=None, help="When to use this QoS")
+@click.option("--all", "show_all", is_flag=True, help="Include interactive/jupyter queues")
+def target_add_qos(
+    target_name: str,
+    qos_name: str | None,
+    constraint: str | None,
+    use_for: str | None,
+    show_all: bool,
+) -> None:
+    """Add a QoS entry to an existing target.
+
+    Without QOS_NAME, shows an interactive picker of available queues
+    from the cluster cache (run `prism target refresh` first).
+
+    Examples:
+        prism target add-qos perlmutter                              # interactive
+        prism target add-qos perlmutter gpu_shared                   # auto-detect
+        prism target add-qos perlmutter gpu_shared --use-for "small GPU jobs"
+    """
+    from prism.dagster.targets import (
+        add_qos_entry,
+        get_allowed_qos_names,
+        load_cluster_cache,
+        load_target,
+        save_target,
+    )
+
+    config = load_target(target_name)
+    if config is None:
+        console.print(f"[red]Error:[/red] No configured target '{target_name}'.")
+        raise SystemExit(1)
+
+    if qos_name:
+        # --- Direct mode ---
+        from prism.dagster.slurm_info import generate_use_for, infer_qos_constraint
+
+        if constraint is None:
+            constraint = infer_qos_constraint(qos_name)
+        if use_for is None:
+            cluster = load_cluster_cache(target_name)
+            if cluster and qos_name in cluster.qos:
+                use_for = generate_use_for(cluster.qos[qos_name])
+            else:
+                use_for = "general purpose"
+
+        added = add_qos_entry(config, qos_name, constraint, use_for)
+        if not added:
+            console.print(
+                f"[yellow]'{qos_name}' is already in target '{target_name}'.[/yellow]"
+            )
+            return
+        save_target(target_name, config)
+        console.print(
+            f"[green]✓[/green] Added '{qos_name}' ({constraint}) to '{target_name}'."
+        )
+    else:
+        # --- Interactive mode ---
+        from prism.dagster.slurm_info import (
+            generate_use_for,
+            infer_qos_constraint,
+            is_user_facing_qos,
+        )
+
+        cluster = load_cluster_cache(target_name)
+        if cluster is None:
+            console.print(
+                f"[red]Error:[/red] No cluster cache for '{target_name}'. "
+                f"Run [cyan]prism target refresh {target_name}[/cyan] first."
+            )
+            raise SystemExit(1)
+
+        existing = set(get_allowed_qos_names(config))
+        candidates: list[tuple[str, str, str]] = []  # (name, constraint, use_for)
+        for name, qos_info in sorted(cluster.qos.items()):
+            if name in existing:
+                continue
+            if name not in cluster.user_qos:
+                continue
+            if not is_user_facing_qos(name, include_interactive=show_all):
+                continue
+            c = infer_qos_constraint(name)
+            desc = generate_use_for(qos_info)
+            candidates.append((name, c, desc))
+
+        if not candidates:
+            console.print("No additional QoS available to add.")
+            return
+
+        # Group by constraint
+        gpu_list = [(n, c, d) for n, c, d in candidates if c == "gpu"]
+        cpu_list = [(n, c, d) for n, c, d in candidates if c != "gpu"]
+
+        console.print(
+            f"\n  Available QoS not yet in this target "
+            f"({len(candidates)} of {len(cluster.qos)}):\n"
+        )
+        numbered: list[tuple[str, str, str]] = []
+        idx = 1
+        if gpu_list:
+            console.print("  [bold]GPU queues:[/bold]")
+            for name, c, desc in gpu_list:
+                console.print(f"    {idx}. {name:<25} {desc}")
+                numbered.append((name, c, desc))
+                idx += 1
+        if cpu_list:
+            console.print("  [bold]CPU queues:[/bold]")
+            for name, c, desc in cpu_list:
+                console.print(f"    {idx}. {name:<25} {desc}")
+                numbered.append((name, c, desc))
+                idx += 1
+
+        selection = click.prompt(
+            "\n  Select (comma-separated), or 'q' to cancel",
+            default="q",
+        )
+        if selection.strip().lower() == "q":
+            return
+
+        indices = []
+        for s in selection.split(","):
+            s = s.strip()
+            if s.isdigit():
+                indices.append(int(s) - 1)
+
+        added_count = 0
+        for i in indices:
+            if 0 <= i < len(numbered):
+                name, c, auto_desc = numbered[i]
+                custom = click.prompt(
+                    f"  Describe when to use {name}",
+                    default=auto_desc,
+                )
+                if add_qos_entry(config, name, c, custom):
+                    added_count += 1
+
+        if added_count:
+            save_target(target_name, config)
+            console.print(
+                f"\n[green]✓[/green] Added {added_count} QoS "
+                f"{'entry' if added_count == 1 else 'entries'} "
+                f"to '{target_name}'."
+            )
+
+
+@target.command("remove-qos")
+@click.argument("target_name")
+@click.argument("qos_name")
+def target_remove_qos(target_name: str, qos_name: str) -> None:
+    """Remove a QoS entry from a target.
+
+    Examples:
+        prism target remove-qos perlmutter gpu_shared
+    """
+    from prism.dagster.targets import load_target, remove_qos_entry, save_target
+
+    config = load_target(target_name)
+    if config is None:
+        console.print(f"[red]Error:[/red] No configured target '{target_name}'.")
+        raise SystemExit(1)
+
+    removed = remove_qos_entry(config, qos_name)
+    if not removed:
+        console.print(
+            f"[red]Error:[/red] '{qos_name}' is not in target '{target_name}'."
+        )
+        raise SystemExit(1)
+
+    # Warn if removing the default QoS
+    defaults = config.get("defaults", {})
+    if defaults.get("qos") == qos_name:
+        from prism.dagster.targets import get_allowed_qos_names
+
+        remaining = get_allowed_qos_names(config)
+        if remaining:
+            new_default = remaining[0]
+            console.print(
+                f"  [yellow]⚠[/yellow] '{qos_name}' was the default QoS. "
+                f"Changing default to '{new_default}'."
+            )
+            defaults["qos"] = new_default
+        else:
+            console.print(
+                f"  [yellow]⚠[/yellow] '{qos_name}' was the default QoS "
+                "and no QoS entries remain."
+            )
+            defaults.pop("qos", None)
+
+    save_target(target_name, config)
+    console.print(
+        f"[green]✓[/green] Removed '{qos_name}' from '{target_name}'."
+    )
+
+
 @target.command("add")
 @click.argument("name", required=False)
 def target_add(name: str | None) -> None:

@@ -320,3 +320,35 @@ def filter_qos_by_hardware(
         elif not needs_gpu and "gpu" not in c:
             result.append(entry)
     return result
+
+
+def add_qos_entry(
+    target_config: dict[str, Any],
+    name: str,
+    constraint: str,
+    use_for: str,
+) -> bool:
+    """Add a QoS entry to *target_config*.
+
+    Returns ``True`` if the entry was added, ``False`` if it already exists.
+    Mutates *target_config* in place.
+    """
+    entries = target_config.setdefault("qos", [])
+    if any(e.get("name") == name for e in entries):
+        return False
+    entries.append({"name": name, "constraint": constraint, "use_for": use_for})
+    return True
+
+
+def remove_qos_entry(target_config: dict[str, Any], name: str) -> bool:
+    """Remove a QoS entry from *target_config* by name.
+
+    Returns ``True`` if removed, ``False`` if not found.
+    Mutates *target_config* in place.
+    """
+    entries = target_config.get("qos", [])
+    for i, entry in enumerate(entries):
+        if entry.get("name") == name:
+            entries.pop(i)
+            return True
+    return False

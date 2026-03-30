@@ -343,3 +343,47 @@ class TestClusterCache:
         info = ClusterInfo(timestamp="2020-01-01T00:00:00+00:00")
         save_cluster_cache("old", info)
         assert is_cache_stale("old") is True
+
+
+# ---------------------------------------------------------------------------
+# QoS entry management
+# ---------------------------------------------------------------------------
+
+
+class TestQoSEntryManagement:
+    def test_add_qos_entry(self, new_format_target):
+        from prism.dagster.targets import add_qos_entry
+
+        added = add_qos_entry(new_format_target, "gpu_shared", "gpu", "small jobs")
+        assert added is True
+        names = get_allowed_qos_names(new_format_target)
+        assert "gpu_shared" in names
+
+    def test_add_qos_entry_duplicate(self, new_format_target):
+        from prism.dagster.targets import add_qos_entry
+
+        added = add_qos_entry(new_format_target, "gpu_debug", "gpu", "testing")
+        assert added is False
+
+    def test_remove_qos_entry(self, new_format_target):
+        from prism.dagster.targets import remove_qos_entry
+
+        removed = remove_qos_entry(new_format_target, "gpu_regular")
+        assert removed is True
+        names = get_allowed_qos_names(new_format_target)
+        assert "gpu_regular" not in names
+        assert "gpu_debug" in names
+
+    def test_remove_qos_entry_missing(self, new_format_target):
+        from prism.dagster.targets import remove_qos_entry
+
+        removed = remove_qos_entry(new_format_target, "nonexistent")
+        assert removed is False
+
+    def test_add_to_empty_qos_list(self):
+        from prism.dagster.targets import add_qos_entry
+
+        config: dict = {"backend": "slurm", "defaults": {}}
+        added = add_qos_entry(config, "gpu_debug", "gpu", "testing")
+        assert added is True
+        assert len(config["qos"]) == 1

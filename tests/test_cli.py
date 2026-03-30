@@ -801,6 +801,99 @@ class TestRunFlags:
         assert "--partition" in result.output
 
 
+class TestQoSManagement:
+    """Tests for add-qos and remove-qos commands."""
+
+    @pytest.fixture
+    def target_env(self, tmp_path: Path, monkeypatch):
+        import yaml
+
+        targets_dir = tmp_path / "targets"
+        targets_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = {
+            "site": "perlmutter",
+            "backend": "slurm",
+            "defaults": {"qos": "gpu_debug", "constraint": "gpu"},
+            "qos": [
+                {"name": "gpu_debug", "constraint": "gpu",
+                 "use_for": "quick iteration"},
+            ],
+        }
+        (targets_dir / "pm.yaml").write_text(yaml.dump(config))
+        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+                            lambda: targets_dir)
+        monkeypatch.setattr("prism.dagster.targets.get_cache_dir",
+                            lambda: cache_dir)
+        return targets_dir, cache_dir
+
+    def test_add_qos_direct(self, runner: CliRunner, target_env):
+        targets_dir, _ = target_env
+        result = runner.invoke(main, [
+            "target", "add-qos", "pm", "gpu_regular",
+            "--constraint", "gpu", "--use-for", "production runs",
+        ])
+        assert result.exit_code == 0
+        assert "Added" in result.output
+
+        import yaml
+        config = yaml.safe_load((targets_dir / "pm.yaml").read_text())
+        names = [e["name"] for e in config["qos"]]
+        assert "gpu_regular" in names
+        assert "gpu_debug" in names
+
+    def test_add_qos_duplicate(self, runner: CliRunner, target_env):
+        result = runner.invoke(main, [
+            "target", "add-qos", "pm", "gpu_debug",
+            "--constraint", "gpu", "--use-for", "testing",
+        ])
+        assert result.exit_code == 0
+        assert "already" in result.output
+
+    def test_add_qos_nonexistent_target(self, runner: CliRunner, target_env):
+        result = runner.invoke(main, [
+            "target", "add-qos", "nonexistent", "gpu_regular",
+        ])
+        assert result.exit_code == 1
+
+    def test_remove_qos(self, runner: CliRunner, target_env):
+        targets_dir, _ = target_env
+        # First add one so we have two
+        runner.invoke(main, [
+            "target", "add-qos", "pm", "gpu_regular",
+            "--constraint", "gpu", "--use-for", "production",
+        ])
+        result = runner.invoke(main, ["target", "remove-qos", "pm", "gpu_regular"])
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+
+        import yaml
+        config = yaml.safe_load((targets_dir / "pm.yaml").read_text())
+        names = [e["name"] for e in config["qos"]]
+        assert "gpu_regular" not in names
+        assert "gpu_debug" in names
+
+    def test_remove_qos_missing(self, runner: CliRunner, target_env):
+        result = runner.invoke(main, ["target", "remove-qos", "pm", "nonexistent"])
+        assert result.exit_code == 1
+
+    def test_remove_default_qos_switches(self, runner: CliRunner, target_env):
+        targets_dir, _ = target_env
+        # Add a second entry, then remove the default
+        runner.invoke(main, [
+            "target", "add-qos", "pm", "gpu_regular",
+            "--constraint", "gpu", "--use-for", "production",
+        ])
+        result = runner.invoke(main, ["target", "remove-qos", "pm", "gpu_debug"])
+        assert result.exit_code == 0
+        assert "default" in result.output.lower()
+
+        import yaml
+        config = yaml.safe_load((targets_dir / "pm.yaml").read_text())
+        assert config["defaults"]["qos"] == "gpu_regular"
+
+
 class TestRemoteCommandRemoved:
     """Verify that the old remote commands are gone."""
 
