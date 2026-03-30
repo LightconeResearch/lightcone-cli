@@ -361,8 +361,9 @@ class TestSetupCommand:
                             lambda: tmp_path / "config.yaml")
 
         # hpc=yes, site=1(perlmutter), username, account,
-        # target_name=default (accept perlmutter-m1234)
-        input_lines = "y\n1\ntestuser\nm1234\n\n"
+        # target_name=default (accept perlmutter-m1234),
+        # default QoS=1 (accept gpu_debug)
+        input_lines = "y\n1\ntestuser\nm1234\n\n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
         assert "Default target: perlmutter-m1234" in result.output
@@ -426,8 +427,8 @@ class TestSetupCommand:
                             lambda: tmp_path / "config.yaml")
 
         # hpc=yes, site=1(perlmutter), username, account,
-        # target_name=default (accept perlmutter-m1234)
-        input_lines = "y\n1\ntestuser\nm1234\n\n"
+        # target_name=default, default QoS=1
+        input_lines = "y\n1\ntestuser\nm1234\n\n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
 

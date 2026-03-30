@@ -2112,6 +2112,72 @@ def target_remove_qos(target_name: str, qos_name: str) -> None:
     )
 
 
+@target.command("set-default-qos")
+@click.argument("target_name")
+@click.argument("qos_name", required=False)
+def target_set_default_qos(target_name: str, qos_name: str | None) -> None:
+    """Set the default QoS for a target.
+
+    Without QOS_NAME, shows the current QoS list and prompts for selection.
+
+    Examples:
+        prism target set-default-qos perlmutter gpu_regular
+        prism target set-default-qos perlmutter              # interactive
+    """
+    from prism.dagster.targets import get_allowed_qos_names, load_target, save_target
+
+    config = load_target(target_name)
+    if config is None:
+        console.print(f"[red]Error:[/red] No configured target '{target_name}'.")
+        raise SystemExit(1)
+
+    allowed = get_allowed_qos_names(config)
+    if not allowed:
+        console.print(
+            f"[red]Error:[/red] Target '{target_name}' has no QoS entries. "
+            f"Run [cyan]prism target add-qos {target_name}[/cyan] first."
+        )
+        raise SystemExit(1)
+
+    if qos_name is None:
+        # Interactive: show list and prompt
+        defaults = config.get("defaults", {})
+        current = defaults.get("qos", "")
+        console.print(f"\n  Current default QoS: [cyan]{current or 'none'}[/cyan]\n")
+        from prism.dagster.targets import get_qos_entries
+        for i, entry in enumerate(get_qos_entries(config), 1):
+            marker = " [green](current)[/green]" if entry["name"] == current else ""
+            console.print(
+                f"    {i}. {entry['name']:<20} "
+                f"({entry.get('constraint', '')}) "
+                f"— {entry.get('use_for', '')}{marker}"
+            )
+        idx = click.prompt(
+            "\n  Select new default",
+            type=click.IntRange(1, len(allowed)),
+        )
+        qos_name = allowed[idx - 1]
+
+    if qos_name not in allowed:
+        console.print(
+            f"[red]Error:[/red] '{qos_name}' is not in target '{target_name}'. "
+            f"Available: {', '.join(allowed)}"
+        )
+        raise SystemExit(1)
+
+    defaults = config.setdefault("defaults", {})
+    defaults["qos"] = qos_name
+
+    # Also update constraint to match the QoS entry
+    from prism.dagster.targets import get_qos_entry
+    entry = get_qos_entry(config, qos_name)
+    if entry and entry.get("constraint"):
+        defaults["constraint"] = entry["constraint"]
+
+    save_target(target_name, config)
+    console.print(f"[green]✓[/green] Default QoS for '{target_name}' set to '{qos_name}'.")
+
+
 def _discover_qos_suggestions() -> list[dict[str, str]]:
     """Try live SLURM discovery and return QoS suggestions.
 
@@ -2180,6 +2246,46 @@ def _prompt_qos_selection(suggested: list[dict[str, str]]) -> list[dict[str, str
     return list(numbered)
 
 
+def _prompt_default_qos(
+    qos_entries: list[dict[str, str]],
+    hint: str | None = None,
+) -> tuple[str, str | None]:
+    """Prompt the user to pick a default QoS from the selected entries.
+
+    Returns ``(qos_name, constraint)``."""
+    if not qos_entries:
+        return hint or "batch", None
+    if len(qos_entries) == 1:
+        entry = qos_entries[0]
+        console.print(f"\n  Default QoS: [cyan]{entry['name']}[/cyan]")
+        return entry["name"], entry.get("constraint")
+
+    # Multiple entries — prompt
+    console.print("\n  [bold]Select default QoS[/bold] (used when no --qos flag):")
+    for i, entry in enumerate(qos_entries, 1):
+        console.print(
+            f"    {i}. {entry['name']:<20} "
+            f"({entry.get('constraint', '')}) "
+            f"— {entry.get('use_for', '')}"
+        )
+
+    # Pre-select hint if it's in the list
+    default_idx = 1
+    if hint:
+        for i, entry in enumerate(qos_entries, 1):
+            if entry["name"] == hint:
+                default_idx = i
+                break
+
+    idx = click.prompt(
+        "  Default QoS",
+        type=click.IntRange(1, len(qos_entries)),
+        default=default_idx,
+    )
+    chosen = qos_entries[idx - 1]
+    return chosen["name"], chosen.get("constraint")
+
+
 @target.command("add")
 @click.argument("name", required=False)
 def target_add(name: str | None) -> None:
@@ -2242,14 +2348,9 @@ def target_add(name: str | None) -> None:
 
         target_name = name or site_key
         qos_entries = _prompt_qos_selection(suggested)
-
-        default_qos = safe.get("qos") or (
-            qos_entries[0]["name"] if qos_entries else "batch"
+        default_qos, default_constraint = _prompt_default_qos(
+            qos_entries, safe.get("qos"),
         )
-        if qos_entries:
-            selected_names = [e["name"] for e in qos_entries]
-            if default_qos not in selected_names:
-                default_qos = selected_names[0]
 
         config: dict[str, Any] = {
             "site": site_key,
@@ -2262,7 +2363,7 @@ def target_add(name: str | None) -> None:
             "container_runtime": container_runtime,
             "defaults": {
                 "qos": default_qos,
-                "constraint": constraint,
+                "constraint": default_constraint or constraint,
                 "time_limit": safe.get("time_limit", "00:30:00"),
             },
         }
@@ -2509,14 +2610,18 @@ def _run_setup_wizard() -> list[Path]:
             }
             if container_runtime:
                 target_config["container_runtime"] = container_runtime
-            # Auto-populate defaults and QoS from site registry
-            target_config["defaults"] = {
-                "qos": safe.get("qos", "gpu_debug"),
-                "constraint": safe.get("constraint", "gpu"),
-                "time_limit": safe.get("time_limit", "00:30:00"),
-            }
+            # Auto-populate QoS from site registry, prompt for default
             if suggested:
                 target_config["qos"] = list(suggested)
+            dq, dc = _prompt_default_qos(
+                list(suggested) if suggested else [],
+                safe.get("qos"),
+            )
+            target_config["defaults"] = {
+                "qos": dq,
+                "constraint": dc or safe.get("constraint", "gpu"),
+                "time_limit": safe.get("time_limit", "00:30:00"),
+            }
             target_config["resource_limits"] = {
                 "max_nodes": 4,
                 "max_walltime_minutes": 360,
@@ -2566,8 +2671,10 @@ def _run_setup_wizard() -> list[Path]:
                 target_config["container_runtime"] = container_runtime
             if qos_entries:
                 target_config["qos"] = qos_entries
-                target_config["defaults"]["qos"] = qos_entries[0]["name"]
-                target_config["defaults"]["constraint"] = qos_entries[0]["constraint"]
+                dq, dc = _prompt_default_qos(qos_entries)
+                target_config["defaults"]["qos"] = dq
+                if dc:
+                    target_config["defaults"]["constraint"] = dc
 
         path = save_target(target_name, target_config)
         saved_paths.append(path)
