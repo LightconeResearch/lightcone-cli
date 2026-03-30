@@ -591,11 +591,22 @@ _INTERNAL_QOS = {
     "batchdisable", "largemem",
 }
 
+# Suffixes for interactive/notebook variants — hidden by default
+_INTERACTIVE_SUFFIXES = ("_interactive", "_jupyter")
 
-def is_user_facing_qos(name: str) -> bool:
-    """Return True if the QoS is suitable for user selection."""
+
+def is_user_facing_qos(name: str, *, include_interactive: bool = False) -> bool:
+    """Return True if the QoS is suitable for user selection.
+
+    By default, interactive/jupyter variants are excluded. Pass
+    ``include_interactive=True`` (or use ``--all`` in the CLI) to include them.
+    """
     if name in _INTERNAL_QOS:
         return False
     if "special" in name or "nstaff" in name:
         return False
+    if not include_interactive:
+        for suffix in _INTERACTIVE_SUFFIXES:
+            if name.endswith(suffix):
+                return False
     return True

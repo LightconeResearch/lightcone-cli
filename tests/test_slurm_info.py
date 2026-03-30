@@ -396,3 +396,13 @@ class TestIsUserFacingQos:
     def test_special_qos(self):
         assert not is_user_facing_qos("gpu_special_m1759")
         assert not is_user_facing_qos("gpu_special_nstaff")
+
+    def test_interactive_hidden_by_default(self):
+        assert not is_user_facing_qos("gpu_interactive")
+        assert not is_user_facing_qos("gpu_shared_interactive")
+        assert not is_user_facing_qos("gpu_jupyter")
+        assert not is_user_facing_qos("gpu_shared_jupyter")
+
+    def test_interactive_shown_with_flag(self):
+        assert is_user_facing_qos("gpu_interactive", include_interactive=True)
+        assert is_user_facing_qos("gpu_jupyter", include_interactive=True)
