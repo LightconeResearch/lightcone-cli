@@ -340,6 +340,24 @@ def add_qos_entry(
     return True
 
 
+def update_qos_entry(
+    target_config: dict[str, Any],
+    name: str,
+    **updates: Any,
+) -> bool:
+    """Update fields on an existing QoS entry.
+
+    Accepts keyword arguments for any field (``use_for``, ``constraint``).
+    Returns ``True`` if the entry was found and updated, ``False`` if not found.
+    Mutates *target_config* in place.
+    """
+    for entry in target_config.get("qos", []):
+        if entry.get("name") == name:
+            entry.update(updates)
+            return True
+    return False
+
+
 def remove_qos_entry(target_config: dict[str, Any], name: str) -> bool:
     """Remove a QoS entry from *target_config* by name.
 

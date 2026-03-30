@@ -2004,6 +2004,58 @@ def target_add_qos(
             )
 
 
+@target.command("edit-qos")
+@click.argument("target_name")
+@click.argument("qos_name")
+@click.option("--use-for", default=None, help="New description for when to use this QoS")
+@click.option("--constraint", default=None, help="New hardware constraint (gpu/cpu)")
+def target_edit_qos(
+    target_name: str,
+    qos_name: str,
+    use_for: str | None,
+    constraint: str | None,
+) -> None:
+    """Edit the description or constraint of a QoS entry.
+
+    Examples:
+        prism target edit-qos perlmutter gpu_debug --use-for "quick tests only"
+        prism target edit-qos perlmutter gpu_regular --use-for "production, large sims"
+    """
+    from prism.dagster.targets import get_qos_entry, load_target, save_target, update_qos_entry
+
+    config = load_target(target_name)
+    if config is None:
+        console.print(f"[red]Error:[/red] No configured target '{target_name}'.")
+        raise SystemExit(1)
+
+    entry = get_qos_entry(config, qos_name)
+    if entry is None:
+        console.print(
+            f"[red]Error:[/red] '{qos_name}' is not in target '{target_name}'."
+        )
+        raise SystemExit(1)
+
+    # Interactive prompt if no flags given
+    if use_for is None and constraint is None:
+        use_for = click.prompt(
+            f"  Description for {qos_name}",
+            default=entry.get("use_for", ""),
+        )
+
+    updates: dict[str, Any] = {}
+    if use_for is not None:
+        updates["use_for"] = use_for
+    if constraint is not None:
+        updates["constraint"] = constraint
+
+    if updates:
+        update_qos_entry(config, qos_name, **updates)
+        save_target(target_name, config)
+        console.print(f"[green]✓[/green] Updated '{qos_name}' in '{target_name}'.")
+    else:
+        console.print("Nothing to update.")
+
+
 @target.command("remove-qos")
 @click.argument("target_name")
 @click.argument("qos_name")
