@@ -55,27 +55,30 @@ prism init my-analysis --no-git --no-venv     # skip git/venv creation
 
 ### Targets and setup
 
-Targets configure where Prism executes jobs. They're user-level (`~/.prism/targets/`), shared across projects, and work with any SLURM cluster. **Create separate targets for each run profile** rather than editing one repeatedly.
+Targets configure where Prism executes jobs. They're user-level (`~/.prism/targets/`), shared across projects, and work with any SLURM cluster. **One target per machine** — each target knows about all your available queues, and Prism picks the right one at runtime.
 
 ```bash
 prism setup                            # interactive setup wizard (first-time)
 prism setup --list                     # list configured targets
-prism setup --show perlmutter-gpu      # show a target's config
-prism setup --default perlmutter-gpu   # change user-wide default target
+prism setup --default perlmutter       # change user-wide default target
 prism target add                       # create a new target interactively
-prism target edit perlmutter-gpu       # edit an existing target
-prism target --set perlmutter-gpu      # set project target
+prism target --show perlmutter         # show target config and QoS choices
+prism target --set perlmutter          # set project target
 prism target --list                    # list available targets
+prism target refresh perlmutter        # re-query SLURM for QoS limits
 ```
 
-For example, on Perlmutter:
+QoS management — add, edit, remove, or change the default queue without editing YAML:
 
 ```bash
-prism target add perlmutter-debug   # gpu, qos: debug, 30min max
-prism target add perlmutter-gpu     # gpu (A100 40GB), qos: regular
-prism target add perlmutter-cpu     # cpu (128 cores/node), qos: regular
-prism target add perlmutter-hbm80   # gpu_hbm80 (A100 80GB), qos: regular
-prism target add perlmutter-preempt # gpu, qos: preempt (0.25x cost)
+prism target add-qos perlmutter                    # interactive picker
+prism target add-qos perlmutter gpu_shared \
+    --constraint gpu --slurm-qos shared \
+    --use-for "small GPU jobs"                      # direct mode
+prism target edit-qos perlmutter gpu_debug \
+    --use-for "quick tests"                         # edit description
+prism target remove-qos perlmutter gpu_shared       # remove a queue
+prism target set-default-qos perlmutter gpu_regular  # change default
 ```
 
 Resolution order: `--target` flag > `prism.yaml` > `~/.prism/config.yaml` > local.
@@ -90,7 +93,9 @@ The agent runs these during `/prism-build`, but you can also run them directly:
 prism run                              # materialize all outputs for all universes
 prism run accuracy                     # materialize a specific output
 prism run --universe baseline          # materialize for a specific universe
-prism run --target perlmutter-gpu      # run on a SLURM target
+prism run --target perlmutter          # run on a SLURM target
+prism run --qos regular --time-limit 2h  # override QoS and time limit
+prism run --strategy switch            # switch QoS instead of reducing resources
 prism status                           # show materialization status (ok / pending / no recipe)
 prism status --universe baseline       # status for a specific universe
 prism dev                              # launch Dagster webserver UI
@@ -117,6 +122,15 @@ Complex analyses can be decomposed into nested stages, each with their own input
 ### Execution backends
 
 Recipes run via Docker, local subprocess, or SLURM batch submission depending on your target configuration. Recipe dependencies are resolved automatically — if output B depends on output A, A runs first. Per-recipe resource requests (CPUs, GPUs, memory, time limit) are translated to the appropriate backend flags.
+
+### Dynamic SLURM discovery
+
+Prism queries `sacctmgr` to discover available QoS and their resource limits on any SLURM cluster. Each queue in your target has a `use_for` description (e.g., "quick iteration", "production runs") that helps the agent choose. When a recipe exceeds the default queue's limits, Prism auto-adjusts:
+
+- **`fit` strategy** (default): reduces resources (nodes, time limit) to stay in the current queue for faster turnaround
+- **`switch` strategy**: keeps resources as-is and picks a queue that can handle them
+
+Container flags (`--gpu`, `--mpi`) are derived automatically from recipe resources — no manual configuration needed.
 
 ### Telemetry
 
