@@ -2112,6 +2112,74 @@ def target_remove_qos(target_name: str, qos_name: str) -> None:
     )
 
 
+def _discover_qos_suggestions() -> list[dict[str, str]]:
+    """Try live SLURM discovery and return QoS suggestions.
+
+    Returns an empty list if SLURM commands are unavailable.
+    """
+    try:
+        from prism.dagster.slurm_info import build_qos_suggestions, discover_cluster
+
+        console.print("\n  Querying scheduler for available queues...")
+        cluster = discover_cluster()
+        if not cluster.qos:
+            console.print("  [dim](no SLURM queues found)[/dim]")
+            return []
+        suggestions = build_qos_suggestions(cluster)
+        console.print(
+            f"  Found {len(suggestions)} queues "
+            f"(of {len(cluster.qos)} total)."
+        )
+        return suggestions
+    except Exception as exc:
+        logger.debug("SLURM discovery failed: %s", exc)
+        console.print("  [dim](SLURM discovery not available)[/dim]")
+        return []
+
+
+def _prompt_qos_selection(suggested: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Show QoS suggestions and let the user select which to include."""
+    if not suggested:
+        return []
+
+    # Group by constraint for display
+    gpu_list = [e for e in suggested if e.get("constraint") == "gpu"]
+    cpu_list = [e for e in suggested if e.get("constraint") != "gpu"]
+
+    console.print("\n  [bold]Available queues:[/bold]")
+    numbered: list[dict[str, str]] = []
+    idx = 1
+    if gpu_list:
+        console.print("  [bold]GPU queues:[/bold]")
+        for entry in gpu_list:
+            console.print(
+                f"    {idx}. {entry['name']:<20} ({entry['constraint']}) "
+                f"— {entry['use_for']}"
+            )
+            numbered.append(entry)
+            idx += 1
+    if cpu_list:
+        console.print("  [bold]CPU queues:[/bold]")
+        for entry in cpu_list:
+            console.print(
+                f"    {idx}. {entry['name']:<20} ({entry['constraint']}) "
+                f"— {entry['use_for']}"
+            )
+            numbered.append(entry)
+            idx += 1
+
+    console.print(
+        "\n  Enter numbers to enable (comma-separated), "
+        "or press Enter for all:"
+    )
+    selection = click.prompt("  Selection", default="")
+    if selection.strip():
+        indices = [int(s.strip()) - 1 for s in selection.split(",")
+                   if s.strip().isdigit()]
+        return [numbered[i] for i in indices if 0 <= i < len(numbered)]
+    return list(numbered)
+
+
 @target.command("add")
 @click.argument("name", required=False)
 def target_add(name: str | None) -> None:
@@ -2163,37 +2231,22 @@ def target_add(name: str | None) -> None:
             site.get("scheduler", {}).get("container_runtime", "docker"),
         )
 
-        # --- QoS selection from suggested_qos ---
+        # --- QoS selection ---
         safe = site.get("safe_defaults", {})
         suggested = site.get("suggested_qos", [])
         constraint = safe.get("constraint", "gpu")
 
+        # For unknown sites, try live SLURM discovery
+        if not suggested:
+            suggested = _discover_qos_suggestions()
+
         target_name = name or site_key
+        qos_entries = _prompt_qos_selection(suggested)
 
-        qos_entries: list[dict] = []
-        if suggested:
-            console.print("\n  [bold]Available queues:[/bold]")
-            for i, entry in enumerate(suggested, 1):
-                console.print(
-                    f"    {i}. {entry['name']:<20} ({entry['constraint']}) "
-                    f"— {entry['use_for']}"
-                )
-            console.print(
-                "\n  Enter numbers to enable (comma-separated), "
-                "or press Enter for all:"
-            )
-            selection = click.prompt("  Selection", default="")
-            if selection.strip():
-                indices = [int(s.strip()) - 1 for s in selection.split(",")
-                           if s.strip().isdigit()]
-                qos_entries = [suggested[i] for i in indices
-                               if 0 <= i < len(suggested)]
-            else:
-                qos_entries = list(suggested)
-
-        default_qos = safe.get("qos", "gpu_debug")
+        default_qos = safe.get("qos") or (
+            qos_entries[0]["name"] if qos_entries else "batch"
+        )
         if qos_entries:
-            # Verify default is in selected list, otherwise use first
             selected_names = [e["name"] for e in qos_entries]
             if default_qos not in selected_names:
                 default_qos = selected_names[0]
@@ -2496,7 +2549,11 @@ def _run_setup_wizard() -> list[Path]:
             default_name = f"{cluster_name}-{account}"
             target_name = click.prompt("  Target name", default=default_name)
 
-            target_config = {
+            # Try SLURM discovery for QoS
+            discovered = _discover_qos_suggestions()
+            qos_entries = _prompt_qos_selection(discovered)
+
+            target_config: dict[str, Any] = {
                 "backend": "slurm",
                 "connection": {
                     "hostname": hostname,
@@ -2507,6 +2564,10 @@ def _run_setup_wizard() -> list[Path]:
             }
             if container_runtime:
                 target_config["container_runtime"] = container_runtime
+            if qos_entries:
+                target_config["qos"] = qos_entries
+                target_config["defaults"]["qos"] = qos_entries[0]["name"]
+                target_config["defaults"]["constraint"] = qos_entries[0]["constraint"]
 
         path = save_target(target_name, target_config)
         saved_paths.append(path)

@@ -610,3 +610,41 @@ def is_user_facing_qos(name: str, *, include_interactive: bool = False) -> bool:
             if name.endswith(suffix):
                 return False
     return True
+
+
+def build_qos_suggestions(
+    cluster: ClusterInfo,
+    *,
+    include_interactive: bool = False,
+) -> list[dict[str, str]]:
+    """Build a QoS suggestion list from live cluster discovery.
+
+    Filters to user-accessible, user-facing QoS, infers constraint,
+    auto-generates ``use_for``, and groups by GPU/CPU.
+
+    Returns a list of dicts with ``name``, ``constraint``, ``use_for``
+    — the same shape as ``suggested_qos`` in the site registry and
+    ``qos`` entries in a target YAML.
+    """
+    suggestions: list[dict[str, str]] = []
+    for name in sorted(cluster.qos):
+        if name not in cluster.user_qos:
+            continue
+        if not is_user_facing_qos(name, include_interactive=include_interactive):
+            continue
+        constraint = infer_qos_constraint(name)
+        use_for = generate_use_for(cluster.qos[name])
+        suggestions.append({
+            "name": name,
+            "constraint": constraint,
+            "use_for": use_for,
+        })
+
+    # Sort: GPU first, then CPU; within each group by priority descending
+    def sort_key(entry: dict[str, str]) -> tuple[int, int]:
+        is_gpu = 0 if entry["constraint"] == "gpu" else 1
+        priority = cluster.qos.get(entry["name"], QoSInfo(entry["name"])).priority
+        return (is_gpu, -priority)
+
+    suggestions.sort(key=sort_key)
+    return suggestions
