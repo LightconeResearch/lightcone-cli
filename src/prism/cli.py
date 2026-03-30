@@ -2397,6 +2397,21 @@ def target_add(name: str | None) -> None:
     path = save_target(target_name, config)
     console.print(f"\n  [green]✓[/green] Created target '{target_name}' at {path}")
 
+    # Auto-refresh cluster cache for SLURM targets
+    if config.get("backend") == "slurm":
+        try:
+            from prism.dagster.targets import refresh_cluster_cache
+            info = refresh_cluster_cache(target_name)
+            console.print(
+                f"  [green]✓[/green] Cached cluster info: "
+                f"{len(info.qos)} QoS, {len(info.partitions)} partitions."
+            )
+        except Exception:
+            console.print(
+                f"  [dim](Cluster cache not available — run "
+                f"`prism target refresh {target_name}` later)[/dim]"
+            )
+
 
 @target.command("edit")
 @click.argument("name")
@@ -2690,6 +2705,18 @@ def _run_setup_wizard() -> list[Path]:
         path = save_target(target_name, target_config)
         saved_paths.append(path)
         console.print(f"  [green]✓[/green] Created target: {target_name}")
+
+        # Auto-refresh cluster cache
+        if target_config.get("backend") == "slurm":
+            try:
+                from prism.dagster.targets import refresh_cluster_cache
+                info = refresh_cluster_cache(target_name)
+                console.print(
+                    f"  [green]✓[/green] Cached cluster info: "
+                    f"{len(info.qos)} QoS, {len(info.partitions)} partitions."
+                )
+            except Exception:
+                pass
 
         default_target = target_name
 
