@@ -2006,7 +2006,13 @@ def target_add_qos(
                     f"  Describe when to use {name}",
                     default=auto_desc,
                 )
-                if add_qos_entry(config, name, c, custom):
+                # Prompt for submission QoS name (may differ from sacctmgr name)
+                sq = click.prompt(
+                    f"  Submission QoS name for {name} (--qos=)",
+                    default=name,
+                )
+                sq_val = sq if sq != name else None
+                if add_qos_entry(config, name, c, custom, slurm_qos=sq_val):
                     added_count += 1
 
         if added_count:
