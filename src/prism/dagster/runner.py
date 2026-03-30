@@ -495,8 +495,8 @@ class ASTRAContainerRunner:
 
         from prism.dagster.slurm_info import (
             check_qos_eligibility,
+            get_slurm_qos,
             recommend_qos,
-            resolve_qos_name,
         )
 
         resolved_qos = scheduler.get("qos")
@@ -513,10 +513,16 @@ class ASTRAContainerRunner:
             ),
         }
 
-        # Resolve target QoS name to cache name (e.g., "debug" → "gpu_debug")
-        constraint = scheduler.get("constraint")
-        cache_qos = resolve_qos_name(resolved_qos, constraint, cluster)
-        qos_info = cluster.qos.get(cache_qos) if cache_qos else None
+        # Find the cache name for the current QoS.
+        # resolved_qos is the slurm_qos value; we need the entry's name
+        # (which matches the sacctmgr/cache key) for limit lookup.
+        cache_qos = resolved_qos  # fallback: assume name == slurm_qos
+        if allowed_qos:
+            for entry in allowed_qos:
+                if get_slurm_qos(entry) == resolved_qos:
+                    cache_qos = entry.get("name", resolved_qos)
+                    break
+        qos_info = cluster.qos.get(cache_qos)
         if not qos_info:
             return resources
 
@@ -585,8 +591,13 @@ class ASTRAContainerRunner:
             )
             scheduler["qos"] = best.qos
             # Clamp time_limit for the new QoS if needed
-            best_cache = resolve_qos_name(best.qos, constraint, cluster)
-            best_info = cluster.qos.get(best_cache) if best_cache else None
+            best_cache_name = best.qos  # fallback
+            if allowed_qos:
+                for entry in allowed_qos:
+                    if get_slurm_qos(entry) == best.qos:
+                        best_cache_name = entry.get("name", best.qos)
+                        break
+            best_info = cluster.qos.get(best_cache_name)
             if best_info and best_info.max_wall_minutes:
                 t = recipe_resources.get("time_limit_minutes")
                 if t and t > best_info.max_wall_minutes:

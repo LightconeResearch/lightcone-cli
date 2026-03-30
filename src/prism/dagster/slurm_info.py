@@ -155,29 +155,12 @@ def infer_qos_constraint(qos_name: str) -> str | None:
     return "cpu"
 
 
-def resolve_qos_name(name: str, constraint: str | None, cluster: ClusterInfo) -> str | None:
-    """Resolve a target QoS name to the actual SLURM QoS name in the cache.
+def get_slurm_qos(entry: dict[str, Any]) -> str:
+    """Return the QoS name to pass to ``sbatch --qos=``.
 
-    On some clusters (e.g., Perlmutter), users submit with base names
-    (``debug``, ``regular``) but ``sacctmgr`` reports prefixed names
-    (``gpu_debug``, ``gpu_regular``).  This function tries:
-
-    1. Exact match: ``name`` exists in ``cluster.qos``
-    2. Prefixed match: ``gpu_{name}`` exists (when constraint is gpu)
-    3. Returns ``None`` if no match found
-
-    >>> resolve_qos_name("debug", "gpu", cluster_with_gpu_debug)
-    'gpu_debug'
-    >>> resolve_qos_name("gpu_debug", None, cluster_with_gpu_debug)
-    'gpu_debug'
+    Uses ``slurm_qos`` if set, otherwise falls back to ``name``.
     """
-    if name in cluster.qos:
-        return name
-    if constraint and "gpu" in constraint:
-        prefixed = f"gpu_{name}"
-        if prefixed in cluster.qos:
-            return prefixed
-    return None
+    return entry.get("slurm_qos") or entry.get("name", "")
 
 
 # ---------------------------------------------------------------------------
@@ -469,41 +452,41 @@ def recommend_qos(
     # store prefixed names (e.g., "gpu_debug").  We resolve each entry
     # to its cache name and track the mapping back to the target name.
     needs_gpu = resources.get("gpus_per_node", 0) > 0
-    # Maps cache_name → target_name (for result QoS naming)
-    cache_to_target: dict[str, str] = {}
+    # Build candidate list: each is (cache_name, slurm_qos) where
+    #   cache_name = entry["name"] (matches sacctmgr, used for limit lookup)
+    #   slurm_qos  = entry["slurm_qos"] or entry["name"] (for --qos= submission)
+    candidates: list[tuple[str, str]] = []  # (cache_name, slurm_qos)
 
     if qos_entries is not None:
         for entry in qos_entries:
-            name = entry.get("name", "")
+            cache_name = entry.get("name", "")
             entry_constraint = entry.get("constraint", "")
             if needs_gpu and "gpu" not in entry_constraint:
                 continue
             if not needs_gpu and "gpu" in entry_constraint:
                 continue
-            cache_name = resolve_qos_name(name, entry_constraint, cluster)
-            if cache_name:
-                cache_to_target[cache_name] = name
+            if cache_name in cluster.qos:
+                candidates.append((cache_name, get_slurm_qos(entry)))
     else:
         for name in cluster.qos:
-            cache_to_target[name] = name
+            candidates.append((name, name))
 
     # Check each candidate
     recommendations: list[QoSRecommendation] = []
-    for cache_name, target_name in cache_to_target.items():
+    slurm_to_cache: dict[str, str] = {}
+    for cache_name, slurm_qos in candidates:
         qos_info = cluster.qos[cache_name]
         rec = check_qos_eligibility(qos_info, resources)
-        # Use the target name (base name) in the recommendation,
-        # not the cache name (possibly prefixed)
-        rec.qos = target_name
+        # The recommendation uses slurm_qos (what gets passed to --qos=)
+        rec.qos = slurm_qos
         recommendations.append(rec)
+        slurm_to_cache[slurm_qos] = cache_name
 
     # Sort: preferred first (if eligible), then eligible by priority desc,
     # then ineligible
-    target_to_cache = {v: k for k, v in cache_to_target.items()}
-
     def sort_key(rec: QoSRecommendation) -> tuple[int, int, int]:
         is_preferred = 1 if rec.qos == preferred_qos else 0
-        cache_name = target_to_cache.get(rec.qos, rec.qos)
+        cache_name = slurm_to_cache.get(rec.qos, rec.qos)
         priority = cluster.qos[cache_name].priority if cache_name in cluster.qos else 0
         return (
             -int(rec.eligible),

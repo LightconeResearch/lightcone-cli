@@ -55,12 +55,22 @@ class TestGetSiteDefaults:
         assert site is not None
         suggested = site["suggested_qos"]
         names = [s["name"] for s in suggested]
-        assert "debug" in names
-        assert "regular" in names
+        assert "gpu_debug" in names
+        assert "gpu_regular" in names
+        assert "debug" in names  # CPU
         # Each entry has constraint and use_for
         for entry in suggested:
             assert "constraint" in entry
             assert "use_for" in entry
+
+    def test_perlmutter_gpu_entries_have_slurm_qos(self):
+        """GPU entries have slurm_qos that differs from name."""
+        site = get_site_defaults("perlmutter")
+        assert site is not None
+        gpu_entries = [s for s in site["suggested_qos"] if s["constraint"] == "gpu"]
+        for entry in gpu_entries:
+            assert "slurm_qos" in entry
+            assert entry["slurm_qos"] != entry["name"]
 
     def test_perlmutter_has_gpu_and_cpu_qos(self):
         site = get_site_defaults("perlmutter")
@@ -69,20 +79,11 @@ class TestGetSiteDefaults:
         assert "gpu" in constraints
         assert "cpu" in constraints
 
-    def test_perlmutter_same_qos_different_constraints(self):
-        """Same QoS name can appear with gpu and cpu constraints."""
-        site = get_site_defaults("perlmutter")
-        assert site is not None
-        debug_entries = [s for s in site["suggested_qos"] if s["name"] == "debug"]
-        assert len(debug_entries) == 2
-        constraints = {e["constraint"] for e in debug_entries}
-        assert constraints == {"gpu", "cpu"}
-
     def test_perlmutter_safe_defaults(self):
         site = get_site_defaults("perlmutter")
         assert site is not None
         defaults = site["safe_defaults"]
-        assert defaults["qos"] == "debug"
+        assert defaults["qos"] == "gpu_debug"
         assert defaults["constraint"] == "gpu"
 
     def test_local_site_exists(self):

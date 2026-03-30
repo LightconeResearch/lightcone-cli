@@ -27,24 +27,24 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
             "gpu&hbm80g": "A100 80 GB — 256 nodes, 4 GPUs/node",
             "cpu": "CPU only — 3,072 nodes, 128 cores/node",
         },
-        # Suggested QoS for setup wizard (pre-filled use_for descriptions).
-        # QoS names are the base names used for submission — the constraint
-        # determines GPU vs CPU, not a name prefix.  Same QoS name can
-        # appear with different constraints.
+        # Suggested QoS for setup wizard.
+        # - name: sacctmgr QoS name (used for cache lookup / limit checking)
+        # - slurm_qos: what gets passed to sbatch --qos= (defaults to name)
+        # - constraint: what gets passed to sbatch --constraint=
         "suggested_qos": [
-            {"name": "debug", "constraint": "gpu",
+            {"name": "gpu_debug", "slurm_qos": "debug", "constraint": "gpu",
              "use_for": "quick GPU iteration, testing"},
-            {"name": "regular", "constraint": "gpu",
+            {"name": "gpu_regular", "slurm_qos": "regular", "constraint": "gpu",
              "use_for": "production GPU runs, large jobs"},
-            {"name": "preempt", "constraint": "gpu",
+            {"name": "gpu_preempt", "slurm_qos": "preempt", "constraint": "gpu",
              "use_for": "cheap GPU batch jobs, restartable"},
             {"name": "debug", "constraint": "cpu",
              "use_for": "quick CPU-only tests"},
-            {"name": "regular", "constraint": "cpu",
+            {"name": "regular_1", "constraint": "cpu",
              "use_for": "large CPU-only jobs"},
         ],
         "safe_defaults": {
-            "qos": "debug",
+            "qos": "gpu_debug",
             "constraint": "gpu",
             "nodes": 1,
             "time_limit": "00:30:00",

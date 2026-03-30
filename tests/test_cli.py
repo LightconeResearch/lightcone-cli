@@ -381,7 +381,7 @@ class TestSetupCommand:
         assert target["account"] == "m1234"
         assert target["container_runtime"] == "podman-hpc"
         assert "defaults" in target
-        assert target["defaults"]["qos"] == "debug"
+        assert target["defaults"]["qos"] == "gpu_debug"
         assert target["defaults"]["constraint"] == "gpu"
         assert "qos" in target  # suggested QoS list
         assert isinstance(target["qos"], list)

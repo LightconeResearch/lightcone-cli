@@ -381,39 +381,20 @@ class TestGenerateUseFor:
 # is_user_facing_qos tests
 # ---------------------------------------------------------------------------
 
-class TestResolveQosName:
-    @pytest.fixture
-    def cluster(self):
-        return ClusterInfo(
-            qos={
-                "gpu_debug": QoSInfo("gpu_debug", max_wall_minutes=30,
-                                     max_nodes=8, priority=69119),
-                "gpu_regular": QoSInfo("gpu_regular", max_wall_minutes=2880,
-                                       priority=67679),
-                "debug": QoSInfo("debug", max_wall_minutes=30,
-                                 max_nodes=8, priority=69119),
-            },
-            user_qos=[], user_accounts=[], partitions={}, timestamp="",
-        )
+class TestGetSlurmQos:
+    def test_with_slurm_qos(self):
+        from prism.dagster.slurm_info import get_slurm_qos
+        entry = {"name": "gpu_debug", "slurm_qos": "debug", "constraint": "gpu"}
+        assert get_slurm_qos(entry) == "debug"
 
-    def test_exact_match(self, cluster):
-        from prism.dagster.slurm_info import resolve_qos_name
-        assert resolve_qos_name("gpu_debug", "gpu", cluster) == "gpu_debug"
-        assert resolve_qos_name("debug", "cpu", cluster) == "debug"
+    def test_without_slurm_qos(self):
+        from prism.dagster.slurm_info import get_slurm_qos
+        entry = {"name": "debug", "constraint": "cpu"}
+        assert get_slurm_qos(entry) == "debug"
 
-    def test_prefix_resolution(self, cluster):
-        from prism.dagster.slurm_info import resolve_qos_name
-        # "regular" not in cache, but "gpu_regular" is → resolves with gpu constraint
-        assert resolve_qos_name("regular", "gpu", cluster) == "gpu_regular"
-
-    def test_no_match(self, cluster):
-        from prism.dagster.slurm_info import resolve_qos_name
-        assert resolve_qos_name("nonexistent", "gpu", cluster) is None
-
-    def test_cpu_no_prefix(self, cluster):
-        from prism.dagster.slurm_info import resolve_qos_name
-        # "regular" with cpu constraint should NOT resolve to gpu_regular
-        assert resolve_qos_name("regular", "cpu", cluster) is None
+    def test_empty_entry(self):
+        from prism.dagster.slurm_info import get_slurm_qos
+        assert get_slurm_qos({}) == ""
 
 
 class TestIsUserFacingQos:

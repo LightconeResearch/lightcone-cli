@@ -264,7 +264,7 @@ def resolve_run_config(
         if val is not None:
             result[key] = val
 
-    # Validate qos against target's allowed list
+    # Validate qos against target's allowed list (by name)
     allowed = get_allowed_qos_names(target_config)
     chosen_qos = result.get("qos")
     if allowed and chosen_qos and chosen_qos not in allowed:
@@ -278,6 +278,16 @@ def resolve_run_config(
         entry = get_qos_entry(target_config, chosen_qos)
         if entry and entry.get("constraint"):
             result["constraint"] = entry["constraint"]
+
+    # Translate qos name to slurm_qos (what gets passed to --qos=)
+    if chosen_qos:
+        entry = get_qos_entry(
+            target_config, chosen_qos, result.get("constraint"),
+        )
+        if entry:
+            slurm_qos = entry.get("slurm_qos")
+            if slurm_qos:
+                result["qos"] = slurm_qos
 
     return result
 
