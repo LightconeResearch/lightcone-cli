@@ -8,7 +8,7 @@ An `astra.yaml` spec captures this for a single unit of work. The structure is *
 
 ## astra.yaml Structure
 
-Fields: `name`, `description`, `version`, `authors`, `tags`, `inputs`, `outputs`, `decisions`, `insights`, `analyses`, `container`, `success_criteria`.
+Fields: `name`, `description`, `version`, `authors`, `tags`, `inputs`, `outputs`, `decisions`, `prior_insights`, `findings`, `analyses`, `container`, `success_criteria`.
 
 ```yaml
 # Simple analysis -- everything at top level
@@ -138,12 +138,17 @@ astra universe generate -n experiment1 -d "Testing hypothesis X"
 
 **Adding a new decision:** (1) add to `astra.yaml` with options/default/rationale, (2) add parameter to code, (3) add to all existing universe files with default, (4) create new universe, (5) `astra validate astra.yaml`.
 
-## Insights Format
+## Prior Insights and Findings
 
-Insights link evidence to decisions using W3C selectors:
+Two kinds of insight, distinguished by direction:
+
+- **Prior insights** (`prior_insights:`) — knowledge from outside the analysis that informs decisions. From literature (by DOI) or artifacts from a prior/parent analysis.
+- **Findings** (`findings:`) — conclusions from the analysis itself, backed by its own output artifacts.
+
+Both use the same model (id, claim, created_at, evidence). Placement determines direction.
 
 ```yaml
-insights:
+prior_insights:
   layer_norm_stability:
     id: layer_norm_stability
     claim: "Layer normalization improves training stability"
@@ -156,25 +161,26 @@ insights:
       - id: e2
         doi: "10.48550/arXiv.1607.06450"
         figure: { type: FigureSelector, label: "Figure 3a", caption: "..." }
-      - id: e3
-        doi: "10.48550/arXiv.1607.06450"
-        table: { type: TableSelector, label: "Table 1", region: "row 3, col 2" }
     scope: "Context where this applies (optional)"
+
+findings:
+  scaling_result:
+    id: scaling_result
+    claim: "StandardScaler achieves 97% accuracy vs 91% for MinMaxScaler"
+    created_at: "2025-02-01T14:00:00"
+    evidence:
+      - id: e1
+        artifact: "accuracy"            # Content selectors optional for artifacts
+      - id: e2
+        artifact: "model_comparison"
+        quote: { type: TextQuoteSelector, exact: "StandardScaler achieved 97% accuracy vs 91% for MinMaxScaler" }
 ```
 
-Link to decisions: `options: { layer_norm: { insights: [layer_norm_stability] } }`
+Link prior insights to decisions: `options: { layer_norm: { insights: [layer_norm_stability] } }`
 
-Literature is integrated into `/prism-new` during scoping.
+Artifact references are validated against declared outputs — `astra validate` flags any `artifact:` that doesn't match an output ID. Literature evidence requires at least one content selector (quote, figure, or table); artifact evidence does not.
 
-Artifacts (computed outputs) use `artifact:` instead of `doi:`:
-
-```yaml
-evidence:
-  - id: e1
-    artifact: "accuracy"
-    quote:
-      exact: "StandardScaler achieved 97% accuracy vs 91% for MinMaxScaler"
-```
+**Sub-analysis findings as prior insights:** When a sub-analysis explores a specific question (calibration study, simulation validation, sensitivity test), its findings can inform decisions elsewhere. The parent or sibling references the sub-analysis output as artifact evidence in its own `prior_insights`, e.g. `artifact: "build_mocks.noise_diagnostics"`. This creates a traceable chain from sub-analysis conclusion to downstream decision.
 
 ## Sub-Analyses
 

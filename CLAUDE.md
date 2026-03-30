@@ -4,7 +4,7 @@
 
 Prism is Lightcone Research's agentic layer for ASTRA (Agentic Schema for Transparent Research Analysis).
 
-- **ASTRA** = pure specification: schema, validation, insights, evidence verification, helpers, minimal CLI
+- **ASTRA** = pure specification: schema, validation, prior insights & findings, evidence verification, helpers, minimal CLI
 - **Prism** = agentic layer: Claude Code skills, project scaffolding, Dagster execution, HPC targets, container builds, telemetry
 
 Prism depends on ASTRA. The `astra` CLI handles spec operations; the `prism` CLI handles execution and agent operations.

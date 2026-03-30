@@ -71,11 +71,11 @@ For each approved paper: `astra paper add <doi>`, `astra paper path <doi>`, then
 The agent type is pre-configured with the user's preferred extraction model (set via `prism setup`). Spawn all in a single message (parallel). Show progress as results come in:
 
 ```
-  ✓ Ba et al. 2016 -- 3 insights
+  ✓ Ba et al. 2016 -- 3 prior insights
   ○ Wu & He 2018 (reading...)
 ```
 
-Write extracted insights to astra.yaml immediately. Synthesize findings by topic for the user.
+Write extracted prior insights to astra.yaml immediately. Synthesize them by topic for the user.
 
 ### Decision Identification
 
@@ -110,7 +110,7 @@ Stage banner: FINALIZING
 ### Validate
 
 1. `astra validate astra.yaml` -- fix errors, iterate until clean
-2. If insights exist: `astra validate astra.yaml --verify-evidence`
+2. If prior insights exist: `astra validate astra.yaml --verify-evidence`
 
 ### Generate Baseline Universe
 
@@ -140,7 +140,7 @@ Stage banner: SPECIFICATION COMPLETE
 Show summary table:
 
 ```
-| Section       | Decisions | Outputs | Insights |
+| Section       | Decisions | Outputs | Prior Insights |
 |---------------|-----------|---------|----------|
 | (top-level)   | 3         | 2       | 5        |
 | sub_analysis  | ...       | ...     | ...      |
