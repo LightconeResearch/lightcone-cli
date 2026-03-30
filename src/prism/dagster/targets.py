@@ -293,16 +293,29 @@ def get_qos_entries(target_config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def get_allowed_qos_names(target_config: dict[str, Any]) -> list[str]:
-    """Extract just the QoS names from the target's ``qos`` list."""
+    """Extract QoS names from the target's ``qos`` list.
+
+    May contain duplicates when the same QoS appears with different
+    constraints (e.g., ``debug`` for both GPU and CPU).
+    """
     return [e["name"] for e in get_qos_entries(target_config) if "name" in e]
 
 
 def get_qos_entry(
-    target_config: dict[str, Any], qos_name: str,
+    target_config: dict[str, Any],
+    qos_name: str,
+    constraint: str | None = None,
 ) -> dict[str, Any] | None:
-    """Return the full qos entry for *qos_name*, or None."""
+    """Return the qos entry matching *qos_name* and optionally *constraint*.
+
+    When the same QoS name appears with multiple constraints (e.g.,
+    ``debug`` for GPU and CPU), pass *constraint* to disambiguate.
+    Without *constraint*, returns the first match.
+    """
     for entry in get_qos_entries(target_config):
-        if entry.get("name") == qos_name:
+        if entry.get("name") != qos_name:
+            continue
+        if constraint is None or entry.get("constraint") == constraint:
             return entry
     return None
 
@@ -330,11 +343,12 @@ def add_qos_entry(
 ) -> bool:
     """Add a QoS entry to *target_config*.
 
-    Returns ``True`` if the entry was added, ``False`` if it already exists.
-    Mutates *target_config* in place.
+    Entries are identified by ``(name, constraint)`` pair.  Returns
+    ``True`` if added, ``False`` if the exact pair already exists.
     """
     entries = target_config.setdefault("qos", [])
-    if any(e.get("name") == name for e in entries):
+    if any(e.get("name") == name and e.get("constraint") == constraint
+           for e in entries):
         return False
     entries.append({"name": name, "constraint": constraint, "use_for": use_for})
     return True
@@ -343,30 +357,40 @@ def add_qos_entry(
 def update_qos_entry(
     target_config: dict[str, Any],
     name: str,
+    constraint: str | None = None,
     **updates: Any,
 ) -> bool:
     """Update fields on an existing QoS entry.
 
-    Accepts keyword arguments for any field (``use_for``, ``constraint``).
-    Returns ``True`` if the entry was found and updated, ``False`` if not found.
-    Mutates *target_config* in place.
+    Pass *constraint* to disambiguate when the same name appears with
+    multiple constraints.  Without it, updates the first match.
     """
     for entry in target_config.get("qos", []):
-        if entry.get("name") == name:
-            entry.update(updates)
-            return True
+        if entry.get("name") != name:
+            continue
+        if constraint is not None and entry.get("constraint") != constraint:
+            continue
+        entry.update(updates)
+        return True
     return False
 
 
-def remove_qos_entry(target_config: dict[str, Any], name: str) -> bool:
-    """Remove a QoS entry from *target_config* by name.
+def remove_qos_entry(
+    target_config: dict[str, Any],
+    name: str,
+    constraint: str | None = None,
+) -> bool:
+    """Remove a QoS entry from *target_config*.
 
-    Returns ``True`` if removed, ``False`` if not found.
-    Mutates *target_config* in place.
+    Pass *constraint* to disambiguate when the same name appears with
+    multiple constraints.  Without it, removes the first match.
     """
     entries = target_config.get("qos", [])
     for i, entry in enumerate(entries):
-        if entry.get("name") == name:
-            entries.pop(i)
-            return True
+        if entry.get("name") != name:
+            continue
+        if constraint is not None and entry.get("constraint") != constraint:
+            continue
+        entries.pop(i)
+        return True
     return False

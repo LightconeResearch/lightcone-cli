@@ -55,8 +55,8 @@ class TestGetSiteDefaults:
         assert site is not None
         suggested = site["suggested_qos"]
         names = [s["name"] for s in suggested]
-        assert "gpu_debug" in names
-        assert "gpu_regular" in names
+        assert "debug" in names
+        assert "regular" in names
         # Each entry has constraint and use_for
         for entry in suggested:
             assert "constraint" in entry
@@ -69,11 +69,20 @@ class TestGetSiteDefaults:
         assert "gpu" in constraints
         assert "cpu" in constraints
 
+    def test_perlmutter_same_qos_different_constraints(self):
+        """Same QoS name can appear with gpu and cpu constraints."""
+        site = get_site_defaults("perlmutter")
+        assert site is not None
+        debug_entries = [s for s in site["suggested_qos"] if s["name"] == "debug"]
+        assert len(debug_entries) == 2
+        constraints = {e["constraint"] for e in debug_entries}
+        assert constraints == {"gpu", "cpu"}
+
     def test_perlmutter_safe_defaults(self):
         site = get_site_defaults("perlmutter")
         assert site is not None
         defaults = site["safe_defaults"]
-        assert defaults["qos"] == "gpu_debug"
+        assert defaults["qos"] == "debug"
         assert defaults["constraint"] == "gpu"
 
     def test_local_site_exists(self):
@@ -157,9 +166,9 @@ class TestSiteDefaultsSchema:
             assert "qos" in defaults
             assert "constraint" in defaults
 
-    def test_slurm_sites_have_account_suffixes(self):
+    def test_slurm_sites_have_scratch_paths(self):
         for key, site in SITE_DEFAULTS.items():
             if site.get("backend") != "slurm":
                 continue
-            assert "account_suffixes" in site, \
-                f"SLURM site '{key}' missing account_suffixes"
+            assert "scratch_paths" in site, \
+                f"SLURM site '{key}' missing scratch_paths"

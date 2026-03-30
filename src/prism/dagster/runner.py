@@ -875,12 +875,7 @@ def translate_resources_to_slurm_directives(
             constraint = arg.split("=", 1)[1] if "=" in arg else None
 
     account = scheduler_config.get("account")
-    # Apply site-specific account suffix (e.g. _g for GPU on Perlmutter)
     if account and not _in_extra("--account"):
-        site_key = scheduler_config.get("site")
-        if site_key and constraint:
-            from prism.dagster.site_registry import resolve_account
-            account = resolve_account(site_key, account, constraint)
         directives.append(f"--account={account}")
     if not _in_extra("--partition"):
         if partition := scheduler_config.get("partition"):

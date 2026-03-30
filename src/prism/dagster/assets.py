@@ -376,7 +376,6 @@ def build_definitions(
 
         if backend == "slurm" and "defaults" in target_config:
             # --- New-format target: use resolve_run_config ---
-            from prism.dagster.site_registry import resolve_account
             from prism.dagster.targets import (
                 get_qos_entries,
                 resolve_run_config,
@@ -392,15 +391,9 @@ def build_definitions(
                 if resolved.get(key) is not None:
                     scheduler[key] = resolved[key]
 
-            # Apply account suffix (e.g. _g for GPU on Perlmutter)
+            # Account from target config if not in resolved
             account = scheduler.get("account") or target_config.get("account")
-            constraint = scheduler.get("constraint")
-            if account and constraint:
-                site_key = target_config.get("site")
-                if site_key:
-                    account = resolve_account(site_key, account, constraint)
-                scheduler["account"] = account
-            elif account:
+            if account:
                 scheduler["account"] = account
 
             # Thread metadata for runner QoS validation

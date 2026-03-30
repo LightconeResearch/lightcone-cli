@@ -27,28 +27,27 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
             "gpu&hbm80g": "A100 80 GB — 256 nodes, 4 GPUs/node",
             "cpu": "CPU only — 3,072 nodes, 128 cores/node",
         },
-        # Suggested QoS for setup wizard (pre-filled use_for descriptions)
+        # Suggested QoS for setup wizard (pre-filled use_for descriptions).
+        # QoS names are the base names used for submission — the constraint
+        # determines GPU vs CPU, not a name prefix.  Same QoS name can
+        # appear with different constraints.
         "suggested_qos": [
-            {"name": "gpu_debug", "constraint": "gpu",
-             "use_for": "quick iteration, testing"},
-            {"name": "gpu_regular", "constraint": "gpu",
-             "use_for": "production runs, large jobs"},
-            {"name": "gpu_preempt", "constraint": "gpu",
-             "use_for": "cheap batch jobs, restartable"},
+            {"name": "debug", "constraint": "gpu",
+             "use_for": "quick GPU iteration, testing"},
+            {"name": "regular", "constraint": "gpu",
+             "use_for": "production GPU runs, large jobs"},
+            {"name": "preempt", "constraint": "gpu",
+             "use_for": "cheap GPU batch jobs, restartable"},
             {"name": "debug", "constraint": "cpu",
              "use_for": "quick CPU-only tests"},
-            {"name": "regular_1", "constraint": "cpu",
+            {"name": "regular", "constraint": "cpu",
              "use_for": "large CPU-only jobs"},
         ],
         "safe_defaults": {
-            "qos": "gpu_debug",
+            "qos": "debug",
             "constraint": "gpu",
             "nodes": 1,
             "time_limit": "00:30:00",
-        },
-        "account_suffixes": {
-            "gpu": "_g",
-            "gpu&hbm80g": "_g",
         },
         "scratch_paths": [
             "//pscratch/**",
@@ -93,22 +92,6 @@ def list_known_sites() -> list[tuple[str, str]]:
         (key, site.get("display_name", key))
         for key, site in SITE_DEFAULTS.items()
     ]
-
-
-def resolve_account(site_key: str, account: str, constraint: str | None) -> str:
-    """Apply site-specific account suffix based on constraint.
-
-    For example, on Perlmutter GPU jobs require ``m4031_g`` instead of
-    ``m4031``.  If the account already has the suffix, it is not added again.
-    """
-    site = SITE_DEFAULTS.get(site_key)
-    if not site or not constraint:
-        return account
-    suffixes = site.get("account_suffixes", {})
-    suffix = suffixes.get(constraint)
-    if suffix and not account.endswith(suffix):
-        return account + suffix
-    return account
 
 
 def get_site_scratch_deny_rules(site_key: str) -> list[str]:
