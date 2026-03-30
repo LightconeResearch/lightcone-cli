@@ -1186,6 +1186,10 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
 @click.option("--time-limit", default=None, help="Walltime (e.g. 30m, 2h, 01:30:00)")
 @click.option("--account", default=None, help="Allocation account override")
 @click.option("--partition", default=None, help="SLURM partition override")
+@click.option("--strategy", default=None,
+              type=click.Choice(["fit", "switch"]),
+              help="QoS strategy: 'fit' reduces resources to stay in current QoS (default), "
+                   "'switch' keeps resources and picks a different QoS")
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -1198,6 +1202,7 @@ def run(
     time_limit: str | None,
     account: str | None,
     partition: str | None,
+    strategy: str | None,
 ) -> None:
     """Materialize ASTRA outputs via Dagster.
 
@@ -1260,6 +1265,8 @@ def run(
         cli_overrides["account"] = account
     if partition:
         cli_overrides["partition"] = partition
+    if strategy:
+        cli_overrides["strategy"] = strategy
 
     universe_id = universe or "baseline"
     defs = build_definitions(

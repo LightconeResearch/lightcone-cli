@@ -406,6 +406,11 @@ def build_definitions(
             # Thread metadata for runner QoS validation
             if target_name:
                 scheduler["_target_name"] = target_name
+            defaults = target_config.get("defaults") or {}
+            scheduler["_strategy"] = (
+                (cli_overrides or {}).get("strategy")
+                or defaults.get("strategy", "fit")
+            )
             qos_entries = get_qos_entries(target_config)
             if qos_entries:
                 scheduler["_allowed_qos"] = qos_entries

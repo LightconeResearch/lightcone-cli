@@ -767,6 +767,7 @@ class TestQoSValidation:
                     "account": "m1234",
                     "qos": "gpu_debug",
                     "_target_name": "test",
+                    "_strategy": "switch",
                     "_allowed_qos": [
                         {"name": "gpu_debug", "constraint": "gpu"},
                         {"name": "gpu_regular", "constraint": "gpu"},
@@ -787,3 +788,68 @@ class TestQoSValidation:
         content = script_path.read_text()
         assert "--qos=gpu_regular" in content
         assert "--qos=gpu_debug" not in content
+
+    @patch("prism.dagster.runner.subprocess.run")
+    def test_qos_fit_strategy_reduces_nodes(self, mock_run, tmp_path, monkeypatch):
+        """Fit strategy: reduce nodes to stay in current QoS."""
+        from prism.dagster.slurm_info import ClusterInfo, QoSInfo
+
+        cluster = ClusterInfo(
+            qos={
+                "gpu_debug": QoSInfo("gpu_debug", max_wall_minutes=30,
+                                      max_nodes=8, priority=69119),
+                "gpu_regular": QoSInfo("gpu_regular", max_wall_minutes=2880,
+                                       priority=67679),
+            },
+            user_qos=["gpu_debug", "gpu_regular"],
+            user_accounts=["m4031"],
+            partitions={},
+            timestamp="2026-03-28T00:00:00",
+        )
+
+        monkeypatch.setattr(
+            "prism.dagster.targets.load_cluster_cache",
+            lambda name: cluster,
+        )
+        monkeypatch.setattr(
+            "prism.dagster.targets.is_cache_stale",
+            lambda name: False,
+        )
+
+        mock_submit = MagicMock()
+        mock_submit.returncode = 1
+        mock_submit.stdout = ""
+        mock_submit.stderr = "error"
+        mock_run.return_value = mock_submit
+
+        runner = ASTRAContainerRunner(
+            project_root=str(tmp_path),
+            backend="slurm",
+            target_config={
+                "scheduler": {
+                    "container_runtime": "podman-hpc",
+                    "account": "m1234",
+                    "qos": "gpu_debug",
+                    "_target_name": "test",
+                    "_strategy": "fit",
+                    "_allowed_qos": [
+                        {"name": "gpu_debug", "constraint": "gpu"},
+                        {"name": "gpu_regular", "constraint": "gpu"},
+                    ],
+                },
+            },
+        )
+        runner.execute(
+            command="python train.py",
+            output_id="model",
+            universe_id="baseline",
+            container="img:1.0",
+            resources={"nodes": 16, "gpus": 4},
+        )
+
+        # Fit strategy: should stay in gpu_debug but reduce nodes to 8
+        script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
+        content = script_path.read_text()
+        assert "--qos=gpu_debug" in content
+        assert "--nodes=8" in content
+        assert "--nodes=16" not in content

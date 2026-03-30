@@ -464,10 +464,21 @@ class ASTRAContainerRunner:
         scheduler: dict[str, Any],
         resources: dict[str, Any],
         target_name: str,
-    ) -> None:
-        """Check QoS eligibility against cached cluster info and auto-switch.
+    ) -> dict[str, Any]:
+        """Check QoS eligibility and adjust resources or QoS.
 
-        Mutates *scheduler* in-place if a QoS switch is needed.
+        Two strategies (from ``scheduler.get("_strategy", "fit")``):
+
+        ``"fit"`` (default)
+            Reduce resources (nodes, time_limit) to fit the current QoS.
+            Only switches QoS if the resources can't be reduced (e.g.,
+            GPU count exceeds the QoS limit).
+
+        ``"switch"``
+            Keep resources as-is and switch to an eligible QoS.
+
+        Mutates *scheduler* in-place.  Returns the (possibly adjusted)
+        *resources* dict.
         """
         from prism.dagster.targets import is_cache_stale, load_cluster_cache
 
@@ -480,14 +491,15 @@ class ASTRAContainerRunner:
 
         cluster = load_cluster_cache(target_name)
         if not cluster:
-            return
+            return resources
 
-        from prism.dagster.slurm_info import recommend_qos
+        from prism.dagster.slurm_info import check_qos_eligibility, recommend_qos
 
         resolved_qos = scheduler.get("qos")
         if not resolved_qos:
-            return
+            return resources
 
+        strategy = scheduler.pop("_strategy", "fit")
         allowed_qos = scheduler.pop("_allowed_qos", None)
         recipe_resources = {
             "nodes": resources.get("nodes", 1),
@@ -497,6 +509,58 @@ class ASTRAContainerRunner:
             ),
         }
 
+        qos_info = cluster.qos.get(resolved_qos)
+        if not qos_info:
+            return resources
+
+        current = check_qos_eligibility(qos_info, recipe_resources)
+        if current.eligible:
+            return resources
+
+        # --- Strategy: fit — reduce resources to stay in current QoS ---
+        if strategy == "fit" and current.clamped_resources:
+            clamped = current.clamped_resources
+            adjusted = dict(resources)
+            can_fit = True
+
+            # Clamp nodes
+            if "nodes" in clamped:
+                new_nodes = clamped["nodes"]
+                logger.warning(
+                    "Reducing nodes from %d to %d to fit QoS '%s' (max %d).",
+                    resources.get("nodes", 1), new_nodes,
+                    resolved_qos, new_nodes,
+                )
+                adjusted["nodes"] = new_nodes
+
+            # Clamp time_limit
+            if "time_limit_minutes" in clamped:
+                new_time = clamped["time_limit_minutes"]
+                logger.warning(
+                    "Reducing time_limit to %d min to fit QoS '%s' (max %d min).",
+                    new_time, resolved_qos, new_time,
+                )
+                adjusted["time_limit"] = f"{new_time}"
+
+            # GPU total can't be reduced by changing resources
+            # (would need fewer nodes or fewer gpus_per_node)
+            if "gpus_total" in clamped:
+                can_fit = False
+
+            if can_fit:
+                # Verify the clamped resources actually fit
+                verify = check_qos_eligibility(qos_info, {
+                    "nodes": adjusted.get("nodes", 1),
+                    "gpus_per_node": adjusted.get("gpus", 0),
+                    "time_limit_minutes": self._parse_time_minutes(
+                        adjusted.get("time_limit")
+                    ),
+                })
+                if verify.eligible:
+                    return adjusted
+                # Fall through to switch strategy if clamping wasn't enough
+
+        # --- Strategy: switch (or fit failed) — find an eligible QoS ---
         recommendations = recommend_qos(
             cluster,
             recipe_resources,
@@ -504,33 +568,33 @@ class ASTRAContainerRunner:
             qos_entries=allowed_qos,
         )
 
-        current = next((r for r in recommendations if r.qos == resolved_qos), None)
-        if current and not current.eligible:
-            best = next((r for r in recommendations if r.eligible), None)
-            if best:
-                logger.warning(
-                    "QoS '%s' cannot handle this job (%s). Switching to '%s'.",
-                    resolved_qos,
-                    "; ".join(current.violations),
-                    best.qos,
-                )
-                scheduler["qos"] = best.qos
-                # Clamp time_limit if needed
-                qos_info = cluster.qos.get(best.qos)
-                if qos_info and qos_info.max_wall_minutes:
-                    t = recipe_resources.get("time_limit_minutes")
-                    if t and t > qos_info.max_wall_minutes:
-                        logger.warning(
-                            "Clamping time_limit from %d to %d min (max for %s).",
-                            t, qos_info.max_wall_minutes, best.qos,
-                        )
-                        scheduler["time_limit"] = f"{qos_info.max_wall_minutes}"
-            else:
-                logger.error(
-                    "No eligible QoS for this job (%s for '%s'). "
-                    "Job will likely be rejected.",
-                    "; ".join(current.violations), resolved_qos,
-                )
+        best = next((r for r in recommendations if r.eligible), None)
+        if best:
+            logger.warning(
+                "QoS '%s' cannot handle this job (%s). Switching to '%s'.",
+                resolved_qos,
+                "; ".join(current.violations),
+                best.qos,
+            )
+            scheduler["qos"] = best.qos
+            # Clamp time_limit for the new QoS if needed
+            best_info = cluster.qos.get(best.qos)
+            if best_info and best_info.max_wall_minutes:
+                t = recipe_resources.get("time_limit_minutes")
+                if t and t > best_info.max_wall_minutes:
+                    logger.warning(
+                        "Clamping time_limit from %d to %d min (max for %s).",
+                        t, best_info.max_wall_minutes, best.qos,
+                    )
+                    scheduler["time_limit"] = f"{best_info.max_wall_minutes}"
+        else:
+            logger.error(
+                "No eligible QoS for this job (%s for '%s'). "
+                "Job will likely be rejected.",
+                "; ".join(current.violations), resolved_qos,
+            )
+
+        return resources
 
     @staticmethod
     def _parse_time_minutes(value: str | int | None) -> int | None:
@@ -669,10 +733,12 @@ class ASTRAContainerRunner:
             )
             resources = {**resources, "nodes": max_nodes}
 
-        # --- QoS validation and auto-switch ---
+        # --- QoS validation and auto-adjust ---
         target_name = scheduler.get("_target_name")
         if target_name:
-            self._validate_and_adjust_qos(scheduler, resources, target_name)
+            resources = self._validate_and_adjust_qos(
+                scheduler, resources, target_name,
+            )
 
         # Generate the sbatch script
         script = generate_sbatch_script(
