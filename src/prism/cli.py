@@ -1867,24 +1867,30 @@ def target_refresh(name: str) -> None:
 @click.argument("target_name")
 @click.argument("qos_name", required=False)
 @click.option("--constraint", default=None, help="Hardware constraint (gpu/cpu)")
+@click.option("--slurm-qos", default=None,
+              help="Submission QoS name if different from sacctmgr name")
 @click.option("--use-for", default=None, help="When to use this QoS")
 @click.option("--all", "show_all", is_flag=True, help="Include interactive/jupyter queues")
 def target_add_qos(
     target_name: str,
     qos_name: str | None,
     constraint: str | None,
+    slurm_qos: str | None,
     use_for: str | None,
     show_all: bool,
 ) -> None:
     """Add a QoS entry to an existing target.
+
+    QOS_NAME is the sacctmgr name (e.g., gpu_debug). Use --slurm-qos
+    if the submission name differs (e.g., --slurm-qos debug).
 
     Without QOS_NAME, shows an interactive picker of available queues
     from the cluster cache (run `prism target refresh` first).
 
     Examples:
         prism target add-qos perlmutter                              # interactive
-        prism target add-qos perlmutter gpu_shared                   # auto-detect
-        prism target add-qos perlmutter gpu_shared --use-for "small GPU jobs"
+        prism target add-qos perlmutter gpu_debug --slurm-qos debug --constraint gpu
+        prism target add-qos perlmutter batch --use-for "general purpose"
     """
     from prism.dagster.targets import (
         add_qos_entry,
@@ -1912,7 +1918,8 @@ def target_add_qos(
             else:
                 use_for = "general purpose"
 
-        added = add_qos_entry(config, qos_name, constraint, use_for)
+        added = add_qos_entry(config, qos_name, constraint, use_for,
+                              slurm_qos=slurm_qos)
         if not added:
             console.print(
                 f"[yellow]'{qos_name}' is already in target '{target_name}'.[/yellow]"
@@ -2016,17 +2023,19 @@ def target_add_qos(
 @click.argument("qos_name")
 @click.option("--use-for", default=None, help="New description for when to use this QoS")
 @click.option("--constraint", default=None, help="New hardware constraint (gpu/cpu)")
+@click.option("--slurm-qos", default=None, help="Submission QoS name (if different from name)")
 def target_edit_qos(
     target_name: str,
     qos_name: str,
     use_for: str | None,
     constraint: str | None,
+    slurm_qos: str | None,
 ) -> None:
-    """Edit the description or constraint of a QoS entry.
+    """Edit the description, constraint, or slurm_qos of a QoS entry.
 
     Examples:
         prism target edit-qos perlmutter gpu_debug --use-for "quick tests only"
-        prism target edit-qos perlmutter gpu_regular --use-for "production, large sims"
+        prism target edit-qos perlmutter gpu_debug --slurm-qos debug
     """
     from prism.dagster.targets import get_qos_entry, load_target, save_target, update_qos_entry
 
@@ -2043,7 +2052,7 @@ def target_edit_qos(
         raise SystemExit(1)
 
     # Interactive prompt if no flags given
-    if use_for is None and constraint is None:
+    if use_for is None and constraint is None and slurm_qos is None:
         use_for = click.prompt(
             f"  Description for {qos_name}",
             default=entry.get("use_for", ""),
@@ -2054,6 +2063,8 @@ def target_edit_qos(
         updates["use_for"] = use_for
     if constraint is not None:
         updates["constraint"] = constraint
+    if slurm_qos is not None:
+        updates["slurm_qos"] = slurm_qos
 
     if updates:
         update_qos_entry(config, qos_name, **updates)

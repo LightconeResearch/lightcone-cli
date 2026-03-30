@@ -350,17 +350,22 @@ def add_qos_entry(
     name: str,
     constraint: str,
     use_for: str,
+    slurm_qos: str | None = None,
 ) -> bool:
     """Add a QoS entry to *target_config*.
 
     Entries are identified by ``(name, constraint)`` pair.  Returns
     ``True`` if added, ``False`` if the exact pair already exists.
+    *slurm_qos* is only stored if it differs from *name*.
     """
     entries = target_config.setdefault("qos", [])
     if any(e.get("name") == name and e.get("constraint") == constraint
            for e in entries):
         return False
-    entries.append({"name": name, "constraint": constraint, "use_for": use_for})
+    entry: dict[str, str] = {"name": name, "constraint": constraint, "use_for": use_for}
+    if slurm_qos and slurm_qos != name:
+        entry["slurm_qos"] = slurm_qos
+    entries.append(entry)
     return True
 
 
