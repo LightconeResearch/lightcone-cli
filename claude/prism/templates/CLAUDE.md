@@ -20,7 +20,8 @@ ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built
 
 - `astra.yaml` -- The analysis specification. Read this first.
 - `universes/` -- Decision selections (one YAML per universe).
-- `.claude/guides/prism-reference.md` -- Full reference for astra.yaml structure, decision parameterization, recipe format, CLI commands, insights, and universe management. Read when you need spec syntax or CLI usage.
+- `.claude/guides/astra-reference.md` -- Full reference for astra.yaml structure, sub-analyses, decision parameterization, recipe format, insights, and universe management. Read when you need spec syntax.
+- `.claude/guides/prism-reference.md` -- Prism execution reference: CLI commands, status interpretation, failure diagnosis.
 
 ### Project Layout
 

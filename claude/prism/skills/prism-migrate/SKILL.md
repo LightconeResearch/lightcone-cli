@@ -10,13 +10,13 @@ End-to-end migration: scan existing code, generate the ASTRA spec, parameterize 
 
 ## References
 
-- [Decision Guide](../../guides/decision-guide.md) -- when a hardcoded value is vs. isn't a decision
+- [ASTRA Reference](../../guides/astra-reference.md) -- spec structure, decision identification, recipes, universes
 
 ## Phase 1: Scan & Spec
 
 Spawn an Explore subagent to scan the project:
 
-First, read the [Decision Guide](../../guides/decision-guide.md), then spawn an Explore subagent. Include the decision guide content in the prompt so the subagent can classify candidates:
+First, read the Decisions section of [ASTRA Reference](../../guides/astra-reference.md), then spawn an Explore subagent. Include the decision criteria in the prompt so the subagent can classify candidates:
 
 ```
 Agent(subagent_type="Explore", prompt="""
@@ -44,14 +44,14 @@ And a separate list of ALL candidate decisions with file:line references.
 Err on the side of completeness — include anything that could plausibly
 be an analytical choice. The orchestrator will filter down later.
 
-For reference, here is the decision guide for classifying candidates:
-<decision-guide>
-{paste decision guide content here}
-</decision-guide>
+For reference, here are the decision criteria for classifying candidates:
+<decision-criteria>
+{paste Decisions section from astra-reference.md here}
+</decision-criteria>
 """)
 ```
 
-Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `.claude/guides/prism-reference.md`. Use the [Decision Guide](../../guides/decision-guide.md) to filter the subagent's candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
+Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `.claude/guides/astra-reference.md`. Use the decision criteria from [ASTRA Reference](../../guides/astra-reference.md) to filter the subagent's candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
 
 Include `recipe:` blocks on each output pointing to the script that produces it. Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
 

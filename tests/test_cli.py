@@ -858,7 +858,7 @@ class TestSyncProjectPlugins:
         # Guides
         guides = plugin / "guides"
         guides.mkdir()
-        (guides / "decision-guide.md").write_text("# Decision Guide\n")
+        (guides / "astra-reference.md").write_text("# ASTRA Reference\n")
         (guides / "ui-brand.md").write_text("# UI Brand\n")
         # Template
         templates = plugin / "templates"
@@ -886,7 +886,7 @@ class TestSyncProjectPlugins:
         assert (project / ".claude" / "skills" / "prism-build" / "SKILL.md").exists()
         assert (project / ".claude" / "scripts" / "session-start.sh").exists()
         assert (project / ".claude" / "hooks" / "langfuse_hook.py").exists()
-        assert (project / ".claude" / "guides" / "decision-guide.md").exists()
+        assert (project / ".claude" / "guides" / "astra-reference.md").exists()
         assert (project / ".claude" / "guides" / "ui-brand.md").exists()
 
     def test_sync_scripts_executable(self, tmp_path: Path):

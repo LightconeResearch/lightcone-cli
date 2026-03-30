@@ -49,7 +49,7 @@ If validation fails, fix issues before proceeding (create `astra.yaml` via `/pri
 
 ### 2. Create implementation plan
 
-Read `astra.yaml`, `CLAUDE.md`, `.claude/guides/prism-reference.md`, `universes/<UNIVERSE>.yaml`, and any existing `scripts/` directory. If the user provided a description (e.g. `/prism-build focus on the fitting script first`), use it to guide the plan's priorities and ordering. Produce an ordered implementation plan and write it to `.prism/plans/build-plan-<UNIVERSE>.md`.
+Read `astra.yaml`, `CLAUDE.md`, `.claude/guides/astra-reference.md`, `.claude/guides/prism-reference.md`, `universes/<UNIVERSE>.yaml`, and any existing `scripts/` directory. If the user provided a description (e.g. `/prism-build focus on the fitting script first`), use it to guide the plan's priorities and ordering. Produce an ordered implementation plan and write it to `.prism/plans/build-plan-<UNIVERSE>.md`.
 
 The plan must include:
 
