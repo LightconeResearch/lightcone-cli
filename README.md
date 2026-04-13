@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/LightconeResearch/Prism/actions/workflows/tests.yml/badge.svg)](https://github.com/LightconeResearch/Prism/actions/workflows/tests.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/License-BSD_3--Clause-green.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 Prism is the agentic layer for [ASTRA](https://github.com/LightconeResearch/ASTRA) (Agentic Schema for Transparent Research Analysis). You interact with Prism through Claude Code: describe what you want, and the agent handles the implementation.
@@ -124,4 +124,4 @@ Claude Code sessions are traced to Langfuse with full conversation structure, to
 
 ## License
 
-Apache 2.0
+BSD 3-Clause
