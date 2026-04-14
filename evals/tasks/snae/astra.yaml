@@ -9,8 +9,7 @@ description: |
   using maximum-likelihood (MAP) point estimation. This provides best-fit
   cosmological parameters as a building block for a larger analysis.
 
-container:
-  build: Containerfile
+container: Containerfile
 
 success_criteria:
   - claim: "Best-fit parameters are physically reasonable"

@@ -161,24 +161,21 @@ class TestResolveContainerSpec:
     def test_none_returns_none(self, project):
         assert resolve_container_spec(None, project, "test") is None
 
-    def test_string_returns_string(self, project):
+    def test_image_name_returns_as_is(self, project):
         assert resolve_container_spec("python:3.12", project, "test") == "python:3.12"
 
-    def test_dry_run_returns_tag(self, project):
-        spec = {"build": "Containerfile"}
-        tag = resolve_container_spec(spec, project, "test", dry_run=True)
+    def test_containerfile_path_dry_run(self, project):
+        tag = resolve_container_spec("Containerfile", project, "test", dry_run=True)
         assert tag is not None
         assert tag.startswith("prism-test-")
 
-    def test_missing_containerfile(self, tmp_path):
-        spec = {"build": "NoSuchFile"}
-        with pytest.raises(ContainerBuildError, match="Containerfile not found"):
-            resolve_container_spec(spec, tmp_path, "test")
+    def test_nonexistent_path_treated_as_image(self, tmp_path):
+        # A string that doesn't point to an existing file is a pre-built image
+        assert resolve_container_spec("NoSuchFile", tmp_path, "test") == "NoSuchFile"
 
     @patch("prism.container.image_exists_locally", return_value=True)
     def test_exists_skip_build(self, mock_exists, project):
-        spec = {"build": "Containerfile"}
-        tag = resolve_container_spec(spec, project, "test")
+        tag = resolve_container_spec("Containerfile", project, "test")
         assert tag is not None
         assert tag.startswith("prism-test-")
 
@@ -186,8 +183,7 @@ class TestResolveContainerSpec:
     @patch("prism.container.image_exists_locally", return_value=False)
     def test_not_exists_builds(self, mock_exists, mock_build, project):
         mock_build.return_value = MagicMock(tag="prism-test-abc123")
-        spec = {"build": "Containerfile"}
-        tag = resolve_container_spec(spec, project, "test")
+        tag = resolve_container_spec("Containerfile", project, "test")
         assert tag is not None
         mock_build.assert_called_once()
 
@@ -195,14 +191,9 @@ class TestResolveContainerSpec:
     @patch("prism.container.image_exists_locally", return_value=True)
     def test_force_rebuilds(self, mock_exists, mock_build, project):
         mock_build.return_value = MagicMock(tag="prism-test-abc123")
-        spec = {"build": "Containerfile"}
-        tag = resolve_container_spec(spec, project, "test", force=True)
+        tag = resolve_container_spec("Containerfile", project, "test", force=True)
         assert tag is not None
         mock_build.assert_called_once()
-
-    def test_missing_build_key(self, project):
-        with pytest.raises(ContainerBuildError, match="must have a 'build' key"):
-            resolve_container_spec({"context": "."}, project, "test")
 
 
 class TestGetContainerStatus:
@@ -215,21 +206,22 @@ class TestGetContainerStatus:
         assert s.type == "prebuilt"
         assert s.image == "python:3.12"
 
-    def test_build_missing_file(self, tmp_path):
-        s = get_container_status({"build": "NoSuchFile"}, tmp_path, "test")
-        assert s.type == "build"
-        assert "not found" in s.extra.get("error", "")
+    def test_nonexistent_path_treated_as_prebuilt(self, tmp_path):
+        # A string that doesn't point to an existing file is a pre-built image
+        s = get_container_status("NoSuchFile", tmp_path, "test")
+        assert s.type == "prebuilt"
+        assert s.image == "NoSuchFile"
 
     @patch("prism.container.image_exists_locally", return_value=False)
-    def test_build_not_built(self, mock_exists, project):
-        s = get_container_status({"build": "Containerfile"}, project, "test")
+    def test_containerfile_not_built(self, mock_exists, project):
+        s = get_container_status("Containerfile", project, "test")
         assert s.type == "build"
         assert s.exists is False
         assert s.image is not None
 
     @patch("prism.container.image_exists_locally", return_value=True)
-    def test_build_built(self, mock_exists, project):
-        s = get_container_status({"build": "Containerfile"}, project, "test")
+    def test_containerfile_built(self, mock_exists, project):
+        s = get_container_status("Containerfile", project, "test")
         assert s.type == "build"
         assert s.exists is True
         assert s.image is not None
@@ -307,25 +299,26 @@ class TestResolveContainerForSlurm:
 
     @patch("prism.container.build_image_podman_hpc")
     @patch("prism.container.image_exists_podman_hpc", return_value=False)
-    def test_build_spec_podman(self, mock_exists, mock_build, project):
+    def test_containerfile_podman_builds(self, mock_exists, mock_build, project):
         mock_build.return_value = MagicMock(tag="prism-test-abc123")
-        spec = {"build": "Containerfile"}
-        tag = resolve_container_for_slurm(spec, project, "test", "podman-hpc")
+        tag = resolve_container_for_slurm("Containerfile", project, "test", "podman-hpc")
         assert tag is not None
         assert tag.startswith("prism-test-")
         mock_build.assert_called_once()
 
     @patch("prism.container.image_exists_podman_hpc", return_value=True)
-    def test_build_spec_podman_cached(self, mock_exists, project):
-        spec = {"build": "Containerfile"}
-        tag = resolve_container_for_slurm(spec, project, "test", "podman-hpc")
+    def test_containerfile_podman_cached(self, mock_exists, project):
+        tag = resolve_container_for_slurm("Containerfile", project, "test", "podman-hpc")
         assert tag is not None
         assert tag.startswith("prism-test-")
 
-    def test_missing_containerfile(self, tmp_path):
-        spec = {"build": "NoSuchFile"}
-        with pytest.raises(ContainerBuildError, match="Containerfile not found"):
-            resolve_container_for_slurm(spec, tmp_path, "test", "podman-hpc")
+    @patch("prism.container._podman_hpc_migrate")
+    @patch("prism.container.image_exists_podman_hpc", return_value=False)
+    def test_nonexistent_path_treated_as_image(self, mock_exists, mock_migrate, tmp_path):
+        # A string that doesn't point to an existing file is a pre-built image
+        tag = resolve_container_for_slurm("NoSuchFile", tmp_path, "test", "podman-hpc")
+        assert tag == "NoSuchFile"
+        mock_migrate.assert_called_once_with("NoSuchFile")
 
 
 class TestDetectContainerRuntime:
@@ -382,8 +375,7 @@ class TestPodmanSupport:
     @patch("prism.container.subprocess.run")
     def test_resolve_container_spec_with_podman(self, mock_run, project):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        spec = {"build": "Containerfile"}
-        tag = resolve_container_spec(spec, project, "test", runtime="podman")
+        tag = resolve_container_spec("Containerfile", project, "test", runtime="podman")
         assert tag is not None
         # First call should be image inspect, second should be build
         calls = mock_run.call_args_list

@@ -525,8 +525,7 @@ name: "{name}"
 description: |
   TODO: What research question are you trying to answer?
 
-container:
-  build: Containerfile
+container: Containerfile
 
 inputs:
   - id: primary_data
@@ -1355,13 +1354,15 @@ def build(force: bool, runtime: str | None) -> None:
     spec = resolve_analysis_tree(spec, project_path)
     project_name = spec.get("name") or project_path.name
 
-    # Collect all unique container build specs.
-    build_specs: list[tuple[str, str | dict]] = []  # (label, spec)
+    # Collect all unique container specs that need building or migrating.
+    from prism.container import _is_containerfile
+
+    build_specs: list[tuple[str, str]] = []  # (label, spec)
     raw_default = spec.get("container")
     if raw_default is not None:
-        if isinstance(raw_default, dict) and "build" in raw_default:
+        if _is_containerfile(raw_default, project_path):
             build_specs.append(("analysis-level", raw_default))
-        elif isinstance(raw_default, str) and runtime != "docker":
+        elif runtime != "docker":
             # Pre-built images need pull/migrate for HPC runtimes
             build_specs.append(("analysis-level", raw_default))
 
@@ -1371,11 +1372,10 @@ def build(force: bool, runtime: str | None) -> None:
             continue
         raw = recipe.get("container")
         if raw is not None:
-            if isinstance(raw, dict) and "build" in raw:
-                label = f"recipe:{output_def.get('id', '?')}"
+            label = f"recipe:{output_def.get('id', '?')}"
+            if _is_containerfile(raw, project_path):
                 build_specs.append((label, raw))
-            elif isinstance(raw, str) and runtime != "docker":
-                label = f"recipe:{output_def.get('id', '?')}"
+            elif runtime != "docker":
                 build_specs.append((label, raw))
 
     if not build_specs:
@@ -1556,11 +1556,7 @@ def status(universe: str | None) -> None:
     if cstatus.type == "prebuilt":
         console.print(f"  Container: prebuilt [cyan]{cstatus.image}[/cyan]")
     elif cstatus.type == "build":
-        if cstatus.extra.get("error"):
-            console.print(
-                f"  Container: build [red]{cstatus.extra['error']}[/red]"
-            )
-        elif cstatus.exists:
+        if cstatus.exists:
             console.print(
                 f"  Container: build {cstatus.containerfile} "
                 f"[green]{cstatus.image} (built)[/green]"

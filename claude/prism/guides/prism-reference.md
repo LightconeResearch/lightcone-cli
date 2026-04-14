@@ -32,7 +32,7 @@ After scaffolding, populate the sub-analysis's `astra.yaml` with inputs, outputs
 Three overlapping phases:
 
 1. **Write & Debug** -- Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
-2. **Integrate** -- Add `recipe:` blocks to outputs in `astra.yaml`. Track with `prism status` (`no recipe` / `pending` / `ok`). Container build specs (Containerfile or image string) can be set at the analysis level or per-recipe.
+2. **Integrate** -- Add `recipe:` blocks to outputs in `astra.yaml`. Track with `prism status` (`no recipe` / `pending` / `ok`). Set `container:` at analysis level or per-recipe — pass an image name (e.g., `python:3.12-slim`) or a path to a Containerfile (e.g., `Containerfile`).
 3. **Materialize** -- `prism run` executes via Dagster in containers (Docker or SLURM). Falls back to local execution if Docker is unavailable. Done when `prism status` shows all `ok`.
 
 **An output is not done until `prism run` produces it.** Running scripts directly is for debugging only — final results must always come from `prism run` so they are reproducible inside containers.

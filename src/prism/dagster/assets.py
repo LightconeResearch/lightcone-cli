@@ -29,7 +29,7 @@ def get_external_inputs(spec: dict[str, Any]) -> dict[str, str]:
 
 
 def _resolve_container(
-    spec: str | dict[str, Any] | None,
+    spec: str | None,
     project_path: Path,
     project_name: str,
     container_runtime: str | None = None,
@@ -79,7 +79,7 @@ def build_asset_definitions(
             raw_default, _path, _name, container_runtime, local_runtime,
         )
     else:
-        default_container = raw_default if isinstance(raw_default, str) else None
+        default_container = raw_default
 
     # Collect external inputs (inputs with filesystem source paths)
     external = get_external_inputs(spec)
@@ -177,7 +177,7 @@ def _resolve_sub_container(
             return _resolve_container(
                 sub_raw, _path, _name, container_runtime, local_runtime,
             )
-        elif sub_raw is not None and isinstance(sub_raw, str):
+        elif sub_raw is not None:
             return sub_raw
 
     return default_container
@@ -274,7 +274,7 @@ def _build_single_asset(
         container = _resolve_container(
             raw_container, _path, _name, container_runtime, local_runtime,
         )
-    elif raw_container is not None and isinstance(raw_container, str):
+    elif raw_container is not None:
         container = raw_container
     else:
         container = default_container
@@ -391,7 +391,7 @@ def build_definitions(
             container_runtime, local_runtime,
         )
     else:
-        default_container = raw_container if isinstance(raw_container, str) else None
+        default_container = raw_container
 
     # Build runner from target config
     if runner_config:

@@ -111,14 +111,14 @@ class TestBuildAssetDefinitions:
             scheduler = call_kwargs["target_config"]["scheduler"]
             assert scheduler["container_flags"] == ["--scratch", "--cfs"]
 
-    def test_build_spec_resolved_to_string(self, tmp_path, mock_runner):
-        """Container build specs should be resolved to tag strings."""
+    def test_containerfile_resolved_to_tag(self, tmp_path, mock_runner):
+        """Containerfile paths should be resolved to tag strings."""
         containerfile = tmp_path / "Containerfile"
         containerfile.write_text("FROM python:3.12-slim\n")
 
         spec = {
             "name": "Test",
-            "container": {"build": "Containerfile"},
+            "container": "Containerfile",
             "outputs": [
                 {
                     "id": "result",
@@ -136,15 +136,16 @@ class TestBuildAssetDefinitions:
                 runner=mock_runner,
                 project_path=tmp_path,
                 project_name="Test",
+                local_runtime="docker",
             )
 
         assert len(assets) == 1
-        # The container metadata should be a resolved tag string, not a dict
+        # The container metadata should be a resolved tag string
         for asset_spec in assets[0].specs:
             meta = asset_spec.metadata or {}
             container_val = meta.get("container", "")
             assert isinstance(container_val, str)
-            assert "build" not in container_val  # not the raw dict
+            assert container_val.startswith("prism-test-")
 
 
 class TestGetExternalInputs:

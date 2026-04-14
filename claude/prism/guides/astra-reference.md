@@ -49,8 +49,7 @@ outputs:
     type: metric
     recipe:
       command: python scripts/evaluate.py
-container:
-  build: Containerfile
+container: Containerfile
 ```
 
 ## Decisions
@@ -109,7 +108,7 @@ outputs:
       resources: { cpus: 4, memory: "32GB", gpus: 1, time_limit: "2h" }
 ```
 
-Set `container:` at analysis level (all recipes inherit); per-recipe `container:` overrides. Accepts a build spec (`{ build: Containerfile }`) or image string (`"python:3.12-slim"`).
+Set `container:` at analysis level (all recipes inherit); per-recipe `container:` overrides. Pass either a container image name (e.g., `python:3.12-slim`, `ghcr.io/org/img:latest`) or a path to a Containerfile (e.g., `Containerfile`, `containers/Dockerfile`). The runtime figures out whether to pull or build.
 
 ### Conditional Outputs
 
