@@ -27,10 +27,10 @@ Stage banner: RESEARCH QUESTION
 > "What are you trying to learn? Describe the question in your own words."
 
 Then sharpen:
-- "What would a clear answer look like?" (becomes success criteria)
+- "What would a clear answer look like?" (sharpens the description)
 - "Why does this matter?" (context for decisions)
 
-**Write to astra.yaml immediately** with `version`, `name`, `description`, `success_criteria`. This gives the user something visible right away.
+**Write to astra.yaml immediately** with `version`, `name`, `description`. This gives the user something visible right away.
 
 ---
 
@@ -63,7 +63,7 @@ Ask if the user has specific papers they want to look into. Also search with Web
 For each approved paper: `astra paper add <doi>`, `astra paper path <doi>`, then spawn one `prism-extractor` agent per paper. The agent definition already contains extraction instructions, output format, and verification logic -- you just fill in the paper-specific context.
 
 **Spawning each agent:** Use `Agent(subagent_type="prism-extractor", prompt="...")`. In the prompt, provide:
-- **Analysis context**: the analysis description, success criteria, and decisions this paper might inform
+- **Analysis context**: the analysis description and decisions this paper might inform
 - **Paper details**: DOI, version (arXiv only), PDF path (from `astra paper path`)
 - **Target decisions**: each decision ID, label, and options with descriptions
 - **Timestamp**: current time in ISO 8601

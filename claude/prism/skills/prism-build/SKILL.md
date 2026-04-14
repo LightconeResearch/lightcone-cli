@@ -57,7 +57,7 @@ The plan must include:
 2. **Dependency graph** — which outputs depend on which
 3. **Decision selections** — table of decisions and their selected values for this universe
 4. **Ordered build checklist** — for each output: script, decisions, dependencies, estimated cost
-5. **Verification checklist** — success criteria checks, spec validation, decision-code alignment
+5. **Verification checklist** — spec validation, decision-code alignment
 
 ### 3. Present plan for approval
 

@@ -8,17 +8,13 @@ An `astra.yaml` spec captures this for a single unit of work. The structure is *
 
 ## astra.yaml Structure
 
-Fields: `name`, `description`, `version`, `authors`, `tags`, `inputs`, `outputs`, `decisions`, `prior_insights`, `findings`, `analyses`, `container`, `success_criteria`.
+Fields: `name`, `description`, `version`, `authors`, `tags`, `inputs`, `outputs`, `decisions`, `prior_insights`, `findings`, `analyses`, `container`.
 
 ```yaml
 # Simple analysis -- everything at top level
 version: "1.0"
 name: "My Analysis"
 description: "What this analysis investigates."
-success_criteria:
-  - claim: "Achieve >95% accuracy on held-out test set"
-    output: accuracy
-    condition: "value > 0.95"
 inputs:
   - id: training_data
     type: data

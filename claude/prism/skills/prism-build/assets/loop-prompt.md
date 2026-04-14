@@ -26,7 +26,6 @@ All outputs are materialized. Time to verify.
 1. **Inline checks:**
    - `astra validate astra.yaml` passes
    - `prism status --universe {{UNIVERSE}}` shows all `ok`
-   - For each success criterion in `astra.yaml`: read the result file, evaluate the condition
    - Decision-code alignment: `grep -r "add_argument" scripts/` and compare against `astra info --decisions` — every decision must be a parameter, no hardcoded values
 2. **If any issues found:** fix them, re-materialize if needed, commit. Exit (loop continues).
 3. **If all clean:** Spawn a verification sub-agent with explicit steps (do not rely on skill dispatch — the sub-agent cannot invoke `/prism-verify` directly):
@@ -37,7 +36,6 @@ All outputs are materialized. Time to verify.
    2. Materialization status: run `prism status --universe {{UNIVERSE}}` — every output must show `ok`.
    3. Decision-code alignment (most important): run `astra info --decisions` and `grep -r 'add_argument' scripts/`. Every decision in the spec must be accepted as a CLI parameter in the code, with no hardcoded values.
    4. Results match spec: for every output in astra.yaml, confirm `results/{{UNIVERSE}}/<output_id>.<ext>` exists and looks well-formed. For `type: metric` outputs, check for valid `{'value': ...}` JSON.
-   5. Success criteria: for each criterion in astra.yaml, read the result file and evaluate the condition. Report pass/fail. Flag any criterion that can't be evaluated automatically as 'needs manual review'.
    Report all findings with file paths and line numbers. If all checks pass, end your report with exactly: VERIFIED"
    ```
 4. **If sub-agent reports issues:** fix them, commit. Exit (loop continues).

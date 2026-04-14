@@ -11,11 +11,6 @@ description: |
 
 container: Containerfile
 
-success_criteria:
-  - claim: "Best-fit parameters are physically reasonable"
-    output: best_fit
-    condition: "H0 in [60, 80] km/s/Mpc and Omega_L in [0.5, 0.9]"
-
 inputs:
   - id: union21
     type: data
