@@ -4,7 +4,7 @@
 
 Prism is Lightcone Research's agentic layer for ASTRA (Agentic Schema for Transparent Research Analysis).
 
-- **ASTRA** = pure specification: schema, validation, insights, evidence verification, helpers, minimal CLI
+- **ASTRA** = pure specification: schema, validation, prior insights & findings, evidence verification, helpers, minimal CLI
 - **Prism** = agentic layer: Claude Code skills, project scaffolding, Dagster execution, HPC targets, container builds, telemetry
 
 Prism depends on ASTRA. The `astra` CLI handles spec operations; the `prism` CLI handles execution and agent operations.
@@ -62,6 +62,7 @@ astra.yaml → build_definitions() → Dagster assets → ASTRAContainerRunner �
 **Spec & execution:**
 - `astra.yaml` is the single source of truth — all inputs, outputs, recipes, decisions, containers
 - Output paths are always `results/{universe_id}/{output_id}/` — enforced by IO manager, no customization
+- Container is a single string: image name (e.g., `python:3.9`) is pulled; file path (e.g., `Containerfile`) is built. No `container_build` dict — runtime detects via file existence.
 - Container image tags are deterministic: SHA256(Containerfile + dependency files) → `prism-{name}-{hash}`
 - Universe decision parameters are injected as CLI args: `--key value` passed to recipe commands
 - Per-recipe container specs override analysis-level defaults

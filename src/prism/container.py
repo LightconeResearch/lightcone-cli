@@ -1,8 +1,9 @@
 """Container image building from Containerfiles.
 
-Resolves container specs in astra.yaml — either pre-built image strings
-or build specs that point to a Containerfile. Build specs produce
-content-addressed image tags for automatic caching.
+Resolves container specs in astra.yaml — a single string that is either
+a pre-built image name (e.g., ``python:3.9``) or a path to a Containerfile
+(e.g., ``Containerfile``, ``containers/Dockerfile``).  The runtime figures
+out whether to pull or build by checking if the path exists as a file.
 """
 
 from __future__ import annotations
@@ -11,9 +12,8 @@ import hashlib
 import logging
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,11 @@ def build_image(
 ) -> ContainerBuildResult:
     """Build a container image with the specified runtime (Docker or Podman).
 
+    Note: *build_args* is a low-level parameter available when calling this
+    function directly.  The high-level :func:`resolve_container_spec` API does
+    not expose build args — pass ``--build-arg`` values by pre-building the
+    image and referencing it by name in ``astra.yaml``.
+
     Raises :class:`ContainerBuildError` on failure.
     """
     cmd: list[str] = [
@@ -150,8 +155,13 @@ def build_image(
     )
 
 
+def is_containerfile(spec: str, project_path: Path) -> bool:
+    """Return ``True`` if *spec* refers to an existing file (Containerfile)."""
+    return (project_path / spec).is_file()
+
+
 def resolve_container_spec(
-    spec: str | dict[str, Any] | None,
+    spec: str | None,
     project_path: Path,
     project_name: str,
     *,
@@ -162,30 +172,28 @@ def resolve_container_spec(
     """Resolve a container spec to an image tag string.
 
     * ``None`` -> ``None``
-    * ``str`` -> returned as-is (pre-built image)
-    * ``dict`` with ``build`` key -> build (or skip if cached) and return tag
+    * ``str`` pointing to an existing file -> build from Containerfile
+    * ``str`` otherwise -> returned as-is (pre-built image name)
 
     If *dry_run* is ``True``, returns the tag that *would* be used without
     actually building.
+
+    .. warning::
+        Any string that does not resolve to an existing file is treated as a
+        pre-built image name.  A typo such as ``container: Containerfle``
+        will *not* raise an error here — the failure surfaces later at
+        execution time with a cryptic "image not found" message.  Double-check
+        Containerfile paths with ``prism build --dry-run`` to catch mistakes
+        early.
     """
     if spec is None:
         return None
-    if isinstance(spec, str):
+
+    if not is_containerfile(spec, project_path):
+        # Pre-built image name — return as-is.
         return spec
 
-    # Must be a build spec dict.
-    build_path = spec.get("build")
-    if not build_path:
-        raise ContainerBuildError(
-            "Container build spec must have a 'build' key pointing to a Containerfile."
-        )
-
-    containerfile = project_path / build_path
-    if not containerfile.is_file():
-        raise ContainerBuildError(
-            f"Containerfile not found: {containerfile}"
-        )
-
+    containerfile = project_path / spec
     tag = compute_image_tag(project_name, containerfile, project_path)
 
     if dry_run:
@@ -195,12 +203,8 @@ def resolve_container_spec(
         logger.info("Image %s already exists, skipping build.", tag)
         return tag
 
-    context_dir = project_path
-    if spec.get("context"):
-        context_dir = project_path / spec["context"]
-
     logger.info("Building image %s from %s ...", tag, containerfile)
-    build_image(tag, containerfile, context_dir, build_args=spec.get("args"), runtime=runtime)
+    build_image(tag, containerfile, project_path, runtime=runtime)
     return tag
 
 
@@ -212,7 +216,6 @@ class ContainerStatus:
     image: str | None = None
     exists: bool | None = None
     containerfile: str | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +233,10 @@ def build_image_podman_hpc(
 
     Runs on NERSC login nodes.  After building, the image is automatically
     migrated so it is available on compute nodes.
+
+    Note: *build_args* is a low-level parameter available when calling this
+    function directly.  The high-level :func:`resolve_container_for_slurm` API
+    does not expose build args — see :func:`build_image` for details.
 
     Raises :class:`ContainerBuildError` on failure.
     """
@@ -299,7 +306,7 @@ def image_exists_podman_hpc(tag: str) -> bool:
 
 
 def resolve_container_for_slurm(
-    spec: str | dict[str, Any] | None,
+    spec: str | None,
     project_path: Path,
     project_name: str,
     container_runtime: str,
@@ -308,16 +315,16 @@ def resolve_container_for_slurm(
 ) -> str | None:
     """Resolve a container spec for SLURM execution, building if needed.
 
-    Build specs (dict with ``build`` key) are built with ``podman-hpc build``
-    and migrated automatically.  Pre-built image strings are migrated if not
-    already available.
+    Containerfile paths (strings pointing to existing files) are built with
+    ``podman-hpc build`` and migrated automatically.  Pre-built image names
+    are migrated if not already available.
 
     Returns the image tag string to use, or ``None`` if no container.
     """
     if spec is None:
         return None
 
-    if isinstance(spec, str):
+    if not is_containerfile(spec, project_path):
         # Pre-built image reference
         if not force and image_exists_podman_hpc(spec):
             logger.info("Image %s already available in podman-hpc, skipping migrate.", spec)
@@ -326,34 +333,21 @@ def resolve_container_for_slurm(
             _podman_hpc_migrate(spec)
         return spec
 
-    # Must be a build spec dict.
-    build_path = spec.get("build")
-    if not build_path:
-        raise ContainerBuildError(
-            "Container build spec must have a 'build' key pointing to a Containerfile."
-        )
-
-    containerfile = project_path / build_path
-    if not containerfile.is_file():
-        raise ContainerBuildError(f"Containerfile not found: {containerfile}")
-
+    # Containerfile path — build from source.
+    containerfile = project_path / spec
     tag = compute_image_tag(project_name, containerfile, project_path)
 
     if not force and image_exists_podman_hpc(tag):
         logger.info("Image %s already exists in podman-hpc, skipping build.", tag)
         return tag
 
-    context_dir = project_path
-    if spec.get("context"):
-        context_dir = project_path / spec["context"]
-
     logger.info("Building image %s with podman-hpc from %s ...", tag, containerfile)
-    build_image_podman_hpc(tag, containerfile, context_dir, build_args=spec.get("args"))
+    build_image_podman_hpc(tag, containerfile, project_path)
     return tag
 
 
 def get_container_status(
-    spec: str | dict[str, Any] | None,
+    spec: str | None,
     project_path: Path,
     project_name: str,
     runtime: str = "docker",
@@ -362,26 +356,15 @@ def get_container_status(
     if spec is None:
         return ContainerStatus(type="none")
 
-    if isinstance(spec, str):
+    if not is_containerfile(spec, project_path):
         return ContainerStatus(type="prebuilt", image=spec)
 
-    build_path = spec.get("build")
-    if not build_path:
-        return ContainerStatus(type="build", extra={"error": "missing 'build' key"})
-
-    containerfile = project_path / build_path
-    if not containerfile.is_file():
-        return ContainerStatus(
-            type="build",
-            containerfile=build_path,
-            extra={"error": f"Containerfile not found: {containerfile}"},
-        )
-
+    containerfile = project_path / spec
     tag = compute_image_tag(project_name, containerfile, project_path)
     exists = image_exists_locally(tag, runtime=runtime)
     return ContainerStatus(
         type="build",
         image=tag,
         exists=exists,
-        containerfile=build_path,
+        containerfile=spec,
     )

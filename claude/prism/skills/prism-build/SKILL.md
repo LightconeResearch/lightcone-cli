@@ -49,7 +49,7 @@ If validation fails, fix issues before proceeding (create `astra.yaml` via `/pri
 
 ### 2. Create implementation plan
 
-Read `astra.yaml`, `CLAUDE.md`, `.claude/guides/prism-reference.md`, `universes/<UNIVERSE>.yaml`, and any existing `scripts/` directory. If the user provided a description (e.g. `/prism-build focus on the fitting script first`), use it to guide the plan's priorities and ordering. Produce an ordered implementation plan and write it to `.prism/plans/build-plan-<UNIVERSE>.md`.
+Read `astra.yaml`, `CLAUDE.md`, `.claude/guides/astra-reference.md`, `.claude/guides/prism-reference.md`, `universes/<UNIVERSE>.yaml`, and any existing `scripts/` directory. If the user provided a description (e.g. `/prism-build focus on the fitting script first`), use it to guide the plan's priorities and ordering. Produce an ordered implementation plan and write it to `.prism/plans/build-plan-<UNIVERSE>.md`.
 
 The plan must include:
 
@@ -57,7 +57,7 @@ The plan must include:
 2. **Dependency graph** — which outputs depend on which
 3. **Decision selections** — table of decisions and their selected values for this universe
 4. **Ordered build checklist** — for each output: script, decisions, dependencies, estimated cost
-5. **Verification checklist** — success criteria checks, spec validation, decision-code alignment
+5. **Verification checklist** — spec validation, decision-code alignment
 
 ### 3. Present plan for approval
 

@@ -32,10 +32,6 @@ Every output should show `ok`. Flag anything pending, missing, or without a reci
 
 For every output in `astra.yaml`, verify `results/<universe_id>/<output_id>.<ext>` exists and looks well-formed. For `type: metric` outputs, check for valid `{"value": ...}` JSON.
 
-### 5. Success criteria
-
-For each success criterion in `astra.yaml`: read the referenced result, evaluate the condition, report pass/fail. Flag criteria that can't be evaluated automatically as "needs manual review".
-
 ## Report
 
 ```
@@ -45,7 +41,6 @@ For each success criterion in `astra.yaml`: read the referenced result, evaluate
 | Materialization (N/N)    | ✓/✗    |
 | Decision-code alignment  | ✓/⚠/✗  |
 | Results match spec (N/N) | ✓/✗    |
-| Success criteria (N/N)   | ✓/⚠/✗  |
 ```
 
 List each finding with file paths and line numbers. If there are failures, suggest concrete fixes.

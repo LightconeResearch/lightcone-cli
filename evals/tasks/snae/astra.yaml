@@ -9,13 +9,7 @@ description: |
   using maximum-likelihood (MAP) point estimation. This provides best-fit
   cosmological parameters as a building block for a larger analysis.
 
-container:
-  build: Containerfile
-
-success_criteria:
-  - claim: "Best-fit parameters are physically reasonable"
-    output: best_fit
-    condition: "H0 in [60, 80] km/s/Mpc and Omega_L in [0.5, 0.9]"
+container: Containerfile
 
 inputs:
   - id: union21

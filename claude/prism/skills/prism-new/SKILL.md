@@ -10,7 +10,7 @@ Create a new ASTRA analysis project through conversation. Build the spec iterati
 
 ## References
 
-- [Decision Guide](../../guides/decision-guide.md) -- decision identification, prioritization, blind-spot checklist
+- [ASTRA Reference](../../guides/astra-reference.md) -- spec structure, decision identification, recipes, universes
 - [UI Brand](../../guides/ui-brand.md) -- visual formatting patterns
 
 ## Setup
@@ -27,10 +27,10 @@ Stage banner: RESEARCH QUESTION
 > "What are you trying to learn? Describe the question in your own words."
 
 Then sharpen:
-- "What would a clear answer look like?" (becomes success criteria)
+- "What would a clear answer look like?" (sharpens the description)
 - "Why does this matter?" (context for decisions)
 
-**Write to astra.yaml immediately** with `version`, `name`, `description`, `success_criteria`. This gives the user something visible right away.
+**Write to astra.yaml immediately** with `version`, `name`, `description`. This gives the user something visible right away.
 
 ---
 
@@ -40,7 +40,7 @@ Stage banner: ANALYSIS STRUCTURE
 
 > "Walk me through your analysis step by step. What goes in, what comes out at the end?"
 
-**Guidance on sub-analyses:** Analyses should only be split into multiple sub-analyses if each sub analysis genuinely has materially different inputs and outputs, and if the scope may be too broad if there is just one analysis; we overall want a sub-analysis to feel like it should genuinely be a self-contained product. For example, training + evaluation would typically be one analysis, because the product would be the trained and validated neural network estimator. When in doubt, opt for a single analysis at this stage. If it does need to be multi-stage, ask the user for confirmation and how to split it. For multi-stage analyses, make sure you confirm stage boundaries. See `.claude/guides/prism-reference.md` for YAML structure.
+**Guidance on sub-analyses:** Analyses should only be split into multiple sub-analyses if each sub analysis genuinely has materially different inputs and outputs, and if the scope may be too broad if there is just one analysis; we overall want a sub-analysis to feel like it should genuinely be a self-contained product. For example, training + evaluation would typically be one analysis, because the product would be the trained and validated neural network estimator. When in doubt, opt for a single analysis at this stage. If it does need to be multi-stage, ask the user for confirmation and how to split it. For multi-stage analyses, make sure you confirm stage boundaries. See `.claude/guides/astra-reference.md` for YAML structure and sub-analysis guidance.
 
 **One output per output.** Each output should be a single metric, a single plot, or a single artifact. Do not bundle multiple metrics into one output (e.g., "performance_metrics" containing accuracy, F1, and AUC). Each of those is its own output. Same for plots -- one figure per output.
 
@@ -63,7 +63,7 @@ Ask if the user has specific papers they want to look into. Also search with Web
 For each approved paper: `astra paper add <doi>`, `astra paper path <doi>`, then spawn one `prism-extractor` agent per paper. The agent definition already contains extraction instructions, output format, and verification logic -- you just fill in the paper-specific context.
 
 **Spawning each agent:** Use `Agent(subagent_type="prism-extractor", prompt="...")`. In the prompt, provide:
-- **Analysis context**: the analysis description, success criteria, and decisions this paper might inform
+- **Analysis context**: the analysis description and decisions this paper might inform
 - **Paper details**: DOI, version (arXiv only), PDF path (from `astra paper path`)
 - **Target decisions**: each decision ID, label, and options with descriptions
 - **Timestamp**: current time in ISO 8601
@@ -71,15 +71,15 @@ For each approved paper: `astra paper add <doi>`, `astra paper path <doi>`, then
 The agent type is pre-configured with the user's preferred extraction model (set via `prism setup`). Spawn all in a single message (parallel). Show progress as results come in:
 
 ```
-  ✓ Ba et al. 2016 -- 3 insights
+  ✓ Ba et al. 2016 -- 3 prior insights
   ○ Wu & He 2018 (reading...)
 ```
 
-Write extracted insights to astra.yaml immediately. Synthesize findings by topic for the user.
+Write extracted prior insights to astra.yaml immediately. Synthesize them by topic for the user.
 
 ### Decision Identification
 
-Use the conversation and literature to identify decisions. Apply [decision-guide.md](../../guides/decision-guide.md):
+Use the conversation and literature to identify decisions. Apply the decision criteria from [astra-reference.md](../../guides/astra-reference.md):
 
 - What could be done differently and still be defensible?
 - Where did papers disagree or compare alternatives?
@@ -110,7 +110,7 @@ Stage banner: FINALIZING
 ### Validate
 
 1. `astra validate astra.yaml` -- fix errors, iterate until clean
-2. If insights exist: `astra validate astra.yaml --verify-evidence`
+2. If prior insights exist: `astra validate astra.yaml --verify-evidence`
 
 ### Generate Baseline Universe
 
@@ -120,7 +120,7 @@ astra universe generate -n baseline
 
 ### Populate CLAUDE.md
 
-Read the existing `CLAUDE.md` (created by `prism init`). Replace the `## Analysis Context` section with context that is NOT already visible in `astra.yaml`. The spec is the source of truth for structure, decisions, and evidence -- CLAUDE.md captures only what would be lost after `/clear`:
+Read the existing `CLAUDE.md` (created by `prism init`). Replace the `## Working Notes` section with context that is NOT already visible in `astra.yaml`. The spec is the source of truth for structure, decisions, and evidence -- CLAUDE.md captures only what would be lost after `/clear`:
 
 - **Domain Context**: important things the user explained during scoping -- data characteristics, constraints, why certain approaches were preferred. This is conversational context not captured in the spec.
 - **Implementation Notes**: domain-specific guidance from the conversation (libraries, data formats, gotchas)
@@ -140,7 +140,7 @@ Stage banner: SPECIFICATION COMPLETE
 Show summary table:
 
 ```
-| Section       | Decisions | Outputs | Insights |
+| Section       | Decisions | Outputs | Prior Insights |
 |---------------|-----------|---------|----------|
 | (top-level)   | 3         | 2       | 5        |
 | sub_analysis  | ...       | ...     | ...      |
