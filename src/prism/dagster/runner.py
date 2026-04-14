@@ -503,8 +503,8 @@ class ASTRAContainerRunner:
         if not resolved_qos:
             return resources
 
-        strategy = scheduler.pop("_strategy", "fit")
-        allowed_qos = scheduler.pop("_allowed_qos", None)
+        strategy = scheduler.get("_strategy", "fit")
+        allowed_qos = scheduler.get("_allowed_qos", None)
         recipe_resources = {
             "nodes": resources.get("nodes", 1),
             "gpus_per_node": resources.get("gpus", 0),
@@ -553,7 +553,7 @@ class ASTRAContainerRunner:
                     "Reducing time_limit to %d min to fit QoS '%s' (max %d min).",
                     new_time, resolved_qos, new_time,
                 )
-                adjusted["time_limit"] = f"{new_time}"
+                adjusted["time_limit"] = f"{new_time}m"
 
             # GPU total can't be reduced by changing resources
             # (would need fewer nodes or fewer gpus_per_node)
@@ -605,7 +605,7 @@ class ASTRAContainerRunner:
                         "Clamping time_limit from %d to %d min (max for %s).",
                         t, best_info.max_wall_minutes, best.qos,
                     )
-                    scheduler["time_limit"] = f"{best_info.max_wall_minutes}"
+                    scheduler["time_limit"] = f"{best_info.max_wall_minutes}m"
         else:
             logger.error(
                 "No eligible QoS for this job (%s for '%s'). "
@@ -1000,7 +1000,7 @@ def generate_sbatch_script(
 
     lines.append("")
     lines.append("# --- Prism / ASTRA recipe execution ---")
-    lines.append(f"cd {project_root}")
+    lines.append(f"cd {shlex.quote(str(project_root))}")
     lines.append("")
 
     # Build the execution command based on container runtime
@@ -1014,7 +1014,7 @@ def generate_sbatch_script(
         if external_inputs:
             lines.append("mkdir -p data")
             for input_id, source in sorted(external_inputs.items()):
-                lines.append(f"ln -sfn {source} data/{input_id}")
+                lines.append(f"ln -sfn {shlex.quote(str(source))} {shlex.quote(f'data/{input_id}')}")
             lines.append("")
         # Run directly
         lines.append(command)
@@ -1061,11 +1061,11 @@ def _podman_hpc_run_command(
             parts.append(flag)
 
     # Volume mount project root
-    parts.extend(["-v", f"{project_root}:/workspace", "-w", "/workspace"])
+    parts.extend(["-v", shlex.quote(f"{project_root}:/workspace"), "-w", "/workspace"])
 
     # Read-only volume mounts for external inputs
     for input_id, source in sorted((external_inputs or {}).items()):
-        parts.extend(["-v", f"{source}:/workspace/data/{input_id}:ro"])
+        parts.extend(["-v", shlex.quote(f"{source}:/workspace/data/{input_id}:ro")])
 
     parts.append(container)
     parts.extend(["sh", "-c", _shell_quote(command)])

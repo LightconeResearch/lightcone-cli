@@ -2152,13 +2152,15 @@ def target_set_default_qos(target_name: str, qos_name: str | None) -> None:
         )
         raise SystemExit(1)
 
+    selected_constraint: str | None = None
     if qos_name is None:
         # Interactive: show list and prompt
         defaults = config.get("defaults", {})
         current = defaults.get("qos", "")
         console.print(f"\n  Current default QoS: [cyan]{current or 'none'}[/cyan]\n")
         from prism.dagster.targets import get_qos_entries
-        for i, entry in enumerate(get_qos_entries(config), 1):
+        entries = get_qos_entries(config)
+        for i, entry in enumerate(entries, 1):
             marker = " [green](current)[/green]" if entry["name"] == current else ""
             console.print(
                 f"    {i}. {entry['name']:<20} "
@@ -2167,9 +2169,13 @@ def target_set_default_qos(target_name: str, qos_name: str | None) -> None:
             )
         idx = click.prompt(
             "\n  Select new default",
-            type=click.IntRange(1, len(allowed)),
+            type=click.IntRange(1, len(entries)),
         )
-        qos_name = allowed[idx - 1]
+        # Index directly into the entries list to correctly handle duplicate names
+        # with different constraints (e.g., "debug" for both GPU and CPU).
+        selected_entry = entries[idx - 1]
+        qos_name = selected_entry["name"]
+        selected_constraint = selected_entry.get("constraint")
 
     if qos_name not in allowed:
         console.print(
@@ -2181,9 +2187,11 @@ def target_set_default_qos(target_name: str, qos_name: str | None) -> None:
     defaults = config.setdefault("defaults", {})
     defaults["qos"] = qos_name
 
-    # Also update constraint to match the QoS entry
+    # Also update constraint to match the QoS entry.
+    # Pass selected_constraint to disambiguate when the same name appears
+    # with multiple constraints (interactive path only).
     from prism.dagster.targets import get_qos_entry
-    entry = get_qos_entry(config, qos_name)
+    entry = get_qos_entry(config, qos_name, constraint=selected_constraint)
     if entry and entry.get("constraint"):
         defaults["constraint"] = entry["constraint"]
 
