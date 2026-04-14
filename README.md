@@ -104,7 +104,7 @@ Define decisions (methodological choices) with multiple options. Each universe f
 
 ### Decision constraints
 
-Decisions can be conditional on other choices (`when`), mutually exclusive (`incompatible_with`), or co-required (`requires`). Options can also be marked as `excluded` with a reason, documenting alternatives that were considered and rejected.
+Decisions can be mutually exclusive (`incompatible_with`) or co-required (`requires`). Options can also be marked as `excluded` with a reason, documenting alternatives that were considered and rejected.
 
 ### Literature integration
 

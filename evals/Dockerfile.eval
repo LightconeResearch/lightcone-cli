@@ -1,0 +1,29 @@
+FROM python:3.12-slim
+
+# System deps
+RUN apt-get update && apt-get install -y git curl bash sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user (Claude Code refuses bypassPermissions as root)
+RUN useradd -m -s /bin/bash evaluser \
+    && echo 'evaluser ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+
+# Install Claude Code as evaluser
+RUN su - evaluser -c 'curl -fsSL https://claude.ai/install.sh | bash'
+RUN ln -sf /home/evaluser/.local/bin/claude /usr/local/bin/claude
+
+# Pre-install Python dependencies
+COPY deps/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Install astra and prism wheels (--no-deps to skip private git URLs)
+COPY deps/*.whl /tmp/deps/
+RUN pip install --no-deps /tmp/deps/*.whl
+
+# Skip Claude Code onboarding
+RUN mkdir -p /home/evaluser/.claude \
+    && echo '{"hasCompletedOnboarding": true}' > /home/evaluser/.claude.json \
+    && chown -R evaluser:evaluser /home/evaluser/.claude /home/evaluser/.claude.json
+
+# Clean up
+RUN rm -rf /tmp/deps /tmp/requirements.txt

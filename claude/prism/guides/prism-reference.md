@@ -51,7 +51,6 @@ decisions:
       "no": { label: "No" }
   n_components:
     label: "PCA Components"
-    when: use_pca.yes             # only exists when use_pca=yes
     default: "50"
     options:
       "50": { label: "50 components" }
@@ -122,7 +121,6 @@ analyses:
 
 - `incompatible_with: ["decision.option"]` -- cannot coexist in a universe
 - `requires: ["decision.option"]` -- must be selected together
-- `when: decision.option` -- conditional, only exists when that option is selected. Supports negation (`~decision.option` = NOT selected) and lists (`when: [cond1, cond2]` = AND, all must be true)
 - `excluded: true` + `excluded_reason: "..."` -- option considered but rejected (cannot be default or selected)
 
 ## Writing Results

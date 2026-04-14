@@ -82,6 +82,7 @@ def _run_streaming(
     return proc.returncode, "".join(stdout_tail), "".join(stderr_tail)
 
 
+
 def _find_venv(cwd: str | None, project_root: Path) -> Path | None:
     """Find .venv by checking cwd first, then walking up to project_root."""
     if cwd:

@@ -1,0 +1,16 @@
+id: snae
+description: >
+  Fit Union2.1 Type Ia supernova data to flat LCDM using MAP estimation.
+  Agent must write 3 scripts (fit, plot_hubble, plot_residuals),
+  materialize all outputs, and produce physically reasonable parameters.
+seed_project: snae
+universe: baseline
+max_turns: 200
+trial_timeout: 7200
+graders:
+  - name: spec_valid
+    type: command
+    command: "astra validate astra.yaml"
+  - name: all_materialized
+    type: status
+    weight: 3.0

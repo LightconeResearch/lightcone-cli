@@ -41,6 +41,5 @@ A multiverse of trivial decisions is less informative than a focused one.
 
 Use constraints when decisions are not independent.
 
-- **Conditional existence** (`when` on decision) -- downstream decision only exists given an upstream choice. E.g., `svm_kernel` only exists `when: model.svm`.
 - **Incompatibility** (`incompatible_with` on option) -- two options cannot coexist in a universe.
 - **Requirement** (`requires` on option) -- selecting one option forces another.
