@@ -769,57 +769,6 @@ class TestTargetResolution:
         assert "Unknown target" not in (result.output or "")
 
 
-class TestUpdateCommand:
-    """Tests for the prism update command."""
-
-    def _patch_updater(self, monkeypatch, pull_results, pkg_results=None):
-        """Patch updater functions for update command tests."""
-        monkeypatch.setattr("prism.updater._get_lightcone_root", lambda: Path("/fake"))
-        monkeypatch.setattr("prism.updater.pull_repos", lambda root: pull_results)
-        monkeypatch.setattr("prism.updater.reinstall_packages",
-                            lambda root: pkg_results or [])
-        monkeypatch.setattr("prism.updater._CHECK_FILE", Path("/tmp/.fake_update_check"))
-
-    def test_update_no_reinstall_when_up_to_date(self, runner: CliRunner, monkeypatch):
-        """When all repos are up to date, skip reinstall but still offer project sync."""
-        self._patch_updater(monkeypatch, [
-            ("ASTRA", True, "already up to date"),
-            ("Prism", True, "already up to date"),
-            ("Prism-UI", True, "already up to date"),
-        ])
-
-        result = runner.invoke(main, ["update"], input="skip\n")
-        assert result.exit_code == 0
-        assert "Reinstalling" not in result.output
-        assert "Sync updated" in result.output
-
-    def test_update_reinstalls_when_updated(self, runner: CliRunner, monkeypatch):
-        """When repos have updates, reinstall packages and prompt for sync."""
-        self._patch_updater(monkeypatch, [
-            ("ASTRA", True, "updated (3 new commits)"),
-            ("Prism", True, "already up to date"),
-        ], [
-            ("ASTRA", True, "installed"),
-            ("Prism", True, "installed"),
-        ])
-
-        result = runner.invoke(main, ["update"], input="skip\n")
-        assert result.exit_code == 0
-        assert "Reinstalling" in result.output
-        assert "Sync updated" in result.output
-
-    def test_update_check_only(self, runner: CliRunner, monkeypatch):
-        """--check flag only checks, doesn't pull or reinstall."""
-        monkeypatch.setattr("prism.updater._get_lightcone_root", lambda: Path("/fake"))
-        monkeypatch.setattr("prism.updater.check_for_updates",
-                            lambda quiet_if_current=True: "Updates available for: Prism")
-
-        result = runner.invoke(main, ["update", "--check"])
-        assert result.exit_code == 0
-        assert "Updates available" in result.output
-        assert "Reinstalling" not in result.output
-
-
 class TestSyncProjectPlugins:
     """Tests for _sync_project_plugins."""
 

@@ -1,0 +1,77 @@
+---
+name: Publish Python Package
+
+# Publishes with trusted publishing to PyPI on releases created in GitHub UI
+# if status is published. For draft status, nothing happens.
+#
+# More on trusted publishing: https://docs.pypi.org/trusted-publishers/
+
+on:  # yamllint disable-line rule:truthy
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build Python distributions for publishing
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      matrix:
+        pyversion: ["3.13"]
+
+    steps:
+      # https://github.com/actions/checkout
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      # https://github.com/astral-sh/setup-uv
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.0.0
+        with:
+          python-version: ${{ matrix.pyversion }}
+          enable-cache: true
+
+      # https://github.com/actions/setup-python
+      - name: Set up Python
+        uses: actions/setup-python@v6.0.0
+        with:
+          python-version: ${{ matrix.pyversion }}
+
+      - name: Build source and wheel archives
+        run: uv build
+
+      # https://github.com/actions/upload-artifact
+      - name: Store built distribution
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: distribution-files
+          path: dist/
+
+  pypi-publish:
+    name: Publish Python package to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-release
+      url: https://pypi.org/p/lightcone-prism
+    permissions:
+      id-token: write  # this permission is mandatory for trusted publishing
+    steps:
+      # https://github.com/actions/download-artifact
+      - name: Download built distribution
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: distribution-files
+          path: dist
+
+      # https://github.com/pypa/gh-action-pypi-publish
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.0
+        with:
+          verbose: true

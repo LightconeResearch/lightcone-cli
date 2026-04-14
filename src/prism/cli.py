@@ -100,14 +100,6 @@ def main(ctx: click.Context) -> None:
         ctx.invoke(setup)
         return
 
-    # Check for updates (cached, non-blocking)
-    try:
-        from prism.updater import check_for_updates
-        msg = check_for_updates()
-        if msg:
-            console.print(f"\n  [yellow]↑[/yellow] {msg}\n")
-    except Exception:
-        pass  # Never let update checks break normal usage
 
 
 # =============================================================================
@@ -1061,36 +1053,8 @@ def _init_git_repo(directory: Path, no_git: bool) -> None:
         pass
 
 
-def _get_lightcone_venv_site_packages() -> Path | None:
-    """Read ~/.lightcone/.config to find the Lightcone venv's site-packages."""
-    config_file = Path.home() / ".lightcone" / ".config"
-    if not config_file.exists():
-        return None
-
-    # Parse the simple KEY="VALUE" config file
-    venv_path_str = None
-    for line in config_file.read_text().splitlines():
-        line = line.strip()
-        if line.startswith("VENV_PATH="):
-            venv_path_str = line.split("=", 1)[1].strip().strip('"')
-            break
-
-    if not venv_path_str:
-        return None
-
-    venv_path = Path(venv_path_str)
-    if not venv_path.is_dir():
-        return None
-
-    # Find site-packages inside the Lightcone venv
-    candidates = list(venv_path.glob("lib/python*/site-packages"))
-    if not candidates:
-        candidates = list(venv_path.glob("Lib/site-packages"))  # Windows
-    return candidates[0] if candidates else None
-
-
 def _create_venv(directory: Path, no_venv: bool) -> bool:
-    """Create a virtual environment with astra and prism installed."""
+    """Create a virtual environment with lightcone-prism installed from PyPI."""
     if no_venv:
         return False
 
@@ -1098,7 +1062,7 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
 
     try:
         subprocess.run(
-            [sys.executable, "-m", "venv", "--system-site-packages", str(venv_path)],
+            [sys.executable, "-m", "venv", str(venv_path)],
             capture_output=True,
             check=True,
         )
@@ -1108,61 +1072,19 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
 
     console.print("[green]✓[/green] Created virtual environment (.venv)")
 
-    # --system-site-packages only exposes the *real* system Python's packages.
-    # If Lightcone was installed into its own venv (the common case), we need
-    # to bridge the new project venv to the Lightcone venv's site-packages
-    # via a .pth file.
-    lightcone_sp = _get_lightcone_venv_site_packages()
-    if lightcone_sp:
-        inner_sp_dirs = list(venv_path.glob("lib/python*/site-packages"))
-        if not inner_sp_dirs and sys.platform == "win32":
-            inner_sp_dirs = list(venv_path.glob("Lib/site-packages"))
-        if inner_sp_dirs:
-            pth_file = inner_sp_dirs[0] / "_lightcone.pth"
-            pth_file.write_text(str(lightcone_sp) + "\n")
-
-    # Check if prism is now importable in the new venv
-    if sys.platform == "win32":
-        python_path = venv_path / "Scripts" / "python"
-    else:
-        python_path = venv_path / "bin" / "python"
-
+    pip_path = venv_path / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
     try:
         subprocess.run(
-            [str(python_path), "-c", "import prism"],
+            [str(pip_path), "install", "lightcone-prism"],
             capture_output=True,
             check=True,
         )
-        console.print("[green]✓[/green] prism available (via Lightcone environment)")
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        # Not available — install it
-        pip_path = python_path.parent / "pip"
-        lightcone_dir = Path.home() / ".lightcone"
-        env = {**os.environ, "SETUPTOOLS_SCM_PRETEND_VERSION": "0.1.0"}
-        try:
-            if (lightcone_dir / "ASTRA").is_dir() and (lightcone_dir / "Prism").is_dir():
-                install_targets = ["-e", str(lightcone_dir / "ASTRA")]
-                install_targets += ["-e", str(lightcone_dir / "Prism")]
-                subprocess.run(
-                    [str(pip_path), "install", *install_targets],
-                    capture_output=True,
-                    check=True,
-                    env=env,
-                )
-            else:
-                subprocess.run(
-                    [str(pip_path), "install",
-                     "git+https://github.com/LightconeResearch/Prism.git"],
-                    capture_output=True,
-                    check=True,
-                    env=env,
-                )
-            console.print("[green]✓[/green] Installed prism in virtual environment")
-        except subprocess.CalledProcessError:
-            console.print(
-                "[yellow]Warning:[/yellow] Could not install prism automatically. "
-                "You can install manually with: .venv/bin/pip install prism"
-            )
+        console.print("[green]✓[/green] Installed lightcone-prism in virtual environment")
+    except subprocess.CalledProcessError:
+        console.print(
+            "[yellow]Warning:[/yellow] Could not install lightcone-prism automatically. "
+            "You can install manually with: .venv/bin/pip install lightcone-prism"
+        )
 
     return True
 
@@ -2365,76 +2287,30 @@ def _prompt_sync_projects() -> None:
 
 
 @main.command()
-@click.option("--check", is_flag=True, help="Only check for updates, don't install them")
-@click.option("--sync", is_flag=True, help="Only sync plugin files to projects (skip pull/reinstall)")
-def update(check: bool, sync: bool) -> None:
-    """Update Lightcone packages to the latest version.
+@click.option("--sync", is_flag=True, help="Only sync plugin files to projects (skip upgrade)")
+def update(sync: bool) -> None:
+    """Update Prism and sync plugin files to projects.
 
-    Pulls the latest code from all Lightcone repositories and
-    reinstalls Python packages.
+    Upgrades lightcone-prism from PyPI, then offers to sync
+    updated skills, hooks, and scripts into your projects.
 
     Examples:
-        prism update          # pull & reinstall everything
-        prism update --check  # just check what's available
-        prism update --sync   # just sync plugin files to projects
+        prism update          # upgrade package & sync projects
+        prism update --sync   # just sync plugin files (no upgrade)
     """
-    from prism.updater import _get_lightcone_root, check_for_updates, pull_repos, reinstall_packages
-
-    root = _get_lightcone_root()
-    if root is None:
-        console.print(
-            "[red]Error:[/red] Could not find Lightcone install directory.\n"
-            "  Expected repos as siblings of the Prism repo."
+    if not sync:
+        console.print("[bold]Upgrading lightcone-prism...[/bold]\n")
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "lightcone-prism"],
+            capture_output=True,
+            text=True,
         )
-        raise SystemExit(1)
-
-    if sync:
-        _prompt_sync_projects()
-        return
-
-    if check:
-        console.print("[bold]Checking for updates...[/bold]\n")
-        msg = check_for_updates(quiet_if_current=False)
-        if msg:
-            console.print(f"  {msg}")
+        if proc.returncode == 0:
+            console.print("  [green]✓[/green] lightcone-prism upgraded")
         else:
-            console.print("  [green]Everything is up to date.[/green]")
-        return
+            console.print(f"  [red]✗[/red] upgrade failed: {proc.stderr.strip()[:200]}")
+            raise SystemExit(1)
 
-    console.print(f"[bold]Updating from:[/bold] {root}\n")
-
-    # Pull repos
-    results = pull_repos(root)
-    for name, success, message in results:
-        icon = "[green]✓[/green]" if success else "[red]✗[/red]"
-        console.print(f"  {icon} {name}: {message}")
-
-    any_failed = any(not s for _, s, _ in results)
-    any_updated = any(s and "updated" in m for _, s, m in results)
-
-    # Reinstall packages only if something actually changed
-    if any_updated:
-        console.print("\n[bold]Reinstalling packages...[/bold]\n")
-        pkg_results = reinstall_packages(root)
-        for name, success, message in pkg_results:
-            icon = "[green]✓[/green]" if success else "[red]✗[/red]"
-            console.print(f"  {icon} {name}: {message}")
-        if any(not s for _, s, _ in pkg_results):
-            any_failed = True
-
-    # Clear the update-check cache so the nag goes away
-    from prism.updater import _CHECK_FILE
-    if _CHECK_FILE.exists():
-        _CHECK_FILE.unlink(missing_ok=True)
-
-    if any_failed:
-        console.print("\n[yellow]Some updates failed — see errors above.[/yellow]")
-        raise SystemExit(1)
-    else:
-        console.print("\n[green bold]All packages updated successfully.[/green bold]")
-
-    # Always offer to sync plugin files — project scaffolding can be stale
-    # even when packages are up to date
     _prompt_sync_projects()
 
 
