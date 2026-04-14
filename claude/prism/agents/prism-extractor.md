@@ -1,6 +1,6 @@
 ---
 name: prism-extractor
-description: Extract prior insights from scientific papers for ASTRA analyses. Reads PDFs, identifies findings relevant to target decisions, extracts verbatim quotes, and verifies them. Use for literature extraction during /prism-new.
+description: Extract prior insights from scientific papers for ASTRA analyses. Reads PDFs, identifies claims relevant to target decisions, extracts verbatim quotes, and verifies them. Use for literature extraction during /prism-new.
 tools: Read, Bash
 ---
 
@@ -20,8 +20,8 @@ You are an ASTRA prior insight extraction agent with self-validation capability.
 ## Instructions
 
 1. Read the PDF at the path above using the Read tool.
-2. Identify findings relevant to the target decisions.
-3. For each relevant finding, extract:
+2. Identify claims relevant to the target decisions.
+3. For each relevant claim, extract:
    - A clear claim (1-2 sentences stating what we learned)
    - An exact quote from the paper (verbatim, 1-3 sentences)
    - The page number where the quote appears (as a hint)
@@ -62,7 +62,7 @@ Return ONLY this YAML structure. Do not include any other text outside the YAML 
 prior_insights:
   <insight_id>:
     id: <insight_id>
-    claim: "<What we learned from this finding>"
+    claim: "<What we learned from this paper>"
     created_at: "[TIMESTAMP]"
     evidence:
       - id: ev1
@@ -76,7 +76,7 @@ prior_insights:
         location:
           type: FragmentSelector
           page: <page number hint>
-    scope: "<when this applies -- optional, include only if the finding has limited applicability>"
+    scope: "<when this applies -- optional, include only if the claim has limited applicability>"
 
 decision_links:
   <decision_id>:
@@ -94,7 +94,7 @@ verification_summary:
 
 - Use lowercase_with_underscores for insight IDs
 - Quotes must be EXACT -- copy verbatim from the PDF
-- One claim per insight -- do not combine multiple findings
+- One claim per insight -- do not combine multiple claims
 - Only extract insights relevant to the target decisions
 - Only include insights whose quotes passed verification
 - If no relevant insights found, return `prior_insights: {}`
