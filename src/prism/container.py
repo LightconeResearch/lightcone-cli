@@ -12,9 +12,8 @@ import hashlib
 import logging
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +117,11 @@ def build_image(
 ) -> ContainerBuildResult:
     """Build a container image with the specified runtime (Docker or Podman).
 
+    Note: *build_args* is a low-level parameter available when calling this
+    function directly.  The high-level :func:`resolve_container_spec` API does
+    not expose build args — pass ``--build-arg`` values by pre-building the
+    image and referencing it by name in ``astra.yaml``.
+
     Raises :class:`ContainerBuildError` on failure.
     """
     cmd: list[str] = [
@@ -151,7 +155,7 @@ def build_image(
     )
 
 
-def _is_containerfile(spec: str, project_path: Path) -> bool:
+def is_containerfile(spec: str, project_path: Path) -> bool:
     """Return ``True`` if *spec* refers to an existing file (Containerfile)."""
     return (project_path / spec).is_file()
 
@@ -173,11 +177,19 @@ def resolve_container_spec(
 
     If *dry_run* is ``True``, returns the tag that *would* be used without
     actually building.
+
+    .. warning::
+        Any string that does not resolve to an existing file is treated as a
+        pre-built image name.  A typo such as ``container: Containerfle``
+        will *not* raise an error here — the failure surfaces later at
+        execution time with a cryptic "image not found" message.  Double-check
+        Containerfile paths with ``prism build --dry-run`` to catch mistakes
+        early.
     """
     if spec is None:
         return None
 
-    if not _is_containerfile(spec, project_path):
+    if not is_containerfile(spec, project_path):
         # Pre-built image name — return as-is.
         return spec
 
@@ -204,7 +216,6 @@ class ContainerStatus:
     image: str | None = None
     exists: bool | None = None
     containerfile: str | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +233,10 @@ def build_image_podman_hpc(
 
     Runs on NERSC login nodes.  After building, the image is automatically
     migrated so it is available on compute nodes.
+
+    Note: *build_args* is a low-level parameter available when calling this
+    function directly.  The high-level :func:`resolve_container_for_slurm` API
+    does not expose build args — see :func:`build_image` for details.
 
     Raises :class:`ContainerBuildError` on failure.
     """
@@ -309,7 +324,7 @@ def resolve_container_for_slurm(
     if spec is None:
         return None
 
-    if not _is_containerfile(spec, project_path):
+    if not is_containerfile(spec, project_path):
         # Pre-built image reference
         if not force and image_exists_podman_hpc(spec):
             logger.info("Image %s already available in podman-hpc, skipping migrate.", spec)
@@ -341,7 +356,7 @@ def get_container_status(
     if spec is None:
         return ContainerStatus(type="none")
 
-    if not _is_containerfile(spec, project_path):
+    if not is_containerfile(spec, project_path):
         return ContainerStatus(type="prebuilt", image=spec)
 
     containerfile = project_path / spec

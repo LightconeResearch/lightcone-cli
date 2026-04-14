@@ -1355,12 +1355,12 @@ def build(force: bool, runtime: str | None) -> None:
     project_name = spec.get("name") or project_path.name
 
     # Collect all unique container specs that need building or migrating.
-    from prism.container import _is_containerfile
+    from prism.container import is_containerfile
 
     build_specs: list[tuple[str, str]] = []  # (label, spec)
     raw_default = spec.get("container")
     if raw_default is not None:
-        if _is_containerfile(raw_default, project_path):
+        if is_containerfile(raw_default, project_path):
             build_specs.append(("analysis-level", raw_default))
         elif runtime != "docker":
             # Pre-built images need pull/migrate for HPC runtimes
@@ -1373,7 +1373,7 @@ def build(force: bool, runtime: str | None) -> None:
         raw = recipe.get("container")
         if raw is not None:
             label = f"recipe:{output_def.get('id', '?')}"
-            if _is_containerfile(raw, project_path):
+            if is_containerfile(raw, project_path):
                 build_specs.append((label, raw))
             elif runtime != "docker":
                 build_specs.append((label, raw))
