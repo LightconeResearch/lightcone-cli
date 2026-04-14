@@ -1171,7 +1171,7 @@ def run(
     import dagster as dg
 
     # Select assets to materialize (exclude external/input-only assets)
-    all_assets = list(defs.get_all_asset_specs())
+    all_assets = list(defs.resolve_all_asset_specs())
     if output_names:
         # Support dot-notation: hod_fitting.galaxy_mesh -> [universe, hod_fitting, galaxy_mesh]
         selection = [dg.AssetKey([universe_id] + o.split(".")) for o in output_names]
