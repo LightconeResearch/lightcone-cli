@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 eval = [
     "anthropic>=0.40",
+    "build>=1.0",
     "daytona-sdk>=0.140",
     "pydantic>=2.0",
     "python-dotenv>=1.0",
