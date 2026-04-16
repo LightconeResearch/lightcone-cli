@@ -34,6 +34,11 @@ dev = [
     "mypy",
     "types-PyYAML",
 ]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+]
+
 
 [project.scripts]
 prism = "prism.cli:main"
