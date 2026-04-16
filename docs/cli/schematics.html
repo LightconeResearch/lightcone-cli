@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prism CLI — Command Schematics</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3e;
+    --accent: #6c63ff;
+    --accent2: #ff6584;
+    --text: #e2e8f0;
+    --muted: #8892a4;
+
+    /* Node colours */
+    --clr-file-in:    #1e3a5f;
+    --clr-file-out:   #1a3a2a;
+    --clr-program:    #3a2200;
+    --clr-skill:      #2d1a4a;
+    --clr-config:     #2a2000;
+    --clr-cmd:        #1a2040;
+
+    --brd-file-in:    #3b82f6;
+    --brd-file-out:   #22c55e;
+    --brd-program:    #f97316;
+    --brd-skill:      #a855f7;
+    --brd-config:     #eab308;
+    --brd-cmd:        #6c63ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 28px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  header h1 { font-size: 1.3rem; font-weight: 700; color: var(--text); }
+  header span { font-size: 0.8rem; color: var(--muted); }
+  .badge {
+    background: var(--accent); color: #fff;
+    font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 20px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+
+  .layout { display: flex; height: calc(100vh - 61px); overflow: hidden; }
+
+  /* Sidebar */
+  nav {
+    width: 200px; flex-shrink: 0;
+    background: var(--surface); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 12px 0;
+  }
+  nav .section-label {
+    font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--muted);
+    padding: 10px 16px 4px;
+  }
+  nav button {
+    display: block; width: 100%;
+    background: none; border: none; cursor: pointer;
+    text-align: left; padding: 9px 16px;
+    font-size: 0.85rem; color: var(--muted);
+    font-family: 'Courier New', monospace;
+    transition: all 0.15s; border-left: 3px solid transparent;
+  }
+  nav button:hover { background: rgba(108,99,255,0.1); color: var(--text); }
+  nav button.active {
+    background: rgba(108,99,255,0.15);
+    color: var(--accent); border-left-color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* Main */
+  main { flex: 1; overflow-y: auto; padding: 28px; }
+  .cmd-header { margin-bottom: 22px; }
+  .cmd-header h2 {
+    font-size: 1.5rem; font-weight: 700;
+    font-family: 'Courier New', monospace;
+    color: var(--accent);
+  }
+  .cmd-header p { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
+  .cmd-sig {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 16px; margin-top: 10px;
+    font-family: 'Courier New', monospace; font-size: 0.82rem; color: #a0f0a0;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    margin-bottom: 22px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--muted); }
+  .legend-dot { width: 12px; height: 12px; border-radius: 3px; border: 2px solid; }
+
+  /* Flow diagram */
+  .flow { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; }
+  .flow-col { display: flex; flex-direction: column; gap: 12px; min-width: 180px; flex: 1; }
+  .flow-col-title {
+    font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--muted);
+    margin-bottom: 2px; text-align: center;
+  }
+
+  .node {
+    border-radius: 8px; border: 1.5px solid;
+    padding: 10px 14px; font-size: 0.8rem;
+    line-height: 1.4; position: relative;
+    transition: transform 0.12s, box-shadow 0.12s;
+  }
+  .node:hover { transform: translateY(-1px); box-shadow: 0 4px 18px rgba(0,0,0,0.4); }
+  .node.file-in    { background: var(--clr-file-in);  border-color: var(--brd-file-in); }
+  .node.file-out   { background: var(--clr-file-out); border-color: var(--brd-file-out); }
+  .node.program    { background: var(--clr-program);  border-color: var(--brd-program); }
+  .node.skill      { background: var(--clr-skill);    border-color: var(--brd-skill); }
+  .node.config     { background: var(--clr-config);   border-color: var(--brd-config); }
+  .node.cmd-node   { background: var(--clr-cmd);      border-color: var(--brd-cmd); font-weight: 700; text-align: center; }
+
+  .node-label {
+    display: block; font-size: 0.7rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 3px;
+  }
+  .node.file-in    .node-label { color: var(--brd-file-in); }
+  .node.file-out   .node-label { color: var(--brd-file-out); }
+  .node.program    .node-label { color: var(--brd-program); }
+  .node.skill      .node-label { color: var(--brd-skill); }
+  .node.config     .node-label { color: var(--brd-config); }
+
+  .node-name { color: var(--text); font-family: 'Courier New', monospace; font-size: 0.78rem; }
+  .node-detail { color: var(--muted); font-size: 0.72rem; margin-top: 4px; font-style: italic; }
+
+  /* Arrow connector between cols */
+  .arrow-col {
+    display: flex; flex-direction: column; justify-content: center;
+    align-items: center; color: var(--muted); font-size: 1.4rem;
+    padding-top: 32px; flex-shrink: 0;
+  }
+
+  /* Execution steps */
+  .steps { margin-top: 30px; }
+  .steps h3 { font-size: 0.9rem; font-weight: 700; color: var(--muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .step-list { display: flex; flex-direction: column; gap: 6px; }
+  .step {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 9px 12px; font-size: 0.81rem;
+  }
+  .step-num {
+    background: var(--accent); color: #fff;
+    border-radius: 50%; width: 20px; height: 20px; flex-shrink: 0;
+    font-size: 0.68rem; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .step-text { color: var(--text); line-height: 1.4; }
+  .step-text code {
+    background: rgba(255,255,255,0.07); border-radius: 3px;
+    padding: 0 4px; font-size: 0.75rem; font-family: 'Courier New', monospace;
+    color: #a0f0a0;
+  }
+
+  /* hooks section */
+  .hooks { margin-top: 30px; }
+  .hooks h3 { font-size: 0.9rem; font-weight: 700; color: var(--muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .hook-grid { display: flex; gap: 10px; flex-wrap: wrap; }
+  .hook-chip {
+    background: rgba(168,85,247,0.12); border: 1px solid #a855f7;
+    border-radius: 6px; padding: 6px 12px; font-size: 0.75rem;
+    color: #d8b4fe; font-family: 'Courier New', monospace;
+  }
+  .hook-chip span { display: block; font-size: 0.65rem; color: var(--muted); margin-top: 2px; font-family: sans-serif; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="badge">Prism</div>
+  <h1>CLI Command Schematics</h1>
+  <span>Files · Programs · Skills — visual reference</span>
+</header>
+
+<div class="layout">
+<nav>
+  <div class="section-label">Commands</div>
+  <button class="active" onclick="show('init')">prism init</button>
+  <button onclick="show('run')">prism run</button>
+  <button onclick="show('build')">prism build</button>
+  <button onclick="show('status')">prism status</button>
+  <button onclick="show('dev')">prism dev</button>
+  <button onclick="show('target')">prism target</button>
+  <button onclick="show('setup')">prism setup</button>
+  <button onclick="show('update')">prism update</button>
+  <div class="section-label" style="margin-top:16px;">Skills</div>
+  <button onclick="show('skill-new')">/prism-new</button>
+  <button onclick="show('skill-build')">/prism-build</button>
+  <button onclick="show('skill-verify')">/prism-verify</button>
+  <button onclick="show('skill-migrate')">/prism-migrate</button>
+  <button onclick="show('skill-feedback')">/prism-feedback</button>
+</nav>
+
+<main>
+
+<!-- ═══════════════════ LEGEND (always visible) ═══════════════════ -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--clr-file-in);border-color:var(--brd-file-in)"></div>Input file</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--clr-file-out);border-color:var(--brd-file-out)"></div>Output / created file</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--clr-program);border-color:var(--brd-program)"></div>External program</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--clr-skill);border-color:var(--brd-skill)"></div>Claude skill</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--clr-config);border-color:var(--brd-config)"></div>Config file</div>
+</div>
+
+<!-- ═══════════════════ prism init ═══════════════════ -->
+<div id="pane-init" class="pane">
+  <div class="cmd-header">
+    <h2>prism init</h2>
+    <p>Create a new ASTRA analysis project with full agentic scaffolding.</p>
+    <div class="cmd-sig">prism init [DIRECTORY] [--no-git] [--no-venv] [--target TARGET] [--permissions TIER] [--sub-analysis PATH]</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads / Inputs</div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">~/.prism/config.yaml</span><span class="node-detail">default_target, permission_tier</span></div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">~/.prism/targets/&lt;name&gt;.yaml</span><span class="node-detail">target definition (if --target given)</span></div>
+      <div class="node file-in"><span class="node-label">Optional</span><span class="node-name">existing project code</span><span class="node-detail">--existing-project mode</span></div>
+      <div class="node file-in"><span class="node-label">Optional</span><span class="node-name">parent astra.yaml</span><span class="node-detail">--sub-analysis mode</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">External Programs</div>
+      <div class="node program"><span class="node-label">Git</span><span class="node-name">git init</span><span class="node-detail">initialise repo (unless --no-git)</span></div>
+      <div class="node program"><span class="node-label">Git</span><span class="node-name">git add . &amp;&amp; git commit</span><span class="node-detail">initial commit</span></div>
+      <div class="node program"><span class="node-label">Python</span><span class="node-name">python -m venv .venv</span><span class="node-detail">create project venv</span></div>
+      <div class="node program"><span class="node-label">pip</span><span class="node-name">pip install lightcone-prism</span><span class="node-detail">install into project venv</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Files Created</div>
+      <div class="node file-out"><span class="node-label">Spec</span><span class="node-name">astra.yaml</span><span class="node-detail">analysis specification skeleton</span></div>
+      <div class="node file-out"><span class="node-label">Universe</span><span class="node-name">universes/baseline.yaml</span></div>
+      <div class="node file-out"><span class="node-label">Container</span><span class="node-name">Containerfile</span></div>
+      <div class="node file-out"><span class="node-label">Deps</span><span class="node-name">requirements.txt</span></div>
+      <div class="node file-out"><span class="node-label">Dirs</span><span class="node-name">scripts/ results/</span></div>
+      <div class="node file-out"><span class="node-label">Prism</span><span class="node-name">.prism/dagster.yaml</span></div>
+      <div class="node file-out"><span class="node-label">Prism</span><span class="node-name">.prism/prism.yaml</span></div>
+      <div class="node file-out"><span class="node-label">Claude</span><span class="node-name">.claude/settings.json</span><span class="node-detail">permissions &amp; hooks config</span></div>
+      <div class="node file-out"><span class="node-label">Claude</span><span class="node-name">.claude/scripts/*</span><span class="node-detail">activate-venv, session-start, validate-on-save, check-prism-run</span></div>
+      <div class="node file-out"><span class="node-label">Claude</span><span class="node-name">.claude/hooks/*</span><span class="node-detail">langfuse hooks (py)</span></div>
+      <div class="node file-out"><span class="node-label">Claude</span><span class="node-name">.claude/skills/*</span><span class="node-detail">prism-new, prism-build, prism-migrate, prism-verify, prism-feedback</span></div>
+      <div class="node file-out"><span class="node-label">Claude</span><span class="node-name">.claude/agents/prism-extractor.md</span></div>
+      <div class="node file-out"><span class="node-label">Claude</span><span class="node-name">.claude/guides/*.md</span><span class="node-detail">astra-reference, prism-reference</span></div>
+      <div class="node file-out"><span class="node-label">VCS</span><span class="node-name">.gitignore</span></div>
+      <div class="node file-out"><span class="node-label">Venv</span><span class="node-name">.venv/</span></div>
+    </div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Skills Deployed</div>
+      <div class="node skill"><span class="node-label">Skill</span><span class="node-name">/prism-new</span><span class="node-detail">available after init</span></div>
+      <div class="node skill"><span class="node-label">Skill</span><span class="node-name">/prism-build</span></div>
+      <div class="node skill"><span class="node-label">Skill</span><span class="node-name">/prism-migrate</span></div>
+      <div class="node skill"><span class="node-label">Skill</span><span class="node-name">/prism-verify</span></div>
+      <div class="node skill"><span class="node-label">Skill</span><span class="node-name">/prism-feedback</span></div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <h3>Execution Steps</h3>
+    <div class="step-list">
+      <div class="step"><div class="step-num">1</div><div class="step-text">Resolve config from <code>~/.prism/config.yaml</code>; prompt for permission tier if missing.</div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-text">Create project directory structure: <code>scripts/</code>, <code>results/</code>, <code>universes/</code>.</div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-text">Write <code>astra.yaml</code> (boilerplate or migrated), <code>universes/baseline.yaml</code>, <code>Containerfile</code>, <code>requirements.txt</code>.</div></div>
+      <div class="step"><div class="step-num">4</div><div class="step-text">Write <code>.prism/dagster.yaml</code> (SQLite at <code>results/.dagster/</code>) and <code>.prism/prism.yaml</code> (target key).</div></div>
+      <div class="step"><div class="step-num">5</div><div class="step-text">Copy bundled plugin files from wheel into <code>.claude/</code> — scripts, hooks, skills, agents, guides.</div></div>
+      <div class="step"><div class="step-num">6</div><div class="step-text">Write <code>.claude/settings.json</code> with permission tier allow/deny lists (+ site-specific denies for HPC).</div></div>
+      <div class="step"><div class="step-num">7</div><div class="step-text"><code>git init</code> → <code>git add .</code> → initial commit (unless <code>--no-git</code>).</div></div>
+      <div class="step"><div class="step-num">8</div><div class="step-text"><code>python -m venv .venv</code> → <code>pip install lightcone-prism</code> (unless <code>--no-venv</code>).</div></div>
+      <div class="step"><div class="step-num">9</div><div class="step-text">If <code>--sub-analysis</code>: wire new sub-analysis into parent <code>astra.yaml</code> and all universe files.</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ prism run ═══════════════════ -->
+<div id="pane-run" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>prism run</h2>
+    <p>Materialise ASTRA outputs via Dagster — supports Docker, local, and SLURM backends.</p>
+    <div class="cmd-sig">prism run [OUTPUTS…] [--universe/-u UNIVERSE] [--target/-t TARGET] [--no-build]</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads / Inputs</div>
+      <div class="node file-in"><span class="node-label">Spec</span><span class="node-name">astra.yaml</span><span class="node-detail">outputs, recipes, containers</span></div>
+      <div class="node file-in"><span class="node-label">Universe</span><span class="node-name">universes/&lt;u&gt;.yaml</span><span class="node-detail">decision parameters</span></div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">.prism/prism.yaml</span><span class="node-detail">project target reference</span></div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">~/.prism/targets/&lt;t&gt;.yaml</span><span class="node-detail">backend, runtime, SLURM params</span></div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">.prism/dagster.yaml</span><span class="node-detail">Dagster instance (SQLite)</span></div>
+      <div class="node file-in"><span class="node-label">Code</span><span class="node-name">scripts/</span><span class="node-detail">recipe commands</span></div>
+      <div class="node file-in"><span class="node-label">Deps</span><span class="node-name">requirements*.txt</span><span class="node-detail">installed into venv if changed</span></div>
+      <div class="node file-in"><span class="node-label">Container</span><span class="node-name">Containerfile</span><span class="node-detail">built if not yet cached</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">External Programs</div>
+      <div class="node program"><span class="node-label">Docker/Podman</span><span class="node-name">docker build / podman build</span><span class="node-detail">build image → prism-&lt;name&gt;-&lt;hash&gt;</span></div>
+      <div class="node program"><span class="node-label">Docker/Podman</span><span class="node-name">docker run --rm -v &lt;proj&gt;:/workspace</span><span class="node-detail">execute recipe in container</span></div>
+      <div class="node program"><span class="node-label">podman-hpc</span><span class="node-name">podman-hpc build / migrate</span><span class="node-detail">NERSC / HPC container builds</span></div>
+      <div class="node program"><span class="node-label">SLURM batch</span><span class="node-name">sbatch &lt;script.sh&gt;</span><span class="node-detail">submit job; returns job ID</span></div>
+      <div class="node program"><span class="node-label">SLURM poll</span><span class="node-name">sacct -j &lt;jobid&gt;</span><span class="node-detail">primary; squeue as fallback</span></div>
+      <div class="node program"><span class="node-label">SLURM interactive</span><span class="node-name">srun bash -c &lt;cmd&gt;</span><span class="node-detail">inside salloc session</span></div>
+      <div class="node program"><span class="node-label">pip</span><span class="node-name">pip install -r requirements*.txt</span><span class="node-detail">venv backend; only if hash changed</span></div>
+      <div class="node program"><span class="node-label">Dagster</span><span class="node-name">dagster.materialize()</span><span class="node-detail">orchestrate asset graph in-process</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Files Created</div>
+      <div class="node file-out"><span class="node-label">Results</span><span class="node-name">results/&lt;universe&gt;/&lt;output&gt;/</span><span class="node-detail">materialized output directories</span></div>
+      <div class="node file-out"><span class="node-label">Dagster DB</span><span class="node-name">results/.dagster/</span><span class="node-detail">SQLite materialisation events</span></div>
+      <div class="node file-out"><span class="node-label">SLURM</span><span class="node-name">results/.slurm/&lt;output&gt;_&lt;u&gt;.sh</span><span class="node-detail">generated sbatch script</span></div>
+      <div class="node file-out"><span class="node-label">SLURM logs</span><span class="node-name">results/.slurm/&lt;output&gt;_&lt;u&gt;.{out,err}</span><span class="node-detail">job stdout/stderr</span></div>
+      <div class="node file-out"><span class="node-label">Symlinks</span><span class="node-name">data/&lt;input_id&gt; → external source</span><span class="node-detail">for external inputs (SLURM)</span></div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <h3>Execution Steps</h3>
+    <div class="step-list">
+      <div class="step"><div class="step-num">1</div><div class="step-text">Load <code>astra.yaml</code>, recursively resolve sub-analysis tree.</div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-text">Determine target: <code>--target</code> flag → <code>.prism/prism.yaml</code> → <code>~/.prism/config.yaml</code> → <code>"local"</code>.</div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-text">Unless <code>--no-build</code>: auto-build all container images (docker/podman/podman-hpc depending on target backend).</div></div>
+      <div class="step"><div class="step-num">4</div><div class="step-text">Create <code>ASTRAContainerRunner</code> with resolved backend + target config.</div></div>
+      <div class="step"><div class="step-num">5</div><div class="step-text">Build Dagster <code>Definitions</code> from <code>build_definitions()</code>: one asset per output, deps from <code>recipe.inputs</code>.</div></div>
+      <div class="step"><div class="step-num">6</div><div class="step-text">Filter to requested outputs (if any); resolve topological order.</div></div>
+      <div class="step"><div class="step-num">7</div><div class="step-text">Call <code>dagster.materialize(assets, resources=...)</code> — runner dispatches each asset to its backend.</div></div>
+      <div class="step"><div class="step-num">8</div><div class="step-text"><strong>Docker/local backend:</strong> inject universe decision params as <code>--key value</code> CLI args, run recipe command.</div></div>
+      <div class="step"><div class="step-num">9</div><div class="step-text"><strong>SLURM batch backend:</strong> generate sbatch script → <code>sbatch</code> → poll <code>sacct</code> until COMPLETED/FAILED.</div></div>
+      <div class="step"><div class="step-num">10</div><div class="step-text">On Docker failure: fall back to local execution with a warning.</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ prism build ═══════════════════ -->
+<div id="pane-build" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>prism build</h2>
+    <p>Build (or migrate) all container images declared in astra.yaml.</p>
+    <div class="cmd-sig">prism build [--force] [--runtime docker|podman|podman-hpc] [--dry-run]</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads / Inputs</div>
+      <div class="node file-in"><span class="node-label">Spec</span><span class="node-name">astra.yaml</span><span class="node-detail">all container: fields (analysis + recipe level)</span></div>
+      <div class="node file-in"><span class="node-label">Container</span><span class="node-name">Containerfile (or path)</span><span class="node-detail">built if it's a file path</span></div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">.prism/prism.yaml</span><span class="node-detail">determines runtime (SLURM → podman-hpc)</span></div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">~/.prism/targets/&lt;t&gt;.yaml</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">External Programs</div>
+      <div class="node program"><span class="node-label">Docker/Podman</span><span class="node-name">docker build -t &lt;tag&gt; -f &lt;file&gt; &lt;ctx&gt;</span><span class="node-detail">local target</span></div>
+      <div class="node program"><span class="node-label">podman-hpc</span><span class="node-name">podman-hpc build -t &lt;tag&gt; -f &lt;file&gt;</span><span class="node-detail">HPC / SLURM target</span></div>
+      <div class="node program"><span class="node-label">podman-hpc</span><span class="node-name">podman-hpc migrate &lt;tag&gt;</span><span class="node-detail">push image to compute nodes</span></div>
+      <div class="node program"><span class="node-label">Inspect</span><span class="node-name">docker image inspect &lt;tag&gt;</span><span class="node-detail">check if already built (skip if exists &amp; no --force)</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Output</div>
+      <div class="node file-out"><span class="node-label">Image tag</span><span class="node-name">prism-&lt;project&gt;-&lt;12-char-sha256&gt;</span><span class="node-detail">content-addressed: SHA256(Containerfile + dep files)</span></div>
+      <div class="node file-out"><span class="node-label">HPC store</span><span class="node-name">podman-hpc image store</span><span class="node-detail">migrated to compute nodes</span></div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <h3>Execution Steps</h3>
+    <div class="step-list">
+      <div class="step"><div class="step-num">1</div><div class="step-text">Load <code>astra.yaml</code>, collect all unique <code>container:</code> values (analysis-level + per-recipe overrides).</div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-text">Auto-detect runtime: SLURM target → <code>podman-hpc</code>; otherwise detect <code>docker</code> or <code>podman</code> locally.</div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-text">For each container spec: if it's a file path → build; if it's an image name + SLURM → <code>podman-hpc migrate</code>.</div></div>
+      <div class="step"><div class="step-num">4</div><div class="step-text">Compute content-addressed tag: <code>SHA256(Containerfile + DEPENDENCY_FILES)</code> → <code>prism-&lt;name&gt;-&lt;hash[:12]&gt;</code>.</div></div>
+      <div class="step"><div class="step-num">5</div><div class="step-text">Skip build if image already exists (unless <code>--force</code>).</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ prism status ═══════════════════ -->
+<div id="pane-status" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>prism status</h2>
+    <p>Show materialisation status of all ASTRA outputs. Read-only — no files created.</p>
+    <div class="cmd-sig">prism status [--universe/-u UNIVERSE]</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads / Inputs</div>
+      <div class="node file-in"><span class="node-label">Spec</span><span class="node-name">astra.yaml</span><span class="node-detail">output declarations + sub-analyses</span></div>
+      <div class="node file-in"><span class="node-label">Universe</span><span class="node-name">universes/&lt;u&gt;.yaml</span><span class="node-detail">optional filter</span></div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">.prism/dagster.yaml</span><span class="node-detail">Dagster instance path</span></div>
+      <div class="node file-in"><span class="node-label">Dagster DB</span><span class="node-name">results/.dagster/ (SQLite)</span><span class="node-detail">latest materialisation events</span></div>
+      <div class="node file-in"><span class="node-label">Filesystem</span><span class="node-name">results/&lt;universe&gt;/&lt;output&gt;/</span><span class="node-detail">physical presence check</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Output (terminal)</div>
+      <div class="node file-out"><span class="node-label">ok</span><span class="node-name">Materialised</span><span class="node-detail">recipe exists + Dagster event confirms run</span></div>
+      <div class="node file-out"><span class="node-label">pending</span><span class="node-name">Has recipe, not run</span></div>
+      <div class="node file-out"><span class="node-label">alias</span><span class="node-name">Root output via from: ref</span></div>
+      <div class="node file-out"><span class="node-label">no recipe</span><span class="node-name">Declared, no recipe</span></div>
+    </div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">No Programs Invoked</div>
+      <div class="node program" style="opacity:0.4"><span class="node-label">n/a</span><span class="node-name">Pure read-only query</span><span class="node-detail">Only Dagster Python API used in-process</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ prism dev ═══════════════════ -->
+<div id="pane-dev" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>prism dev</h2>
+    <p>Launch Dagster webserver UI for asset graph visualisation and run history.</p>
+    <div class="cmd-sig">prism dev [--port/-p PORT] [--universe/-u UNIVERSE]</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads / Inputs</div>
+      <div class="node file-in"><span class="node-label">Spec</span><span class="node-name">astra.yaml</span></div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">.prism/dagster.yaml</span><span class="node-detail">sets DAGSTER_HOME</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Files Created (temp)</div>
+      <div class="node file-out"><span class="node-label">Temp</span><span class="node-name">/tmp/prism_defs_*.py</span><span class="node-detail">ephemeral Dagster definitions file; deleted on exit</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">External Programs</div>
+      <div class="node program"><span class="node-label">Dagster</span><span class="node-name">dagster-webserver</span><span class="node-detail">-f &lt;temp_defs.py&gt; -h 0.0.0.0 -p &lt;port&gt;</span></div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <h3>Execution Steps</h3>
+    <div class="step-list">
+      <div class="step"><div class="step-num">1</div><div class="step-text">Load <code>astra.yaml</code> and determine universe (default: baseline).</div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-text">Write ephemeral <code>/tmp/prism_defs_*.py</code> that calls <code>build_definitions()</code> with <code>no_build=True</code>.</div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-text">Set <code>DAGSTER_HOME</code> to <code>.prism/</code> (falls back to project root if <code>.prism/dagster.yaml</code> absent).</div></div>
+      <div class="step"><div class="step-num">4</div><div class="step-text">Launch <code>dagster-webserver -f &lt;file&gt; -h 0.0.0.0 -p &lt;port&gt;</code>; block until user Ctrl-C.</div></div>
+      <div class="step"><div class="step-num">5</div><div class="step-text">On exit (normal or error): delete temp file.</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ prism target ═══════════════════ -->
+<div id="pane-target" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>prism target</h2>
+    <p>Manage execution targets (local, Docker, SLURM) at project and user level.</p>
+    <div class="cmd-sig">prism target [--list] [--set NAME] [--show NAME] | prism target add | prism target edit NAME</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads</div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">~/.prism/targets/*.yaml</span><span class="node-detail">all global targets</span></div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">.prism/prism.yaml</span><span class="node-detail">current project target key</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Files Created / Modified</div>
+      <div class="node file-out"><span class="node-label">Global</span><span class="node-name">~/.prism/targets/&lt;name&gt;.yaml</span><span class="node-detail">target add / edit subcommand</span></div>
+      <div class="node file-out"><span class="node-label">Project</span><span class="node-name">.prism/prism.yaml</span><span class="node-detail">--set updates target key</span></div>
+    </div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">No External Programs</div>
+      <div class="node program" style="opacity:0.4"><span class="node-label">n/a</span><span class="node-name">Config management only</span></div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <h3>Target Config Schema (written to ~/.prism/targets/)</h3>
+    <div class="step-list">
+      <div class="step"><div class="step-num">·</div><div class="step-text"><code>backend</code>: slurm | docker | local | venv</div></div>
+      <div class="step"><div class="step-num">·</div><div class="step-text"><code>connection</code>: hostname, username (for remote SLURM)</div></div>
+      <div class="step"><div class="step-num">·</div><div class="step-text"><code>account</code>: HPC allocation ID (site-specific suffix added automatically, e.g. <code>_g</code> for GPU on Perlmutter)</div></div>
+      <div class="step"><div class="step-num">·</div><div class="step-text"><code>container_runtime</code>: docker | podman | podman-hpc | singularity</div></div>
+      <div class="step"><div class="step-num">·</div><div class="step-text"><code>scheduler</code>: site key, container_flags, extra_slurm_args</div></div>
+      <div class="step"><div class="step-num">·</div><div class="step-text"><code>max_nodes / max_walltime_minutes / max_concurrent_jobs</code></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ prism setup ═══════════════════ -->
+<div id="pane-setup" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>prism setup</h2>
+    <p>Global interactive wizard: configure targets, permission tier, extraction model.</p>
+    <div class="cmd-sig">prism setup [--list] [--show NAME] [--default NAME]</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads</div>
+      <div class="node config"><span class="node-label">Config</span><span class="node-name">~/.prism/config.yaml</span><span class="node-detail">existing settings (if any)</span></div>
+      <div class="node config"><span class="node-label">Site registry</span><span class="node-name">site_registry.py (bundled)</span><span class="node-detail">Perlmutter defaults, hostname patterns</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Files Created / Modified</div>
+      <div class="node file-out"><span class="node-label">Global config</span><span class="node-name">~/.prism/config.yaml</span><span class="node-detail">default_target, default_permission_tier, extraction_model</span></div>
+      <div class="node file-out"><span class="node-label">Target</span><span class="node-name">~/.prism/targets/&lt;name&gt;.yaml</span><span class="node-detail">for each configured target</span></div>
+    </div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Site Registry Defaults</div>
+      <div class="node config"><span class="node-label">Perlmutter</span><span class="node-name">NERSC site</span><span class="node-detail">node types: gpu, gpu_hbm80, cpu; QOS: regular, debug, shared, preempt</span></div>
+      <div class="node config"><span class="node-label">Local</span><span class="node-name">No remote config</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ prism update ═══════════════════ -->
+<div id="pane-update" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>prism update</h2>
+    <p>Upgrade lightcone-prism and optionally sync plugin files to existing projects.</p>
+    <div class="cmd-sig">prism update [--sync PROJECT_DIR…]</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads</div>
+      <div class="node file-in"><span class="node-label">Wheel</span><span class="node-name">lightcone-prism (PyPI)</span><span class="node-detail">latest bundled plugin files</span></div>
+      <div class="node file-in"><span class="node-label">Projects</span><span class="node-name">&lt;project&gt;/.claude/</span><span class="node-detail">existing managed sections</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">External Programs</div>
+      <div class="node program"><span class="node-label">pip</span><span class="node-name">pip install --upgrade lightcone-prism</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Files Synced (per project)</div>
+      <div class="node file-out"><span class="node-label">Scripts</span><span class="node-name">.claude/scripts/*</span><span class="node-detail">full copy from wheel</span></div>
+      <div class="node file-out"><span class="node-label">Hooks</span><span class="node-name">.claude/hooks/*</span></div>
+      <div class="node file-out"><span class="node-label">Skills</span><span class="node-name">.claude/skills/*</span></div>
+      <div class="node file-out"><span class="node-label">Agents</span><span class="node-name">.claude/agents/*</span><span class="node-detail">+ extraction model update in prism-extractor.md</span></div>
+      <div class="node file-out"><span class="node-label">Guides</span><span class="node-name">.claude/guides/*</span></div>
+      <div class="node file-out"><span class="node-label">CLAUDE.md</span><span class="node-name">CLAUDE.md</span><span class="node-detail">managed section updated; user section preserved</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ /prism-new ═══════════════════ -->
+<div id="pane-skill-new" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>/prism-new</h2>
+    <p>Interactive specification agent — interview → literature → astra.yaml.</p>
+    <div class="cmd-sig">Trigger: "new analysis", "scope this", "research question", "start analysis"</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads / Inputs</div>
+      <div class="node file-in"><span class="node-label">Spec</span><span class="node-name">astra.yaml (existing)</span><span class="node-detail">if updating an existing spec</span></div>
+      <div class="node file-in"><span class="node-label">Web</span><span class="node-name">WebSearch + WebFetch</span><span class="node-detail">paper collection, prior findings</span></div>
+      <div class="node file-in"><span class="node-label">User</span><span class="node-name">AskUserQuestion</span><span class="node-detail">research question, decisions, paper selection</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Subagents Spawned</div>
+      <div class="node skill"><span class="node-label">Subagent</span><span class="node-name">prism-extractor</span><span class="node-detail">one per paper; extracts prior insights &amp; decisions</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Programs Invoked</div>
+      <div class="node program"><span class="node-label">ASTRA CLI</span><span class="node-name">astra validate astra.yaml</span><span class="node-detail">spec validation</span></div>
+      <div class="node program"><span class="node-label">ASTRA CLI</span><span class="node-name">astra universe generate -n baseline</span><span class="node-detail">generate baseline universe</span></div>
+      <div class="node program"><span class="node-label">ASTRA CLI</span><span class="node-name">astra info --decisions</span><span class="node-detail">inspect extracted decisions</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Files Written</div>
+      <div class="node file-out"><span class="node-label">Spec</span><span class="node-name">astra.yaml</span><span class="node-detail">incremental writes; name, description, inputs, outputs, recipes, decisions, prior</span></div>
+      <div class="node file-out"><span class="node-label">Universe</span><span class="node-name">universes/baseline.yaml</span><span class="node-detail">generated decision defaults</span></div>
+      <div class="node file-out"><span class="node-label">Project</span><span class="node-name">CLAUDE.md</span><span class="node-detail">project context populated</span></div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <h3>Skill Phases</h3>
+    <div class="step-list">
+      <div class="step"><div class="step-num">1</div><div class="step-text"><strong>Research Question:</strong> Interview user; write name/description to astra.yaml.</div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-text"><strong>Analysis Structure:</strong> Gather inputs/outputs; flag sub-analysis candidates.</div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-text"><strong>Deep Dive per section:</strong> WebSearch for papers → user selects → spawn <code>prism-extractor</code> subagent per paper → identify decisions.</div></div>
+      <div class="step"><div class="step-num">4</div><div class="step-text"><strong>Checkpoint:</strong> Review full spec with user; iterate if needed.</div></div>
+      <div class="step"><div class="step-num">5</div><div class="step-text"><strong>Finalize:</strong> <code>astra validate</code> → <code>astra universe generate</code> → populate CLAUDE.md.</div></div>
+      <div class="step"><div class="step-num">6</div><div class="step-text"><strong>Done:</strong> Summary table; suggest <code>/prism-build</code> or <code>/prism-verify</code>.</div></div>
+    </div>
+  </div>
+
+  <div class="hooks">
+    <h3>Hooks Active During Skill</h3>
+    <div class="hook-grid">
+      <div class="hook-chip">validate-on-save.sh<span>PostToolUse Write|Edit → auto-validate astra.yaml</span></div>
+      <div class="hook-chip">langfuse_hook.py<span>Stop → emit full session trace to Langfuse</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ /prism-build ═══════════════════ -->
+<div id="pane-skill-build" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>/prism-build</h2>
+    <p>Autonomous implementation loop — builds scripts until all outputs materialise.</p>
+    <div class="cmd-sig">Trigger: "build", "implement", "start building"  |  /prism-build [DESC] [--universe NAME] [--max-iterations N]</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads / Inputs</div>
+      <div class="node file-in"><span class="node-label">Spec</span><span class="node-name">astra.yaml</span></div>
+      <div class="node file-in"><span class="node-label">State</span><span class="node-name">.claude/ralph-loop.local.md</span><span class="node-detail">resume interrupted loop</span></div>
+      <div class="node file-in"><span class="node-label">Plans</span><span class="node-name">.prism/plans/build-plan-*.md</span><span class="node-detail">approved implementation plan</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Programs Invoked (per iteration)</div>
+      <div class="node program"><span class="node-label">Prism</span><span class="node-name">prism run --universe &lt;u&gt;</span><span class="node-detail">attempt materialisation</span></div>
+      <div class="node program"><span class="node-label">Prism</span><span class="node-name">prism status</span><span class="node-detail">check what's done</span></div>
+      <div class="node program"><span class="node-label">ASTRA</span><span class="node-name">astra validate astra.yaml</span></div>
+      <div class="node program"><span class="node-label">Git</span><span class="node-name">git add . &amp;&amp; git commit</span><span class="node-detail">per iteration commit</span></div>
+      <div class="node program"><span class="node-label">Shell</span><span class="node-name">bash .claude/skills/prism-build/scripts/setup-prism-build.sh</span><span class="node-detail">--validate / --activate</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Files Created</div>
+      <div class="node file-out"><span class="node-label">Scripts</span><span class="node-name">scripts/&lt;output&gt;.py|sh</span><span class="node-detail">implementation scripts per output</span></div>
+      <div class="node file-out"><span class="node-label">Plan</span><span class="node-name">.prism/plans/build-plan-&lt;u&gt;.md</span></div>
+      <div class="node file-out"><span class="node-label">Loop state</span><span class="node-name">.claude/ralph-loop.local.md</span><span class="node-detail">ralph-wiggum agentic loop state</span></div>
+      <div class="node file-out"><span class="node-label">Results</span><span class="node-name">results/&lt;universe&gt;/&lt;output&gt;/</span><span class="node-detail">via prism run</span></div>
+      <div class="node file-out"><span class="node-label">Spec</span><span class="node-name">astra.yaml (updated)</span><span class="node-detail">recipe paths, containers added</span></div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <h3>Loop Mechanics</h3>
+    <div class="step-list">
+      <div class="step"><div class="step-num">1</div><div class="step-text"><strong>Check state:</strong> if <code>.claude/ralph-loop.local.md</code> exists, offer resume or fresh start.</div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-text"><strong>Plan:</strong> create <code>.prism/plans/build-plan-&lt;universe&gt;.md</code>; user approves before loop starts.</div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-text"><strong>Activate:</strong> <code>setup-prism-build.sh --activate</code> writes ralph-loop state file; Stop hook is now armed.</div></div>
+      <div class="step"><div class="step-num">4</div><div class="step-text"><strong>Each iteration:</strong> Survey → Decide → Write code → <code>prism run</code> → <code>git commit</code>.</div></div>
+      <div class="step"><div class="step-num">5</div><div class="step-text"><strong>Stop hook re-injection:</strong> PostToolUse Stop hook reads ralph-loop state and re-injects prompt for next iteration automatically.</div></div>
+      <div class="step"><div class="step-num">6</div><div class="step-text"><strong>Exit:</strong> emit <code>&lt;promise&gt;BUILD_COMPLETE&lt;/promise&gt;</code>; Stop hook deactivates loop; state file removed.</div></div>
+    </div>
+  </div>
+
+  <div class="hooks">
+    <h3>Hooks Active During Skill</h3>
+    <div class="hook-grid">
+      <div class="hook-chip">validate-on-save.sh<span>PostToolUse Write|Edit → auto-validate ASTRA files</span></div>
+      <div class="hook-chip">check-prism-run.sh<span>PostToolUse Bash → monitor prism run output</span></div>
+      <div class="hook-chip">langfuse_git_commit_hook.py<span>PostToolUse Bash → emit commit events to Langfuse</span></div>
+      <div class="hook-chip">Stop hook (ralph-wiggum)<span>re-injects build prompt; drives the loop</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ /prism-verify ═══════════════════ -->
+<div id="pane-skill-verify" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>/prism-verify</h2>
+    <p>Verification checklist — spec, materialisation, decision alignment, result files.</p>
+    <div class="cmd-sig">Trigger: "verify", "check", "validation"</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Programs Invoked</div>
+      <div class="node program"><span class="node-label">ASTRA</span><span class="node-name">astra validate astra.yaml</span><span class="node-detail">schema + evidence verification</span></div>
+      <div class="node program"><span class="node-label">Prism</span><span class="node-name">prism status --universe &lt;u&gt;</span><span class="node-detail">materialisation state</span></div>
+      <div class="node program"><span class="node-label">ASTRA</span><span class="node-name">astra info --decisions</span><span class="node-detail">list all declared decisions</span></div>
+      <div class="node program"><span class="node-label">Shell</span><span class="node-name">grep -r add_argument scripts/</span><span class="node-detail">decision-code alignment check</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Checks Performed</div>
+      <div class="node file-out"><span class="node-label">✓/✗</span><span class="node-name">Spec validation</span></div>
+      <div class="node file-out"><span class="node-label">✓/✗</span><span class="node-name">All outputs materialised</span></div>
+      <div class="node file-out"><span class="node-label">✓/✗</span><span class="node-name">Decisions ↔ CLI args aligned</span></div>
+      <div class="node file-out"><span class="node-label">✓/✗</span><span class="node-name">results/ dirs exist and non-empty</span></div>
+    </div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Files Written</div>
+      <div class="node file-out" style="opacity:0.5"><span class="node-label">n/a</span><span class="node-name">Read-only</span><span class="node-detail">Output is a terminal report table</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ /prism-migrate ═══════════════════ -->
+<div id="pane-skill-migrate" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>/prism-migrate</h2>
+    <p>Migrate an existing codebase into an ASTRA-compliant project.</p>
+    <div class="cmd-sig">Trigger: "migrate", "convert", "existing project"</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Reads / Inputs</div>
+      <div class="node file-in"><span class="node-label">Code</span><span class="node-name">existing scripts/*</span></div>
+      <div class="node file-in"><span class="node-label">Deps</span><span class="node-name">requirements.txt / environment.yaml</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Subagents Spawned</div>
+      <div class="node skill"><span class="node-label">Subagent</span><span class="node-name">Explore</span><span class="node-detail">scans codebase structure</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Programs Invoked</div>
+      <div class="node program"><span class="node-label">ASTRA</span><span class="node-name">astra validate astra.yaml</span></div>
+      <div class="node program"><span class="node-label">Prism</span><span class="node-name">prism run --universe baseline</span><span class="node-detail">verify migration works</span></div>
+      <div class="node program"><span class="node-label">Git</span><span class="node-name">git diff / git commit</span></div>
+    </div>
+
+    <div class="arrow-col">→</div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Files Created / Modified</div>
+      <div class="node file-out"><span class="node-label">Spec</span><span class="node-name">astra.yaml</span><span class="node-detail">generated from codebase scan</span></div>
+      <div class="node file-out"><span class="node-label">Universe</span><span class="node-name">universes/baseline.yaml</span></div>
+      <div class="node file-out"><span class="node-label">Scripts</span><span class="node-name">scripts/* (modified)</span><span class="node-detail">argparse added; output paths updated to results/&lt;u&gt;/&lt;output&gt;/</span></div>
+      <div class="node file-out"><span class="node-label">Deps</span><span class="node-name">requirements.txt (updated)</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ /prism-feedback ═══════════════════ -->
+<div id="pane-skill-feedback" class="pane" style="display:none">
+  <div class="cmd-header">
+    <h2>/prism-feedback</h2>
+    <p>File a GitHub issue against ASTRA or Prism from within the project.</p>
+    <div class="cmd-sig">/prism-feedback &lt;description&gt;</div>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <div class="flow-col-title">Programs Invoked</div>
+      <div class="node program"><span class="node-label">GitHub CLI</span><span class="node-name">gh auth status</span><span class="node-detail">verify authentication</span></div>
+      <div class="node program"><span class="node-label">Python</span><span class="node-name">python -c "import astra; print(astra.__version__)"</span><span class="node-detail">collect version info</span></div>
+      <div class="node program"><span class="node-label">GitHub CLI</span><span class="node-name">gh issue create --repo LightconeResearch/&lt;repo&gt;</span><span class="node-detail">--label beta-feedback --body "..."</span></div>
+    </div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Decision</div>
+      <div class="node config"><span class="node-label">Triage</span><span class="node-name">ASTRA vs Prism repo</span><span class="node-detail">spec/validation issues → ASTRA; execution/CLI → Prism</span></div>
+    </div>
+
+    <div class="flow-col">
+      <div class="flow-col-title">Output</div>
+      <div class="node file-out"><span class="node-label">GitHub</span><span class="node-name">Issue created on LightconeResearch/ASTRA or /Prism</span><span class="node-detail">labelled beta-feedback</span></div>
+    </div>
+  </div>
+</div>
+
+</main>
+</div>
+
+<script>
+function show(id) {
+  document.querySelectorAll('.pane').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  const pane = document.getElementById('pane-' + id);
+  if (pane) pane.style.display = 'block';
+  // highlight nav button
+  const btns = document.querySelectorAll('nav button');
+  btns.forEach(b => {
+    if (b.getAttribute('onclick') === `show('${id}')`) b.classList.add('active');
+  });
+}
+</script>
+</body>
+</html>
