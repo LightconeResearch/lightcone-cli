@@ -29,6 +29,7 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
+          activate-environment: true
 
       - name: Install dependencies
         run: uv sync --extra eval
