@@ -20,7 +20,7 @@ dependencies = [
     "langfuse>=2.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 eval = [
     "anthropic>=0.40",
     "daytona-sdk>=0.140",
