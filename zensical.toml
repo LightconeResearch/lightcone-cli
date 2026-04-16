@@ -1,0 +1,73 @@
+[project]
+site_name = "Lightcone Prism — Maintainer Documentation"
+site_description = "Agentic execution layer for ASTRA research pipelines"
+site_author = "Lightcone Research Team"
+repo_url = "https://github.com/LightconeResearch/Prism"
+copyright = "&copy; 2026 Lightcone Research"
+docs_dir = "docs"
+
+nav = [
+  {"Home" = "index.md"},
+  {"Architecture" = "architecture.md"},
+  {"CLI Reference" = [
+    {"Overview" = "cli/index.md"},
+    {"Command Schematics" = "cli/schematics.md"},
+    {"prism init" = "cli/init.md"},
+    {"prism run" = "cli/run.md"},
+    {"prism build" = "cli/build.md"},
+    {"prism status" = "cli/status.md"},
+    {"prism dev" = "cli/dev.md"},
+    {"prism setup" = "cli/setup.md"},
+    {"prism target" = "cli/target.md"},
+    {"prism update" = "cli/update.md"},
+  ]},
+  {"Python API" = [
+    {"Overview" = "api/index.md"},
+    {"cli" = "api/cli.md"},
+    {"container" = "api/container.md"},
+    {"dagster/assets" = "api/assets.md"},
+    {"dagster/runner" = "api/runner.md"},
+    {"dagster/io_manager" = "api/io_manager.md"},
+    {"dagster/status" = "api/status.md"},
+    {"dagster/targets" = "api/targets.md"},
+    {"dagster/site_registry" = "api/site_registry.md"},
+  ]},
+  {"Skills" = [
+    {"Overview" = "skills/index.md"},
+    {"prism-new" = "skills/prism-new.md"},
+    {"prism-build" = "skills/prism-build.md"},
+    {"prism-verify" = "skills/prism-verify.md"},
+    {"prism-migrate" = "skills/prism-migrate.md"},
+    {"prism-feedback" = "skills/prism-feedback.md"},
+    {"Creating Skills" = "skills/authoring.md"},
+  ]},
+  {"Telemetry (Langfuse)" = [
+    {"Overview" = "telemetry/index.md"},
+    {"Hooks Architecture" = "telemetry/hooks.md"},
+    {"Session Lifecycle" = "telemetry/lifecycle.md"},
+    {"Disabling Telemetry" = "telemetry/opt-out.md"},
+  ]},
+  {"HPC & SLURM" = [
+    {"Overview" = "hpc/index.md"},
+    {"Site Registry" = "hpc/site-registry.md"},
+    {"Target Configuration" = "hpc/targets.md"},
+    {"Container Builds" = "hpc/containers.md"},
+  ]},
+  {"Contributing" = [
+    {"Development Setup" = "contributing/setup.md"},
+    {"Adding a Backend" = "contributing/backends.md"},
+    {"Adding an HPC Site" = "contributing/hpc-sites.md"},
+    {"Testing" = "contributing/testing.md"},
+  ]},
+]
+
+[project.theme]
+variant = "modern"
+features = [
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.expand",
+  "navigation.top",
+  "search.highlight",
+  "content.code.copy",
+]

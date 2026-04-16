@@ -2,11 +2,11 @@
 
 Interactive visual reference for all `prism` CLI commands and skills, showing data flow, execution steps, and hook integration points.
 
-[Open full screen](../schematics.html){ .md-button }
+[Open full screen](/cli/schematics.html){ .md-button }
 
 <div style="position: relative; width: 100%; padding-top: 80vh;">
   <iframe
-    src="../schematics.html"
+    src="/cli/schematics.html"
     style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; border-radius: 4px;"
     title="Prism Command Schematics"
   ></iframe>

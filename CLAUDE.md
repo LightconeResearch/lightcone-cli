@@ -55,7 +55,7 @@ just install       # uv sync --all-groups
 
 ## Documentation
 
-Maintainer documentation lives in `docs/` and is built with [MkDocs Material](https://squidfunk.github.io/mkdocs-material/). Configuration is in `mkdocs.yml`.
+Maintainer documentation lives in `docs/` and is built with [Zensical](https://zensical.org). Configuration is in `zensical.toml`.
 
 ```
 docs/
@@ -73,10 +73,8 @@ Dependencies are declared in `pyproject.toml` under `[dependency-groups].docs` a
 
 ```bash
 just docs-serve     # syncs docs group then serves with live reload at http://127.0.0.1:8000
-just docs-strict    # build with --strict (fails on warnings)
+just docs-strict    # build with --strict (accepted flag, not yet enforced by zensical)
 ```
-
-Autodoc (`mkdocstrings`) is commented out in `mkdocs.yml` by default so the docs build without needing the package installed. Uncomment the `mkdocstrings` plugin block to enable it.
 
 ## Architecture & Data Flow
 

@@ -49,23 +49,19 @@ docs-install:
 
 # Build the documentation site (outputs to site/)
 docs: docs-install
-    uv run mkdocs build
+    uv run zensical build
 
-# Build with strict mode (fail on warnings)
+# Build with strict mode (fail on warnings; --strict is accepted but not yet enforced by zensical)
 docs-strict: docs-install
-    uv run mkdocs build --strict
+    uv run zensical build --strict
 
 # Serve documentation with live reload at http://127.0.0.1:8000
 docs-serve: docs-install
-    uv run mkdocs serve
+    uv run zensical serve
 
 # Serve on a custom port
 docs-serve-port port="8080": docs-install
-    uv run mkdocs serve --dev-addr 0.0.0.0:{{ port }}
-
-# Deploy documentation to GitHub Pages
-docs-deploy: docs-install
-    uv run mkdocs gh-deploy --force
+    uv run zensical serve --dev-addr 0.0.0.0:{{ port }}
 
 # Remove the built site directory
 docs-clean:
