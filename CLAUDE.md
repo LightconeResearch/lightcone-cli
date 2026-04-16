@@ -37,11 +37,46 @@ pyproject.toml           # hatchling + hatch-vcs, ASTRA as git dep
 ## Development Commands
 
 ```bash
-pip install -e ".[dev]"
-pytest
-ruff check src/ tests/
-mypy src/
+uv sync --group dev   # installe pytest, ruff, mypy dans l'env uv
+uv run pytest
+uv run ruff check src/ tests/
+uv run mypy src/
 ```
+
+A `justfile` is available for common tasks — run `just` to see all recipes:
+
+```bash
+just test          # run pytest
+just lint          # ruff + mypy
+just docs          # build the documentation site
+just docs-serve    # live preview at http://127.0.0.1:8000
+just install       # uv sync --all-groups
+```
+
+## Documentation
+
+Maintainer documentation lives in `docs/` and is built with [MkDocs Material](https://squidfunk.github.io/mkdocs-material/). Configuration is in `mkdocs.yml`.
+
+```
+docs/
+├── index.md           # Overview, repo structure, key invariants
+├── architecture.md    # Dagster integration, container mgmt, plugin system
+├── cli/               # One page per prism command
+├── api/               # One page per Python module
+├── skills/            # Skill reference + authoring guide
+├── telemetry/         # Langfuse hooks, session lifecycle, opt-out
+├── hpc/               # SLURM, site registry, targets, container builds
+└── contributing/      # Dev setup, adding backends/sites, testing
+```
+
+Dependencies are declared in `pyproject.toml` under `[dependency-groups].docs` and managed with `uv`:
+
+```bash
+just docs-serve     # syncs docs group then serves with live reload at http://127.0.0.1:8000
+just docs-strict    # build with --strict (fails on warnings)
+```
+
+Autodoc (`mkdocstrings`) is commented out in `mkdocs.yml` by default so the docs build without needing the package installed. Uncomment the `mkdocstrings` plugin block to enable it.
 
 ## Architecture & Data Flow
 
