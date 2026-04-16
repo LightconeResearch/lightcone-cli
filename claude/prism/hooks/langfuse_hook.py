@@ -341,6 +341,35 @@ class Turn:
 
 
 def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
+    """Assemble a flat list of JSONL transcript messages into conversation turns.
+
+    A *turn* groups a single user message with all the assistant messages that
+    follow it (including intermediate tool-use / tool-result exchanges) until
+    the next user message arrives.
+
+    The function handles the multi-step structure produced by Claude Code:
+
+    * One or more ``"user"`` messages may carry ``tool_result`` content blocks
+      that belong to the *preceding* assistant turn (i.e. the results of tool
+      calls the assistant requested).  These are attached to the current turn,
+      not treated as a new user turn.
+    * Multiple assistant messages are issued during a single turn (one per
+      tool-use / response cycle).  All of them are collected in
+      ``Turn.assistant_msgs``; only the *latest* message with a given
+      ``message_id`` is kept to avoid duplicates from streaming.
+    * When a new user message that is *not* purely tool-result content arrives,
+      the accumulated state is flushed into a ``Turn`` object and a new turn
+      begins.
+
+    Args:
+        messages: Raw JSONL objects from a Claude Code transcript file.  Each
+            entry must have at least a ``"role"`` key (``"user"`` or
+            ``"assistant"``).  Entries without a recognized role are silently
+            skipped.
+
+    Returns:
+        Ordered list of :class:`Turn` objects, one per user-initiated exchange.
+    """
     turns: List[Turn] = []
     current_user: Optional[Dict[str, Any]] = None
     user_ts: Optional[datetime] = None
@@ -489,6 +518,43 @@ def emit_turn(
     propagated_metadata: Optional[Dict[str, str]] = None,
     user_id: Optional[str] = None,
 ) -> Optional[str]:
+    """Emit a single conversation turn to Langfuse as a trace + generation span.
+
+    Each call creates:
+
+    * A **trace** (``langfuse.trace``) scoped to *session_id*.  If
+      *pre_trace_id* is supplied (from the session-init hook) and this is
+      the first turn (``turn_num == 1``), the trace reuses that ID so the
+      full session appears as one trace in the Langfuse UI.
+    * A **generation span** (``trace.generation``) that carries the full
+      ChatML-formatted input/output, model name, tool calls with their
+      outputs, and timing metadata.
+
+    Tool calls present in the assistant messages are extracted and added to
+    the generation span in OpenAI ChatML format (``tool_calls`` key).
+    Tool results (from subsequent ``"user"`` role messages) are looked up
+    by tool-call ID in ``turn.tool_results_by_id`` and attached as
+    ``output`` fields on each tool call.
+
+    Args:
+        langfuse: An authenticated :class:`langfuse.Langfuse` client instance.
+        session_id: The Claude Code session identifier used to group traces.
+        turn_num: 1-based index of this turn within the session.
+        turn: The assembled :class:`Turn` object to emit.
+        transcript_path: Path to the transcript file (stored as metadata).
+        pre_trace_id: Deterministic trace ID from the session-init hook.
+            When provided and ``turn_num == 1``, the trace is created with
+            this ID so it links to the pre-session trace entry.
+        git_metadata: Dict of git context (commit SHA, GitHub URL, branch).
+            Merged into span metadata when present.
+        propagated_metadata: Extra string metadata to propagate from a prior
+            turn's trace (e.g. ``github_commit_url``).
+        user_id: The Claude user's email address (from ``~/.claude.json``).
+            Attached to the trace for per-user analytics in Langfuse.
+
+    Returns:
+        The trace ID string if the emit succeeded, ``None`` on any error.
+    """
     user_text_raw = extract_text(get_content(turn.user_msg))
     user_text, user_text_meta = truncate_text(user_text_raw)
 

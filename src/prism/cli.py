@@ -16,6 +16,17 @@ from rich.console import Console
 
 console = Console()
 
+#: Permission tier definitions for Claude Code's ``.claude/settings.json``.
+#:
+#: Three tiers are available:
+#:
+#: * ``yolo`` — All tools allowed, including MCP servers.  No guardrails.
+#:   Suitable for trusted, isolated development environments.
+#: * ``recommended`` — Full read/write/bash access with deny rules for
+#:   sensitive dotfiles, HPC scratch filesystems, and destructive commands
+#:   (``sudo``, ``rm -rf /``, ``git push``).  Default for new projects.
+#: * ``minimal`` — Read-only.  Every write or shell action requires explicit
+#:   human confirmation.  Use when working on shared or production systems.
 PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
     "yolo": {
         "allow": [

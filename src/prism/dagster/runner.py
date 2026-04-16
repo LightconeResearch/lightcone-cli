@@ -159,6 +159,25 @@ class ASTRAContainerRunner:
         target_config: dict[str, Any] | None = None,
         container_runtime: str | None = None,
     ):
+        """Initialise an ASTRA container runner.
+
+        Args:
+            project_root: Absolute path to the ASTRA project directory.
+                All recipe commands are executed with this as their working
+                directory unless *cwd_override* is supplied at call time.
+            backend: Execution backend to use.  One of ``"docker"``,
+                ``"local"``, ``"venv"``, or ``"slurm"``.  The ``"docker"``
+                backend automatically falls back to ``"venv"`` (or
+                ``"local"``) when the container run fails.
+            default_container: Analysis-level container image resolved from
+                ``astra.yaml``.  Per-recipe containers override this value.
+            target_config: Parsed SLURM target configuration dict (from
+                ``~/.prism/targets/<name>.yaml``).  Used only when *backend*
+                is ``"slurm"``.
+            container_runtime: Local container runtime binary name
+                (``"docker"`` or ``"podman"``).  When ``None``, the runner
+                uses whatever is available on ``PATH``.
+        """
         self.project_root = Path(project_root)
         self.backend = backend
         self.default_container = default_container
