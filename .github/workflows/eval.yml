@@ -6,7 +6,7 @@ on:
 
 # Only one eval per PR at a time — cancel in-progress runs
 concurrency:
-  group: eval-${{ github.event.pull_request.number }}
+  group: eval-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -21,67 +21,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - name: Configure git credentials for private ASTRA repo
+        run: git config --local url."https://x-access-token:${{ secrets.ASP_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-
-      - name: Configure git credentials for private ASTRA repo
-        run: git config --global url."https://x-access-token:${{ secrets.ASP_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          enable-cache: true
+          activate-environment: true
 
       - name: Install dependencies
-        run: pip install -e ".[eval]" build
+        run: uv sync --extra eval
 
       - name: Run eval
         id: eval
         env:
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        shell: bash
         run: |
+          set -o pipefail
           prism eval run evals/build.yaml --num-trials 1 --concurrency 1 2>&1 | tee eval-output.txt
 
-          # Find the results JSON
+          # Find the results JSON and extract key metrics
           results_json=$(find eval-results -name results.json -type f | head -1)
-          echo "results_json=$results_json" >> "$GITHUB_OUTPUT"
-
-          # Extract key metrics for the summary
-          python3 -c "
-          import json, sys
-          data = json.load(open('$results_json'))
-          v = data.get('version', {})
-          trials = data.get('trials', [])
-          if not trials:
-              print('No trials completed', file=sys.stderr)
-              sys.exit(1)
-          t = trials[0]
-          score = t['composite_score']
-          cost = t['total_cost_usd']
-          turns = t['total_turns']
-          duration = t['total_duration_seconds']
-          build_ok = t['build_complete']
-          error = t.get('error', '')
-
-          graders = []
-          for g in t.get('grader_results', []):
-              status = '✅' if g['passed'] else '❌'
-              graders.append(f'{status} {g[\"name\"]} ({g[\"score\"]:.2f})')
-
-          with open('$GITHUB_OUTPUT', 'a') as f:
-              f.write(f'score={score:.2f}\n')
-              f.write(f'cost={cost:.2f}\n')
-              f.write(f'turns={turns}\n')
-              f.write(f'duration={duration:.0f}\n')
-              f.write(f'build_complete={build_ok}\n')
-              f.write(f'prism_version={v.get(\"prism_version\", \"unknown\")}\n')
-              f.write(f'prism_commit={v.get(\"prism_commit\", \"unknown\")[:8]}\n')
-
-          # Write grader details to a file (multiline output is tricky)
-          with open('grader-details.txt', 'w') as f:
-              f.write('\n'.join(graders))
-
-          if score < 1.0 or error:
-              sys.exit(1)
-          "
+          python3 .github/scripts/parse_eval_results.py "$results_json"
 
       - name: Upload results artifact
         id: upload
