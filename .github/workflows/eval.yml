@@ -32,7 +32,7 @@ jobs:
           activate-environment: true
 
       - name: Install dependencies
-        run: uv sync --extra eval
+        run: uv sync --group eval
 
       - name: Run eval
         id: eval
