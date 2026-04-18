@@ -229,16 +229,36 @@ def _resolve_recipe_deps(
 
 
 def _load_universe_params(
-    project_path: Path | None, universe_id: str
+    project_path: Path | None, universe_id: str,
+    tree_output: TreeOutput | None = None,
 ) -> dict[str, Any]:
-    """Load universe decisions as params dict."""
+    """Load universe decisions as params dict.
+
+    For sub-analysis recipes, merges the sub-analysis universe's decisions
+    on top of the root's so locally-declared decisions are also passed to
+    the recipe command.
+    """
     if project_path is None:
         return {}
     universe_file = project_path / "universes" / f"{universe_id}.yaml"
     if not universe_file.exists():
         return {}
     universe_data = load_yaml(universe_file)
-    return universe_data.get("decisions", {})
+    params = dict(universe_data.get("decisions", {}))
+
+    if tree_output and tree_output.analysis_id and tree_output.analysis_path:
+        sub_uid = (
+            (universe_data.get("analyses") or {})
+            .get(tree_output.analysis_id, {})
+            .get("universe", universe_id)
+        )
+        sub_file = (
+            project_path / tree_output.analysis_path
+            / "universes" / f"{sub_uid}.yaml"
+        )
+        if sub_file.exists():
+            params.update(load_yaml(sub_file).get("decisions", {}))
+    return params
 
 
 def _build_single_asset(
@@ -299,7 +319,7 @@ def _build_single_asset(
 
     @dg.asset(**asset_kwargs)
     def _asset(context) -> dg.MaterializeResult:
-        params = _load_universe_params(project_path, universe_id)
+        params = _load_universe_params(project_path, universe_id, tree_output)
 
         # Determine working directory for sub-analysis recipes
         cwd_override = None
