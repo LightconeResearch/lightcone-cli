@@ -343,12 +343,20 @@ def build_definitions(
     target_config: dict[str, Any] | None = None,
     universe_id: str = "baseline",
     no_build: bool = False,
+    cli_overrides: dict[str, Any] | None = None,
+    target_name: str | None = None,
 ) -> dg.Definitions:
     """Build complete Dagster Definitions from an ASTRA project.
 
     This is the main entry point for the Dagster integration.  When a SLURM
     target is provided, container images are automatically built (podman-hpc)
     or pulled before asset definitions are constructed.
+
+    *cli_overrides* are runtime option overrides from CLI flags (e.g.
+    ``--qos``, ``--constraint``, ``--time-limit``).  They are merged with
+    the target's defaults via :func:`resolve_run_config`.
+
+    *target_name* is threaded to the runner for cluster cache lookup.
     """
     spec = load_yaml(project_path / "astra.yaml")
     # Resolve sub-analysis tree: expand path: references
@@ -364,16 +372,66 @@ def build_definitions(
     if target_config:
         backend = target_config.get("backend", "docker")
         container_runtime = target_config.get("container_runtime")
-        # Transform flat target_config into the shape the runner expects
         runner_config = {"connection": target_config.get("connection", {})}
-        scheduler = {}
-        for key in ("site", "account", "qos", "constraint", "node_type",
-                     "container_runtime", "container_flags",
-                     "nodes", "time_limit", "extra_slurm_args"):
-            if target_config.get(key) is not None:
-                scheduler[key] = target_config[key]
-        if scheduler:
+
+        if backend == "slurm" and "defaults" in target_config:
+            # --- New-format target: use resolve_run_config ---
+            from lightcone.engine.targets import (
+                get_qos_entries,
+                resolve_run_config,
+            )
+
+            resolved = resolve_run_config(target_config, cli_overrides or {})
+            scheduler: dict[str, Any] = {
+                "site": target_config.get("site"),
+                "container_runtime": container_runtime,
+            }
+            for key in ("qos", "constraint", "time_limit", "account",
+                         "partition"):
+                if resolved.get(key) is not None:
+                    scheduler[key] = resolved[key]
+
+            # Account from target config if not in resolved
+            account = scheduler.get("account") or target_config.get("account")
+            if account:
+                scheduler["account"] = account
+
+            # Thread metadata for runner QoS validation
+            if target_name:
+                scheduler["_target_name"] = target_name
+            defaults = target_config.get("defaults") or {}
+            scheduler["_strategy"] = (
+                (cli_overrides or {}).get("strategy")
+                or defaults.get("strategy", "fit")
+            )
+            qos_entries = get_qos_entries(target_config)
+            if qos_entries:
+                scheduler["_allowed_qos"] = qos_entries
+
+            # Forward extra SLURM args from CLI passthrough
+            if target_config.get("extra_slurm_args"):
+                scheduler["extra_slurm_args"] = target_config["extra_slurm_args"]
+            # Forward extra container flags
+            if target_config.get("extra_container_flags"):
+                scheduler["extra_container_flags"] = target_config[
+                    "extra_container_flags"
+                ]
+
             runner_config["scheduler"] = scheduler
+            runner_config["resource_limits"] = target_config.get(
+                "resource_limits", {}
+            )
+            runner_config["poll"] = target_config.get("poll", {})
+        else:
+            # --- Old-format target or non-SLURM: flat-key passthrough ---
+            scheduler = {}
+            for key in ("site", "account", "qos", "constraint", "node_type",
+                         "container_runtime", "container_flags",
+                         "nodes", "time_limit", "extra_slurm_args"):
+                if target_config.get(key) is not None:
+                    scheduler[key] = target_config[key]
+            if scheduler:
+                runner_config["scheduler"] = scheduler
     else:
         # No target config → local target.  Detect available container runtime.
         from lightcone.engine.container import detect_container_runtime

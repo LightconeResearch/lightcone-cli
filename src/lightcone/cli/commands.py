@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -17,6 +18,7 @@ from rich.console import Console
 from lightcone.cli.plugin import get_plugin_source_dir
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 #: Permission tier definitions for Claude Code's ``.claude/settings.json``.
 #:
@@ -1102,6 +1104,15 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
 @click.option("--universe", "-u", default=None, help="Universe to materialize for")
 @click.option("--target", "-t", default=None, help="Execution target name")
 @click.option("--no-build", is_flag=True, help="Skip automatic container image builds")
+@click.option("--qos", default=None, help="QoS override (e.g. gpu_debug, gpu_regular)")
+@click.option("--constraint", default=None, help="Node constraint (e.g. gpu, cpu)")
+@click.option("--time-limit", default=None, help="Walltime (e.g. 30m, 2h, 01:30:00)")
+@click.option("--account", default=None, help="Allocation account override")
+@click.option("--partition", default=None, help="SLURM partition override")
+@click.option("--strategy", default=None,
+              type=click.Choice(["fit", "switch"]),
+              help="QoS strategy: 'fit' reduces resources to stay in current QoS (default), "
+                   "'switch' keeps resources and picks a different QoS")
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -1109,6 +1120,12 @@ def run(
     universe: str | None,
     target: str | None,
     no_build: bool,
+    qos: str | None,
+    constraint: str | None,
+    time_limit: str | None,
+    account: str | None,
+    partition: str | None,
+    strategy: str | None,
 ) -> None:
     """Materialize ASTRA outputs via Dagster.
 
@@ -1116,8 +1133,7 @@ def run(
     outputs for all universes. Container build specs are automatically
     built before execution unless --no-build is given.
 
-    Any unknown flags are passed through as SLURM scheduling directives
-    (e.g. --partition, --qos, --constraint, --gres).
+    Any unknown flags are passed through as extra SLURM scheduling directives.
 
     Examples:
         lc run                           # all outputs, all universes
@@ -1125,14 +1141,14 @@ def run(
         lc run --universe baseline       # specific universe
         lc run accuracy -u baseline      # specific output + universe
         lc run --target perlmutter       # run on SLURM
-        lc run --qos shared --constraint gpu  # SLURM scheduling flags
-        lc run --partition gpu-a100      # works for any cluster
+        lc run --qos gpu_regular         # override QoS
+        lc run --qos gpu_debug --time-limit 30m  # quick test
         lc run --no-build                # skip container builds
     """
     from lightcone.engine.assets import build_definitions
     from lightcone.engine.targets import load_target
 
-    # Separate output names from SLURM flags in the combined args
+    # Separate output names from extra SLURM flags in the combined args
     all_args = list(outputs) + ctx.args
     output_names = [a for a in all_args if not a.startswith("-")]
     slurm_args = [a for a in all_args if a.startswith("-")]
@@ -1160,10 +1176,26 @@ def run(
     if slurm_args and target_config:
         target_config["extra_slurm_args"] = slurm_args
 
+    # Build CLI overrides from named flags
+    cli_overrides: dict[str, Any] = {}
+    if qos:
+        cli_overrides["qos"] = qos
+    if constraint:
+        cli_overrides["constraint"] = constraint
+    if time_limit:
+        cli_overrides["time_limit"] = time_limit
+    if account:
+        cli_overrides["account"] = account
+    if partition:
+        cli_overrides["partition"] = partition
+    if strategy:
+        cli_overrides["strategy"] = strategy
+
     universe_id = universe or "baseline"
     defs = build_definitions(
         project_path, target_config=target_config, universe_id=universe_id,
-        no_build=no_build,
+        no_build=no_build, cli_overrides=cli_overrides or None,
+        target_name=target_name,
     )
 
     console.print("[bold]Materializing outputs...[/bold]")
@@ -1604,8 +1636,7 @@ def target(
         if config is None:
             console.print(f"[red]Error:[/red] No configured target '{show_name}'.")
             raise SystemExit(1)
-        console.print(f"[bold]Target: {show_name}[/bold]\n")
-        console.print(yaml.dump(config, default_flow_style=False, sort_keys=False))
+        _display_target(show_name, config)
         return
 
     if list_flag:
@@ -1651,6 +1682,553 @@ def target(
         else:
             console.print("  [yellow]Warning: target not found in ~/.lightcone/targets/[/yellow]")
     console.print("\n  Use [cyan]lc target --set <name>[/cyan] to change.")
+
+
+def _display_target(name: str, config: dict) -> None:
+    """Pretty-print a target configuration."""
+    from lightcone.engine.targets import (
+        get_qos_entries,
+        is_cache_stale,
+    )
+
+    console.print(f"[bold]Target: {name}[/bold]")
+    site = config.get("site", "unknown")
+    backend = config.get("backend", "unknown")
+    console.print(f"  Site: {site}  Backend: {backend}")
+    conn = config.get("connection", {})
+    if conn.get("hostname"):
+        console.print(f"  Host: {conn['hostname']}")
+    if config.get("container_runtime"):
+        console.print(f"  Container: {config['container_runtime']}")
+    if config.get("account"):
+        console.print(f"  Account: {config['account']}")
+
+    # Defaults
+    defaults = config.get("defaults", {})
+    if defaults:
+        parts = [f"{k}={v}" for k, v in defaults.items()]
+        console.print(f"\n  [bold]Defaults:[/bold] {', '.join(parts)}")
+
+    # QoS choices
+    qos_entries = get_qos_entries(config)
+    if qos_entries:
+        console.print("\n  [bold]QoS choices:[/bold]")
+        for entry in qos_entries:
+            name_str = entry.get("name", "?")
+            constraint_str = entry.get("constraint", "")
+            use_for = entry.get("use_for", "")
+            console.print(
+                f"    {name_str:<20} ({constraint_str}) "
+                f"[dim]→ {use_for}[/dim]"
+            )
+
+    # Resource limits
+    limits = config.get("resource_limits", {})
+    if limits:
+        parts = [f"{k}={v}" for k, v in limits.items()]
+        console.print(f"\n  [bold]Guardrails:[/bold] {', '.join(parts)}")
+
+    # Cache status
+    if backend == "slurm":
+        target_name_for_cache = name
+        if is_cache_stale(target_name_for_cache):
+            console.print(
+                "\n  [yellow]Cluster cache: stale or missing.[/yellow] "
+                f"Run [cyan]lc target refresh {name}[/cyan] to update."
+            )
+        else:
+            console.print("\n  [green]Cluster cache: current[/green]")
+
+
+@target.command("refresh")
+@click.argument("name")
+def target_refresh(name: str) -> None:
+    """Re-query SLURM scheduler and update cached QoS limits."""
+    from lightcone.engine.targets import (
+        get_allowed_qos_names,
+        load_target,
+        refresh_cluster_cache,
+    )
+
+    config = load_target(name)
+    if config is None:
+        console.print(f"[red]Error:[/red] No configured target '{name}'.")
+        raise SystemExit(1)
+
+    if config.get("backend") != "slurm":
+        console.print(
+            f"Only SLURM targets support refresh ('{name}' is "
+            f"{config.get('backend')})."
+        )
+        return
+
+    info = refresh_cluster_cache(name)
+    console.print(
+        f"[green]✓[/green] Updated cluster cache for '{name}': "
+        f"{len(info.qos)} QoS, {len(info.partitions)} partitions."
+    )
+
+    # Warn about QoS in target but not on cluster
+    allowed = get_allowed_qos_names(config)
+    for qos_name in allowed:
+        if qos_name not in info.qos:
+            console.print(
+                f"  [yellow]⚠[/yellow] '{qos_name}' is in your target "
+                "but not available on this cluster."
+            )
+        elif qos_name not in info.user_qos:
+            console.print(
+                f"  [yellow]⚠[/yellow] '{qos_name}' exists but your "
+                "account doesn't have access."
+            )
+
+
+@target.command("add-qos")
+@click.argument("target_name")
+@click.argument("qos_name", required=False)
+@click.option("--constraint", default=None, help="Hardware constraint (gpu/cpu)")
+@click.option("--slurm-qos", default=None,
+              help="Submission QoS name if different from sacctmgr name")
+@click.option("--use-for", default=None, help="When to use this QoS")
+@click.option("--all", "show_all", is_flag=True, help="Include interactive/jupyter queues")
+def target_add_qos(
+    target_name: str,
+    qos_name: str | None,
+    constraint: str | None,
+    slurm_qos: str | None,
+    use_for: str | None,
+    show_all: bool,
+) -> None:
+    """Add a QoS entry to an existing target.
+
+    QOS_NAME is the sacctmgr name (e.g., gpu_debug). Use --slurm-qos
+    if the submission name differs (e.g., --slurm-qos debug).
+
+    Without QOS_NAME, shows an interactive picker of available queues
+    from the cluster cache (run `lc target refresh` first).
+
+    Examples:
+        lc target add-qos perlmutter                              # interactive
+        lc target add-qos perlmutter gpu_debug --slurm-qos debug --constraint gpu
+        lc target add-qos perlmutter batch --use-for "general purpose"
+    """
+    from lightcone.engine.targets import (
+        add_qos_entry,
+        get_allowed_qos_names,
+        load_cluster_cache,
+        load_target,
+        save_target,
+    )
+
+    config = load_target(target_name)
+    if config is None:
+        console.print(f"[red]Error:[/red] No configured target '{target_name}'.")
+        raise SystemExit(1)
+
+    if qos_name:
+        # --- Direct mode ---
+        from lightcone.engine.slurm_info import generate_use_for, infer_qos_constraint
+
+        if constraint is None:
+            constraint = infer_qos_constraint(qos_name)
+        if use_for is None:
+            cluster = load_cluster_cache(target_name)
+            if cluster and qos_name in cluster.qos:
+                use_for = generate_use_for(cluster.qos[qos_name])
+            else:
+                use_for = "general purpose"
+
+        added = add_qos_entry(config, qos_name, constraint, use_for,
+                              slurm_qos=slurm_qos)
+        if not added:
+            console.print(
+                f"[yellow]'{qos_name}' is already in target '{target_name}'.[/yellow]"
+            )
+            return
+        save_target(target_name, config)
+        console.print(
+            f"[green]✓[/green] Added '{qos_name}' ({constraint}) to '{target_name}'."
+        )
+    else:
+        # --- Interactive mode ---
+        from lightcone.engine.slurm_info import (
+            generate_use_for,
+            infer_qos_constraint,
+            is_user_facing_qos,
+        )
+
+        cluster = load_cluster_cache(target_name)
+        if cluster is None:
+            console.print(
+                f"[red]Error:[/red] No cluster cache for '{target_name}'. "
+                f"Run [cyan]lc target refresh {target_name}[/cyan] first."
+            )
+            raise SystemExit(1)
+
+        existing = set(get_allowed_qos_names(config))
+        candidates: list[tuple[str, str, str]] = []  # (name, constraint, use_for)
+        for name, qos_info in sorted(cluster.qos.items()):
+            if name in existing:
+                continue
+            if name not in cluster.user_qos:
+                continue
+            if not is_user_facing_qos(name, include_interactive=show_all):
+                continue
+            c = infer_qos_constraint(name)
+            desc = generate_use_for(qos_info)
+            candidates.append((name, c, desc))
+
+        if not candidates:
+            console.print("No additional QoS available to add.")
+            return
+
+        # Group by constraint
+        gpu_list = [(n, c, d) for n, c, d in candidates if c == "gpu"]
+        cpu_list = [(n, c, d) for n, c, d in candidates if c != "gpu"]
+
+        console.print(
+            f"\n  Available QoS not yet in this target "
+            f"({len(candidates)} of {len(cluster.qos)}):\n"
+        )
+        numbered: list[tuple[str, str, str]] = []
+        idx = 1
+        if gpu_list:
+            console.print("  [bold]GPU queues:[/bold]")
+            for name, c, desc in gpu_list:
+                console.print(f"    {idx}. {name:<25} {desc}")
+                numbered.append((name, c, desc))
+                idx += 1
+        if cpu_list:
+            console.print("  [bold]CPU queues:[/bold]")
+            for name, c, desc in cpu_list:
+                console.print(f"    {idx}. {name:<25} {desc}")
+                numbered.append((name, c, desc))
+                idx += 1
+
+        selection = click.prompt(
+            "\n  Select (comma-separated), or 'q' to cancel",
+            default="q",
+        )
+        if selection.strip().lower() == "q":
+            return
+
+        indices = []
+        for s in selection.split(","):
+            s = s.strip()
+            if s.isdigit():
+                indices.append(int(s) - 1)
+
+        added_count = 0
+        for i in indices:
+            if 0 <= i < len(numbered):
+                name, c, auto_desc = numbered[i]
+                custom = click.prompt(
+                    f"  Describe when to use {name}",
+                    default=auto_desc,
+                )
+                # Prompt for submission QoS name (may differ from sacctmgr name)
+                sq = click.prompt(
+                    f"  Submission QoS name for {name} (--qos=)",
+                    default=name,
+                )
+                sq_val = sq if sq != name else None
+                if add_qos_entry(config, name, c, custom, slurm_qos=sq_val):
+                    added_count += 1
+
+        if added_count:
+            save_target(target_name, config)
+            console.print(
+                f"\n[green]✓[/green] Added {added_count} QoS "
+                f"{'entry' if added_count == 1 else 'entries'} "
+                f"to '{target_name}'."
+            )
+
+
+@target.command("edit-qos")
+@click.argument("target_name")
+@click.argument("qos_name")
+@click.option("--use-for", default=None, help="New description for when to use this QoS")
+@click.option("--constraint", default=None, help="New hardware constraint (gpu/cpu)")
+@click.option("--slurm-qos", default=None, help="Submission QoS name (if different from name)")
+def target_edit_qos(
+    target_name: str,
+    qos_name: str,
+    use_for: str | None,
+    constraint: str | None,
+    slurm_qos: str | None,
+) -> None:
+    """Edit the description, constraint, or slurm_qos of a QoS entry.
+
+    Examples:
+        lc target edit-qos perlmutter gpu_debug --use-for "quick tests only"
+        lc target edit-qos perlmutter gpu_debug --slurm-qos debug
+    """
+    from lightcone.engine.targets import get_qos_entry, load_target, save_target, update_qos_entry
+
+    config = load_target(target_name)
+    if config is None:
+        console.print(f"[red]Error:[/red] No configured target '{target_name}'.")
+        raise SystemExit(1)
+
+    entry = get_qos_entry(config, qos_name)
+    if entry is None:
+        console.print(
+            f"[red]Error:[/red] '{qos_name}' is not in target '{target_name}'."
+        )
+        raise SystemExit(1)
+
+    # Interactive prompt if no flags given
+    if use_for is None and constraint is None and slurm_qos is None:
+        use_for = click.prompt(
+            f"  Description for {qos_name}",
+            default=entry.get("use_for", ""),
+        )
+
+    updates: dict[str, Any] = {}
+    if use_for is not None:
+        updates["use_for"] = use_for
+    if constraint is not None:
+        updates["constraint"] = constraint
+    if slurm_qos is not None:
+        updates["slurm_qos"] = slurm_qos
+
+    if updates:
+        update_qos_entry(config, qos_name, **updates)
+        save_target(target_name, config)
+        console.print(f"[green]✓[/green] Updated '{qos_name}' in '{target_name}'.")
+    else:
+        console.print("Nothing to update.")
+
+
+@target.command("remove-qos")
+@click.argument("target_name")
+@click.argument("qos_name")
+def target_remove_qos(target_name: str, qos_name: str) -> None:
+    """Remove a QoS entry from a target.
+
+    Examples:
+        lc target remove-qos perlmutter gpu_shared
+    """
+    from lightcone.engine.targets import load_target, remove_qos_entry, save_target
+
+    config = load_target(target_name)
+    if config is None:
+        console.print(f"[red]Error:[/red] No configured target '{target_name}'.")
+        raise SystemExit(1)
+
+    removed = remove_qos_entry(config, qos_name)
+    if not removed:
+        console.print(
+            f"[red]Error:[/red] '{qos_name}' is not in target '{target_name}'."
+        )
+        raise SystemExit(1)
+
+    # Warn if removing the default QoS
+    defaults = config.get("defaults", {})
+    if defaults.get("qos") == qos_name:
+        from lightcone.engine.targets import get_allowed_qos_names
+
+        remaining = get_allowed_qos_names(config)
+        if remaining:
+            new_default = remaining[0]
+            console.print(
+                f"  [yellow]⚠[/yellow] '{qos_name}' was the default QoS. "
+                f"Changing default to '{new_default}'."
+            )
+            defaults["qos"] = new_default
+        else:
+            console.print(
+                f"  [yellow]⚠[/yellow] '{qos_name}' was the default QoS "
+                "and no QoS entries remain."
+            )
+            defaults.pop("qos", None)
+
+    save_target(target_name, config)
+    console.print(
+        f"[green]✓[/green] Removed '{qos_name}' from '{target_name}'."
+    )
+
+
+@target.command("set-default-qos")
+@click.argument("target_name")
+@click.argument("qos_name", required=False)
+def target_set_default_qos(target_name: str, qos_name: str | None) -> None:
+    """Set the default QoS for a target.
+
+    Without QOS_NAME, shows the current QoS list and prompts for selection.
+
+    Examples:
+        lc target set-default-qos perlmutter gpu_regular
+        lc target set-default-qos perlmutter              # interactive
+    """
+    from lightcone.engine.targets import get_allowed_qos_names, load_target, save_target
+
+    config = load_target(target_name)
+    if config is None:
+        console.print(f"[red]Error:[/red] No configured target '{target_name}'.")
+        raise SystemExit(1)
+
+    allowed = get_allowed_qos_names(config)
+    if not allowed:
+        console.print(
+            f"[red]Error:[/red] Target '{target_name}' has no QoS entries. "
+            f"Run [cyan]lc target add-qos {target_name}[/cyan] first."
+        )
+        raise SystemExit(1)
+
+    selected_constraint: str | None = None
+    if qos_name is None:
+        # Interactive: show list and prompt
+        defaults = config.get("defaults", {})
+        current = defaults.get("qos", "")
+        console.print(f"\n  Current default QoS: [cyan]{current or 'none'}[/cyan]\n")
+        from lightcone.engine.targets import get_qos_entries
+        entries = get_qos_entries(config)
+        for i, entry in enumerate(entries, 1):
+            marker = " [green](current)[/green]" if entry["name"] == current else ""
+            console.print(
+                f"    {i}. {entry['name']:<20} "
+                f"({entry.get('constraint', '')}) "
+                f"— {entry.get('use_for', '')}{marker}"
+            )
+        idx = click.prompt(
+            "\n  Select new default",
+            type=click.IntRange(1, len(entries)),
+        )
+        # Index directly into the entries list to correctly handle duplicate names
+        # with different constraints (e.g., "debug" for both GPU and CPU).
+        selected_entry = entries[idx - 1]
+        qos_name = selected_entry["name"]
+        selected_constraint = selected_entry.get("constraint")
+
+    if qos_name not in allowed:
+        console.print(
+            f"[red]Error:[/red] '{qos_name}' is not in target '{target_name}'. "
+            f"Available: {', '.join(allowed)}"
+        )
+        raise SystemExit(1)
+
+    defaults = config.setdefault("defaults", {})
+    defaults["qos"] = qos_name
+
+    # Also update constraint to match the QoS entry.
+    # Pass selected_constraint to disambiguate when the same name appears
+    # with multiple constraints (interactive path only).
+    from lightcone.engine.targets import get_qos_entry
+    entry = get_qos_entry(config, qos_name, constraint=selected_constraint)
+    if entry and entry.get("constraint"):
+        defaults["constraint"] = entry["constraint"]
+
+    save_target(target_name, config)
+    console.print(f"[green]✓[/green] Default QoS for '{target_name}' set to '{qos_name}'.")
+
+
+def _discover_qos_suggestions() -> list[dict[str, str]]:
+    """Try live SLURM discovery and return QoS suggestions.
+
+    Returns an empty list if SLURM commands are unavailable.
+    """
+    try:
+        from lightcone.engine.slurm_info import build_qos_suggestions, discover_cluster
+
+        console.print("\n  Querying scheduler for available queues...")
+        cluster = discover_cluster()
+        if not cluster.qos:
+            console.print("  [dim](no SLURM queues found)[/dim]")
+            return []
+        suggestions = build_qos_suggestions(cluster)
+        console.print(
+            f"  Found {len(suggestions)} queues "
+            f"(of {len(cluster.qos)} total)."
+        )
+        return suggestions
+    except Exception as exc:
+        logger.debug("SLURM discovery failed: %s", exc)
+        console.print("  [dim](SLURM discovery not available)[/dim]")
+        return []
+
+
+def _prompt_qos_selection(suggested: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Show QoS suggestions and let the user select which to include."""
+    if not suggested:
+        return []
+
+    # Group by constraint for display
+    gpu_list = [e for e in suggested if e.get("constraint") == "gpu"]
+    cpu_list = [e for e in suggested if e.get("constraint") != "gpu"]
+
+    console.print("\n  [bold]Available queues:[/bold]")
+    numbered: list[dict[str, str]] = []
+    idx = 1
+    if gpu_list:
+        console.print("  [bold]GPU queues:[/bold]")
+        for entry in gpu_list:
+            console.print(
+                f"    {idx}. {entry['name']:<20} ({entry['constraint']}) "
+                f"— {entry['use_for']}"
+            )
+            numbered.append(entry)
+            idx += 1
+    if cpu_list:
+        console.print("  [bold]CPU queues:[/bold]")
+        for entry in cpu_list:
+            console.print(
+                f"    {idx}. {entry['name']:<20} ({entry['constraint']}) "
+                f"— {entry['use_for']}"
+            )
+            numbered.append(entry)
+            idx += 1
+
+    console.print(
+        "\n  Enter numbers to enable (comma-separated), "
+        "or press Enter for all:"
+    )
+    selection = click.prompt("  Selection", default="")
+    if selection.strip():
+        indices = [int(s.strip()) - 1 for s in selection.split(",")
+                   if s.strip().isdigit()]
+        return [numbered[i] for i in indices if 0 <= i < len(numbered)]
+    return list(numbered)
+
+
+def _prompt_default_qos(
+    qos_entries: list[dict[str, str]],
+    hint: str | None = None,
+) -> tuple[str, str | None]:
+    """Prompt the user to pick a default QoS from the selected entries.
+
+    Returns ``(qos_name, constraint)``."""
+    if not qos_entries:
+        return hint or "batch", None
+    if len(qos_entries) == 1:
+        entry = qos_entries[0]
+        console.print(f"\n  Default QoS: [cyan]{entry['name']}[/cyan]")
+        return entry["name"], entry.get("constraint")
+
+    # Multiple entries — prompt
+    console.print("\n  [bold]Select default QoS[/bold] (used when no --qos flag):")
+    for i, entry in enumerate(qos_entries, 1):
+        console.print(
+            f"    {i}. {entry['name']:<20} "
+            f"({entry.get('constraint', '')}) "
+            f"— {entry.get('use_for', '')}"
+        )
+
+    # Pre-select hint if it's in the list
+    default_idx = 1
+    if hint:
+        for i, entry in enumerate(qos_entries, 1):
+            if entry["name"] == hint:
+                default_idx = i
+                break
+
+    idx = click.prompt(
+        "  Default QoS",
+        type=click.IntRange(1, len(qos_entries)),
+        default=default_idx,
+    )
+    chosen = qos_entries[idx - 1]
+    return chosen["name"], chosen.get("constraint")
 
 
 @target.command("add")
@@ -1699,64 +2277,27 @@ def target_add(name: str | None) -> None:
         account = click.prompt("  Account/allocation")
 
         # --- Container runtime ---
-        site_runtimes = site.get("container_runtimes", [])
-        if len(site_runtimes) > 1:
-            console.print("\n  [bold]Container runtime:[/bold]")
-            for i, rt in enumerate(site_runtimes, 1):
-                console.print(f"    {i}. {rt}")
-            rt_choices = [str(i) for i in range(1, len(site_runtimes) + 1)]
-            rt_idx = click.prompt(
-                "  Select runtime",
-                type=click.Choice(rt_choices),
-                default="1",
-            )
-            container_runtime = site_runtimes[int(rt_idx) - 1]
-        elif site_runtimes:
-            container_runtime = site_runtimes[0]
-        else:
-            container_runtime = site.get(
-                "scheduler", {},
-            ).get("container_runtime", "docker")
+        container_runtime = site.get(
+            "container_runtime",
+            site.get("scheduler", {}).get("container_runtime", "docker"),
+        )
 
-        # --- Node type selection ---
-        node_types = site.get("node_types", {})
-        if node_types:
-            console.print("\n  [bold]Node type:[/bold]")
-            nt_list = list(node_types.items())
-            for i, (nt_key, nt_info) in enumerate(nt_list, 1):
-                console.print(f"    {i}. {nt_key} — {nt_info.get('description', '')}")
-            nt_choices = [str(i) for i in range(1, len(nt_list) + 1)]
-            nt_idx = click.prompt(
-                "  Select node type",
-                type=click.Choice(nt_choices),
-                default="1",
-            )
-            nt_key, nt_info = nt_list[int(nt_idx) - 1]
-            constraint = nt_info.get("constraint", nt_key)
-        else:
-            nt_key = "default"
-            constraint = ""
+        # --- QoS selection ---
+        safe = site.get("safe_defaults", {})
+        suggested = site.get("suggested_qos", [])
+        constraint = safe.get("constraint", "gpu")
 
-        target_name = name or f"{site_key}-{nt_key}"
+        # For unknown sites, try live SLURM discovery
+        if not suggested:
+            suggested = _discover_qos_suggestions()
 
-        # QOS selection
-        qos_options = site.get("qos_options", {})
-        qos = "regular"
-        if qos_options:
-            console.print("\n  [bold]QOS:[/bold]")
-            qos_list = list(qos_options.items())
-            for i, (qos_key, qos_info) in enumerate(qos_list, 1):
-                console.print(f"    {i}. {qos_key} — {qos_info.get('description', '')}")
-            qos_choices = [str(i) for i in range(1, len(qos_list) + 1)]
-            qos_idx = click.prompt(
-                "  Select QOS",
-                type=click.Choice(qos_choices),
-                default="1",
-            )
-            qos = qos_list[int(qos_idx) - 1][0]
+        target_name = name or site_key
+        qos_entries = _prompt_qos_selection(suggested)
+        default_qos, default_constraint = _prompt_default_qos(
+            qos_entries, safe.get("qos"),
+        )
 
-        resource_limits = site.get("resource_limits", {})
-        config = {
+        config: dict[str, Any] = {
             "site": site_key,
             "backend": site.get("backend", "slurm"),
             "connection": {
@@ -1765,32 +2306,45 @@ def target_add(name: str | None) -> None:
             },
             "account": account,
             "container_runtime": container_runtime,
-            "constraint": constraint,
-            "qos": qos,
+            "defaults": {
+                "qos": default_qos,
+                "constraint": default_constraint or constraint,
+                "time_limit": safe.get("time_limit", "00:30:00"),
+            },
         }
+        if qos_entries:
+            config["qos"] = qos_entries
 
         # --- Resource limits ---
         console.print("\n  [bold]Resource limits[/bold]")
         console.print("  (these cap what Claude can request per job)\n")
 
-        config["max_nodes"] = click.prompt(
-            "  Max nodes per job",
-            type=int,
-            default=resource_limits.get("max_nodes", 4),
-        )
-        config["max_walltime_minutes"] = click.prompt(
-            "  Max walltime (minutes)",
-            type=int,
-            default=resource_limits.get("max_walltime_minutes", 360),
-        )
-        config["max_concurrent_jobs"] = click.prompt(
-            "  Max concurrent jobs",
-            type=int,
-            default=resource_limits.get("max_concurrent_jobs", 8),
-        )
+        max_nodes = click.prompt("  Max nodes per job", type=int, default=4)
+        max_wall = click.prompt("  Max walltime (minutes)", type=int, default=360)
+        max_concurrent = click.prompt("  Max concurrent jobs", type=int, default=8)
+        config["resource_limits"] = {
+            "max_nodes": max_nodes,
+            "max_walltime_minutes": max_wall,
+            "max_concurrent_jobs": max_concurrent,
+        }
 
     path = save_target(target_name, config)
     console.print(f"\n  [green]✓[/green] Created target '{target_name}' at {path}")
+
+    # Auto-refresh cluster cache for SLURM targets
+    if config.get("backend") == "slurm":
+        try:
+            from lightcone.engine.targets import refresh_cluster_cache
+            info = refresh_cluster_cache(target_name)
+            console.print(
+                f"  [green]✓[/green] Cached cluster info: "
+                f"{len(info.qos)} QoS, {len(info.partitions)} partitions."
+            )
+        except Exception:
+            console.print(
+                f"  [dim](Cluster cache not available — run "
+                f"`lc target refresh {target_name}` later)[/dim]"
+            )
 
 
 @target.command("edit")
@@ -1993,28 +2547,17 @@ def _run_setup_wizard() -> list[Path]:
             )
             account = click.prompt("  Account/allocation")
 
-            # Container runtime — auto-select if only one
-            site_runtimes = site.get("container_runtimes", [])
-            if len(site_runtimes) > 1:
-                console.print("\n  [bold]Container runtime:[/bold]")
-                for i, rt in enumerate(site_runtimes, 1):
-                    console.print(f"    {i}. {rt}")
-                rt_choices = [
-                    str(i) for i in range(1, len(site_runtimes) + 1)
-                ]
-                rt_idx = click.prompt(
-                    "  Select runtime",
-                    type=click.Choice(rt_choices),
-                    default="1",
-                )
-                container_runtime = site_runtimes[int(rt_idx) - 1]
-            elif site_runtimes:
-                container_runtime = site_runtimes[0]
-            else:
-                container_runtime = None
+            # Container runtime — use site default
+            container_runtime = site.get(
+                "container_runtime",
+                site.get("scheduler", {}).get("container_runtime"),
+            )
 
             default_name = f"{site_key}-{account}"
             target_name = click.prompt("  Target name", default=default_name)
+
+            safe = site.get("safe_defaults", {})
+            suggested = site.get("suggested_qos", [])
 
             target_config: dict[str, Any] = {
                 "site": site_key,
@@ -2027,6 +2570,23 @@ def _run_setup_wizard() -> list[Path]:
             }
             if container_runtime:
                 target_config["container_runtime"] = container_runtime
+            # Auto-populate QoS from site registry, prompt for default
+            if suggested:
+                target_config["qos"] = list(suggested)
+            dq, dc = _prompt_default_qos(
+                list(suggested) if suggested else [],
+                safe.get("qos"),
+            )
+            target_config["defaults"] = {
+                "qos": dq,
+                "constraint": dc or safe.get("constraint", "gpu"),
+                "time_limit": safe.get("time_limit", "00:30:00"),
+            }
+            target_config["resource_limits"] = {
+                "max_nodes": 4,
+                "max_walltime_minutes": 360,
+                "max_concurrent_jobs": 8,
+            }
 
         else:
             # --- Custom SLURM cluster ---
@@ -2054,20 +2614,43 @@ def _run_setup_wizard() -> list[Path]:
             default_name = f"{cluster_name}-{account}"
             target_name = click.prompt("  Target name", default=default_name)
 
-            target_config = {
+            # Try SLURM discovery for QoS
+            discovered = _discover_qos_suggestions()
+            qos_entries = _prompt_qos_selection(discovered)
+
+            target_config: dict[str, Any] = {
                 "backend": "slurm",
                 "connection": {
                     "hostname": hostname,
                     "username": username,
                 },
                 "account": account,
+                "defaults": {},
             }
             if container_runtime:
                 target_config["container_runtime"] = container_runtime
+            if qos_entries:
+                target_config["qos"] = qos_entries
+                dq, dc = _prompt_default_qos(qos_entries)
+                target_config["defaults"]["qos"] = dq
+                if dc:
+                    target_config["defaults"]["constraint"] = dc
 
         path = save_target(target_name, target_config)
         saved_paths.append(path)
         console.print(f"  [green]✓[/green] Created target: {target_name}")
+
+        # Auto-refresh cluster cache
+        if target_config.get("backend") == "slurm":
+            try:
+                from lightcone.engine.targets import refresh_cluster_cache
+                info = refresh_cluster_cache(target_name)
+                console.print(
+                    f"  [green]✓[/green] Cached cluster info: "
+                    f"{len(info.qos)} QoS, {len(info.partitions)} partitions."
+                )
+            except Exception:
+                pass
 
         default_target = target_name
 
