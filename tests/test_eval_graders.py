@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from prism.eval.graders import (
+from lightcone.eval.graders import (
     _grade_command,
     _grade_status,
     compute_composite_score,
     run_graders,
 )
-from prism.eval.models import GraderResult, GraderSpec, GraderType
-from prism.eval.sandbox import ExecuteResult
+from lightcone.eval.models import GraderResult, GraderSpec, GraderType
+from lightcone.eval.sandbox import ExecuteResult
 
 
 def _mock_sandbox(exec_results: dict[str, ExecuteResult] | None = None) -> MagicMock:
@@ -53,7 +53,7 @@ class TestGradeStatus:
             "│ chain  │ ok       │\n"
             "│ plot   │ ok       │\n"
         )
-        sandbox = _mock_sandbox({"prism status": ExecuteResult(exit_code=0, output=status_output)})
+        sandbox = _mock_sandbox({"lc status": ExecuteResult(exit_code=0, output=status_output)})
         grader = GraderSpec(name="status", type=GraderType.status, weight=3.0)
         result = _grade_status(sandbox, grader)
         assert result.passed is True
@@ -66,14 +66,14 @@ class TestGradeStatus:
             "│ chain  │ ok       │\n"
             "│ plot   │ pending  │\n"
         )
-        sandbox = _mock_sandbox({"prism status": ExecuteResult(exit_code=0, output=status_output)})
+        sandbox = _mock_sandbox({"lc status": ExecuteResult(exit_code=0, output=status_output)})
         grader = GraderSpec(name="status", type=GraderType.status)
         result = _grade_status(sandbox, grader)
         assert result.passed is False
         assert result.score == 0.5
 
     def test_status_command_failure(self):
-        sandbox = _mock_sandbox({"prism status": ExecuteResult(exit_code=1, output="error")})
+        sandbox = _mock_sandbox({"lc status": ExecuteResult(exit_code=1, output="error")})
         grader = GraderSpec(name="status", type=GraderType.status)
         result = _grade_status(sandbox, grader)
         assert result.error is not None

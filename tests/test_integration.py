@@ -3,7 +3,7 @@
 import pytest
 from click.testing import CliRunner
 
-from prism.cli import main
+from lightcone.cli.commands import main
 
 
 @pytest.fixture
@@ -43,14 +43,14 @@ decisions: {}
 
 class TestIntegration:
     def test_init_creates_dagster_yaml(self, project_dir):
-        assert (project_dir / ".prism" / "dagster.yaml").exists()
+        assert (project_dir / ".lightcone" / "dagster.yaml").exists()
 
     def test_init_creates_project_structure(self, project_dir):
         assert (project_dir / "astra.yaml").exists()
         assert (project_dir / "universes").is_dir()
         assert (project_dir / "results").is_dir()
         assert (project_dir / "scripts").is_dir()
-        assert (project_dir / ".prism").is_dir()
+        assert (project_dir / ".lightcone").is_dir()
 
     def test_init_creates_containerfile(self, tmp_path, runner):
         project = tmp_path / "container-project"
@@ -72,7 +72,7 @@ class TestIntegration:
         (project_dir / "universes" / "baseline.yaml").write_text(
             "id: baseline\ndecisions: {}\n"
         )
-        from prism.dagster.status import get_output_status
+        from lightcone.engine.status import get_output_status
 
         status = get_output_status(project_dir, "baseline")
         assert status["cleaned"] == "pending"
@@ -90,17 +90,17 @@ class TestIntegration:
         # chdir so relative paths in dagster.yaml resolve to project_dir
         monkeypatch.chdir(project_dir)
 
-        instance = dg.DagsterInstance.from_config(str(project_dir / ".prism"))
+        instance = dg.DagsterInstance.from_config(str(project_dir / ".lightcone"))
         materialize_via_dagster(instance, "baseline", "cleaned")
 
-        from prism.dagster.status import get_output_status
+        from lightcone.engine.status import get_output_status
 
         status = get_output_status(project_dir, "baseline", instance=instance)
         assert status["cleaned"] == "materialized"
         assert status["result"] == "pending"
 
     def test_status_cli_output(self, project_dir, runner, monkeypatch):
-        """prism status should run without error."""
+        """lc status should run without error."""
         monkeypatch.chdir(project_dir)
         (project_dir / "universes" / "baseline.yaml").write_text(
             "id: baseline\ndecisions: {}\n"
@@ -113,9 +113,9 @@ class TestIntegration:
         """Target config round-trip."""
         targets = tmp_path / "targets"
         targets.mkdir()
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir", lambda: targets)
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir", lambda: targets)
 
-        from prism.dagster.targets import list_targets, load_target, save_target
+        from lightcone.engine.targets import list_targets, load_target, save_target
 
         save_target("test-target", {
             "site": "test-site",
@@ -129,7 +129,7 @@ class TestIntegration:
 
     def test_io_manager_paths(self, project_dir):
         """IO manager should produce correct paths."""
-        from prism.dagster.io_manager import ASTRAIOManager
+        from lightcone.engine.io_manager import ASTRAIOManager
 
         mgr = ASTRAIOManager(project_root=str(project_dir))
         path = mgr.get_output_path("cleaned", "baseline")
@@ -140,7 +140,7 @@ class TestIntegration:
         import subprocess
         import sys
 
-        from prism.dagster.runner import ASTRAContainerRunner
+        from lightcone.engine.runner import ASTRAContainerRunner
 
         # Create a minimal .venv so the venv backend can use it
         subprocess.run(

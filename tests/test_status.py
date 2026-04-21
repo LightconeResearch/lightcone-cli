@@ -4,7 +4,7 @@ from __future__ import annotations
 import dagster as dg
 from conftest import materialize_via_dagster
 
-from prism.dagster.status import get_all_universe_status, get_output_status
+from lightcone.engine.status import get_all_universe_status, get_output_status
 
 
 class TestOutputStatus:
@@ -169,17 +169,17 @@ outputs:
             'id: alt\ndecisions: {}\n'
         )
 
-        # Create .prism/dagster.yaml — use absolute base_dir so it works regardless of CWD
-        prism_dir = tmp_path / ".prism"
-        prism_dir.mkdir(parents=True, exist_ok=True)
+        # Create .lightcone/dagster.yaml — use absolute base_dir so it works regardless of CWD
+        lightcone_dir = tmp_path / ".lightcone"
+        lightcone_dir.mkdir(parents=True, exist_ok=True)
         dagster_dir = tmp_path / "results" / ".dagster"
         dagster_dir.mkdir(parents=True, exist_ok=True)
-        (prism_dir / "dagster.yaml").write_text(
+        (lightcone_dir / "dagster.yaml").write_text(
             f"storage:\n  sqlite:\n    base_dir: {dagster_dir}\n"
         )
         # chdir so DagsterInstance resolves paths correctly
         monkeypatch.chdir(tmp_path)
-        instance = dg.DagsterInstance.from_config(str(prism_dir))
+        instance = dg.DagsterInstance.from_config(str(lightcone_dir))
         materialize_via_dagster(instance, "baseline", "result")
 
         result = get_all_universe_status(tmp_path)

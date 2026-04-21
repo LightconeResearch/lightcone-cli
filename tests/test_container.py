@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from prism.container import (
+from lightcone.engine.container import (
     ContainerBuildError,
     build_image,
     build_image_podman_hpc,
@@ -72,9 +72,9 @@ class TestComputeImageTag:
     def test_tag_format(self, project):
         containerfile = project / "Containerfile"
         tag = compute_image_tag("my-project", containerfile, project)
-        assert tag.startswith("prism-my-project-")
+        assert tag.startswith("lc-my-project-")
         # 12 hex chars after the prefix
-        hash_part = tag.removeprefix("prism-my-project-")
+        hash_part = tag.removeprefix("lc-my-project-")
         assert len(hash_part) == 12
 
     def test_changes_with_containerfile(self, project):
@@ -94,60 +94,60 @@ class TestComputeImageTag:
     def test_sanitises_project_name(self, project):
         containerfile = project / "Containerfile"
         tag = compute_image_tag("My Project", containerfile, project)
-        assert tag.startswith("prism-my-project-")
+        assert tag.startswith("lc-my-project-")
 
 
 class TestImageExistsLocally:
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_exists(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
-        assert image_exists_locally("prism-test-abc123") is True
+        assert image_exists_locally("lc-test-abc123") is True
 
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_not_exists(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1)
-        assert image_exists_locally("prism-test-abc123") is False
+        assert image_exists_locally("lc-test-abc123") is False
 
-    @patch("prism.container.subprocess.run", side_effect=FileNotFoundError)
+    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
     def test_docker_not_installed(self, mock_run):
-        assert image_exists_locally("prism-test-abc123") is False
+        assert image_exists_locally("lc-test-abc123") is False
 
 
 class TestBuildImage:
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_success(self, mock_run, project):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="built", stderr=""
         )
         result = build_image(
-            "prism-test-abc123",
+            "lc-test-abc123",
             project / "Containerfile",
             project,
         )
-        assert result.tag == "prism-test-abc123"
+        assert result.tag == "lc-test-abc123"
         assert result.already_existed is False
         assert result.exit_code == 0
 
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_failure(self, mock_run, project):
         mock_run.return_value = MagicMock(
             returncode=1, stdout="", stderr="some error"
         )
         with pytest.raises(ContainerBuildError, match="docker build failed"):
-            build_image("prism-test-abc123", project / "Containerfile", project, runtime="docker")
+            build_image("lc-test-abc123", project / "Containerfile", project, runtime="docker")
 
-    @patch("prism.container.subprocess.run", side_effect=FileNotFoundError)
+    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
     def test_docker_not_installed(self, mock_run, project):
         with pytest.raises(ContainerBuildError, match="docker is not installed"):
-            build_image("prism-test-abc123", project / "Containerfile", project)
+            build_image("lc-test-abc123", project / "Containerfile", project)
 
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_build_args(self, mock_run, project):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="", stderr=""
         )
         build_image(
-            "prism-test-abc123",
+            "lc-test-abc123",
             project / "Containerfile",
             project,
             build_args={"PY_VERSION": "3.12"},
@@ -167,30 +167,30 @@ class TestResolveContainerSpec:
     def test_containerfile_path_dry_run(self, project):
         tag = resolve_container_spec("Containerfile", project, "test", dry_run=True)
         assert tag is not None
-        assert tag.startswith("prism-test-")
+        assert tag.startswith("lc-test-")
 
     def test_nonexistent_path_treated_as_image(self, tmp_path):
         # A string that doesn't point to an existing file is a pre-built image
         assert resolve_container_spec("NoSuchFile", tmp_path, "test") == "NoSuchFile"
 
-    @patch("prism.container.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.container.image_exists_locally", return_value=True)
     def test_exists_skip_build(self, mock_exists, project):
         tag = resolve_container_spec("Containerfile", project, "test")
         assert tag is not None
-        assert tag.startswith("prism-test-")
+        assert tag.startswith("lc-test-")
 
-    @patch("prism.container.build_image")
-    @patch("prism.container.image_exists_locally", return_value=False)
+    @patch("lightcone.engine.container.build_image")
+    @patch("lightcone.engine.container.image_exists_locally", return_value=False)
     def test_not_exists_builds(self, mock_exists, mock_build, project):
-        mock_build.return_value = MagicMock(tag="prism-test-abc123")
+        mock_build.return_value = MagicMock(tag="lc-test-abc123")
         tag = resolve_container_spec("Containerfile", project, "test")
         assert tag is not None
         mock_build.assert_called_once()
 
-    @patch("prism.container.build_image")
-    @patch("prism.container.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.container.build_image")
+    @patch("lightcone.engine.container.image_exists_locally", return_value=True)
     def test_force_rebuilds(self, mock_exists, mock_build, project):
-        mock_build.return_value = MagicMock(tag="prism-test-abc123")
+        mock_build.return_value = MagicMock(tag="lc-test-abc123")
         tag = resolve_container_spec("Containerfile", project, "test", force=True)
         assert tag is not None
         mock_build.assert_called_once()
@@ -212,14 +212,14 @@ class TestGetContainerStatus:
         assert s.type == "prebuilt"
         assert s.image == "NoSuchFile"
 
-    @patch("prism.container.image_exists_locally", return_value=False)
+    @patch("lightcone.engine.container.image_exists_locally", return_value=False)
     def test_containerfile_not_built(self, mock_exists, project):
         s = get_container_status("Containerfile", project, "test")
         assert s.type == "build"
         assert s.exists is False
         assert s.image is not None
 
-    @patch("prism.container.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.container.image_exists_locally", return_value=True)
     def test_containerfile_built(self, mock_exists, project):
         s = get_container_status("Containerfile", project, "test")
         assert s.type == "build"
@@ -233,47 +233,47 @@ class TestGetContainerStatus:
 
 
 class TestImageExistsPodmanHpc:
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_exists(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
         assert image_exists_podman_hpc("my-image:v1") is True
 
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_not_exists(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1)
         assert image_exists_podman_hpc("my-image:v1") is False
 
-    @patch("prism.container.subprocess.run", side_effect=FileNotFoundError)
+    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
     def test_not_installed(self, mock_run):
         assert image_exists_podman_hpc("my-image:v1") is False
 
 
 class TestBuildImagePodmanHpc:
-    @patch("prism.container._podman_hpc_migrate")
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container._podman_hpc_migrate")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_success(self, mock_run, mock_migrate, project):
         mock_run.return_value = MagicMock(returncode=0, stdout="built", stderr="")
         result = build_image_podman_hpc(
-            "prism-test-abc123", project / "Containerfile", project,
+            "lc-test-abc123", project / "Containerfile", project,
         )
-        assert result.tag == "prism-test-abc123"
+        assert result.tag == "lc-test-abc123"
         assert result.already_existed is False
         # Should also have migrated
-        mock_migrate.assert_called_once_with("prism-test-abc123")
+        mock_migrate.assert_called_once_with("lc-test-abc123")
 
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_failure(self, mock_run, project):
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="build error")
         with pytest.raises(ContainerBuildError, match="podman-hpc build failed"):
             build_image_podman_hpc(
-                "prism-test-abc123", project / "Containerfile", project,
+                "lc-test-abc123", project / "Containerfile", project,
             )
 
-    @patch("prism.container.subprocess.run", side_effect=FileNotFoundError)
+    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
     def test_not_installed(self, mock_run, project):
         with pytest.raises(ContainerBuildError, match="podman-hpc is not installed"):
             build_image_podman_hpc(
-                "prism-test-abc123", project / "Containerfile", project,
+                "lc-test-abc123", project / "Containerfile", project,
             )
 
 
@@ -281,15 +281,15 @@ class TestResolveContainerForSlurm:
     def test_none_returns_none(self, project):
         assert resolve_container_for_slurm(None, project, "test", "podman-hpc") is None
 
-    @patch("prism.container.image_exists_podman_hpc", return_value=True)
+    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=True)
     def test_prebuilt_podman_already_exists(self, mock_exists, project):
         result = resolve_container_for_slurm(
             "my-image:v1", project, "test", "podman-hpc",
         )
         assert result == "my-image:v1"
 
-    @patch("prism.container._podman_hpc_migrate")
-    @patch("prism.container.image_exists_podman_hpc", return_value=False)
+    @patch("lightcone.engine.container._podman_hpc_migrate")
+    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=False)
     def test_prebuilt_podman_migrates(self, mock_exists, mock_migrate, project):
         result = resolve_container_for_slurm(
             "my-image:v1", project, "test", "podman-hpc",
@@ -297,23 +297,23 @@ class TestResolveContainerForSlurm:
         assert result == "my-image:v1"
         mock_migrate.assert_called_once_with("my-image:v1")
 
-    @patch("prism.container.build_image_podman_hpc")
-    @patch("prism.container.image_exists_podman_hpc", return_value=False)
+    @patch("lightcone.engine.container.build_image_podman_hpc")
+    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=False)
     def test_containerfile_podman_builds(self, mock_exists, mock_build, project):
-        mock_build.return_value = MagicMock(tag="prism-test-abc123")
+        mock_build.return_value = MagicMock(tag="lc-test-abc123")
         tag = resolve_container_for_slurm("Containerfile", project, "test", "podman-hpc")
         assert tag is not None
-        assert tag.startswith("prism-test-")
+        assert tag.startswith("lc-test-")
         mock_build.assert_called_once()
 
-    @patch("prism.container.image_exists_podman_hpc", return_value=True)
+    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=True)
     def test_containerfile_podman_cached(self, mock_exists, project):
         tag = resolve_container_for_slurm("Containerfile", project, "test", "podman-hpc")
         assert tag is not None
-        assert tag.startswith("prism-test-")
+        assert tag.startswith("lc-test-")
 
-    @patch("prism.container._podman_hpc_migrate")
-    @patch("prism.container.image_exists_podman_hpc", return_value=False)
+    @patch("lightcone.engine.container._podman_hpc_migrate")
+    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=False)
     def test_nonexistent_path_treated_as_image(self, mock_exists, mock_migrate, tmp_path):
         # A string that doesn't point to an existing file is a pre-built image
         tag = resolve_container_for_slurm("NoSuchFile", tmp_path, "test", "podman-hpc")
@@ -322,22 +322,22 @@ class TestResolveContainerForSlurm:
 
 
 class TestDetectContainerRuntime:
-    @patch("prism.container.shutil.which")
+    @patch("lightcone.engine.container.shutil.which")
     def test_docker_found(self, mock_which):
         mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
         assert detect_container_runtime() == "docker"
 
-    @patch("prism.container.shutil.which")
+    @patch("lightcone.engine.container.shutil.which")
     def test_podman_only(self, mock_which):
         mock_which.side_effect = lambda name: "/usr/bin/podman" if name == "podman" else None
         assert detect_container_runtime() == "podman"
 
-    @patch("prism.container.shutil.which")
+    @patch("lightcone.engine.container.shutil.which")
     def test_docker_preferred_over_podman(self, mock_which):
         mock_which.side_effect = lambda name: f"/usr/bin/{name}"
         assert detect_container_runtime() == "docker"
 
-    @patch("prism.container.shutil.which", return_value=None)
+    @patch("lightcone.engine.container.shutil.which", return_value=None)
     def test_neither_found(self, mock_which):
         assert detect_container_runtime() is None
 
@@ -349,14 +349,14 @@ class TestPodmanSupport:
         (tmp_path / "requirements.txt").write_text("numpy\n")
         return tmp_path
 
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_image_exists_with_podman(self, mock_run, project):
         mock_run.return_value = MagicMock(returncode=0)
         assert image_exists_locally("some-tag", runtime="podman") is True
         mock_run.assert_called_once()
         assert mock_run.call_args[0][0][0] == "podman"
 
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_build_image_with_podman(self, mock_run, project):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         result = build_image(
@@ -367,12 +367,12 @@ class TestPodmanSupport:
         assert cmd[0] == "podman"
         assert cmd[1] == "build"
 
-    @patch("prism.container.subprocess.run", side_effect=FileNotFoundError)
+    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
     def test_build_image_podman_not_installed(self, mock_run, project):
         with pytest.raises(ContainerBuildError, match="podman is not installed"):
             build_image("test-tag", project / "Containerfile", project, runtime="podman")
 
-    @patch("prism.container.subprocess.run")
+    @patch("lightcone.engine.container.subprocess.run")
     def test_resolve_container_spec_with_podman(self, mock_run, project):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         tag = resolve_container_spec("Containerfile", project, "test", runtime="podman")

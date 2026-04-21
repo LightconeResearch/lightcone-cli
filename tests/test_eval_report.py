@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from prism.eval.models import (
+from lightcone.eval.models import (
     EvalRun,
     EvalRunConfig,
     GraderResult,
@@ -16,7 +16,7 @@ from prism.eval.models import (
     IterationResult,
     TrialResult,
 )
-from prism.eval.report import (
+from lightcone.eval.report import (
     compute_summary,
     load_results,
     print_comparison_between,

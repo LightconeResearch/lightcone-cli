@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from prism.dagster.runner import (
+from lightcone.engine.runner import (
     ASTRAContainerRunner,
     _check_sacct,
     _normalise_time_limit,
@@ -213,7 +213,7 @@ class TestGenerateSbatchScript:
             scheduler_config={"account": "m1234", "partition": "gpu"},
         )
         assert "#!/bin/bash" in script
-        assert "#SBATCH --job-name=prism_trained_model_baseline" in script
+        assert "#SBATCH --job-name=lc_trained_model_baseline" in script
         assert "#SBATCH --account=m1234" in script
         assert "#SBATCH --partition=gpu" in script
         assert "#SBATCH --cpus-per-task=4" in script
@@ -240,36 +240,7 @@ class TestGenerateSbatchScript:
         assert "--gpu" in script
         assert "#SBATCH --gpus=1" in script
 
-    def test_mpi_derived_from_multi_node(self, tmp_path):
-        """Multi-node recipes (nodes > 1) derive --mpi automatically."""
-        script = generate_sbatch_script(
-            command="python scripts/train.py",
-            container="ghcr.io/proj/ml:latest",
-            container_runtime="podman-hpc",
-            project_root=tmp_path,
-            output_id="train",
-            universe_id="baseline",
-            resources={"nodes": 2},
-            scheduler_config={"account": "m1234"},
-        )
-        assert "--mpi" in script
-
-    def test_no_mpi_for_single_node(self, tmp_path):
-        """Single-node recipes should not get --mpi."""
-        script = generate_sbatch_script(
-            command="python scripts/train.py",
-            container="ghcr.io/proj/ml:latest",
-            container_runtime="podman-hpc",
-            project_root=tmp_path,
-            output_id="train",
-            universe_id="baseline",
-            resources={"nodes": 1, "gpus": 1},
-            scheduler_config={"account": "m1234"},
-        )
-        assert "--mpi" not in script
-
-    def test_extra_container_flags(self, tmp_path):
-        """extra_container_flags like --nccl pass through to podman-hpc."""
+    def test_podman_hpc_with_mpi_flags(self, tmp_path):
         script = generate_sbatch_script(
             command="python scripts/train.py",
             container="ghcr.io/proj/ml:latest",
@@ -280,14 +251,14 @@ class TestGenerateSbatchScript:
             resources={},
             scheduler_config={
                 "account": "m1234",
-                "extra_container_flags": ["--nccl", "--scratch"],
+                "container_flags": ["--mpi", "--nccl"],
             },
         )
+        assert "--mpi" in script
         assert "--nccl" in script
-        assert "--scratch" in script
 
-    def test_legacy_container_flags_still_work(self, tmp_path):
-        """Old container_flags key is supported as fallback."""
+    def test_podman_hpc_with_custom_flags(self, tmp_path):
+        """Custom container_flags like --scratch pass through to podman-hpc."""
         script = generate_sbatch_script(
             command="python scripts/train.py",
             container="ghcr.io/proj/ml:latest",
@@ -298,10 +269,10 @@ class TestGenerateSbatchScript:
             resources={},
             scheduler_config={
                 "account": "m1234",
-                "container_flags": ["--mpi", "--cfs"],
+                "container_flags": ["--scratch", "--cfs"],
             },
         )
-        assert "--mpi" in script
+        assert "--scratch" in script
         assert "--cfs" in script
 
     def test_no_container(self, tmp_path):
@@ -424,8 +395,8 @@ class TestSlurmRunner:
         assert result.exit_code == 127
         assert "sbatch" in result.metadata.get("stderr", "")
 
-    @patch("prism.dagster.runner.subprocess.run")
-    @patch("prism.dagster.runner._poll_slurm_job")
+    @patch("lightcone.engine.runner.subprocess.run")
+    @patch("lightcone.engine.runner._poll_slurm_job")
     def test_slurm_submit_and_poll(self, mock_poll, mock_run, tmp_path):
         """Test the full submit + poll flow with mocked subprocess."""
         # Mock sbatch submission
@@ -461,7 +432,7 @@ class TestSlurmRunner:
         assert result.metadata["container_runtime"] == "podman-hpc"
         assert result.metadata["slurm_state"] == "COMPLETED"
 
-    @patch("prism.dagster.runner.subprocess.run")
+    @patch("lightcone.engine.runner.subprocess.run")
     def test_slurm_submit_failure(self, mock_run, tmp_path):
         """sbatch returns non-zero exit code."""
         mock_submit = MagicMock()
@@ -485,7 +456,7 @@ class TestSlurmRunner:
         assert result.exit_code == 1
         assert "invalid account" in result.metadata["stderr"]
 
-    @patch("prism.dagster.runner.subprocess.run")
+    @patch("lightcone.engine.runner.subprocess.run")
     def test_slurm_creates_script_file(self, mock_run, tmp_path):
         """Verify that sbatch script is written to results/.slurm/."""
         mock_submit = MagicMock()
@@ -517,7 +488,7 @@ class TestSlurmRunner:
         assert "#!/bin/bash" in content
         assert "podman-hpc run" in content
 
-    @patch("prism.dagster.runner.subprocess.run")
+    @patch("lightcone.engine.runner.subprocess.run")
     def test_slurm_forwards_universe_and_params(self, mock_run, tmp_path):
         """Universe ID and decision params must appear in the sbatch script command."""
         mock_submit = MagicMock()
@@ -556,7 +527,7 @@ class TestSlurmRunner:
 class TestCheckSacct:
     def test_completed_returns_zero(self):
         stdout = "12345|COMPLETED|0:0|00:05:00|nid001\n"
-        with patch("prism.dagster.runner.subprocess.run") as mock_run:
+        with patch("lightcone.engine.runner.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             exit_code, meta = _check_sacct("12345")
         assert exit_code == 0
@@ -565,7 +536,7 @@ class TestCheckSacct:
     def test_cancelled_returns_nonzero(self):
         """CANCELLED jobs report 0:0 in sacct but should be treated as failure."""
         stdout = "12345|CANCELLED|0:0|00:01:00|nid001\n"
-        with patch("prism.dagster.runner.subprocess.run") as mock_run:
+        with patch("lightcone.engine.runner.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             exit_code, meta = _check_sacct("12345")
         assert exit_code != 0
@@ -573,21 +544,21 @@ class TestCheckSacct:
 
     def test_timeout_returns_nonzero(self):
         stdout = "12345|TIMEOUT|0:0|04:00:00|nid001\n"
-        with patch("prism.dagster.runner.subprocess.run") as mock_run:
+        with patch("lightcone.engine.runner.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             exit_code, meta = _check_sacct("12345")
         assert exit_code != 0
 
     def test_failed_returns_nonzero(self):
         stdout = "12345|FAILED|1:0|00:02:00|nid001\n"
-        with patch("prism.dagster.runner.subprocess.run") as mock_run:
+        with patch("lightcone.engine.runner.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             exit_code, meta = _check_sacct("12345")
         assert exit_code != 0
 
     def test_running_returns_none(self):
         stdout = "12345|RUNNING|0:0|00:01:00|nid001\n"
-        with patch("prism.dagster.runner.subprocess.run") as mock_run:
+        with patch("lightcone.engine.runner.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             exit_code, meta = _check_sacct("12345")
         assert exit_code is None
@@ -681,175 +652,3 @@ class TestExternalInputs:
         )
         assert "mkdir -p data" not in script
         assert "ln -sfn" not in script
-
-
-# ---------------------------------------------------------------------------
-# QoS validation and resource clamping
-# ---------------------------------------------------------------------------
-
-
-class TestQoSValidation:
-    @patch("prism.dagster.runner.subprocess.run")
-    def test_resource_limit_clamping(self, mock_run, tmp_path):
-        """Nodes exceeding target max_nodes should be clamped."""
-        mock_submit = MagicMock()
-        mock_submit.returncode = 1
-        mock_submit.stdout = ""
-        mock_submit.stderr = "error"
-        mock_run.return_value = mock_submit
-
-        runner = ASTRAContainerRunner(
-            project_root=str(tmp_path),
-            backend="slurm",
-            target_config={
-                "scheduler": {
-                    "container_runtime": "podman-hpc",
-                    "account": "m1234",
-                },
-                "resource_limits": {
-                    "max_nodes": 4,
-                },
-            },
-        )
-        runner.execute(
-            command="python train.py",
-            output_id="model",
-            universe_id="baseline",
-            container="img:1.0",
-            resources={"nodes": 8},
-        )
-
-        # Check the generated script has nodes=4 (clamped)
-        script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
-        content = script_path.read_text()
-        assert "--nodes=4" in content
-        assert "--nodes=8" not in content
-
-    @patch("prism.dagster.runner.subprocess.run")
-    def test_qos_auto_switch(self, mock_run, tmp_path, monkeypatch):
-        """When preferred QoS can't handle the job, auto-switch to eligible."""
-        from prism.dagster.slurm_info import ClusterInfo, QoSInfo
-
-        cluster = ClusterInfo(
-            qos={
-                "gpu_debug": QoSInfo("gpu_debug", max_wall_minutes=30,
-                                      max_nodes=8, priority=69119),
-                "gpu_regular": QoSInfo("gpu_regular", max_wall_minutes=2880,
-                                       priority=67679),
-            },
-            user_qos=["gpu_debug", "gpu_regular"],
-            user_accounts=["m4031"],
-            partitions={},
-            timestamp="2026-03-28T00:00:00",
-        )
-
-        monkeypatch.setattr(
-            "prism.dagster.targets.load_cluster_cache",
-            lambda name: cluster,
-        )
-        monkeypatch.setattr(
-            "prism.dagster.targets.is_cache_stale",
-            lambda name: False,
-        )
-
-        mock_submit = MagicMock()
-        mock_submit.returncode = 1
-        mock_submit.stdout = ""
-        mock_submit.stderr = "error"
-        mock_run.return_value = mock_submit
-
-        runner = ASTRAContainerRunner(
-            project_root=str(tmp_path),
-            backend="slurm",
-            target_config={
-                "scheduler": {
-                    "container_runtime": "podman-hpc",
-                    "account": "m1234",
-                    "qos": "gpu_debug",
-                    "_target_name": "test",
-                    "_strategy": "switch",
-                    "_allowed_qos": [
-                        {"name": "gpu_debug", "constraint": "gpu"},
-                        {"name": "gpu_regular", "constraint": "gpu"},
-                    ],
-                },
-            },
-        )
-        runner.execute(
-            command="python train.py",
-            output_id="model",
-            universe_id="baseline",
-            container="img:1.0",
-            resources={"nodes": 16, "gpus": 4},
-        )
-
-        # Check the generated script switched to gpu_regular
-        script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
-        content = script_path.read_text()
-        assert "--qos=gpu_regular" in content
-        assert "--qos=gpu_debug" not in content
-
-    @patch("prism.dagster.runner.subprocess.run")
-    def test_qos_fit_strategy_reduces_nodes(self, mock_run, tmp_path, monkeypatch):
-        """Fit strategy: reduce nodes to stay in current QoS."""
-        from prism.dagster.slurm_info import ClusterInfo, QoSInfo
-
-        cluster = ClusterInfo(
-            qos={
-                "gpu_debug": QoSInfo("gpu_debug", max_wall_minutes=30,
-                                      max_nodes=8, priority=69119),
-                "gpu_regular": QoSInfo("gpu_regular", max_wall_minutes=2880,
-                                       priority=67679),
-            },
-            user_qos=["gpu_debug", "gpu_regular"],
-            user_accounts=["m4031"],
-            partitions={},
-            timestamp="2026-03-28T00:00:00",
-        )
-
-        monkeypatch.setattr(
-            "prism.dagster.targets.load_cluster_cache",
-            lambda name: cluster,
-        )
-        monkeypatch.setattr(
-            "prism.dagster.targets.is_cache_stale",
-            lambda name: False,
-        )
-
-        mock_submit = MagicMock()
-        mock_submit.returncode = 1
-        mock_submit.stdout = ""
-        mock_submit.stderr = "error"
-        mock_run.return_value = mock_submit
-
-        runner = ASTRAContainerRunner(
-            project_root=str(tmp_path),
-            backend="slurm",
-            target_config={
-                "scheduler": {
-                    "container_runtime": "podman-hpc",
-                    "account": "m1234",
-                    "qos": "gpu_debug",
-                    "_target_name": "test",
-                    "_strategy": "fit",
-                    "_allowed_qos": [
-                        {"name": "gpu_debug", "constraint": "gpu"},
-                        {"name": "gpu_regular", "constraint": "gpu"},
-                    ],
-                },
-            },
-        )
-        runner.execute(
-            command="python train.py",
-            output_id="model",
-            universe_id="baseline",
-            container="img:1.0",
-            resources={"nodes": 16, "gpus": 4},
-        )
-
-        # Fit strategy: should stay in gpu_debug but reduce nodes to 8
-        script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
-        content = script_path.read_text()
-        assert "--qos=gpu_debug" in content
-        assert "--nodes=8" in content
-        assert "--nodes=16" not in content

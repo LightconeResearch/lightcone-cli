@@ -1,7 +1,7 @@
 """Tests for HPC site defaults."""
 from __future__ import annotations
 
-from prism.dagster.site_registry import (
+from lightcone.engine.site_registry import (
     SITE_DEFAULTS,
     detect_site,
     get_site_defaults,
@@ -38,53 +38,45 @@ class TestGetSiteDefaults:
         site = get_site_defaults("perlmutter")
         assert site is not None
         assert site["backend"] == "slurm"
-        assert site["container_runtime"] == "podman-hpc"
+        assert site["scheduler"]["container_runtime"] == "podman-hpc"
+        assert "gpu" in site["node_types"]
         assert site["connection"]["hostname"] == "perlmutter.nersc.gov"
 
-    def test_perlmutter_constraint_guidance(self):
+    def test_perlmutter_gpu_node_type(self):
         site = get_site_defaults("perlmutter")
         assert site is not None
-        guidance = site["constraint_guidance"]
-        assert "gpu" in guidance
-        assert "cpu" in guidance
-        assert "gpu&hbm80g" in guidance
-        assert "A100" in guidance["gpu"]
+        gpu = site["node_types"]["gpu"]
+        assert gpu["constraint"] == "gpu"
+        assert "--gpu" in gpu["container_flags"]
+        assert "description" in gpu
 
-    def test_perlmutter_suggested_qos(self):
+    def test_perlmutter_gpu_hbm80_node_type(self):
         site = get_site_defaults("perlmutter")
         assert site is not None
-        suggested = site["suggested_qos"]
-        names = [s["name"] for s in suggested]
-        assert "gpu_debug" in names
-        assert "gpu_regular" in names
-        assert "debug" in names  # CPU
-        # Each entry has constraint and use_for
-        for entry in suggested:
-            assert "constraint" in entry
-            assert "use_for" in entry
+        gpu80 = site["node_types"]["gpu_hbm80"]
+        assert gpu80["constraint"] == "gpu&hbm80g"
+        assert "--gpu" in gpu80["container_flags"]
 
-    def test_perlmutter_gpu_entries_have_slurm_qos(self):
-        """GPU entries have slurm_qos that differs from name."""
+    def test_perlmutter_cpu_node_type(self):
         site = get_site_defaults("perlmutter")
         assert site is not None
-        gpu_entries = [s for s in site["suggested_qos"] if s["constraint"] == "gpu"]
-        for entry in gpu_entries:
-            assert "slurm_qos" in entry
-            assert entry["slurm_qos"] != entry["name"]
+        cpu = site["node_types"]["cpu"]
+        assert cpu["constraint"] == "cpu"
+        assert cpu["container_flags"] == []
 
-    def test_perlmutter_has_gpu_and_cpu_qos(self):
+    def test_perlmutter_qos_options(self):
         site = get_site_defaults("perlmutter")
         assert site is not None
-        constraints = {s["constraint"] for s in site["suggested_qos"]}
-        assert "gpu" in constraints
-        assert "cpu" in constraints
+        qos = site["qos_options"]
+        assert "regular" in qos
+        assert "debug" in qos
+        assert qos["regular"].get("default") is True
 
-    def test_perlmutter_safe_defaults(self):
+    def test_perlmutter_container_runtimes(self):
         site = get_site_defaults("perlmutter")
         assert site is not None
-        defaults = site["safe_defaults"]
-        assert defaults["qos"] == "gpu_debug"
-        assert defaults["constraint"] == "gpu"
+        assert "podman-hpc" in site["container_runtimes"]
+        assert "shifter" not in site["container_runtimes"]
 
     def test_local_site_exists(self):
         defaults = get_site_defaults("local")
@@ -124,52 +116,45 @@ class TestSiteDefaultsSchema:
     """Ensure all site entries have the required fields."""
 
     def test_all_sites_have_required_fields(self):
-        required = {"hostname_patterns", "backend", "connection", "display_name"}
+        required = {"hostname_patterns", "backend", "connection", "scheduler",
+                     "node_types", "qos_options", "container_runtimes",
+                     "resource_limits"}
         for key, site in SITE_DEFAULTS.items():
             missing = required - set(site.keys())
             assert not missing, f"Site '{key}' missing fields: {missing}"
 
-    def test_slurm_sites_have_container_runtime(self):
+    def test_all_sites_have_container_runtime(self):
         for key, site in SITE_DEFAULTS.items():
-            if site.get("backend") != "slurm":
+            if site.get("backend") == "local":
                 continue
-            assert "container_runtime" in site, \
-                f"SLURM site '{key}' missing container_runtime"
+            assert "container_runtime" in site["scheduler"], \
+                f"Site '{key}' missing scheduler.container_runtime"
 
-    def test_slurm_sites_have_suggested_qos(self):
+    def test_all_node_types_have_required_fields(self):
         for key, site in SITE_DEFAULTS.items():
-            if site.get("backend") != "slurm":
+            if site.get("backend") == "local":
                 continue
-            assert "suggested_qos" in site, \
-                f"SLURM site '{key}' missing suggested_qos"
-            for entry in site["suggested_qos"]:
-                assert "name" in entry, \
-                    f"Site '{key}' suggested_qos entry missing 'name'"
-                assert "constraint" in entry, \
-                    f"Site '{key}' suggested_qos entry missing 'constraint'"
-                assert "use_for" in entry, \
-                    f"Site '{key}' suggested_qos entry missing 'use_for'"
+            for nname, ninfo in site["node_types"].items():
+                assert "constraint" in ninfo, \
+                    f"Site '{key}' node_type '{nname}' missing constraint"
+                assert "container_flags" in ninfo, \
+                    f"Site '{key}' node_type '{nname}' missing container_flags"
+                assert "description" in ninfo, \
+                    f"Site '{key}' node_type '{nname}' missing description"
 
-    def test_slurm_sites_have_constraint_guidance(self):
+    def test_all_qos_options_have_description(self):
         for key, site in SITE_DEFAULTS.items():
-            if site.get("backend") != "slurm":
+            if site.get("backend") == "local":
                 continue
-            assert "constraint_guidance" in site, \
-                f"SLURM site '{key}' missing constraint_guidance"
+            for qname, qinfo in site["qos_options"].items():
+                assert "description" in qinfo, \
+                    f"Site '{key}' qos_option '{qname}' missing description"
 
-    def test_slurm_sites_have_safe_defaults(self):
+    def test_exactly_one_default_qos(self):
         for key, site in SITE_DEFAULTS.items():
-            if site.get("backend") != "slurm":
+            if site.get("backend") == "local":
                 continue
-            assert "safe_defaults" in site, \
-                f"SLURM site '{key}' missing safe_defaults"
-            defaults = site["safe_defaults"]
-            assert "qos" in defaults
-            assert "constraint" in defaults
-
-    def test_slurm_sites_have_scratch_paths(self):
-        for key, site in SITE_DEFAULTS.items():
-            if site.get("backend") != "slurm":
-                continue
-            assert "scratch_paths" in site, \
-                f"SLURM site '{key}' missing scratch_paths"
+            defaults = [q for q, info in site["qos_options"].items()
+                        if info.get("default")]
+            assert len(defaults) == 1, \
+                f"Site '{key}' has {len(defaults)} default QOS options (expected 1)"

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from prism.dagster.runner import ASTRAContainerRunner
+from lightcone.engine.runner import ASTRAContainerRunner
 
 
 @pytest.fixture()

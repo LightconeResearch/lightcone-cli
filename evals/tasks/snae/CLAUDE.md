@@ -2,19 +2,19 @@
 
 ## Project: snae
 
-ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built with Prism.
+ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built with lightcone-cli.
 
 ### Skill Commands
 
 | Command | Purpose |
 |---------|---------|
-| `/prism-new` | Scope question, structure decisions, integrate literature |
-| `/prism-migrate` | Migrate an existing project into ASTRA/Prism framework |
-| `/prism-build [description]` | Build loop -- spec to materialized results. Optional description guides plan priorities |
-| `/prism-verify` | Verify results and decision-code alignment |
-| `/prism-feedback` | File a bug report from the current session |
+| `/lc-new` | Scope question, structure decisions, integrate literature |
+| `/lc-migrate` | Migrate an existing project into ASTRA / lightcone-cli framework |
+| `/lc-build [description]` | Build loop -- spec to materialized results. Optional description guides plan priorities |
+| `/lc-verify` | Verify results and decision-code alignment |
+| `/lc-feedback` | File a bug report from the current session |
 
-**Workflow:** `/prism-new` or `/prism-migrate` --> `/prism-build` --> `/prism-verify`
+**Workflow:** `/lc-new` or `/lc-migrate` --> `/lc-build` --> `/lc-verify`
 
 ### Source of Truth
 
@@ -25,14 +25,14 @@ ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built
 
 ```
 astra.yaml              # Specification: decisions, inputs, outputs
-prism.yaml            # Prism config (default target, etc.)
+lightcone.yaml            # lightcone-cli config (default target, etc.)
 CLAUDE.md             # This file
 Containerfile         # Container image for execution
 requirements.txt      # Python deps (keep in sync with scripts)
 universes/
   baseline.yaml       # Default decision selections
 scripts/              # Implementation scripts
-results/<universe>/   # Outputs by universe (produced by prism run)
+results/<universe>/   # Outputs by universe (produced by lc run)
 ```
 
 ### Development Workflow
@@ -40,10 +40,10 @@ results/<universe>/   # Outputs by universe (produced by prism run)
 Three overlapping phases:
 
 1. **Write & Debug** -- Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
-2. **Integrate** -- Add `recipe:` blocks to outputs in `astra.yaml`. Track with `prism status` (`no recipe` / `pending` / `ok`). Container build specs (Containerfile or image string) can be set at the analysis level or per-recipe.
-3. **Materialize** -- `prism run` executes via Dagster in containers (Docker or SLURM). Falls back to local execution if Docker is unavailable. Done when `prism status` shows all `ok`.
+2. **Integrate** -- Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status` (`no recipe` / `pending` / `ok`). Container build specs (Containerfile or image string) can be set at the analysis level or per-recipe.
+3. **Materialize** -- `lc run` executes via Dagster in containers (Docker or SLURM). Falls back to local execution if Docker is unavailable. Done when `lc status` shows all `ok`.
 
-**An output is not done until `prism run` produces it.** Running scripts directly is for debugging only — final results must always come from `prism run` so they are reproducible inside containers.
+**An output is not done until `lc run` produces it.** Running scripts directly is for debugging only — final results must always come from `lc run` so they are reproducible inside containers.
 
 ### Spec-Code Invariant
 
@@ -56,7 +56,7 @@ Three overlapping phases:
 
 **Every decision must be parameterized in code** -- never hardcode a decision value. Accept all decisions as CLI args.
 
-**Underscore convention:** IDs use underscores in `astra.yaml` (`prior_range`). Prism passes `--prior_range wide`. Scripts must match: `parser.add_argument('--prior_range')`, **not** `--prior-range`.
+**Underscore convention:** IDs use underscores in `astra.yaml` (`prior_range`). lightcone-cli passes `--prior_range wide`. Scripts must match: `parser.add_argument('--prior_range')`, **not** `--prior-range`.
 
 ### Writing Results
 
@@ -77,17 +77,17 @@ astra info [--decisions]                      # Analysis summary / decision deta
 astra universe generate -n NAME [-d "desc"]   # Generate universe from defaults
 astra universe check universes/x.yaml         # Check universe constraints
 
-# prism -- execution operations
-prism run [OUTPUT] [--universe NAME]        # Execute recipes via Dagster (auto-builds)
-prism status [--universe NAME]              # Materialization + container status
+# lc -- execution operations
+lc run [OUTPUT] [--universe NAME]        # Execute recipes via Dagster (auto-builds)
+lc status [--universe NAME]              # Materialization + container status
 ```
 
 ### Status Interpretation
 
-`prism status` shows outputs vs universes. **Progression:** `no recipe` --> `pending` --> `ok`
+`lc status` shows outputs vs universes. **Progression:** `no recipe` --> `pending` --> `ok`
 
 - `ok` -- Recipe exists, results on disk. Done.
-- `pending` -- Recipe exists, not materialized. Run `prism run`.
+- `pending` -- Recipe exists, not materialized. Run `lc run`.
 - `no recipe` -- No `recipe:` block yet. Still in Write & Debug phase.
 
 ---

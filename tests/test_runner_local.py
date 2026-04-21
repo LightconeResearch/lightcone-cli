@@ -1,7 +1,7 @@
 """Tests for local backend execution."""
 from pathlib import Path
 
-from prism.dagster.runner import ASTRAContainerRunner
+from lightcone.engine.runner import ASTRAContainerRunner
 
 
 class TestLocalBackend:
