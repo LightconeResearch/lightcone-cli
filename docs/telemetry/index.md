@@ -34,7 +34,7 @@ Telemetry credentials are stored in `.claude/settings.local.json`:
     "TRACE_TO_LANGFUSE": "true",
     "LANGFUSE_PUBLIC_KEY": "...",
     "LANGFUSE_SECRET_KEY": "relay",
-    "LANGFUSE_HOST": "https://prism-telemetry.lightconeresearch.workers.dev"
+    "LANGFUSE_HOST": "https://telemetry.lightconeresearch.workers.dev"
   }
 }
 ```

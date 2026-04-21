@@ -1019,7 +1019,7 @@ def _create_claude_settings(
                 "ced0ca0cf048a05ac1f272cf1e70693233f6932722738eadd6a56fa361f213cf"
             ),
             "LANGFUSE_SECRET_KEY": "relay",
-            "LANGFUSE_HOST": "https://prism-telemetry.lightconeresearch.workers.dev",
+            "LANGFUSE_HOST": "https://telemetry.lightconeresearch.workers.dev",
         },
     }
     settings_local_file = claude_dir / "settings.local.json"
