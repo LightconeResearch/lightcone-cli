@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from prism.dagster.targets import (
+from lightcone.engine.targets import (
     get_config_path,
     list_targets,
     load_target,
@@ -19,7 +19,7 @@ from prism.dagster.targets import (
 def targets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     targets = tmp_path / "targets"
     targets.mkdir()
-    monkeypatch.setattr("prism.dagster.targets.get_targets_dir", lambda: targets)
+    monkeypatch.setattr("lightcone.engine.targets.get_targets_dir", lambda: targets)
     return targets
 
 
@@ -65,19 +65,19 @@ class TestTargetConfig:
 class TestUserConfig:
     def test_load_missing_returns_empty(self, targets_dir, monkeypatch):
         config_path = targets_dir.parent / "config.yaml"
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: config_path)
         assert load_user_config() == {}
 
     def test_save_and_load_default_target(self, targets_dir, monkeypatch):
         config_path = targets_dir.parent / "config.yaml"
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: config_path)
         save_user_config({"default_target": "perlmutter-gpu"})
         config = load_user_config()
         assert config["default_target"] == "perlmutter-gpu"
 
-    def test_config_path_is_in_prism_dir(self):
+    def test_config_path_is_in_lightcone_dir(self):
         path = get_config_path()
         assert path.name == "config.yaml"
-        assert ".prism" in str(path)
+        assert ".lightcone" in str(path)

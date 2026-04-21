@@ -1,11 +1,11 @@
 # Authoring Skills
 
-Skills are markdown files with YAML frontmatter. They live in `claude/prism/skills/{name}/SKILL.md`.
+Skills are markdown files with YAML frontmatter. They live in `claude/lightcone/skills/{name}/SKILL.md`.
 
 ## File structure
 
 ```
-claude/prism/skills/
+claude/lightcone/skills/
 └── my-skill/
     └── SKILL.md
 ```
@@ -45,7 +45,7 @@ Before starting, read `.claude/guides/astra-reference.md` for the full ASTRA spe
 
 ## Installing into projects
 
-New skills in `claude/prism/skills/` are installed automatically by `prism init`. To push skills to existing projects, run `prism update --sync`.
+New skills in `claude/lightcone/skills/` are installed automatically by `lc init`. To push skills to existing projects, run `lc update --sync`.
 
 ## Testing skills
 
@@ -53,7 +53,7 @@ The `evals/` directory contains test fixtures. Run evals with:
 
 ```bash
 pip install -e ".[eval]"
-prism eval run
+lc eval run
 ```
 
 See `contributing/testing.md` for more details.

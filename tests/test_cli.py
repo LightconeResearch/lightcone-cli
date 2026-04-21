@@ -1,4 +1,4 @@
-"""Tests for Prism CLI commands."""
+"""Tests for lightcone-cli CLI commands."""
 
 from pathlib import Path
 from unittest.mock import patch
@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
-from prism.cli import main
+from lightcone.cli.commands import main
 
 
 @pytest.fixture
@@ -16,7 +16,7 @@ def runner():
 
 
 class TestInitCommand:
-    """Tests for the prism init command."""
+    """Tests for the lc init command."""
 
     def test_init_creates_project_structure(self, runner: CliRunner, tmp_path: Path):
         """Test that basic init creates the project structure."""
@@ -35,7 +35,7 @@ class TestInitCommand:
         assert (project_dir / "universes" / "baseline.yaml").exists()
         assert (project_dir / "scripts").is_dir()
         assert (project_dir / "results").is_dir()
-        assert (project_dir / ".prism").is_dir()
+        assert (project_dir / ".lightcone").is_dir()
 
     def test_init_astra_yaml_content(self, runner: CliRunner, tmp_path: Path):
         """Test that the generated astra.yaml has the expected content."""
@@ -111,7 +111,7 @@ class TestInitCommand:
         assert (project_dir / "astra.yaml").exists()
 
     def test_init_creates_dagster_yaml(self, runner: CliRunner, tmp_path: Path):
-        """Test that init creates .prism/dagster.yaml."""
+        """Test that init creates .lightcone/dagster.yaml."""
         project_dir = tmp_path / "dagster-test"
         result = runner.invoke(
             main,
@@ -119,12 +119,12 @@ class TestInitCommand:
              "--permissions", "recommended"],
         )
         assert result.exit_code == 0
-        assert (project_dir / ".prism" / "dagster.yaml").exists()
+        assert (project_dir / ".lightcone" / "dagster.yaml").exists()
 
-    def test_init_with_target_creates_prism_yaml(self, runner: CliRunner, tmp_path: Path):
-        """Test that --target creates .prism/prism.yaml with a flat target key."""
+    def test_init_with_target_creates_lightcone_yaml(self, runner: CliRunner, tmp_path: Path):
+        """Test that --target creates .lightcone/lightcone.yaml with a flat target key."""
         project_dir = tmp_path / "target-test"
-        with patch("prism.dagster.targets.load_target", return_value={"site": "perlmutter"}):
+        with patch("lightcone.engine.targets.load_target", return_value={"site": "perlmutter"}):
             result = runner.invoke(
                 main,
                 ["init", str(project_dir), "--no-git", "--no-venv",
@@ -132,14 +132,14 @@ class TestInitCommand:
                  "--permissions", "recommended"],
             )
         assert result.exit_code == 0
-        assert (project_dir / ".prism" / "prism.yaml").exists()
+        assert (project_dir / ".lightcone" / "lightcone.yaml").exists()
 
         import yaml
-        config = yaml.safe_load((project_dir / ".prism" / "prism.yaml").read_text())
+        config = yaml.safe_load((project_dir / ".lightcone" / "lightcone.yaml").read_text())
         assert config["target"] == "perlmutter-gpu"
 
     def test_init_without_target_uses_default(self, runner: CliRunner, tmp_path: Path):
-        """Test that without --target, .prism/prism.yaml uses default target from user config."""
+        """Test that without --target, .lightcone/lightcone.yaml uses the default target from user config."""  # noqa: E501
         project_dir = tmp_path / "no-target-test"
         result = runner.invoke(
             main,
@@ -147,17 +147,17 @@ class TestInitCommand:
              "--permissions", "recommended"],
         )
         assert result.exit_code == 0
-        assert (project_dir / ".prism" / "prism.yaml").exists()
+        assert (project_dir / ".lightcone" / "lightcone.yaml").exists()
 
         import yaml
-        prism_cfg = yaml.safe_load(
-            (project_dir / ".prism" / "prism.yaml").read_text()
+        lightcone_cfg = yaml.safe_load(
+            (project_dir / ".lightcone" / "lightcone.yaml").read_text()
         )
         # conftest sets default_target: fake
-        assert prism_cfg["target"] == "fake"
+        assert lightcone_cfg["target"] == "fake"
 
 class TestInitExistingProject:
-    """Tests for prism init --existing-project."""
+    """Tests for lc init --existing-project."""
 
     def test_existing_project_in_place(self, runner: CliRunner, tmp_path: Path):
         """Test --existing-project . adds infrastructure in place."""
@@ -174,15 +174,15 @@ class TestInitExistingProject:
         assert result.exit_code == 0
 
         # Infrastructure created
-        assert (project_dir / ".prism" / "prism.yaml").exists()
-        assert (project_dir / ".prism" / "dagster.yaml").exists()
+        assert (project_dir / ".lightcone" / "lightcone.yaml").exists()
+        assert (project_dir / ".lightcone" / "dagster.yaml").exists()
         assert (project_dir / ".claude" / "settings.json").exists()
         assert (project_dir / "CLAUDE.md").exists()
         assert (project_dir / "universes").is_dir()
         assert (project_dir / "results").is_dir()
         assert (project_dir / "Containerfile").exists()
 
-        # astra.yaml NOT created — that's /prism-migrate's job
+        # astra.yaml NOT created — that's /lc-migrate's job
         assert not (project_dir / "astra.yaml").exists()
 
         # Existing files untouched
@@ -211,11 +211,11 @@ class TestInitExistingProject:
         assert (target_dir / "data" / "input.csv").exists()
 
         # Infrastructure added
-        assert (target_dir / ".prism" / "prism.yaml").exists()
+        assert (target_dir / ".lightcone" / "lightcone.yaml").exists()
         assert (target_dir / "CLAUDE.md").exists()
 
         # Source untouched
-        assert not (source_dir / ".prism").exists()
+        assert not (source_dir / ".lightcone").exists()
 
     def test_existing_project_preserves_gitignore(self, runner: CliRunner, tmp_path: Path):
         """Test that --existing-project appends to existing .gitignore."""
@@ -265,7 +265,7 @@ class TestInitExistingProject:
         assert result.exit_code == 1
 
     def test_existing_project_shows_next_steps(self, runner: CliRunner, tmp_path: Path):
-        """Test that output includes next steps with /prism-migrate."""
+        """Test that output includes next steps with /lc-migrate."""
         project_dir = tmp_path / "next-steps"
         project_dir.mkdir()
 
@@ -275,7 +275,7 @@ class TestInitExistingProject:
              "--no-git", "--no-venv", "--permissions", "yolo"],
         )
         assert result.exit_code == 0
-        assert "/prism-migrate" in result.output
+        assert "/lc-migrate" in result.output
 
 
 class TestVersionOption:
@@ -293,7 +293,7 @@ class TestHelpOption:
     def test_help(self, runner: CliRunner):
         result = runner.invoke(main, ["--help"])
         assert result.exit_code == 0
-        assert "Prism" in result.output
+        assert "lightcone-cli" in result.output
 
     def test_init_help(self, runner: CliRunner):
         result = runner.invoke(main, ["init", "--help"])
@@ -305,7 +305,7 @@ class TestHelpOption:
 
 
 class TestSetupCommand:
-    """Tests for the prism setup command."""
+    """Tests for the lc setup command."""
 
     def test_setup_help(self, runner: CliRunner):
         result = runner.invoke(main, ["setup", "--help"])
@@ -313,9 +313,9 @@ class TestSetupCommand:
         assert "target" in result.output.lower() or "Setup" in result.output
 
     def test_setup_list_empty(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: tmp_path / "targets")
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
         result = runner.invoke(main, ["setup", "--list"])
         assert result.exit_code == 0
@@ -325,11 +325,11 @@ class TestSetupCommand:
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir()
         (targets_dir / "perlmutter-gpu.yaml").write_text("site: perlmutter\n")
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
         config_path = tmp_path / "config.yaml"
         config_path.write_text("default_target: perlmutter-gpu\n")
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: config_path)
         result = runner.invoke(main, ["setup", "--list"])
         assert result.exit_code == 0
@@ -339,14 +339,14 @@ class TestSetupCommand:
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir()
         (targets_dir / "perlmutter-gpu.yaml").write_text("site: perlmutter\nbackend: slurm\n")
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
         result = runner.invoke(main, ["setup", "--show", "perlmutter-gpu"])
         assert result.exit_code == 0
         assert "slurm" in result.output
 
     def test_setup_show_nonexistent(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: tmp_path / "targets")
         result = runner.invoke(main, ["setup", "--show", "nonexistent"])
         assert result.exit_code == 1
@@ -355,9 +355,9 @@ class TestSetupCommand:
         """Test the wizard flow with a known site (perlmutter)."""
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir(parents=True)
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
 
         # hpc=yes, site=1(perlmutter), username, account,
@@ -381,17 +381,17 @@ class TestSetupCommand:
         assert target["container_runtime"] == "podman-hpc"
 
         # Verify closing message
-        assert "prism target --list" in result.output
-        assert "prism target add" in result.output
-        assert "prism target edit" in result.output
+        assert "lc target --list" in result.output
+        assert "lc target add" in result.output
+        assert "lc target edit" in result.output
 
     def test_setup_wizard_local(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         """Test the wizard flow choosing local (no HPC)."""
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir(parents=True)
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
 
         # hpc=no
@@ -414,9 +414,9 @@ class TestSetupCommand:
         """Test that wizard sets the default_target in config.yaml."""
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir(parents=True)
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
 
         # hpc=yes, site=1(perlmutter), username, account,
@@ -431,7 +431,7 @@ class TestSetupCommand:
 
     def test_setup_default_local(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         """Test --default local works without a target config file."""
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
         result = runner.invoke(main, ["setup", "--default", "local"])
         assert result.exit_code == 0
@@ -447,9 +447,9 @@ class TestSetupCommand:
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir()
         (targets_dir / "perlmutter-gpu.yaml").write_text("site: perlmutter\n")
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
         result = runner.invoke(main, ["setup", "--default", "perlmutter-gpu"])
         assert result.exit_code == 0
@@ -462,7 +462,7 @@ class TestSetupCommand:
         self, runner: CliRunner, tmp_path: Path, monkeypatch,
     ):
         """Test --default fails for a non-existent target."""
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: tmp_path / "targets")
         result = runner.invoke(main, ["setup", "--default", "nonexistent"])
         assert result.exit_code == 1
@@ -473,11 +473,11 @@ class TestSetupCommand:
         """When config exists, setup shows the menu. Choosing 5 re-runs wizard."""
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir(parents=True)
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
         config_path = tmp_path / "config.yaml"
         config_path.write_text("default_target: local\n")
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: config_path)
 
         # action 6 (re-run wizard), then wizard: no HPC
@@ -493,11 +493,11 @@ class TestSetupCommand:
         """Menu action 1 changes the permission tier."""
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir(parents=True)
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
         config_path = tmp_path / "config.yaml"
         config_path.write_text("default_target: local\n")
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: config_path)
 
         # action 1, tier 2 (recommended)
@@ -516,11 +516,11 @@ class TestSetupCommand:
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir(parents=True)
         (targets_dir / "perlmutter-gpu.yaml").write_text("site: perlmutter\n")
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
         config_path = tmp_path / "config.yaml"
         config_path.write_text("default_target: local\n")
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: config_path)
 
         # action 5, pick target 2 (perlmutter-gpu — local is 1)
@@ -538,18 +538,18 @@ class TestSetupCommand:
         """Menu action 7 (exit) returns immediately. Also the default."""
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir(parents=True)
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
         config_path = tmp_path / "config.yaml"
         config_path.write_text("default_target: local\n")
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: config_path)
 
         # Just press Enter — default is 7 (exit)
         input_lines = "\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
-        assert "Prism Setup" in result.output
+        assert "lightcone-cli Setup" in result.output
         # Should NOT have entered the wizard
         assert "Configure a remote" not in result.output
 
@@ -561,16 +561,16 @@ class TestAutoTrigger:
         self, runner: CliRunner, tmp_path: Path, monkeypatch,
     ):
         """Commands should trigger setup when no config exists."""
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
         result = runner.invoke(main, ["init", str(tmp_path / "proj"), "--no-git", "--no-venv"])
-        assert "Prism Setup" in result.output or "No execution environment" in result.output
+        assert "lightcone-cli Setup" in result.output or "No execution environment" in result.output
 
     def test_setup_command_skips_auto_trigger(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        """prism setup itself should not trigger the auto-trigger."""
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        """lc setup itself should not trigger the auto-trigger."""
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: tmp_path / "targets")
         result = runner.invoke(main, ["setup", "--list"])
         assert "no additional targets" in result.output.lower() or "local" in result.output
@@ -578,17 +578,17 @@ class TestAutoTrigger:
     def test_target_command_skips_auto_trigger(
         self, runner: CliRunner, tmp_path: Path, monkeypatch,
     ):
-        """prism target itself should not trigger the auto-trigger."""
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        """lc target itself should not trigger the auto-trigger."""
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: tmp_path / "targets")
         result = runner.invoke(main, ["target", "--list"])
         assert "no additional targets" in result.output.lower() or "local" in result.output
 
     def test_version_skips_auto_trigger(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         """--version should not trigger setup."""
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
@@ -596,7 +596,7 @@ class TestAutoTrigger:
 
     def test_help_skips_auto_trigger(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         """--help should not trigger setup."""
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
         result = runner.invoke(main, ["--help"])
         assert result.exit_code == 0
@@ -605,7 +605,7 @@ class TestAutoTrigger:
         """Commands should work normally when config exists."""
         config_path = tmp_path / "config.yaml"
         config_path.write_text("default_target: perlmutter-gpu\n")
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: config_path)
         result = runner.invoke(
             main,
@@ -617,20 +617,22 @@ class TestAutoTrigger:
 
 
 class TestTargetCommand:
-    """Tests for the prism target command."""
+    """Tests for the lc target command."""
 
-    def test_target_no_prism_yaml(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+    def test_target_no_lightcone_yaml(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(main, ["target"])
         assert result.exit_code == 0
-        assert "No prism.yaml" in result.output
+        assert "No lightcone.yaml" in result.output
 
     def test_target_shows_current(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import yaml
-        (tmp_path / ".prism").mkdir()
-        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({"target": "perlmutter-gpu"}))
-        with patch("prism.dagster.targets.load_target", return_value={
+        (tmp_path / ".lightcone").mkdir()
+        (tmp_path / ".lightcone" / "lightcone.yaml").write_text(
+            yaml.dump({"target": "perlmutter-gpu"})
+        )
+        with patch("lightcone.engine.targets.load_target", return_value={
             "backend": "slurm", "connection": {"hostname": "perlmutter.nersc.gov"},
         }):
             result = runner.invoke(main, ["target"])
@@ -640,22 +642,22 @@ class TestTargetCommand:
     def test_target_set(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import yaml
-        (tmp_path / ".prism").mkdir()
-        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({"target": "local"}))
-        with patch("prism.dagster.targets.load_target", return_value={"backend": "slurm"}):
+        (tmp_path / ".lightcone").mkdir()
+        (tmp_path / ".lightcone" / "lightcone.yaml").write_text(yaml.dump({"target": "local"}))
+        with patch("lightcone.engine.targets.load_target", return_value={"backend": "slurm"}):
             result = runner.invoke(main, ["target", "--set", "perlmutter-gpu"])
         assert result.exit_code == 0
         assert "perlmutter-gpu" in result.output
-        config = yaml.safe_load((tmp_path / ".prism" / "prism.yaml").read_text())
+        config = yaml.safe_load((tmp_path / ".lightcone" / "lightcone.yaml").read_text())
         assert config["target"] == "perlmutter-gpu"
 
     def test_target_set_nonexistent(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import yaml
-        (tmp_path / ".prism").mkdir()
-        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({"target": "local"}))
-        with patch("prism.dagster.targets.load_target", return_value=None):
-            with patch("prism.dagster.targets.list_targets", return_value=["local"]):
+        (tmp_path / ".lightcone").mkdir()
+        (tmp_path / ".lightcone" / "lightcone.yaml").write_text(yaml.dump({"target": "local"}))
+        with patch("lightcone.engine.targets.load_target", return_value=None):
+            with patch("lightcone.engine.targets.list_targets", return_value=["local"]):
                 result = runner.invoke(main, ["target", "--set", "nonexistent"])
         assert result.exit_code == 1
 
@@ -663,11 +665,11 @@ class TestTargetCommand:
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir()
         (targets_dir / "perlmutter-gpu.yaml").write_text("site: perlmutter\n")
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
         config_path = tmp_path / "config.yaml"
         config_path.write_text("default_target: perlmutter-gpu\n")
-        monkeypatch.setattr("prism.dagster.targets.get_config_path",
+        monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: config_path)
         result = runner.invoke(main, ["target", "--list"])
         assert result.exit_code == 0
@@ -679,7 +681,7 @@ class TestTargetCommand:
         (targets_dir / "perlmutter-gpu.yaml").write_text(
             "site: perlmutter\nbackend: slurm\n"
         )
-        monkeypatch.setattr("prism.dagster.targets.get_targets_dir",
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
         result = runner.invoke(main, ["target", "--show", "perlmutter-gpu"])
         assert result.exit_code == 0
@@ -703,7 +705,7 @@ class TestTargetResolution:
     """Integration tests for target resolution flow."""
 
     def test_run_with_local_target(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        """Test that prism run with a local target resolves correctly."""
+        """Test that lc run with a local target resolves correctly."""
         monkeypatch.chdir(tmp_path)
         import yaml
 
@@ -715,14 +717,14 @@ class TestTargetResolution:
             "decisions": [],
         }, sort_keys=False))
 
-        # Create .prism/ with prism.yaml and dagster.yaml
-        (tmp_path / ".prism").mkdir()
-        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({
+        # Create .lightcone/ with lightcone.yaml and dagster.yaml
+        (tmp_path / ".lightcone").mkdir()
+        (tmp_path / ".lightcone" / "lightcone.yaml").write_text(yaml.dump({
             "target": "local",
         }, sort_keys=False))
 
         (tmp_path / "results").mkdir()
-        (tmp_path / ".prism" / "dagster.yaml").write_text(yaml.dump({
+        (tmp_path / ".lightcone" / "dagster.yaml").write_text(yaml.dump({
             "storage": {"sqlite": {"base_dir": str(tmp_path / "results" / ".dagster")}}
         }, sort_keys=False))
 
@@ -732,7 +734,7 @@ class TestTargetResolution:
         assert "ImportError" not in (result.output or "")
 
     def test_run_with_named_target(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        """Test that prism run --target loads target config directly."""
+        """Test that lc run --target loads target config directly."""
         monkeypatch.chdir(tmp_path)
         import yaml
 
@@ -743,13 +745,13 @@ class TestTargetResolution:
             "decisions": [],
         }, sort_keys=False))
 
-        (tmp_path / ".prism").mkdir()
-        (tmp_path / ".prism" / "prism.yaml").write_text(yaml.dump({
+        (tmp_path / ".lightcone").mkdir()
+        (tmp_path / ".lightcone" / "lightcone.yaml").write_text(yaml.dump({
             "target": "local",
         }, sort_keys=False))
 
         (tmp_path / "results").mkdir()
-        (tmp_path / ".prism" / "dagster.yaml").write_text(yaml.dump({
+        (tmp_path / ".lightcone" / "dagster.yaml").write_text(yaml.dump({
             "storage": {"sqlite": {"base_dir": str(tmp_path / "results" / ".dagster")}}
         }, sort_keys=False))
 
@@ -763,7 +765,7 @@ class TestTargetResolution:
             "constraint": "gpu",
             "qos": "debug",
         }
-        with patch("prism.dagster.targets.load_target", return_value=target_config):
+        with patch("lightcone.engine.targets.load_target", return_value=target_config):
             result = runner.invoke(main, ["run", "--target", "perlmutter-gpu"])
         # Should not fail on target resolution
         assert "Unknown target" not in (result.output or "")
@@ -793,7 +795,7 @@ class TestSyncProjectPlugins:
         plugin = tmp_path / "plugin_source"
         plugin.mkdir()
         # Skills
-        skills = plugin / "skills" / "prism-build"
+        skills = plugin / "skills" / "lc-build"
         skills.mkdir(parents=True)
         (skills / "SKILL.md").write_text("# build skill v2\n")
         # Scripts
@@ -823,16 +825,16 @@ class TestSyncProjectPlugins:
 
     def test_sync_copies_plugin_dirs(self, tmp_path: Path):
         """Sync should copy skills, hooks, scripts into .claude/."""
-        from prism.cli import _sync_project_plugins
+        from lightcone.cli.commands import _sync_project_plugins
 
         project = self._make_project(tmp_path)
         plugin = self._make_plugin_source(tmp_path)
 
-        with patch("prism.cli._get_plugin_source_dir", return_value=plugin):
+        with patch("lightcone.cli.commands.get_plugin_source_dir", return_value=plugin):
             result = _sync_project_plugins(project)
 
         assert result is True
-        assert (project / ".claude" / "skills" / "prism-build" / "SKILL.md").exists()
+        assert (project / ".claude" / "skills" / "lc-build" / "SKILL.md").exists()
         assert (project / ".claude" / "scripts" / "session-start.sh").exists()
         assert (project / ".claude" / "hooks" / "langfuse_hook.py").exists()
         assert (project / ".claude" / "guides" / "astra-reference.md").exists()
@@ -840,12 +842,12 @@ class TestSyncProjectPlugins:
 
     def test_sync_scripts_executable(self, tmp_path: Path):
         """Synced scripts should be executable."""
-        from prism.cli import _sync_project_plugins
+        from lightcone.cli.commands import _sync_project_plugins
 
         project = self._make_project(tmp_path)
         plugin = self._make_plugin_source(tmp_path)
 
-        with patch("prism.cli._get_plugin_source_dir", return_value=plugin):
+        with patch("lightcone.cli.commands.get_plugin_source_dir", return_value=plugin):
             _sync_project_plugins(project)
 
         sh = project / ".claude" / "scripts" / "session-start.sh"
@@ -853,12 +855,12 @@ class TestSyncProjectPlugins:
 
     def test_sync_preserves_analysis_context(self, tmp_path: Path):
         """Sync should update managed CLAUDE.md section but preserve Analysis Context."""
-        from prism.cli import _sync_project_plugins
+        from lightcone.cli.commands import _sync_project_plugins
 
         project = self._make_project(tmp_path)
         plugin = self._make_plugin_source(tmp_path)
 
-        with patch("prism.cli._get_plugin_source_dir", return_value=plugin):
+        with patch("lightcone.cli.commands.get_plugin_source_dir", return_value=plugin):
             _sync_project_plugins(project)
 
         content = (project / "CLAUDE.md").read_text()
@@ -871,12 +873,12 @@ class TestSyncProjectPlugins:
 
     def test_sync_substitutes_project_name(self, tmp_path: Path):
         """CLAUDE.md template should have {{name}} replaced with project dir name."""
-        from prism.cli import _sync_project_plugins
+        from lightcone.cli.commands import _sync_project_plugins
 
         project = self._make_project(tmp_path)
         plugin = self._make_plugin_source(tmp_path)
 
-        with patch("prism.cli._get_plugin_source_dir", return_value=plugin):
+        with patch("lightcone.cli.commands.get_plugin_source_dir", return_value=plugin):
             _sync_project_plugins(project)
 
         content = (project / "CLAUDE.md").read_text()
@@ -885,7 +887,7 @@ class TestSyncProjectPlugins:
 
     def test_sync_rejects_non_astra_project(self, tmp_path: Path):
         """Sync should fail for directories without astra.yaml."""
-        from prism.cli import _sync_project_plugins
+        from lightcone.cli.commands import _sync_project_plugins
 
         not_a_project = tmp_path / "random-dir"
         not_a_project.mkdir()
@@ -895,26 +897,26 @@ class TestSyncProjectPlugins:
 
     def test_sync_replaces_stale_skills(self, tmp_path: Path):
         """Sync should replace existing skills with fresh ones."""
-        from prism.cli import _sync_project_plugins
+        from lightcone.cli.commands import _sync_project_plugins
 
         project = self._make_project(tmp_path)
         plugin = self._make_plugin_source(tmp_path)
 
         # Put stale skill in project
-        old_skill = project / ".claude" / "skills" / "prism-build"
+        old_skill = project / ".claude" / "skills" / "lc-build"
         old_skill.mkdir(parents=True)
         (old_skill / "SKILL.md").write_text("# old skill v1\n")
 
-        with patch("prism.cli._get_plugin_source_dir", return_value=plugin):
+        with patch("lightcone.cli.commands.get_plugin_source_dir", return_value=plugin):
             _sync_project_plugins(project)
 
-        content = (project / ".claude" / "skills" / "prism-build" / "SKILL.md").read_text()
+        content = (project / ".claude" / "skills" / "lc-build" / "SKILL.md").read_text()
         assert "v2" in content
         assert "v1" not in content
 
 
 class TestInitSubAnalysis:
-    """Tests for prism init --sub-analysis."""
+    """Tests for lc init --sub-analysis."""
 
     @staticmethod
     def _setup_project_root(project_dir: Path) -> None:
@@ -976,7 +978,9 @@ class TestInitSubAnalysis:
         assert sub_spec["outputs"] == []
         assert sub_spec["decisions"] == {}
 
-    def test_sub_analysis_wires_root_astra_yaml(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+    def test_sub_analysis_wires_root_astra_yaml(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch
+    ):
         """Test that root astra.yaml gets the analyses reference."""
         import yaml
 
@@ -990,7 +994,9 @@ class TestInitSubAnalysis:
         assert "analyses" in root_spec
         assert root_spec["analyses"]["hod_fitting"] == {"path": "./analyses/hod_fitting"}
 
-    def test_sub_analysis_wires_root_universes(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+    def test_sub_analysis_wires_root_universes(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch
+    ):
         """Test that root universe files get the analyses reference."""
         import yaml
 

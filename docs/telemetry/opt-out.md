@@ -14,7 +14,7 @@ This environment variable is checked by `tracing_enabled()` in `langfuse_utils.p
 
 ## Disabling globally
 
-To disable telemetry for all new projects, unset the key or set it to `false` before running `prism init`, or patch `_create_claude_settings()` in `cli.py` to set `TRACE_TO_LANGFUSE=false` by default.
+To disable telemetry for all new projects, unset the key or set it to `false` before running `lc init`, or patch `_create_claude_settings()` in `cli.py` to set `TRACE_TO_LANGFUSE=false` by default.
 
 ## What is not collected
 
@@ -25,4 +25,4 @@ To disable telemetry for all new projects, unset the key or set it to `false` be
 
 ## Transparency
 
-The full telemetry implementation is in `claude/prism/hooks/`. All hooks are plain Python scripts installed in each project's `.claude/hooks/` directory — they can be inspected, modified, or deleted per-project.
+The full telemetry implementation is in `claude/lightcone/hooks/`. All hooks are plain Python scripts installed in each project's `.claude/hooks/` directory — they can be inspected, modified, or deleted per-project.

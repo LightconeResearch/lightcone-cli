@@ -23,7 +23,7 @@ Claude Code session opens
         ▼ (for each tool use)
 [PostToolUse]
   validate-on-save.sh    → runs astra validate on Write/Edit
-  check-prism-run.sh     → warns if python run directly
+  check-lc-run.sh     → warns if python run directly
   langfuse_git_commit_hook.py
         → if bash command was git commit:
             → extract commit SHA + GitHub URL

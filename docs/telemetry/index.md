@@ -1,10 +1,10 @@
 # Telemetry (Langfuse)
 
-Prism traces Claude Code sessions to [Langfuse](https://langfuse.com/) for observability, debugging, and research workflow analysis. Telemetry is **opt-out** — it is enabled by default in all projects created with `prism init`.
+lightcone-cli traces Claude Code sessions to [Langfuse](https://langfuse.com/) for observability, debugging, and research workflow analysis. Telemetry is **opt-out** — it is enabled by default in all projects created with `lc init`.
 
 ## What is traced
 
-Each Claude Code session in a Prism project generates:
+Each Claude Code session in a lightcone-cli project generates:
 
 - One **trace per turn** (user message + all assistant responses in that turn).
 - **Tool calls** with input arguments and output results (truncated to 2000 chars).

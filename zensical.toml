@@ -1,8 +1,8 @@
 [project]
-site_name = "Lightcone Prism — Maintainer Documentation"
+site_name = "lightcone-cli — Maintainer Documentation"
 site_description = "Agentic execution layer for ASTRA research pipelines"
 site_author = "Lightcone Research Team"
-repo_url = "https://github.com/LightconeResearch/Prism"
+repo_url = "https://github.com/LightconeResearch/lightcone-cli"
 copyright = "&copy; 2026 Lightcone Research"
 docs_dir = "docs"
 
@@ -12,33 +12,33 @@ nav = [
   {"CLI Reference" = [
     {"Overview" = "cli/index.md"},
     {"Command Schematics" = "cli/schematics.md"},
-    {"prism init" = "cli/init.md"},
-    {"prism run" = "cli/run.md"},
-    {"prism build" = "cli/build.md"},
-    {"prism status" = "cli/status.md"},
-    {"prism dev" = "cli/dev.md"},
-    {"prism setup" = "cli/setup.md"},
-    {"prism target" = "cli/target.md"},
-    {"prism update" = "cli/update.md"},
+    {"lc init" = "cli/init.md"},
+    {"lc run" = "cli/run.md"},
+    {"lc build" = "cli/build.md"},
+    {"lc status" = "cli/status.md"},
+    {"lc dev" = "cli/dev.md"},
+    {"lc setup" = "cli/setup.md"},
+    {"lc target" = "cli/target.md"},
+    {"lc update" = "cli/update.md"},
   ]},
   {"Python API" = [
     {"Overview" = "api/index.md"},
     {"cli" = "api/cli.md"},
-    {"container" = "api/container.md"},
-    {"dagster/assets" = "api/assets.md"},
-    {"dagster/runner" = "api/runner.md"},
-    {"dagster/io_manager" = "api/io_manager.md"},
-    {"dagster/status" = "api/status.md"},
-    {"dagster/targets" = "api/targets.md"},
-    {"dagster/site_registry" = "api/site_registry.md"},
+    {"engine/container" = "api/container.md"},
+    {"engine/assets" = "api/assets.md"},
+    {"engine/runner" = "api/runner.md"},
+    {"engine/io_manager" = "api/io_manager.md"},
+    {"engine/status" = "api/status.md"},
+    {"engine/targets" = "api/targets.md"},
+    {"engine/site_registry" = "api/site_registry.md"},
   ]},
   {"Skills" = [
     {"Overview" = "skills/index.md"},
-    {"prism-new" = "skills/prism-new.md"},
-    {"prism-build" = "skills/prism-build.md"},
-    {"prism-verify" = "skills/prism-verify.md"},
-    {"prism-migrate" = "skills/prism-migrate.md"},
-    {"prism-feedback" = "skills/prism-feedback.md"},
+    {"lc-new" = "skills/lc-new.md"},
+    {"lc-build" = "skills/lc-build.md"},
+    {"lc-verify" = "skills/lc-verify.md"},
+    {"lc-migrate" = "skills/lc-migrate.md"},
+    {"lc-feedback" = "skills/lc-feedback.md"},
     {"Creating Skills" = "skills/authoring.md"},
   ]},
   {"Telemetry (Langfuse)" = [

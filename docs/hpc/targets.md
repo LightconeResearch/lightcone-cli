@@ -1,6 +1,6 @@
 # Target Configuration
 
-See also [CLI: prism target](../cli/target.md) and [API: targets](../api/targets.md).
+See also [CLI: lc target](../cli/target.md) and [API: targets](../api/targets.md).
 
 ## Full target YAML reference
 
@@ -30,7 +30,7 @@ nodes: 1
 time_limit: "30m"
 ntasks_per_node: 1
 
-# Injected by prism run for SLURM flags
+# Injected by lc run for SLURM flags
 extra_slurm_args:
   - --partition=gpu-a100
   - --gres=gpu:1

@@ -1,6 +1,6 @@
-# prism.dagster.site_registry
+# lightcone.engine.site_registry
 
-Known HPC site defaults. Used by `prism setup` and `prism target add` to auto-populate scheduler configuration.
+Known HPC site defaults. Used by `lc setup` and `lc target add` to auto-populate scheduler configuration.
 
 ---
 
@@ -36,7 +36,7 @@ Returns Claude Code `Edit()` deny rules for the site's scratch paths. For Perlmu
 ["Edit(//pscratch/**)", "Edit(//global/cscratch1/**)", "Edit(//global/cfs/cdirs/**)"]
 ```
 
-These are merged into `.claude/settings.json` by `prism init` when a non-local target is configured.
+These are merged into `.claude/settings.json` by `lc init` when a non-local target is configured.
 
 ---
 

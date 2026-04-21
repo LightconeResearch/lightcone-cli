@@ -1,11 +1,11 @@
-# prism dev
+# lc dev
 
 Launch the Dagster webserver UI for the current project.
 
 ## Synopsis
 
 ```
-prism dev [OPTIONS]
+lc dev [OPTIONS]
 ```
 
 ## Description
@@ -24,13 +24,13 @@ The webserver generates a temporary Python file that calls `build_definitions()`
 ## Examples
 
 ```bash
-prism dev
-prism dev --port 8080
-prism dev --universe experiment1
+lc dev
+lc dev --port 8080
+lc dev --universe experiment1
 ```
 
 ## Notes
 
 - Container builds are always skipped in `dev` mode (`no_build=True`).
-- The Dagster instance uses `results/.dagster/` for event storage, so run history is shared with `prism run`.
+- The Dagster instance uses `results/.dagster/` for event storage, so run history is shared with `lc run`.
 - Press `Ctrl+C` to stop the webserver.

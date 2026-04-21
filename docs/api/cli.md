@@ -1,6 +1,6 @@
-# prism.cli
+# lightcone.cli.commands
 
-Click CLI entry point. Implements all `prism` commands as Click decorated functions.
+Click CLI entry point. Implements all `lc` commands as Click decorated functions.
 
 ---
 
@@ -11,7 +11,7 @@ Click CLI entry point. Implements all `prism` commands as Click decorated functi
 def main(): ...
 ```
 
-The root Click group. Auto-triggers `setup` if `~/.prism/config.yaml` does not exist (except for `setup`, `target`, `update`, `eval` subcommands).
+The root Click group. Auto-triggers `setup` if `~/.lightcone/config.yaml` does not exist (except for `setup`, `target`, `update`, `eval` subcommands).
 
 ---
 
@@ -29,10 +29,10 @@ Keys: `"yolo"`, `"recommended"`, `"minimal"`.
 
 ## Plugin discovery: `_get_plugin_source_dir() → Path | None`
 
-Finds the Prism plugin source directory. Checks:
+Finds the lightcone-cli plugin source directory. Checks:
 
-1. **Bundled** (installed package): `prism/claude/prism/`
-2. **Development** (repo checkout): `{repo_root}/claude/prism/`
+1. **Bundled** (installed package): `lightcone/cli/claude/lightcone/`
+2. **Development** (repo checkout): `{repo_root}/claude/lightcone/`
 
 Returns `None` if neither exists.
 
@@ -40,17 +40,17 @@ Returns `None` if neither exists.
 
 ## Path helpers
 
-### `_find_prism_yaml(project_path) → Path | None`
+### `_find_lightcone_yaml(project_path) → Path | None`
 
-Finds `.prism/prism.yaml`, falling back to `prism.yaml` in root for backward compatibility.
+Finds `.lightcone/lightcone.yaml`, falling back to `lightcone.yaml` in root for backward compatibility.
 
 ### `_find_dagster_yaml(project_path) → Path | None`
 
-Finds `.prism/dagster.yaml`, falling back to `dagster.yaml` in root.
+Finds `.lightcone/dagster.yaml`, falling back to `dagster.yaml` in root.
 
-### `_load_prism_config(project_path) → dict`
+### `_load_lightcone_config(project_path) → dict`
 
-Loads `.prism/prism.yaml`. Returns `{}` if missing.
+Loads `.lightcone/lightcone.yaml`. Returns `{}` if missing.
 
 ---
 
@@ -59,7 +59,7 @@ Loads `.prism/prism.yaml`. Returns `{}` if missing.
 Priority order:
 
 1. `--permissions` flag
-2. Saved default in `~/.prism/config.yaml`
+2. Saved default in `~/.lightcone/config.yaml`
 3. Interactive prompt (`_prompt_permission_tier()`)
 
 ---
@@ -68,14 +68,14 @@ Priority order:
 
 | Function | Purpose |
 |----------|---------|
-| `_create_dagster_yaml(directory)` | Write `.prism/dagster.yaml` |
+| `_create_dagster_yaml(directory)` | Write `.lightcone/dagster.yaml` |
 | `_create_boilerplate_astra_yaml(directory)` | Write `astra.yaml`, `Containerfile`, `requirements.txt`, `universes/baseline.yaml` |
 | `_create_claude_settings(directory, tier, target)` | Copy plugin files and write `.claude/settings.json` + `settings.local.json` |
-| `_create_prism_config(directory, target_name)` | Write `.prism/prism.yaml` |
+| `_create_lightcone_config(directory, target_name)` | Write `.lightcone/lightcone.yaml` |
 | `_create_claude_md(directory)` | Write `CLAUDE.md` from plugin template |
-| `_create_venv(directory, no_venv)` | Create `.venv/` and install `lightcone-prism` |
+| `_create_venv(directory, no_venv)` | Create `.venv/` and install `lightcone-cli` |
 | `_init_git_repo(directory, no_git)` | Run `git init` + initial commit |
-| `_init_existing_project(...)` | Add Prism infrastructure to an existing code directory |
+| `_init_existing_project(...)` | Add lightcone-cli infrastructure to an existing code directory |
 | `_init_sub_analysis(directory)` | Scaffold sub-analysis and wire into parent spec |
 
 ---
@@ -86,7 +86,7 @@ This function:
 
 1. Copies `scripts/`, `hooks/`, `skills/`, `agents/`, `guides/` from the plugin source to `.claude/`.
 2. Makes `.sh` scripts and `.py` hooks executable.
-3. Applies extraction model config to `agents/prism-extractor.md`.
+3. Applies extraction model config to `agents/lc-extractor.md`.
 4. Builds permission dict from the selected tier.
 5. Merges site-specific deny rules (e.g. Perlmutter scratch paths).
 6. Writes `.claude/settings.json` with full hook registrations.
@@ -102,7 +102,7 @@ Syncs `skills/`, `hooks/`, `scripts/`, `agents/`, `guides/` into `project_dir/.c
 
 ### `_update_extractor_agent_model(agents_dir)`
 
-Reads `extraction_model` from `~/.prism/config.yaml` and sets (or removes) the `model:` field in `agents/prism-extractor.md` frontmatter.
+Reads `extraction_model` from `~/.lightcone/config.yaml` and sets (or removes) the `model:` field in `agents/lc-extractor.md` frontmatter.
 
 ---
 

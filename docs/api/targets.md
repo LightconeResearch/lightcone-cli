@@ -1,12 +1,12 @@
-# prism.dagster.targets
+# lightcone.engine.targets
 
-User-level target configuration management. Targets are stored as YAML files in `~/.prism/targets/`.
+User-level target configuration management. Targets are stored as YAML files in `~/.lightcone/targets/`.
 
 ---
 
 ## `get_targets_dir() → Path`
 
-Returns `~/.prism/targets/`.
+Returns `~/.lightcone/targets/`.
 
 ---
 
@@ -24,32 +24,32 @@ Loads a saved target by name. Returns `None` if the file does not exist.
 
 ## `save_target(name, config) → Path`
 
-Saves `config` to `~/.prism/targets/{name}.yaml`. Creates the directory if needed. Returns the path.
+Saves `config` to `~/.lightcone/targets/{name}.yaml`. Creates the directory if needed. Returns the path.
 
 ---
 
 ## `get_config_path() → Path`
 
-Returns `~/.prism/config.yaml`.
+Returns `~/.lightcone/config.yaml`.
 
 ---
 
 ## `load_user_config() → dict`
 
-Loads `~/.prism/config.yaml`. Returns `{}` if it does not exist.
+Loads `~/.lightcone/config.yaml`. Returns `{}` if it does not exist.
 
 ---
 
 ## `save_user_config(config) → Path`
 
-Saves `config` to `~/.prism/config.yaml`. Creates parent directories if needed.
+Saves `config` to `~/.lightcone/config.yaml`. Creates parent directories if needed.
 
 ---
 
 ## File layout
 
 ```
-~/.prism/
+~/.lightcone/
 ├── config.yaml           # default_target, default_permission_tier, extraction_model
 └── targets/
     ├── local.yaml
@@ -61,6 +61,6 @@ Saves `config` to `~/.prism/config.yaml`. Creates parent directories if needed.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `default_target` | `str` | Used when no `--target` flag or `.prism/prism.yaml` |
+| `default_target` | `str` | Used when no `--target` flag or `.lightcone/lightcone.yaml` |
 | `default_permission_tier` | `str` | `yolo`, `recommended`, or `minimal` |
-| `extraction_model` | `str` | Model for `/prism-new` literature extraction (`""` = inherit) |
+| `extraction_model` | `str` | Model for `/lc-new` literature extraction (`""` = inherit) |

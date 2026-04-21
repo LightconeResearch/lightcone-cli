@@ -1,16 +1,16 @@
-# prism update
+# lc update
 
-Update Prism and sync plugin files to projects.
+Upgrade lightcone-cli and sync plugin files to projects.
 
 ## Synopsis
 
 ```
-prism update [OPTIONS]
+lc update [OPTIONS]
 ```
 
 ## Description
 
-`prism update` upgrades `lightcone-prism` from PyPI, then offers to sync updated skills, hooks, scripts, and `CLAUDE.md` into existing projects.
+`lc update` upgrades `lightcone-cli` from PyPI, then offers to sync updated skills, hooks, scripts, and `CLAUDE.md` into existing projects.
 
 ## Options
 
@@ -33,8 +33,8 @@ For `CLAUDE.md`, only the managed portion (everything above `## Analysis Context
 ## Examples
 
 ```bash
-prism update             # upgrade + offer to sync
-prism update --sync      # just sync plugin files (no upgrade)
+lc update             # upgrade + offer to sync
+lc update --sync      # just sync plugin files (no upgrade)
 ```
 
 ## Notes

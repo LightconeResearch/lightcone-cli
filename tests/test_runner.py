@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from prism.dagster.runner import (
+from lightcone.engine.runner import (
     ASTRAContainerRunner,
     _check_sacct,
     _normalise_time_limit,
@@ -213,7 +213,7 @@ class TestGenerateSbatchScript:
             scheduler_config={"account": "m1234", "partition": "gpu"},
         )
         assert "#!/bin/bash" in script
-        assert "#SBATCH --job-name=prism_trained_model_baseline" in script
+        assert "#SBATCH --job-name=lc_trained_model_baseline" in script
         assert "#SBATCH --account=m1234" in script
         assert "#SBATCH --partition=gpu" in script
         assert "#SBATCH --cpus-per-task=4" in script
@@ -395,8 +395,8 @@ class TestSlurmRunner:
         assert result.exit_code == 127
         assert "sbatch" in result.metadata.get("stderr", "")
 
-    @patch("prism.dagster.runner.subprocess.run")
-    @patch("prism.dagster.runner._poll_slurm_job")
+    @patch("lightcone.engine.runner.subprocess.run")
+    @patch("lightcone.engine.runner._poll_slurm_job")
     def test_slurm_submit_and_poll(self, mock_poll, mock_run, tmp_path):
         """Test the full submit + poll flow with mocked subprocess."""
         # Mock sbatch submission
@@ -432,7 +432,7 @@ class TestSlurmRunner:
         assert result.metadata["container_runtime"] == "podman-hpc"
         assert result.metadata["slurm_state"] == "COMPLETED"
 
-    @patch("prism.dagster.runner.subprocess.run")
+    @patch("lightcone.engine.runner.subprocess.run")
     def test_slurm_submit_failure(self, mock_run, tmp_path):
         """sbatch returns non-zero exit code."""
         mock_submit = MagicMock()
@@ -456,7 +456,7 @@ class TestSlurmRunner:
         assert result.exit_code == 1
         assert "invalid account" in result.metadata["stderr"]
 
-    @patch("prism.dagster.runner.subprocess.run")
+    @patch("lightcone.engine.runner.subprocess.run")
     def test_slurm_creates_script_file(self, mock_run, tmp_path):
         """Verify that sbatch script is written to results/.slurm/."""
         mock_submit = MagicMock()
@@ -488,7 +488,7 @@ class TestSlurmRunner:
         assert "#!/bin/bash" in content
         assert "podman-hpc run" in content
 
-    @patch("prism.dagster.runner.subprocess.run")
+    @patch("lightcone.engine.runner.subprocess.run")
     def test_slurm_forwards_universe_and_params(self, mock_run, tmp_path):
         """Universe ID and decision params must appear in the sbatch script command."""
         mock_submit = MagicMock()
@@ -527,7 +527,7 @@ class TestSlurmRunner:
 class TestCheckSacct:
     def test_completed_returns_zero(self):
         stdout = "12345|COMPLETED|0:0|00:05:00|nid001\n"
-        with patch("prism.dagster.runner.subprocess.run") as mock_run:
+        with patch("lightcone.engine.runner.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             exit_code, meta = _check_sacct("12345")
         assert exit_code == 0
@@ -536,7 +536,7 @@ class TestCheckSacct:
     def test_cancelled_returns_nonzero(self):
         """CANCELLED jobs report 0:0 in sacct but should be treated as failure."""
         stdout = "12345|CANCELLED|0:0|00:01:00|nid001\n"
-        with patch("prism.dagster.runner.subprocess.run") as mock_run:
+        with patch("lightcone.engine.runner.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             exit_code, meta = _check_sacct("12345")
         assert exit_code != 0
@@ -544,21 +544,21 @@ class TestCheckSacct:
 
     def test_timeout_returns_nonzero(self):
         stdout = "12345|TIMEOUT|0:0|04:00:00|nid001\n"
-        with patch("prism.dagster.runner.subprocess.run") as mock_run:
+        with patch("lightcone.engine.runner.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             exit_code, meta = _check_sacct("12345")
         assert exit_code != 0
 
     def test_failed_returns_nonzero(self):
         stdout = "12345|FAILED|1:0|00:02:00|nid001\n"
-        with patch("prism.dagster.runner.subprocess.run") as mock_run:
+        with patch("lightcone.engine.runner.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             exit_code, meta = _check_sacct("12345")
         assert exit_code != 0
 
     def test_running_returns_none(self):
         stdout = "12345|RUNNING|0:0|00:01:00|nid001\n"
-        with patch("prism.dagster.runner.subprocess.run") as mock_run:
+        with patch("lightcone.engine.runner.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             exit_code, meta = _check_sacct("12345")
         assert exit_code is None

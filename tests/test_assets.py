@@ -8,7 +8,7 @@ import dagster as dg
 import pytest
 from astra.helpers import load_yaml
 
-from prism.dagster.assets import (
+from lightcone.engine.assets import (
     build_asset_definitions,
     build_definitions,
     get_external_inputs,
@@ -102,12 +102,12 @@ class TestBuildAssetDefinitions:
             "container_flags": ["--scratch", "--cfs"],
         }
         with unittest.mock.patch(
-            "prism.dagster.assets.ASTRAContainerRunner",
-        ) as MockRunner:
+            "lightcone.engine.assets.ASTRAContainerRunner",
+        ) as mock_runner_cls:
             build_definitions(
                 sample_astra_yaml, target_config=target_config, no_build=True,
             )
-            call_kwargs = MockRunner.call_args[1]
+            call_kwargs = mock_runner_cls.call_args[1]
             scheduler = call_kwargs["target_config"]["scheduler"]
             assert scheduler["container_flags"] == ["--scratch", "--cfs"]
 
@@ -129,7 +129,7 @@ class TestBuildAssetDefinitions:
         }
 
         with unittest.mock.patch(
-            "prism.container.image_exists_locally", return_value=True,
+            "lightcone.engine.container.image_exists_locally", return_value=True,
         ):
             assets = build_asset_definitions(
                 spec,
@@ -145,7 +145,7 @@ class TestBuildAssetDefinitions:
             meta = asset_spec.metadata or {}
             container_val = meta.get("container", "")
             assert isinstance(container_val, str)
-            assert container_val.startswith("prism-test-")
+            assert container_val.startswith("lc-test-")
 
 
 class TestGetExternalInputs:

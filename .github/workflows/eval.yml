@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          prism eval run evals/build.yaml --num-trials 1 --concurrency 1 2>&1 | tee eval-output.txt
+          lc eval run evals/build.yaml --num-trials 1 --concurrency 1 2>&1 | tee eval-output.txt
 
           # Find the results JSON and extract key metrics
           results_json=$(find eval-results -name results.json -type f | head -1)
@@ -67,8 +67,8 @@ jobs:
             const turns = '${{ steps.eval.outputs.turns }}' || 'N/A';
             const duration = '${{ steps.eval.outputs.duration }}' || 'N/A';
             const buildComplete = '${{ steps.eval.outputs.build_complete }}';
-            const prismVersion = '${{ steps.eval.outputs.prism_version }}' || 'unknown';
-            const prismCommit = '${{ steps.eval.outputs.prism_commit }}' || 'unknown';
+            const lightconeVersion = '${{ steps.eval.outputs.lightcone_version }}' || 'unknown';
+            const lightconeCommit = '${{ steps.eval.outputs.lightcone_commit }}' || 'unknown';
             const outcome = '${{ steps.eval.outcome }}';
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
             const artifactId = '${{ steps.upload.outputs.artifact-id }}';
@@ -88,7 +88,7 @@ jobs:
               `| Cost | $${cost} |`,
               `| Turns | ${turns} |`,
               `| Duration | ${duration}s |`,
-              `| Prism | \`${prismVersion}\` (\`${prismCommit}\`) |`,
+              `| lightcone-cli | \`${lightconeVersion}\` (\`${lightconeCommit}\`) |`,
               artifactUrl ? `| Results | [Download](${artifactUrl}) |` : '',
               '',
               '### Graders',

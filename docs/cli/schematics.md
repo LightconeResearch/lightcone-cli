@@ -1,6 +1,6 @@
 # Command Schematics
 
-Interactive visual reference for all `prism` CLI commands and skills, showing data flow, execution steps, and hook integration points.
+Interactive visual reference for all `lc` CLI commands and skills, showing data flow, execution steps, and hook integration points.
 
 [Open full screen](/cli/schematics.html){ .md-button }
 
@@ -8,7 +8,7 @@ Interactive visual reference for all `prism` CLI commands and skills, showing da
   <iframe
     src="/cli/schematics.html"
     style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; border-radius: 4px;"
-    title="Prism Command Schematics"
+    title="lightcone-cli Command Schematics"
   ></iframe>
 </div>
 
@@ -32,8 +32,8 @@ Each panel in the interactive reference covers one command or skill and includes
 
 ### Commands covered
 
-`prism init` · `prism run` · `prism build` · `prism status` · `prism dev` · `prism setup` · `prism target` · `prism update`
+`lc init` · `lc run` · `lc build` · `lc status` · `lc dev` · `lc setup` · `lc target` · `lc update`
 
 ### Skills covered
 
-`prism-new` · `prism-build` · `prism-verify` · `prism-migrate` · `prism-feedback`
+`lc-new` · `lc-build` · `lc-verify` · `lc-migrate` · `lc-feedback`

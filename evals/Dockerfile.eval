@@ -16,7 +16,7 @@ RUN ln -sf /home/evaluser/.local/bin/claude /usr/local/bin/claude
 COPY deps/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Install astra and prism wheels (--no-deps to skip private git URLs)
+# Install astra and lightcone-cli wheels (--no-deps to skip private git URLs)
 COPY deps/*.whl /tmp/deps/
 RUN pip install --no-deps /tmp/deps/*.whl
 

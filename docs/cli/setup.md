@@ -1,18 +1,18 @@
-# prism setup
+# lc setup
 
 Set up execution targets (interactive first-time experience).
 
 ## Synopsis
 
 ```
-prism setup [OPTIONS]
+lc setup [OPTIONS]
 ```
 
 ## Description
 
-`prism setup` configures connection details and container runtimes for execution backends. Settings are stored at the user level in `~/.prism/targets/` and referenced by projects via `.prism/prism.yaml`.
+`lc setup` configures connection details and container runtimes for execution backends. Settings are stored at the user level in `~/.lightcone/targets/` and referenced by projects via `.lightcone/lightcone.yaml`.
 
-If `~/.prism/config.yaml` does not exist, the full setup wizard runs. If it already exists, a management menu is shown instead.
+If `~/.lightcone/config.yaml` does not exist, the full setup wizard runs. If it already exists, a management menu is shown instead.
 
 ## Options
 
@@ -28,11 +28,11 @@ If `~/.prism/config.yaml` does not exist, the full setup wizard runs. If it alre
 2. For known HPC sites: username, account/allocation, container runtime, target name.
 3. For custom SLURM: cluster name, hostname, username, account, optional container runtime.
 4. A `local` target is always created in addition to any HPC target.
-5. The default target is saved to `~/.prism/config.yaml`.
+5. The default target is saved to `~/.lightcone/config.yaml`.
 
 ## Management menu
 
-When `~/.prism/config.yaml` already exists, running `prism setup` shows a menu:
+When `~/.lightcone/config.yaml` already exists, running `lc setup` shows a menu:
 
 ```
 1. Change permission level
@@ -48,14 +48,14 @@ When `~/.prism/config.yaml` already exists, running `prism setup` shows a menu:
 
 | File | Contents |
 |------|----------|
-| `~/.prism/config.yaml` | `default_target`, `default_permission_tier`, `extraction_model` |
-| `~/.prism/targets/{name}.yaml` | Per-target connection, scheduler, runtime config |
+| `~/.lightcone/config.yaml` | `default_target`, `default_permission_tier`, `extraction_model` |
+| `~/.lightcone/targets/{name}.yaml` | Per-target connection, scheduler, runtime config |
 
 ## Examples
 
 ```bash
-prism setup                          # interactive wizard (first time) or menu
-prism setup --list                   # list configured targets
-prism setup --show perlmutter-gpu    # show a target's config
-prism setup --default local          # change default target
+lc setup                          # interactive wizard (first time) or menu
+lc setup --list                   # list configured targets
+lc setup --show perlmutter-gpu    # show a target's config
+lc setup --default local          # change default target
 ```

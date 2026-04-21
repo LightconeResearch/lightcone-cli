@@ -1,4 +1,4 @@
-# prism.dagster.io_manager
+# lightcone.engine.io_manager
 
 IO manager that enforces the canonical `results/{universe_id}/{output_id}/` path convention.
 

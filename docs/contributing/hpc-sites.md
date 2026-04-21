@@ -1,6 +1,6 @@
 # Adding an HPC Site
 
-HPC site defaults live in `src/prism/dagster/site_registry.py`. See the full reference at [API: site_registry](../api/site_registry.md#adding-a-new-site).
+HPC site defaults live in `src/lightcone/dagster/site_registry.py`. See the full reference at [API: site_registry](../api/site_registry.md#adding-a-new-site).
 
 ## Minimal example
 
@@ -36,13 +36,13 @@ SITE_DEFAULTS["my_cluster"] = {
 After adding a site, verify it appears in the setup wizard:
 
 ```bash
-prism setup   # → select "Configure HPC" → your site should appear
+lc setup   # → select "Configure HPC" → your site should appear
 ```
 
 And that `detect_site()` recognises the hostname:
 
 ```python
-from prism.dagster.site_registry import detect_site
+from lightcone.engine.site_registry import detect_site
 assert detect_site("mycluster.example.org") == "my_cluster"
 ```
 

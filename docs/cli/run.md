@@ -1,16 +1,16 @@
-# prism run
+# lc run
 
 Materialise ASTRA outputs via Dagster.
 
 ## Synopsis
 
 ```
-prism run [OPTIONS] [OUTPUTS]... [SLURM_FLAGS]...
+lc run [OPTIONS] [OUTPUTS]... [SLURM_FLAGS]...
 ```
 
 ## Description
 
-`prism run` loads `astra.yaml`, builds Dagster asset definitions, and calls `dagster.materialize()`. Container images are built automatically before execution (unless `--no-build` is given).
+`lc run` loads `astra.yaml`, builds Dagster asset definitions, and calls `dagster.materialize()`. Container images are built automatically before execution (unless `--no-build` is given).
 
 Arguments that start with `-` are treated as SLURM scheduling directives and passed through to the `sbatch` script. Everything else is treated as an output name to materialise.
 
@@ -28,9 +28,9 @@ Arguments that start with `-` are treated as SLURM scheduling directives and pas
 Any unknown flags are forwarded as SLURM scheduling directives:
 
 ```bash
-prism run --qos shared --constraint gpu
-prism run --partition gpu-a100
-prism run --gres gpu:1 --time 30:00
+lc run --qos shared --constraint gpu
+lc run --partition gpu-a100
+lc run --gres gpu:1 --time 30:00
 ```
 
 These are collected in `target_config["extra_slurm_args"]` and injected into the `sbatch` script verbatim.
@@ -38,14 +38,14 @@ These are collected in `target_config["extra_slurm_args"]` and injected into the
 ## Examples
 
 ```bash
-prism run                              # all outputs, baseline universe
-prism run accuracy                     # specific output
-prism run --universe experiment1       # different universe
-prism run accuracy -u baseline         # output + universe
-prism run --target perlmutter-gpu      # on SLURM
-prism run --no-build                   # skip container builds
-prism run hod_fitting.galaxy_mesh      # sub-analysis output
-prism run --qos debug --constraint gpu # with SLURM scheduling flags
+lc run                              # all outputs, baseline universe
+lc run accuracy                     # specific output
+lc run --universe experiment1       # different universe
+lc run accuracy -u baseline         # output + universe
+lc run --target perlmutter-gpu      # on SLURM
+lc run --no-build                   # skip container builds
+lc run hod_fitting.galaxy_mesh      # sub-analysis output
+lc run --qos debug --constraint gpu # with SLURM scheduling flags
 ```
 
 ## Execution order
@@ -64,4 +64,4 @@ The `ASTRA_OUTPUT_DIR` environment variable is set to the correct path before ea
 
 ## Dagster persistence
 
-Materialisation events are stored in `results/.dagster/` (SQLite). This is what `prism status` queries. If `dagster.yaml` is missing, `prism run` creates it automatically.
+Materialisation events are stored in `results/.dagster/` (SQLite). This is what `lc status` queries. If `dagster.yaml` is missing, `lc run` creates it automatically.

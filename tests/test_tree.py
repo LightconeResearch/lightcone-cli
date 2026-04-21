@@ -1,25 +1,21 @@
 """Tests for analysis tree helpers (sub-analysis support)."""
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import dagster as dg
 import pytest
 from astra.helpers import load_yaml, resolve_analysis_tree
-from conftest import materialize_via_dagster
 
-from prism.dagster.assets import build_asset_definitions, build_definitions
-from prism.dagster.status import get_output_status
-from prism.dagster.tree import (
-    TreeOutput,
+from lightcone.engine.assets import build_asset_definitions, build_definitions
+from lightcone.engine.status import get_output_status
+from lightcone.engine.tree import (
     collect_tree_outputs,
     get_decisions_for_analysis,
     resolve_input_path,
     resolve_output_path,
     resolve_universe_decisions,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

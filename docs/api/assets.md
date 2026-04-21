@@ -1,4 +1,4 @@
-# prism.dagster.assets
+# lightcone.engine.assets
 
 Asset factory that generates Dagster assets from `astra.yaml` output recipes.
 

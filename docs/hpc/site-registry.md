@@ -4,7 +4,7 @@ See the full API reference at [api/site_registry.md](../api/site_registry.md).
 
 ## How site detection works
 
-When creating a target via `prism target add`, the user provides a hostname. `detect_site()` checks the hostname against `hostname_patterns` for each registered site:
+When creating a target via `lc target add`, the user provides a hostname. `detect_site()` checks the hostname against `hostname_patterns` for each registered site:
 
 ```python
 for site_key, site in SITE_DEFAULTS.items():

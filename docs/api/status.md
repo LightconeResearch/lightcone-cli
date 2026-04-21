@@ -1,4 +1,4 @@
-# prism.dagster.status
+# lightcone.engine.status
 
 Materialisation status queries for ASTRA outputs. Reads from the Dagster SQLite event log.
 

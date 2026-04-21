@@ -43,8 +43,8 @@ def main() -> None:
         f.write(f"turns={turns}\n")
         f.write(f"duration={duration:.0f}\n")
         f.write(f"build_complete={build_ok}\n")
-        f.write(f'prism_version={v.get("prism_version", "unknown")}\n')
-        f.write(f'prism_commit={v.get("prism_commit", "unknown")[:8]}\n')
+        f.write(f'lightcone_version={v.get("lightcone_version", "unknown")}\n')
+        f.write(f'lightcone_commit={v.get("lightcone_commit", "unknown")[:8]}\n')
 
     with open("grader-details.txt", "w") as f:
         f.write("\n".join(graders))

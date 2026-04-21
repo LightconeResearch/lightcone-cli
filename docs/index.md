@@ -1,20 +1,20 @@
-# Prism — Maintainer Documentation
+# lightcone-cli — Maintainer Documentation
 
-**Prism** is Lightcone Research's agentic execution layer for **ASTRA** (Agentic Schema for Transparent Research Analysis).
+**lightcone-cli** is Lightcone Research's agentic execution layer for **ASTRA** (Agentic Schema for Transparent Research Analysis).
 
 ## Separation of concerns
 
 | Layer | Package | Role |
 |-------|---------|------|
 | **ASTRA** | `astra-tools` | Pure specification: schema, validation, prior insights, evidence helpers, minimal CLI |
-| **Prism** | `lightcone-prism` | Agentic layer: Claude Code skills, project scaffolding, Dagster execution, HPC targets, telemetry |
+| **lightcone-cli** | `lightcone-cli` | Agentic layer: Claude Code skills, project scaffolding, Dagster execution, HPC targets, telemetry |
 
-Prism depends on ASTRA. The `astra` CLI handles spec operations; the `prism` CLI handles execution and agent operations.
+lightcone-cli depends on ASTRA. The `astra` CLI handles spec operations; the `lc` CLI handles execution and agent operations.
 
 ## Quick orientation for maintainers
 
 ```
-src/prism/
+src/lightcone/
 ├── cli.py              # Click CLI entry point (init, run, build, status, dev, target, setup, update)
 ├── container.py        # Content-addressed container builds (Docker, podman-hpc)
 └── dagster/
@@ -23,14 +23,14 @@ src/prism/
     ├── runner.py        # Execution backends: Docker, local, venv, SLURM
     ├── site_registry.py # Known HPC site defaults (Perlmutter, etc.)
     ├── status.py        # Materialization status queries (SQLite via Dagster)
-    ├── targets.py       # Target config management (~/.prism/targets/)
+    ├── targets.py       # Target config management (~/.lightcone/targets/)
     └── tree.py          # Sub-analysis tree traversal helpers
 
-claude/prism/            # Claude Code plugin (bundled into wheel via hatch force-include)
-├── skills/             # prism-new, prism-build, prism-verify, prism-migrate, prism-feedback
+claude/lightcone/            # Claude Code plugin (bundled into wheel via hatch force-include)
+├── skills/             # lc-new, lc-build, lc-verify, lc-migrate, lc-feedback
 ├── templates/          # Project CLAUDE.md template
-├── agents/             # prism-extractor (literature extraction subagent)
-├── guides/             # astra-reference.md, prism-reference.md, ui-brand.md
+├── agents/             # lc-extractor (literature extraction subagent)
+├── guides/             # astra-reference.md, lightcone-cli-reference.md, ui-brand.md
 ├── hooks/              # Langfuse telemetry hooks (Python)
 └── scripts/            # Session hooks (bash): venv activation, validate-on-save, status display
 ```
@@ -62,7 +62,7 @@ uv run mypy src/
 - `astra.yaml` is the single source of truth — all inputs, outputs, recipes, decisions, containers.
 - Output paths are always `results/{universe_id}/{output_id}/` — not customizable.
 - Container spec is a single string: an image name (e.g. `python:3.9`) is pulled; a file path (e.g. `Containerfile`) is built.
-- Container image tags are deterministic: `SHA256(Containerfile + dependency files)` → `prism-{name}-{hash}`.
+- Container image tags are deterministic: `SHA256(Containerfile + dependency files)` → `lc-{name}-{hash}`.
 - Universe decision parameters are injected as CLI args: `--key value` passed to recipe commands.
 - Per-recipe container specs override the analysis-level default.
 
@@ -72,5 +72,5 @@ Used by all commands:
 
 | Setting | Priority |
 |---------|----------|
-| Target | `--target` flag › `.prism/prism.yaml` › `~/.prism/config.yaml` › `"local"` |
-| Permission tier | `--permissions` flag › `~/.prism/config.yaml` › interactive prompt |
+| Target | `--target` flag › `.lightcone/lightcone.yaml` › `~/.lightcone/config.yaml` › `"local"` |
+| Permission tier | `--permissions` flag › `~/.lightcone/config.yaml` › interactive prompt |

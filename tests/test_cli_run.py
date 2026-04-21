@@ -1,8 +1,8 @@
-"""Tests for prism run CLI command."""
+"""Tests for lc run CLI command."""
 import pytest
 from click.testing import CliRunner
 
-from prism.cli import main
+from lightcone.cli.commands import main
 
 
 @pytest.fixture

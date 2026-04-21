@@ -1,7 +1,7 @@
 """Tests for ASTRA IO Manager."""
 from __future__ import annotations
 
-from prism.dagster.io_manager import ASTRAIOManager
+from lightcone.engine.io_manager import ASTRAIOManager
 
 
 class TestASTRAIOManager:

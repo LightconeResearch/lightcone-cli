@@ -11,8 +11,8 @@
 ## Clone and install
 
 ```bash
-git clone https://github.com/LightconeResearch/Prism.git
-cd Prism
+git clone https://github.com/LightconeResearch/lightcone-cli.git
+cd lightcone-cli
 just install        # uv sync --all-groups (dev + docs)
 ```
 
@@ -45,7 +45,7 @@ The `_fake_config` fixture monkeypatches `get_config_path()` to prevent the auto
 def _fake_config(tmp_path, monkeypatch):
     config = tmp_path / "config.yaml"
     config.write_text("default_target: local\n")
-    monkeypatch.setattr("prism.dagster.targets.get_config_path", lambda: config)
+    monkeypatch.setattr("lightcone.engine.targets.get_config_path", lambda: config)
 ```
 
 ## Linting and type checking
@@ -60,8 +60,8 @@ Ruff rules: E, F, I, N, W, UP. Line length: 100. Target: Python 3.11.
 ## Package structure
 
 ```
-src/prism/          # main package
-claude/prism/       # plugin files (bundled via hatch force-include)
+src/lightcone/          # main package
+claude/lightcone/       # plugin files (bundled via hatch force-include)
 tests/              # mirrors src/ structure
 evals/              # skill evaluation fixtures
 ```
@@ -73,14 +73,14 @@ just build   # uv build
 just version # uv run hatch version
 ```
 
-The `hatch-vcs` plugin derives the version from git tags. The `claude/prism/` directory is force-included in the wheel via `pyproject.toml`:
+The `hatch-vcs` plugin derives the version from git tags. The `claude/lightcone/` directory is force-included in the wheel via `pyproject.toml`:
 
 ```toml
 [tool.hatch.build.targets.wheel]
-packages = ["src/prism"]
+packages = ["src/lightcone"]
 
 [tool.hatch.build.force-include]
-"claude/prism" = "prism/claude/prism"
+"claude/lightcone" = "lightcone/cli/claude/lightcone"
 ```
 
 ## Building the documentation

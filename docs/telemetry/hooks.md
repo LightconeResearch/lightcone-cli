@@ -1,6 +1,6 @@
 # Hooks Architecture
 
-The telemetry system is composed of four Python scripts in `claude/prism/hooks/`:
+The telemetry system is composed of four Python scripts in `claude/lightcone/hooks/`:
 
 ```
 hooks/

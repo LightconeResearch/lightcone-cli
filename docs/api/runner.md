@@ -1,4 +1,4 @@
-# prism.dagster.runner
+# lightcone.engine.runner
 
 Execution backends for ASTRA recipes: Docker/Podman, local subprocess, venv, and SLURM.
 

@@ -1,10 +1,10 @@
-# prism.container
+# lightcone.engine.container
 
 Content-addressed container image building from Containerfiles.
 
 ## Overview
 
-A container spec in `astra.yaml` is a single string. Prism distinguishes two cases by checking whether the string resolves to an existing file:
+A container spec in `astra.yaml` is a single string. lightcone-cli distinguishes two cases by checking whether the string resolves to an existing file:
 
 - **Pre-built image** (e.g. `python:3.9`) — pulled on demand.
 - **Containerfile build** (e.g. `Containerfile`, `containers/gpu.Dockerfile`) — built locally and tagged deterministically.
@@ -27,7 +27,7 @@ Returns `True` if `spec` resolves to an existing file in `project_path`.
 
 ## `compute_image_tag(project_name, containerfile_path, project_path) → str`
 
-Returns a deterministic tag `prism-{name}-{sha256[:12]}` where the hash covers the Containerfile and all dependency files.
+Returns a deterministic tag `lc-{name}-{sha256[:12]}` where the hash covers the Containerfile and all dependency files.
 
 ---
 
@@ -122,7 +122,7 @@ Raised when a container image build fails. Message includes the build command an
 ## Image tag format
 
 ```
-prism-{sanitised-project-name}-{sha256[:12]}
+lc-{sanitised-project-name}-{sha256[:12]}
 ```
 
 Sanitisation: lowercase, non-alphanumeric characters replaced with `-`.

@@ -1,4 +1,4 @@
-# Prism — justfile
+# lightcone-cli — justfile
 # Install just: https://github.com/casey/just
 # Usage: just <recipe>
 
@@ -22,7 +22,7 @@ test *ARGS:
 
 # Run tests with coverage report
 test-cov:
-    uv run pytest --cov=src/prism --cov-report=term-missing --cov-report=html
+    uv run pytest --cov=src/lightcone --cov-report=term-missing --cov-report=html
 
 # Lint with ruff + mypy
 lint:
@@ -89,8 +89,8 @@ evals-install:
 
 # Run all skill evals
 evals: evals-install
-    uv run prism eval run
+    uv run lc eval run
 
 # Run evals for a specific skill
 evals-skill skill: evals-install
-    uv run prism eval run --skill {{ skill }}
+    uv run lc eval run --skill {{ skill }}

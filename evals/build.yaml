@@ -4,6 +4,6 @@ tasks:
 num_trials: 3
 max_concurrency: 2
 # sandbox_image: optional, defaults to Daytona's debian_slim("3.12")
-#   with git, Claude Code, astra, and prism pre-installed.
+#   with git, Claude Code, astra, and lightcone-cli pre-installed.
 #   Set to a Docker image string to use a pre-built image instead.
 output_dir: "eval-results"

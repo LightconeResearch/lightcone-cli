@@ -8,18 +8,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from prism.eval.harness import (
+from lightcone.eval.harness import (
     DEFAULT_LOOP_PROMPT,
     _get_loop_prompt,
     load_run_config,
     load_task,
     run_trial,
 )
-from prism.eval.models import (
+from lightcone.eval.models import (
     EvalRunConfig,
     TaskSpec,
 )
-from prism.eval.sandbox import (
+from lightcone.eval.sandbox import (
     BUILD_COMPLETE_MARKER,
     ClaudeResult,
     ExecuteResult,
@@ -98,7 +98,7 @@ class TestGetLoopPrompt:
 
 
 class TestRunTrial:
-    @patch("prism.eval.harness.EvalSandbox")
+    @patch("lightcone.eval.harness.EvalSandbox")
     def test_successful_trial(self, mock_sandbox_cls: MagicMock, evals_dir: Path):
         """Test a trial that completes successfully."""
         sandbox_instance = mock_sandbox_cls.return_value
@@ -131,7 +131,7 @@ class TestRunTrial:
         assert trial.total_cost_usd == 0.05
         sandbox_instance.teardown.assert_called_once()
 
-    @patch("prism.eval.harness.EvalSandbox")
+    @patch("lightcone.eval.harness.EvalSandbox")
     def test_trial_with_error(self, mock_sandbox_cls: MagicMock, evals_dir: Path):
         """Test a trial where sandbox creation fails."""
         sandbox_instance = mock_sandbox_cls.return_value
@@ -148,7 +148,7 @@ class TestRunTrial:
         assert "Daytona is down" in trial.error
         sandbox_instance.teardown.assert_called_once()
 
-    @patch("prism.eval.harness.EvalSandbox")
+    @patch("lightcone.eval.harness.EvalSandbox")
     def test_trial_incomplete(self, mock_sandbox_cls: MagicMock, evals_dir: Path):
         """Test a trial where the build does not complete."""
         sandbox_instance = mock_sandbox_cls.return_value
@@ -180,7 +180,7 @@ class TestRunTrial:
 
 
 class TestSidecarFiles:
-    @patch("prism.eval.harness.EvalSandbox")
+    @patch("lightcone.eval.harness.EvalSandbox")
     def test_sidecar_written(self, mock_sandbox_cls: MagicMock, evals_dir: Path, tmp_path: Path):
         """Test that JSONL sidecar files are written when sidecar_dir is provided."""
         sandbox_instance = mock_sandbox_cls.return_value
@@ -211,7 +211,7 @@ class TestSidecarFiles:
         assert full_path.exists()
         assert full_path.read_text() == raw_jsonl
 
-    @patch("prism.eval.harness.EvalSandbox")
+    @patch("lightcone.eval.harness.EvalSandbox")
     def test_no_sidecar_without_dir(self, mock_sandbox_cls: MagicMock, evals_dir: Path):
         """transcript_path stays None when no sidecar_dir is given."""
         sandbox_instance = mock_sandbox_cls.return_value

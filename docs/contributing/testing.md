@@ -6,7 +6,7 @@
 tests/
 ├── conftest.py               # shared fixtures (_fake_config, tmp project helpers)
 ├── test_cli.py               # CLI command tests
-├── test_cli_run.py           # prism run integration tests
+├── test_cli_run.py           # lc run integration tests
 ├── test_integration.py       # end-to-end tests
 └── dagster/
     ├── test_assets.py        # build_asset_definitions tests
@@ -26,8 +26,8 @@ Prevents the auto-setup wizard from firing during CLI tests by monkeypatching `g
 def _fake_config(tmp_path, monkeypatch):
     config = tmp_path / "fake_config.yaml"
     config.write_text("default_target: local\n")
-    monkeypatch.setattr("prism.dagster.targets.get_config_path", lambda: config)
-    monkeypatch.setattr("prism.cli.get_config_path", lambda: config)
+    monkeypatch.setattr("lightcone.engine.targets.get_config_path", lambda: config)
+    monkeypatch.setattr("lightcone.cli.commands.get_config_path", lambda: config)
 ```
 
 ### `tmp_project` (helper)
@@ -48,7 +48,7 @@ Use Click's `CliRunner`:
 
 ```python
 from click.testing import CliRunner
-from prism.cli import main
+from lightcone.cli.commands import main
 
 def test_init_creates_structure(tmp_path):
     runner = CliRunner()
@@ -60,7 +60,7 @@ def test_init_creates_structure(tmp_path):
 ## Asset tests
 
 ```python
-from prism.dagster.assets import build_asset_definitions
+from lightcone.engine.assets import build_asset_definitions
 
 def test_asset_keys(simple_spec):
     assets = build_asset_definitions(simple_spec, universe_id="baseline")
@@ -71,7 +71,7 @@ def test_asset_keys(simple_spec):
 ## Runner tests
 
 ```python
-from prism.dagster.runner import ASTRAContainerRunner
+from lightcone.engine.runner import ASTRAContainerRunner
 
 def test_local_execution(tmp_path):
     (tmp_path / "universes").mkdir()
@@ -91,15 +91,15 @@ Skill performance evals live in `evals/`. Install the optional dependency and ru
 
 ```bash
 pip install -e ".[eval]"
-prism eval run           # run all evals
-prism eval run --skill prism-build  # run a specific skill
+lc eval run           # run all evals
+lc eval run --skill lc-build  # run a specific skill
 ```
 
 Or via just:
 
 ```bash
-just evals             # uv sync --extra eval && prism eval run
-just evals-skill prism-build
+just evals             # uv sync --extra eval && lc eval run
+just evals-skill lc-build
 ```
 
 Evals measure whether skills produce the expected outputs (e.g. a valid `astra.yaml`) given test fixtures.

@@ -1,6 +1,6 @@
 # HPC & SLURM
 
-Prism supports executing ASTRA recipes on SLURM-based HPC clusters. The SLURM backend generates `sbatch` scripts from recipe definitions, submits them, and polls for completion.
+lightcone-cli supports executing ASTRA recipes on SLURM-based HPC clusters. The SLURM backend generates `sbatch` scripts from recipe definitions, submits them, and polls for completion.
 
 ## Supported sites
 
@@ -13,29 +13,29 @@ Prism supports executing ASTRA recipes on SLURM-based HPC clusters. The SLURM ba
 
 ```bash
 # Configure a target (one time)
-prism setup   # select Perlmutter or custom SLURM
+lc setup   # select Perlmutter or custom SLURM
 
 # Build containers
-prism build --runtime podman-hpc
+lc build --runtime podman-hpc
 
 # Run on SLURM
-prism run --target perlmutter-gpu
+lc run --target perlmutter-gpu
 
 # With SLURM scheduling options
-prism run --qos debug --constraint gpu --time 30:00
+lc run --qos debug --constraint gpu --time 30:00
 ```
 
 ## Interactive allocation
 
-On login nodes, `prism run` submits batch jobs and waits for them. For faster iteration, start an interactive allocation first:
+On login nodes, `lc run` submits batch jobs and waits for them. For faster iteration, start an interactive allocation first:
 
 ```bash
 salloc --nodes=1 --qos=interactive --constraint=gpu --time=01:00:00 --account=m4031_g
 # → now on a compute node
-prism run   # executes instantly via srun
+lc run   # executes instantly via srun
 ```
 
-Prism detects an existing `SLURM_JOB_ID` and uses `srun` instead of `sbatch` when inside an allocation.
+lightcone-cli detects an existing `SLURM_JOB_ID` and uses `srun` instead of `sbatch` when inside an allocation.
 
 ## See also
 

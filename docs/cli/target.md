@@ -1,18 +1,18 @@
-# prism target
+# lc target
 
 Show or manage execution targets for this project.
 
 ## Synopsis
 
 ```
-prism target [OPTIONS]
-prism target add [NAME]
-prism target edit NAME
+lc target [OPTIONS]
+lc target add [NAME]
+lc target edit NAME
 ```
 
 ## Description
 
-`prism target` manages which execution target a project uses. It reads and writes `.prism/prism.yaml`.
+`lc target` manages which execution target a project uses. It reads and writes `.lightcone/lightcone.yaml`.
 
 Without subcommands or flags, shows the current project target.
 
@@ -26,28 +26,28 @@ Without subcommands or flags, shows the current project target.
 
 ## Subcommands
 
-### `prism target add [NAME]`
+### `lc target add [NAME]`
 
-Interactive wizard to create a new execution target. Prompts for site type, connection details, container runtime, node type, QOS, and resource limits. Saves to `~/.prism/targets/{name}.yaml`.
+Interactive wizard to create a new execution target. Prompts for site type, connection details, container runtime, node type, QOS, and resource limits. Saves to `~/.lightcone/targets/{name}.yaml`.
 
-### `prism target edit NAME`
+### `lc target edit NAME`
 
 Edit an existing target's configuration interactively. Press Enter to keep the current value of any field.
 
 ## Examples
 
 ```bash
-prism target                          # show current project target
-prism target --list                   # list all targets
-prism target --set perlmutter-gpu     # change project target
-prism target --show perlmutter-gpu    # inspect a target's config
-prism target add my-cluster           # create a new target
-prism target edit perlmutter-gpu      # edit an existing target
+lc target                          # show current project target
+lc target --list                   # list all targets
+lc target --set perlmutter-gpu     # change project target
+lc target --show perlmutter-gpu    # inspect a target's config
+lc target add my-cluster           # create a new target
+lc target edit perlmutter-gpu      # edit an existing target
 ```
 
 ## Target configuration format
 
-Targets are stored as YAML files in `~/.prism/targets/`:
+Targets are stored as YAML files in `~/.lightcone/targets/`:
 
 ```yaml
 site: perlmutter

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Prism bridges an ASTRA specification (`astra.yaml`) and actual execution on heterogeneous compute backends (local, Docker, SLURM). It does this through three main subsystems:
+lightcone-cli bridges an ASTRA specification (`astra.yaml`) and actual execution on heterogeneous compute backends (local, Docker, SLURM). It does this through three main subsystems:
 
 1. **Dagster integration** — translates the ASTRA spec into a directed-acyclic graph (DAG) of assets, then materialises them in dependency order.
 2. **Container management** — resolves and builds content-addressed Docker/Podman images from `Containerfile` specs.
@@ -21,7 +21,7 @@ Prism bridges an ASTRA specification (`astra.yaml`) and actual execution on hete
 3. Wires dependencies: `recipe.inputs` → Dagster `deps`.
 4. Attaches the configured `ASTRAContainerRunner` as execution logic.
 
-Asset keys use a three-level hierarchy: `[universe_id, analysis_id, output_id]` for sub-analysis outputs, and `[universe_id, output_id]` for root-level outputs. This hierarchy is visible in the Dagster UI (`prism dev`).
+Asset keys use a three-level hierarchy: `[universe_id, analysis_id, output_id]` for sub-analysis outputs, and `[universe_id, output_id]` for root-level outputs. This hierarchy is visible in the Dagster UI (`lc dev`).
 
 ### IO manager (`dagster/io_manager.py`)
 
@@ -60,7 +60,7 @@ Container specs in `astra.yaml` are a single string. The runtime distinguishes:
 Image tags are content-addressed:
 
 ```python
-tag = f"prism-{project_name}-{sha256(Containerfile + dependency_files)[:12]}"
+tag = f"lc-{project_name}-{sha256(Containerfile + dependency_files)[:12]}"
 ```
 
 This means rebuilds only happen when the `Containerfile` or dependency files (`requirements.txt`, `pyproject.toml`, etc.) actually change.
@@ -73,14 +73,14 @@ For SLURM/`podman-hpc` targets, `resolve_container_for_slurm()` additionally mig
 
 ### Structure
 
-The plugin lives in `claude/prism/` and is bundled into the Python wheel via `hatch-vcs` force-include directives. When `prism init` runs, it copies the plugin into the project's `.claude/` directory.
+The plugin lives in `claude/lightcone/` and is bundled into the Python wheel via `hatch-vcs` force-include directives. When `lc init` runs, it copies the plugin into the project's `.claude/` directory.
 
 ```
 .claude/
 ├── settings.json          # Permissions + hook registrations
 ├── settings.local.json    # Telemetry env vars (Langfuse keys)
 ├── skills/                # Claude Code slash commands
-├── agents/                # prism-extractor subagent
+├── agents/                # lc-extractor subagent
 ├── guides/                # Reference docs loaded by skills
 ├── hooks/                 # Python hooks for Langfuse telemetry
 └── scripts/               # Bash hooks for session lifecycle
@@ -100,7 +100,7 @@ Site-specific deny rules (e.g. Perlmutter scratch paths) are merged in automatic
 
 ### Hooks lifecycle
 
-Claude Code fires hooks at defined points in a session. Prism registers:
+Claude Code fires hooks at defined points in a session. lightcone-cli registers:
 
 | Event | Script/Hook | Purpose |
 |-------|-------------|---------|
@@ -108,7 +108,7 @@ Claude Code fires hooks at defined points in a session. Prism registers:
 | `SessionStart` | `session-start.sh` | Show ASTRA summary, detect crash recovery |
 | `PreToolUse` | `langfuse_session_init_hook.py` | Create Langfuse trace ID before first tool |
 | `PostToolUse` (Write/Edit) | `validate-on-save.sh` | Run `astra validate` on every save |
-| `PostToolUse` (Bash) | `check-prism-run.sh` | Warn if Python run directly instead of via `prism run` |
+| `PostToolUse` (Bash) | `check-lc-run.sh` | Warn if Python run directly instead of via `lc run` |
 | `PostToolUse` (Bash) | `langfuse_git_commit_hook.py` | Attach git metadata to Langfuse spans |
 | `Stop` / `SessionEnd` | `langfuse_hook.py` | Emit full session trace to Langfuse |
 
@@ -118,7 +118,7 @@ Claude Code fires hooks at defined points in a session. Prism registers:
 
 A project can have nested `analyses:` entries in `astra.yaml`, each pointing to a sub-directory with its own `astra.yaml`. The full tree is resolved by `astra.helpers.resolve_analysis_tree()` before any asset or status operation.
 
-Asset keys and status keys use a `analysis_id/output_id` qualified notation for sub-analysis outputs. The `prism status` command displays these as a Rich tree.
+Asset keys and status keys use a `analysis_id/output_id` qualified notation for sub-analysis outputs. The `lc status` command displays these as a Rich tree.
 
 ---
 
@@ -127,7 +127,7 @@ Asset keys and status keys use a `analysis_id/output_id` qualified notation for 
 | File | Scope | Purpose |
 |------|-------|---------|
 | `astra.yaml` | Project | Spec: inputs, outputs, recipes, decisions |
-| `.prism/prism.yaml` | Project | Target name for this project |
-| `.prism/dagster.yaml` | Project | Dagster SQLite instance path |
-| `~/.prism/config.yaml` | User | Default target, permission tier, extraction model |
-| `~/.prism/targets/{name}.yaml` | User | Connection + scheduler config for each target |
+| `.lightcone/lightcone.yaml` | Project | Target name for this project |
+| `.lightcone/dagster.yaml` | Project | Dagster SQLite instance path |
+| `~/.lightcone/config.yaml` | User | Default target, permission tier, extraction model |
+| `~/.lightcone/targets/{name}.yaml` | User | Connection + scheduler config for each target |

@@ -1,11 +1,11 @@
-# prism build
+# lc build
 
 Build container images from `Containerfile` specs in `astra.yaml`.
 
 ## Synopsis
 
 ```
-prism build [OPTIONS]
+lc build [OPTIONS]
 ```
 
 ## Description
@@ -26,7 +26,7 @@ The container runtime is auto-detected from the project's target config. Use `--
 Tags are deterministic and content-addressed:
 
 ```
-prism-{project_name}-{sha256[:12]}
+lc-{project_name}-{sha256[:12]}
 ```
 
 The hash covers:
@@ -35,17 +35,17 @@ The hash covers:
 
 ## Pre-built image behaviour
 
-If the `container:` field in `astra.yaml` is a pre-built image name (not a file path), `prism build` with a non-Docker runtime (e.g. `podman-hpc`) will call `resolve_container_for_slurm()` to migrate it to the site container cache.
+If the `container:` field in `astra.yaml` is a pre-built image name (not a file path), `lc build` with a non-Docker runtime (e.g. `podman-hpc`) will call `resolve_container_for_slurm()` to migrate it to the site container cache.
 
 ## Examples
 
 ```bash
-prism build                      # auto-detect runtime from target
-prism build --runtime podman-hpc # force podman-hpc
-prism build --runtime docker     # force docker
-prism build --force              # rebuild all images
+lc build                      # auto-detect runtime from target
+lc build --runtime podman-hpc # force podman-hpc
+lc build --runtime docker     # force docker
+lc build --force              # rebuild all images
 ```
 
-## Integration with prism run
+## Integration with lc run
 
-`prism run` calls the same build logic internally unless `--no-build` is passed. Use `prism build` separately to pre-stage images before an HPC session where network access may be limited.
+`lc run` calls the same build logic internally unless `--no-build` is passed. Use `lc build` separately to pre-stage images before an HPC session where network access may be limited.

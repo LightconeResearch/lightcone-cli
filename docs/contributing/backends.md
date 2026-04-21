@@ -1,6 +1,6 @@
 # Adding an Execution Backend
 
-Execution backends are implemented in `src/prism/dagster/runner.py` as methods on `ASTRAContainerRunner`.
+Execution backends are implemented in `src/lightcone/dagster/runner.py` as methods on `ASTRAContainerRunner`.
 
 ## Steps
 

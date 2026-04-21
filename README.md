@@ -1,25 +1,28 @@
-# Prism
+# lightcone-cli
 
-[![Tests](https://github.com/LightconeResearch/Prism/actions/workflows/tests.yml/badge.svg)](https://github.com/LightconeResearch/Prism/actions/workflows/tests.yml)
+[![Tests](https://github.com/LightconeResearch/lightcone-cli/actions/workflows/tests.yml/badge.svg)](https://github.com/LightconeResearch/lightcone-cli/actions/workflows/tests.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-green.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-Prism is the agentic layer for [ASTRA](https://github.com/LightconeResearch/ASTRA) (Agentic Schema for Transparent Research Analysis). You interact with Prism through Claude Code: describe what you want, and the agent handles the implementation.
+**lightcone-cli** (`lc`) is the agentic layer for [ASTRA](https://github.com/LightconeResearch/ASTRA) (Agentic Schema for Transparent Research Analysis). You interact with lightcone-cli through Claude Code: describe what you want, and the agent handles the implementation.
+
+> **Note on the `lc` executable.** `lc` is not a standard Unix tool, but some users have a personal shell alias `lc='ls --color'`. If that's you, installing lightcone-cli will shadow that alias — rebind it if needed.
 
 ## Quick Start
 
 ```bash
-prism init my-analysis
+pip install lightcone-cli
+lc init my-analysis
 cd my-analysis
 claude
 ```
 
-Then tell the agent `/prism-new` to scope your research question.
+Then tell the agent `/lc-new` to scope your research question.
 
 ## Skills
 
-### `/prism-new` — Scope and specify an analysis
+### `/lc-new` — Scope and specify an analysis
 
 Guides you from a research question to a complete `astra.yaml` specification through interactive conversation. The agent will:
 
@@ -31,69 +34,69 @@ Guides you from a research question to a complete `astra.yaml` specification thr
 
 You don't write any code or YAML during this phase — the agent produces the full specification.
 
-### `/prism-build` — Build the analysis
+### `/lc-build` — Build the analysis
 
-Takes the specification from `/prism-new` and iteratively implements it: writing scripts, building containers, running computations, and committing progress. The agent works in a loop, and if it hits something ambiguous it flags it as an open question for you to resolve before continuing.
+Takes the specification from `/lc-new` and iteratively implements it: writing scripts, building containers, running computations, and committing progress. The agent works in a loop, and if it hits something ambiguous it flags it as an open question for you to resolve before continuing.
 
-### `/prism-verify` — Audit a completed analysis
+### `/lc-verify` — Audit a completed analysis
 
 Runs a read-only audit checking that the implementation matches the specification: schema validity, result files present, metrics in expected format, and that decision parameters are actually wired through the code (not hardcoded).
 
-### `/prism-feedback` — Report a bug
+### `/lc-feedback` — Report a bug
 
-Files a GitHub issue against the right repo (ASTRA or Prism) with version info and error context auto-collected from your session.
+Files a GitHub issue against the right repo (ASTRA or lightcone-cli) with version info and error context auto-collected from your session.
 
 ## CLI Reference
 
 ### Project setup
 
 ```bash
-prism init my-analysis                        # full scaffolding with Claude Code config
-prism init my-analysis --target perlmutter-gpu  # pre-configure for an HPC target
-prism init my-analysis --no-git --no-venv     # skip git/venv creation
+lc init my-analysis                         # full scaffolding with Claude Code config
+lc init my-analysis --target perlmutter-gpu  # pre-configure for an HPC target
+lc init my-analysis --no-git --no-venv      # skip git/venv creation
 ```
 
 ### Targets and setup
 
-Targets configure where Prism executes jobs. They're user-level (`~/.prism/targets/`), shared across projects, and work with any SLURM cluster. **Create separate targets for each run profile** rather than editing one repeatedly.
+Targets configure where lightcone-cli executes jobs. They're user-level (`~/.lightcone/targets/`), shared across projects, and work with any SLURM cluster. **Create separate targets for each run profile** rather than editing one repeatedly.
 
 ```bash
-prism setup                            # interactive setup wizard (first-time)
-prism setup --list                     # list configured targets
-prism setup --show perlmutter-gpu      # show a target's config
-prism setup --default perlmutter-gpu   # change user-wide default target
-prism target add                       # create a new target interactively
-prism target edit perlmutter-gpu       # edit an existing target
-prism target --set perlmutter-gpu      # set project target
-prism target --list                    # list available targets
+lc setup                            # interactive setup wizard (first-time)
+lc setup --list                     # list configured targets
+lc setup --show perlmutter-gpu      # show a target's config
+lc setup --default perlmutter-gpu   # change user-wide default target
+lc target add                       # create a new target interactively
+lc target edit perlmutter-gpu       # edit an existing target
+lc target --set perlmutter-gpu      # set project target
+lc target --list                    # list available targets
 ```
 
 For example, on Perlmutter:
 
 ```bash
-prism target add perlmutter-debug   # gpu, qos: debug, 30min max
-prism target add perlmutter-gpu     # gpu (A100 40GB), qos: regular
-prism target add perlmutter-cpu     # cpu (128 cores/node), qos: regular
-prism target add perlmutter-hbm80   # gpu_hbm80 (A100 80GB), qos: regular
-prism target add perlmutter-preempt # gpu, qos: preempt (0.25x cost)
+lc target add perlmutter-debug   # gpu, qos: debug, 30min max
+lc target add perlmutter-gpu     # gpu (A100 40GB), qos: regular
+lc target add perlmutter-cpu     # cpu (128 cores/node), qos: regular
+lc target add perlmutter-hbm80   # gpu_hbm80 (A100 80GB), qos: regular
+lc target add perlmutter-preempt # gpu, qos: preempt (0.25x cost)
 ```
 
-Resolution order: `--target` flag > `prism.yaml` > `~/.prism/config.yaml` > local.
+Resolution order: `--target` flag > `.lightcone/lightcone.yaml` > `~/.lightcone/config.yaml` > local.
 
-**Extraction model:** Literature extraction subagents default to Sonnet. To change this, run `prism setup` and select "Change extraction model", or edit `extraction_model` in `~/.prism/config.yaml` directly (options: `sonnet`, `haiku`, or empty for inherit).
+**Extraction model:** Literature extraction subagents default to Sonnet. To change this, run `lc setup` and select "Change extraction model", or edit `extraction_model` in `~/.lightcone/config.yaml` directly (options: `sonnet`, `haiku`, or empty for inherit).
 
 ### Execution and monitoring
 
-The agent runs these during `/prism-build`, but you can also run them directly:
+The agent runs these during `/lc-build`, but you can also run them directly:
 
 ```bash
-prism run                              # materialize all outputs for all universes
-prism run accuracy                     # materialize a specific output
-prism run --universe baseline          # materialize for a specific universe
-prism run --target perlmutter-gpu      # run on a SLURM target
-prism status                           # show materialization status (ok / pending / no recipe)
-prism status --universe baseline       # status for a specific universe
-prism dev                              # launch Dagster webserver UI
+lc run                              # materialize all outputs for all universes
+lc run accuracy                     # materialize a specific output
+lc run --universe baseline          # materialize for a specific universe
+lc run --target perlmutter-gpu      # run on a SLURM target
+lc status                           # show materialization status (ok / pending / no recipe)
+lc status --universe baseline       # status for a specific universe
+lc dev                              # launch Dagster webserver UI
 ```
 
 ## Capabilities

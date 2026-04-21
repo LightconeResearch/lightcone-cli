@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from prism.eval.models import (
+from lightcone.eval.models import (
     EvalRun,
     EvalRunConfig,
     GraderResult,
@@ -104,21 +104,21 @@ class TestEvalRunConfig:
 class TestVersionInfo:
     def test_defaults(self):
         v = VersionInfo()
-        assert v.prism_commit == ""
-        assert v.prism_dirty is False
+        assert v.lightcone_commit == ""
+        assert v.lightcone_dirty is False
 
     def test_roundtrip(self):
         v = VersionInfo(
-            prism_commit="abc123",
-            prism_branch="main",
-            prism_dirty=True,
-            prism_version="0.0.2",
+            lightcone_commit="abc123",
+            lightcone_branch="main",
+            lightcone_dirty=True,
+            lightcone_version="0.0.2",
             astra_version="0.0.8",
         )
         data = v.model_dump(mode="json")
         restored = VersionInfo(**data)
-        assert restored.prism_commit == "abc123"
-        assert restored.prism_dirty is True
+        assert restored.lightcone_commit == "abc123"
+        assert restored.lightcone_dirty is True
 
 
 class TestEvalRun:
@@ -130,7 +130,7 @@ class TestEvalRun:
     def test_roundtrip(self):
         run = EvalRun(
             config=EvalRunConfig(id="r1", tasks=["t1"]),
-            version=VersionInfo(prism_commit="abc123"),
+            version=VersionInfo(lightcone_commit="abc123"),
             started_at=datetime(2026, 3, 15, tzinfo=UTC),
             trials=[
                 TrialResult(
@@ -144,4 +144,4 @@ class TestEvalRun:
         restored = EvalRun(**data)
         assert len(restored.trials) == 1
         assert restored.trials[0].composite_score == 0.75
-        assert restored.version.prism_commit == "abc123"
+        assert restored.version.lightcone_commit == "abc123"

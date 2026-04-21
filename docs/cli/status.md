@@ -1,11 +1,11 @@
-# prism status
+# lc status
 
 Show materialisation status of all outputs.
 
 ## Synopsis
 
 ```
-prism status [OPTIONS]
+lc status [OPTIONS]
 ```
 
 ## Description
@@ -35,8 +35,8 @@ At the bottom, a summary line shows recipe coverage and container status.
 ## Examples
 
 ```bash
-prism status
-prism status --universe experiment1
+lc status
+lc status --universe experiment1
 ```
 
 ## Sample output (flat project)
@@ -53,7 +53,7 @@ prism status --universe experiment1
 
   Recipes: 2/3 outputs integrated
   Materialized: 1/4 runs
-  Container: build Containerfile  prism-myanalysis-a1b2c3 (built)
+  Container: build Containerfile  lc-myanalysis-a1b2c3 (built)
 ```
 
 ## Implementation notes
