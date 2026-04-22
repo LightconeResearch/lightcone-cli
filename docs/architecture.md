@@ -6,7 +6,7 @@ lightcone-cli bridges an ASTRA specification (`astra.yaml`) and actual execution
 
 1. **Dagster integration** — translates the ASTRA spec into a directed-acyclic graph (DAG) of assets, then materialises them in dependency order.
 2. **Container management** — resolves and builds content-addressed Docker/Podman images from `Containerfile` specs.
-3. **Claude Code plugin** — injects skills, hooks, and scripts into each project's `.claude/` directory so that Claude Code can operate as a research agent.
+3. **Agent harness plugin** — injects skills, agents, and guides into each project's harness directory (`.<prefix>/`) for every selected tool. Hooks and scripts are installed for Claude Code only.
 
 ---
 
@@ -69,22 +69,32 @@ For SLURM/`podman-hpc` targets, `resolve_container_for_slurm()` additionally mig
 
 ---
 
-## Claude Code plugin
+## Agent harness plugin
 
 ### Structure
 
-The plugin lives in `claude/lightcone/` and is bundled into the Python wheel via `hatch-vcs` force-include directives. When `lc init` runs, it copies the plugin into the project's `.claude/` directory.
+The plugin lives in `claude/lightcone/` and is bundled into the Python wheel via `hatch-vcs` force-include directives. When `lc init` runs, it copies the plugin into one or more harness directories selected via `--tools` (default: `claude`).
+
+**Content installed to every harness** (`.<prefix>/`):
+
+```
+.<prefix>/
+├── skills/                # Agent slash commands / prompts
+├── agents/                # lc-extractor subagent
+└── guides/                # Reference docs loaded by skills
+```
+
+**Additional content installed for Claude Code only** (`.claude/`):
 
 ```
 .claude/
 ├── settings.json          # Permissions + hook registrations
 ├── settings.local.json    # Telemetry env vars (Langfuse keys)
-├── skills/                # Claude Code slash commands
-├── agents/                # lc-extractor subagent
-├── guides/                # Reference docs loaded by skills
 ├── hooks/                 # Python hooks for Langfuse telemetry
 └── scripts/               # Bash hooks for session lifecycle
 ```
+
+The harness registry (`src/lightcone/cli/harness.py`) maps each tool ID to its install prefix and capability flags. Supported harnesses: `claude`, `codex`, `cursor`, `github-copilot`, `opencode`.
 
 ### Permission tiers
 

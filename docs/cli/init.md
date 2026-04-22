@@ -16,7 +16,7 @@ lc init [OPTIONS] [DIRECTORY]
 - Boilerplate `astra.yaml` with TODO placeholders
 - `Containerfile` and `requirements.txt`
 - A baseline universe (`universes/baseline.yaml`)
-- `.claude/` directory with skills, hooks, scripts, and `settings.json`
+- `.<harness>/` directory with skills, agents, guides (and hooks, scripts, `settings.json` for Claude Code)
 - `.lightcone/lightcone.yaml` linking the project to its execution target
 - `.lightcone/dagster.yaml` pointing Dagster's SQLite store to `results/.dagster/`
 - `CLAUDE.md` from the plugin template
@@ -32,6 +32,7 @@ lc init [OPTIONS] [DIRECTORY]
 | `--no-venv` | false | Skip virtual environment creation |
 | `--target`, `-t` | user default | Execution target name to write into `.lightcone/lightcone.yaml` |
 | `--permissions` | saved/prompt | Claude Code permission tier (`yolo`, `recommended`, `minimal`) |
+| `--tools` | `claude` | Agent harness(es) to install (repeat for multiple: `--tools claude --tools codex`) |
 | `--existing-project` | — | Path to existing code to migrate into the new project |
 | `--sub-analysis` | false | Create a sub-analysis directory and wire it into the parent project |
 
@@ -42,9 +43,10 @@ lc init [OPTIONS] [DIRECTORY]
 ```bash
 lc init my-analysis
 lc init my-analysis --target perlmutter-gpu
+lc init my-analysis --tools claude --tools codex   # install both Claude Code and Codex harnesses
 ```
 
-Creates a fresh project in `my-analysis/`.
+Creates a fresh project in `my-analysis/`. By default only the Claude Code harness (`.claude/`) is installed. Pass `--tools` once per harness to install additional ones.
 
 ### Migrate existing code
 
@@ -88,6 +90,6 @@ The following private functions do the heavy lifting and are tested directly:
 
 - `_create_dagster_yaml(directory)` — writes `.lightcone/dagster.yaml`
 - `_create_boilerplate_astra_yaml(directory)` — writes `astra.yaml`, `Containerfile`, `requirements.txt`, `universes/baseline.yaml`
-- `_create_claude_settings(directory, tier, target)` — copies plugin files and writes `.claude/settings.json` + `.claude/settings.local.json`
+- `_install_harnesses(directory, tier, target, tools)` — copies skills/agents/guides to every selected harness; installs hooks, scripts, and `settings.json` for Claude Code only
 - `_create_lightcone_config(directory, target_name)` — writes `.lightcone/lightcone.yaml`
 - `_init_sub_analysis(directory)` — scaffolds sub-analysis directory and wires it into the parent spec

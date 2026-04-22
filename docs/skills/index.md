@@ -14,7 +14,7 @@ Skills are Claude Code slash commands bundled in the lightcone-cli plugin. They 
 
 ## How skills work
 
-Each skill is a markdown file (`SKILL.md`) in `.claude/skills/{skill-name}/`. Claude Code discovers skills by scanning the `.claude/skills/` directory. The frontmatter configures the skill's metadata and allowed tools:
+Each skill is a markdown file (`SKILL.md`) in `.<harness>/skills/{skill-name}/`. The agent tool discovers skills by scanning that directory. The frontmatter configures the skill's metadata and allowed tools:
 
 ```yaml
 ---
@@ -24,14 +24,28 @@ allowed-tools: Read, Write, Edit, Bash, WebSearch, WebFetch
 ---
 ```
 
-The body of the file is a structured prompt that tells Claude exactly how to proceed, including phase definitions, rules, and references to guide files.
+The body of the file is a structured prompt that tells the agent exactly how to proceed, including phase definitions, rules, and references to guide files.
 
 ## Plugin installation
 
-Skills are installed by `lc init` (copying the plugin to `.claude/`) and updated by `lc update --sync`. They live at:
+Skills are installed by `lc init` and updated by `lc update --sync`. `lc init` copies skills (and agents, guides) to every harness selected via `--tools`; the default is `claude`. Hooks and scripts are installed for Claude Code only.
+
+Canonical source locations:
 
 - **Bundled (installed package)**: `{site-packages}/lightcone/cli/claude/lightcone/skills/`
 - **Development**: `{repo}/claude/lightcone/skills/`
+
+## Multi-harness distribution
+
+Skills are harness-agnostic — the same `SKILL.md` files are installed into each selected harness's `skills/` directory:
+
+| Harness | Install path | `--tools` value |
+|---------|-------------|-----------------|
+| Claude Code | `.claude/skills/` | `claude` |
+| Codex | `.codex/skills/` | `codex` |
+| Cursor | `.cursor/skills/` | `cursor` |
+| GitHub Copilot | `.github/skills/` | `github-copilot` |
+| OpenCode | `.opencode/skills/` | `opencode` |
 
 ## Related files
 
