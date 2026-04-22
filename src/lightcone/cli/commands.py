@@ -16,6 +16,7 @@ import yaml
 from rich.console import Console
 
 from lightcone.cli.harness import (
+    ALL_TOOL_IDS,
     HARNESS_REGISTRY,
     ensure_dir,
     resolve_global_commands_path,
@@ -169,7 +170,7 @@ def _load_lightcone_config(project_path: Path) -> dict:
 @click.option(
     "--tools", "tools",
     multiple=True,
-    type=click.Choice(["claude", "codex", "cursor", "github-copilot", "opencode"]),
+    type=click.Choice(list(ALL_TOOL_IDS)),
     default=("claude",),
     help="Agent harnesses to install (repeat for multiple; default: claude)",
 )
@@ -899,17 +900,17 @@ def _install_harnesses(
         prefix = directory / h.prefix
         ensure_dir(prefix)
 
-        # Skills — all harnesses
-        _copy_dir(plugin_source / "skills", prefix / "skills")
+        if h.has_skills:
+            _copy_dir(plugin_source / "skills", prefix / "skills")
 
-        # Agents — all harnesses (with model config)
-        _copy_dir(plugin_source / "agents", prefix / "agents")
-        agents_dst = prefix / "agents"
-        if agents_dst.exists():
-            _update_extractor_agent_model(agents_dst)
+        if h.has_agents:
+            _copy_dir(plugin_source / "agents", prefix / "agents")
+            agents_dst = prefix / "agents"
+            if agents_dst.exists():
+                _update_extractor_agent_model(agents_dst)
 
-        # Guides — all harnesses
-        _copy_dir(plugin_source / "guides", prefix / "guides")
+        if h.has_guides:
+            _copy_dir(plugin_source / "guides", prefix / "guides")
 
     # Claude Code only: hooks, scripts, settings
     if has_claude:
@@ -1061,7 +1062,7 @@ def _create_claude_settings_only(
 def _display_install_summary(harnesses: list) -> None:
     """Display post-install summary for installed harnesses."""
     installed: list[str] = []
-    global_notices: list[str] = []
+    global_notices: list[tuple[str, str]] = []
 
     for h in harnesses:
         installed.append(h.tool_name)
@@ -1073,7 +1074,13 @@ def _display_install_summary(harnesses: list) -> None:
         console.print("\n[bold]Installed to:[/bold]")
         for h in harnesses:
             prefix = h.prefix
-            parts = [f"[cyan]{prefix}/skills[/cyan]"]
+            parts: list[str] = []
+            if h.has_skills:
+                parts.append(f"[cyan]{prefix}/skills[/cyan]")
+            if h.has_agents:
+                parts.append(f"[cyan]{prefix}/agents[/cyan]")
+            if h.has_guides:
+                parts.append(f"[cyan]{prefix}/guides[/cyan]")
             if h.has_hooks:
                 parts.append(f"[cyan]{prefix}/hooks[/cyan]")
             if h.has_settings:
@@ -2258,10 +2265,10 @@ def _sync_project_plugins(project_dir: Path, tools: tuple[str, ...] = ("claude",
         console.print("  [red]✗[/red] Could not find lightcone-cli plugin source files.")
         return False
 
-    tool_ids = list(tools) if tools else ["claude"]
+    harness_list = resolve_harnesses(tools or None)
+    tool_ids = [h.tool_id for h in harness_list]
 
-    for tid in tool_ids:
-        harness = HARNESS_REGISTRY[tid]
+    for harness in harness_list:
         prefix = project_dir / harness.prefix
         ensure_dir(prefix)
 
@@ -2329,7 +2336,7 @@ def _sync_project_plugins(project_dir: Path, tools: tuple[str, ...] = ("claude",
 
 def _prompt_sync_projects(tools: tuple[str, ...] = ("claude",)) -> None:
     """Prompt the user to sync plugin files into existing projects."""
-    harness_names = ", ".join(HARNESS_REGISTRY[tid].tool_name for tid in tools)
+    harness_names = ", ".join(h.tool_name for h in resolve_harnesses(tools or None))
     console.print(
         "\n[bold]Sync updated plugin files to your projects?[/bold]"
     )
@@ -2357,7 +2364,7 @@ def _prompt_sync_projects(tools: tuple[str, ...] = ("claude",)) -> None:
 @click.option(
     "--tools", "tools",
     multiple=True,
-    type=click.Choice(["claude", "codex", "cursor", "github-copilot", "opencode"]),
+    type=click.Choice(list(ALL_TOOL_IDS)),
     default=("claude",),
     help="Agent harnesses to sync (repeat for multiple; default: claude)",
 )

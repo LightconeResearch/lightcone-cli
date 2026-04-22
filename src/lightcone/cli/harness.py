@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,9 +108,11 @@ ALL_TOOL_IDS: tuple[str, ...] = tuple(HARNESS_REGISTRY)
 
 
 def resolve_harnesses(tool_ids: Sequence[str] | None) -> list[HarnessConfig]:
-    """Return configured harnesses for *tool_ids*, defaulting to ``["claude"]``."""
-    ids: list[str] = list(tool_ids) if tool_ids else ["claude"]
-    # Validate
+    """Return configured harnesses for *tool_ids*, defaulting to ``["claude"]``.
+
+    Duplicate IDs are silently de-duplicated (order preserved).
+    """
+    ids: list[str] = list(dict.fromkeys(tool_ids)) if tool_ids else ["claude"]
     for tid in ids:
         if tid not in HARNESS_REGISTRY:
             raise ValueError(
@@ -146,4 +149,4 @@ def ensure_dir(path: Path) -> None:
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        print(f"\n[warning] Cannot create directory {path}: {exc}")
+        warnings.warn(f"Cannot create directory {path}: {exc}", stacklevel=2)
