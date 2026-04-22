@@ -798,6 +798,10 @@ class TestSyncProjectPlugins:
         skills = plugin / "skills" / "lc-build"
         skills.mkdir(parents=True)
         (skills / "SKILL.md").write_text("# build skill v2\n")
+        # Agents
+        agents = plugin / "agents"
+        agents.mkdir()
+        (agents / "lc-extractor.md").write_text("# extractor agent v2\n")
         # Scripts
         scripts = plugin / "scripts"
         scripts.mkdir()
@@ -824,7 +828,7 @@ class TestSyncProjectPlugins:
         return plugin
 
     def test_sync_copies_plugin_dirs(self, tmp_path: Path):
-        """Sync should copy skills, hooks, scripts into .claude/."""
+        """Sync should copy skills, agents, and guides into .claude/ (not hooks or scripts)."""
         from lightcone.cli.commands import _sync_project_plugins
 
         project = self._make_project(tmp_path)
@@ -835,13 +839,15 @@ class TestSyncProjectPlugins:
 
         assert result is True
         assert (project / ".claude" / "skills" / "lc-build" / "SKILL.md").exists()
-        assert (project / ".claude" / "scripts" / "session-start.sh").exists()
-        assert (project / ".claude" / "hooks" / "langfuse_hook.py").exists()
+        assert (project / ".claude" / "agents" / "lc-extractor.md").exists()
         assert (project / ".claude" / "guides" / "astra-reference.md").exists()
         assert (project / ".claude" / "guides" / "ui-brand.md").exists()
+        # Hooks and scripts are init-time only; not synced
+        assert not (project / ".claude" / "scripts").exists()
+        assert not (project / ".claude" / "hooks").exists()
 
-    def test_sync_scripts_executable(self, tmp_path: Path):
-        """Synced scripts should be executable."""
+    def test_sync_no_scripts(self, tmp_path: Path):
+        """Sync does not copy scripts or hooks (init-time only)."""
         from lightcone.cli.commands import _sync_project_plugins
 
         project = self._make_project(tmp_path)
@@ -850,8 +856,8 @@ class TestSyncProjectPlugins:
         with patch("lightcone.cli.commands.get_plugin_source_dir", return_value=plugin):
             _sync_project_plugins(project)
 
-        sh = project / ".claude" / "scripts" / "session-start.sh"
-        assert sh.stat().st_mode & 0o111
+        assert not (project / ".claude" / "scripts").exists()
+        assert not (project / ".claude" / "hooks").exists()
 
     def test_sync_preserves_analysis_context(self, tmp_path: Path):
         """Sync should update managed CLAUDE.md section but preserve Analysis Context."""
