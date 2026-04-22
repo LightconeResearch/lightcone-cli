@@ -24,7 +24,7 @@ def validate_output(
     if not output_dir.exists():
         return [f"Output directory missing after successful run: {output_dir}"]
     if not output_dir.is_dir():
-        return []
+        return [f"Output '{output_id}': expected a directory at {output_dir}, found a file"]
 
     try:
         files = list(output_dir.iterdir())
