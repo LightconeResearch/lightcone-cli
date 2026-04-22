@@ -31,7 +31,7 @@ bash .claude/skills/lc-build/scripts/setup-lc-build.sh --resume
 ```
 Then jump straight to reading `.claude/ralph-loop.local.md` and following the loop prompt.
 
-**If start fresh:** Delete the old state file (`rm .claude/ralph-loop.local.md`) and continue to Phase 1.
+**If start fresh:** Delete the old state file (`command rm .claude/ralph-loop.local.md`) and continue to Phase 1.
 
 ## Phase 1: Setup & Plan
 
@@ -88,14 +88,14 @@ This creates `.claude/ralph-loop.local.md` — the ralph-wiggum state file. The 
 ## Notes
 
 - The setup script will attempt to install the ralph-loop plugin if missing (via marketplace update). If installation fails, it errors and cleans up — the loop cannot run without the stop hook.
-- The build plan file (`.lightcone/plans/build-plan-<UNIVERSE>.md`) persists across crashes for easy resumption. It's deleted on successful completion. 
+- The build plan file (`.lightcone/plans/build-plan-<UNIVERSE>.md`) persists across crashes for easy resumption. It's deleted on successful completion.
 - To cancel mid-loop: `/cancel-ralph`
 
 ## Common issues and solutions
 
 ### Issue: rm alias blocks progress
 
-**Problem**: Running `rm /workdir/.lightcone/plans/build-plan-XXX.md` takes longer than 1 second or prompts for confirmation. This happens because the system uses a secured alias for `rm`: `alias rm=rm -i` (interactive mode). Agents will stall waiting for confirmation that will never come.
+**Problem**: Running `rm .lightcone/plans/build-plan-<UNIVERSE>.md` takes longer than 1 second or prompts for confirmation. This happens because the system uses a secured alias for `rm`: `alias rm='rm -i'` (interactive mode). Agents will stall waiting for confirmation that will never come.
 
 **Solution**:
 
@@ -103,5 +103,5 @@ Use `command rm` instead of `rm` to bypass the alias and use the system binary d
 
 ```bash
 # Bypass the interactive rm alias
-command rm /workdir/.lightcone/plans/build-plan-XXX.md
+command rm .lightcone/plans/build-plan-<UNIVERSE>.md
 ```
