@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,12 @@ import click
 import yaml
 from rich.console import Console
 
+from lightcone.cli.harness import (
+    HARNESS_REGISTRY,
+    ensure_dir,
+    resolve_global_commands_path,
+    resolve_harnesses,
+)
 from lightcone.cli.plugin import get_plugin_source_dir
 
 console = Console()
@@ -159,20 +166,28 @@ def _load_lightcone_config(project_path: Path) -> dict:
     default=False,
     help="Create a sub-analysis directory and wire it into the parent project",
 )
+@click.option(
+    "--tools", "tools",
+    multiple=True,
+    type=click.Choice(["claude", "codex", "cursor", "github-copilot", "opencode"]),
+    default=("claude",),
+    help="Agent harnesses to install (repeat for multiple; default: claude)",
+)
 def init(
     directory: Path, no_git: bool, no_venv: bool,
     target: str | None, permissions: str | None,
     existing_project: Path | None,
     sub_analysis: bool,
+    tools: tuple[str, ...],
 ) -> None:
     """Create a new ASTRA analysis project with full agentic scaffolding.
 
-    Creates the project with ASTRA specification files, Claude Code plugin
+    Creates the project with ASTRA specification files, agent plugin
     configuration, skills, hooks, and a Python virtual environment.
 
     Use --existing-project to migrate existing code into ASTRA. If the
     source path differs from DIRECTORY, code is copied in. Then run
-    /lc-migrate in Claude Code to generate the spec.
+    /lc-migrate in your agent to generate the spec.
 
     Use --sub-analysis to scaffold a sub-analysis directory and wire it
     into the parent project's astra.yaml and universe files.
@@ -186,6 +201,7 @@ def init(
         lc init my-analysis --existing-project ../old-code
         lc init analyses/new_stage --sub-analysis
         lc init --sub-analysis new_stage
+        lc init my-analysis --tools claude --tools codex
     """
     if sub_analysis:
         _init_sub_analysis(directory)
@@ -196,6 +212,7 @@ def init(
             directory, source=existing_project,
             no_git=no_git, no_venv=no_venv,
             target=target, permissions=permissions,
+            tools=tools,
         )
         return
 
@@ -248,7 +265,7 @@ def init(
         effective_target = load_user_config().get("default_target", "local")
 
     tier = _resolve_permission_tier(permissions)
-    _create_claude_settings(directory, tier, target=effective_target)
+    _install_harnesses(directory, tier, effective_target, tools)
 
     # Write lightcone.yaml project config
     _create_lightcone_config(directory, effective_target)
@@ -372,6 +389,7 @@ def _init_existing_project(
     no_venv: bool,
     target: str | None,
     permissions: str | None,
+    tools: tuple[str, ...] = ("claude",),
 ) -> None:
     """Add lightcone-cli infrastructure to an existing project.
 
@@ -459,9 +477,9 @@ COPY . .
     else:
         console.print("  [dim]requirements.txt already exists, skipping[/dim]")
 
-    # Claude Code settings
+    # Agent harnesses (Claude Code settings)
     tier = _resolve_permission_tier(permissions)
-    _create_claude_settings(directory, tier)
+    _install_harnesses(directory, tier, target or "local", tools)
 
     # lightcone.yaml
     effective_target = target
@@ -838,72 +856,86 @@ def _update_extractor_agent_model(agents_dir: Path) -> None:
     extractor_path.write_text(content)
 
 
-def _create_claude_settings(
+def _copy_dir(src: Path, dst: Path) -> None:
+    """Copy *src* to *dst*, replacing *dst* if it already exists."""
+    if not src.exists():
+        return
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+
+def _copy_executable_dir(src: Path, dst: Path, ext: str) -> None:
+    """Copy *src* to *dst* and set execute bit on files matching *ext*."""
+    _copy_dir(src, dst)
+    for f in dst.glob(f"*{ext}"):
+        f.chmod(f.stat().st_mode | 0o111)
+
+
+def _install_harnesses(
+    directory: Path,
+    tier: str = "recommended",
+    target: str = "local",
+    tools: Sequence[str] | None = None,
+) -> None:
+    """Install lightcone-cli plugin content for the given agent harnesses.
+
+    For each harness, copies skills, agents, and guides.
+    For Claude Code, also installs hooks, scripts, and settings.json.
+    """
+    harnesses = resolve_harnesses(tools)
+
+    plugin_source = get_plugin_source_dir()
+    if plugin_source is None:
+        console.print(
+            "[yellow]Warning:[/yellow] Could not find lightcone-cli plugin source files. "
+            "Agent skills will not be available."
+        )
+        return
+
+    has_claude = any(h.tool_id == "claude" for h in harnesses)
+
+    for h in harnesses:
+        prefix = directory / h.prefix
+        ensure_dir(prefix)
+
+        # Skills — all harnesses
+        _copy_dir(plugin_source / "skills", prefix / "skills")
+
+        # Agents — all harnesses (with model config)
+        _copy_dir(plugin_source / "agents", prefix / "agents")
+        agents_dst = prefix / "agents"
+        if agents_dst.exists():
+            _update_extractor_agent_model(agents_dst)
+
+        # Guides — all harnesses
+        _copy_dir(plugin_source / "guides", prefix / "guides")
+
+    # Claude Code only: hooks, scripts, settings
+    if has_claude:
+        claude_dir = directory / ".claude"
+
+        # Scripts
+        _copy_executable_dir(plugin_source / "scripts", claude_dir / "scripts", ".sh")
+
+        # Hooks
+        _copy_executable_dir(plugin_source / "hooks", claude_dir / "hooks", ".py")
+
+        _create_claude_settings_only(directory, tier, target)
+
+    _display_install_summary(harnesses)
+
+
+def _create_claude_settings_only(
     directory: Path, tier: str = "recommended", target: str = "local",
 ) -> None:
-    """Create Claude Code settings with lightcone-cli skills and agents.
+    """Create Claude Code settings.json and settings.local.json.
 
     If a non-local target maps to a known HPC site, site-specific deny rules
     (e.g. scratch filesystem paths) are merged into the permissions.
     """
     claude_dir = directory / ".claude"
-    claude_dir.mkdir(parents=True, exist_ok=True)
-
-    # Find the plugin source directory
-    plugin_source = get_plugin_source_dir()
-    if plugin_source is None:
-        console.print(
-            "[yellow]Warning:[/yellow] Could not find lightcone-cli plugin source files. "
-            "Claude Code skills will not be available."
-        )
-        return
-
-    # Copy scripts
-    scripts_src = plugin_source / "scripts"
-    scripts_dst = claude_dir / "scripts"
-    if scripts_src.exists():
-        if scripts_dst.exists():
-            shutil.rmtree(scripts_dst)
-        shutil.copytree(scripts_src, scripts_dst)
-        # Make scripts executable
-        for script in scripts_dst.glob("*.sh"):
-            script.chmod(script.stat().st_mode | 0o111)
-
-    # Copy hooks
-    hooks_src = plugin_source / "hooks"
-    hooks_dst = claude_dir / "hooks"
-    if hooks_src.exists():
-        if hooks_dst.exists():
-            shutil.rmtree(hooks_dst)
-        shutil.copytree(hooks_src, hooks_dst)
-        # Make .py files executable
-        for hook in hooks_dst.glob("*.py"):
-            hook.chmod(hook.stat().st_mode | 0o111)
-
-    # Copy skills
-    skills_src = plugin_source / "skills"
-    skills_dst = claude_dir / "skills"
-    if skills_src.exists():
-        if skills_dst.exists():
-            shutil.rmtree(skills_dst)
-        shutil.copytree(skills_src, skills_dst)
-
-    # Copy agents and apply extraction model config
-    agents_src = plugin_source / "agents"
-    agents_dst = claude_dir / "agents"
-    if agents_src.exists():
-        if agents_dst.exists():
-            shutil.rmtree(agents_dst)
-        shutil.copytree(agents_src, agents_dst)
-        _update_extractor_agent_model(agents_dst)
-
-    # Copy guides
-    guides_src = plugin_source / "guides"
-    guides_dst = claude_dir / "guides"
-    if guides_src.exists():
-        if guides_dst.exists():
-            shutil.rmtree(guides_dst)
-        shutil.copytree(guides_src, guides_dst)
+    ensure_dir(claude_dir)
 
     # Build permissions: start from tier, then merge site-specific deny rules
     permissions: dict[str, list[str]] = {
@@ -1024,6 +1056,35 @@ def _create_claude_settings(
     }
     settings_local_file = claude_dir / "settings.local.json"
     settings_local_file.write_text(json.dumps(settings_local, indent=2) + "\n")
+
+
+def _display_install_summary(harnesses: list) -> None:
+    """Display post-install summary for installed harnesses."""
+    installed: list[str] = []
+    global_notices: list[str] = []
+
+    for h in harnesses:
+        installed.append(h.tool_name)
+        gpath = resolve_global_commands_path(h)
+        if gpath:
+            global_notices.append((h.tool_name, gpath))
+
+    if installed:
+        console.print("\n[bold]Installed to:[/bold]")
+        for h in harnesses:
+            prefix = h.prefix
+            parts = [f"[cyan]{prefix}/skills[/cyan]"]
+            if h.has_hooks:
+                parts.append(f"[cyan]{prefix}/hooks[/cyan]")
+            if h.has_settings:
+                parts.append(f"[cyan]{prefix}/settings.json[/cyan]")
+            console.print(f"  {h.tool_name}: {', '.join(parts)}")
+
+    for tool_name, gpath in global_notices:
+        console.print(
+            f"\n[yellow]Note: {tool_name} global commands[/yellow]"
+        )
+        console.print(f"  Place commands at: [cyan]{gpath}[/cyan]")
 
 
 def _init_git_repo(directory: Path, no_git: bool) -> None:
@@ -2183,8 +2244,8 @@ def setup(
 _CLAUDE_MD_SEPARATOR = "## Analysis Context"
 
 
-def _sync_project_plugins(project_dir: Path) -> bool:
-    """Sync plugin files (skills, hooks, scripts, agents, CLAUDE.md) into a project.
+def _sync_project_plugins(project_dir: Path, tools: tuple[str, ...] = ("claude",)) -> bool:
+    """Sync plugin files (skills, agents, guides, CLAUDE.md) into a project.
 
     Returns True if the sync succeeded.
     """
@@ -2197,78 +2258,83 @@ def _sync_project_plugins(project_dir: Path) -> bool:
         console.print("  [red]✗[/red] Could not find lightcone-cli plugin source files.")
         return False
 
-    claude_dir = project_dir / ".claude"
-    claude_dir.mkdir(parents=True, exist_ok=True)
+    tool_ids = list(tools) if tools else ["claude"]
 
-    # Sync directories: skills, hooks, scripts, agents, guides
-    for subdir in ("scripts", "hooks", "skills", "agents", "guides"):
-        src = plugin_source / subdir
-        dst = claude_dir / subdir
-        if not src.exists():
-            continue
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
-        # Make executable as needed
-        if subdir == "scripts":
-            for f in dst.glob("*.sh"):
-                f.chmod(f.stat().st_mode | 0o111)
-        elif subdir == "hooks":
-            for f in dst.glob("*.py"):
-                f.chmod(f.stat().st_mode | 0o111)
+    for tid in tool_ids:
+        harness = HARNESS_REGISTRY[tid]
+        prefix = project_dir / harness.prefix
+        ensure_dir(prefix)
 
-    # Apply extraction model config to agents
-    agents_dst = claude_dir / "agents"
-    if agents_dst.exists():
-        _update_extractor_agent_model(agents_dst)
+        # Sync content directories for this harness
+        for subdir in ("skills", "agents", "guides"):
+            if not harness.has_skills and subdir == "skills":
+                continue
+            if not harness.has_agents and subdir == "agents":
+                continue
+            if not harness.has_guides and subdir == "guides":
+                continue
+            src = plugin_source / subdir
+            dst = prefix / subdir
+            if not src.exists():
+                continue
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
 
-    # Update the managed portion of CLAUDE.md (everything above "## Analysis Context")
-    claude_md = project_dir / "CLAUDE.md"
-    if claude_md.exists():
-        existing = claude_md.read_text()
-        # Find the separator
-        sep_idx = existing.find(_CLAUDE_MD_SEPARATOR)
-        if sep_idx != -1:
-            user_section = existing[sep_idx:]
-        else:
-            # No separator found — preserve everything as user content
-            user_section = (
-                f"{_CLAUDE_MD_SEPARATOR}\n\n"
-                "_Run `/lc-new` to scope the research question and populate "
-                "this section with domain context and implementation notes not "
-                "captured in astra.yaml._\n"
-            )
+        # Apply extraction model config to agents
+        agents_dst = prefix / "agents"
+        if agents_dst.exists():
+            _update_extractor_agent_model(agents_dst)
 
-        # Get fresh template
-        name = project_dir.name
-        template_path = plugin_source / "templates" / "CLAUDE.md"
-        if template_path.exists():
-            template = template_path.read_text().replace("{{name}}", name)
-            template_sep_idx = template.find(_CLAUDE_MD_SEPARATOR)
-            if template_sep_idx != -1:
-                managed_section = template[:template_sep_idx]
+    # CLAUDE.md — only sync for Claude Code (it is Claude Code-specific content)
+    if "claude" in tool_ids:
+        claude_md = project_dir / "CLAUDE.md"
+        if claude_md.exists():
+            existing = claude_md.read_text()
+            # Find the separator
+            sep_idx = existing.find(_CLAUDE_MD_SEPARATOR)
+            if sep_idx != -1:
+                user_section = existing[sep_idx:]
             else:
-                managed_section = template + "\n"
-        else:
-            managed_section = (
-                f"# CLAUDE.md\n\n## Project: {name}\n\n"
-                "ASTRA analysis project, built with lightcone-cli.\n\n---\n\n"
-                "<!-- AUTOGENERATED: /lc-new populates below during specification -->\n"
-            )
+                # No separator found — preserve everything as user content
+                user_section = (
+                    f"{_CLAUDE_MD_SEPARATOR}\n\n"
+                    "_Run `/lc-new` to scope the research question and populate "
+                    "this section with domain context and implementation notes not "
+                    "captured in astra.yaml._\n"
+                )
 
-        claude_md.write_text(managed_section + user_section)
+            # Get fresh template
+            name = project_dir.name
+            template_path = plugin_source / "templates" / "CLAUDE.md"
+            if template_path.exists():
+                template = template_path.read_text().replace("{{name}}", name)
+                template_sep_idx = template.find(_CLAUDE_MD_SEPARATOR)
+                if template_sep_idx != -1:
+                    managed_section = template[:template_sep_idx]
+                else:
+                    managed_section = template + "\n"
+            else:
+                managed_section = (
+                    f"# CLAUDE.md\n\n## Project: {name}\n\n"
+                    "ASTRA analysis project, built with lightcone-cli.\n\n---\n\n"
+                    "<!-- AUTOGENERATED: /lc-new populates below during specification -->\n"
+                )
+
+            claude_md.write_text(managed_section + user_section)
 
     console.print(f"  [green]✓[/green] {project_dir}")
     return True
 
 
-def _prompt_sync_projects() -> None:
+def _prompt_sync_projects(tools: tuple[str, ...] = ("claude",)) -> None:
     """Prompt the user to sync plugin files into existing projects."""
+    harness_names = ", ".join(HARNESS_REGISTRY[tid].tool_name for tid in tools)
     console.print(
         "\n[bold]Sync updated plugin files to your projects?[/bold]"
     )
     console.print(
-        "  This updates skills, hooks, scripts, and CLAUDE.md in each project's .claude/ directory."
+        f"  This updates skills, agents, and guides for {harness_names}."
     )
     raw = click.prompt(
         "\n  Enter project paths (comma-separated), or skip",
@@ -2283,20 +2349,28 @@ def _prompt_sync_projects() -> None:
 
     console.print()
     for p in paths:
-        _sync_project_plugins(p)
+        _sync_project_plugins(p, tools)
 
 
 @main.command()
 @click.option("--sync", is_flag=True, help="Only sync plugin files to projects (skip upgrade)")
-def update(sync: bool) -> None:
+@click.option(
+    "--tools", "tools",
+    multiple=True,
+    type=click.Choice(["claude", "codex", "cursor", "github-copilot", "opencode"]),
+    default=("claude",),
+    help="Agent harnesses to sync (repeat for multiple; default: claude)",
+)
+def update(sync: bool, tools: tuple[str, ...]) -> None:
     """Upgrade lightcone-cli and sync plugin files to projects.
 
     Upgrades lightcone-cli from PyPI, then offers to sync
-    updated skills, hooks, and scripts into your projects.
+    updated skills, agents, and guides into your projects.
 
     Examples:
         lc update          # upgrade package & sync projects
         lc update --sync   # just sync plugin files (no upgrade)
+        lc update --sync --tools claude --tools codex
     """
     if not sync:
         console.print("[bold]Upgrading lightcone-cli...[/bold]\n")
@@ -2311,7 +2385,7 @@ def update(sync: bool) -> None:
             console.print(f"  [red]✗[/red] upgrade failed: {proc.stderr.strip()[:200]}")
             raise SystemExit(1)
 
-    _prompt_sync_projects()
+    _prompt_sync_projects(tools)
 
 
 # Register eval subgroup (requires optional 'eval' extra)
