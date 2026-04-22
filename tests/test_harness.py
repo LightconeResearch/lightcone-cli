@@ -36,9 +36,9 @@ class TestResolveHarnesses:
         assert len(result) == 3
         assert [r.tool_id for r in result] == ["claude", "codex", "cursor"]
 
-    def test_duplicate_tools_preserved(self):
+    def test_duplicate_tools_deduplicated(self):
         result = resolve_harnesses(("claude", "claude"))
-        assert len(result) == 2
+        assert len(result) == 1
 
     def test_invalid_tool_raises(self):
         with pytest.raises(ValueError, match="Unknown tool"):
@@ -138,14 +138,13 @@ class TestEnsureDir:
         ensure_dir(existing)
         assert existing.is_dir()
 
-    def test_warns_on_permission_error(self, capsys, tmp_path: Path):
-        """ensure_dir prints a warning on OSError instead of raising."""
+    def test_warns_on_permission_error(self, tmp_path: Path):
+        """ensure_dir emits a warnings.warn() on OSError instead of raising."""
         import errno
         from unittest.mock import patch
 
         target = tmp_path / "nope"
         with patch.object(Path, "mkdir") as mock_mkdir:
             mock_mkdir.side_effect = OSError(errno.EACCES, "Permission denied")
-            ensure_dir(target)
-        out = capsys.readouterr().out
-        assert "warning" in out.lower()
+            with pytest.warns(UserWarning, match="Cannot create directory"):
+                ensure_dir(target)
