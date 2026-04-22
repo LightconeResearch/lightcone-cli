@@ -26,6 +26,7 @@ src/lightcone/              # namespace — NO __init__.py
 ├── cli/                    # Click surface
 │   ├── __init__.py         # exposes main()
 │   ├── commands.py         # all Click commands (init, run, build, status, dev, target, setup, update)
+│   ├── harness.py          # harness registry — maps tool IDs to install paths (claude, codex, cursor...)
 │   ├── plugin.py           # get_plugin_source_dir — leaf module (no imports from commands.py)
 │   └── claude/             # force-included Claude plugin bundle (in installed wheel only)
 ├── engine/                 # execution substrate — Dagster + HPC + containers
@@ -153,6 +154,7 @@ All commands use Click. Key patterns:
 | Add container features | `src/lightcone/engine/container.py` | `DEPENDENCY_FILES` tuple, `compute_image_tag()`, build/resolve functions |
 | Create a skill | `claude/lightcone/skills/` | SKILL.md with YAML frontmatter (`name`, `description`, `allowed-tools`) |
 | Add a telemetry hook | `claude/lightcone/hooks/` | Follow `langfuse_hook.py` pattern: read JSON payload, emit to Langfuse |
+| Add a harness target | `src/lightcone/cli/harness.py` | Add to `HARNESS_REGISTRY` dataclass + `ALL_TOOL_IDS` tuple |
 
 ## Test Patterns
 
