@@ -1,0 +1,56 @@
+name: Integration — SLURM emulator
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [labeled]
+
+# Run on main, or on PRs when the 'ci:slurm' label is added.
+jobs:
+  integration-slurm:
+    if: >
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'ci:slurm')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure git credentials for private ASTRA repo
+        run: git config --global url."https://x-access-token:${{ secrets.ASP_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start SLURM emulator
+        run: |
+          docker compose -f tests/integration/docker-compose.yml \
+            up -d --wait --wait-timeout 120
+
+      - name: Install dependencies (dev + slurm-next)
+        run: pip install -e ".[dev]" && pip install -e ".[slurm-next]" || \
+             uv sync --group dev --group slurm-next 2>/dev/null || \
+             pip install -e ".[dev]" dagster-slurm
+
+      - name: Run SLURM integration tests
+        env:
+          LIGHTCONE_USE_DAGSTER_SLURM: "1"
+        run: |
+          pytest -m "needs_slurm_docker" tests/integration/ -v \
+            --timeout=600 --tb=short
+
+      - name: Tear down emulator
+        if: always()
+        run: |
+          docker compose -f tests/integration/docker-compose.yml down -v

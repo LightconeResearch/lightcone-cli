@@ -6,10 +6,13 @@ from pathlib import Path
 import pytest
 
 from lightcone.engine.targets import (
+    TargetKind,
+    detect_target_shape,
     get_config_path,
     list_targets,
     load_target,
     load_user_config,
+    normalize_target,
     save_target,
     save_user_config,
 )
@@ -81,3 +84,103 @@ class TestUserConfig:
         path = get_config_path()
         assert path.name == "config.yaml"
         assert ".lightcone" in str(path)
+
+
+class TestTargetKind:
+    def test_values(self):
+        assert TargetKind.DOCKER.value == "docker"
+        assert TargetKind.LOCAL.value == "local"
+        assert TargetKind.SLURM.value == "slurm"
+        assert TargetKind.SLURM_SESSION.value == "slurm-session"
+
+    def test_str_compatible(self):
+        # TargetKind is a str subclass so it round-trips through YAML naturally.
+        assert TargetKind.SLURM == "slurm"
+
+
+class TestDetectTargetShape:
+    def test_new_shape(self):
+        assert detect_target_shape({"mode": "slurm"}) == "new"
+
+    def test_legacy_shape(self):
+        assert detect_target_shape({"backend": "slurm"}) == "legacy"
+
+    def test_new_takes_precedence(self):
+        # If both are present (unlikely mixed config), the new shape wins.
+        assert detect_target_shape({"mode": "slurm", "backend": "slurm"}) == "new"
+
+    def test_missing_raises(self):
+        with pytest.raises(ValueError, match="neither 'mode' nor 'backend'"):
+            detect_target_shape({"site": "perlmutter"})
+
+
+class TestNormalizeTarget:
+    def test_new_shape_is_identity(self):
+        cfg = {
+            "name": "perlmutter",
+            "mode": "slurm",
+            "ssh": {"host": "perlmutter.nersc.gov"},
+            "queue": {"account": "m1234"},
+        }
+        assert normalize_target(cfg) == cfg
+
+    def test_legacy_emits_deprecation_warning(self, sample_target):
+        with pytest.warns(DeprecationWarning, match="pre-ADR-0001"):
+            normalize_target(sample_target)
+
+    def test_legacy_flat_scheduler_translation(self, sample_target):
+        # sample_target has scheduler-ish fields at the top level (wizard shape).
+        with pytest.warns(DeprecationWarning):
+            result = normalize_target(sample_target)
+
+        assert result["mode"] == "slurm"
+        assert result["name"] == "perlmutter"
+        assert result["site"] == "perlmutter"
+        assert result["ssh"] == {"host": "perlmutter.nersc.gov", "user": "testuser"} or (
+            result["ssh"]["host"] == "perlmutter.nersc.gov"
+        )
+        assert result["queue"]["account"] == "m1234"
+        assert result["queue"]["qos"] == "debug"
+        assert result["container"]["runtime"] == "podman-hpc"
+        assert "--constraint=gpu" in result["extra_sbatch_directives"]
+
+    def test_legacy_nested_scheduler_translation(self):
+        cfg = {
+            "site": "frontier",
+            "backend": "slurm",
+            "connection": {"hostname": "frontier.olcf.ornl.gov"},
+            "scheduler": {
+                "account": "CSC999",
+                "partition": "batch",
+                "qos": "normal",
+                "constraint": "gpu",
+                "container_runtime": "apptainer",
+                "container_flags": ["--nv"],
+                "extra_slurm_args": ["--reservation=maint"],
+            },
+            "poll": {"interval_seconds": 15, "timeout_seconds": 7200},
+        }
+        with pytest.warns(DeprecationWarning):
+            result = normalize_target(cfg)
+
+        assert result["mode"] == "slurm"
+        assert result["ssh"]["host"] == "frontier.olcf.ornl.gov"
+        assert result["queue"]["account"] == "CSC999"
+        assert result["queue"]["partition"] == "batch"
+        assert result["container"]["runtime"] == "apptainer"
+        assert result["container"]["flags"] == ["--nv"]
+        assert result["extra_sbatch_directives"] == [
+            "--constraint=gpu",
+            "--reservation=maint",
+        ]
+        # interval_seconds is dropped; only timeout_seconds carries over.
+        assert result["poll"] == {"timeout_seconds": 7200}
+
+    def test_legacy_docker_minimal(self):
+        cfg = {"backend": "docker"}
+        with pytest.warns(DeprecationWarning):
+            result = normalize_target(cfg)
+        assert result["mode"] == "docker"
+        assert "queue" not in result
+        assert "ssh" not in result
+        assert "extra_sbatch_directives" not in result

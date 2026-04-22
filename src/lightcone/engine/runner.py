@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from lightcone.engine.slurm_utils import normalise_time_limit as _normalise_time_limit
+
 logger = logging.getLogger(__name__)
 
 # Maximum number of characters to keep from stdout/stderr for metadata.
@@ -762,29 +764,6 @@ def translate_resources_to_slurm_directives(
     directives.extend(extra_args)
 
     return directives
-
-
-def _normalise_time_limit(value: str | int) -> str:
-    """Convert time_limit values like '2h', '30m', 120 to HH:MM:SS."""
-    if isinstance(value, int):
-        # Assume minutes
-        hours, minutes = divmod(value, 60)
-        return f"{hours:02d}:{minutes:02d}:00"
-    value = str(value).strip()
-    match = re.match(r"^(\d+)([hm]?)$", value, re.IGNORECASE)
-    if match:
-        num, unit = int(match.group(1)), match.group(2).lower()
-        if unit == "h":
-            return f"{num:02d}:00:00"
-        elif unit == "m":
-            hours, minutes = divmod(num, 60)
-            return f"{hours:02d}:{minutes:02d}:00"
-        else:
-            # bare number = minutes
-            hours, minutes = divmod(num, 60)
-            return f"{hours:02d}:{minutes:02d}:00"
-    # Already in HH:MM:SS or similar — pass through
-    return value
 
 
 def generate_sbatch_script(

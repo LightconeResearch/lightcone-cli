@@ -38,6 +38,14 @@ dev = [
 docs = [
     "zensical>=0.0.33",
 ]
+# Opt-in preview of the dagster-slurm execution backend (ADR-0001).
+# Requires Python 3.12 — sync with `uv sync --group slurm-next` and
+# activate with LIGHTCONE_USE_DAGSTER_SLURM=1 at runtime. Will be promoted
+# to a core dependency when the ADR's Phase D flips the Python floor to 3.12.
+slurm-next = [
+    "dagster-slurm>=1.13,<1.14; python_version >= '3.12'",
+    "dagster-pipes>=1.13,<1.14; python_version >= '3.12'",
+]
 
 
 [project.scripts]
@@ -75,3 +83,7 @@ mypy_path = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "needs_slurm_docker: requires Docker + SLURM emulator (docker-compose up)",
+    "slow: marks tests as slow (excluded from default run)",
+]

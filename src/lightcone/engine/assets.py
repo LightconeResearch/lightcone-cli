@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,8 @@ from lightcone.engine.tree import (
 )
 
 logger = logging.getLogger(__name__)
+
+_USE_DAGSTER_SLURM = os.getenv("LIGHTCONE_USE_DAGSTER_SLURM") == "1"
 
 
 def get_external_inputs(spec: dict[str, Any]) -> dict[str, str]:
@@ -64,6 +67,10 @@ def build_asset_definitions(
     no_build: bool = False,
     container_runtime: str | None = None,
     local_runtime: str | None = None,
+    compute_resource: Any | None = None,
+    container_wrap: list[str] | None = None,
+    extra_sbatch_directives: list[str] | None = None,
+    _target_config: dict[str, Any] | None = None,
 ) -> list[dg.AssetsDefinition | dg.AssetSpec]:
     """Generate one @asset per output with a recipe.
 
@@ -148,6 +155,10 @@ def build_asset_definitions(
                 local_runtime=local_runtime, external_inputs=sub_external,
                 key_prefix=key_prefix, group_name=group_name,
                 dep_keys=dep_keys, tree_output=tree_out, spec=spec,
+                compute_resource=compute_resource,
+                container_wrap=container_wrap,
+                extra_sbatch_directives=extra_sbatch_directives,
+                _target_config=_target_config,
             )
         )
 
@@ -258,6 +269,10 @@ def _build_single_asset(
     dep_keys: list[dg.AssetKey] | None = None,
     tree_output: TreeOutput | None = None,
     spec: dict[str, Any] | None = None,
+    compute_resource: Any | None = None,
+    container_wrap: list[str] | None = None,
+    extra_sbatch_directives: list[str] | None = None,
+    _target_config: dict[str, Any] | None = None,
 ) -> dg.AssetsDefinition:
     """Build a single Dagster asset from an output recipe."""
     input_ids = recipe.get("inputs") or []
@@ -308,7 +323,36 @@ def _build_single_asset(
                 (project_path / tree_output.analysis_path).resolve()
             )
 
-        result = runner.execute(
+        if compute_resource is not None:
+            # dagster-slurm path (ADR-0001 Phase B+C): active when
+            # LIGHTCONE_USE_DAGSTER_SLURM=1 and mode is local or slurm.
+            from lightcone.engine import compute_adapter as _ca  # deferred
+            from lightcone.engine.slurm_utils import resources_to_slurm_opts
+
+            _root = project_path or Path.cwd()
+            payload_path, ctx = _ca.prepare_payload(
+                command=command,
+                universe_id=universe_id,
+                output_id=output_id,
+                project_root=_root,
+                params=params,
+                external_inputs=recipe_external,
+                cwd_override=cwd_override,
+                container_wrap=container_wrap,
+                extra_sbatch_directives=extra_sbatch_directives,
+                payload_override=Path(recipe["payload"]) if recipe.get("payload") else None,
+                target_config=_target_config,
+            )
+            completed = compute_resource.run(
+                context=context,
+                payload_path=str(payload_path),
+                extra_slurm_opts=resources_to_slurm_opts(resources),
+            )
+            _ca.stage_artifacts(completed, ctx, run_id=context.run_id)
+            return completed.get_materialize_result()
+
+        # Legacy path — unchanged.
+        result = runner.execute(  # type: ignore[union-attr]
             command=command,
             container=container,
             inputs=input_ids,
@@ -393,7 +437,52 @@ def build_definitions(
     else:
         default_container = raw_container
 
-    # Build runner from target config
+    # Optionally route local/slurm backends through dagster-slurm (ADR-0001).
+    # Activated by LIGHTCONE_USE_DAGSTER_SLURM=1 for non-Docker targets.
+    compute_resource: Any | None = None
+    container_wrap: list[str] | None = None
+    extra_sbatch_directives: list[str] | None = None
+    _effective_target_config: dict[str, Any] | None = None
+
+    if _USE_DAGSTER_SLURM and target_config is not None:
+        norm = target_config  # build_definitions callers already pass the right shape,
+        # but support legacy shape transparently.
+        mode = norm.get("mode") or norm.get("backend", "docker")
+        if mode in ("local", "slurm", "slurm-session"):
+            from lightcone.engine import compute_adapter as _ca
+            from lightcone.engine.targets import normalize_target
+            norm = normalize_target(target_config)
+            try:
+                compute_resource = _ca.build_compute_resource(norm)
+                _effective_target_config = norm
+            except ImportError as exc:
+                logger.warning(
+                    "LIGHTCONE_USE_DAGSTER_SLURM=1 but dagster-slurm is not installed "
+                    "— falling back to legacy runner. Install with "
+                    "`uv sync --group slurm-next`. (%s)", exc,
+                )
+            container_cfg = norm.get("container") or {}
+            if container_cfg.get("runtime") == "podman-hpc":
+                container_wrap = ["podman-hpc", "run", "--rm"]
+                for flag in container_cfg.get("flags") or []:
+                    container_wrap.append(flag)
+            extra_sbatch_directives = norm.get("extra_sbatch_directives") or []
+
+    elif _USE_DAGSTER_SLURM and target_config is None:
+        # No target → treat as local mode via dagster-slurm.
+        from lightcone.engine import compute_adapter as _ca
+        _local_cfg: dict[str, Any] = {"mode": "local"}
+        try:
+            compute_resource = _ca.build_compute_resource(_local_cfg)
+            _effective_target_config = _local_cfg
+        except ImportError as exc:
+            logger.warning(
+                "LIGHTCONE_USE_DAGSTER_SLURM=1 but dagster-slurm is not installed "
+                "— falling back to legacy runner. (%s)", exc,
+            )
+
+    # Build runner from target config (still needed for Docker targets and
+    # as fallback when compute_resource is None).
     if runner_config:
         runner = ASTRAContainerRunner(
             project_root=str(project_path),
@@ -413,6 +502,10 @@ def build_definitions(
         spec, runner=runner, universe_id=universe_id, project_path=project_path,
         project_name=project_name, no_build=no_build,
         container_runtime=container_runtime, local_runtime=local_runtime,
+        compute_resource=compute_resource,
+        container_wrap=container_wrap,
+        extra_sbatch_directives=extra_sbatch_directives,
+        _target_config=_effective_target_config,
     )
 
     return dg.Definitions(assets=assets)

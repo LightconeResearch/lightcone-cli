@@ -1,0 +1,77 @@
+---
+# SLURM Docker cluster emulator for integration tests (ADR-0001 §5.3).
+# Uses the upstream dagster-slurm Docker image — we do not vendor the build
+# context. Pin the tag in CI if upstream breaks compatibility.
+#
+# Usage:
+#   docker compose up -d --wait --wait-timeout 120
+#   docker compose down -v
+#
+# Credentials: user=submitter, password=submitter, port=2223 on localhost.
+
+name: lightcone-slurm-test
+
+services:
+  mysql:
+    image: mariadb:10.10
+    hostname: mysql
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_USER: slurm
+      MYSQL_PASSWORD: slurm
+      MYSQL_DATABASE: slurm_acct_db
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "slurm", "-pslurm"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - slurm
+
+  slurmdbd:
+    image: ghcr.io/ascii-supply-networks/dagster-slurm/slurm-docker-cluster:25-11-2-1
+    command: ["slurmdbd"]
+    hostname: slurmdbd
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - slurm
+
+  slurmctld:
+    image: ghcr.io/ascii-supply-networks/dagster-slurm/slurm-docker-cluster:25-11-2-1
+    command: ["slurmctld"]
+    hostname: slurmctld
+    ports:
+      - "2223:22"
+    depends_on:
+      - slurmdbd
+    networks:
+      - slurm
+    healthcheck:
+      test: ["CMD", "scontrol", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  c1:
+    image: ghcr.io/ascii-supply-networks/dagster-slurm/slurm-docker-cluster:25-11-2-1
+    command: ["slurmd"]
+    hostname: c1
+    depends_on:
+      - slurmctld
+    networks:
+      - slurm
+
+  c2:
+    image: ghcr.io/ascii-supply-networks/dagster-slurm/slurm-docker-cluster:25-11-2-1
+    command: ["slurmd"]
+    hostname: c2
+    depends_on:
+      - slurmctld
+    networks:
+      - slurm
+
+networks:
+  slurm:
+    driver: bridge
