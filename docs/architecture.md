@@ -73,7 +73,7 @@ For SLURM/`podman-hpc` targets, `resolve_container_for_slurm()` additionally mig
 
 ### Structure
 
-The plugin lives in `claude/lightcone/` and is bundled into the Python wheel via `hatch-vcs` force-include directives. When `lc init` runs, it copies the plugin into one or more harness directories selected via `--tools` (default: `claude`).
+The plugin lives in `plugin/lightcone/` and is bundled into the Python wheel via `hatch-vcs` force-include directives. When `lc init` runs, it copies the plugin into one or more harness directories selected via `--tools` (default: `claude`).
 
 **Content installed to every harness** (`.<prefix>/`):
 

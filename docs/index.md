@@ -26,7 +26,7 @@ src/lightcone/
     ├── targets.py       # Target config management (~/.lightcone/targets/)
     └── tree.py          # Sub-analysis tree traversal helpers
 
-claude/lightcone/            # Claude Code plugin (bundled into wheel via hatch force-include)
+plugin/lightcone/            # agent harness plugin (bundled into wheel via hatch force-include)
 ├── skills/             # lc-new, lc-build, lc-verify, lc-migrate, lc-feedback
 ├── templates/          # Project CLAUDE.md template
 ├── agents/             # lc-extractor (literature extraction subagent)

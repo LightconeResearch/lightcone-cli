@@ -61,7 +61,7 @@ Ruff rules: E, F, I, N, W, UP. Line length: 100. Target: Python 3.11.
 
 ```
 src/lightcone/          # main package
-claude/lightcone/       # plugin files (bundled via hatch force-include)
+plugin/lightcone/       # plugin files (bundled via hatch force-include)
 tests/              # mirrors src/ structure
 evals/              # skill evaluation fixtures
 ```
@@ -73,14 +73,14 @@ just build   # uv build
 just version # uv run hatch version
 ```
 
-The `hatch-vcs` plugin derives the version from git tags. The `claude/lightcone/` directory is force-included in the wheel via `pyproject.toml`:
+The `hatch-vcs` plugin derives the version from git tags. The `plugin/lightcone/` directory is force-included in the wheel via `pyproject.toml`:
 
 ```toml
 [tool.hatch.build.targets.wheel]
 packages = ["src/lightcone"]
 
 [tool.hatch.build.force-include]
-"claude/lightcone" = "lightcone/cli/claude/lightcone"
+"plugin/lightcone" = "lightcone/cli/plugin/lightcone"
 ```
 
 ## Building the documentation

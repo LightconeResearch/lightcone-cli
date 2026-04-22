@@ -1,6 +1,6 @@
 # Hooks Architecture
 
-The telemetry system is composed of four Python scripts in `claude/lightcone/hooks/`:
+The telemetry system is composed of four Python scripts in `plugin/lightcone/hooks/`:
 
 ```
 hooks/

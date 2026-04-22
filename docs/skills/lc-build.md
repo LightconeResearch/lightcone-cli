@@ -55,4 +55,4 @@ For each pending output, in dependency order:
 ## Related
 
 - [lc-verify](lc-verify.md) — run after build to check consistency
-- `claude/lightcone/guides/lightcone-cli-reference.md` — CLI and execution reference
+- `plugin/lightcone/guides/lightcone-cli-reference.md` — CLI and execution reference

@@ -54,10 +54,10 @@ source = "vcs"
 packages = ["src/lightcone"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"claude/lightcone" = "lightcone/cli/claude/lightcone"
+"plugin/lightcone" = "lightcone/cli/plugin/lightcone"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/lightcone", "claude/lightcone"]
+include = ["src/lightcone", "plugin/lightcone"]
 
 [tool.ruff]
 target-version = "py311"

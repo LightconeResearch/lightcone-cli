@@ -43,4 +43,4 @@ Create a new ASTRA analysis from a research question.
 ## Related
 
 - [lc-build](lc-build.md) — the next step after `/lc-new`
-- `claude/lightcone/guides/astra-reference.md` — full `astra.yaml` spec
+- `plugin/lightcone/guides/astra-reference.md` — full `astra.yaml` spec

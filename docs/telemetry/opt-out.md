@@ -25,4 +25,4 @@ To disable telemetry for all new projects, unset the key or set it to `false` be
 
 ## Transparency
 
-The full telemetry implementation is in `claude/lightcone/hooks/`. All hooks are plain Python scripts installed in each project's `.claude/hooks/` directory — they can be inspected, modified, or deleted per-project.
+The full telemetry implementation is in `plugin/lightcone/hooks/`. All hooks are plain Python scripts installed in each project's `.claude/hooks/` directory — they can be inspected, modified, or deleted per-project.

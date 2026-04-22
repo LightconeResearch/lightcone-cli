@@ -28,7 +28,7 @@ src/lightcone/              # namespace — NO __init__.py
 │   ├── commands.py         # all Click commands (init, run, build, status, dev, target, setup, update)
 │   ├── harness.py          # harness registry — maps tool IDs to install paths (claude, codex, cursor...)
 │   ├── plugin.py           # get_plugin_source_dir — leaf module (no imports from commands.py)
-│   └── claude/             # force-included Claude plugin bundle (in installed wheel only)
+│   └── plugin/             # force-included agent harness plugin bundle (in installed wheel only)
 ├── engine/                 # execution substrate — Dagster + HPC + containers
 │   ├── __init__.py
 │   ├── assets.py           # Asset factory — turns astra.yaml recipes into Dagster assets
@@ -43,7 +43,7 @@ src/lightcone/              # namespace — NO __init__.py
     ├── cli.py              # `lc eval` subcommand group (registered by lightcone.cli.commands)
     ├── harness.py, sandbox.py, graders.py, build.py, report.py, models.py
 
-claude/lightcone/           # Claude plugin source — force-included into the wheel
+plugin/lightcone/           # Claude plugin source — force-included into the wheel
 ├── skills/                 # lc-new, lc-build, lc-verify, lc-migrate, lc-feedback
 ├── agents/                 # lc-extractor
 ├── guides/                 # astra-reference, lightcone-cli-reference, ui-brand
@@ -131,11 +131,11 @@ astra.yaml → build_definitions() → Dagster assets → ASTRAContainerRunner �
 - Most commands require `astra.yaml` in cwd; exceptions: `setup`, `target`
 
 **Plugin system:**
-- Skills, agents, guides, hooks, and scripts are bundled in the wheel (`claude/lightcone/` → `lightcone/cli/claude/lightcone/`)
+- Skills, agents, guides, hooks, and scripts are bundled in the wheel (`plugin/lightcone/` → `lightcone/cli/plugin/lightcone/`)
 - `lc init [--tools T]` copies content into `.<prefix>/` for each selected harness; default harness is `claude`
 - Skills, agents, and guides are installed for every harness; hooks/scripts are Claude Code only
 - `lc update --sync [--tools T]` re-syncs skills/agents/guides (hooks are init-time only, not synced)
-- Plugin source discovery: `lightcone.cli.plugin.get_plugin_source_dir` — bundled location first, then `claude/lightcone/` at repo root
+- Plugin source discovery: `lightcone.cli.plugin.get_plugin_source_dir` — bundled location first, then `plugin/lightcone/` at repo root
 - Bash scripts must be chmod +x
 
 ## CLI Patterns
@@ -154,8 +154,8 @@ All commands use Click. Key patterns:
 | Add an HPC site | `src/lightcone/engine/site_registry.py` | Add to `SITE_DEFAULTS` dict with hostname_patterns, node_types, qos_options |
 | Add an execution backend | `src/lightcone/engine/runner.py` | Add `_run_{backend}()` method, update `execute()` dispatch |
 | Add container features | `src/lightcone/engine/container.py` | `DEPENDENCY_FILES` tuple, `compute_image_tag()`, build/resolve functions |
-| Create a skill | `claude/lightcone/skills/` | SKILL.md with YAML frontmatter (`name`, `description`, `allowed-tools`) |
-| Add a telemetry hook | `claude/lightcone/hooks/` | Follow `langfuse_hook.py` pattern: read JSON payload, emit to Langfuse |
+| Create a skill | `plugin/lightcone/skills/` | SKILL.md with YAML frontmatter (`name`, `description`, `allowed-tools`) |
+| Add a telemetry hook | `plugin/lightcone/hooks/` | Follow `langfuse_hook.py` pattern: read JSON payload, emit to Langfuse |
 | Add a harness target | `src/lightcone/cli/harness.py` | Add to `HARNESS_REGISTRY` dataclass + `ALL_TOOL_IDS` tuple |
 
 ## Test Patterns

@@ -32,8 +32,8 @@ Skills are installed by `lc init` and updated by `lc update --sync`. `lc init` c
 
 Canonical source locations:
 
-- **Bundled (installed package)**: `{site-packages}/lightcone/cli/claude/lightcone/skills/`
-- **Development**: `{repo}/claude/lightcone/skills/`
+- **Bundled (installed package)**: `{site-packages}/lightcone/cli/plugin/lightcone/skills/`
+- **Development**: `{repo}/plugin/lightcone/skills/`
 
 ## Multi-harness distribution
 
@@ -51,7 +51,7 @@ Skills are harness-agnostic — the same `SKILL.md` files are installed into eac
 
 | File | Purpose |
 |------|---------|
-| `claude/lightcone/guides/lightcone-cli-reference.md` | CLI and workflow reference loaded by build/verify skills |
-| `claude/lightcone/guides/astra-reference.md` | Full ASTRA spec reference loaded by all skills |
-| `claude/lightcone/guides/ui-brand.md` | Visual formatting conventions for skill output |
-| `claude/lightcone/agents/lc-extractor.md` | Literature extraction subagent used by `/lc-new` |
+| `plugin/lightcone/guides/lightcone-cli-reference.md` | CLI and workflow reference loaded by build/verify skills |
+| `plugin/lightcone/guides/astra-reference.md` | Full ASTRA spec reference loaded by all skills |
+| `plugin/lightcone/guides/ui-brand.md` | Visual formatting conventions for skill output |
+| `plugin/lightcone/agents/lc-extractor.md` | Literature extraction subagent used by `/lc-new` |

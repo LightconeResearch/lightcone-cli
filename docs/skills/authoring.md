@@ -1,11 +1,11 @@
 # Authoring Skills
 
-Skills are markdown files with YAML frontmatter. They live in `claude/lightcone/skills/{name}/SKILL.md`.
+Skills are markdown files with YAML frontmatter. They live in `plugin/lightcone/skills/{name}/SKILL.md`.
 
 ## File structure
 
 ```
-claude/lightcone/skills/
+plugin/lightcone/skills/
 └── my-skill/
     └── SKILL.md
 ```
@@ -45,7 +45,7 @@ Before starting, read `.claude/guides/astra-reference.md` for the full ASTRA spe
 
 ## Installing into projects
 
-New skills in `claude/lightcone/skills/` are installed automatically by `lc init`. To push skills to existing projects, run `lc update --sync`.
+New skills in `plugin/lightcone/skills/` are installed automatically by `lc init`. To push skills to existing projects, run `lc update --sync`.
 
 ## Testing skills
 

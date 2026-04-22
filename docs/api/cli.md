@@ -31,8 +31,8 @@ Keys: `"yolo"`, `"recommended"`, `"minimal"`.
 
 Finds the lightcone-cli plugin source directory. Checks:
 
-1. **Bundled** (installed package): `lightcone/cli/claude/lightcone/`
-2. **Development** (repo checkout): `{repo_root}/claude/lightcone/`
+1. **Bundled** (installed package): `lightcone/cli/plugin/lightcone/`
+2. **Development** (repo checkout): `{repo_root}/plugin/lightcone/`
 
 Returns `None` if neither exists.
 
