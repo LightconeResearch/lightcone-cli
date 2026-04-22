@@ -13,7 +13,9 @@ from lightcone.engine.runner import ASTRAContainerRunner
 from lightcone.engine.tree import (
     TreeOutput,
     collect_tree_outputs,
+    resolve_output_path,
 )
+from lightcone.engine.validation import validate_output
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +150,7 @@ def build_asset_definitions(
                 local_runtime=local_runtime, external_inputs=sub_external,
                 key_prefix=key_prefix, group_name=group_name,
                 dep_keys=dep_keys, tree_output=tree_out, spec=spec,
+                output_type=output_def.get("type"),
             )
         )
 
@@ -258,6 +261,7 @@ def _build_single_asset(
     dep_keys: list[dg.AssetKey] | None = None,
     tree_output: TreeOutput | None = None,
     spec: dict[str, Any] | None = None,
+    output_type: str | None = None,
 ) -> dg.AssetsDefinition:
     """Build a single Dagster asset from an output recipe."""
     input_ids = recipe.get("inputs") or []
@@ -327,6 +331,14 @@ def _build_single_asset(
                 f"Recipe for '{output_id}' failed (exit code {result.exit_code})"
                 f"{': ' + stderr if stderr else ''}"
             )
+        # Post-materialization validation: warn on suspicious output files.
+        if project_path is not None:
+            if tree_output is not None:
+                out_dir = resolve_output_path(project_path, tree_output, universe_id) / output_id
+            else:
+                out_dir = result.output_path / output_id
+            for warning in validate_output(out_dir, output_type, output_id):
+                context.log.warning(warning)
         return dg.MaterializeResult(
             metadata={
                 "exit_code": result.exit_code,
