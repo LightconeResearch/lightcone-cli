@@ -131,9 +131,11 @@ astra.yaml → build_definitions() → Dagster assets → ASTRAContainerRunner �
 - Most commands require `astra.yaml` in cwd; exceptions: `setup`, `target`
 
 **Plugin system:**
-- Skills, hooks, and scripts are bundled in the wheel (`claude/lightcone/` → `lightcone/cli/claude/lightcone/`)
-- `lc init` copies them into each project's `.claude/` directory
-- Plugin source discovery lives in `lightcone.cli.plugin.get_plugin_source_dir` — tries bundled location first, falls back to dev location (`claude/lightcone/` at repo root)
+- Skills, agents, guides, hooks, and scripts are bundled in the wheel (`claude/lightcone/` → `lightcone/cli/claude/lightcone/`)
+- `lc init [--tools T]` copies content into `.<prefix>/` for each selected harness; default harness is `claude`
+- Skills, agents, and guides are installed for every harness; hooks/scripts are Claude Code only
+- `lc update --sync [--tools T]` re-syncs skills/agents/guides (hooks are init-time only, not synced)
+- Plugin source discovery: `lightcone.cli.plugin.get_plugin_source_dir` — bundled location first, then `claude/lightcone/` at repo root
 - Bash scripts must be chmod +x
 
 ## CLI Patterns
@@ -172,3 +174,4 @@ All commands use Click. Key patterns:
 - SLURM scripts/output stored in `results/.slurm/`
 - Dagster instance storage at `results/.dagster/` (SQLite)
 - Telemetry opt-out: `TRACE_TO_LANGFUSE=false`
+- **Keep CLAUDE.md current** — when a PR changes CLI behaviour, key invariants, or repo structure, update the relevant section of CLAUDE.md in the same commit

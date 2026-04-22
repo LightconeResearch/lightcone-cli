@@ -29,7 +29,11 @@ class HarnessConfig:
     has_skills: bool = True
     has_agents: bool = True
     has_guides: bool = True
+    # True only for Claude Code: copies hooks/ and scripts/ during lc init.
+    # No other supported tool has an equivalent per-project agent automation hook system.
     has_hooks: bool = False
+    # True only for Claude Code: writes settings.json + settings.local.json during lc init.
+    # Other tools use editor-level or global config, not per-project files managed by lightcone-cli.
     has_settings: bool = False
     commands_local: str | None = None
     commands_global: str | None = None

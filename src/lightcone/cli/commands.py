@@ -17,7 +17,6 @@ from rich.console import Console
 
 from lightcone.cli.harness import (
     ALL_TOOL_IDS,
-    HARNESS_REGISTRY,
     ensure_dir,
     resolve_global_commands_path,
     resolve_harnesses,
@@ -2389,8 +2388,10 @@ def update(sync: bool, tools: tuple[str, ...]) -> None:
         if proc.returncode == 0:
             console.print("  [green]✓[/green] lightcone-cli upgraded")
         else:
-            console.print(f"  [red]✗[/red] upgrade failed: {proc.stderr.strip()[:200]}")
-            raise SystemExit(1)
+            console.print(
+                f"  [yellow]⚠[/yellow] upgrade failed (continuing to sync): "
+                f"{proc.stderr.strip()[:200]}"
+            )
 
     _prompt_sync_projects(tools)
 
