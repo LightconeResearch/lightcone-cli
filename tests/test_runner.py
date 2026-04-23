@@ -87,9 +87,30 @@ class TestSlurmResourceTranslation:
         dirs = translate_resources_to_slurm_directives({"memory": "16GB"})
         assert "--mem=16GB" in dirs
 
-    def test_translate_gpus(self):
+    def test_translate_gpus_per_node(self):
+        """resources.gpus is per-node — emit --gpus-per-node so the scheduler
+        allocates (nodes × gpus) total GPUs."""
         dirs = translate_resources_to_slurm_directives({"gpus": 1})
-        assert "--gpus=1" in dirs
+        assert "--gpus-per-node=1" in dirs
+        assert "--gpus=1" not in dirs
+
+    def test_translate_gpus_per_node_multi_node(self):
+        dirs = translate_resources_to_slurm_directives(
+            {"nodes": 4, "gpus": 4},
+        )
+        assert "--nodes=4" in dirs
+        assert "--gpus-per-node=4" in dirs
+
+    def test_in_extra_does_not_confuse_gpus_and_gpus_per_node(self):
+        """Having `--gpus-per-node=X` in extras must not suppress the other
+        (or vice versa) — exact-flag matching only."""
+        dirs = translate_resources_to_slurm_directives(
+            {"gpus": 2},
+            scheduler_config={"extra_slurm_args": ["--gpus=8"]},
+        )
+        # `--gpus=8` should not block emission of `--gpus-per-node=2`
+        assert "--gpus-per-node=2" in dirs
+        assert "--gpus=8" in dirs
 
     def test_translate_nodes(self):
         dirs = translate_resources_to_slurm_directives({"nodes": 2})
@@ -237,8 +258,8 @@ class TestGenerateSbatchScript:
             resources={"cpus": 4, "gpus": 1},
             scheduler_config={"account": "m1234"},
         )
-        assert "--gpu" in script
-        assert "#SBATCH --gpus=1" in script
+        assert "--gpu" in script  # podman-hpc boolean flag
+        assert "#SBATCH --gpus-per-node=1" in script
 
     def test_mpi_derived_from_multi_node(self, tmp_path):
         """Multi-node recipes (nodes > 1) derive --mpi automatically."""

@@ -132,7 +132,11 @@ def _build_cli_args(params: dict[str, Any], universe_id: str) -> list[str]:
 
 
 def translate_resources_to_docker_flags(resources: dict[str, Any]) -> list[str]:
-    """Translate ASTRA resource requirements to Docker CLI flags."""
+    """Translate ASTRA resource requirements to Docker CLI flags.
+
+    ``resources.gpus`` is per-node; Docker runs on a single node, so the
+    value maps directly to ``--gpus=N``.
+    """
     flags: list[str] = []
     if cpus := resources.get("cpus"):
         flags.append(f"--cpus={cpus}")
@@ -847,24 +851,29 @@ def translate_resources_to_slurm_directives(
     *,
     resource_limits: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Translate ASTRA resource requirements to SLURM #SBATCH directives.
+    """Translate ASTRA resource requirements to SLURM ``#SBATCH`` directives.
 
-    Returns a list of directive strings (without the ``#SBATCH`` prefix).
+    ``resources.gpus`` is treated as **per-node** — emitted as
+    ``--gpus-per-node=N`` — so that multi-node recipes allocate
+    ``nodes × gpus`` total GPUs, matching user intent and the QoS
+    validator's math.  For single-node recipes per-node and total
+    coincide.
 
     When *resource_limits* is provided (non-``None``) and no explicit
-    ``time_limit`` appears in *resources*, a default ``--time`` directive is
-    emitted using ``resource_limits["max_walltime_minutes"]`` (falling back
-    to 30 minutes).  This ensures SLURM jobs always have a walltime.
+    ``time_limit`` appears in *resources*, a default ``--time`` directive
+    is emitted using ``resource_limits["max_walltime_minutes"]`` (falling
+    back to 30 minutes).
     """
     scheduler_config = scheduler_config or {}
     directives: list[str] = []
 
-    # Extra SLURM args from CLI passthrough (e.g. --partition, --qos, --constraint)
+    # Extra SLURM args forwarded from the target YAML (never from the
+    # agent-facing CLI, which no longer accepts passthrough flags).
     extra_args = scheduler_config.get("extra_slurm_args", [])
 
-    # Helper to check if a flag is already in extra args (CLI overrides target)
+    # Exact-flag match: `--gpus` must NOT match `--gpus-per-node`, etc.
     def _in_extra(flag: str) -> bool:
-        return any(a.startswith(flag) for a in extra_args)
+        return any(a == flag or a.startswith(f"{flag}=") for a in extra_args)
 
     # Extract constraint from extra args for account suffix resolution
     constraint = scheduler_config.get("constraint")
@@ -891,9 +900,9 @@ def translate_resources_to_slurm_directives(
         directives.append(f"--cpus-per-task={cpus}")
     if memory := resources.get("memory"):
         directives.append(f"--mem={memory}")
-    if not _in_extra("--gpus"):
+    if not _in_extra("--gpus-per-node"):
         if gpus := resources.get("gpus"):
-            directives.append(f"--gpus={gpus}")
+            directives.append(f"--gpus-per-node={gpus}")
     if time_limit := resources.get("time_limit"):
         directives.append(f"--time={_normalise_time_limit(time_limit)}")
     elif resource_limits is not None:
