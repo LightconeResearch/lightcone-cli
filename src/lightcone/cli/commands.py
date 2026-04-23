@@ -301,23 +301,6 @@ def init(
         "in [cyan].claude/settings.local.json[/cyan]."
     )
 
-    # Detect SLURM environment and suggest interactive allocation
-    if shutil.which("salloc") and not os.environ.get("SLURM_JOB_ID"):
-        target_name = target
-        if not target_name:
-            from lightcone.engine.targets import load_user_config
-            target_name = load_user_config().get("default_target")
-        if target_name and target_name != "local":
-            from lightcone.engine.targets import load_target
-            target_config = load_target(target_name)
-            if target_config and target_config.get("backend") == "slurm":
-                console.print(
-                    "\n[bold]Tip:[/bold] For fast execution, start an interactive "
-                    "allocation ([cyan]salloc[/cyan]) before launching Claude Code. "
-                    "This lets [cyan]lc run[/cyan] execute instantly via srun "
-                    "instead of waiting in the batch queue."
-                )
-
     console.print(f"\n[bold]cd {directory}[/bold] && [bold]claude[/bold]")
     console.print("Then run [cyan]/lc-new[/cyan] to scope your research question.")
 
