@@ -978,7 +978,7 @@ def generate_sbatch_script(
         lines.append(f"#SBATCH {d}")
 
     lines.append("")
-    lines.append("# --- Prism / ASTRA recipe execution ---")
+    lines.append("# --- lightcone-cli / ASTRA recipe execution ---")
     lines.append(f"cd {shlex.quote(str(project_root))}")
     lines.append("")
 
