@@ -360,34 +360,33 @@ class TestSetupCommand:
         monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
 
-        # hpc=yes, site=1(perlmutter), username, account,
-        # target_name=default (accept perlmutter-m1234),
-        # default QoS=1 (accept gpu_debug)
-        input_lines = "y\n1\ntestuser\nm1234\n\n\n"
+        # Inputs: configure hpc, pick site 1, username, account, accept
+        # default target name, accept default qos (1), accept default
+        # constraint (1), accept default max_nodes/max_walltime/
+        # max_concurrent resource limits.
+        input_lines = "y\n1\ntestuser\nm1234\n\n\n\n\n\n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
         assert "Default target: perlmutter-m1234" in result.output
 
-        # Should create the target + local
         assert (targets_dir / "perlmutter-m1234.yaml").exists()
         assert (targets_dir / "local.yaml").exists()
         assert (tmp_path / "config.yaml").exists()
 
-        # Verify new-format target shape
         import yaml
         target = yaml.safe_load((targets_dir / "perlmutter-m1234.yaml").read_text())
         assert target["site"] == "perlmutter"
         assert target["backend"] == "slurm"
-        assert target["account"] == "m1234"
         assert target["container_runtime"] == "podman-hpc"
-        assert "defaults" in target
-        assert target["defaults"]["qos"] == "gpu_debug"
-        assert target["defaults"]["constraint"] == "gpu"
-        assert "qos" in target  # suggested QoS list
-        assert isinstance(target["qos"], list)
+        options = target["options"]
+        assert options["qos"]["default"] == "debug"
+        assert "debug" in options["qos"]["choices"]
+        assert options["constraint"]["default"] == "gpu"
+        assert options["account"]["default"] == "m1234"
+        assert target["strategy"] == "fit"
+        assert target["cache_key_overrides"] == {"regular/cpu": "regular_1"}
         assert "resource_limits" in target
 
-        # Verify closing message
         assert "lc target --list" in result.output
         assert "lc target add" in result.output
         assert "lc target edit" in result.output
@@ -426,9 +425,10 @@ class TestSetupCommand:
         monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
 
-        # hpc=yes, site=1(perlmutter), username, account,
-        # target_name=default, default QoS=1
-        input_lines = "y\n1\ntestuser\nm1234\n\n\n"
+        # hpc=yes, perlmutter, username, account, accept default target
+        # name, accept default qos, accept default constraint, three
+        # resource-limit defaults.
+        input_lines = "y\n1\ntestuser\nm1234\n\n\n\n\n\n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
 
@@ -692,27 +692,33 @@ class TestTargetCommand:
             "site": "perlmutter",
             "backend": "slurm",
             "container_runtime": "podman-hpc",
-            "account": "m4031",
-            "defaults": {"qos": "gpu_debug", "constraint": "gpu"},
-            "qos": [
-                {"name": "gpu_debug", "constraint": "gpu",
-                 "use_for": "quick iteration"},
-                {"name": "gpu_regular", "constraint": "gpu",
-                 "use_for": "production"},
-            ],
+            "options": {
+                "qos": {
+                    "default": "debug",
+                    "choices": {
+                        "debug":   "quick iteration",
+                        "regular": "production",
+                    },
+                },
+                "constraint": {
+                    "default": "gpu",
+                    "choices": {"gpu": "A100", "cpu": "CPU only"},
+                },
+            },
             "resource_limits": {"max_nodes": 4},
         }
         (targets_dir / "perlmutter.yaml").write_text(yaml.dump(config))
-        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
-                            lambda: targets_dir)
-        monkeypatch.setattr("lightcone.engine.targets.get_cache_dir",
-                            lambda: cache_dir)
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_targets_dir", lambda: targets_dir,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_cache_dir", lambda: cache_dir,
+        )
         result = runner.invoke(main, ["target", "--show", "perlmutter"])
         assert result.exit_code == 0
         assert "perlmutter" in result.output
-        assert "slurm" in result.output
-        assert "gpu_debug" in result.output
-        assert "gpu_regular" in result.output
+        assert "debug" in result.output
+        assert "regular" in result.output
         assert "quick iteration" in result.output
         assert "max_nodes" in result.output
 
@@ -736,14 +742,19 @@ class TestTargetCommand:
         config = {
             "site": "perlmutter",
             "backend": "slurm",
-            "defaults": {"qos": "gpu_debug"},
-            "qos": [{"name": "gpu_debug", "constraint": "gpu", "use_for": "test"}],
+            "options": {
+                "qos": {"default": "debug",
+                         "choices": {"debug": "test"}},
+                "constraint": {"default": "gpu", "choices": {"gpu": ""}},
+            },
         }
         (targets_dir / "pm.yaml").write_text(yaml.dump(config))
-        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
-                            lambda: targets_dir)
-        monkeypatch.setattr("lightcone.engine.targets.get_cache_dir",
-                            lambda: cache_dir)
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_targets_dir", lambda: targets_dir,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_cache_dir", lambda: cache_dir,
+        )
 
         fake_cluster = ClusterInfo(
             qos={"gpu_debug": QoSInfo("gpu_debug", max_wall_minutes=30,
@@ -760,10 +771,7 @@ class TestTargetCommand:
 
         result = runner.invoke(main, ["target", "refresh", "pm"])
         assert result.exit_code == 0
-        assert "Updated" in result.output
-        assert "1 QoS" in result.output
-
-        # Cache file should exist now
+        assert "Refreshed" in result.output
         assert (cache_dir / "pm.cluster.yaml").exists()
 
     def test_target_refresh_nonexistent(self, runner: CliRunner, tmp_path: Path, monkeypatch):
@@ -783,7 +791,7 @@ class TestTargetCommand:
                             lambda: targets_dir)
         result = runner.invoke(main, ["target", "refresh", "local"])
         assert result.exit_code == 0
-        assert "Only SLURM" in result.output
+        assert "no external option limits" in result.output.lower()
 
     def test_target_help(self, runner: CliRunner):
         result = runner.invoke(main, ["target", "--help"])
@@ -804,8 +812,8 @@ class TestRunFlags:
         assert "--partition" in result.output
 
 
-class TestQoSManagement:
-    """Tests for add-qos and remove-qos commands."""
+class TestTargetShowHidesSchedulerDetails:
+    """`lc target --show` must not leak scheduler implementation details."""
 
     @pytest.fixture
     def target_env(self, tmp_path: Path, monkeypatch):
@@ -818,83 +826,57 @@ class TestQoSManagement:
         config = {
             "site": "perlmutter",
             "backend": "slurm",
-            "defaults": {"qos": "gpu_debug", "constraint": "gpu"},
-            "qos": [
-                {"name": "gpu_debug", "constraint": "gpu",
-                 "use_for": "quick iteration"},
-            ],
+            "connection": {
+                "hostname": "perlmutter.nersc.gov",
+                "username": "u",
+            },
+            "container_runtime": "podman-hpc",
+            "options": {
+                "qos": {
+                    "default": "debug",
+                    "choices": {
+                        "debug":   "quick iteration",
+                        "regular": "production",
+                    },
+                },
+                "constraint": {
+                    "default": "gpu",
+                    "choices": {"gpu": "A100", "cpu": "CPU only"},
+                },
+                "time_limit": {"default": "30m"},
+            },
+            "strategy": "fit",
         }
         (targets_dir / "pm.yaml").write_text(yaml.dump(config))
-        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
-                            lambda: targets_dir)
-        monkeypatch.setattr("lightcone.engine.targets.get_cache_dir",
-                            lambda: cache_dir)
-        return targets_dir, cache_dir
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_targets_dir", lambda: targets_dir,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_cache_dir", lambda: cache_dir,
+        )
+        return targets_dir
 
-    def test_add_qos_direct(self, runner: CliRunner, target_env):
-        targets_dir, _ = target_env
-        result = runner.invoke(main, [
-            "target", "add-qos", "pm", "gpu_regular",
-            "--constraint", "gpu", "--use-for", "production runs",
-        ])
+    def test_show_presents_options(self, runner: CliRunner, target_env):
+        result = runner.invoke(main, ["target", "--show", "pm"])
         assert result.exit_code == 0
-        assert "Added" in result.output
+        assert "qos" in result.output
+        assert "debug" in result.output
+        assert "regular" in result.output
+        assert "constraint" in result.output
+        # Guidance surfaced next to each choice.
+        assert "quick iteration" in result.output
+        assert "A100" in result.output
 
-        import yaml
-        config = yaml.safe_load((targets_dir / "pm.yaml").read_text())
-        names = [e["name"] for e in config["qos"]]
-        assert "gpu_regular" in names
-        assert "gpu_debug" in names
-
-    def test_add_qos_duplicate(self, runner: CliRunner, target_env):
-        result = runner.invoke(main, [
-            "target", "add-qos", "pm", "gpu_debug",
-            "--constraint", "gpu", "--use-for", "testing",
-        ])
+    def test_show_omits_scheduler_leak(self, runner: CliRunner, target_env):
+        """No scheduler identifiers in the agent-visible output."""
+        result = runner.invoke(main, ["target", "--show", "pm"])
         assert result.exit_code == 0
-        assert "already" in result.output
-
-    def test_add_qos_nonexistent_target(self, runner: CliRunner, target_env):
-        result = runner.invoke(main, [
-            "target", "add-qos", "nonexistent", "gpu_regular",
-        ])
-        assert result.exit_code == 1
-
-    def test_remove_qos(self, runner: CliRunner, target_env):
-        targets_dir, _ = target_env
-        # First add one so we have two
-        runner.invoke(main, [
-            "target", "add-qos", "pm", "gpu_regular",
-            "--constraint", "gpu", "--use-for", "production",
-        ])
-        result = runner.invoke(main, ["target", "remove-qos", "pm", "gpu_regular"])
-        assert result.exit_code == 0
-        assert "Removed" in result.output
-
-        import yaml
-        config = yaml.safe_load((targets_dir / "pm.yaml").read_text())
-        names = [e["name"] for e in config["qos"]]
-        assert "gpu_regular" not in names
-        assert "gpu_debug" in names
-
-    def test_remove_qos_missing(self, runner: CliRunner, target_env):
-        result = runner.invoke(main, ["target", "remove-qos", "pm", "nonexistent"])
-        assert result.exit_code == 1
-
-    def test_remove_default_qos_switches(self, runner: CliRunner, target_env):
-        targets_dir, _ = target_env
-        # Add a second entry, then remove the default
-        runner.invoke(main, [
-            "target", "add-qos", "pm", "gpu_regular",
-            "--constraint", "gpu", "--use-for", "production",
-        ])
-        result = runner.invoke(main, ["target", "remove-qos", "pm", "gpu_debug"])
-        assert result.exit_code == 0
-        assert "default" in result.output.lower()
-
-        import yaml
-        config = yaml.safe_load((targets_dir / "pm.yaml").read_text())
-        assert config["defaults"]["qos"] == "gpu_regular"
+        lowered = result.output.lower()
+        for forbidden in ("slurm", "sbatch", "sacctmgr", "srun", "hostname",
+                           "perlmutter.nersc.gov", "backend",
+                           "podman-hpc", "container_runtime"):
+            assert forbidden not in lowered, \
+                f"agent-facing view leaked '{forbidden}'"
 
 
 class TestRemoteCommandRemoved:

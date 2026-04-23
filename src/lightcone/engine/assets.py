@@ -374,10 +374,10 @@ def build_definitions(
         container_runtime = target_config.get("container_runtime")
         runner_config = {"connection": target_config.get("connection", {})}
 
-        if backend == "slurm" and "defaults" in target_config:
-            # --- New-format target: use resolve_run_config ---
+        if backend == "slurm":
             from lightcone.engine.targets import (
-                get_qos_entries,
+                get_cache_key_overrides,
+                get_option_choices,
                 resolve_run_config,
             )
 
@@ -391,27 +391,22 @@ def build_definitions(
                 if resolved.get(key) is not None:
                     scheduler[key] = resolved[key]
 
-            # Account from target config if not in resolved
-            account = scheduler.get("account") or target_config.get("account")
-            if account:
-                scheduler["account"] = account
-
-            # Thread metadata for runner QoS validation
+            # Runner metadata for QoS validation and auto-adjust.
             if target_name:
                 scheduler["_target_name"] = target_name
-            defaults = target_config.get("defaults") or {}
             scheduler["_strategy"] = (
                 (cli_overrides or {}).get("strategy")
-                or defaults.get("strategy", "fit")
+                or target_config.get("strategy", "fit")
             )
-            qos_entries = get_qos_entries(target_config)
-            if qos_entries:
-                scheduler["_allowed_qos"] = qos_entries
+            qos_choices = list(get_option_choices(target_config, "qos"))
+            if qos_choices:
+                scheduler["_qos_choices"] = qos_choices
+            overrides = get_cache_key_overrides(target_config)
+            if overrides:
+                scheduler["_cache_key_overrides"] = overrides
 
-            # Forward extra SLURM args from CLI passthrough
             if target_config.get("extra_slurm_args"):
                 scheduler["extra_slurm_args"] = target_config["extra_slurm_args"]
-            # Forward extra container flags
             if target_config.get("extra_container_flags"):
                 scheduler["extra_container_flags"] = target_config[
                     "extra_container_flags"
@@ -423,11 +418,9 @@ def build_definitions(
             )
             runner_config["poll"] = target_config.get("poll", {})
         else:
-            # --- Old-format target or non-SLURM: flat-key passthrough ---
+            # Non-scheduler backend — only forward what matters to the runner.
             scheduler = {}
-            for key in ("site", "account", "qos", "constraint", "node_type",
-                         "container_runtime", "container_flags",
-                         "nodes", "time_limit", "extra_slurm_args"):
+            for key in ("site", "container_runtime"):
                 if target_config.get(key) is not None:
                     scheduler[key] = target_config[key]
             if scheduler:

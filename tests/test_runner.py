@@ -286,24 +286,6 @@ class TestGenerateSbatchScript:
         assert "--nccl" in script
         assert "--scratch" in script
 
-    def test_legacy_container_flags_still_work(self, tmp_path):
-        """Old container_flags key is supported as fallback."""
-        script = generate_sbatch_script(
-            command="python scripts/train.py",
-            container="ghcr.io/proj/ml:latest",
-            container_runtime="podman-hpc",
-            project_root=tmp_path,
-            output_id="train",
-            universe_id="baseline",
-            resources={},
-            scheduler_config={
-                "account": "m1234",
-                "container_flags": ["--mpi", "--cfs"],
-            },
-        )
-        assert "--mpi" in script
-        assert "--cfs" in script
-
     def test_no_container(self, tmp_path):
         script = generate_sbatch_script(
             command="python scripts/train.py",
@@ -765,13 +747,11 @@ class TestQoSValidation:
                 "scheduler": {
                     "container_runtime": "podman-hpc",
                     "account": "m1234",
-                    "qos": "gpu_debug",
+                    "qos": "debug",
+                    "constraint": "gpu",
                     "_target_name": "test",
                     "_strategy": "switch",
-                    "_allowed_qos": [
-                        {"name": "gpu_debug", "constraint": "gpu"},
-                        {"name": "gpu_regular", "constraint": "gpu"},
-                    ],
+                    "_qos_choices": ["debug", "regular"],
                 },
             },
         )
@@ -783,11 +763,11 @@ class TestQoSValidation:
             resources={"nodes": 16, "gpus": 4},
         )
 
-        # Check the generated script switched to gpu_regular
+        # Switched from debug (max 8 nodes) to regular (no node cap).
         script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
         content = script_path.read_text()
-        assert "--qos=gpu_regular" in content
-        assert "--qos=gpu_debug" not in content
+        assert "--qos=regular" in content
+        assert "--qos=debug\n" not in content
 
     @patch("lightcone.engine.runner.subprocess.run")
     def test_qos_fit_strategy_reduces_nodes(self, mock_run, tmp_path, monkeypatch):
@@ -829,13 +809,11 @@ class TestQoSValidation:
                 "scheduler": {
                     "container_runtime": "podman-hpc",
                     "account": "m1234",
-                    "qos": "gpu_debug",
+                    "qos": "debug",
+                    "constraint": "gpu",
                     "_target_name": "test",
                     "_strategy": "fit",
-                    "_allowed_qos": [
-                        {"name": "gpu_debug", "constraint": "gpu"},
-                        {"name": "gpu_regular", "constraint": "gpu"},
-                    ],
+                    "_qos_choices": ["debug", "regular"],
                 },
             },
         )
@@ -847,9 +825,9 @@ class TestQoSValidation:
             resources={"nodes": 16, "gpus": 4},
         )
 
-        # Fit strategy: should stay in gpu_debug but reduce nodes to 8
+        # Fit strategy: stay in debug but clamp nodes to 8.
         script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
         content = script_path.read_text()
-        assert "--qos=gpu_debug" in content
+        assert "--qos=debug" in content
         assert "--nodes=8" in content
         assert "--nodes=16" not in content

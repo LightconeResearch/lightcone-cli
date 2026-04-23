@@ -135,32 +135,32 @@ def parse_slurm_walltime(wall_str: str) -> int | None:
 
 
 def infer_qos_constraint(qos_name: str) -> str | None:
-    """Infer the hardware constraint from a QoS name.
+    """Infer the hardware constraint from a QoS record name.
 
-    Heuristic: names starting with ``gpu_`` target GPU nodes.
-    Names starting with ``shared`` without ``gpu`` may be CPU shared.
+    Heuristic: names starting with ``gpu`` / ``gpu_`` target GPU nodes;
+    everything else is assumed CPU.  Used only for grouping discovered
+    QoS records during setup; the target YAML then declares the
+    authoritative constraint for each user-facing option.
 
     >>> infer_qos_constraint("gpu_debug")
     'gpu'
     >>> infer_qos_constraint("debug")
     'cpu'
-    >>> infer_qos_constraint("gpu_shared")
-    'gpu'
     """
     name = qos_name.lower()
-    if name.startswith("gpu_"):
-        return "gpu"
-    if name.startswith("gpu"):
+    if name.startswith("gpu_") or name.startswith("gpu"):
         return "gpu"
     return "cpu"
 
 
-def get_slurm_qos(entry: dict[str, Any]) -> str:
-    """Return the QoS name to pass to ``sbatch --qos=``.
+def strip_constraint_prefix(qos_name: str, constraint: str) -> str:
+    """Return *qos_name* with any leading ``{constraint}_`` stripped.
 
-    Uses ``slurm_qos`` if set, otherwise falls back to ``name``.
+    Used during setup to derive user-facing QoS names from sacctmgr
+    records (``gpu_debug`` with constraint ``gpu`` → ``debug``).
     """
-    return entry.get("slurm_qos") or entry.get("name", "")
+    prefix = f"{constraint}_"
+    return qos_name[len(prefix):] if qos_name.startswith(prefix) else qos_name
 
 
 # ---------------------------------------------------------------------------
@@ -431,68 +431,48 @@ def check_qos_eligibility(
 def recommend_qos(
     cluster: ClusterInfo,
     resources: dict[str, Any],
+    qos_choices: list[str],
+    constraint: str | None,
+    *,
     preferred_qos: str | None = None,
-    constraint: str | None = None,
-    qos_entries: list[dict[str, Any]] | None = None,
+    cache_key_overrides: dict[str, str] | None = None,
 ) -> list[QoSRecommendation]:
     """Return QoS recommendations sorted by preference and eligibility.
 
-    *qos_entries* is the target's ``qos`` list (dicts with ``name``,
-    ``constraint``, ``use_for``).  If provided, only QoS in this list
-    are considered.  GPU recipes (``resources["gpus_per_node"] > 0``)
-    filter to entries with ``constraint`` containing ``"gpu"``.
+    *qos_choices* is the list of user-facing QoS names available on this
+    target (``options.qos.choices`` keys).  *constraint* is the
+    user-selected constraint, held fixed for all candidates — "switch"
+    never crosses hardware families.  Each candidate resolves to a cache
+    record via :func:`lightcone.engine.targets.resolve_cache_key`.
 
-    Sorting:
-      1. *preferred_qos* first (if eligible)
-      2. Eligible options by priority (descending)
-      3. Ineligible options last
+    Sort order:
+      1. *preferred_qos* first (if eligible),
+      2. eligible options by priority (descending),
+      3. ineligible options last.
     """
-    # Determine which QoS names to consider.
-    # Target entries use base names (e.g., "debug") but the cache may
-    # store prefixed names (e.g., "gpu_debug").  We resolve each entry
-    # to its cache name and track the mapping back to the target name.
-    needs_gpu = resources.get("gpus_per_node", 0) > 0
-    # Build candidate list: each is (cache_name, slurm_qos) where
-    #   cache_name = entry["name"] (matches sacctmgr, used for limit lookup)
-    #   slurm_qos  = entry["slurm_qos"] or entry["name"] (for --qos= submission)
-    candidates: list[tuple[str, str]] = []  # (cache_name, slurm_qos)
+    from lightcone.engine.targets import resolve_cache_key
 
-    if qos_entries is not None:
-        for entry in qos_entries:
-            cache_name = entry.get("name", "")
-            entry_constraint = entry.get("constraint", "")
-            if needs_gpu and "gpu" not in entry_constraint:
-                continue
-            if not needs_gpu and "gpu" in entry_constraint:
-                continue
-            if cache_name in cluster.qos:
-                candidates.append((cache_name, get_slurm_qos(entry)))
-    else:
-        for name in cluster.qos:
-            candidates.append((name, name))
-
-    # Check each candidate
     recommendations: list[QoSRecommendation] = []
-    slurm_to_cache: dict[str, str] = {}
-    for cache_name, slurm_qos in candidates:
-        qos_info = cluster.qos[cache_name]
+    cache_by_qos: dict[str, str] = {}
+    for qos_name in qos_choices:
+        cache_name = resolve_cache_key(
+            qos_name, constraint, cluster.qos, cache_key_overrides,
+        )
+        qos_info = cluster.qos.get(cache_name)
+        if qos_info is None:
+            continue
         rec = check_qos_eligibility(qos_info, resources)
-        # The recommendation uses slurm_qos (what gets passed to --qos=)
-        rec.qos = slurm_qos
+        rec.qos = qos_name
         recommendations.append(rec)
-        slurm_to_cache[slurm_qos] = cache_name
+        cache_by_qos[qos_name] = cache_name
 
-    # Sort: preferred first (if eligible), then eligible by priority desc,
-    # then ineligible
     def sort_key(rec: QoSRecommendation) -> tuple[int, int, int]:
         is_preferred = 1 if rec.qos == preferred_qos else 0
-        cache_name = slurm_to_cache.get(rec.qos, rec.qos)
-        priority = cluster.qos[cache_name].priority if cache_name in cluster.qos else 0
-        return (
-            -int(rec.eligible),
-            -is_preferred,
-            -priority,
+        cache_name = cache_by_qos.get(rec.qos, rec.qos)
+        priority = (
+            cluster.qos[cache_name].priority if cache_name in cluster.qos else 0
         )
+        return (-int(rec.eligible), -is_preferred, -priority)
 
     recommendations.sort(key=sort_key)
     return recommendations
@@ -633,39 +613,59 @@ def is_user_facing_qos(name: str, *, include_interactive: bool = False) -> bool:
     return True
 
 
-def build_qos_suggestions(
+def build_option_suggestions(
     cluster: ClusterInfo,
     *,
     include_interactive: bool = False,
-) -> list[dict[str, str]]:
-    """Build a QoS suggestion list from live cluster discovery.
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Build ``options`` + ``cache_key_overrides`` from live discovery.
 
-    Filters to user-accessible, user-facing QoS, infers constraint,
-    auto-generates ``use_for``, and groups by GPU/CPU.
+    Filters to user-accessible, user-facing QoS, groups by inferred
+    constraint (GPU / CPU), and strips the ``{constraint}_`` prefix from
+    sacctmgr names where present to produce orthogonal user-facing QoS
+    choices.  Non-conventional mappings land in ``cache_key_overrides``.
 
-    Returns a list of dicts with ``name``, ``constraint``, ``use_for``
-    — the same shape as ``suggested_qos`` in the site registry and
-    ``qos`` entries in a target YAML.
+    Returns ``(options, cache_key_overrides)`` where *options* has the
+    same shape as a target's ``options`` section.
     """
-    suggestions: list[dict[str, str]] = []
-    for name in sorted(cluster.qos):
-        if name not in cluster.user_qos:
-            continue
-        if not is_user_facing_qos(name, include_interactive=include_interactive):
-            continue
-        constraint = infer_qos_constraint(name)
-        use_for = generate_use_for(cluster.qos[name])
-        suggestions.append({
-            "name": name,
-            "constraint": constraint,
-            "use_for": use_for,
-        })
+    qos_choices: dict[str, str] = {}
+    constraints_seen: list[str] = []
+    cache_key_overrides: dict[str, str] = {}
 
-    # Sort: GPU first, then CPU; within each group by priority descending
-    def sort_key(entry: dict[str, str]) -> tuple[int, int]:
-        is_gpu = 0 if entry["constraint"] == "gpu" else 1
-        priority = cluster.qos.get(entry["name"], QoSInfo(entry["name"])).priority
-        return (is_gpu, -priority)
+    # Collect in priority order within each constraint family so higher-
+    # priority QoS appear first in the choices map.
+    records = [
+        (name, info) for name, info in cluster.qos.items()
+        if name in cluster.user_qos
+        and is_user_facing_qos(name, include_interactive=include_interactive)
+    ]
+    records.sort(
+        key=lambda r: (0 if infer_qos_constraint(r[0]) == "gpu" else 1,
+                        -r[1].priority, r[0]),
+    )
 
-    suggestions.sort(key=sort_key)
-    return suggestions
+    for name, info in records:
+        constraint = infer_qos_constraint(name) or ""
+        if constraint and constraint not in constraints_seen:
+            constraints_seen.append(constraint)
+        user_name = strip_constraint_prefix(name, constraint) if constraint else name
+        if user_name in qos_choices:
+            continue
+        qos_choices[user_name] = generate_use_for(info)
+        expected = f"{constraint}_{user_name}" if constraint else user_name
+        if name != user_name and name != expected:
+            key = f"{user_name}/{constraint}" if constraint else user_name
+            cache_key_overrides[key] = name
+
+    options: dict[str, Any] = {}
+    if qos_choices:
+        options["qos"] = {
+            "default": next(iter(qos_choices)),
+            "choices": qos_choices,
+        }
+    if constraints_seen:
+        options["constraint"] = {
+            "default": constraints_seen[0],
+            "choices": {c: "" for c in constraints_seen},
+        }
+    return options, cache_key_overrides

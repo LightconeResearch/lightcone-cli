@@ -1,6 +1,6 @@
 # lightcone-cli Reference
 
-Reference for lightcone-cli execution: CLI commands, development workflow, status interpretation, HPC execution, and failure diagnosis. For astra.yaml spec syntax, see `astra-reference.md`.
+Reference for lightcone-cli execution: CLI commands, development workflow, status interpretation, and failure diagnosis. For `astra.yaml` spec syntax, see `astra-reference.md`.
 
 ## CLI Reference
 
@@ -8,14 +8,20 @@ Reference for lightcone-cli execution: CLI commands, development workflow, statu
 lc init [DIR]                            # Scaffold a new ASTRA project
 lc init NAME --sub-analysis              # Scaffold sub-analysis and wire into parent
 lc run [OUTPUT] [--universe NAME]        # Execute recipes via Dagster (auto-builds)
-lc run --partition gpu --qos shared      # Unknown flags passed through to SLURM
+lc run [--qos V] [--constraint V] [--time-limit V] [--account V] [--partition V]
+                                         # Override target run options per invocation
 lc run --no-build                        # Skip automatic container builds
 lc build [--force] [--runtime docker]    # Build container images from specs
 lc status [--universe NAME]              # Materialization + container status
 lc dev [--port 3000]                     # Dagster webserver UI
-lc target [--set NAME] [--list]          # Manage execution targets
-lc setup                                 # Interactive target setup wizard
+lc target                                # Show current target + available run options
+lc target --show NAME                    # Show a target's run options
+lc target --set NAME                     # Switch project target
+lc target --list                         # List available targets
+lc setup                                 # Interactive setup wizard
 ```
+
+**Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Never invoke schedulers or container runtimes directly — it will bypass reproducibility guarantees.
 
 ## Creating Sub-Analyses
 
@@ -31,11 +37,11 @@ After scaffolding, populate the sub-analysis's `astra.yaml` with inputs, outputs
 
 Three overlapping phases:
 
-1. **Write & Debug** -- Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
-2. **Integrate** -- Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status` (`no recipe` / `pending` / `ok`). Set `container:` at analysis level or per-recipe — pass an image name (e.g., `python:3.12-slim`) or a path to a Containerfile (e.g., `Containerfile`).
-3. **Materialize** -- `lc run` executes via Dagster in containers (Docker or SLURM). Falls back to local execution if Docker is unavailable. Done when `lc status` shows all `ok`.
+1. **Write & Debug** — Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
+2. **Integrate** — Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status` (`no recipe` / `pending` / `ok`). Set `container:` at analysis level or per-recipe — pass an image name (e.g., `python:3.12-slim`) or a path to a Containerfile (e.g., `Containerfile`).
+3. **Materialize** — `lc run` executes via Dagster in the target's environment. Done when `lc status` shows all `ok`.
 
-**An output is not done until `lc run` produces it.** Running scripts directly is for debugging only — final results must always come from `lc run` so they are reproducible inside containers.
+**An output is not done until `lc run` produces it.** Running scripts directly is for debugging only — final results must always come from `lc run` so they are reproducible.
 
 ### Spec-Code Invariant
 
@@ -46,30 +52,37 @@ Three overlapping phases:
 
 ## Status Interpretation
 
-`lc status` shows outputs vs universes. **Progression:** `no recipe` --> `pending` --> `ok`
+`lc status` shows outputs vs universes. **Progression:** `no recipe` → `pending` → `ok`
 
-- `ok` -- Recipe exists, results on disk. Done.
-- `pending` -- Recipe exists, not materialized. Run `lc run`.
-- `no recipe` -- No `recipe:` block yet. Still in Write & Debug phase.
+- `ok` — Recipe exists, results on disk. Done.
+- `pending` — Recipe exists, not materialized. Run `lc run`.
+- `no recipe` — No `recipe:` block yet. Still in Write & Debug phase.
 
 Container status: `prebuilt: image`, `build: Containerfile (built)`, or `(not built)` (needs `lc build`).
 
 ## Failure Diagnosis
 
-- **Script arg not recognized** -- Use underscores in argparse to match decision IDs
-- **Recipe input not found** -- Materialize upstream outputs first
+- **Script arg not recognized** — Use underscores in argparse to match decision IDs
+- **Recipe input not found** — Materialize upstream outputs first
 
 After failure: fix, then `lc run <output_id> --universe <name>`.
 
-## HPC / Interactive Execution
+## Choosing run options
 
-If `SLURM_JOB_ID` is set in the environment, `lc run` automatically uses `srun` (instant) instead of `sbatch` (queued). This means the user is inside an interactive allocation and execution will be fast.
+Every target exposes a small set of orthogonal **options** (commonly `qos`, `constraint`, `time_limit`, `account`, `partition`). To see what this target offers:
 
-If `SLURM_JOB_ID` is not set and the target is SLURM, `lc run` submits via `sbatch`. Any unknown flags are passed through as SLURM directives:
 ```bash
-lc run --qos shared --constraint gpu      # NERSC
-lc run --partition gpu-a100               # TACC, SDSC, etc.
-lc run --gres=gpu:4 --partition batch     # any cluster
+lc target
 ```
 
-Recipe `resources` (gpus, memory, cpus, time_limit) are portable and used for batch scheduling. They are ignored in interactive mode since the allocation already provides them.
+Each option has a default and a set of valid choices with short guidance. Override any of them for a single run:
+
+```bash
+lc run --qos debug --time-limit 30m        # quick iteration
+lc run --qos regular --time-limit 4h       # production run
+lc run --constraint cpu                    # CPU-only hardware
+```
+
+If your recipe's `resources` exceed the limits implied by the selected options, `lc run` will either trim the request to fit (`strategy: fit`, the default) or switch to a different `qos` choice (`strategy: switch`). Pass `--strategy switch` per run to prefer the latter.
+
+Recipe `resources` (gpus, memory, cpus, nodes, time_limit) are portable across targets — they inform how `lc run` dispatches work in the target's environment.

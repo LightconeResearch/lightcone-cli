@@ -1,4 +1,12 @@
-"""Target configuration management for Dagster execution backends."""
+"""Target configuration management.
+
+Targets describe *execution environments* as a set of orthogonal
+``options`` (``qos``, ``constraint``, ``time_limit``, ``account``,
+``partition``) that agents and users can override per run via ``lc run
+--<option> <value>``.  This module owns the target YAML schema, on-load
+migration from older formats, option resolution, and the cluster-cache
+layer used for scheduler-specific limit checking.
+"""
 from __future__ import annotations
 
 import logging
@@ -10,21 +18,35 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+#: User-facing axes exposed as ``--<axis>`` flags on ``lc run``.
+OPTION_AXES: tuple[str, ...] = (
+    "qos", "constraint", "time_limit", "account", "partition",
+)
+
+#: Axes that are only meaningful for scheduler-backed targets.
+_SCHEDULER_AXES = frozenset({"qos", "constraint", "partition"})
+
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
 
 def get_targets_dir() -> Path:
-    """Return the user-level targets directory (~/.lightcone/targets/)."""
+    """Return the user-level targets directory (``~/.lightcone/targets/``)."""
     return Path.home() / ".lightcone" / "targets"
 
 
 def get_cache_dir() -> Path:
-    """Return the cluster cache directory (~/.lightcone/cache/)."""
+    """Return the cluster cache directory (``~/.lightcone/cache/``)."""
     cache = Path.home() / ".lightcone" / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     return cache
+
+
+def get_config_path() -> Path:
+    """Return the user-level config file path (``~/.lightcone/config.yaml``)."""
+    return Path.home() / ".lightcone" / "config.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -41,25 +63,19 @@ def list_targets() -> list[str]:
 
 
 def load_target(name: str) -> dict[str, Any] | None:
-    """Load a saved target configuration by name.
+    """Load a target configuration by name.
 
-    Auto-migrates old-format targets to the new schema and rewrites the
-    file so the migration happens only once.  Returns ``None`` if the
-    target does not exist.
+    Returns ``None`` if the target does not exist.
     """
     config_path = get_targets_dir() / f"{name}.yaml"
     if not config_path.exists():
         return None
     with open(config_path) as f:
-        config = yaml.safe_load(f)
-    if config and _is_old_format(config):
-        config = migrate_target(config)
-        save_target(name, config)
-    return config
+        return yaml.safe_load(f) or {}
 
 
 def save_target(name: str, config: dict[str, Any]) -> Path:
-    """Save a target configuration to ~/.lightcone/targets/{name}.yaml."""
+    """Save a target configuration to ``~/.lightcone/targets/{name}.yaml``."""
     targets_dir = get_targets_dir()
     targets_dir.mkdir(parents=True, exist_ok=True)
     config_path = targets_dir / f"{name}.yaml"
@@ -73,16 +89,8 @@ def save_target(name: str, config: dict[str, Any]) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def get_config_path() -> Path:
-    """Return the user-level config file path (~/.lightcone/config.yaml)."""
-    return Path.home() / ".lightcone" / "config.yaml"
-
-
 def load_user_config() -> dict[str, Any]:
-    """Load the user-level lightcone-cli configuration.
-
-    Returns an empty dict if the config file doesn't exist.
-    """
+    """Load the user-level lightcone-cli configuration."""
     config_path = get_config_path()
     if not config_path.exists():
         return {}
@@ -91,10 +99,7 @@ def load_user_config() -> dict[str, Any]:
 
 
 def save_user_config(config: dict[str, Any]) -> Path:
-    """Save user-level lightcone-cli configuration to ~/.lightcone/config.yaml.
-
-    Returns the path where it was saved.
-    """
+    """Save user-level lightcone-cli configuration."""
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     with open(config_path, "w") as f:
@@ -103,15 +108,13 @@ def save_user_config(config: dict[str, Any]) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Cluster cache management
+# Cluster cache — stores raw scheduler limit data used by the runner for
+# option validation.  Never surfaced to the agent.
 # ---------------------------------------------------------------------------
 
 
 def load_cluster_cache(target_name: str) -> Any:
-    """Load cached ``ClusterInfo`` for a target.
-
-    Returns ``None`` if no cache file exists.
-    """
+    """Load cached ``ClusterInfo`` for a target, or ``None`` if absent."""
     from lightcone.engine.slurm_info import cluster_info_from_dict
 
     cache_path = get_cache_dir() / f"{target_name}.cluster.yaml"
@@ -125,7 +128,7 @@ def load_cluster_cache(target_name: str) -> Any:
 
 
 def save_cluster_cache(target_name: str, info: Any) -> Path:
-    """Write ``ClusterInfo`` to the cache directory."""
+    """Write ``ClusterInfo`` to the cluster cache directory."""
     from lightcone.engine.slurm_info import cluster_info_to_dict
 
     cache_path = get_cache_dir() / f"{target_name}.cluster.yaml"
@@ -137,7 +140,7 @@ def save_cluster_cache(target_name: str, info: Any) -> Path:
 
 
 def is_cache_stale(target_name: str, max_age_days: int = 30) -> bool:
-    """Return True if cache doesn't exist or is older than *max_age_days*."""
+    """Return ``True`` if the cache is missing or older than *max_age_days*."""
     cache_path = get_cache_dir() / f"{target_name}.cluster.yaml"
     if not cache_path.exists():
         return True
@@ -147,14 +150,13 @@ def is_cache_stale(target_name: str, max_age_days: int = 30) -> bool:
         return True
     try:
         ts = datetime.fromisoformat(data["timestamp"])
-        age = datetime.now(UTC) - ts
-        return age.days > max_age_days
+        return (datetime.now(UTC) - ts).days > max_age_days
     except (ValueError, TypeError):
         return True
 
 
 def refresh_cluster_cache(target_name: str) -> Any:
-    """Re-query SLURM and update the cache for *target_name*."""
+    """Re-query the scheduler and rewrite the cache for *target_name*."""
     from lightcone.engine.slurm_info import discover_cluster
 
     info = discover_cluster()
@@ -163,74 +165,79 @@ def refresh_cluster_cache(target_name: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Schema migration
+# Option helpers
 # ---------------------------------------------------------------------------
 
-_OLD_FLAT_KEYS = {"qos", "constraint", "max_nodes",
-                  "max_walltime_minutes", "max_concurrent_jobs"}
+
+def get_options(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the ``options`` mapping for a target (empty dict if absent)."""
+    return config.get("options") or {}
 
 
-def _is_old_format(config: dict[str, Any]) -> bool:
-    """Return True if the target uses the old flat schema."""
-    return "defaults" not in config and bool(_OLD_FLAT_KEYS & set(config))
+def get_option_default(config: dict[str, Any], axis: str) -> Any:
+    """Return the configured default for *axis*, or ``None``."""
+    return (get_options(config).get(axis) or {}).get("default")
 
 
-def migrate_target(config: dict[str, Any]) -> dict[str, Any]:
-    """Migrate an old-format target to the new schema.
+def get_option_choices(config: dict[str, Any], axis: str) -> dict[str, str]:
+    """Return ``{value: guidance}`` for *axis*.  Accepts list form as well."""
+    raw = (get_options(config).get(axis) or {}).get("choices") or {}
+    if isinstance(raw, list):
+        return {str(v): "" for v in raw}
+    return {str(k): (v or "") for k, v in raw.items()}
 
-    Old format::
 
-        qos: debug
-        constraint: gpu
-        max_nodes: 4
-        container_flags: ["--gpu"]
+def get_option_guidance(config: dict[str, Any], axis: str) -> str:
+    """Return the overall guidance string for *axis*, if any."""
+    return (get_options(config).get(axis) or {}).get("guidance") or ""
 
-    New format::
 
-        defaults:
-          qos: debug
-          constraint: gpu
-        qos:
-          - name: debug
-            constraint: gpu
-            use_for: default
-        resource_limits:
-          max_nodes: 4
+# ---------------------------------------------------------------------------
+# Cache-key resolver — maps a user-facing (qos, constraint) pair to the
+# sacctmgr record name used for limit lookup in the cluster cache.
+# ---------------------------------------------------------------------------
+
+
+def resolve_cache_key(
+    qos: str,
+    constraint: str | None,
+    cache_qos_keys: Any,
+    overrides: dict[str, str] | None = None,
+) -> str:
+    """Map ``(qos, constraint)`` to a scheduler cache record name.
+
+    Lookup order:
+
+    1. explicit ``cache_key_overrides`` entry (``{qos}/{constraint}`` or
+       ``{qos}``);
+    2. the convention ``{constraint}_{qos}`` when present in the cache
+       (``gpu_debug`` on Perlmutter);
+    3. ``{qos}`` verbatim.
     """
-    drop = {"qos", "constraint", "max_nodes", "max_walltime_minutes",
-            "max_concurrent_jobs", "container_flags", "node_type"}
-    new: dict[str, Any] = {k: v for k, v in config.items() if k not in drop}
+    if overrides:
+        if constraint:
+            key = f"{qos}/{constraint}"
+            if key in overrides:
+                return overrides[key]
+        if qos in overrides:
+            return overrides[qos]
+    if constraint:
+        prefixed = f"{constraint}_{qos}"
+        if prefixed in cache_qos_keys:
+            return prefixed
+    return qos
 
-    # defaults
-    defaults: dict[str, Any] = {}
-    if "qos" in config:
-        defaults["qos"] = config["qos"]
-    if "constraint" in config:
-        defaults["constraint"] = config["constraint"]
-    if defaults:
-        new["defaults"] = defaults
 
-    # qos list
-    if "qos" in config:
-        from lightcone.engine.slurm_info import infer_qos_constraint
-        qos_name = config["qos"]
-        constraint = config.get("constraint") or infer_qos_constraint(qos_name)
-        new["qos"] = [{"name": qos_name, "constraint": constraint,
-                        "use_for": "default"}]
-
-    # resource_limits
-    limits: dict[str, Any] = {}
-    for key in ("max_nodes", "max_walltime_minutes", "max_concurrent_jobs"):
-        if key in config:
-            limits[key] = config[key]
-    if limits:
-        new["resource_limits"] = limits
-
-    return new
+def get_cache_key_overrides(config: dict[str, Any]) -> dict[str, str]:
+    """Return the target's ``cache_key_overrides`` map (empty dict if none)."""
+    raw = config.get("cache_key_overrides") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
 
 
 # ---------------------------------------------------------------------------
-# Run config resolution
+# Run-config resolution
 # ---------------------------------------------------------------------------
 
 
@@ -238,174 +245,38 @@ def resolve_run_config(
     target_config: dict[str, Any],
     cli_overrides: dict[str, Any],
 ) -> dict[str, Any]:
-    """Merge CLI overrides with target defaults.
+    """Merge CLI overrides with option defaults.
 
-    Resolution order: ``cli_override > target default > None``.
-
-    For non-SLURM backends (local, docker, venv), returns an empty dict
-    and warns if SLURM-specific overrides were passed.
+    Resolution order per axis: ``cli_override > option default > None``.
+    Validates ``qos`` and ``constraint`` against the target's declared
+    choices.  For non-scheduler backends, warns on scheduler-only
+    overrides and returns an empty dict.
     """
     backend = target_config.get("backend", "local")
-    slurm_keys = {"qos", "constraint", "partition"}
-
     if backend != "slurm":
-        used = slurm_keys & set(cli_overrides)
-        if used:
-            for key in used:
-                logger.warning(
-                    "--%s is ignored for %s backend (no scheduler).", key, backend,
-                )
+        stray = _SCHEDULER_AXES & set(cli_overrides)
+        for axis in sorted(stray):
+            logger.warning(
+                "--%s is ignored for %s backend.", axis, backend,
+            )
         return {}
 
-    defaults = target_config.get("defaults") or {}
     result: dict[str, Any] = {}
-    for key in ("qos", "constraint", "time_limit", "account", "partition"):
-        val = cli_overrides.get(key) or defaults.get(key)
+    for axis in OPTION_AXES:
+        val = cli_overrides.get(axis)
+        if val is None:
+            val = get_option_default(target_config, axis)
         if val is not None:
-            result[key] = val
+            result[axis] = val
 
-    # Validate qos against target's allowed list (by name)
-    allowed = get_allowed_qos_names(target_config)
-    chosen_qos = result.get("qos")
-    if allowed and chosen_qos and chosen_qos not in allowed:
-        raise ValueError(
-            f"'{chosen_qos}' is not in this target's qos list: {allowed}. "
-            "Edit the target to add it."
-        )
-
-    # Auto-set constraint from qos entry if not explicitly overridden
-    if "constraint" not in cli_overrides and chosen_qos:
-        entry = get_qos_entry(target_config, chosen_qos)
-        if entry and entry.get("constraint"):
-            result["constraint"] = entry["constraint"]
-
-    # Translate qos name to slurm_qos (what gets passed to --qos=)
-    if chosen_qos:
-        entry = get_qos_entry(
-            target_config, chosen_qos, result.get("constraint"),
-        )
-        if entry:
-            slurm_qos = entry.get("slurm_qos")
-            if slurm_qos:
-                result["qos"] = slurm_qos
+    # Validate qos / constraint against declared choices.
+    for axis in ("qos", "constraint"):
+        choices = get_option_choices(target_config, axis)
+        chosen = result.get(axis)
+        if choices and chosen and chosen not in choices:
+            raise ValueError(
+                f"'{chosen}' is not a valid {axis} for this target. "
+                f"Choices: {sorted(choices)}"
+            )
 
     return result
-
-
-# ---------------------------------------------------------------------------
-# QoS query helpers
-# ---------------------------------------------------------------------------
-
-
-def get_qos_entries(target_config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return the target's ``qos`` list."""
-    return target_config.get("qos") or []
-
-
-def get_allowed_qos_names(target_config: dict[str, Any]) -> list[str]:
-    """Extract QoS names from the target's ``qos`` list.
-
-    May contain duplicates when the same QoS appears with different
-    constraints (e.g., ``debug`` for both GPU and CPU).
-    """
-    return [e["name"] for e in get_qos_entries(target_config) if "name" in e]
-
-
-def get_qos_entry(
-    target_config: dict[str, Any],
-    qos_name: str,
-    constraint: str | None = None,
-) -> dict[str, Any] | None:
-    """Return the qos entry matching *qos_name* and optionally *constraint*.
-
-    When the same QoS name appears with multiple constraints (e.g.,
-    ``debug`` for GPU and CPU), pass *constraint* to disambiguate.
-    Without *constraint*, returns the first match.
-    """
-    for entry in get_qos_entries(target_config):
-        if entry.get("name") != qos_name:
-            continue
-        if constraint is None or entry.get("constraint") == constraint:
-            return entry
-    return None
-
-
-def filter_qos_by_hardware(
-    target_config: dict[str, Any],
-    needs_gpu: bool,
-) -> list[dict[str, Any]]:
-    """Return qos entries matching the hardware requirement."""
-    result = []
-    for entry in get_qos_entries(target_config):
-        c = entry.get("constraint", "")
-        if needs_gpu and "gpu" in c:
-            result.append(entry)
-        elif not needs_gpu and "gpu" not in c:
-            result.append(entry)
-    return result
-
-
-def add_qos_entry(
-    target_config: dict[str, Any],
-    name: str,
-    constraint: str,
-    use_for: str,
-    slurm_qos: str | None = None,
-) -> bool:
-    """Add a QoS entry to *target_config*.
-
-    Entries are identified by ``(name, constraint)`` pair.  Returns
-    ``True`` if added, ``False`` if the exact pair already exists.
-    *slurm_qos* is only stored if it differs from *name*.
-    """
-    entries = target_config.setdefault("qos", [])
-    if any(e.get("name") == name and e.get("constraint") == constraint
-           for e in entries):
-        return False
-    entry: dict[str, str] = {"name": name, "constraint": constraint, "use_for": use_for}
-    if slurm_qos and slurm_qos != name:
-        entry["slurm_qos"] = slurm_qos
-    entries.append(entry)
-    return True
-
-
-def update_qos_entry(
-    target_config: dict[str, Any],
-    name: str,
-    constraint: str | None = None,
-    **updates: Any,
-) -> bool:
-    """Update fields on an existing QoS entry.
-
-    Pass *constraint* to disambiguate when the same name appears with
-    multiple constraints.  Without it, updates the first match.
-    """
-    for entry in target_config.get("qos", []):
-        if entry.get("name") != name:
-            continue
-        if constraint is not None and entry.get("constraint") != constraint:
-            continue
-        entry.update(updates)
-        return True
-    return False
-
-
-def remove_qos_entry(
-    target_config: dict[str, Any],
-    name: str,
-    constraint: str | None = None,
-) -> bool:
-    """Remove a QoS entry from *target_config*.
-
-    Pass *constraint* to disambiguate when the same name appears with
-    multiple constraints.  Without it, removes the first match.
-    """
-    entries = target_config.get("qos", [])
-    for i, entry in enumerate(entries):
-        if entry.get("name") != name:
-            continue
-        if constraint is not None and entry.get("constraint") != constraint:
-            continue
-        entries.pop(i)
-        return True
-    return False

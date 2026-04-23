@@ -93,13 +93,13 @@ class TestBuildAssetDefinitions:
         defs = build_definitions(sample_astra_yaml)
         assert isinstance(defs, dg.Definitions)
 
-    def test_container_flags_forwarded_to_runner(self, sample_astra_yaml):
-        """container_flags from target config should reach the runner's scheduler config."""
+    def test_extra_container_flags_forwarded_to_runner(self, sample_astra_yaml):
+        """extra_container_flags should reach the runner's scheduler config."""
         target_config = {
             "backend": "slurm",
-            "account": "m1234",
             "container_runtime": "podman-hpc",
-            "container_flags": ["--scratch", "--cfs"],
+            "options": {"account": {"default": "m1234"}},
+            "extra_container_flags": ["--scratch", "--cfs"],
         }
         with unittest.mock.patch(
             "lightcone.engine.assets.ASTRAContainerRunner",
@@ -107,9 +107,8 @@ class TestBuildAssetDefinitions:
             build_definitions(
                 sample_astra_yaml, target_config=target_config, no_build=True,
             )
-            call_kwargs = mock_runner_cls.call_args[1]
-            scheduler = call_kwargs["target_config"]["scheduler"]
-            assert scheduler["container_flags"] == ["--scratch", "--cfs"]
+            scheduler = mock_runner_cls.call_args[1]["target_config"]["scheduler"]
+            assert scheduler["extra_container_flags"] == ["--scratch", "--cfs"]
 
     def test_containerfile_resolved_to_tag(self, tmp_path, mock_runner):
         """Containerfile paths should be resolved to tag strings."""

@@ -9,6 +9,7 @@ from lightcone.engine.slurm_info import (
     ClusterInfo,
     PartitionInfo,
     QoSInfo,
+    build_option_suggestions,
     check_qos_eligibility,
     cluster_info_from_dict,
     cluster_info_to_dict,
@@ -21,6 +22,7 @@ from lightcone.engine.slurm_info import (
     query_qos,
     query_user_associations,
     recommend_qos,
+    strip_constraint_prefix,
 )
 
 # ---------------------------------------------------------------------------
@@ -250,68 +252,107 @@ class TestRecommendQos:
             timestamp="2026-03-28T00:00:00",
         )
 
-    @pytest.fixture
-    def qos_entries(self):
-        return [
-            {"name": "gpu_debug", "constraint": "gpu", "use_for": "testing"},
-            {"name": "gpu_regular", "constraint": "gpu", "use_for": "production"},
-            {"name": "gpu_preempt", "constraint": "gpu", "use_for": "cheap"},
-            {"name": "debug", "constraint": "cpu", "use_for": "cpu testing"},
-            {"name": "regular_1", "constraint": "cpu", "use_for": "cpu production"},
-        ]
-
-    def test_preferred_eligible_first(self, cluster, qos_entries):
+    def test_preferred_eligible_first(self, cluster):
         recs = recommend_qos(
             cluster,
             {"nodes": 4, "gpus_per_node": 4, "time_limit_minutes": 20},
-            preferred_qos="gpu_debug",
-            qos_entries=qos_entries,
+            qos_choices=["debug", "regular", "preempt"],
+            constraint="gpu",
+            preferred_qos="debug",
         )
-        assert recs[0].qos == "gpu_debug"
+        assert recs[0].qos == "debug"
         assert recs[0].eligible
 
-    def test_falls_back_when_preferred_ineligible(self, cluster, qos_entries):
+    def test_falls_back_when_preferred_ineligible(self, cluster):
         recs = recommend_qos(
             cluster,
             {"nodes": 16, "gpus_per_node": 4, "time_limit_minutes": 20},
-            preferred_qos="gpu_debug",
-            qos_entries=qos_entries,
+            qos_choices=["debug", "regular", "preempt"],
+            constraint="gpu",
+            preferred_qos="debug",
         )
-        # gpu_debug should be ineligible
-        debug_rec = next(r for r in recs if r.qos == "gpu_debug")
+        debug_rec = next(r for r in recs if r.qos == "debug")
         assert not debug_rec.eligible
-        # First eligible should be gpu_regular or gpu_preempt
         first_eligible = next(r for r in recs if r.eligible)
-        assert first_eligible.qos in ("gpu_regular", "gpu_preempt")
+        assert first_eligible.qos in ("regular", "preempt")
 
-    def test_filters_by_gpu(self, cluster, qos_entries):
+    def test_constraint_holds_switch_within_family(self, cluster):
+        """Switch never crosses hardware families."""
         recs = recommend_qos(
             cluster,
-            {"nodes": 4, "gpus_per_node": 4},
-            qos_entries=qos_entries,
+            {"nodes": 4, "gpus_per_node": 4, "time_limit_minutes": 20},
+            qos_choices=["debug", "regular"],
+            constraint="gpu",
         )
-        qos_names = [r.qos for r in recs]
-        assert "debug" not in qos_names
-        assert "regular_1" not in qos_names
-        assert "gpu_debug" in qos_names
+        for rec in recs:
+            assert rec.qos in ("debug", "regular")
 
-    def test_filters_by_cpu(self, cluster, qos_entries):
+    def test_cache_key_override_used(self, cluster):
+        """regular/cpu resolves via the override map to regular_1."""
         recs = recommend_qos(
             cluster,
-            {"nodes": 4, "gpus_per_node": 0},
-            qos_entries=qos_entries,
+            {"nodes": 4, "gpus_per_node": 0, "time_limit_minutes": 60},
+            qos_choices=["debug", "regular"],
+            constraint="cpu",
+            cache_key_overrides={"regular/cpu": "regular_1"},
         )
-        qos_names = [r.qos for r in recs]
-        assert "gpu_debug" not in qos_names
-        assert "debug" in qos_names
+        # Both resolve to something; regular_1 is eligible, debug isn't (30m max).
+        assert any(r.qos == "regular" and r.eligible for r in recs)
 
-    def test_no_qos_entries_uses_all(self, cluster):
-        recs = recommend_qos(
-            cluster,
-            {"nodes": 4, "gpus_per_node": 4},
-            qos_entries=None,
+
+class TestBuildOptionSuggestions:
+    def test_returns_orthogonal_options(self):
+        cluster = ClusterInfo(
+            qos={
+                "gpu_debug": QoSInfo("gpu_debug", max_wall_minutes=30,
+                                     max_nodes=8, priority=69119),
+                "gpu_regular": QoSInfo("gpu_regular", max_wall_minutes=2880,
+                                       priority=67679),
+                "debug": QoSInfo("debug", max_wall_minutes=30,
+                                 max_nodes=8, priority=69119),
+            },
+            user_qos=["gpu_debug", "gpu_regular", "debug"],
+            user_accounts=["m4031"],
+            partitions={},
+            timestamp="2026-03-28T00:00:00",
         )
-        assert len(recs) == len(cluster.qos)
+        options, overrides = build_option_suggestions(cluster)
+        qos_choices = options["qos"]["choices"]
+        assert "debug" in qos_choices
+        assert "regular" in qos_choices
+        assert "gpu_debug" not in qos_choices  # stripped prefix
+        assert options["constraint"]["choices"]
+        assert "gpu" in options["constraint"]["choices"]
+        # Debug appears under both gpu and cpu via convention; no override
+        # needed since `gpu_debug` follows `{constraint}_{qos}`.
+        assert overrides == {}
+
+    def test_emits_override_for_non_conventional(self):
+        cluster = ClusterInfo(
+            qos={
+                "regular_1": QoSInfo("regular_1", max_wall_minutes=2880,
+                                     priority=67679),
+            },
+            user_qos=["regular_1"],
+            user_accounts=["m4031"],
+            partitions={},
+            timestamp="2026-03-28T00:00:00",
+        )
+        options, overrides = build_option_suggestions(cluster)
+        # "regular_1" gets recorded as-is (infer_qos_constraint → cpu; no prefix).
+        assert "regular_1" in options["qos"]["choices"]
+
+
+class TestStripConstraintPrefix:
+    def test_strips_matching_prefix(self):
+        assert strip_constraint_prefix("gpu_debug", "gpu") == "debug"
+
+    def test_no_prefix(self):
+        assert strip_constraint_prefix("debug", "gpu") == "debug"
+
+    def test_empty_constraint(self):
+        # Empty constraint -> prefix is "_" which rarely matches.
+        assert strip_constraint_prefix("debug", "") == "debug"
 
 
 # ---------------------------------------------------------------------------
@@ -380,22 +421,6 @@ class TestGenerateUseFor:
 # ---------------------------------------------------------------------------
 # is_user_facing_qos tests
 # ---------------------------------------------------------------------------
-
-class TestGetSlurmQos:
-    def test_with_slurm_qos(self):
-        from lightcone.engine.slurm_info import get_slurm_qos
-        entry = {"name": "gpu_debug", "slurm_qos": "debug", "constraint": "gpu"}
-        assert get_slurm_qos(entry) == "debug"
-
-    def test_without_slurm_qos(self):
-        from lightcone.engine.slurm_info import get_slurm_qos
-        entry = {"name": "debug", "constraint": "cpu"}
-        assert get_slurm_qos(entry) == "debug"
-
-    def test_empty_entry(self):
-        from lightcone.engine.slurm_info import get_slurm_qos
-        assert get_slurm_qos({}) == ""
-
 
 class TestIsUserFacingQos:
     def test_standard_qos(self):
