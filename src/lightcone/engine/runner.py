@@ -524,7 +524,7 @@ class ASTRAContainerRunner:
             "nodes": resources.get("nodes", 1),
             "gpus_per_node": resources.get("gpus", 0),
             "time_limit_minutes": self._parse_time_minutes(
-                resources.get("time_limit") or scheduler.get("time_limit")
+                resources.get("time_limit"),
             ),
         }
 
@@ -589,7 +589,10 @@ class ASTRAContainerRunner:
                         "Clamping time_limit from %d to %d min (max for %s).",
                         t, best_info.max_wall_minutes, best.qos,
                     )
-                    scheduler["time_limit"] = f"{best_info.max_wall_minutes}m"
+                    resources = {
+                        **resources,
+                        "time_limit": f"{best_info.max_wall_minutes}m",
+                    }
         else:
             logger.error(
                 "No eligible qos for this job (%s for '%s'). "
@@ -643,6 +646,17 @@ class ASTRAContainerRunner:
 
         output_path = self.project_root / "results" / universe_id
         output_path.mkdir(parents=True, exist_ok=True)
+
+        # --- time_limit resolution (CLI > recipe > target default) ---
+        # After this, resources["time_limit"] is authoritative.  Validation,
+        # fit/switch clamping, and sbatch emission all read it.
+        effective_time_limit = (
+            scheduler.get("_cli_time_limit")
+            or resources.get("time_limit")
+            or scheduler.get("_default_time_limit")
+        )
+        if effective_time_limit is not None:
+            resources = {**resources, "time_limit": effective_time_limit}
 
         # --- Resource limit clamping (target-level guardrails) ---
         resource_limits = self.target_config.get("resource_limits", {})

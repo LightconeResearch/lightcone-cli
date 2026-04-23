@@ -791,6 +791,46 @@ class TestQoSValidation:
         assert "--qos=debug\n" not in content
 
     @patch("lightcone.engine.runner.subprocess.run")
+    def test_cli_time_limit_reaches_sbatch(self, mock_run, tmp_path):
+        """--time-limit must appear as --time=... in the emitted sbatch
+        script, even when the recipe has no time_limit and the target's
+        resource_limits.max_walltime_minutes would otherwise dominate."""
+        mock_submit = MagicMock()
+        mock_submit.returncode = 1  # fail fast; we just want the script
+        mock_submit.stdout = ""
+        mock_submit.stderr = "error"
+        mock_run.return_value = mock_submit
+
+        runner = ASTRAContainerRunner(
+            project_root=str(tmp_path),
+            backend="slurm",
+            target_config={
+                "scheduler": {
+                    "container_runtime": "podman-hpc",
+                    "account": "m1234",
+                    "qos": "debug",
+                    "constraint": "gpu",
+                    # CLI passed --time-limit 5 (bare number = minutes).
+                    "_cli_time_limit": "5",
+                },
+                "resource_limits": {"max_walltime_minutes": 360},
+            },
+        )
+        runner.execute(
+            command="python train.py",
+            output_id="model",
+            universe_id="baseline",
+            container="img:1.0",
+            resources={},  # recipe declares no time_limit
+        )
+
+        script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
+        content = script_path.read_text()
+        assert "#SBATCH --time=00:05:00" in content
+        # The max_walltime fallback must NOT appear when CLI set a value.
+        assert "#SBATCH --time=06:00:00" not in content
+
+    @patch("lightcone.engine.runner.subprocess.run")
     def test_qos_fit_strategy_reduces_nodes(self, mock_run, tmp_path, monkeypatch):
         """Fit strategy: reduce nodes to stay in current QoS."""
         from lightcone.engine.slurm_info import ClusterInfo, QoSInfo

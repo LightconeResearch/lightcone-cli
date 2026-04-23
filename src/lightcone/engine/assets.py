@@ -378,6 +378,7 @@ def build_definitions(
             from lightcone.engine.targets import (
                 get_cache_key_overrides,
                 get_option_choices,
+                get_option_default,
                 resolve_run_config,
             )
 
@@ -386,10 +387,21 @@ def build_definitions(
                 "site": target_config.get("site"),
                 "container_runtime": container_runtime,
             }
-            for key in ("qos", "constraint", "time_limit", "account",
-                         "partition"):
+            # Environment axes (qos/constraint/partition/account) live in
+            # `scheduler`.  `time_limit` is a *resource request* — the runner
+            # merges it into the recipe's resources dict so validation,
+            # clamping, and sbatch emission all agree on one value.  Keep CLI
+            # and target-default separate so precedence stays CLI > recipe >
+            # target default.
+            for key in ("qos", "constraint", "account", "partition"):
                 if resolved.get(key) is not None:
                     scheduler[key] = resolved[key]
+            cli_time_limit = (cli_overrides or {}).get("time_limit")
+            if cli_time_limit is not None:
+                scheduler["_cli_time_limit"] = cli_time_limit
+            default_time_limit = get_option_default(target_config, "time_limit")
+            if default_time_limit is not None:
+                scheduler["_default_time_limit"] = default_time_limit
 
             # Runner metadata for QoS validation and auto-adjust.
             if target_name:
