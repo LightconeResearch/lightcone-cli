@@ -76,3 +76,4 @@ mypy_path = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = ["tests/manual"]
