@@ -38,6 +38,10 @@ the *execution substrate* under `backend: slurm`.
 - Multi-pilot autoscale or cross-pilot task migration.
 - Any change to `backend: local`, `backend: docker`, `backend: venv`,
   or `backend: docker` paths.
+- Any agent-facing CLI surface that exposes pilot/Parsl/SLURM
+  internals (see "Agent–target contract" below). Ad-hoc pilot resize
+  from the CLI is deliberately out of scope; resize via target files
+  or by switching `--target`.
 
 ## Decisions
 
@@ -283,14 +287,52 @@ old target files for `backend: slurm` won't load until updated to the
 new shape — `lc target validate` should give a clear "missing `pilots`
 key" error.
 
-**CLI flags added to `lc run`** for ad-hoc pilot sizing without editing
-the target YAML:
+**No new CLI flags for pilot sizing.** See the "Agent–target contract"
+principle below: ad-hoc resize from the CLI is deliberately out of
+scope. Resize a pilot by editing its target file, or maintain multiple
+preset targets (`perlmutter-debug`, `perlmutter-regular`,
+`perlmutter-gpu-large`) and switch between them with `--target`.
 
-- `--pilot <name>:nodes=N` / `--pilot <name>:walltime=T` — override a
-  pilot's size for one invocation. Resolution order: CLI > target file.
-- Existing per-axis flags (`--qos`, `--constraint`, `--account`,
-  `--time-limit`) keep working but now apply to **all** pilots in the
-  target unless qualified (`--qos cpu:debug`).
+## Design principle: the agent–target contract
+
+The agent invoking `lc run` must not need to know **anything** about
+how compute happens — not Parsl, not SLURM, not WorkQueue, not pilots,
+not blocks, not QoS. Its entire interface to compute is:
+
+```
+lc run --target <name>
+```
+
+A **target** is a complete, opaque description of *where and how* an
+analysis runs. If the agent's current target is unsuitable (wrong
+queue, too small, wrong site, no GPUs), the human user picks a
+different target — they do not pass extra knobs at the CLI.
+
+This principle has concrete consequences for this PR:
+
+1. The `pilots:` schema, `parsl_backend.py`, the `with parsl.load(…):`
+   wrapper — none of it surfaces in CLI help text the agent sees.
+   `lc run --help` describes targets and universes; backend mechanics
+   are not mentioned.
+2. The existing per-axis flags (`--qos`, `--constraint`, `--account`,
+   `--partition`, `--time-limit`) are kept as **human-only escape
+   hatches** — they remain in `lc run --help` but their docstring
+   notes "for interactive use; not part of the agent contract." When
+   present, they apply to all pilots in the target. Agents are
+   instructed (via `claude/lightcone/skills/lc-build` and the project
+   CLAUDE.md template) to use `--target` exclusively.
+3. The pilot-routing rule (`pick_executor`) is opaque to the recipe
+   author too. A recipe declares `resources: {gpus: 2}`; whether that
+   lands in a `gpu` pilot, a `gpu-large` pilot, or fails because no
+   GPU pilot is configured is a property of the *target*, not of the
+   recipe.
+4. Future work that exposes more knobs (autoscaling, attach-to-
+   `salloc`, multi-site) follows the same rule: anything new lives in
+   the target file, never as agent-facing CLI surface.
+
+The intent-based-options machinery in `targets.py` still resolves at
+`lc run` start (once per pilot, not once per recipe), but its CLI
+overrides are now firmly in the human-escape-hatch tier.
 
 ## Data flow
 
