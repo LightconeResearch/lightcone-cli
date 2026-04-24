@@ -1117,6 +1117,7 @@ def run(
 
     from lightcone.engine.assets import build_definitions
     from lightcone.engine.parsl_backend import (
+        MissingWorkQueueError,
         PilotConfigError,
         apply_cli_overrides_to_pilots,
         build_parsl_config,
@@ -1226,6 +1227,9 @@ def run(
             parsl_config = build_parsl_config(target_config, project_root=project_path)
         except (PilotConfigError, ValueError) as e:
             console.print(f"[red]Pilot config rejected:[/red] {e}")
+            raise SystemExit(1) from None
+        except MissingWorkQueueError as e:
+            console.print(f"[red]Missing dependency:[/red] {e}")
             raise SystemExit(1) from None
         with _parsl.load(parsl_config):
             _materialize()

@@ -107,8 +107,9 @@ class TestBuildAssetDefinitions:
             build_definitions(
                 sample_astra_yaml, target_config=target_config, no_build=True,
             )
-            forwarded = mock_runner_cls.call_args[1]["target_config"]["pilots"]
-            assert forwarded == pilots
+            forwarded_target = mock_runner_cls.call_args[1]["target_config"]
+            assert forwarded_target["pilots"] == pilots
+            assert forwarded_target["container_runtime"] == "podman-hpc"
 
     def test_containerfile_resolved_to_tag(self, tmp_path, mock_runner):
         """Containerfile paths should be resolved to tag strings."""

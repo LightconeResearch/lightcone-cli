@@ -83,6 +83,6 @@ lc run --qos regular --time-limit 4h       # production run
 lc run --constraint cpu                    # CPU-only hardware
 ```
 
-If your recipe's `resources` exceed the limits implied by the selected options, `lc run` will either trim the request to fit (`strategy: fit`, the default) or switch to a different `qos` choice (`strategy: switch`). Pass `--strategy switch` per run to prefer the latter.
+SLURM targets allocate one (or two) compute *pilot* per `lc run` invocation, then dispatch every recipe in the analysis tree into that allocation — paying the queue wait once. The pilot's size is fixed in the target file (`pilots:` block, with `nodes` and `walltime` per pilot). If the target's compute envelope is unsuitable for what you're trying to run, switch targets with `--target` rather than stacking CLI overrides.
 
-Recipe `resources` (gpus, memory, cpus, nodes, time_limit) are portable across targets — they inform how `lc run` dispatches work in the target's environment.
+Recipe `resources` (gpus, memory, cpus, nodes, time_limit) inform which pilot pool handles each task — they are not subject to per-run trimming.

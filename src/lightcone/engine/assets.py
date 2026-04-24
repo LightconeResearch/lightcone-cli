@@ -381,6 +381,8 @@ def build_definitions(
             # (qos/constraint defaults, choices) lives in target.yaml
             # and was applied at load-target time.
             runner_config["pilots"] = target_config.get("pilots", {})
+            if container_runtime is not None:
+                runner_config["container_runtime"] = container_runtime
         else:
             # Non-scheduler backend — only forward what matters to the runner.
             scheduler = {}
