@@ -1217,6 +1217,8 @@ def run(
             raise SystemExit(1)
 
     if backend == "slurm":
+        # backend == "slurm" implies target_config is non-None (defaults to "local").
+        assert target_config is not None
         try:
             validate_pilots_against_qos(
                 pilots=target_config.get("pilots") or {}, target_name=target_name,
