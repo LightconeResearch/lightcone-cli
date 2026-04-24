@@ -1,6 +1,6 @@
 # HPC & SLURM
 
-lightcone-cli supports executing ASTRA recipes on SLURM-based HPC clusters. The SLURM backend generates `sbatch` scripts from recipe definitions, submits them, and polls for completion.
+lightcone-cli supports executing ASTRA recipes on SLURM-based HPC clusters. The SLURM backend uses Parsl to acquire one SLURM allocation per `lc run` invocation, then dispatches every recipe in the analysis tree into that pool — paying the queue wait once. See [Parsl pilot model](parsl-pilot.md) for details.
 
 ## Supported sites
 

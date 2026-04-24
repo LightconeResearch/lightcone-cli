@@ -36,25 +36,11 @@ extra_slurm_args:
   - --gres=gpu:1
 ```
 
-## How target config flows into SLURM scripts
+## How target config flows into Parsl
 
-`build_definitions()` in `assets.py` transforms the flat target YAML into the shape the runner expects:
+`build_definitions()` in `assets.py` passes the target YAML to the runner, which maps each entry under `pilots:` to a `SlurmProvider` + `WorkQueueExecutor` in the Parsl config. Recipes are dispatched to the appropriate pilot based on their `resources` (see [Parsl pilot model](parsl-pilot.md)).
 
-```python
-runner_config = {
-    "connection": target_config.get("connection", {}),
-    "scheduler": {
-        "site": ...,
-        "account": ...,
-        "qos": ...,
-        "constraint": ...,
-        "container_runtime": ...,
-        "extra_slurm_args": [...],
-    }
-}
-```
-
-The runner's `_run_slurm()` method passes this to `generate_sbatch_script()`, which assembles the `#SBATCH` directives.
+The old `scheduler:` key and per-recipe `sbatch` script generation are no longer used. Pilot-level SLURM parameters (`account`, `qos`, `constraint`, etc.) now live under each named pilot block.
 
 ## Resource limit enforcement
 

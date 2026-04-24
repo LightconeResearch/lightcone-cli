@@ -76,13 +76,13 @@ class ExecutionResult:
 
 Converts ASTRA `resources:` dict to Docker `--cpus`, `--memory`, `--gpus` flags.
 
-### `translate_resources_to_slurm_directives(resources, ...) → list[str]`
+### `build_recipe_shell_command(command, params, universe_id) → str`
 
-Converts ASTRA `resources:` dict to SLURM `#SBATCH` directives.
+Assembles the full shell command for a recipe, injecting universe decision parameters as `--key value` CLI arguments.
 
-### `generate_sbatch_script(command, container, ...) → str`
+### `_podman_hpc_run_command_inline(image, project_root, shell_command, gpus) → str`
 
-Generates a complete `sbatch` script string from recipe parameters and target config.
+Builds the `podman-hpc run` invocation used when executing a recipe task on a compute node via Parsl. Injects `--gpu` automatically when `gpus > 0`.
 
 ---
 
@@ -92,7 +92,7 @@ Generates a complete `sbatch` script string from recipe parameters and target co
 
 ```
 backend == "local"  → _run_local()
-backend == "slurm"  → _run_slurm()
+backend == "slurm"  → dispatches via Parsl to pilot pool (see parsl-pilot.md)
 backend == "venv"   → _run_venv()
 otherwise           → _run_container()
                        ↓ on failure
@@ -103,13 +103,12 @@ otherwise           → _run_container()
 
 ## Resource translation table
 
-| ASTRA field | Docker flag | SLURM directive |
-|-------------|------------|-----------------|
-| `cpus` | `--cpus=N` | `--cpus-per-task=N` |
-| `memory` | `--memory=Xg` | `--mem=Xg` |
-| `gpus` (per-node) | `--gpus=N` | `--gpus-per-node=N` |
-| `nodes` | — | `--nodes=N` |
-| `time_limit` | — | `--time=HH:MM:SS` |
+| ASTRA field | Docker flag | Parsl pilot routing |
+|-------------|------------|---------------------|
+| `cpus` | `--cpus=N` | bin-packed within pilot |
+| `memory` | `--memory=Xg` | bin-packed within pilot |
+| `gpus` (per-node) | `--gpus=N` | routes to `gpu` pilot if configured |
+| `nodes > 1` | — | routes to `mpi` pilot if configured |
 
 ## CLI argument injection
 

@@ -25,9 +25,9 @@ Migration copies the image to the site-local container cache at a path the batch
 
 If the spec is a pre-built image (not a Containerfile), only the migrate step runs.
 
-### sbatch integration
+### Parsl task integration
 
-The migrated image name is passed directly to `podman-hpc run` in the sbatch script:
+The migrated image name is passed to `podman-hpc run` when the Parsl worker executes a recipe task on the compute node:
 
 ```bash
 podman-hpc run --rm \
@@ -37,7 +37,7 @@ podman-hpc run --rm \
   sh -c "python scripts/compute.py --universe baseline ..."
 ```
 
-The `--gpu` container flag is injected automatically for GPU node types.
+The `--gpu` container flag is injected automatically for GPU node types. The command is assembled by `_podman_hpc_run_command_inline()` in the runner and handed to Parsl for dispatch — there is no `sbatch` script generated per recipe. See [Parsl pilot model](parsl-pilot.md) for how tasks are routed to the right pilot.
 
 ## Content-addressed tags
 
