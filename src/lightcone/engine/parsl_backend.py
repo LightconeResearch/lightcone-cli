@@ -307,3 +307,41 @@ def build_parsl_config(
         # pins it, but strategy='none' makes the intent explicit.
         strategy="none",
     )
+
+
+# --------------------------------------------------------------------------
+# CLI override application
+# --------------------------------------------------------------------------
+
+#: CLI-flag → pilot-key mapping. ``time_limit`` maps to ``walltime`` because
+#: at pilot scope, the user's "time-limit" flag describes the allocation
+#: walltime, not a per-task wall.
+_CLI_TO_PILOT_KEY = {
+    "qos": "qos",
+    "constraint": "constraint",
+    "account": "account",
+    "partition": "partition",
+    "time_limit": "walltime",
+}
+
+
+def apply_cli_overrides_to_pilots(
+    pilots: dict[str, Any],
+    cli_overrides: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a new pilots dict with CLI overrides applied to every pilot.
+
+    Per the agent–target contract, per-axis CLI flags apply uniformly to
+    all pilots — there is no per-pilot CLI surface. Unknown keys (e.g.,
+    the now-dead ``strategy``) are ignored.
+    """
+    if not cli_overrides:
+        return pilots
+    out: dict[str, Any] = {}
+    for label, pilot in pilots.items():
+        new_pilot = dict(pilot)
+        for cli_key, pilot_key in _CLI_TO_PILOT_KEY.items():
+            if (val := cli_overrides.get(cli_key)) is not None:
+                new_pilot[pilot_key] = val
+        out[label] = new_pilot
+    return out

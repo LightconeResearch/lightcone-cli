@@ -353,3 +353,43 @@ class TestValidatePilotsAgainstQos:
             pilots={"cpu": {"nodes": 100, "walltime": "100h"}},
             target_name="perlmutter",
         )
+
+
+class TestApplyCliOverridesToPilots:
+    def test_no_overrides_returns_unchanged(self):
+        from lightcone.engine.parsl_backend import apply_cli_overrides_to_pilots
+        pilots = {"cpu": {"nodes": 4, "walltime": "2h", "qos": "debug"}}
+        out = apply_cli_overrides_to_pilots(pilots, {})
+        assert out == pilots
+
+    def test_qos_overrides_all_pilots(self):
+        from lightcone.engine.parsl_backend import apply_cli_overrides_to_pilots
+        pilots = {
+            "cpu": {"nodes": 4, "walltime": "2h", "qos": "debug"},
+            "gpu": {"nodes": 1, "walltime": "1h", "qos": "debug"},
+        }
+        out = apply_cli_overrides_to_pilots(pilots, {"qos": "regular"})
+        assert out["cpu"]["qos"] == "regular"
+        assert out["gpu"]["qos"] == "regular"
+
+    def test_time_limit_overrides_walltime(self):
+        from lightcone.engine.parsl_backend import apply_cli_overrides_to_pilots
+        pilots = {"cpu": {"nodes": 4, "walltime": "2h"}}
+        out = apply_cli_overrides_to_pilots(pilots, {"time_limit": "30m"})
+        # CLI --time-limit maps onto pilot walltime
+        assert out["cpu"]["walltime"] == "30m"
+
+    def test_unknown_override_keys_ignored(self):
+        from lightcone.engine.parsl_backend import apply_cli_overrides_to_pilots
+        pilots = {"cpu": {"nodes": 4, "walltime": "2h"}}
+        out = apply_cli_overrides_to_pilots(
+            pilots, {"strategy": "fit", "garbage": "x"},
+        )
+        assert out == pilots
+
+    def test_input_pilots_not_mutated(self):
+        from lightcone.engine.parsl_backend import apply_cli_overrides_to_pilots
+        pilots = {"cpu": {"nodes": 4, "walltime": "2h", "qos": "debug"}}
+        apply_cli_overrides_to_pilots(pilots, {"qos": "regular"})
+        # Original dict unchanged
+        assert pilots["cpu"]["qos"] == "debug"
