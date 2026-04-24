@@ -147,6 +147,83 @@ def translate_resources_to_docker_flags(resources: dict[str, Any]) -> list[str]:
     return flags
 
 
+def build_recipe_shell_command(
+    command: str,
+    container: str | None,
+    container_runtime: str | None,
+    project_root: Path,
+    resources: dict[str, Any],
+    cwd: str,
+    external_inputs: dict[str, str] | None,
+) -> str:
+    """Compose the shell command that executes a recipe inside a worker.
+
+    This is the same string the old SLURM backend wrote into an sbatch
+    script body (minus the ``#SBATCH`` headers): cd to cwd, optionally
+    set up symlinks or volume mounts for external inputs, then run the
+    command — wrapping it in ``podman-hpc run`` when a container is
+    requested.
+
+    Used by both the Parsl-backed SLURM runner and any direct-shell
+    debugging. The output is a single multi-line shell script suitable
+    for ``bash -c`` or ``parsl.bash_app``.
+    """
+    lines = [f"cd {shlex.quote(cwd)}"]
+
+    if container and container_runtime == "podman-hpc":
+        lines.append(_podman_hpc_run_command_inline(
+            command=command,
+            container=container,
+            project_root=project_root,
+            resources=resources,
+            external_inputs=external_inputs,
+        ))
+        return "\n".join(lines)
+
+    # No container — symlink external inputs into ./data/ for the recipe to read
+    if external_inputs:
+        lines.append("mkdir -p data")
+        for input_id, source in sorted(external_inputs.items()):
+            src = shlex.quote(str(source))
+            dst = shlex.quote(f"data/{input_id}")
+            lines.append(f"ln -sfn {src} {dst}")
+
+    lines.append(command)
+    return "\n".join(lines)
+
+
+def _podman_hpc_run_command_inline(
+    command: str,
+    container: str,
+    project_root: Path,
+    resources: dict[str, Any],
+    external_inputs: dict[str, str] | None = None,
+) -> str:
+    """Build a podman-hpc run invocation as a single shell command string.
+
+    Mirrors the old ``_podman_hpc_run_command`` but without a
+    ``scheduler_config`` parameter — the ``extra_container_flags`` escape
+    hatch is now read from the pilot config when constructing the
+    SlurmProvider, and per-task container flags aren't a concept we need.
+    """
+    parts = ["podman-hpc", "run", "--rm"]
+
+    if resources.get("gpus"):
+        parts.append("--gpu")
+    if resources.get("nodes", 1) > 1:
+        parts.append("--mpi")
+
+    parts.extend(["-v", shlex.quote(f"{project_root}:/workspace"), "-w", "/workspace"])
+
+    for input_id, source in sorted((external_inputs or {}).items()):
+        parts.extend(["-v", shlex.quote(f"{source}:/workspace/data/{input_id}:ro")])
+
+    parts.append(container)
+    parts.extend(["sh", "-c", shlex.quote(command)])
+
+    return " ".join(parts)
+
+
 class ASTRAContainerRunner:
     """Executes ASTRA recipes via Docker, local subprocess, or SLURM.
 
