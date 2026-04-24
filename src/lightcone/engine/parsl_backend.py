@@ -70,3 +70,53 @@ def recipe_resources_to_parsl(resources: dict[str, Any]) -> dict[str, Any]:
     if (tl := resources.get("time_limit")) is not None:
         spec["wall_time"] = _parse_time_to_seconds(tl)
     return spec
+
+
+# --------------------------------------------------------------------------
+# Routing
+# --------------------------------------------------------------------------
+
+
+class PilotRoutingError(RuntimeError):
+    """Raised when a recipe cannot be routed to any configured pilot."""
+
+
+def pick_executor(
+    resources: dict[str, Any],
+    pilots: dict[str, Any],
+) -> str:
+    """Pick the executor label for a recipe given the configured pilots.
+
+    Routing rule (deterministic, in this order):
+      1. ``resources.nodes > 1`` and ``mpi`` pilot exists → ``mpi``
+      2. ``resources.gpus > 0`` and ``gpu`` pilot exists → ``gpu``
+      3. ``cpu`` pilot exists → ``cpu``
+
+    Raises :class:`PilotRoutingError` if no rule matches — better to fail
+    fast at task dispatch than to silently route to the wrong pool.
+    """
+    if not pilots:
+        raise PilotRoutingError(
+            "no pilots configured in target; cannot route any recipe"
+        )
+
+    if resources.get("nodes", 1) > 1 and "mpi" in pilots:
+        return "mpi"
+
+    if resources.get("gpus") and "gpu" in pilots:
+        return "gpu"
+
+    if resources.get("gpus"):
+        # GPU recipe but no GPU pilot — fail fast rather than dispatch to cpu.
+        raise PilotRoutingError(
+            f"recipe needs gpus={resources['gpus']} but no 'gpu' pilot "
+            f"is configured in target (available: {sorted(pilots)})"
+        )
+
+    if "cpu" in pilots:
+        return "cpu"
+
+    raise PilotRoutingError(
+        f"no suitable pilot for resources={resources}; "
+        f"available: {sorted(pilots)} (need 'cpu')"
+    )
