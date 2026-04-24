@@ -18,6 +18,7 @@ dependencies = [
     "dagster-webserver>=1.9",
     "dagster-docker>=0.25",
     "langfuse>=2.0",
+    "parsl>=2024.1.0",
 ]
 
 [dependency-groups]
