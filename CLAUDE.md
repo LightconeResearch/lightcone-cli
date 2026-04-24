@@ -33,7 +33,8 @@ src/lightcone/              # namespace — NO __init__.py
 │   ├── assets.py           # Asset factory — turns astra.yaml recipes into Dagster assets
 │   ├── container.py        # Content-addressed container builds (Docker, podman-hpc)
 │   ├── io_manager.py       # Maps (output, universe) → results/{universe}/{output}/
-│   ├── runner.py           # Execution backends: Docker, local, SLURM
+│   ├── runner.py           # Execution backends: Docker, local, venv; SLURM dispatches via parsl_backend
+│   ├── parsl_backend.py    # Pilot config + executor routing for SLURM (Parsl)
 │   ├── site_registry.py    # Known HPC site defaults (Perlmutter, etc.)
 │   ├── status.py           # Materialization status queries
 │   ├── targets.py          # Target config management (~/.lightcone/targets/)
@@ -105,14 +106,14 @@ just docs-strict    # build with --strict (accepted flag, not yet enforced by ze
 ```
 astra.yaml → build_definitions() → Dagster assets → ASTRAContainerRunner → results/{universe}/{output}/
                                          ↑                    ↑
-                                    ASTRAIOManager        Docker / local / SLURM
+                                    ASTRAIOManager        Docker / local / venv / SLURM (Parsl pilot)
 ```
 
 - `build_definitions()` (`lightcone.engine.assets`) loads astra.yaml, creates one Dagster asset per output with a recipe
 - Asset dependencies come from `recipe.inputs` — Dagster resolves execution order
-- `ASTRAContainerRunner` (`lightcone.engine.runner`) dispatches to Docker, local subprocess, or SLURM based on target config
-- Docker backend falls back to local execution on failure (with warning)
-- SLURM backend generates sbatch scripts, submits via `sbatch`, polls via `sacct`/`squeue`
+- `ASTRAContainerRunner` (`lightcone.engine.runner`) dispatches to Docker, local subprocess, venv, or SLURM based on target config
+- Docker backend falls back to venv (then local) execution on failure (with warning)
+- SLURM backend dispatches every recipe via Parsl into a single pre-allocated pilot — one `sbatch` per `lc run`, not per recipe (see `docs/hpc/parsl-pilot.md`)
 
 ## Key Invariants
 
@@ -142,6 +143,19 @@ All commands use Click. Key patterns:
 - Target/config resolution is shared logic, not per-command
 - `lc setup` auto-triggers if `~/.lightcone/config.yaml` doesn't exist when running other commands
 - Three permission tiers: `yolo` (all allowed), `recommended` (workflow allowed), `minimal` (read-only)
+
+## Agent–target contract
+
+The agent invoking `lc run` must not need to know how compute happens —
+not Parsl, not SLURM, not pilots, not blocks. Its entire interface to
+compute is `lc run --target <name>`. If the target's compute envelope
+is unsuitable, the human user picks a different target rather than
+passing extra knobs at the CLI.
+
+Per-axis flags (`--qos`, `--constraint`, `--account`, `--partition`,
+`--time-limit`) remain for interactive human use but are not part of
+the agent contract. When an agent needs different compute, switch
+targets — do not stack overrides.
 
 ## Extending the Codebase
 
