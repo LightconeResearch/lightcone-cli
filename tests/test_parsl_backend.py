@@ -10,6 +10,7 @@ from lightcone.engine.parsl_backend import (
     pick_executor,
     recipe_resources_to_parsl,
 )
+from lightcone.engine.slurm_info import ClusterInfo, QoSInfo
 
 
 class TestRecipeResourcesToParsl:
@@ -244,3 +245,111 @@ class TestBuildParslConfig:
         }
         with pytest.raises(MissingWorkQueueError, match="ndcctools"):
             build_parsl_config(target)
+
+
+class TestValidatePilotsAgainstQos:
+    def _cluster_with_debug_max_8_nodes_30min(self):
+        return ClusterInfo(
+            qos={
+                "gpu_debug": QoSInfo(
+                    "gpu_debug", max_wall_minutes=30, max_nodes=8, priority=1
+                ),
+                "gpu_regular": QoSInfo(
+                    "gpu_regular", max_wall_minutes=2880, priority=1
+                ),
+            },
+            user_qos=["gpu_debug", "gpu_regular"],
+            user_accounts=["m4031"],
+            partitions={},
+            timestamp="2026-04-24T00:00:00",
+        )
+
+    def test_pilot_within_limits_passes(self, monkeypatch):
+        from lightcone.engine.parsl_backend import validate_pilots_against_qos
+
+        cluster = self._cluster_with_debug_max_8_nodes_30min()
+        monkeypatch.setattr(
+            "lightcone.engine.targets.load_cluster_cache", lambda n: cluster,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.is_cache_stale", lambda n: False,
+        )
+
+        validate_pilots_against_qos(
+            pilots={"gpu": {"nodes": 4, "walltime": "20m", "qos": "gpu_debug"}},
+            target_name="perlmutter",
+        )
+
+    def test_pilot_exceeds_max_nodes_raises(self, monkeypatch):
+        from lightcone.engine.parsl_backend import (
+            PilotConfigError,
+            validate_pilots_against_qos,
+        )
+        cluster = self._cluster_with_debug_max_8_nodes_30min()
+        monkeypatch.setattr(
+            "lightcone.engine.targets.load_cluster_cache", lambda n: cluster,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.is_cache_stale", lambda n: False,
+        )
+
+        with pytest.raises(PilotConfigError, match="nodes"):
+            validate_pilots_against_qos(
+                pilots={
+                    "gpu": {"nodes": 16, "walltime": "20m", "qos": "gpu_debug"},
+                },
+                target_name="perlmutter",
+            )
+
+    def test_pilot_exceeds_walltime_raises(self, monkeypatch):
+        from lightcone.engine.parsl_backend import (
+            PilotConfigError,
+            validate_pilots_against_qos,
+        )
+        cluster = self._cluster_with_debug_max_8_nodes_30min()
+        monkeypatch.setattr(
+            "lightcone.engine.targets.load_cluster_cache", lambda n: cluster,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.is_cache_stale", lambda n: False,
+        )
+
+        with pytest.raises(PilotConfigError, match="wall"):
+            validate_pilots_against_qos(
+                pilots={
+                    "gpu": {"nodes": 4, "walltime": "2h", "qos": "gpu_debug"},
+                },
+                target_name="perlmutter",
+            )
+
+    def test_no_cluster_cache_warns_but_passes(self, monkeypatch, caplog):
+        from lightcone.engine.parsl_backend import validate_pilots_against_qos
+
+        monkeypatch.setattr(
+            "lightcone.engine.targets.load_cluster_cache", lambda n: None,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.is_cache_stale", lambda n: False,
+        )
+        # No cache — best-effort, don't block lc run; log a warning.
+        validate_pilots_against_qos(
+            pilots={"cpu": {"nodes": 4, "walltime": "2h", "qos": "debug"}},
+            target_name="perlmutter",
+        )
+        assert any("cluster cache" in r.message.lower() for r in caplog.records)
+
+    def test_pilot_without_qos_skipped(self, monkeypatch):
+        # No QoS declared in pilot → nothing to check
+        from lightcone.engine.parsl_backend import validate_pilots_against_qos
+
+        cluster = self._cluster_with_debug_max_8_nodes_30min()
+        monkeypatch.setattr(
+            "lightcone.engine.targets.load_cluster_cache", lambda n: cluster,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.is_cache_stale", lambda n: False,
+        )
+        validate_pilots_against_qos(
+            pilots={"cpu": {"nodes": 100, "walltime": "100h"}},
+            target_name="perlmutter",
+        )

@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from parsl.config import Config
+    from parsl.executors import WorkQueueExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +144,7 @@ def _walltime_to_hms(value: str | int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def _build_pilot_executor(label: str, pilot: dict[str, Any]):
+def _build_pilot_executor(label: str, pilot: dict[str, Any]) -> WorkQueueExecutor:
     """Build one WorkQueueExecutor wrapping a SlurmProvider for a single pilot."""
     try:
         from parsl.executors import WorkQueueExecutor
@@ -178,10 +183,91 @@ def _build_pilot_executor(label: str, pilot: dict[str, Any]):
     )
 
 
+# --------------------------------------------------------------------------
+# Pre-flight validation (replaces per-recipe QoS clamping)
+# --------------------------------------------------------------------------
+
+
+class PilotConfigError(RuntimeError):
+    """A pilot's requested size doesn't fit the QoS it targets."""
+
+
+def validate_pilots_against_qos(
+    pilots: dict[str, Any],
+    target_name: str | None,
+) -> None:
+    """Pre-flight check at ``lc run`` start.
+
+    For each pilot that names a QoS, look the QoS up in the cluster cache
+    and verify ``nodes`` and ``walltime`` fit. Raises ``PilotConfigError``
+    on the first violation with a message naming the pilot, the QoS, and
+    the offending limit.
+
+    If no cluster cache is available (e.g., user hasn't run
+    ``lc target refresh``), logs a warning and returns — best-effort,
+    don't block ``lc run``.
+    """
+    if not target_name:
+        return
+
+    from lightcone.engine.slurm_info import check_qos_eligibility
+    from lightcone.engine.targets import (
+        is_cache_stale,
+        load_cluster_cache,
+    )
+
+    if is_cache_stale(target_name):
+        logger.warning(
+            "Cluster cache for '%s' is stale or missing. "
+            "Run `lc target refresh %s` to update.",
+            target_name, target_name,
+        )
+
+    cluster = load_cluster_cache(target_name)
+    if cluster is None:
+        logger.warning(
+            "No cluster cache for target '%s' — skipping pilot QoS pre-flight",
+            target_name,
+        )
+        return
+
+    for label, pilot in pilots.items():
+        qos = pilot.get("qos")
+        if not qos:
+            continue
+        # Direct lookup; constraint-qualified cache keys are a corner case
+        # the user docs cover. Any miss is treated as "unknown qos" — log
+        # and skip rather than block.
+        qos_info = cluster.qos.get(qos)
+        if qos_info is None:
+            logger.warning(
+                "Pilot '%s' targets qos '%s' which is not in the cluster "
+                "cache — skipping pre-flight for this pilot",
+                label, qos,
+            )
+            continue
+
+        wall_seconds = _parse_time_to_seconds(pilot["walltime"])
+        rec = check_qos_eligibility(
+            qos_info,
+            {
+                "nodes": pilot["nodes"],
+                "gpus_per_node": 0,  # pilots specify nodes, not per-task gpus
+                "time_limit_minutes": wall_seconds // 60,
+            },
+        )
+        if not rec.eligible:
+            raise PilotConfigError(
+                f"pilot '{label}' (nodes={pilot['nodes']}, "
+                f"walltime={pilot['walltime']}) does not fit qos '{qos}': "
+                + "; ".join(rec.violations)
+            )
+
+
 def build_parsl_config(
     target_config: dict[str, Any],
-    project_root=None,
-):
+    project_root: Path | str | None = None,
+) -> Config:
     """Build a ``parsl.Config`` from a lightcone target dict.
 
     *project_root* (optional ``Path``) — if given, the DFK's run_dir is
@@ -211,8 +297,6 @@ def build_parsl_config(
 
     run_dir = "runinfo"
     if project_root is not None:
-        from pathlib import Path
-
         run_dir = str(Path(project_root) / "results" / ".parsl")
 
     return Config(
