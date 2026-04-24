@@ -4,7 +4,9 @@ from __future__ import annotations
 import pytest
 
 from lightcone.engine.parsl_backend import (
+    MissingWorkQueueError,
     PilotRoutingError,
+    build_parsl_config,
     pick_executor,
     recipe_resources_to_parsl,
 )
@@ -112,3 +114,133 @@ class TestPickExecutor:
         pilots = {"gpu": {"nodes": 1, "walltime": "1h"}}
         with pytest.raises(PilotRoutingError):
             pick_executor({"cpus": 2}, pilots)
+
+
+def _have_workqueue() -> bool:
+    try:
+        import work_queue  # noqa: F401
+        from parsl.executors import WorkQueueExecutor  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+class TestBuildParslConfig:
+    """build_parsl_config returns a parsl.Config with one executor per pilot.
+
+    These tests inspect the returned object's attributes rather than
+    actually loading the DFK — that's covered by the integration tests.
+    """
+
+    def test_missing_pilots_key_raises(self):
+        with pytest.raises(ValueError, match="pilots"):
+            build_parsl_config({"backend": "slurm"})
+
+    def test_empty_pilots_raises(self):
+        with pytest.raises(ValueError, match="pilots"):
+            build_parsl_config({"backend": "slurm", "pilots": {}})
+
+    @pytest.mark.skipif(
+        not _have_workqueue(),
+        reason="ndcctools (WorkQueue) not installed — required for SLURM backend",
+    )
+    def test_single_cpu_pilot(self):
+        target = {
+            "backend": "slurm",
+            "pilots": {
+                "cpu": {
+                    "nodes": 4,
+                    "walltime": "2h",
+                    "qos": "debug",
+                    "account": "m1234",
+                },
+            },
+        }
+        config = build_parsl_config(target)
+        assert len(config.executors) == 1
+        ex = config.executors[0]
+        assert ex.label == "cpu"
+        # Provider sanity
+        provider = ex.provider
+        assert provider.nodes_per_block == 4
+        assert provider.walltime == "02:00:00"
+        assert provider.qos == "debug"
+        assert provider.account == "m1234"
+        assert provider.init_blocks == 1
+        assert provider.min_blocks == 1
+        assert provider.max_blocks == 1
+
+    @pytest.mark.skipif(
+        not _have_workqueue(),
+        reason="ndcctools (WorkQueue) not installed",
+    )
+    def test_cpu_and_gpu_pilots(self):
+        target = {
+            "backend": "slurm",
+            "pilots": {
+                "cpu": {"nodes": 4, "walltime": "2h", "account": "m1234"},
+                "gpu": {
+                    "nodes": 2,
+                    "walltime": "1h",
+                    "account": "m1234_g",
+                    "constraint": "gpu",
+                },
+            },
+        }
+        config = build_parsl_config(target)
+        labels = {ex.label for ex in config.executors}
+        assert labels == {"cpu", "gpu"}
+        gpu_ex = next(ex for ex in config.executors if ex.label == "gpu")
+        assert gpu_ex.provider.constraint == "gpu"
+        assert gpu_ex.provider.account == "m1234_g"
+
+    @pytest.mark.skipif(
+        not _have_workqueue(),
+        reason="ndcctools (WorkQueue) not installed",
+    )
+    def test_worker_init_passed_through(self):
+        target = {
+            "backend": "slurm",
+            "pilots": {
+                "cpu": {
+                    "nodes": 1,
+                    "walltime": "30m",
+                    "account": "m1234",
+                    "worker_init": "module load python\nsource /env/bin/activate",
+                },
+            },
+        }
+        config = build_parsl_config(target)
+        assert "module load python" in config.executors[0].provider.worker_init
+
+    @pytest.mark.skipif(
+        not _have_workqueue(),
+        reason="ndcctools (WorkQueue) not installed",
+    )
+    def test_run_dir_under_results(self, tmp_path):
+        target = {
+            "backend": "slurm",
+            "pilots": {"cpu": {"nodes": 1, "walltime": "30m", "account": "m1"}},
+        }
+        config = build_parsl_config(target, project_root=tmp_path)
+        assert str(tmp_path / "results" / ".parsl") in config.run_dir
+
+    def test_workqueue_missing_raises_clear_error(self, monkeypatch):
+        """When ndcctools isn't installed, raise a clear actionable error."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name in ("parsl.config", "parsl.executors.workqueue.executor"):
+                raise ImportError("No module named 'work_queue'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        target = {
+            "backend": "slurm",
+            "pilots": {"cpu": {"nodes": 1, "walltime": "30m", "account": "m1"}},
+        }
+        with pytest.raises(MissingWorkQueueError, match="ndcctools"):
+            build_parsl_config(target)

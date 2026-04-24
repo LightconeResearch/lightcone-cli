@@ -120,3 +120,106 @@ def pick_executor(
         f"no suitable pilot for resources={resources}; "
         f"available: {sorted(pilots)} (need 'cpu')"
     )
+
+
+# --------------------------------------------------------------------------
+# Config construction
+# --------------------------------------------------------------------------
+
+
+class MissingWorkQueueError(RuntimeError):
+    """ndcctools / work_queue not installed; required for SLURM backend."""
+
+
+def _walltime_to_hms(value: str | int) -> str:
+    """Convert walltime ('2h', '30m', 120, '01:30:00') to HH:MM:SS for SlurmProvider."""
+    seconds = _parse_time_to_seconds(value)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _build_pilot_executor(label: str, pilot: dict[str, Any]):
+    """Build one WorkQueueExecutor wrapping a SlurmProvider for a single pilot."""
+    try:
+        from parsl.executors import WorkQueueExecutor
+        from parsl.providers import SlurmProvider
+    except ImportError as e:
+        raise MissingWorkQueueError(
+            "WorkQueueExecutor requires the 'ndcctools' package "
+            "(provides the 'work_queue' Python module). "
+            "Install via: conda install -c conda-forge ndcctools"
+        ) from e
+
+    provider_kwargs: dict[str, Any] = {
+        "nodes_per_block": pilot["nodes"],
+        "walltime": _walltime_to_hms(pilot["walltime"]),
+        "init_blocks": 1,
+        "min_blocks": 1,
+        "max_blocks": 1,
+        "exclusive": pilot.get("exclusive", True),
+    }
+    for key in ("account", "qos", "partition", "constraint", "worker_init"):
+        if (val := pilot.get(key)) is not None:
+            provider_kwargs[key] = val
+    if extra := pilot.get("scheduler_options"):
+        provider_kwargs["scheduler_options"] = extra
+
+    provider = SlurmProvider(**provider_kwargs)
+
+    return WorkQueueExecutor(
+        label=label,
+        provider=provider,
+        # Lets recipes declare per-task resources (cores, memory, gpus,
+        # wall_time) so WorkQueue can bin-pack heterogeneous tasks within
+        # the allocation.
+        autolabel=False,
+        autocategory=False,
+    )
+
+
+def build_parsl_config(
+    target_config: dict[str, Any],
+    project_root=None,
+):
+    """Build a ``parsl.Config`` from a lightcone target dict.
+
+    *project_root* (optional ``Path``) — if given, the DFK's run_dir is
+    rooted under ``<project_root>/results/.parsl`` to mirror today's
+    ``results/.slurm`` convention.
+
+    Raises ``ValueError`` for missing/empty ``pilots``;
+    raises ``MissingWorkQueueError`` if ndcctools is not installed.
+    """
+    try:
+        from parsl.config import Config
+    except ImportError as e:
+        raise MissingWorkQueueError(
+            "WorkQueueExecutor requires the 'ndcctools' package "
+            "(provides the 'work_queue' Python module). "
+            "Install via: conda install -c conda-forge ndcctools"
+        ) from e
+
+    pilots = target_config.get("pilots") or {}
+    if not pilots:
+        raise ValueError(
+            "target.pilots must be a non-empty mapping; "
+            "this target has no pilots configured"
+        )
+
+    executors = [_build_pilot_executor(label, p) for label, p in pilots.items()]
+
+    run_dir = "runinfo"
+    if project_root is not None:
+        from pathlib import Path
+
+        run_dir = str(Path(project_root) / "results" / ".parsl")
+
+    return Config(
+        executors=executors,
+        run_dir=run_dir,
+        # Pilot is fixed-size; turn off autoscale so Parsl never tries to
+        # provision additional blocks. min == max == init == 1 already
+        # pins it, but strategy='none' makes the intent explicit.
+        strategy="none",
+    )
