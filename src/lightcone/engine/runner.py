@@ -18,6 +18,16 @@ logger = logging.getLogger(__name__)
 _TAIL_CHARS = 2000
 
 
+def _read_tail(path: str, max_chars: int) -> str:
+    """Return the last *max_chars* characters of *path*, empty if missing."""
+    try:
+        with open(path) as f:
+            data = f.read()
+    except OSError:
+        return ""
+    return data[-max_chars:] if len(data) > max_chars else data
+
+
 def _run_streaming(
     cmd: list[str] | str,
     *,
@@ -711,141 +721,79 @@ class ASTRAContainerRunner:
         external_inputs: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> ExecutionResult:
-        """Execute a recipe on a scheduler-backed target.
+        """Execute a recipe via Parsl into a pre-loaded pilot allocation.
 
-        Generates an sbatch script, submits it, and polls until
-        completion.  If you are already on a compute node (e.g. via an
-        interactive allocation) and want results now rather than queued,
-        switch the project to a ``local`` target instead.
+        Assumes ``parsl.load(config)`` has been called by the CLI layer
+        (see ``lc run``). Routes the recipe to one of the configured
+        pilot executors based on its resources, builds a ``bash_app``,
+        and awaits the result. Stdout/stderr are read from Parsl's
+        per-task log files.
         """
-        scheduler = self.target_config.get("scheduler", {})
-        container_runtime = scheduler.get("container_runtime", "podman-hpc")
+        from parsl.app.app import bash_app
+        from parsl.app.errors import BashExitFailure
 
-        output_path = self.project_root / "results" / universe_id
-        output_path.mkdir(parents=True, exist_ok=True)
-
-        # --- time_limit resolution (CLI > recipe > target default) ---
-        # After this, resources["time_limit"] is authoritative.  Validation,
-        # fit/switch clamping, and sbatch emission all read it.
-        effective_time_limit = (
-            scheduler.get("_cli_time_limit")
-            or resources.get("time_limit")
-            or scheduler.get("_default_time_limit")
+        from lightcone.engine.parsl_backend import (
+            pick_executor,
+            recipe_resources_to_parsl,
         )
-        if effective_time_limit is not None:
-            resources = {**resources, "time_limit": effective_time_limit}
 
-        # --- Resource limit clamping (target-level guardrails) ---
-        resource_limits = self.target_config.get("resource_limits", {})
-        max_nodes = resource_limits.get("max_nodes")
-        if max_nodes and resources.get("nodes", 1) > max_nodes:
-            logger.warning(
-                "Clamping nodes from %d to %d (target resource_limits).",
-                resources["nodes"], max_nodes,
-            )
-            resources = {**resources, "nodes": max_nodes}
+        pilots = self.target_config.get("pilots") or {}
+        label = pick_executor(resources, pilots)
+        spec = recipe_resources_to_parsl(resources)
+        container_runtime = self.target_config.get("container_runtime", "podman-hpc")
 
-        # --- QoS validation and auto-adjust ---
-        target_name = scheduler.get("_target_name")
-        if target_name:
-            resources = self._validate_and_adjust_qos(
-                scheduler, resources, target_name,
-            )
-
-        # Generate the sbatch script
-        script = generate_sbatch_script(
+        full_cmd = build_recipe_shell_command(
             command=command,
             container=container,
             container_runtime=container_runtime,
             project_root=self.project_root,
-            output_id=output_id,
-            universe_id=universe_id,
             resources=resources,
-            scheduler_config=scheduler,
-            resource_limits=resource_limits,
+            cwd=cwd or str(self.project_root),
             external_inputs=external_inputs,
         )
 
-        # Write script to a temp file inside the project so it's on the
-        # shared filesystem visible to compute nodes.
-        scripts_dir = self.project_root / "results" / ".slurm"
-        scripts_dir.mkdir(parents=True, exist_ok=True)
-        job_name = f"{output_id}_{universe_id}"
-        script_path = scripts_dir / f"{job_name}.sh"
-        script_path.write_text(script)
-        script_path.chmod(0o755)
+        @bash_app(executors=[label])
+        def _run(parsl_resource_specification: dict[str, Any] | None = None,
+                 stdout: str | None = None,
+                 stderr: str | None = None) -> str:  # noqa: ARG001 — Parsl reads these via name
+            return full_cmd
 
-        logger.info("Submitting SLURM job for %s/%s", output_id, universe_id)
-        logger.debug("sbatch script:\n%s", script)
-
-        # Submit via sbatch
-        try:
-            submit_result = subprocess.run(
-                ["sbatch", str(script_path)],
-                capture_output=True,
-                text=True,
-                cwd=str(self.project_root),
-            )
-        except FileNotFoundError:
-            return ExecutionResult(
-                exit_code=127,
-                output_path=output_path,
-                metadata={"stderr": "sbatch: command not found"},
-            )
-
-        if submit_result.returncode != 0:
-            return ExecutionResult(
-                exit_code=submit_result.returncode,
-                output_path=output_path,
-                metadata={
-                    "stderr": submit_result.stderr,
-                    "backend": "slurm",
-                },
-            )
-
-        # Parse job ID from "Submitted batch job 12345"
-        job_id = _parse_sbatch_job_id(submit_result.stdout)
-        if job_id is None:
-            return ExecutionResult(
-                exit_code=1,
-                output_path=output_path,
-                metadata={
-                    "stderr": f"Could not parse job ID from: {submit_result.stdout}",
-                    "backend": "slurm",
-                },
-            )
-
-        logger.info("SLURM job submitted: %s", job_id)
-
-        # Poll for completion
-        poll_config = self.target_config.get("poll", {})
-        poll_interval = poll_config.get("interval_seconds", 15)
-        poll_timeout = poll_config.get("timeout_seconds", 14400)  # 4h default
-        exit_code, job_metadata = _poll_slurm_job(
-            job_id, poll_interval=poll_interval, poll_timeout=poll_timeout,
+        # Parsl's AUTO_LOGNAME picks unique paths under run_dir/task_logs/
+        import parsl
+        fut = _run(
+            parsl_resource_specification=spec or None,
+            stdout=parsl.AUTO_LOGNAME,
+            stderr=parsl.AUTO_LOGNAME,
         )
 
-        # Collect stdout/stderr from SLURM output files
-        slurm_stdout = ""
-        slurm_stderr = ""
-        stdout_file = scripts_dir / f"{job_name}.out"
-        stderr_file = scripts_dir / f"{job_name}.err"
-        if stdout_file.exists():
-            slurm_stdout = stdout_file.read_text()[-2000:]
-        if stderr_file.exists():
-            slurm_stderr = stderr_file.read_text()[-2000:]
+        try:
+            fut.result()
+            exit_code = 0
+        except BashExitFailure as e:
+            exit_code = e.exitcode
+        except Exception as e:
+            # Pilot expired, worker died, etc.
+            return ExecutionResult(
+                exit_code=1,
+                output_path=self.project_root / "results" / universe_id,
+                metadata={
+                    "backend": "slurm",
+                    "executor": label,
+                    "stderr": f"parsl task failed: {e!r}",
+                },
+            )
+
+        stdout_tail = _read_tail(fut.stdout, _TAIL_CHARS) if fut.stdout else ""
+        stderr_tail = _read_tail(fut.stderr, _TAIL_CHARS) if fut.stderr else ""
 
         return ExecutionResult(
             exit_code=exit_code,
-            output_path=output_path,
+            output_path=self.project_root / "results" / universe_id,
             metadata={
                 "backend": "slurm",
-                "slurm_job_id": job_id,
-                "container_runtime": container_runtime,
-                "stdout": slurm_stdout,
-                "stderr": slurm_stderr,
-                "sbatch_script": str(script_path),
-                **job_metadata,
+                "executor": label,
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
             },
         )
 
