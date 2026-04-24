@@ -87,9 +87,30 @@ class TestSlurmResourceTranslation:
         dirs = translate_resources_to_slurm_directives({"memory": "16GB"})
         assert "--mem=16GB" in dirs
 
-    def test_translate_gpus(self):
+    def test_translate_gpus_per_node(self):
+        """resources.gpus is per-node — emit --gpus-per-node so the scheduler
+        allocates (nodes × gpus) total GPUs."""
         dirs = translate_resources_to_slurm_directives({"gpus": 1})
-        assert "--gpus=1" in dirs
+        assert "--gpus-per-node=1" in dirs
+        assert "--gpus=1" not in dirs
+
+    def test_translate_gpus_per_node_multi_node(self):
+        dirs = translate_resources_to_slurm_directives(
+            {"nodes": 4, "gpus": 4},
+        )
+        assert "--nodes=4" in dirs
+        assert "--gpus-per-node=4" in dirs
+
+    def test_in_extra_does_not_confuse_gpus_and_gpus_per_node(self):
+        """Having `--gpus-per-node=X` in extras must not suppress the other
+        (or vice versa) — exact-flag matching only."""
+        dirs = translate_resources_to_slurm_directives(
+            {"gpus": 2},
+            scheduler_config={"extra_slurm_args": ["--gpus=8"]},
+        )
+        # `--gpus=8` should not block emission of `--gpus-per-node=2`
+        assert "--gpus-per-node=2" in dirs
+        assert "--gpus=8" in dirs
 
     def test_translate_nodes(self):
         dirs = translate_resources_to_slurm_directives({"nodes": 2})
@@ -237,10 +258,11 @@ class TestGenerateSbatchScript:
             resources={"cpus": 4, "gpus": 1},
             scheduler_config={"account": "m1234"},
         )
-        assert "--gpu" in script
-        assert "#SBATCH --gpus=1" in script
+        assert "--gpu" in script  # podman-hpc boolean flag
+        assert "#SBATCH --gpus-per-node=1" in script
 
-    def test_podman_hpc_with_mpi_flags(self, tmp_path):
+    def test_mpi_derived_from_multi_node(self, tmp_path):
+        """Multi-node recipes (nodes > 1) derive --mpi automatically."""
         script = generate_sbatch_script(
             command="python scripts/train.py",
             container="ghcr.io/proj/ml:latest",
@@ -248,17 +270,27 @@ class TestGenerateSbatchScript:
             project_root=tmp_path,
             output_id="train",
             universe_id="baseline",
-            resources={},
-            scheduler_config={
-                "account": "m1234",
-                "container_flags": ["--mpi", "--nccl"],
-            },
+            resources={"nodes": 2},
+            scheduler_config={"account": "m1234"},
         )
         assert "--mpi" in script
-        assert "--nccl" in script
 
-    def test_podman_hpc_with_custom_flags(self, tmp_path):
-        """Custom container_flags like --scratch pass through to podman-hpc."""
+    def test_no_mpi_for_single_node(self, tmp_path):
+        """Single-node recipes should not get --mpi."""
+        script = generate_sbatch_script(
+            command="python scripts/train.py",
+            container="ghcr.io/proj/ml:latest",
+            container_runtime="podman-hpc",
+            project_root=tmp_path,
+            output_id="train",
+            universe_id="baseline",
+            resources={"nodes": 1, "gpus": 1},
+            scheduler_config={"account": "m1234"},
+        )
+        assert "--mpi" not in script
+
+    def test_extra_container_flags(self, tmp_path):
+        """extra_container_flags like --nccl pass through to podman-hpc."""
         script = generate_sbatch_script(
             command="python scripts/train.py",
             container="ghcr.io/proj/ml:latest",
@@ -269,11 +301,11 @@ class TestGenerateSbatchScript:
             resources={},
             scheduler_config={
                 "account": "m1234",
-                "container_flags": ["--scratch", "--cfs"],
+                "extra_container_flags": ["--nccl", "--scratch"],
             },
         )
+        assert "--nccl" in script
         assert "--scratch" in script
-        assert "--cfs" in script
 
     def test_no_container(self, tmp_path):
         script = generate_sbatch_script(
@@ -652,3 +684,211 @@ class TestExternalInputs:
         )
         assert "mkdir -p data" not in script
         assert "ln -sfn" not in script
+
+
+# ---------------------------------------------------------------------------
+# QoS validation and resource clamping
+# ---------------------------------------------------------------------------
+
+
+class TestQoSValidation:
+    @patch("lightcone.engine.runner.subprocess.run")
+    def test_resource_limit_clamping(self, mock_run, tmp_path):
+        """Nodes exceeding target max_nodes should be clamped."""
+        mock_submit = MagicMock()
+        mock_submit.returncode = 1
+        mock_submit.stdout = ""
+        mock_submit.stderr = "error"
+        mock_run.return_value = mock_submit
+
+        runner = ASTRAContainerRunner(
+            project_root=str(tmp_path),
+            backend="slurm",
+            target_config={
+                "scheduler": {
+                    "container_runtime": "podman-hpc",
+                    "account": "m1234",
+                },
+                "resource_limits": {
+                    "max_nodes": 4,
+                },
+            },
+        )
+        runner.execute(
+            command="python train.py",
+            output_id="model",
+            universe_id="baseline",
+            container="img:1.0",
+            resources={"nodes": 8},
+        )
+
+        # Check the generated script has nodes=4 (clamped)
+        script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
+        content = script_path.read_text()
+        assert "--nodes=4" in content
+        assert "--nodes=8" not in content
+
+    @patch("lightcone.engine.runner.subprocess.run")
+    def test_qos_auto_switch(self, mock_run, tmp_path, monkeypatch):
+        """When preferred QoS can't handle the job, auto-switch to eligible."""
+        from lightcone.engine.slurm_info import ClusterInfo, QoSInfo
+
+        cluster = ClusterInfo(
+            qos={
+                "gpu_debug": QoSInfo("gpu_debug", max_wall_minutes=30,
+                                      max_nodes=8, priority=69119),
+                "gpu_regular": QoSInfo("gpu_regular", max_wall_minutes=2880,
+                                       priority=67679),
+            },
+            user_qos=["gpu_debug", "gpu_regular"],
+            user_accounts=["m4031"],
+            partitions={},
+            timestamp="2026-03-28T00:00:00",
+        )
+
+        monkeypatch.setattr(
+            "lightcone.engine.targets.load_cluster_cache",
+            lambda name: cluster,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.is_cache_stale",
+            lambda name: False,
+        )
+
+        mock_submit = MagicMock()
+        mock_submit.returncode = 1
+        mock_submit.stdout = ""
+        mock_submit.stderr = "error"
+        mock_run.return_value = mock_submit
+
+        runner = ASTRAContainerRunner(
+            project_root=str(tmp_path),
+            backend="slurm",
+            target_config={
+                "scheduler": {
+                    "container_runtime": "podman-hpc",
+                    "account": "m1234",
+                    "qos": "debug",
+                    "constraint": "gpu",
+                    "_target_name": "test",
+                    "_strategy": "switch",
+                    "_qos_choices": ["debug", "regular"],
+                },
+            },
+        )
+        runner.execute(
+            command="python train.py",
+            output_id="model",
+            universe_id="baseline",
+            container="img:1.0",
+            resources={"nodes": 16, "gpus": 4},
+        )
+
+        # Switched from debug (max 8 nodes) to regular (no node cap).
+        script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
+        content = script_path.read_text()
+        assert "--qos=regular" in content
+        assert "--qos=debug\n" not in content
+
+    @patch("lightcone.engine.runner.subprocess.run")
+    def test_cli_time_limit_reaches_sbatch(self, mock_run, tmp_path):
+        """--time-limit must appear as --time=... in the emitted sbatch
+        script, even when the recipe has no time_limit and the target's
+        resource_limits.max_walltime_minutes would otherwise dominate."""
+        mock_submit = MagicMock()
+        mock_submit.returncode = 1  # fail fast; we just want the script
+        mock_submit.stdout = ""
+        mock_submit.stderr = "error"
+        mock_run.return_value = mock_submit
+
+        runner = ASTRAContainerRunner(
+            project_root=str(tmp_path),
+            backend="slurm",
+            target_config={
+                "scheduler": {
+                    "container_runtime": "podman-hpc",
+                    "account": "m1234",
+                    "qos": "debug",
+                    "constraint": "gpu",
+                    # CLI passed --time-limit 5 (bare number = minutes).
+                    "_cli_time_limit": "5",
+                },
+                "resource_limits": {"max_walltime_minutes": 360},
+            },
+        )
+        runner.execute(
+            command="python train.py",
+            output_id="model",
+            universe_id="baseline",
+            container="img:1.0",
+            resources={},  # recipe declares no time_limit
+        )
+
+        script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
+        content = script_path.read_text()
+        assert "#SBATCH --time=00:05:00" in content
+        # The max_walltime fallback must NOT appear when CLI set a value.
+        assert "#SBATCH --time=06:00:00" not in content
+
+    @patch("lightcone.engine.runner.subprocess.run")
+    def test_qos_fit_strategy_reduces_nodes(self, mock_run, tmp_path, monkeypatch):
+        """Fit strategy: reduce nodes to stay in current QoS."""
+        from lightcone.engine.slurm_info import ClusterInfo, QoSInfo
+
+        cluster = ClusterInfo(
+            qos={
+                "gpu_debug": QoSInfo("gpu_debug", max_wall_minutes=30,
+                                      max_nodes=8, priority=69119),
+                "gpu_regular": QoSInfo("gpu_regular", max_wall_minutes=2880,
+                                       priority=67679),
+            },
+            user_qos=["gpu_debug", "gpu_regular"],
+            user_accounts=["m4031"],
+            partitions={},
+            timestamp="2026-03-28T00:00:00",
+        )
+
+        monkeypatch.setattr(
+            "lightcone.engine.targets.load_cluster_cache",
+            lambda name: cluster,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.is_cache_stale",
+            lambda name: False,
+        )
+
+        mock_submit = MagicMock()
+        mock_submit.returncode = 1
+        mock_submit.stdout = ""
+        mock_submit.stderr = "error"
+        mock_run.return_value = mock_submit
+
+        runner = ASTRAContainerRunner(
+            project_root=str(tmp_path),
+            backend="slurm",
+            target_config={
+                "scheduler": {
+                    "container_runtime": "podman-hpc",
+                    "account": "m1234",
+                    "qos": "debug",
+                    "constraint": "gpu",
+                    "_target_name": "test",
+                    "_strategy": "fit",
+                    "_qos_choices": ["debug", "regular"],
+                },
+            },
+        )
+        runner.execute(
+            command="python train.py",
+            output_id="model",
+            universe_id="baseline",
+            container="img:1.0",
+            resources={"nodes": 16, "gpus": 4},
+        )
+
+        # Fit strategy: stay in debug but clamp nodes to 8.
+        script_path = tmp_path / "results" / ".slurm" / "model_baseline.sh"
+        content = script_path.read_text()
+        assert "--qos=debug" in content
+        assert "--nodes=8" in content
+        assert "--nodes=16" not in content

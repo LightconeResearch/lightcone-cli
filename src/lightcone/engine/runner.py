@@ -132,7 +132,11 @@ def _build_cli_args(params: dict[str, Any], universe_id: str) -> list[str]:
 
 
 def translate_resources_to_docker_flags(resources: dict[str, Any]) -> list[str]:
-    """Translate ASTRA resource requirements to Docker CLI flags."""
+    """Translate ASTRA resource requirements to Docker CLI flags.
+
+    ``resources.gpus`` is per-node; Docker runs on a single node, so the
+    value maps directly to ``--gpus=N``.
+    """
     flags: list[str] = []
     if cpus := resources.get("cpus"):
         flags.append(f"--cpus={cpus}")
@@ -159,25 +163,6 @@ class ASTRAContainerRunner:
         target_config: dict[str, Any] | None = None,
         container_runtime: str | None = None,
     ):
-        """Initialise an ASTRA container runner.
-
-        Args:
-            project_root: Absolute path to the ASTRA project directory.
-                All recipe commands are executed with this as their working
-                directory unless *cwd_override* is supplied at call time.
-            backend: Execution backend to use.  One of ``"docker"``,
-                ``"local"``, ``"venv"``, or ``"slurm"``.  The ``"docker"``
-                backend automatically falls back to ``"venv"`` (or
-                ``"local"``) when the container run fails.
-            default_container: Analysis-level container image resolved from
-                ``astra.yaml``.  Per-recipe containers override this value.
-            target_config: Parsed SLURM target configuration dict (from
-                ``~/.lightcone/targets/<name>.yaml``).  Used only when *backend*
-                is ``"slurm"``.
-            container_runtime: Local container runtime binary name
-                (``"docker"`` or ``"podman"``).  When ``None``, the runner
-                uses whatever is available on ``PATH``.
-        """
         self.project_root = Path(project_root)
         self.backend = backend
         self.default_container = default_container
@@ -478,74 +463,165 @@ class ASTRAContainerRunner:
             marker.write_text(current_hash + "\n")
         self._venv_deps_checked = True
 
-    def _run_slurm_interactive(
+    def _validate_and_adjust_qos(
         self,
-        command: str,
-        container: str | None,
-        output_id: str,
-        universe_id: str,
+        scheduler: dict[str, Any],
         resources: dict[str, Any],
-        external_inputs: dict[str, str] | None = None,
-        cwd: str | None = None,
-    ) -> ExecutionResult:
-        """Execute a recipe via srun inside an existing interactive allocation.
+        target_name: str,
+    ) -> dict[str, Any]:
+        """Check QoS eligibility against the cluster cache and adjust.
 
-        Runs synchronously — no job submission or polling needed.
+        Strategies (``scheduler["_strategy"]``, default ``"fit"``):
+
+        ``"fit"``
+            Reduce nodes and/or time_limit to stay in the selected QoS.
+            Falls through to ``"switch"`` when clamping can't make the
+            job fit (e.g., total-GPU limit exceeded).
+
+        ``"switch"``
+            Keep resources as-is and pick another QoS from the target's
+            ``options.qos.choices`` list that fits, holding *constraint*
+            fixed so hardware family doesn't change.
+
+        Mutates *scheduler* in place; returns the (possibly adjusted)
+        ``resources`` dict.
         """
-        effective_cwd = cwd or str(self.project_root)
-        scheduler = self.target_config.get("scheduler", {})
-        container_runtime = scheduler.get("container_runtime", "podman-hpc")
+        from lightcone.engine.slurm_info import (
+            check_qos_eligibility,
+            recommend_qos,
+        )
+        from lightcone.engine.targets import (
+            is_cache_stale,
+            load_cluster_cache,
+            resolve_cache_key,
+        )
 
-        output_path = Path(effective_cwd) / "results" / universe_id
-        output_path.mkdir(parents=True, exist_ok=True)
+        qos = scheduler.get("qos")
+        if not qos:
+            return resources
 
-        # Build the execution command
-        if container and container_runtime == "podman-hpc":
-            exec_command = _podman_hpc_run_command(
-                command, container, self.project_root, resources, scheduler,
-                external_inputs=external_inputs,
+        if is_cache_stale(target_name):
+            logger.warning(
+                "Cluster cache for '%s' is stale or missing. "
+                "Run `lc target refresh %s` to update.",
+                target_name, target_name,
             )
+        cluster = load_cluster_cache(target_name)
+        if not cluster:
+            return resources
+
+        constraint = scheduler.get("constraint")
+        strategy = scheduler.get("_strategy", "fit")
+        qos_choices: list[str] = scheduler.get("_qos_choices") or [qos]
+        overrides: dict[str, str] = scheduler.get("_cache_key_overrides") or {}
+
+        cache_key = resolve_cache_key(qos, constraint, cluster.qos, overrides)
+        qos_info = cluster.qos.get(cache_key)
+        if qos_info is None:
+            return resources
+
+        recipe_resources = {
+            "nodes": resources.get("nodes", 1),
+            "gpus_per_node": resources.get("gpus", 0),
+            "time_limit_minutes": self._parse_time_minutes(
+                resources.get("time_limit"),
+            ),
+        }
+
+        current = check_qos_eligibility(qos_info, recipe_resources)
+        if current.eligible:
+            return resources
+
+        # --- Strategy: fit — reduce resources to stay in current QoS ---
+        if strategy == "fit" and current.clamped_resources:
+            clamped = current.clamped_resources
+            adjusted = dict(resources)
+            can_fit = "gpus_total" not in clamped
+            if "nodes" in clamped:
+                new_nodes = clamped["nodes"]
+                logger.warning(
+                    "Reducing nodes from %d to %d to fit qos '%s'.",
+                    resources.get("nodes", 1), new_nodes, qos,
+                )
+                adjusted["nodes"] = new_nodes
+            if "time_limit_minutes" in clamped:
+                new_time = clamped["time_limit_minutes"]
+                logger.warning(
+                    "Reducing time_limit to %d min to fit qos '%s'.",
+                    new_time, qos,
+                )
+                adjusted["time_limit"] = f"{new_time}m"
+            if can_fit:
+                verify = check_qos_eligibility(qos_info, {
+                    "nodes": adjusted.get("nodes", 1),
+                    "gpus_per_node": adjusted.get("gpus", 0),
+                    "time_limit_minutes": self._parse_time_minutes(
+                        adjusted.get("time_limit")
+                    ),
+                })
+                if verify.eligible:
+                    return adjusted
+
+        # --- Strategy: switch (or fit couldn't reduce enough) ---
+        recommendations = recommend_qos(
+            cluster,
+            recipe_resources,
+            qos_choices=qos_choices,
+            constraint=constraint,
+            preferred_qos=qos,
+            cache_key_overrides=overrides,
+        )
+        best = next((r for r in recommendations if r.eligible), None)
+        if best:
+            logger.warning(
+                "qos '%s' cannot handle this job (%s). Switching to '%s'.",
+                qos, "; ".join(current.violations), best.qos,
+            )
+            scheduler["qos"] = best.qos
+            best_cache = resolve_cache_key(
+                best.qos, constraint, cluster.qos, overrides,
+            )
+            best_info = cluster.qos.get(best_cache)
+            if best_info and best_info.max_wall_minutes:
+                t = recipe_resources.get("time_limit_minutes")
+                if t and t > best_info.max_wall_minutes:
+                    logger.warning(
+                        "Clamping time_limit from %d to %d min (max for %s).",
+                        t, best_info.max_wall_minutes, best.qos,
+                    )
+                    resources = {
+                        **resources,
+                        "time_limit": f"{best_info.max_wall_minutes}m",
+                    }
         else:
-            # No container — symlink external inputs into data/ directory
-            if external_inputs:
-                data_dir = Path(effective_cwd) / "data"
-                data_dir.mkdir(parents=True, exist_ok=True)
-                for input_id, source in sorted(external_inputs.items()):
-                    link = data_dir / input_id
-                    if link.is_symlink() or link.exists():
-                        link.unlink()
-                    link.symlink_to(source)
-            exec_command = command
-
-        cmd = ["srun", "bash", "-c", exec_command]
-
-        logger.info(
-            "Running %s/%s interactively (SLURM_JOB_ID=%s)",
-            output_id, universe_id, os.environ.get("SLURM_JOB_ID"),
-        )
-
-        try:
-            returncode, stdout_tail, stderr_tail = _run_streaming(
-                cmd, cwd=effective_cwd,
+            logger.error(
+                "No eligible qos for this job (%s for '%s'). "
+                "Job will likely be rejected.",
+                "; ".join(current.violations), qos,
             )
-        except FileNotFoundError:
-            return ExecutionResult(
-                exit_code=127,
-                output_path=output_path,
-                metadata={"stderr": "srun: command not found"},
-            )
+        return resources
 
-        return ExecutionResult(
-            exit_code=returncode,
-            output_path=output_path,
-            metadata={
-                "backend": "slurm-interactive",
-                "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
-                "container_runtime": container_runtime if container else None,
-                "stdout": stdout_tail,
-                "stderr": stderr_tail,
-            },
-        )
+    @staticmethod
+    def _parse_time_minutes(value: str | int | None) -> int | None:
+        """Parse a time value to minutes for QoS comparison."""
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        value = str(value).strip()
+        if value.endswith("m"):
+            try:
+                return int(value[:-1])
+            except ValueError:
+                return None
+        if value.endswith("h"):
+            try:
+                return int(value[:-1]) * 60
+            except ValueError:
+                return None
+        # Try HH:MM:SS
+        from lightcone.engine.slurm_info import parse_slurm_walltime
+        return parse_slurm_walltime(value)
 
     def _run_slurm(
         self,
@@ -558,33 +634,48 @@ class ASTRAContainerRunner:
         external_inputs: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> ExecutionResult:
-        """Execute a recipe via SLURM.
+        """Execute a recipe on a scheduler-backed target.
 
-        When ``SLURM_JOB_ID`` is set (i.e. we are inside an interactive
-        ``salloc`` session), runs the command synchronously via ``srun``
-        for fast iteration.  Otherwise, generates an sbatch script,
-        submits it, and polls for completion.
+        Generates an sbatch script, submits it, and polls until
+        completion.  If you are already on a compute node (e.g. via an
+        interactive allocation) and want results now rather than queued,
+        switch the project to a ``local`` target instead.
         """
-        # Fast path: interactive allocation detected
-        if os.environ.get("SLURM_JOB_ID"):
-            return self._run_slurm_interactive(
-                command=command,
-                container=container,
-                output_id=output_id,
-                universe_id=universe_id,
-                resources=resources,
-                external_inputs=external_inputs,
-                cwd=cwd,
-            )
-
         scheduler = self.target_config.get("scheduler", {})
         container_runtime = scheduler.get("container_runtime", "podman-hpc")
 
         output_path = self.project_root / "results" / universe_id
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Generate the sbatch script
+        # --- time_limit resolution (CLI > recipe > target default) ---
+        # After this, resources["time_limit"] is authoritative.  Validation,
+        # fit/switch clamping, and sbatch emission all read it.
+        effective_time_limit = (
+            scheduler.get("_cli_time_limit")
+            or resources.get("time_limit")
+            or scheduler.get("_default_time_limit")
+        )
+        if effective_time_limit is not None:
+            resources = {**resources, "time_limit": effective_time_limit}
+
+        # --- Resource limit clamping (target-level guardrails) ---
         resource_limits = self.target_config.get("resource_limits", {})
+        max_nodes = resource_limits.get("max_nodes")
+        if max_nodes and resources.get("nodes", 1) > max_nodes:
+            logger.warning(
+                "Clamping nodes from %d to %d (target resource_limits).",
+                resources["nodes"], max_nodes,
+            )
+            resources = {**resources, "nodes": max_nodes}
+
+        # --- QoS validation and auto-adjust ---
+        target_name = scheduler.get("_target_name")
+        if target_name:
+            resources = self._validate_and_adjust_qos(
+                scheduler, resources, target_name,
+            )
+
+        # Generate the sbatch script
         script = generate_sbatch_script(
             command=command,
             container=container,
@@ -693,24 +784,29 @@ def translate_resources_to_slurm_directives(
     *,
     resource_limits: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Translate ASTRA resource requirements to SLURM #SBATCH directives.
+    """Translate ASTRA resource requirements to SLURM ``#SBATCH`` directives.
 
-    Returns a list of directive strings (without the ``#SBATCH`` prefix).
+    ``resources.gpus`` is treated as **per-node** — emitted as
+    ``--gpus-per-node=N`` — so that multi-node recipes allocate
+    ``nodes × gpus`` total GPUs, matching user intent and the QoS
+    validator's math.  For single-node recipes per-node and total
+    coincide.
 
     When *resource_limits* is provided (non-``None``) and no explicit
-    ``time_limit`` appears in *resources*, a default ``--time`` directive is
-    emitted using ``resource_limits["max_walltime_minutes"]`` (falling back
-    to 30 minutes).  This ensures SLURM jobs always have a walltime.
+    ``time_limit`` appears in *resources*, a default ``--time`` directive
+    is emitted using ``resource_limits["max_walltime_minutes"]`` (falling
+    back to 30 minutes).
     """
     scheduler_config = scheduler_config or {}
     directives: list[str] = []
 
-    # Extra SLURM args from CLI passthrough (e.g. --partition, --qos, --constraint)
+    # Extra SLURM args forwarded from the target YAML (never from the
+    # agent-facing CLI, which no longer accepts passthrough flags).
     extra_args = scheduler_config.get("extra_slurm_args", [])
 
-    # Helper to check if a flag is already in extra args (CLI overrides target)
+    # Exact-flag match: `--gpus` must NOT match `--gpus-per-node`, etc.
     def _in_extra(flag: str) -> bool:
-        return any(a.startswith(flag) for a in extra_args)
+        return any(a == flag or a.startswith(f"{flag}=") for a in extra_args)
 
     # Extract constraint from extra args for account suffix resolution
     constraint = scheduler_config.get("constraint")
@@ -719,12 +815,7 @@ def translate_resources_to_slurm_directives(
             constraint = arg.split("=", 1)[1] if "=" in arg else None
 
     account = scheduler_config.get("account")
-    # Apply site-specific account suffix (e.g. _g for GPU on Perlmutter)
     if account and not _in_extra("--account"):
-        site_key = scheduler_config.get("site")
-        if site_key and constraint:
-            from lightcone.engine.site_registry import resolve_account
-            account = resolve_account(site_key, account, constraint)
         directives.append(f"--account={account}")
     if not _in_extra("--partition"):
         if partition := scheduler_config.get("partition"):
@@ -742,9 +833,9 @@ def translate_resources_to_slurm_directives(
         directives.append(f"--cpus-per-task={cpus}")
     if memory := resources.get("memory"):
         directives.append(f"--mem={memory}")
-    if not _in_extra("--gpus"):
+    if not _in_extra("--gpus-per-node"):
         if gpus := resources.get("gpus"):
-            directives.append(f"--gpus={gpus}")
+            directives.append(f"--gpus-per-node={gpus}")
     if time_limit := resources.get("time_limit"):
         directives.append(f"--time={_normalise_time_limit(time_limit)}")
     elif resource_limits is not None:
@@ -830,7 +921,7 @@ def generate_sbatch_script(
 
     lines.append("")
     lines.append("# --- lightcone-cli / ASTRA recipe execution ---")
-    lines.append(f"cd {project_root}")
+    lines.append(f"cd {shlex.quote(str(project_root))}")
     lines.append("")
 
     # Build the execution command based on container runtime
@@ -844,7 +935,9 @@ def generate_sbatch_script(
         if external_inputs:
             lines.append("mkdir -p data")
             for input_id, source in sorted(external_inputs.items()):
-                lines.append(f"ln -sfn {source} data/{input_id}")
+                src = shlex.quote(str(source))
+                dst = shlex.quote(f"data/{input_id}")
+                lines.append(f"ln -sfn {src} {dst}")
             lines.append("")
         # Run directly
         lines.append(command)
@@ -872,30 +965,26 @@ def _podman_hpc_run_command(
     """
     parts = ["podman-hpc", "run", "--rm"]
 
-    # GPU support
+    # GPU support — derived from recipe resources
     if resources.get("gpus"):
         parts.append("--gpu")
 
-    # MPI support — if the scheduler config opts in
-    container_flags = scheduler_config.get("container_flags", [])
-    if "--mpi" in container_flags:
+    # MPI support — derived from multi-node recipes
+    if resources.get("nodes", 1) > 1:
         parts.append("--mpi")
-    if "--nccl" in container_flags:
-        parts.append("--nccl")
-    if "--cuda-mpi" in container_flags:
-        parts.append("--cuda-mpi")
 
-    # Any extra user-specified flags
-    for flag in container_flags:
-        if flag not in ("--mpi", "--nccl", "--cuda-mpi", "--gpu"):
+    # Extra container flags: escape hatch for --nccl, --cuda-mpi, etc.
+    # --gpu and --mpi are derived from recipe resources above.
+    for flag in scheduler_config.get("extra_container_flags", []):
+        if flag not in ("--gpu", "--mpi"):
             parts.append(flag)
 
     # Volume mount project root
-    parts.extend(["-v", f"{project_root}:/workspace", "-w", "/workspace"])
+    parts.extend(["-v", shlex.quote(f"{project_root}:/workspace"), "-w", "/workspace"])
 
     # Read-only volume mounts for external inputs
     for input_id, source in sorted((external_inputs or {}).items()):
-        parts.extend(["-v", f"{source}:/workspace/data/{input_id}:ro"])
+        parts.extend(["-v", shlex.quote(f"{source}:/workspace/data/{input_id}:ro")])
 
     parts.append(container)
     parts.extend(["sh", "-c", _shell_quote(command)])

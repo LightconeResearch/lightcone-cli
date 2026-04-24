@@ -25,17 +25,22 @@ lc run --target perlmutter-gpu
 lc run --qos debug --constraint gpu --time 30:00
 ```
 
-## Interactive allocation
+## Interactive iteration
 
-On login nodes, `lc run` submits batch jobs and waits for them. For faster iteration, start an interactive allocation first:
+From a login node, an HPC target submits batch jobs and waits in the queue — fine for production runs, slow for iteration. For fast turnaround, grab an interactive compute node yourself and point the project at the `local` target while you're on it:
 
 ```bash
+# From the login node:
 salloc --nodes=1 --qos=interactive --constraint=gpu --time=01:00:00 --account=m4031_g
-# → now on a compute node
-lc run   # executes instantly via srun
+# → now in a shell on a compute node
+
+lc target --set local    # runs execute here, no queueing
+lc run                   # executes immediately, using the node you just allocated
 ```
 
-lightcone-cli detects an existing `SLURM_JOB_ID` and uses `srun` instead of `sbatch` when inside an allocation.
+When you're done iterating, `lc target --set <hpc-target>` switches back to queued submission for production runs.
+
+lightcone-cli deliberately does **not** auto-detect allocations: recipe resource declarations and QoS limits only apply on the scheduler path, and silently bypassing them would be surprising. Switching the target makes the mode explicit.
 
 ## See also
 

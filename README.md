@@ -58,27 +58,18 @@ lc init my-analysis --no-git --no-venv      # skip git/venv creation
 
 ### Targets and setup
 
-Targets configure where lightcone-cli executes jobs. They're user-level (`~/.lightcone/targets/`), shared across projects, and work with any SLURM cluster. **Create separate targets for each run profile** rather than editing one repeatedly.
+Targets configure where lightcone-cli executes jobs. They're user-level (`~/.lightcone/targets/`), shared across projects. **One target per machine** — each target declares a small set of orthogonal run *options* (`qos`, `constraint`, `time_limit`, `account`, `partition`) that the agent or user can override per run.
 
 ```bash
 lc setup                            # interactive setup wizard (first-time)
 lc setup --list                     # list configured targets
-lc setup --show perlmutter-gpu      # show a target's config
-lc setup --default perlmutter-gpu   # change user-wide default target
+lc setup --default perlmutter       # change user-wide default target
 lc target add                       # create a new target interactively
-lc target edit perlmutter-gpu       # edit an existing target
-lc target --set perlmutter-gpu      # set project target
+lc target                           # show current target + run options
+lc target --show perlmutter         # show a specific target's run options
+lc target --set perlmutter          # set project target
 lc target --list                    # list available targets
-```
-
-For example, on Perlmutter:
-
-```bash
-lc target add perlmutter-debug   # gpu, qos: debug, 30min max
-lc target add perlmutter-gpu     # gpu (A100 40GB), qos: regular
-lc target add perlmutter-cpu     # cpu (128 cores/node), qos: regular
-lc target add perlmutter-hbm80   # gpu_hbm80 (A100 80GB), qos: regular
-lc target add perlmutter-preempt # gpu, qos: preempt (0.25x cost)
+lc target refresh perlmutter        # refresh cached option limits
 ```
 
 Resolution order: `--target` flag > `.lightcone/lightcone.yaml` > `~/.lightcone/config.yaml` > local.
@@ -93,7 +84,9 @@ The agent runs these during `/lc-build`, but you can also run them directly:
 lc run                              # materialize all outputs for all universes
 lc run accuracy                     # materialize a specific output
 lc run --universe baseline          # materialize for a specific universe
-lc run --target perlmutter-gpu      # run on a SLURM target
+lc run --target perlmutter          # run on a configured HPC target
+lc run --qos regular --time-limit 2h  # override run options
+lc run --strategy switch            # swap qos instead of trimming resources
 lc status                           # show materialization status (ok / pending / no recipe)
 lc status --universe baseline       # status for a specific universe
 lc dev                              # launch Dagster webserver UI
@@ -120,6 +113,15 @@ Complex analyses can be decomposed into nested stages, each with their own input
 ### Execution backends
 
 Recipes run via Docker, local subprocess, or SLURM batch submission depending on your target configuration. Recipe dependencies are resolved automatically — if output B depends on output A, A runs first. Per-recipe resource requests (CPUs, GPUs, memory, time limit) are translated to the appropriate backend flags.
+
+### Run options with auto-adjustment
+
+Each target declares orthogonal run options (`qos`, `constraint`, `time_limit`, `account`, `partition`) with a default value and brief guidance on each choice. The agent (or user) picks any of them per invocation via `lc run --<option>`. When a recipe exceeds the limits implied by the selected options, lightcone-cli auto-adjusts:
+
+- **`fit` strategy** (default): trims resources (nodes, time limit) to stay in the selected `qos` for faster turnaround
+- **`switch` strategy**: keeps resources as-is and picks another `qos` choice that can handle them
+
+Container flags (`--gpu`, `--mpi`) are derived automatically from recipe resources — no manual configuration needed.
 
 ### Telemetry
 

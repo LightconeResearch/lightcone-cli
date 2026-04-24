@@ -107,7 +107,7 @@ otherwise           → _run_container()
 |-------------|------------|-----------------|
 | `cpus` | `--cpus=N` | `--cpus-per-task=N` |
 | `memory` | `--memory=Xg` | `--mem=Xg` |
-| `gpus` | `--gpus=N` | `--gpus=N` |
+| `gpus` (per-node) | `--gpus=N` | `--gpus-per-node=N` |
 | `nodes` | — | `--nodes=N` |
 | `time_limit` | — | `--time=HH:MM:SS` |
 

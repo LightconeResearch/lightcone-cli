@@ -102,6 +102,7 @@ outputs:
       inputs: [trained_model]               # Dependency on other output
       container: ghcr.io/proj/ml:latest     # Overrides analysis-level default
       resources: { cpus: 4, memory: "32GB", gpus: 1, time_limit: "2h" }
+      # `gpus` is per-node. Multi-node recipes get nodes × gpus total GPUs.
 ```
 
 Set `container:` at analysis level (all recipes inherit); per-recipe `container:` overrides. Pass either a container image name (e.g., `python:3.12-slim`, `ghcr.io/org/img:latest`) or a path to a Containerfile (e.g., `Containerfile`, `containers/Dockerfile`). The runtime figures out whether to pull or build.

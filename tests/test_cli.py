@@ -360,27 +360,33 @@ class TestSetupCommand:
         monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
 
-        # hpc=yes, site=1(perlmutter), username, account,
-        # target_name=default (accept perlmutter-m1234)
-        input_lines = "y\n1\ntestuser\nm1234\n\n"
+        # Inputs: configure hpc, pick site 1, username, account, accept
+        # default target name, accept default qos (1), accept default
+        # constraint (1), accept default max_nodes/max_walltime/
+        # max_concurrent resource limits.
+        input_lines = "y\n1\ntestuser\nm1234\n\n\n\n\n\n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
         assert "Default target: perlmutter-m1234" in result.output
 
-        # Should create the target + local
         assert (targets_dir / "perlmutter-m1234.yaml").exists()
         assert (targets_dir / "local.yaml").exists()
         assert (tmp_path / "config.yaml").exists()
 
-        # Verify target shape — site, backend, connection, account
         import yaml
         target = yaml.safe_load((targets_dir / "perlmutter-m1234.yaml").read_text())
         assert target["site"] == "perlmutter"
         assert target["backend"] == "slurm"
-        assert target["account"] == "m1234"
         assert target["container_runtime"] == "podman-hpc"
+        options = target["options"]
+        assert options["qos"]["default"] == "debug"
+        assert "debug" in options["qos"]["choices"]
+        assert options["constraint"]["default"] == "gpu"
+        assert options["account"]["default"] == "m1234"
+        assert target["strategy"] == "fit"
+        assert target["cache_key_overrides"] == {"regular/cpu": "regular_1"}
+        assert "resource_limits" in target
 
-        # Verify closing message
         assert "lc target --list" in result.output
         assert "lc target add" in result.output
         assert "lc target edit" in result.output
@@ -419,9 +425,10 @@ class TestSetupCommand:
         monkeypatch.setattr("lightcone.engine.targets.get_config_path",
                             lambda: tmp_path / "config.yaml")
 
-        # hpc=yes, site=1(perlmutter), username, account,
-        # target_name=default (accept perlmutter-m1234)
-        input_lines = "y\n1\ntestuser\nm1234\n\n"
+        # hpc=yes, perlmutter, username, account, accept default target
+        # name, accept default qos, accept default constraint, three
+        # resource-limit defaults.
+        input_lines = "y\n1\ntestuser\nm1234\n\n\n\n\n\n\n"
         result = runner.invoke(main, ["setup"], input=input_lines)
         assert result.exit_code == 0
 
@@ -676,20 +683,200 @@ class TestTargetCommand:
         assert "perlmutter-gpu" in result.output
 
     def test_target_show(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        import yaml
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir()
-        (targets_dir / "perlmutter-gpu.yaml").write_text(
-            "site: perlmutter\nbackend: slurm\n"
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = {
+            "site": "perlmutter",
+            "backend": "slurm",
+            "container_runtime": "podman-hpc",
+            "options": {
+                "qos": {
+                    "default": "debug",
+                    "choices": {
+                        "debug":   "quick iteration",
+                        "regular": "production",
+                    },
+                },
+                "constraint": {
+                    "default": "gpu",
+                    "choices": {"gpu": "A100", "cpu": "CPU only"},
+                },
+            },
+            "resource_limits": {"max_nodes": 4},
+        }
+        (targets_dir / "perlmutter.yaml").write_text(yaml.dump(config))
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_targets_dir", lambda: targets_dir,
         )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_cache_dir", lambda: cache_dir,
+        )
+        result = runner.invoke(main, ["target", "--show", "perlmutter"])
+        assert result.exit_code == 0
+        assert "perlmutter" in result.output
+        assert "debug" in result.output
+        assert "regular" in result.output
+        assert "quick iteration" in result.output
+        assert "max_nodes" in result.output
+
+    def test_target_show_nonexistent(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        targets_dir = tmp_path / "targets"
+        targets_dir.mkdir()
         monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
                             lambda: targets_dir)
-        result = runner.invoke(main, ["target", "--show", "perlmutter-gpu"])
+        result = runner.invoke(main, ["target", "--show", "nonexistent"])
+        assert result.exit_code == 1
+
+    def test_target_refresh(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        import yaml
+
+        from lightcone.engine.slurm_info import ClusterInfo, QoSInfo
+
+        targets_dir = tmp_path / "targets"
+        targets_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = {
+            "site": "perlmutter",
+            "backend": "slurm",
+            "options": {
+                "qos": {"default": "debug",
+                         "choices": {"debug": "test"}},
+                "constraint": {"default": "gpu", "choices": {"gpu": ""}},
+            },
+        }
+        (targets_dir / "pm.yaml").write_text(yaml.dump(config))
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_targets_dir", lambda: targets_dir,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_cache_dir", lambda: cache_dir,
+        )
+
+        fake_cluster = ClusterInfo(
+            qos={"gpu_debug": QoSInfo("gpu_debug", max_wall_minutes=30,
+                                       max_nodes=8, priority=69119)},
+            user_qos=["gpu_debug"],
+            user_accounts=["m4031"],
+            partitions={},
+            timestamp="2026-03-28T00:00:00",
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.slurm_info.discover_cluster",
+            lambda: fake_cluster,
+        )
+
+        result = runner.invoke(main, ["target", "refresh", "pm"])
         assert result.exit_code == 0
-        assert "slurm" in result.output
+        assert "Refreshed" in result.output
+        assert (cache_dir / "pm.cluster.yaml").exists()
+
+    def test_target_refresh_nonexistent(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        targets_dir = tmp_path / "targets"
+        targets_dir.mkdir()
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
+                            lambda: targets_dir)
+        result = runner.invoke(main, ["target", "refresh", "nonexistent"])
+        assert result.exit_code == 1
+
+    def test_target_refresh_local_rejected(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        import yaml
+        targets_dir = tmp_path / "targets"
+        targets_dir.mkdir()
+        (targets_dir / "local.yaml").write_text(yaml.dump({"backend": "local"}))
+        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir",
+                            lambda: targets_dir)
+        result = runner.invoke(main, ["target", "refresh", "local"])
+        assert result.exit_code == 0
+        assert "no external option limits" in result.output.lower()
 
     def test_target_help(self, runner: CliRunner):
         result = runner.invoke(main, ["target", "--help"])
         assert result.exit_code == 0
+        assert "refresh" in result.output
+
+
+class TestRunFlags:
+    """Tests for the new --qos/--constraint/--time-limit/--account/--partition flags."""
+
+    def test_run_help_shows_new_flags(self, runner: CliRunner):
+        result = runner.invoke(main, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "--qos" in result.output
+        assert "--constraint" in result.output
+        assert "--time-limit" in result.output
+        assert "--account" in result.output
+        assert "--partition" in result.output
+
+
+class TestTargetShowHidesSchedulerDetails:
+    """`lc target --show` must not leak scheduler implementation details."""
+
+    @pytest.fixture
+    def target_env(self, tmp_path: Path, monkeypatch):
+        import yaml
+
+        targets_dir = tmp_path / "targets"
+        targets_dir.mkdir()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = {
+            "site": "perlmutter",
+            "backend": "slurm",
+            "connection": {
+                "hostname": "perlmutter.nersc.gov",
+                "username": "u",
+            },
+            "container_runtime": "podman-hpc",
+            "options": {
+                "qos": {
+                    "default": "debug",
+                    "choices": {
+                        "debug":   "quick iteration",
+                        "regular": "production",
+                    },
+                },
+                "constraint": {
+                    "default": "gpu",
+                    "choices": {"gpu": "A100", "cpu": "CPU only"},
+                },
+                "time_limit": {"default": "30m"},
+            },
+            "strategy": "fit",
+        }
+        (targets_dir / "pm.yaml").write_text(yaml.dump(config))
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_targets_dir", lambda: targets_dir,
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.targets.get_cache_dir", lambda: cache_dir,
+        )
+        return targets_dir
+
+    def test_show_presents_options(self, runner: CliRunner, target_env):
+        result = runner.invoke(main, ["target", "--show", "pm"])
+        assert result.exit_code == 0
+        assert "qos" in result.output
+        assert "debug" in result.output
+        assert "regular" in result.output
+        assert "constraint" in result.output
+        # Guidance surfaced next to each choice.
+        assert "quick iteration" in result.output
+        assert "A100" in result.output
+
+    def test_show_omits_scheduler_leak(self, runner: CliRunner, target_env):
+        """No scheduler identifiers in the agent-visible output."""
+        result = runner.invoke(main, ["target", "--show", "pm"])
+        assert result.exit_code == 0
+        lowered = result.output.lower()
+        for forbidden in ("slurm", "sbatch", "sacctmgr", "srun", "hostname",
+                           "perlmutter.nersc.gov", "backend",
+                           "podman-hpc", "container_runtime"):
+            assert forbidden not in lowered, \
+                f"agent-facing view leaked '{forbidden}'"
 
 
 class TestRemoteCommandRemoved:
