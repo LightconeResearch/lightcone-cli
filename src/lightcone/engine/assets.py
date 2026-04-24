@@ -375,60 +375,12 @@ def build_definitions(
         runner_config = {"connection": target_config.get("connection", {})}
 
         if backend == "slurm":
-            from lightcone.engine.targets import (
-                get_cache_key_overrides,
-                get_option_choices,
-                get_option_default,
-                resolve_run_config,
-            )
-
-            resolved = resolve_run_config(target_config, cli_overrides or {})
-            scheduler: dict[str, Any] = {
-                "site": target_config.get("site"),
-                "container_runtime": container_runtime,
-            }
-            # Environment axes (qos/constraint/partition/account) live in
-            # `scheduler`.  `time_limit` is a *resource request* — the runner
-            # merges it into the recipe's resources dict so validation,
-            # clamping, and sbatch emission all agree on one value.  Keep CLI
-            # and target-default separate so precedence stays CLI > recipe >
-            # target default.
-            for key in ("qos", "constraint", "account", "partition"):
-                if resolved.get(key) is not None:
-                    scheduler[key] = resolved[key]
-            cli_time_limit = (cli_overrides or {}).get("time_limit")
-            if cli_time_limit is not None:
-                scheduler["_cli_time_limit"] = cli_time_limit
-            default_time_limit = get_option_default(target_config, "time_limit")
-            if default_time_limit is not None:
-                scheduler["_default_time_limit"] = default_time_limit
-
-            # Runner metadata for QoS validation and auto-adjust.
-            if target_name:
-                scheduler["_target_name"] = target_name
-            scheduler["_strategy"] = (
-                (cli_overrides or {}).get("strategy")
-                or target_config.get("strategy", "fit")
-            )
-            qos_choices = list(get_option_choices(target_config, "qos"))
-            if qos_choices:
-                scheduler["_qos_choices"] = qos_choices
-            overrides = get_cache_key_overrides(target_config)
-            if overrides:
-                scheduler["_cache_key_overrides"] = overrides
-
-            if target_config.get("extra_slurm_args"):
-                scheduler["extra_slurm_args"] = target_config["extra_slurm_args"]
-            if target_config.get("extra_container_flags"):
-                scheduler["extra_container_flags"] = target_config[
-                    "extra_container_flags"
-                ]
-
-            runner_config["scheduler"] = scheduler
-            runner_config["resource_limits"] = target_config.get(
-                "resource_limits", {}
-            )
-            runner_config["poll"] = target_config.get("poll", {})
+            # Pilot model: the runner only needs the pilots dict and the
+            # container runtime. CLI overrides have already been applied
+            # to pilots in `lc run`. The intent-based-options machinery
+            # (qos/constraint defaults, choices) lives in target.yaml
+            # and was applied at load-target time.
+            runner_config["pilots"] = target_config.get("pilots", {})
         else:
             # Non-scheduler backend — only forward what matters to the runner.
             scheduler = {}
