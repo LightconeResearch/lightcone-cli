@@ -1089,11 +1089,6 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
 @click.option("--time-limit", default=None, help="walltime (e.g. 30m, 2h, 01:30:00)")
 @click.option("--account", default=None, help="allocation account override")
 @click.option("--partition", default=None, help="partition override")
-@click.option("--strategy", default=None,
-              type=click.Choice(["fit", "switch"]),
-              help="adjustment when options exceed limits: 'fit' trims resources "
-                   "to stay in the selected qos (default); 'switch' keeps resources "
-                   "and picks another qos")
 def run(
     outputs: tuple[str, ...],
     universe: str | None,
@@ -1104,7 +1099,6 @@ def run(
     time_limit: str | None,
     account: str | None,
     partition: str | None,
-    strategy: str | None,
 ) -> None:
     """Materialize ASTRA outputs via Dagster.
 
@@ -1112,23 +1106,25 @@ def run(
     outputs for all universes. Container build specs are automatically
     built before execution unless --no-build is given.
 
-    Any unknown flags are passed through as extra SLURM scheduling directives.
-
     Examples:
         lc run                           # all outputs, all universes
         lc run accuracy                  # specific output
         lc run --universe baseline       # specific universe
         lc run accuracy -u baseline      # specific output + universe
-        lc run --target perlmutter       # run on SLURM
-        lc run --qos regular             # override default qos
-        lc run --qos debug --time-limit 30m   # quick test
-        lc run --no-build                # skip container builds
+        lc run --target perlmutter       # run on the configured perlmutter target
     """
+    import parsl as _parsl
+
     from lightcone.engine.assets import build_definitions
+    from lightcone.engine.parsl_backend import (
+        PilotConfigError,
+        apply_cli_overrides_to_pilots,
+        build_parsl_config,
+        validate_pilots_against_qos,
+    )
     from lightcone.engine.targets import load_target
 
     output_names = list(outputs)
-
     project_path = Path.cwd()
     if not (project_path / "astra.yaml").exists():
         console.print("[red]Error:[/red] No astra.yaml found in current directory.")
@@ -1142,11 +1138,10 @@ def run(
             from lightcone.engine.targets import load_user_config
             target_name = load_user_config().get("default_target")
 
-    target_config = None
+    target_config: dict[str, Any] | None = None
     if target_name and target_name != "local":
         target_config = load_target(target_name)
 
-    # Build CLI overrides from named flags
     cli_overrides: dict[str, Any] = {}
     if qos:
         cli_overrides["qos"] = qos
@@ -1158,61 +1153,82 @@ def run(
         cli_overrides["account"] = account
     if partition:
         cli_overrides["partition"] = partition
-    if strategy:
-        cli_overrides["strategy"] = strategy
 
     universe_id = universe or "baseline"
-    defs = build_definitions(
-        project_path, target_config=target_config, universe_id=universe_id,
-        no_build=no_build, cli_overrides=cli_overrides or None,
-        target_name=target_name,
-    )
+    backend = (target_config or {}).get("backend", "local")
 
-    console.print("[bold]Materializing outputs...[/bold]")
-
-    import dagster as dg
-
-    # Select assets to materialize (exclude external/input-only assets)
-    all_assets = list(defs.resolve_all_asset_specs())
-    if output_names:
-        # Support dot-notation: hod_fitting.galaxy_mesh -> [universe, hod_fitting, galaxy_mesh]
-        selection = [dg.AssetKey([universe_id] + o.split(".")) for o in output_names]
-    else:
-        selection = [
-            spec.key for spec in all_assets
-            if not (spec.metadata or {}).get('external', False)
-        ]
-
-    # Ensure dagster.yaml exists so materialization events are persisted.
-    # Without this, events are lost and lc status can't detect them.
-    dagster_yaml_path = _find_dagster_yaml(project_path)
-    if dagster_yaml_path is None:
-        lightcone_dir = project_path / ".lightcone"
-        lightcone_dir.mkdir(parents=True, exist_ok=True)
-        dagster_yaml_path = lightcone_dir / "dagster.yaml"
-        dagster_yaml_content = {
-            "storage": {"sqlite": {"base_dir": "results/.dagster"}},
-        }
-        dagster_yaml_path.write_text(
-            yaml.dump(dagster_yaml_content, default_flow_style=False, sort_keys=False)
+    # Apply CLI overrides to pilots before validation/Parsl-config build,
+    # so the validated and dispatched config matches the agent's intent.
+    if backend == "slurm" and target_config is not None:
+        target_config = dict(target_config)  # don't mutate caller's dict
+        target_config["pilots"] = apply_cli_overrides_to_pilots(
+            target_config.get("pilots") or {}, cli_overrides,
         )
-    instance = dg.DagsterInstance.from_config(str(dagster_yaml_path.parent))
 
-    # Execute
-    try:
-        result = dg.materialize(
-            assets=list(defs.assets),
-            selection=selection,
-            instance=instance,
+    def _materialize() -> None:
+        defs = build_definitions(
+            project_path, target_config=target_config, universe_id=universe_id,
+            no_build=no_build, cli_overrides=cli_overrides or None,
+            target_name=target_name,
         )
-        if result.success:
-            console.print("[green]✓[/green] Materialization complete")
+
+        console.print("[bold]Materializing outputs...[/bold]")
+        import dagster as dg
+
+        all_assets = list(defs.resolve_all_asset_specs())
+        if output_names:
+            selection = [
+                dg.AssetKey([universe_id] + o.split("."))
+                for o in output_names
+            ]
         else:
-            console.print("[red]✗[/red] Materialization failed")
+            selection = [
+                spec.key for spec in all_assets
+                if not (spec.metadata or {}).get('external', False)
+            ]
+
+        dagster_yaml_path = _find_dagster_yaml(project_path)
+        if dagster_yaml_path is None:
+            lightcone_dir = project_path / ".lightcone"
+            lightcone_dir.mkdir(parents=True, exist_ok=True)
+            dagster_yaml_path = lightcone_dir / "dagster.yaml"
+            dagster_yaml_content = {
+                "storage": {"sqlite": {"base_dir": "results/.dagster"}},
+            }
+            dagster_yaml_path.write_text(
+                yaml.dump(dagster_yaml_content, default_flow_style=False,
+                          sort_keys=False)
+            )
+        instance = dg.DagsterInstance.from_config(str(dagster_yaml_path.parent))
+
+        try:
+            result = dg.materialize(
+                assets=list(defs.assets),
+                selection=selection,
+                instance=instance,
+            )
+            if result.success:
+                console.print("[green]✓[/green] Materialization complete")
+            else:
+                console.print("[red]✗[/red] Materialization failed")
+                raise SystemExit(1)
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
             raise SystemExit(1)
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise SystemExit(1)
+
+    if backend == "slurm":
+        try:
+            validate_pilots_against_qos(
+                pilots=target_config.get("pilots") or {}, target_name=target_name,
+            )
+            parsl_config = build_parsl_config(target_config, project_root=project_path)
+        except (PilotConfigError, ValueError) as e:
+            console.print(f"[red]Pilot config rejected:[/red] {e}")
+            raise SystemExit(1) from None
+        with _parsl.load(parsl_config):
+            _materialize()
+    else:
+        _materialize()
 
 
 @main.command()
