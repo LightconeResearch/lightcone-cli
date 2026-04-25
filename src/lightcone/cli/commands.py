@@ -1113,16 +1113,7 @@ def run(
         lc run accuracy -u baseline      # specific output + universe
         lc run --target perlmutter       # run on the configured perlmutter target
     """
-    import parsl as _parsl
-
     from lightcone.engine.assets import build_definitions
-    from lightcone.engine.parsl_backend import (
-        MissingWorkQueueError,
-        PilotConfigError,
-        apply_cli_overrides_to_pilots,
-        build_parsl_config,
-        validate_pilots_against_qos,
-    )
     from lightcone.engine.targets import load_target
 
     output_names = list(outputs)
@@ -1158,19 +1149,10 @@ def run(
     universe_id = universe or "baseline"
     backend = (target_config or {}).get("backend", "local")
 
-    # Apply CLI overrides to pilots before validation/Parsl-config build,
-    # so the validated and dispatched config matches the agent's intent.
-    if backend == "slurm" and target_config is not None:
-        target_config = dict(target_config)  # don't mutate caller's dict
-        target_config["pilots"] = apply_cli_overrides_to_pilots(
-            target_config.get("pilots") or {}, cli_overrides,
-        )
-
     def _materialize() -> None:
         defs = build_definitions(
             project_path, target_config=target_config, universe_id=universe_id,
-            no_build=no_build, cli_overrides=cli_overrides or None,
-            target_name=target_name,
+            no_build=no_build, target_name=target_name,
         )
 
         console.print("[bold]Materializing outputs...[/bold]")
@@ -1217,23 +1199,39 @@ def run(
             console.print(f"[red]Error:[/red] {e}")
             raise SystemExit(1)
 
-    if backend == "slurm":
-        # backend == "slurm" implies target_config is non-None (defaults to "local").
-        assert target_config is not None
-        try:
-            validate_pilots_against_qos(
-                pilots=target_config.get("pilots") or {}, target_name=target_name,
-            )
-            parsl_config = build_parsl_config(target_config, project_root=project_path)
-        except (PilotConfigError, ValueError) as e:
-            console.print(f"[red]Pilot config rejected:[/red] {e}")
-            raise SystemExit(1) from None
-        except MissingWorkQueueError as e:
-            console.print(f"[red]Missing dependency:[/red] {e}")
-            raise SystemExit(1) from None
-        with _parsl.load(parsl_config):
-            _materialize()
-    else:
+    if backend != "slurm":
+        _materialize()
+        return
+
+    import parsl as _parsl
+
+    from lightcone.engine.parsl_backend import (
+        MissingWorkQueueError,
+        PilotConfigError,
+        apply_cli_overrides_to_pilots,
+        build_parsl_config,
+        validate_pilots_against_qos,
+    )
+
+    assert target_config is not None  # backend != "local" guarantees this
+    target_config = dict(target_config)
+    target_config["pilots"] = apply_cli_overrides_to_pilots(
+        target_config.get("pilots") or {}, cli_overrides,
+    )
+
+    try:
+        validate_pilots_against_qos(
+            pilots=target_config["pilots"], target_name=target_name,
+        )
+        parsl_config = build_parsl_config(target_config, project_root=project_path)
+    except (PilotConfigError, ValueError) as e:
+        console.print(f"[red]Pilot config rejected:[/red] {e}")
+        raise SystemExit(1) from None
+    except MissingWorkQueueError as e:
+        console.print(f"[red]Missing dependency:[/red] {e}")
+        raise SystemExit(1) from None
+
+    with _parsl.load(parsl_config):
         _materialize()
 
 

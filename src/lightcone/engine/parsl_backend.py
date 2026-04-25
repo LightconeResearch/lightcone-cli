@@ -4,7 +4,7 @@ Owns three concerns:
   - Recipe resources (per-task) → WorkQueue per-task spec
   - Target ``pilots:`` dict → ``parsl.Config`` (one executor per pilot)
   - Recipe routing → which executor label handles a given recipe
-  - Pre-flight QoS validation at pilot scope (replaces per-recipe clamping)
+  - Pre-flight QoS validation at pilot scope
 """
 from __future__ import annotations
 
@@ -184,7 +184,7 @@ def _build_pilot_executor(label: str, pilot: dict[str, Any]) -> WorkQueueExecuto
 
 
 # --------------------------------------------------------------------------
-# Pre-flight validation (replaces per-recipe QoS clamping)
+# Pre-flight validation
 # --------------------------------------------------------------------------
 
 
@@ -216,13 +216,6 @@ def validate_pilots_against_qos(
         load_cluster_cache,
     )
 
-    if is_cache_stale(target_name):
-        logger.warning(
-            "Cluster cache for '%s' is stale or missing. "
-            "Run `lc target refresh %s` to update.",
-            target_name, target_name,
-        )
-
     cluster = load_cluster_cache(target_name)
     if cluster is None:
         logger.warning(
@@ -230,6 +223,12 @@ def validate_pilots_against_qos(
             target_name,
         )
         return
+
+    if is_cache_stale(target_name):
+        logger.warning(
+            "Cluster cache for '%s' is stale. Run `lc target refresh %s` to update.",
+            target_name, target_name,
+        )
 
     for label, pilot in pilots.items():
         qos = pilot.get("qos")

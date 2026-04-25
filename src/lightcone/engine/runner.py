@@ -10,20 +10,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from parsl.app.app import bash_app
+from parsl.app.errors import BashExitFailure
+
+from lightcone.engine.parsl_backend import (
+    pick_executor,
+    recipe_resources_to_parsl,
+)
+
 logger = logging.getLogger(__name__)
 
 # Maximum number of characters to keep from stdout/stderr for metadata.
 _TAIL_CHARS = 2000
 
 
-def _read_tail(path: str, max_chars: int) -> str:
-    """Return the last *max_chars* characters of *path*, empty if missing."""
+def _read_tail(path: str, max_chars: int = _TAIL_CHARS) -> str:
+    """Return the last *max_chars* bytes of *path* as text, empty if missing."""
     try:
-        with open(path) as f:
-            data = f.read()
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_chars))
+            return f.read().decode(errors="replace")
     except OSError:
         return ""
-    return data[-max_chars:] if len(data) > max_chars else data
 
 
 def _run_streaming(
@@ -164,18 +174,14 @@ def build_recipe_shell_command(
     cwd: str,
     external_inputs: dict[str, str] | None,
 ) -> str:
-    """Compose the shell command that executes a recipe inside a worker.
+    """Compose a shell script that runs a recipe inside a worker.
 
-    This is the same string the old SLURM backend wrote into an sbatch
-    script body (minus the ``#SBATCH`` headers): cd to cwd, optionally
-    set up symlinks or volume mounts for external inputs, then run the
-    command — wrapping it in ``podman-hpc run`` when a container is
-    requested.
-
-    Used by both the Parsl-backed SLURM runner and any direct-shell
-    debugging. The output is a single multi-line shell script suitable
+    cd to *cwd*, optionally set up symlinks or volume mounts for external
+    inputs, then run the command — wrapping it in ``podman-hpc run`` when
+    a container is requested. Output is a multi-line shell script suitable
     for ``bash -c`` or ``parsl.bash_app``.
     """
+    sorted_inputs = sorted((external_inputs or {}).items())
     lines = [f"cd {shlex.quote(cwd)}"]
 
     if container and container_runtime == "podman-hpc":
@@ -184,14 +190,13 @@ def build_recipe_shell_command(
             container=container,
             project_root=project_root,
             resources=resources,
-            external_inputs=external_inputs,
+            sorted_external_inputs=sorted_inputs,
         ))
         return "\n".join(lines)
 
-    # No container — symlink external inputs into ./data/ for the recipe to read
-    if external_inputs:
+    if sorted_inputs:
         lines.append("mkdir -p data")
-        for input_id, source in sorted(external_inputs.items()):
+        for input_id, source in sorted_inputs:
             src = shlex.quote(str(source))
             dst = shlex.quote(f"data/{input_id}")
             lines.append(f"ln -sfn {src} {dst}")
@@ -205,15 +210,9 @@ def _podman_hpc_run_command_inline(
     container: str,
     project_root: Path,
     resources: dict[str, Any],
-    external_inputs: dict[str, str] | None = None,
+    sorted_external_inputs: list[tuple[str, str]],
 ) -> str:
-    """Build a podman-hpc run invocation as a single shell command string.
-
-    Mirrors the old ``_podman_hpc_run_command`` but without a
-    ``scheduler_config`` parameter — the ``extra_container_flags`` escape
-    hatch is now read from the pilot config when constructing the
-    SlurmProvider, and per-task container flags aren't a concept we need.
-    """
+    """Build a single ``podman-hpc run`` invocation as a shell command string."""
     parts = ["podman-hpc", "run", "--rm"]
 
     if resources.get("gpus"):
@@ -223,7 +222,7 @@ def _podman_hpc_run_command_inline(
 
     parts.extend(["-v", shlex.quote(f"{project_root}:/workspace"), "-w", "/workspace"])
 
-    for input_id, source in sorted((external_inputs or {}).items()):
+    for input_id, source in sorted_external_inputs:
         parts.extend(["-v", shlex.quote(f"{source}:/workspace/data/{input_id}:ro")])
 
     parts.append(container)
@@ -290,8 +289,6 @@ class ASTRAContainerRunner:
             return self._run_slurm(
                 command=full_command,
                 container=container or self.default_container,
-                input_ids=inputs or [],
-                output_id=output_id,
                 universe_id=universe_id,
                 resources=resources or {},
                 external_inputs=external_inputs,
@@ -552,8 +549,6 @@ class ASTRAContainerRunner:
         self,
         command: str,
         container: str | None,
-        input_ids: list[str],
-        output_id: str,
         universe_id: str,
         resources: dict[str, Any],
         external_inputs: dict[str, str] | None = None,
@@ -567,13 +562,7 @@ class ASTRAContainerRunner:
         and awaits the result. Stdout/stderr are read from Parsl's
         per-task log files.
         """
-        from parsl.app.app import bash_app
-        from parsl.app.errors import BashExitFailure
-
-        from lightcone.engine.parsl_backend import (
-            pick_executor,
-            recipe_resources_to_parsl,
-        )
+        import parsl
 
         pilots = self.target_config.get("pilots") or {}
         label = pick_executor(resources, pilots)
@@ -590,14 +579,14 @@ class ASTRAContainerRunner:
             external_inputs=external_inputs,
         )
 
+        # ``parsl_resource_specification``, ``stdout``, ``stderr`` are not used
+        # in the body — Parsl intercepts them by parameter name.
         @bash_app(executors=[label])
         def _run(parsl_resource_specification: dict[str, Any] | None = None,
                  stdout: str | None = None,
-                 stderr: str | None = None) -> str:  # noqa: ARG001 — Parsl reads these via name
+                 stderr: str | None = None) -> str:  # noqa: ARG001
             return full_cmd
 
-        # Parsl's AUTO_LOGNAME picks unique paths under run_dir/task_logs/
-        import parsl
         fut = _run(
             parsl_resource_specification=spec or None,
             stdout=parsl.AUTO_LOGNAME,
@@ -610,7 +599,6 @@ class ASTRAContainerRunner:
         except BashExitFailure as e:
             exit_code = e.exitcode
         except Exception as e:
-            # Pilot expired, worker died, etc.
             return ExecutionResult(
                 exit_code=1,
                 output_path=self.project_root / "results" / universe_id,
@@ -621,16 +609,13 @@ class ASTRAContainerRunner:
                 },
             )
 
-        stdout_tail = _read_tail(fut.stdout, _TAIL_CHARS) if fut.stdout else ""
-        stderr_tail = _read_tail(fut.stderr, _TAIL_CHARS) if fut.stderr else ""
-
         return ExecutionResult(
             exit_code=exit_code,
             output_path=self.project_root / "results" / universe_id,
             metadata={
                 "backend": "slurm",
                 "executor": label,
-                "stdout": stdout_tail,
-                "stderr": stderr_tail,
+                "stdout": _read_tail(fut.stdout) if fut.stdout else "",
+                "stderr": _read_tail(fut.stderr) if fut.stderr else "",
             },
         )

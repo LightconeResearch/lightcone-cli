@@ -13,6 +13,16 @@ from lightcone.engine.parsl_backend import (
 from lightcone.engine.slurm_info import ClusterInfo, QoSInfo
 
 
+def have_workqueue() -> bool:
+    """Mirror of conftest.have_workqueue — used as a skipif predicate."""
+    try:
+        import work_queue  # noqa: F401
+        from parsl.executors import WorkQueueExecutor  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 class TestRecipeResourcesToParsl:
     def test_empty_resources(self):
         assert recipe_resources_to_parsl({}) == {}
@@ -117,16 +127,6 @@ class TestPickExecutor:
             pick_executor({"cpus": 2}, pilots)
 
 
-def _have_workqueue() -> bool:
-    try:
-        import work_queue  # noqa: F401
-        from parsl.executors import WorkQueueExecutor  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
 class TestBuildParslConfig:
     """build_parsl_config returns a parsl.Config with one executor per pilot.
 
@@ -143,7 +143,7 @@ class TestBuildParslConfig:
             build_parsl_config({"backend": "slurm", "pilots": {}})
 
     @pytest.mark.skipif(
-        not _have_workqueue(),
+        not have_workqueue(),
         reason="ndcctools (WorkQueue) not installed — required for SLURM backend",
     )
     def test_single_cpu_pilot(self):
@@ -173,7 +173,7 @@ class TestBuildParslConfig:
         assert provider.max_blocks == 1
 
     @pytest.mark.skipif(
-        not _have_workqueue(),
+        not have_workqueue(),
         reason="ndcctools (WorkQueue) not installed",
     )
     def test_cpu_and_gpu_pilots(self):
@@ -197,7 +197,7 @@ class TestBuildParslConfig:
         assert gpu_ex.provider.account == "m1234_g"
 
     @pytest.mark.skipif(
-        not _have_workqueue(),
+        not have_workqueue(),
         reason="ndcctools (WorkQueue) not installed",
     )
     def test_worker_init_passed_through(self):
@@ -216,7 +216,7 @@ class TestBuildParslConfig:
         assert "module load python" in config.executors[0].provider.worker_init
 
     @pytest.mark.skipif(
-        not _have_workqueue(),
+        not have_workqueue(),
         reason="ndcctools (WorkQueue) not installed",
     )
     def test_run_dir_under_results(self, tmp_path):

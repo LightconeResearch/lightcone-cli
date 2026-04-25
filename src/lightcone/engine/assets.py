@@ -343,28 +343,21 @@ def build_definitions(
     target_config: dict[str, Any] | None = None,
     universe_id: str = "baseline",
     no_build: bool = False,
-    cli_overrides: dict[str, Any] | None = None,
     target_name: str | None = None,
 ) -> dg.Definitions:
     """Build complete Dagster Definitions from an ASTRA project.
 
-    This is the main entry point for the Dagster integration.  When a SLURM
-    target is provided, container images are automatically built (podman-hpc)
-    or pulled before asset definitions are constructed.
-
-    *cli_overrides* are runtime option overrides from CLI flags (e.g.
-    ``--qos``, ``--constraint``, ``--time-limit``).  They are merged with
-    the target's defaults via :func:`resolve_run_config`.
+    Main entry point for the Dagster integration. For SLURM targets,
+    container images are automatically built (podman-hpc) or pulled
+    before asset definitions are constructed.
 
     *target_name* is threaded to the runner for cluster cache lookup.
     """
     spec = load_yaml(project_path / "astra.yaml")
-    # Resolve sub-analysis tree: expand path: references
     spec = resolve_analysis_tree(spec, project_path)
     project_name = spec.get("name") or project_path.name
 
-    # Build runner config from target
-    runner_config = None
+    runner_config: dict[str, Any] | None = None
     container_runtime: str | None = None
     local_runtime: str | None = None
     backend = "docker"
@@ -372,19 +365,13 @@ def build_definitions(
     if target_config:
         backend = target_config.get("backend", "docker")
         container_runtime = target_config.get("container_runtime")
-        runner_config = {"connection": target_config.get("connection", {})}
+        runner_config = {}
 
         if backend == "slurm":
-            # Pilot model: the runner only needs the pilots dict and the
-            # container runtime. CLI overrides have already been applied
-            # to pilots in `lc run`. The intent-based-options machinery
-            # (qos/constraint defaults, choices) lives in target.yaml
-            # and was applied at load-target time.
             runner_config["pilots"] = target_config.get("pilots", {})
             if container_runtime is not None:
                 runner_config["container_runtime"] = container_runtime
         else:
-            # Non-scheduler backend — only forward what matters to the runner.
             scheduler = {}
             for key in ("site", "container_runtime"):
                 if target_config.get(key) is not None:

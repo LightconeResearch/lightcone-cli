@@ -11,21 +11,14 @@ def parsl_local_pilot():
     """Yield with a Parsl DFK loaded with a single LocalProvider-backed
     WorkQueueExecutor labelled 'cpu'. Cleaned up on test exit.
 
-    Use for integration tests that need to actually run bash_app tasks
-    without booting a real SLURM allocation.
-
     Skips the test cleanly if ndcctools (WorkQueue) isn't installed.
     """
     try:
         import parsl
+        import work_queue  # noqa: F401
         from parsl.config import Config
         from parsl.executors import WorkQueueExecutor
         from parsl.providers import LocalProvider
-    except ImportError as e:
-        pytest.skip(f"Parsl not available: {e}")
-
-    try:
-        import work_queue  # noqa: F401
     except ImportError:
         pytest.skip("ndcctools (WorkQueue) not installed")
 
