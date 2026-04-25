@@ -109,23 +109,19 @@ class TestIntegration:
         assert result.exit_code == 0
         assert "cleaned" in result.output or "pending" in result.output
 
-    def test_target_save_and_load(self, tmp_path, monkeypatch):
-        """Target config round-trip."""
-        targets = tmp_path / "targets"
-        targets.mkdir()
-        monkeypatch.setattr("lightcone.engine.targets.get_targets_dir", lambda: targets)
+    def test_pilot_save_and_load(self, tmp_path):
+        """Pilot config round-trip via the public CRUD API."""
+        from lightcone.engine.pilots import list_pilots, load_pilot_config, save_pilot_config
 
-        from lightcone.engine.targets import list_targets, load_target, save_target
-
-        save_target("test-target", {
-            "site": "test-site",
-            "backend": "slurm",
+        save_pilot_config("test-pilot", {
+            "site": "perlmutter",
+            "account": "m1234",
+            "workers": [{"nodes": 1}],
         })
-
-        loaded = load_target("test-target")
+        loaded = load_pilot_config("test-pilot")
         assert loaded is not None
-        assert loaded["backend"] == "slurm"
-        assert list_targets() == ["test-target"]
+        assert loaded["site"] == "perlmutter"
+        assert list_pilots() == ["test-pilot"]
 
     def test_io_manager_paths(self, project_dir):
         """IO manager should produce correct paths."""

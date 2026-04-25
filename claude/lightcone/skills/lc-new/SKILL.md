@@ -68,7 +68,7 @@ For each approved paper: `astra paper add <doi>`, `astra paper path <doi>`, then
 - **Target decisions**: each decision ID, label, and options with descriptions
 - **Timestamp**: current time in ISO 8601
 
-The agent type is pre-configured with the user's preferred extraction model (set via `lc setup`). Spawn all in a single message (parallel). Show progress as results come in:
+The agent type's model is declared in `.claude/agents/lc-extractor.md` (edit the frontmatter `model:` field to change it). Spawn all in a single message (parallel). Show progress as results come in:
 
 ```
   ✓ Ba et al. 2016 -- 3 prior insights

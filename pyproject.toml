@@ -17,6 +17,8 @@ dependencies = [
     "dagster>=1.9",
     "dagster-webserver>=1.9",
     "dagster-docker>=0.25",
+    "dagster-dask>=0.25",
+    "distributed>=2024.0",
     "langfuse>=2.0",
 ]
 

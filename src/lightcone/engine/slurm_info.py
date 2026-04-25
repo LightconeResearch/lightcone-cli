@@ -439,24 +439,24 @@ def recommend_qos(
 ) -> list[QoSRecommendation]:
     """Return QoS recommendations sorted by preference and eligibility.
 
-    *qos_choices* is the list of user-facing QoS names available on this
-    target (``options.qos.choices`` keys).  *constraint* is the
-    user-selected constraint, held fixed for all candidates — "switch"
-    never crosses hardware families.  Each candidate resolves to a cache
-    record via :func:`lightcone.engine.targets.resolve_cache_key`.
+    *qos_choices* is the list of user-facing QoS names available on the
+    site (``site_registry.SITE_DEFAULTS[site].suggested_options.qos.choices``).
+    *constraint* is the user-selected constraint, held fixed for all
+    candidates — "switch" never crosses hardware families.  Each candidate
+    resolves to a cache record via :func:`lightcone.engine.pilots._resolve_cache_key`.
 
     Sort order:
       1. *preferred_qos* first (if eligible),
       2. eligible options by priority (descending),
       3. ineligible options last.
     """
-    from lightcone.engine.targets import resolve_cache_key
+    from lightcone.engine.pilots import _resolve_cache_key as resolve_cache_key
 
     recommendations: list[QoSRecommendation] = []
     cache_by_qos: dict[str, str] = {}
     for qos_name in qos_choices:
         cache_name = resolve_cache_key(
-            qos_name, constraint, cluster.qos, cache_key_overrides,
+            qos_name, constraint, cluster.qos, cache_key_overrides or {},
         )
         qos_info = cluster.qos.get(cache_name)
         if qos_info is None:

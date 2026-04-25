@@ -1,6 +1,7 @@
 """Asset factory — generates Dagster assets from astra.yaml output recipes."""
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,10 @@ from lightcone.engine.tree import (
     TreeOutput,
     collect_tree_outputs,
 )
+
+#: Op-tag key recognised by ``dagster_dask.dask_executor`` to route the
+#: step to a Dask worker advertising matching ``--resources``.
+DASK_RESOURCE_REQUIREMENTS_KEY = "dagster-dask/resource_requirements"
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +302,13 @@ def _build_single_asset(
     if group_name:
         asset_kwargs["group_name"] = group_name
 
+    # Tag GPU recipes so dagster-dask routes them to GPU workers.
+    gpus_per_node = int(resources.get("gpus", 0) or 0)
+    if gpus_per_node > 0:
+        asset_kwargs["op_tags"] = {
+            DASK_RESOURCE_REQUIREMENTS_KEY: json.dumps({"GPU": gpus_per_node})
+        }
+
     @dg.asset(**asset_kwargs)
     def _asset(context) -> dg.MaterializeResult:
         params = _load_universe_params(project_path, universe_id)
@@ -340,113 +352,40 @@ def _build_single_asset(
 
 def build_definitions(
     project_path: Path,
-    target_config: dict[str, Any] | None = None,
+    pilot_config: dict[str, Any] | None = None,
     universe_id: str = "baseline",
     no_build: bool = False,
-    cli_overrides: dict[str, Any] | None = None,
-    target_name: str | None = None,
+    executor_def: Any = None,
 ) -> dg.Definitions:
     """Build complete Dagster Definitions from an ASTRA project.
 
-    This is the main entry point for the Dagster integration.  When a SLURM
-    target is provided, container images are automatically built (podman-hpc)
-    or pulled before asset definitions are constructed.
-
-    *cli_overrides* are runtime option overrides from CLI flags (e.g.
-    ``--qos``, ``--constraint``, ``--time-limit``).  They are merged with
-    the target's defaults via :func:`resolve_run_config`.
-
-    *target_name* is threaded to the runner for cluster cache lookup.
+    When *pilot_config* is provided, the runner is configured to use the
+    pilot's container runtime (e.g. ``podman-hpc``) on compute nodes and
+    *executor_def* (typically :data:`dagster_dask.dask_executor`) is
+    attached so steps dispatch to the live Dask cluster.  When omitted,
+    the runner auto-detects a local container runtime and Dagster runs in
+    process.
     """
     spec = load_yaml(project_path / "astra.yaml")
-    # Resolve sub-analysis tree: expand path: references
     spec = resolve_analysis_tree(spec, project_path)
     project_name = spec.get("name") or project_path.name
 
-    # Build runner config from target
-    runner_config = None
     container_runtime: str | None = None
     local_runtime: str | None = None
     backend = "docker"
 
-    if target_config:
-        backend = target_config.get("backend", "docker")
-        container_runtime = target_config.get("container_runtime")
-        runner_config = {"connection": target_config.get("connection", {})}
-
-        if backend == "slurm":
-            from lightcone.engine.targets import (
-                get_cache_key_overrides,
-                get_option_choices,
-                get_option_default,
-                resolve_run_config,
-            )
-
-            resolved = resolve_run_config(target_config, cli_overrides or {})
-            scheduler: dict[str, Any] = {
-                "site": target_config.get("site"),
-                "container_runtime": container_runtime,
-            }
-            # Environment axes (qos/constraint/partition/account) live in
-            # `scheduler`.  `time_limit` is a *resource request* — the runner
-            # merges it into the recipe's resources dict so validation,
-            # clamping, and sbatch emission all agree on one value.  Keep CLI
-            # and target-default separate so precedence stays CLI > recipe >
-            # target default.
-            for key in ("qos", "constraint", "account", "partition"):
-                if resolved.get(key) is not None:
-                    scheduler[key] = resolved[key]
-            cli_time_limit = (cli_overrides or {}).get("time_limit")
-            if cli_time_limit is not None:
-                scheduler["_cli_time_limit"] = cli_time_limit
-            default_time_limit = get_option_default(target_config, "time_limit")
-            if default_time_limit is not None:
-                scheduler["_default_time_limit"] = default_time_limit
-
-            # Runner metadata for QoS validation and auto-adjust.
-            if target_name:
-                scheduler["_target_name"] = target_name
-            scheduler["_strategy"] = (
-                (cli_overrides or {}).get("strategy")
-                or target_config.get("strategy", "fit")
-            )
-            qos_choices = list(get_option_choices(target_config, "qos"))
-            if qos_choices:
-                scheduler["_qos_choices"] = qos_choices
-            overrides = get_cache_key_overrides(target_config)
-            if overrides:
-                scheduler["_cache_key_overrides"] = overrides
-
-            if target_config.get("extra_slurm_args"):
-                scheduler["extra_slurm_args"] = target_config["extra_slurm_args"]
-            if target_config.get("extra_container_flags"):
-                scheduler["extra_container_flags"] = target_config[
-                    "extra_container_flags"
-                ]
-
-            runner_config["scheduler"] = scheduler
-            runner_config["resource_limits"] = target_config.get(
-                "resource_limits", {}
-            )
-            runner_config["poll"] = target_config.get("poll", {})
-        else:
-            # Non-scheduler backend — only forward what matters to the runner.
-            scheduler = {}
-            for key in ("site", "container_runtime"):
-                if target_config.get(key) is not None:
-                    scheduler[key] = target_config[key]
-            if scheduler:
-                runner_config["scheduler"] = scheduler
+    if pilot_config is not None:
+        backend = "docker"  # runner uses the configured container_runtime CLI
+        container_runtime = pilot_config.get("container_runtime")
+        if container_runtime is None:
+            from lightcone.engine.site_registry import get_site_defaults
+            site_defaults = get_site_defaults(pilot_config.get("site", "")) or {}
+            container_runtime = site_defaults.get("container_runtime") or "podman-hpc"
     else:
-        # No target config → local target.  Detect available container runtime.
         from lightcone.engine.container import detect_container_runtime
         local_runtime = detect_container_runtime()
         backend = "docker" if local_runtime else "venv"
 
-    # Resolve analysis-level container spec to a string for the runner.
-    # For SLURM targets this triggers podman-hpc build/migrate or
-    # podman-hpc migrate automatically.  Skipped entirely when no
-    # container runtime is available.
     raw_container = spec.get("container")
     if not no_build and (container_runtime or local_runtime):
         default_container = _resolve_container(
@@ -456,21 +395,12 @@ def build_definitions(
     else:
         default_container = raw_container
 
-    # Build runner from target config
-    if runner_config:
-        runner = ASTRAContainerRunner(
-            project_root=str(project_path),
-            backend=backend,
-            default_container=default_container,
-            target_config=runner_config,
-        )
-    else:
-        runner = ASTRAContainerRunner(
-            project_root=str(project_path),
-            backend=backend,
-            default_container=default_container,
-            container_runtime=local_runtime,
-        )
+    runner = ASTRAContainerRunner(
+        project_root=str(project_path),
+        backend=backend,
+        default_container=default_container,
+        container_runtime=container_runtime or local_runtime,
+    )
 
     assets = build_asset_definitions(
         spec, runner=runner, universe_id=universe_id, project_path=project_path,
@@ -478,4 +408,6 @@ def build_definitions(
         container_runtime=container_runtime, local_runtime=local_runtime,
     )
 
+    if executor_def is not None:
+        return dg.Definitions(assets=assets, executor=executor_def)
     return dg.Definitions(assets=assets)

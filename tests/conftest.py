@@ -19,20 +19,14 @@ def materialize_via_dagster(
 
 
 @pytest.fixture(autouse=True)
-def _fake_config(tmp_path, monkeypatch):
-    """Ensure a config.yaml exists so the CLI auto-trigger doesn't fire.
+def _isolate_lightcone_home(tmp_path, monkeypatch):
+    """Redirect ``~/.lightcone/`` reads/writes to a per-test temp dir.
 
-    The ``main`` group callback checks for ``~/.lightcone/config.yaml`` and
-    launches the setup wizard when it is missing.  This fixture creates a
-    temporary config so that tests which invoke CLI commands are not
-    interrupted by the wizard.
-
-    Individual tests that want to exercise the auto-trigger behaviour
-    should override ``get_config_path`` themselves.
+    Pilot CRUD, cluster cache, and worker-env paths all derive from
+    ``Path.home()``.  Pinning ``HOME`` to a tmp dir keeps tests from
+    touching the developer's real config.
     """
-    config_path = tmp_path / "lightcone_cfg" / "config.yaml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("default_target: fake\n")
-    monkeypatch.setattr(
-        "lightcone.engine.targets.get_config_path", lambda: config_path
-    )
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)

@@ -59,7 +59,7 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 
 1. **Add the recipe block** to `astra.yaml` under the output's `recipe:` key.
 2. **Validate:** `astra validate astra.yaml`
-3. **Check the target:** Run `lc target` to confirm the current target. If it is a remote/queued target, `lc run` will wait in the queue — that makes the build loop useless. Ask the user to switch the project to the `local` target (`lc target --set local`) and run the loop from a machine that can actually execute recipes (e.g. their laptop with Docker, or a compute session they've already opened).
+3. **Check the dispatch path:** If a pilot is configured (`pilot:` key in `.lightcone/lightcone.yaml`) make sure it is RUNNING via `lc pilot status` — otherwise `lc run` will refuse and the build loop stalls. To bypass the pilot for this loop, use `lc run --local` from a machine that can actually execute recipes (laptop with Docker, or a compute session you've already opened).
 4. **Run it:** `lc run <OUTPUT> --universe {{UNIVERSE}}`
 5. **If it fails:** Read the error output carefully and diagnose the root cause before retrying. Never re-run the same command without changing something first. Common causes:
    - Container not built → `lc build`

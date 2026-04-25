@@ -1,9 +1,8 @@
 """Known site defaults.
 
-When ``lc setup`` detects a known site, it pre-populates a target with
-orthogonal ``options`` (qos, constraint, ...) and scheduler-neutral
-guidance drawn from the entries below.  Users override any default
-during the wizard.
+When ``lc pilot add`` detects a known site, it pre-populates a pilot YAML
+from the entry below.  Users override any default during the wizard or by
+editing the pilot file later.
 
 To add a new site, append an entry to :data:`SITE_DEFAULTS`.
 """
@@ -11,19 +10,17 @@ from __future__ import annotations
 
 from typing import Any
 
-#: Per-site defaults.  ``suggested_options`` follows the same shape as the
-#: target file's ``options`` section: an orthogonal map of axis →
-#: ``{default, choices}`` (where ``choices`` is ``{value: guidance}``).
-#: ``cache_key_overrides`` captures non-conventional sacctmgr naming (e.g.
-#: Perlmutter's ``regular_1`` for the CPU ``regular`` queue).
+#: Per-site defaults.  Each entry carries ``container_runtime`` (the CLI
+#: invoked on compute nodes), an optional ``pilot`` block with sbatch
+#: defaults (``scratch_root``, ``default_qos``, ``default_walltime``,
+#: ``worker_init_template``), ``cache_key_overrides`` capturing non-
+#: conventional sacctmgr naming (e.g. Perlmutter's ``regular_1`` for the
+#: CPU ``regular`` queue), and ``scratch_paths`` used to seed Claude Code
+#: edit-deny rules in ``lc init``.
 SITE_DEFAULTS: dict[str, dict[str, Any]] = {
     "perlmutter": {
         "hostname_patterns": ["perlmutter", "saul"],
         "display_name": "NERSC Perlmutter",
-        "backend": "slurm",
-        "connection": {
-            "hostname": "perlmutter.nersc.gov",
-        },
         "container_runtime": "podman-hpc",
         "suggested_options": {
             "qos": {
@@ -36,17 +33,23 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
                 },
             },
             "constraint": {
-                "default": "gpu",
+                "default": "cpu",
                 "choices": {
-                    "gpu":          "A100 40 GB — 1,536 nodes, 4 GPUs/node",
-                    "cpu":          "CPU only — 3,072 nodes, 128 cores/node",
-                    "gpu&hbm80g":   "A100 80 GB — 256 nodes",
+                    "cpu":        "CPU only — 3,072 nodes, 128 cores/node",
+                    "gpu":        "A100 40 GB — 1,536 nodes, 4 GPUs/node",
+                    "gpu&hbm80g": "A100 80 GB — 256 nodes",
                 },
             },
-            "time_limit": {
-                "default": "30m",
-                "guidance": "debug caps at 30 min; regular allows up to 48 h",
-            },
+        },
+        # Pilot defaults — fields the user almost never overrides.
+        "pilot": {
+            "scratch_root": "$PSCRATCH",
+            "default_qos": "regular",
+            "default_walltime": "24h",
+            "worker_init_template": (
+                "module load python\n"
+                "source $HOME/.lightcone/envs/perlmutter/bin/activate\n"
+            ),
         },
         # Perlmutter's sacctmgr names prefix GPU QoS with `gpu_` and
         # suffix the CPU regular queue as `regular_1`.  The first is
@@ -61,12 +64,6 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
             "//global/cfs/cdirs/**",
         ],
     },
-    "local": {
-        "hostname_patterns": [],
-        "display_name": "Local",
-        "backend": "local",
-        "connection": {},
-    },
 }
 
 
@@ -74,8 +71,6 @@ def detect_site(hostname_or_name: str) -> str | None:
     """Detect a known site from a hostname or site name."""
     normalized = hostname_or_name.lower()
     for site_key, site in SITE_DEFAULTS.items():
-        if site.get("backend") == "local":
-            continue
         if site_key in normalized:
             return site_key
         for pattern in site.get("hostname_patterns", []):
