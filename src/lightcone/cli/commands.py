@@ -596,23 +596,25 @@ def run(
     force_local: bool,
     no_build: bool,
 ) -> None:
-    """Materialize ASTRA outputs.
+    """Materialize ASTRA outputs via dagster-dask.
 
-    Without ``--cluster`` or a project default, runs locally with auto-detected
-    container runtime.  When a cluster is resolved, dispatches assets via
-    ``dagster-dask`` to the live cluster.
+    Without ``--cluster`` or a project default, ``dagster-dask`` spins up
+    an ephemeral ``distributed.LocalCluster`` per run.  When a cluster is
+    resolved, dispatches assets to its live Dask scheduler instead.
 
     Examples:
         lc run                              # all outputs, default universe
         lc run accuracy                     # specific output
         lc run -u baseline                  # specific universe
-        lc run --cluster perlmutter           # explicit cluster
+        lc run --cluster perlmutter         # explicit cluster
         lc run --local                      # force local even with cluster configured
     """
     import dagster as dg
+    from dagster_dask import dask_executor
 
     from lightcone.engine.assets import build_definitions
     from lightcone.engine.clusters import find_running_cluster, resolve_cluster
+    from lightcone.engine.dask_entrypoint import get_cluster_job
 
     project_path = Path.cwd()
     if not (project_path / "astra.yaml").exists():
@@ -622,51 +624,33 @@ def run(
     output_names = list(outputs)
     universe_id = universe or "baseline"
 
-    cluster_resolution: tuple[str, dict] | None = None
+    # --- Resolve which cluster (if any) backs this run ---
+    cluster_name: str | None = None
+    cluster_config: dict | None = None
     if not force_local:
         try:
-            cluster_resolution = resolve_cluster(project_path, cli_cluster=cluster)
+            resolution = resolve_cluster(project_path, cli_cluster=cluster)
         except FileNotFoundError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise SystemExit(1)
+        if resolution is not None:
+            cluster_name, cluster_config = resolution
 
-    cluster_name: str | None = None
-    cluster_config: dict | None = None
-    if cluster_resolution is not None:
-        cluster_name, cluster_config = cluster_resolution
-
-    # Build the Dagster Definitions.  When a cluster is active, the executor
-    # is the dagster-dask one; otherwise the default in-process executor.
-    if cluster_config is not None:
-        try:
-            from dagster_dask import dask_executor
-        except ImportError:
-            console.print(
-                "[red]Error:[/red] dagster-dask not installed. "
-                "Reinstall lightcone-cli or `pip install dagster-dask distributed`."
-            )
-            raise SystemExit(1)
-        defs = build_definitions(
-            project_path, cluster_config=cluster_config, universe_id=universe_id,
-            no_build=no_build, executor_def=dask_executor,
-        )
-    else:
-        defs = build_definitions(
-            project_path, cluster_config=None, universe_id=universe_id,
-            no_build=no_build,
-        )
-
+    # --- Build Definitions on the orchestrator side (for selection enumeration) ---
+    defs = build_definitions(
+        project_path, cluster_config=cluster_config, universe_id=universe_id,
+        no_build=no_build, executor_def=dask_executor,
+    )
     all_assets = list(defs.resolve_all_asset_specs())
     if output_names:
-        selection = [
-            dg.AssetKey([universe_id] + o.split(".")) for o in output_names
-        ]
+        selection = [dg.AssetKey([universe_id] + o.split(".")) for o in output_names]
     else:
         selection = [
             spec.key for spec in all_assets
             if not (spec.metadata or {}).get("external", False)
         ]
 
+    # --- Dagster instance ---
     dagster_yaml_path = _find_dagster_yaml(project_path)
     if dagster_yaml_path is None:
         lightcone_dir = project_path / ".lightcone"
@@ -680,51 +664,31 @@ def run(
         )
     instance = dg.DagsterInstance.from_config(str(dagster_yaml_path.parent))
 
-    if cluster_config is None:
-        # Local path — in-process materialization.
-        console.print("[bold]Materializing outputs (local)...[/bold]")
-        try:
-            result = dg.materialize(
-                assets=list(defs.assets),
-                selection=selection,
-                instance=instance,
-            )
-        except Exception as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise SystemExit(1)
-        if result.success:
-            console.print("[green]✓[/green] Materialization complete")
-        else:
-            console.print("[red]✗[/red] Materialization failed")
-            raise SystemExit(1)
-        return
-
-    # Cluster path — dispatch via dagster-dask to the running cluster.
-    assert cluster_name is not None  # guaranteed by the cluster_resolution branch
-    info = find_running_cluster(cluster_name)
-    if info is None:
-        console.print(
-            f"[red]Error:[/red] No active cluster for '{cluster_name}'.\n"
-            f"  Start one with: [cyan]lc cluster start {cluster_name}[/cyan]"
-        )
-        raise SystemExit(1)
-
-    from lightcone.engine.dask_entrypoint import get_cluster_job
-
+    # --- Resolve the Dask cluster mode for the run_config ---
     os.environ["LIGHTCONE_PROJECT_PATH"] = str(project_path)
-    os.environ["LIGHTCONE_CLUSTER"] = cluster_name
     os.environ["LIGHTCONE_UNIVERSE"] = universe_id
 
-    run_config = {
-        "execution": {"config": {"cluster": {"existing": {
-            "address": info.scheduler_address,
-        }}}},
-    }
+    if cluster_name is None:
+        # Local — dagster-dask spins up an ephemeral distributed.LocalCluster.
+        os.environ["LIGHTCONE_CLUSTER"] = ""
+        cluster_mode: dict[str, Any] = {"local": {}}
+        location_label = "local"
+    else:
+        info = find_running_cluster(cluster_name)
+        if info is None:
+            console.print(
+                f"[red]Error:[/red] No active cluster for '{cluster_name}'.\n"
+                f"  Start one with: [cyan]lc cluster start {cluster_name}[/cyan]"
+            )
+            raise SystemExit(1)
+        os.environ["LIGHTCONE_CLUSTER"] = cluster_name
+        cluster_mode = {"existing": {"address": info.scheduler_address}}
+        location_label = f"cluster '{cluster_name}' ({info.scheduler_address})"
+
+    run_config = {"execution": {"config": {"cluster": cluster_mode}}}
     op_selection = [_asset_key_to_op_name(k, universe_id) for k in selection]
-    console.print(
-        f"[bold]Materializing outputs on cluster '{cluster_name}' "
-        f"({info.scheduler_address})...[/bold]"
-    )
+
+    console.print(f"[bold]Materializing outputs on {location_label}...[/bold]")
     try:
         result = dg.execute_job(
             get_cluster_job(), instance=instance,

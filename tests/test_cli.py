@@ -1,6 +1,7 @@
 """Tests for lightcone-cli CLI commands."""
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -300,6 +301,53 @@ class TestHelpOption:
         assert result.exit_code == 0
         assert "cluster" in result.output.lower()
 
+
+
+class TestRunDispatch:
+    """`lc run` always goes through dagster-dask; verify the run_config payload."""
+
+    def _make_project(self, tmp_path: Path, runner: CliRunner) -> Path:
+        project = tmp_path / "p"
+        runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+        # Trivial astra.yaml — one no-op recipe.
+        (project / "astra.yaml").write_text(
+            "version: '1.0'\n"
+            "name: T\n"
+            "outputs:\n"
+            "  - id: noop\n"
+            "    type: data\n"
+            "    recipe:\n"
+            "      command: echo\n"
+        )
+        (project / "universes" / "baseline.yaml").write_text(
+            "id: baseline\ndecisions: {}\n"
+        )
+        return project
+
+    def test_run_local_uses_dask_local_mode(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch,
+    ):
+        """Without a configured cluster, lc run dispatches via cluster: {local: {}}."""
+        project = self._make_project(tmp_path, runner)
+        monkeypatch.chdir(project)
+
+        captured: dict[str, Any] = {}
+
+        def fake_execute_job(job, *, instance, run_config, op_selection=None):
+            captured["run_config"] = run_config
+            captured["op_selection"] = op_selection
+
+            class _R:
+                success = True
+            return _R()
+
+        with patch("dagster.execute_job", fake_execute_job):
+            result = runner.invoke(main, ["run", "--local"])
+
+        assert result.exit_code == 0, result.output
+        assert captured["run_config"] == {
+            "execution": {"config": {"cluster": {"local": {}}}}
+        }
 
 
 class TestRemovedCommands:

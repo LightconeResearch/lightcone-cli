@@ -24,22 +24,30 @@ from dagster import reconstructable
 
 
 def build_cluster_job() -> Any:
-    """Module-scope callable. Workers re-import and call this."""
+    """Module-scope callable. Workers re-import and call this.
+
+    ``LIGHTCONE_CLUSTER`` is the cluster config name to load.  If unset
+    or empty, this is the local-execution case: no config is loaded, and
+    the orchestrator will pass ``cluster: {local: {}}`` in the run_config
+    so dagster-dask spins up a :class:`distributed.LocalCluster` for us.
+    """
     from dagster_dask import dask_executor
 
     from lightcone.engine.assets import build_definitions
     from lightcone.engine.clusters import load_cluster_config
 
     project_path = Path(os.environ["LIGHTCONE_PROJECT_PATH"])
-    cluster_name = os.environ["LIGHTCONE_CLUSTER"]
+    cluster_name = os.environ.get("LIGHTCONE_CLUSTER") or None
     universe_id = os.environ.get("LIGHTCONE_UNIVERSE", "baseline")
 
-    cluster_config = load_cluster_config(cluster_name)
-    if cluster_config is None:
-        raise RuntimeError(
-            f"LIGHTCONE_CLUSTER={cluster_name!r} but no cluster config exists at "
-            f"~/.lightcone/clusters/{cluster_name}.yaml"
-        )
+    cluster_config: dict | None = None
+    if cluster_name:
+        cluster_config = load_cluster_config(cluster_name)
+        if cluster_config is None:
+            raise RuntimeError(
+                f"LIGHTCONE_CLUSTER={cluster_name!r} but no cluster config exists at "
+                f"~/.lightcone/clusters/{cluster_name}.yaml"
+            )
 
     defs = build_definitions(
         project_path,
