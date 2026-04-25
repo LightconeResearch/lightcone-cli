@@ -10,17 +10,19 @@ import pytest
 from lightcone.engine.clusters import (
     ClusterSpec,
     WorkerPool,
-    _parse_job_id,
-    _read_scheduler_address,
-    ensure_worker_env,
     list_clusters,
     load_cluster_config,
     parse_walltime_seconds,
-    render_cluster_sbatch,
+    read_scheduler_address,
     resolve_cluster,
     save_cluster_config,
     spec_from_config,
     walltime_to_slurm,
+)
+from lightcone.engine.clusters._slurm import (
+    ensure_worker_env,
+    parse_job_id,
+    render_sbatch,
 )
 
 # ---------------------------------------------------------------------------
@@ -55,6 +57,7 @@ class TestWalltime:
 @pytest.fixture
 def perlmutter_yaml() -> dict:
     return {
+        "type": "slurm",
         "site": "perlmutter",
         "account": "m1234",
         "qos": "regular",
@@ -91,13 +94,23 @@ class TestSpecFromConfig:
         assert len(spec.workers) == 1
         assert spec.workers[0].nodes == 4
 
+    def test_missing_type_raises(self):
+        with pytest.raises(ValueError, match="missing required field 'type'"):
+            spec_from_config("x", {"site": "perlmutter", "account": "m1"})
+
+    def test_unknown_type_raises(self):
+        with pytest.raises(ValueError, match="unknown type"):
+            spec_from_config("x", {"type": "k8s", "site": "perlmutter", "account": "m1"})
+
     def test_missing_site_raises(self):
         with pytest.raises(ValueError, match="missing required field 'site'"):
-            spec_from_config("x", {"account": "m1"})
+            spec_from_config("x", {"type": "slurm", "account": "m1"})
 
     def test_missing_workers_raises(self):
         with pytest.raises(ValueError, match="at least one worker pool"):
-            spec_from_config("x", {"site": "perlmutter", "account": "m1"})
+            spec_from_config(
+                "x", {"type": "slurm", "site": "perlmutter", "account": "m1"},
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +156,7 @@ class TestResolveCluster:
 def _spec(**overrides) -> ClusterSpec:
     base = {
         "name": "perlmutter",
+        "type": "slurm",
         "site": "perlmutter",
         "account": "m1234",
         "qos": "regular",
@@ -157,7 +171,7 @@ def _spec(**overrides) -> ClusterSpec:
 
 class TestSbatchRender:
     def test_single_pool_basic_directives(self):
-        script = render_cluster_sbatch(_spec())
+        script = render_sbatch(_spec())
         assert "#SBATCH --job-name=lc-cluster-perlmutter" in script
         assert "#SBATCH --nodes=4" in script
         assert "#SBATCH --time=24:00:00" in script
@@ -165,20 +179,20 @@ class TestSbatchRender:
         assert "#SBATCH --account=m1234" in script
 
     def test_runs_dask_scheduler_and_worker(self):
-        script = render_cluster_sbatch(_spec())
+        script = render_sbatch(_spec())
         assert "dask scheduler" in script
         assert "dask worker" in script
         assert "$PSCRATCH/lightcone/clusters/perlmutter.json" in script
         assert 'wait "$SCHED_PID"' in script
 
     def test_default_worker_init_template(self):
-        script = render_cluster_sbatch(_spec())
+        script = render_sbatch(_spec())
         assert "module load python" in script
         assert "source $HOME/.lightcone/envs/perlmutter/bin/activate" in script
 
     def test_user_overrides_worker_init(self):
         spec = _spec(worker_init="echo override\n")
-        script = render_cluster_sbatch(spec)
+        script = render_sbatch(spec)
         assert "echo override" in script
         assert "module load python" not in script
 
@@ -187,7 +201,7 @@ class TestSbatchRender:
             WorkerPool(nodes=2, constraint="cpu"),
             WorkerPool(nodes=2, constraint="cpu"),
         ])
-        script = render_cluster_sbatch(spec)
+        script = render_sbatch(spec)
         assert "#SBATCH --constraint=cpu" in script
         # No per-srun --constraint when uniform.
         assert script.count("--constraint=") == 1
@@ -197,7 +211,7 @@ class TestSbatchRender:
             WorkerPool(nodes=3, constraint="cpu", resources={}),
             WorkerPool(nodes=1, constraint="gpu", resources={"GPU": 4}),
         ])
-        script = render_cluster_sbatch(spec)
+        script = render_sbatch(spec)
         # Total nodes = sum of pools.
         assert "#SBATCH --nodes=4" in script
         # Two srun lines, each with its own constraint.
@@ -210,7 +224,7 @@ class TestSbatchRender:
     def test_missing_account_raises(self):
         spec = _spec(account="")
         with pytest.raises(ValueError, match="missing 'account'"):
-            render_cluster_sbatch(spec)
+            render_sbatch(spec)
 
 
 # ---------------------------------------------------------------------------
@@ -219,24 +233,24 @@ class TestSbatchRender:
 
 
 class TestParsing:
-    def test_parse_job_id(self):
-        assert _parse_job_id("Submitted batch job 12345678\n") == "12345678"
+    def testparse_job_id(self):
+        assert parse_job_id("Submitted batch job 12345678\n") == "12345678"
 
-    def test_parse_job_id_no_match(self):
-        assert _parse_job_id("error: bogus output") is None
+    def testparse_job_id_no_match(self):
+        assert parse_job_id("error: bogus output") is None
 
-    def test_read_scheduler_address(self, tmp_path):
+    def testread_scheduler_address(self, tmp_path):
         path = tmp_path / "sched.json"
         path.write_text(json.dumps({"address": "tcp://nid001234:8786"}))
-        assert _read_scheduler_address(str(path)) == "tcp://nid001234:8786"
+        assert read_scheduler_address(str(path)) == "tcp://nid001234:8786"
 
-    def test_read_scheduler_address_missing_file(self, tmp_path):
-        assert _read_scheduler_address(str(tmp_path / "absent.json")) is None
+    def testread_scheduler_address_missing_file(self, tmp_path):
+        assert read_scheduler_address(str(tmp_path / "absent.json")) is None
 
-    def test_read_scheduler_address_corrupt(self, tmp_path):
+    def testread_scheduler_address_corrupt(self, tmp_path):
         path = tmp_path / "sched.json"
         path.write_text("{not json")
-        assert _read_scheduler_address(str(path)) is None
+        assert read_scheduler_address(str(path)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -272,8 +286,8 @@ class TestEnsureWorkerEnv:
 
 class TestQoSPreflight:
     def _populate_cache(self, site: str = "perlmutter") -> None:
-        from lightcone.engine.clusters import save_cluster_cache
-        from lightcone.engine.slurm_info import ClusterInfo, QoSInfo
+        from lightcone.engine.clusters._slurm import save_slurm_cache as save_cluster_cache
+        from lightcone.engine.clusters._slurm_info import ClusterInfo, QoSInfo
 
         info = ClusterInfo(
             qos={
@@ -287,7 +301,7 @@ class TestQoSPreflight:
         save_cluster_cache(site, info)
 
     def test_no_cache_skips_validation(self):
-        from lightcone.engine.clusters import validate_against_qos
+        from lightcone.engine.clusters._slurm import validate_against_qos
 
         spec = _spec(qos="debug", walltime="2h")
         # Should not raise; logs a warning.
@@ -295,7 +309,7 @@ class TestQoSPreflight:
         assert result.qos == "debug"
 
     def test_fit_clamps_walltime(self):
-        from lightcone.engine.clusters import validate_against_qos
+        from lightcone.engine.clusters._slurm import validate_against_qos
 
         self._populate_cache()
         spec = _spec(qos="debug", walltime="2h")        # debug caps at 30 min
@@ -304,7 +318,7 @@ class TestQoSPreflight:
         assert parse_walltime_seconds(result.walltime) <= 30 * 60
 
     def test_eligible_passthrough(self):
-        from lightcone.engine.clusters import validate_against_qos
+        from lightcone.engine.clusters._slurm import validate_against_qos
 
         self._populate_cache()
         spec = _spec(qos="regular", walltime="2h")

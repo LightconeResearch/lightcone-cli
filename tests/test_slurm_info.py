@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lightcone.engine.slurm_info import (
+from lightcone.engine.clusters._slurm_info import (
     ClusterInfo,
     PartitionInfo,
     QoSInfo,
@@ -121,8 +121,8 @@ class TestInferQosConstraint:
 # ---------------------------------------------------------------------------
 
 class TestQueryQos:
-    @patch("lightcone.engine.slurm_info._run_command")
-    @patch("lightcone.engine.slurm_info.shutil.which", return_value="/usr/bin/sacctmgr")
+    @patch("lightcone.engine.clusters._slurm_info._run_command")
+    @patch("lightcone.engine.clusters._slurm_info.shutil.which", return_value="/usr/bin/sacctmgr")
     def test_parses_real_output(self, _which, mock_cmd):
         mock_cmd.return_value = SAMPLE_SACCTMGR_QOS_OUTPUT
         result = query_qos()
@@ -145,14 +145,14 @@ class TestQueryQos:
         assert "gpu_preempt" in result
         assert result["gpu_preempt"].max_nodes == 128
 
-    @patch("lightcone.engine.slurm_info.shutil.which", return_value=None)
+    @patch("lightcone.engine.clusters._slurm_info.shutil.which", return_value=None)
     def test_no_sacctmgr(self, _which):
         assert query_qos() == {}
 
 
 class TestQueryUserAssociations:
-    @patch("lightcone.engine.slurm_info._run_command")
-    @patch("lightcone.engine.slurm_info.shutil.which", return_value="/usr/bin/sacctmgr")
+    @patch("lightcone.engine.clusters._slurm_info._run_command")
+    @patch("lightcone.engine.clusters._slurm_info.shutil.which", return_value="/usr/bin/sacctmgr")
     def test_parses_real_output(self, _which, mock_cmd):
         mock_cmd.return_value = SAMPLE_SACCTMGR_ASSOC_OUTPUT
         accounts, qos_names = query_user_associations("testuser")
@@ -163,15 +163,15 @@ class TestQueryUserAssociations:
         assert "gpu_regular" in qos_names
         assert "debug" in qos_names
 
-    @patch("lightcone.engine.slurm_info.shutil.which", return_value=None)
+    @patch("lightcone.engine.clusters._slurm_info.shutil.which", return_value=None)
     def test_no_sacctmgr(self, _which):
         assert query_user_associations() == ([], [])
 
 
 class TestDiscoverCluster:
-    @patch("lightcone.engine.slurm_info.query_partitions", return_value={})
-    @patch("lightcone.engine.slurm_info.query_user_associations", return_value=([], []))
-    @patch("lightcone.engine.slurm_info.query_qos", return_value={})
+    @patch("lightcone.engine.clusters._slurm_info.query_partitions", return_value={})
+    @patch("lightcone.engine.clusters._slurm_info.query_user_associations", return_value=([], []))
+    @patch("lightcone.engine.clusters._slurm_info.query_qos", return_value={})
     def test_assembles_cluster_info(self, _qos, _assoc, _part):
         info = discover_cluster()
         assert isinstance(info, ClusterInfo)
