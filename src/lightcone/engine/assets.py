@@ -43,24 +43,26 @@ def _resolve_container(
     project_name: str,
     container_runtime: str | None = None,
     local_runtime: str | None = None,
+    no_build: bool = False,
 ) -> str | None:
-    """Resolve a container spec, dispatching to the right builder.
+    """Resolve a container spec to an image tag string.
 
-    When *container_runtime* is set (i.e. we are targeting SLURM), uses
-    ``resolve_container_for_slurm`` which handles podman-hpc build/migrate
-    and podman-hpc migrate automatically.  When *local_runtime* is set
-    (Docker or Podman detected locally), uses ``resolve_container_spec``
-    with that runtime.  Returns ``None`` if no runtime is available.
+    Dispatches to the right builder for the active runtime.  When
+    *no_build* is true, Containerfile paths still get resolved to their
+    content-addressed tag, but the actual build is skipped — the image
+    is assumed to be already present (built earlier by ``lc build``).
+    Returns ``None`` if no runtime is available.
     """
     if container_runtime:
         return resolve_container_for_slurm(
             spec, project_path, project_name, container_runtime,
+            dry_run=no_build,
         )
     if local_runtime:
         return resolve_container_spec(
-            spec, project_path, project_name, runtime=local_runtime,
+            spec, project_path, project_name,
+            runtime=local_runtime, dry_run=no_build,
         )
-    # No container runtime available — skip building
     return None
 
 
@@ -81,11 +83,12 @@ def build_asset_definitions(
     """
     # Resolve analysis-level container spec once.
     raw_default = spec.get("container")
-    if raw_default is not None and not no_build and (container_runtime or local_runtime):
+    if raw_default is not None and (container_runtime or local_runtime):
         _name = project_name or spec.get("name") or "project"
         _path = project_path or Path.cwd()
         default_container = _resolve_container(
             raw_default, _path, _name, container_runtime, local_runtime,
+            no_build=no_build,
         )
     else:
         default_container = raw_default
@@ -180,11 +183,12 @@ def _resolve_sub_container(
     # Check sub-analysis level container
     if tree_out.analysis_id:
         sub_raw = tree_out.analysis_spec.get("container")
-        if sub_raw is not None and not no_build and (container_runtime or local_runtime):
+        if sub_raw is not None and (container_runtime or local_runtime):
             _name = project_name or "project"
             _path = project_path or Path.cwd()
             return _resolve_container(
                 sub_raw, _path, _name, container_runtime, local_runtime,
+                no_build=no_build,
             )
         elif sub_raw is not None:
             return sub_raw
@@ -277,11 +281,12 @@ def _build_single_asset(
     } or None
     raw_container = recipe.get("container")
     # Resolve per-recipe container spec; fall back to analysis-level default.
-    if raw_container is not None and not no_build and (container_runtime or local_runtime):
+    if raw_container is not None and (container_runtime or local_runtime):
         _name = project_name or "project"
         _path = project_path or Path.cwd()
         container = _resolve_container(
             raw_container, _path, _name, container_runtime, local_runtime,
+            no_build=no_build,
         )
     elif raw_container is not None:
         container = raw_container
@@ -391,10 +396,11 @@ def build_definitions(
         backend = "docker" if local_runtime else "venv"
 
     raw_container = spec.get("container")
-    if not no_build and (container_runtime or local_runtime):
+    if container_runtime or local_runtime:
         default_container = _resolve_container(
             raw_container, project_path, project_name,
             container_runtime, local_runtime,
+            no_build=no_build,
         )
     else:
         default_container = raw_container

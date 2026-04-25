@@ -312,12 +312,15 @@ def resolve_container_for_slurm(
     container_runtime: str,
     *,
     force: bool = False,
+    dry_run: bool = False,
 ) -> str | None:
     """Resolve a container spec for SLURM execution, building if needed.
 
     Containerfile paths (strings pointing to existing files) are built with
     ``podman-hpc build`` and migrated automatically.  Pre-built image names
-    are migrated if not already available.
+    are migrated if not already available.  When *dry_run* is true, the
+    image tag is computed and returned but no build/migrate is performed
+    — the image is assumed to be already present.
 
     Returns the image tag string to use, or ``None`` if no container.
     """
@@ -326,6 +329,8 @@ def resolve_container_for_slurm(
 
     if not is_containerfile(spec, project_path):
         # Pre-built image reference
+        if dry_run:
+            return spec
         if not force and image_exists_podman_hpc(spec):
             logger.info("Image %s already available in podman-hpc, skipping migrate.", spec)
         else:
@@ -336,6 +341,9 @@ def resolve_container_for_slurm(
     # Containerfile path — build from source.
     containerfile = project_path / spec
     tag = compute_image_tag(project_name, containerfile, project_path)
+
+    if dry_run:
+        return tag
 
     if not force and image_exists_podman_hpc(tag):
         logger.info("Image %s already exists in podman-hpc, skipping build.", tag)
