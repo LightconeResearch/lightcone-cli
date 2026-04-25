@@ -29,6 +29,7 @@ from lightcone.engine.clusters._common import (
     env_path_for_site,
     expand_path,
     get_cache_dir,
+    get_clusters_dir,
     load_cluster_config,
     parse_walltime_seconds,
     read_record,
@@ -517,7 +518,8 @@ def _spec_from_attached_record(record: ClusterRecord) -> ClusterSpec:
     """
     site_defaults = SITE_DEFAULTS.get(record.site, {})
     cluster_defaults = (site_defaults.get("slurm") or {})
-    scratch_root = cluster_defaults.get("scratch_root") or "$HOME/scratch"
+    # For display only — the real local-spill path was chosen at attach time.
+    scratch_root = cluster_defaults.get("scratch_root") or "(attached)"
     container_runtime = site_defaults.get("container_runtime") or "podman-hpc"
     return ClusterSpec(
         name=record.name,
@@ -538,10 +540,31 @@ def _spec_from_attached_record(record: ClusterRecord) -> ClusterSpec:
 # ---------------------------------------------------------------------------
 
 
-def _scratch_root_for_site(site: str) -> str:
-    """Return the site's preferred scratch root, expanded for the local FS."""
-    cluster_defaults = (SITE_DEFAULTS.get(site, {}).get("slurm") or {})
-    return cluster_defaults.get("scratch_root") or "$HOME/scratch"
+def _detect_site_in_allocation() -> str:
+    """Detect the SLURM site from inside an allocation.
+
+    Compute-node hostnames don't match site patterns (e.g. Perlmutter's
+    compute nodes are ``nidNNNNNN``), so prefer the canonical env var
+    ``NERSC_HOST`` (set by the site's module init), then fall back to
+    ``socket.gethostname()`` for non-NERSC sites or login-node use.
+    """
+    nersc_host = os.environ.get("NERSC_HOST", "").strip().lower()
+    if nersc_host and nersc_host in SITE_DEFAULTS:
+        return nersc_host
+    return detect_site(socket.gethostname()) or "_attached"
+
+
+def _attached_worker_local_dir() -> str:
+    """Pick a writable local-spill path for dask workers in an allocation.
+
+    Resolves env vars directly so we never depend on the ``$HOME/scratch``
+    symlink (which can be broken or point to a non-directory at NERSC).
+    """
+    for var in ("PSCRATCH", "SCRATCH"):
+        v = os.environ.get(var)
+        if v:
+            return f"{v}/lightcone/dask-scratch"
+    return "/tmp/lightcone/dask-scratch"
 
 
 def attach_to_allocation(
@@ -588,12 +611,13 @@ def attach_to_allocation(
 
     nodes = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     cpus_per_node = int(os.environ.get("SLURM_CPUS_ON_NODE", "0")) or 1
-    site = detect_site(socket.gethostname()) or "_attached"
-    scratch = expand_path(_scratch_root_for_site(site))
+    site = _detect_site_in_allocation()
 
-    sched_file_path = f"{scratch}/lightcone/clusters/{name}.json"
-    Path(sched_file_path).parent.mkdir(parents=True, exist_ok=True)
-    local_dir = f"{scratch}/lightcone/clusters/scratch"
+    # Scheduler-file lives next to the state file in ~/.lightcone/clusters/.
+    # That path is small, always writable from compute + login, and avoids
+    # the brittle $HOME/scratch symlink some sites set up.
+    sched_file_path = str(get_clusters_dir() / f"{name}.scheduler.json")
+    local_dir = _attached_worker_local_dir()
     Path(local_dir).mkdir(parents=True, exist_ok=True)
 
     pool = WorkerPool(
