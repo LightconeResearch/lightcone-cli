@@ -8,21 +8,21 @@ Reference for lightcone-cli execution: CLI commands, development workflow, statu
 lc init [DIR]                            # Scaffold a new ASTRA project
 lc init NAME --sub-analysis              # Scaffold sub-analysis and wire into parent
 lc run [OUTPUT] [-u UNIVERSE]            # Execute recipes via Dagster (auto-builds)
-lc run --pilot NAME                      # Dispatch to a configured pilot's Dask cluster
-lc run --local                           # Force local execution (override project pilot)
+lc run --cluster NAME                      # Dispatch to a configured cluster's Dask cluster
+lc run --local                           # Force local execution (override project cluster)
 lc run --no-build                        # Skip automatic container builds
 lc build [--force] [--runtime docker]    # Build container images from specs
 lc status [--universe NAME]              # Materialization + container status
 lc dev [--port 3000]                     # Dagster webserver UI
-lc pilot list                            # List configured pilots and live state
-lc pilot add [NAME]                      # Create a pilot YAML from site defaults
-lc pilot start [NAME]                    # Submit the SLURM allocation
-lc pilot stop [NAME]                     # Cancel the allocation
-lc pilot status [NAME]                   # Show one pilot's state
-lc pilot logs [NAME] [-f]                # Tail SLURM stdout
+lc cluster list                            # List configured clusters and live state
+lc cluster add [NAME]                      # Create a cluster YAML from site defaults
+lc cluster start [NAME]                    # Submit the SLURM allocation
+lc cluster stop [NAME]                     # Cancel the allocation
+lc cluster status [NAME]                   # Show one cluster's state
+lc cluster logs [NAME] [-f]                # Tail SLURM stdout
 ```
 
-**Always run via `lc`.** Recipes must execute through `lc run` so that container builds, pilot dispatch, and result paths are applied. Never invoke schedulers or container runtimes directly — it will bypass reproducibility guarantees.
+**Always run via `lc`.** Recipes must execute through `lc run` so that container builds, cluster dispatch, and result paths are applied. Never invoke schedulers or container runtimes directly — it will bypass reproducibility guarantees.
 
 ## Creating Sub-Analyses
 
@@ -40,7 +40,7 @@ Three overlapping phases:
 
 1. **Write & Debug** — Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
 2. **Integrate** — Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status` (`no recipe` / `pending` / `ok`). Set `container:` at analysis level or per-recipe — pass an image name (e.g., `python:3.12-slim`) or a path to a Containerfile (e.g., `Containerfile`).
-3. **Materialize** — `lc run` executes via Dagster, locally or via a pilot. Done when `lc status` shows all `ok`.
+3. **Materialize** — `lc run` executes via Dagster, locally or via a cluster. Done when `lc status` shows all `ok`.
 
 **An output is not done until `lc run` produces it.** Running scripts directly is for debugging only — final results must always come from `lc run` so they are reproducible.
 
@@ -51,26 +51,26 @@ Three overlapping phases:
 - Add an output or change a script? Update the `recipe:` block in `astra.yaml`.
 - Remove or rename something? Update both sides and run `astra validate astra.yaml`.
 
-## Pilots — running on SLURM with zero queue wait
+## Clusters — running on SLURM with zero queue wait
 
-A *pilot* is a long-lived SLURM allocation that hosts a Dask scheduler.
-After `lc pilot start`, every `lc run` dispatches to the same cluster
+A *cluster* is a long-lived SLURM allocation that hosts a Dask scheduler.
+After `lc cluster start`, every `lc run` dispatches to the same cluster
 without re-queueing.
 
 ```bash
-lc pilot add perlmutter         # one-time wizard
-lc pilot start perlmutter       # one queue wait, ~minutes
+lc cluster add perlmutter         # one-time wizard
+lc cluster start perlmutter       # one queue wait, ~minutes
 lc run                          # ~1s round-trip
 lc run                          # again — instant
-lc pilot stop perlmutter        # done
+lc cluster stop perlmutter        # done
 ```
 
-The project picks a pilot via `.lightcone/lightcone.yaml: pilot: NAME`,
-or `lc run` falls back to the single configured pilot. Without a pilot,
+The project picks a cluster via `.lightcone/lightcone.yaml: cluster: NAME`,
+or `lc run` falls back to the single configured cluster. Without a cluster,
 recipes run locally with the auto-detected container runtime.
 
 Scheduler-side knobs (`--qos`, `--walltime`, `--nodes`, GPU vs CPU
-constraint) live on `lc pilot start`, not on `lc run` — pilots are
+constraint) live on `lc cluster start`, not on `lc run` — clusters are
 long-lived, so those choices are made once at submission.
 
 ## Status Interpretation
@@ -85,8 +85,8 @@ Container status: `prebuilt: image`, `build: Containerfile (built)`, or `(not bu
 
 ## Failure Diagnosis
 
-- **"No active pilot for 'NAME'"** — `lc pilot start NAME`, or `lc run --local` to bypass.
-- **Pilot dies (walltime exceeded)** — `lc pilot start NAME` to renew. Walltime is a property of the pilot YAML.
+- **"No active cluster for 'NAME'"** — `lc cluster start NAME`, or `lc run --local` to bypass.
+- **Cluster dies (walltime exceeded)** — `lc cluster start NAME` to renew. Walltime is a property of the cluster YAML.
 - **Script arg not recognized** — Use underscores in argparse to match decision IDs.
 - **Recipe input not found** — Materialize upstream outputs first.
 

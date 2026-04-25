@@ -1,4 +1,4 @@
-"""Tests for ``lightcone.engine.pilots`` — config CRUD, sbatch rendering, QoS preflight."""
+"""Tests for ``lightcone.engine.clusters`` — config CRUD, sbatch rendering, QoS preflight."""
 from __future__ import annotations
 
 import json
@@ -7,18 +7,18 @@ from unittest.mock import patch
 
 import pytest
 
-from lightcone.engine.pilots import (
-    PilotSpec,
+from lightcone.engine.clusters import (
+    ClusterSpec,
     WorkerPool,
     _parse_job_id,
     _read_scheduler_address,
     ensure_worker_env,
-    list_pilots,
-    load_pilot_config,
+    list_clusters,
+    load_cluster_config,
     parse_walltime_seconds,
-    render_pilot_sbatch,
-    resolve_pilot,
-    save_pilot_config,
+    render_cluster_sbatch,
+    resolve_cluster,
+    save_cluster_config,
     spec_from_config,
     walltime_to_slurm,
 )
@@ -67,17 +67,17 @@ def perlmutter_yaml() -> dict:
 
 class TestConfigCRUD:
     def test_save_and_load(self, perlmutter_yaml):
-        save_pilot_config("perlmutter", perlmutter_yaml)
-        loaded = load_pilot_config("perlmutter")
+        save_cluster_config("perlmutter", perlmutter_yaml)
+        loaded = load_cluster_config("perlmutter")
         assert loaded == perlmutter_yaml
 
     def test_load_missing_returns_none(self):
-        assert load_pilot_config("nonexistent") is None
+        assert load_cluster_config("nonexistent") is None
 
     def test_list_alphabetical(self, perlmutter_yaml):
-        save_pilot_config("perlmutter", perlmutter_yaml)
-        save_pilot_config("frontier", {**perlmutter_yaml, "site": "frontier"})
-        assert list_pilots() == ["frontier", "perlmutter"]
+        save_cluster_config("perlmutter", perlmutter_yaml)
+        save_cluster_config("frontier", {**perlmutter_yaml, "site": "frontier"})
+        assert list_clusters() == ["frontier", "perlmutter"]
 
 
 class TestSpecFromConfig:
@@ -101,38 +101,38 @@ class TestSpecFromConfig:
 
 
 # ---------------------------------------------------------------------------
-# Pilot resolution
+# Cluster resolution
 # ---------------------------------------------------------------------------
 
 
-class TestResolvePilot:
+class TestResolveCluster:
     def test_explicit_cli_flag_wins(self, tmp_path, perlmutter_yaml):
-        save_pilot_config("perlmutter", perlmutter_yaml)
-        save_pilot_config("debug", {**perlmutter_yaml, "qos": "debug"})
-        name, _ = resolve_pilot(tmp_path, cli_pilot="debug")
+        save_cluster_config("perlmutter", perlmutter_yaml)
+        save_cluster_config("debug", {**perlmutter_yaml, "qos": "debug"})
+        name, _ = resolve_cluster(tmp_path, cli_cluster="debug")
         assert name == "debug"
 
     def test_unknown_cli_flag_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            resolve_pilot(tmp_path, cli_pilot="ghost")
+            resolve_cluster(tmp_path, cli_cluster="ghost")
 
     def test_project_config(self, tmp_path, perlmutter_yaml):
-        save_pilot_config("perlmutter", perlmutter_yaml)
+        save_cluster_config("perlmutter", perlmutter_yaml)
         cfg_dir = tmp_path / ".lightcone"
         cfg_dir.mkdir()
-        (cfg_dir / "lightcone.yaml").write_text("pilot: perlmutter\n")
-        name, _ = resolve_pilot(tmp_path, cli_pilot=None)
+        (cfg_dir / "lightcone.yaml").write_text("cluster: perlmutter\n")
+        name, _ = resolve_cluster(tmp_path, cli_cluster=None)
         assert name == "perlmutter"
 
-    def test_single_pilot_fallback(self, tmp_path, perlmutter_yaml):
-        save_pilot_config("perlmutter", perlmutter_yaml)
-        name, _ = resolve_pilot(tmp_path, cli_pilot=None)
+    def test_single_cluster_fallback(self, tmp_path, perlmutter_yaml):
+        save_cluster_config("perlmutter", perlmutter_yaml)
+        name, _ = resolve_cluster(tmp_path, cli_cluster=None)
         assert name == "perlmutter"
 
     def test_no_resolution_returns_none(self, tmp_path, perlmutter_yaml):
-        save_pilot_config("a", perlmutter_yaml)
-        save_pilot_config("b", perlmutter_yaml)
-        assert resolve_pilot(tmp_path, cli_pilot=None) is None
+        save_cluster_config("a", perlmutter_yaml)
+        save_cluster_config("b", perlmutter_yaml)
+        assert resolve_cluster(tmp_path, cli_cluster=None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ class TestResolvePilot:
 # ---------------------------------------------------------------------------
 
 
-def _spec(**overrides) -> PilotSpec:
+def _spec(**overrides) -> ClusterSpec:
     base = {
         "name": "perlmutter",
         "site": "perlmutter",
@@ -152,33 +152,33 @@ def _spec(**overrides) -> PilotSpec:
         "scratch_root": "$PSCRATCH",
     }
     base.update(overrides)
-    return PilotSpec(**base)
+    return ClusterSpec(**base)
 
 
 class TestSbatchRender:
     def test_single_pool_basic_directives(self):
-        script = render_pilot_sbatch(_spec())
-        assert "#SBATCH --job-name=lc-pilot-perlmutter" in script
+        script = render_cluster_sbatch(_spec())
+        assert "#SBATCH --job-name=lc-cluster-perlmutter" in script
         assert "#SBATCH --nodes=4" in script
         assert "#SBATCH --time=24:00:00" in script
         assert "#SBATCH --qos=regular" in script
         assert "#SBATCH --account=m1234" in script
 
     def test_runs_dask_scheduler_and_worker(self):
-        script = render_pilot_sbatch(_spec())
+        script = render_cluster_sbatch(_spec())
         assert "dask scheduler" in script
         assert "dask worker" in script
-        assert "$PSCRATCH/lightcone/pilots/perlmutter.json" in script
+        assert "$PSCRATCH/lightcone/clusters/perlmutter.json" in script
         assert 'wait "$SCHED_PID"' in script
 
     def test_default_worker_init_template(self):
-        script = render_pilot_sbatch(_spec())
+        script = render_cluster_sbatch(_spec())
         assert "module load python" in script
         assert "source $HOME/.lightcone/envs/perlmutter/bin/activate" in script
 
     def test_user_overrides_worker_init(self):
         spec = _spec(worker_init="echo override\n")
-        script = render_pilot_sbatch(spec)
+        script = render_cluster_sbatch(spec)
         assert "echo override" in script
         assert "module load python" not in script
 
@@ -187,7 +187,7 @@ class TestSbatchRender:
             WorkerPool(nodes=2, constraint="cpu"),
             WorkerPool(nodes=2, constraint="cpu"),
         ])
-        script = render_pilot_sbatch(spec)
+        script = render_cluster_sbatch(spec)
         assert "#SBATCH --constraint=cpu" in script
         # No per-srun --constraint when uniform.
         assert script.count("--constraint=") == 1
@@ -197,7 +197,7 @@ class TestSbatchRender:
             WorkerPool(nodes=3, constraint="cpu", resources={}),
             WorkerPool(nodes=1, constraint="gpu", resources={"GPU": 4}),
         ])
-        script = render_pilot_sbatch(spec)
+        script = render_cluster_sbatch(spec)
         # Total nodes = sum of pools.
         assert "#SBATCH --nodes=4" in script
         # Two srun lines, each with its own constraint.
@@ -210,7 +210,7 @@ class TestSbatchRender:
     def test_missing_account_raises(self):
         spec = _spec(account="")
         with pytest.raises(ValueError, match="missing 'account'"):
-            render_pilot_sbatch(spec)
+            render_cluster_sbatch(spec)
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +247,7 @@ class TestParsing:
 class TestEnsureWorkerEnv:
     def test_idempotent_when_python_exists(self):
         spec = _spec()
-        from lightcone.engine.pilots import env_path_for_site
+        from lightcone.engine.clusters import env_path_for_site
 
         env = env_path_for_site(spec.site)
         (env / "bin").mkdir(parents=True)
@@ -272,7 +272,7 @@ class TestEnsureWorkerEnv:
 
 class TestQoSPreflight:
     def _populate_cache(self, site: str = "perlmutter") -> None:
-        from lightcone.engine.pilots import save_cluster_cache
+        from lightcone.engine.clusters import save_cluster_cache
         from lightcone.engine.slurm_info import ClusterInfo, QoSInfo
 
         info = ClusterInfo(
@@ -287,7 +287,7 @@ class TestQoSPreflight:
         save_cluster_cache(site, info)
 
     def test_no_cache_skips_validation(self):
-        from lightcone.engine.pilots import validate_against_qos
+        from lightcone.engine.clusters import validate_against_qos
 
         spec = _spec(qos="debug", walltime="2h")
         # Should not raise; logs a warning.
@@ -295,7 +295,7 @@ class TestQoSPreflight:
         assert result.qos == "debug"
 
     def test_fit_clamps_walltime(self):
-        from lightcone.engine.pilots import validate_against_qos
+        from lightcone.engine.clusters import validate_against_qos
 
         self._populate_cache()
         spec = _spec(qos="debug", walltime="2h")        # debug caps at 30 min
@@ -304,7 +304,7 @@ class TestQoSPreflight:
         assert parse_walltime_seconds(result.walltime) <= 30 * 60
 
     def test_eligible_passthrough(self):
-        from lightcone.engine.pilots import validate_against_qos
+        from lightcone.engine.clusters import validate_against_qos
 
         self._populate_cache()
         spec = _spec(qos="regular", walltime="2h")

@@ -1,7 +1,7 @@
 # HPC & SLURM
 
 lightcone-cli executes ASTRA recipes on SLURM clusters via **persistent
-pilots**: a single `sbatch` allocation hosts a Dask scheduler and pool
+clusters**: a single `sbatch` allocation hosts a Dask scheduler and pool
 of workers that all subsequent `lc run` invocations dispatch to. One
 queue wait per session — not per recipe.
 
@@ -20,19 +20,19 @@ compute nodes, (c) a container runtime on compute nodes, and
 ## Quick start
 
 ```bash
-lc pilot add perlmutter         # interactive: site detect → site defaults → $EDITOR
-lc pilot start perlmutter       # one queue wait, ~minutes
+lc cluster add perlmutter         # interactive: site detect → site defaults → $EDITOR
+lc cluster start perlmutter       # one queue wait, ~minutes
 lc run                          # ~1s round-trip, no queueing
 lc run                          # again — instant
-lc pilot stop perlmutter        # done
+lc cluster stop perlmutter        # done
 ```
 
-For an in-depth walkthrough of pilot configuration and lifecycle, see
-[Pilots](pilots.md).
+For an in-depth walkthrough of cluster configuration and lifecycle, see
+[Clusters](clusters.md).
 
-## Interactive iteration without a pilot
+## Interactive iteration without a cluster
 
-When a project has no pilot configured (or you pass `--local`),
+When a project has no cluster configured (or you pass `--local`),
 `lc run` executes recipes locally with the auto-detected container
 runtime. This is appropriate when:
 
@@ -44,11 +44,11 @@ runtime. This is appropriate when:
 ```bash
 salloc --nodes=1 --qos=interactive --constraint=gpu --time=01:00:00 --account=m4031_g
 # now in a shell on a compute node
-lc run --local           # bypass any project-default pilot
+lc run --local           # bypass any project-default cluster
 ```
 
 ## See also
 
-- [Pilots](pilots.md) — pilot YAML schema, sbatch rendering, lifecycle
+- [Clusters](clusters.md) — cluster YAML schema, sbatch rendering, lifecycle
 - [Site Registry](site-registry.md) — site defaults and how to add new sites
 - [Container Builds](containers.md) — `podman-hpc` build and migrate workflow

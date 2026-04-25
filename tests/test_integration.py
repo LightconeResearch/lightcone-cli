@@ -109,19 +109,23 @@ class TestIntegration:
         assert result.exit_code == 0
         assert "cleaned" in result.output or "pending" in result.output
 
-    def test_pilot_save_and_load(self, tmp_path):
-        """Pilot config round-trip via the public CRUD API."""
-        from lightcone.engine.pilots import list_pilots, load_pilot_config, save_pilot_config
+    def test_cluster_save_and_load(self, tmp_path):
+        """Cluster config round-trip via the public CRUD API."""
+        from lightcone.engine.clusters import (
+            list_clusters,
+            load_cluster_config,
+            save_cluster_config,
+        )
 
-        save_pilot_config("test-pilot", {
+        save_cluster_config("test-cluster", {
             "site": "perlmutter",
             "account": "m1234",
             "workers": [{"nodes": 1}],
         })
-        loaded = load_pilot_config("test-pilot")
+        loaded = load_cluster_config("test-cluster")
         assert loaded is not None
         assert loaded["site"] == "perlmutter"
-        assert list_pilots() == ["test-pilot"]
+        assert list_clusters() == ["test-cluster"]
 
     def test_io_manager_paths(self, project_dir):
         """IO manager should produce correct paths."""

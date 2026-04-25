@@ -22,7 +22,7 @@ def materialize_via_dagster(
 def _isolate_lightcone_home(tmp_path, monkeypatch):
     """Redirect ``~/.lightcone/`` reads/writes to a per-test temp dir.
 
-    Pilot CRUD, cluster cache, and worker-env paths all derive from
+    Cluster CRUD, cluster cache, and worker-env paths all derive from
     ``Path.home()``.  Pinning ``HOME`` to a tmp dir keeps tests from
     touching the developer's real config.
     """

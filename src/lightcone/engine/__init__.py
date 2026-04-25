@@ -1,6 +1,6 @@
-"""Lightcone execution engine — Dagster assets, runner, pilots."""
+"""Lightcone execution engine — Dagster assets, runner, clusters."""
+from lightcone.engine.clusters import list_clusters, load_cluster_config, save_cluster_config
 from lightcone.engine.io_manager import ASTRAIOManager
-from lightcone.engine.pilots import list_pilots, load_pilot_config, save_pilot_config
 from lightcone.engine.runner import ASTRAContainerRunner
 from lightcone.engine.status import get_all_universe_status, get_output_status
 
@@ -11,9 +11,9 @@ __all__ = [
     "build_definitions",
     "get_all_universe_status",
     "get_output_status",
-    "list_pilots",
-    "load_pilot_config",
-    "save_pilot_config",
+    "list_clusters",
+    "load_cluster_config",
+    "save_cluster_config",
 ]
 
 

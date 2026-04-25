@@ -121,24 +121,24 @@ class TestInitCommand:
         assert result.exit_code == 0
         assert (project_dir / ".lightcone" / "dagster.yaml").exists()
 
-    def test_init_with_pilot_creates_lightcone_yaml(self, runner: CliRunner, tmp_path: Path):
-        """Test that --pilot writes ``pilot:`` to ``.lightcone/lightcone.yaml``."""
-        project_dir = tmp_path / "pilot-test"
+    def test_init_with_cluster_creates_lightcone_yaml(self, runner: CliRunner, tmp_path: Path):
+        """Test that --cluster writes ``cluster:`` to ``.lightcone/lightcone.yaml``."""
+        project_dir = tmp_path / "cluster-test"
         result = runner.invoke(
             main,
             ["init", str(project_dir), "--no-git", "--no-venv",
-             "--pilot", "perlmutter",
+             "--cluster", "perlmutter",
              "--permissions", "recommended"],
         )
         assert result.exit_code == 0
         assert (project_dir / ".lightcone" / "lightcone.yaml").exists()
         import yaml
         config = yaml.safe_load((project_dir / ".lightcone" / "lightcone.yaml").read_text())
-        assert config["pilot"] == "perlmutter"
+        assert config["cluster"] == "perlmutter"
 
-    def test_init_without_pilot(self, runner: CliRunner, tmp_path: Path):
-        """Without --pilot the project config has no pilot field (local execution)."""
-        project_dir = tmp_path / "no-pilot-test"
+    def test_init_without_cluster(self, runner: CliRunner, tmp_path: Path):
+        """Without --cluster the project config has no cluster field (local execution)."""
+        project_dir = tmp_path / "no-cluster-test"
         result = runner.invoke(
             main,
             ["init", str(project_dir), "--no-git", "--no-venv",
@@ -149,7 +149,7 @@ class TestInitCommand:
         cfg = yaml.safe_load(
             (project_dir / ".lightcone" / "lightcone.yaml").read_text()
         )
-        assert "pilot" not in cfg
+        assert "cluster" not in cfg
         assert cfg["permissions"] == "recommended"
 
 class TestInitExistingProject:
@@ -295,10 +295,10 @@ class TestHelpOption:
         result = runner.invoke(main, ["init", "--help"])
         assert result.exit_code == 0
 
-    def test_pilot_help(self, runner: CliRunner):
-        result = runner.invoke(main, ["pilot", "--help"])
+    def test_cluster_help(self, runner: CliRunner):
+        result = runner.invoke(main, ["cluster", "--help"])
         assert result.exit_code == 0
-        assert "pilot" in result.output.lower()
+        assert "cluster" in result.output.lower()
 
 
 

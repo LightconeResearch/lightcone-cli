@@ -352,15 +352,15 @@ def _build_single_asset(
 
 def build_definitions(
     project_path: Path,
-    pilot_config: dict[str, Any] | None = None,
+    cluster_config: dict[str, Any] | None = None,
     universe_id: str = "baseline",
     no_build: bool = False,
     executor_def: Any = None,
 ) -> dg.Definitions:
     """Build complete Dagster Definitions from an ASTRA project.
 
-    When *pilot_config* is provided, the runner is configured to use the
-    pilot's container runtime (e.g. ``podman-hpc``) on compute nodes and
+    When *cluster_config* is provided, the runner is configured to use the
+    cluster's container runtime (e.g. ``podman-hpc``) on compute nodes and
     *executor_def* (typically :data:`dagster_dask.dask_executor`) is
     attached so steps dispatch to the live Dask cluster.  When omitted,
     the runner auto-detects a local container runtime and Dagster runs in
@@ -374,12 +374,12 @@ def build_definitions(
     local_runtime: str | None = None
     backend = "docker"
 
-    if pilot_config is not None:
+    if cluster_config is not None:
         backend = "docker"  # runner uses the configured container_runtime CLI
-        container_runtime = pilot_config.get("container_runtime")
+        container_runtime = cluster_config.get("container_runtime")
         if container_runtime is None:
             from lightcone.engine.site_registry import get_site_defaults
-            site_defaults = get_site_defaults(pilot_config.get("site", "")) or {}
+            site_defaults = get_site_defaults(cluster_config.get("site", "")) or {}
             container_runtime = site_defaults.get("container_runtime") or "podman-hpc"
     else:
         from lightcone.engine.container import detect_container_runtime

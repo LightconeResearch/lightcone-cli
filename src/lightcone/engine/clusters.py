@@ -1,16 +1,16 @@
-"""Pilot configuration, lifecycle, and SLURM-side rendering.
+"""Cluster configuration, lifecycle, and SLURM-side rendering.
 
-A *pilot* is a long-lived SLURM allocation that hosts a Dask scheduler and
-workers.  Users define one in ``~/.lightcone/pilots/<name>.yaml`` and bring
-it up with ``lc pilot start <name>``.  Subsequent ``lc run`` invocations
+A *cluster* is a long-lived SLURM allocation that hosts a Dask scheduler and
+workers.  Users define one in ``~/.lightcone/clusters/<name>.yaml`` and bring
+it up with ``lc cluster start <name>``.  Subsequent ``lc run`` invocations
 connect to the live Dask cluster via ``dagster_dask`` and dispatch assets
 with zero queue wait.
 
-This module owns the entire pilot domain: config CRUD, sbatch rendering,
+This module owns the entire cluster domain: config CRUD, sbatch rendering,
 state files, lifecycle calls (``sbatch``/``squeue``/``scancel``), QoS
 preflight, and worker-env auto-bootstrap.  It is intentionally
 self-contained so it can be extracted to a standalone
-``dagster-slurm-pilot`` package later via ``git mv``.
+``dagster-slurm-cluster`` package later via ``git mv``.
 """
 from __future__ import annotations
 
@@ -35,9 +35,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def get_pilots_dir() -> Path:
-    """Return ``~/.lightcone/pilots/`` (created on demand)."""
-    p = Path.home() / ".lightcone" / "pilots"
+def get_clusters_dir() -> Path:
+    """Return ``~/.lightcone/clusters/`` (created on demand)."""
+    p = Path.home() / ".lightcone" / "clusters"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -61,67 +61,67 @@ def get_envs_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 
-def list_pilots() -> list[str]:
-    """Return names of configured pilots (alphabetical)."""
-    return sorted(p.stem for p in get_pilots_dir().glob("*.yaml"))
+def list_clusters() -> list[str]:
+    """Return names of configured clusters (alphabetical)."""
+    return sorted(p.stem for p in get_clusters_dir().glob("*.yaml"))
 
 
-def load_pilot_config(name: str) -> dict[str, Any] | None:
-    """Load ``~/.lightcone/pilots/<name>.yaml`` or ``None`` if absent."""
-    path = get_pilots_dir() / f"{name}.yaml"
+def load_cluster_config(name: str) -> dict[str, Any] | None:
+    """Load ``~/.lightcone/clusters/<name>.yaml`` or ``None`` if absent."""
+    path = get_clusters_dir() / f"{name}.yaml"
     if not path.exists():
         return None
     with open(path) as f:
         return yaml.safe_load(f) or {}
 
 
-def save_pilot_config(name: str, config: dict[str, Any]) -> Path:
-    """Write a pilot config and return its path."""
-    path = get_pilots_dir() / f"{name}.yaml"
+def save_cluster_config(name: str, config: dict[str, Any]) -> Path:
+    """Write a cluster config and return its path."""
+    path = get_clusters_dir() / f"{name}.yaml"
     with open(path, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
     return path
 
 
-def resolve_pilot(
+def resolve_cluster(
     project_path: Path,
-    cli_pilot: str | None,
+    cli_cluster: str | None,
 ) -> tuple[str, dict[str, Any]] | None:
-    """Resolve which pilot to use for a project, or ``None`` for local.
+    """Resolve which cluster to use for a project, or ``None`` for local.
 
     Resolution order:
 
-    1. Explicit ``--pilot NAME`` CLI flag.
-    2. ``pilot:`` field in ``<project>/.lightcone/lightcone.yaml``.
-    3. The single configured pilot if exactly one exists in
-       ``~/.lightcone/pilots/``.
+    1. Explicit ``--cluster NAME`` CLI flag.
+    2. ``cluster:`` field in ``<project>/.lightcone/lightcone.yaml``.
+    3. The single configured cluster if exactly one exists in
+       ``~/.lightcone/clusters/``.
     4. ``None`` — caller falls back to local execution.
     """
-    if cli_pilot:
-        config = load_pilot_config(cli_pilot)
+    if cli_cluster:
+        config = load_cluster_config(cli_cluster)
         if config is None:
             raise FileNotFoundError(
-                f"No pilot named '{cli_pilot}'. Configured: {list_pilots() or 'none'}"
+                f"No cluster named '{cli_cluster}'. Configured: {list_clusters() or 'none'}"
             )
-        return cli_pilot, config
+        return cli_cluster, config
 
     project_cfg_path = project_path / ".lightcone" / "lightcone.yaml"
     if project_cfg_path.exists():
         with open(project_cfg_path) as f:
             project_cfg = yaml.safe_load(f) or {}
-        name = project_cfg.get("pilot")
+        name = project_cfg.get("cluster")
         if name:
-            config = load_pilot_config(name)
+            config = load_cluster_config(name)
             if config is None:
                 raise FileNotFoundError(
-                    f"Project requests pilot '{name}' but it is not configured. "
-                    f"Run: lc pilot add {name}"
+                    f"Project requests cluster '{name}' but it is not configured. "
+                    f"Run: lc cluster add {name}"
                 )
             return name, config
 
-    pilots = list_pilots()
-    if len(pilots) == 1:
-        return pilots[0], load_pilot_config(pilots[0]) or {}
+    clusters = list_clusters()
+    if len(clusters) == 1:
+        return clusters[0], load_cluster_config(clusters[0]) or {}
 
     return None
 
@@ -152,7 +152,7 @@ def save_cluster_cache(site: str, info: Any) -> Path:
 
     path = cache_path_for_site(site)
     with open(path, "w") as f:
-        f.write("# AUTO-GENERATED by `lc pilot refresh-cache`. Do not edit.\n")
+        f.write("# AUTO-GENERATED by `lc cluster refresh-cache`. Do not edit.\n")
         yaml.dump(cluster_info_to_dict(info), f, default_flow_style=False, sort_keys=False)
     return path
 
@@ -188,7 +188,7 @@ def refresh_cluster_cache(site: str) -> Any:
 
 @dataclass
 class WorkerPool:
-    """One homogeneous pool of Dask workers in a pilot."""
+    """One homogeneous pool of Dask workers in a cluster."""
 
     nodes: int
     threads_per_node: int = 64
@@ -198,8 +198,8 @@ class WorkerPool:
 
 
 @dataclass
-class PilotSpec:
-    """Static config for a pilot — what the user wrote in YAML."""
+class ClusterSpec:
+    """Static config for a cluster — what the user wrote in YAML."""
 
     name: str
     site: str
@@ -214,8 +214,8 @@ class PilotSpec:
 
 
 @dataclass
-class PilotState:
-    """Live state recorded after ``lc pilot start`` (``<name>.state.json``)."""
+class ClusterState:
+    """Live state recorded after ``lc cluster start`` (``<name>.state.json``)."""
 
     name: str
     job_id: str
@@ -226,11 +226,11 @@ class PilotState:
 
 
 @dataclass
-class PilotInfo:
+class ClusterInfo:
     """Spec + state + live SLURM/Dask state, joined for display."""
 
-    spec: PilotSpec
-    state: PilotState | None
+    spec: ClusterSpec
+    state: ClusterState | None
     slurm_state: Literal[
         "PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "DEAD", "NONE",
     ]
@@ -242,21 +242,21 @@ class PilotInfo:
 # ---------------------------------------------------------------------------
 
 
-def spec_from_config(name: str, config: dict[str, Any]) -> PilotSpec:
-    """Materialize a :class:`PilotSpec` from a loaded YAML dict.
+def spec_from_config(name: str, config: dict[str, Any]) -> ClusterSpec:
+    """Materialize a :class:`ClusterSpec` from a loaded YAML dict.
 
     Pulls site defaults from ``site_registry`` for fields the user omitted
     (``scratch_root``, ``container_runtime``, ``worker_init``).
     """
     site = config.get("site")
     if not site:
-        raise ValueError(f"Pilot '{name}': missing required field 'site'")
+        raise ValueError(f"Cluster '{name}': missing required field 'site'")
     site_defaults = SITE_DEFAULTS.get(site, {})
-    pilot_defaults = site_defaults.get("pilot", {})
+    cluster_defaults = site_defaults.get("cluster", {})
 
     raw_workers = config.get("workers") or []
     if not raw_workers:
-        raise ValueError(f"Pilot '{name}': must declare at least one worker pool")
+        raise ValueError(f"Cluster '{name}': must declare at least one worker pool")
 
     workers = [
         WorkerPool(
@@ -269,12 +269,12 @@ def spec_from_config(name: str, config: dict[str, Any]) -> PilotSpec:
         for w in raw_workers
     ]
 
-    return PilotSpec(
+    return ClusterSpec(
         name=name,
         site=site,
         account=config.get("account") or "",
-        qos=config.get("qos") or pilot_defaults.get("default_qos", "debug"),
-        walltime=str(config.get("walltime") or pilot_defaults.get("default_walltime", "30m")),
+        qos=config.get("qos") or cluster_defaults.get("default_qos", "debug"),
+        walltime=str(config.get("walltime") or cluster_defaults.get("default_walltime", "30m")),
         workers=workers,
         container_runtime=(
             config.get("container_runtime")
@@ -282,7 +282,7 @@ def spec_from_config(name: str, config: dict[str, Any]) -> PilotSpec:
             or "podman-hpc"
         ),
         scratch_root=str(
-            config.get("scratch_root") or pilot_defaults.get("scratch_root", "$HOME/scratch")
+            config.get("scratch_root") or cluster_defaults.get("scratch_root", "$HOME/scratch")
         ),
         extra_sbatch=list(config.get("extra_sbatch") or []),
         worker_init=config.get("worker_init"),
@@ -323,12 +323,12 @@ def walltime_to_slurm(value: str | int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_worker_init(spec: PilotSpec) -> str:
+def _resolve_worker_init(spec: ClusterSpec) -> str:
     """Return the bash snippet that activates the worker env on compute nodes."""
     if spec.worker_init:
         return spec.worker_init.rstrip() + "\n"
     site_defaults = SITE_DEFAULTS.get(spec.site, {})
-    template = (site_defaults.get("pilot") or {}).get("worker_init_template")
+    template = (site_defaults.get("cluster") or {}).get("worker_init_template")
     if template:
         return template.rstrip() + "\n"
     # Last resort: assume the env is at the conventional path.
@@ -340,11 +340,11 @@ def _resources_to_dask_arg(resources: dict[str, int]) -> str:
     return ",".join(f"{k}={v}" for k, v in sorted(resources.items()))
 
 
-def _total_nodes(spec: PilotSpec) -> int:
+def _total_nodes(spec: ClusterSpec) -> int:
     return sum(w.nodes for w in spec.workers)
 
 
-def render_pilot_sbatch(spec: PilotSpec) -> str:
+def render_cluster_sbatch(spec: ClusterSpec) -> str:
     """Render the sbatch script that brings up the persistent Dask cluster.
 
     The head node runs ``dask scheduler``; one ``srun`` step per worker pool
@@ -353,22 +353,22 @@ def render_pilot_sbatch(spec: PilotSpec) -> str:
     allocation until the scheduler exits or walltime expires.
     """
     if not spec.account:
-        raise ValueError(f"Pilot '{spec.name}': missing 'account'")
+        raise ValueError(f"Cluster '{spec.name}': missing 'account'")
 
     total_nodes = _total_nodes(spec)
     walltime = walltime_to_slurm(spec.walltime)
     scratch = spec.scratch_root
-    sched_file = f"{scratch}/lightcone/pilots/{spec.name}.json"
-    local_dir = f"{scratch}/lightcone/pilots/scratch"
+    sched_file = f"{scratch}/lightcone/clusters/{spec.name}.json"
+    local_dir = f"{scratch}/lightcone/clusters/scratch"
 
     lines: list[str] = [
         "#!/bin/bash",
-        f"#SBATCH --job-name=lc-pilot-{spec.name}",
+        f"#SBATCH --job-name=lc-cluster-{spec.name}",
         f"#SBATCH --nodes={total_nodes}",
         f"#SBATCH --time={walltime}",
         f"#SBATCH --qos={spec.qos}",
         f"#SBATCH --account={spec.account}",
-        f"#SBATCH --output=results/.slurm/lc-pilot-{spec.name}-%j.out",
+        f"#SBATCH --output=results/.slurm/lc-cluster-{spec.name}-%j.out",
     ]
     # Promote a pool-uniform constraint to a top-level SBATCH directive
     # (most common case: every pool wants ``cpu`` or every pool wants ``gpu``).
@@ -433,8 +433,8 @@ def render_pilot_sbatch(spec: PilotSpec) -> str:
 # ---------------------------------------------------------------------------
 
 
-def validate_against_qos(spec: PilotSpec, strategy: str = "fit") -> PilotSpec:
-    """Check the pilot against the cluster cache; adjust or raise.
+def validate_against_qos(spec: ClusterSpec, strategy: str = "fit") -> ClusterSpec:
+    """Check the cluster against the cluster cache; adjust or raise.
 
     ``"fit"``: clamp ``walltime`` and total ``nodes`` to fit the configured
     ``qos`` if exceeded.
@@ -442,7 +442,7 @@ def validate_against_qos(spec: PilotSpec, strategy: str = "fit") -> PilotSpec:
     ``"switch"``: pick another QoS from the site-registry-declared choices
     that fits, holding hardware constraint fixed.
 
-    Returns a (possibly adjusted) :class:`PilotSpec`.  No-ops if the cache
+    Returns a (possibly adjusted) :class:`ClusterSpec`.  No-ops if the cache
     is missing or the QoS isn't found in it.
     """
     from lightcone.engine.slurm_info import (
@@ -455,7 +455,7 @@ def validate_against_qos(spec: PilotSpec, strategy: str = "fit") -> PilotSpec:
         if is_cache_stale(spec.site):
             logger.warning(
                 "No cluster cache for site '%s' — skipping QoS preflight. "
-                "Run `lc pilot refresh-cache %s` to enable it.",
+                "Run `lc cluster refresh-cache %s` to enable it.",
                 spec.site, spec.site,
             )
         return spec
@@ -490,14 +490,14 @@ def validate_against_qos(spec: PilotSpec, strategy: str = "fit") -> PilotSpec:
         if "time_limit_minutes" in clamped:
             new_minutes = clamped["time_limit_minutes"]
             logger.warning(
-                "Reducing pilot '%s' walltime to %d min to fit qos '%s'.",
+                "Reducing cluster '%s' walltime to %d min to fit qos '%s'.",
                 spec.name, new_minutes, spec.qos,
             )
             adjusted = _replace(adjusted, walltime=f"{new_minutes}m")
         if "nodes" in clamped:
             new_nodes = clamped["nodes"]
             logger.warning(
-                "Pilot '%s' requests %d nodes; qos '%s' allows %d. "
+                "Cluster '%s' requests %d nodes; qos '%s' allows %d. "
                 "Reduce the worker pool sizes manually if you need fewer nodes.",
                 spec.name, nodes_total, spec.qos, new_nodes,
             )
@@ -520,15 +520,15 @@ def validate_against_qos(spec: PilotSpec, strategy: str = "fit") -> PilotSpec:
     best = next((r for r in recs if r.eligible), None)
     if best:
         logger.warning(
-            "qos '%s' cannot host pilot '%s' (%s). Switching to '%s'.",
+            "qos '%s' cannot host cluster '%s' (%s). Switching to '%s'.",
             spec.qos, spec.name, "; ".join(current.violations), best.qos,
         )
         return _replace(spec, qos=best.qos)
 
     raise ValueError(
-        f"Pilot '{spec.name}' violates qos '{spec.qos}' "
+        f"Cluster '{spec.name}' violates qos '{spec.qos}' "
         f"({'; '.join(current.violations)}) and no eligible alternative "
-        f"was found. Adjust the pilot config and retry."
+        f"was found. Adjust the cluster config and retry."
     )
 
 
@@ -552,7 +552,7 @@ def _resolve_cache_key(
     return qos
 
 
-def _replace(spec: PilotSpec, **changes: Any) -> PilotSpec:
+def _replace(spec: ClusterSpec, **changes: Any) -> ClusterSpec:
     """Return a copy of *spec* with *changes* applied (dataclasses.replace shim)."""
     from dataclasses import replace
     return replace(spec, **changes)
@@ -567,7 +567,7 @@ def env_path_for_site(site: str) -> Path:
     return get_envs_dir() / site
 
 
-def ensure_worker_env(spec: PilotSpec) -> Path:
+def ensure_worker_env(spec: ClusterSpec) -> Path:
     """Create ``~/.lightcone/envs/<site>/`` with the worker dependencies.
 
     Idempotent: if the venv's Python exists, returns immediately.
@@ -596,23 +596,23 @@ def ensure_worker_env(spec: PilotSpec) -> Path:
 
 
 def _state_path(name: str) -> Path:
-    return get_pilots_dir() / f"{name}.state.json"
+    return get_clusters_dir() / f"{name}.state.json"
 
 
-def _write_state(state: PilotState) -> Path:
+def _write_state(state: ClusterState) -> Path:
     path = _state_path(state.name)
     with open(path, "w") as f:
         json.dump(asdict(state), f, indent=2)
     return path
 
 
-def _read_state(name: str) -> PilotState | None:
+def _read_state(name: str) -> ClusterState | None:
     path = _state_path(name)
     if not path.exists():
         return None
     with open(path) as f:
         data = json.load(f)
-    return PilotState(**data)
+    return ClusterState(**data)
 
 
 def _expand_path(value: str) -> str:
@@ -671,27 +671,27 @@ def _query_slurm_state(job_id: str) -> str:
     return _SLURM_STATE_MAP.get(raw, "DEAD")
 
 
-def pilot_info(name: str) -> PilotInfo | None:
+def cluster_info(name: str) -> ClusterInfo | None:
     """Combine on-disk config + state + live SLURM state into one view.
 
-    Returns ``None`` if the pilot has no config.  When the pilot has a
+    Returns ``None`` if the cluster has no config.  When the cluster has a
     config but no state, ``slurm_state == "NONE"``.
     """
-    config = load_pilot_config(name)
+    config = load_cluster_config(name)
     if config is None:
         return None
     spec = spec_from_config(name, config)
     state = _read_state(name)
     if state is None:
-        return PilotInfo(spec=spec, state=None, slurm_state="NONE", scheduler_address=None)
+        return ClusterInfo(spec=spec, state=None, slurm_state="NONE", scheduler_address=None)
     slurm_state = _query_slurm_state(state.job_id)
     address = _read_scheduler_address(state.scheduler_file) if slurm_state == "RUNNING" else None
-    return PilotInfo(spec=spec, state=state, slurm_state=slurm_state, scheduler_address=address)
+    return ClusterInfo(spec=spec, state=state, slurm_state=slurm_state, scheduler_address=address)
 
 
-def find_running_pilot(name: str) -> PilotInfo | None:
-    """Return the pilot if it has a state file and is RUNNING with a reachable scheduler."""
-    info = pilot_info(name)
+def find_running_cluster(name: str) -> ClusterInfo | None:
+    """Return the cluster if it has a state file and is RUNNING with a reachable scheduler."""
+    info = cluster_info(name)
     if info is None or info.state is None:
         return None
     if info.slurm_state != "RUNNING" or not info.scheduler_address:
@@ -699,22 +699,22 @@ def find_running_pilot(name: str) -> PilotInfo | None:
     return info
 
 
-def start_pilot(
+def start_cluster(
     name: str,
     project_root: Path | None = None,
     cli_overrides: dict[str, Any] | None = None,
     strategy: str = "fit",
-) -> PilotInfo:
-    """Submit the pilot via ``sbatch`` and record state.
+) -> ClusterInfo:
+    """Submit the cluster via ``sbatch`` and record state.
 
     Provisions the worker env first if missing.  Performs QoS preflight.
-    Writes ``~/.lightcone/pilots/<name>.state.json``.  Does not block on
+    Writes ``~/.lightcone/clusters/<name>.state.json``.  Does not block on
     the scheduler coming up — call :func:`wait_for_scheduler` for that.
     """
-    config = load_pilot_config(name)
+    config = load_cluster_config(name)
     if config is None:
         raise FileNotFoundError(
-            f"No pilot named '{name}'. Configured: {list_pilots() or 'none'}"
+            f"No cluster named '{name}'. Configured: {list_clusters() or 'none'}"
         )
     if cli_overrides:
         for k, v in cli_overrides.items():
@@ -722,11 +722,11 @@ def start_pilot(
                 config[k] = v
 
     if _read_state(name) is not None:
-        existing = pilot_info(name)
+        existing = cluster_info(name)
         if existing and existing.slurm_state in {"PENDING", "RUNNING"}:
             raise RuntimeError(
-                f"Pilot '{name}' already has an active job ({existing.state.job_id}, "
-                f"state={existing.slurm_state}). Run `lc pilot stop {name}` first."
+                f"Cluster '{name}' already has an active job ({existing.state.job_id}, "
+                f"state={existing.slurm_state}). Run `lc cluster stop {name}` first."
             )
         # Stale state — clean up.
         _state_path(name).unlink()
@@ -735,11 +735,11 @@ def start_pilot(
     spec = validate_against_qos(spec, strategy=strategy)
     ensure_worker_env(spec)
 
-    script = render_pilot_sbatch(spec)
+    script = render_cluster_sbatch(spec)
     project_root = project_root or Path.cwd()
     scripts_dir = project_root / "results" / ".slurm"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    script_path = scripts_dir / f"lc-pilot-{name}.sbatch"
+    script_path = scripts_dir / f"lc-cluster-{name}.sbatch"
     script_path.write_text(script)
     script_path.chmod(0o755)
 
@@ -754,57 +754,57 @@ def start_pilot(
     if job_id is None:
         raise RuntimeError(f"could not parse job id from sbatch output: {submit.stdout!r}")
 
-    state = PilotState(
+    state = ClusterState(
         name=name,
         job_id=job_id,
         site=spec.site,
         submitted_at=datetime.now(UTC).isoformat(),
         walltime_seconds=parse_walltime_seconds(spec.walltime),
-        scheduler_file=f"{spec.scratch_root}/lightcone/pilots/{name}.json",
+        scheduler_file=f"{spec.scratch_root}/lightcone/clusters/{name}.json",
     )
     _write_state(state)
-    logger.info("Pilot '%s' submitted as job %s", name, job_id)
-    return PilotInfo(spec=spec, state=state, slurm_state="PENDING", scheduler_address=None)
+    logger.info("Cluster '%s' submitted as job %s", name, job_id)
+    return ClusterInfo(spec=spec, state=state, slurm_state="PENDING", scheduler_address=None)
 
 
-def stop_pilot(name: str) -> None:
+def stop_cluster(name: str) -> None:
     """``scancel`` the job and remove the state file (and stale scheduler-file)."""
     state = _read_state(name)
     if state is None:
-        logger.info("No active state for pilot '%s' — nothing to stop.", name)
+        logger.info("No active state for cluster '%s' — nothing to stop.", name)
         return
     subprocess.run(["scancel", state.job_id], check=False)
     sched_file = Path(_expand_path(state.scheduler_file))
     if sched_file.exists():
         sched_file.unlink()
     _state_path(name).unlink()
-    logger.info("Pilot '%s' stopped (cancelled job %s)", name, state.job_id)
+    logger.info("Cluster '%s' stopped (cancelled job %s)", name, state.job_id)
 
 
-def wait_for_scheduler(name: str, timeout_s: int = 600) -> PilotInfo:
-    """Block until the pilot is RUNNING and the scheduler-file is readable."""
+def wait_for_scheduler(name: str, timeout_s: int = 600) -> ClusterInfo:
+    """Block until the cluster is RUNNING and the scheduler-file is readable."""
     import time
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        info = pilot_info(name)
+        info = cluster_info(name)
         if info is None or info.state is None:
-            raise RuntimeError(f"No state for pilot '{name}'")
+            raise RuntimeError(f"No state for cluster '{name}'")
         if info.slurm_state in {"FAILED", "CANCELLED", "COMPLETED", "DEAD"}:
-            raise RuntimeError(f"Pilot '{name}' ended in state {info.slurm_state}")
+            raise RuntimeError(f"Cluster '{name}' ended in state {info.slurm_state}")
         if info.slurm_state == "RUNNING" and info.scheduler_address:
             return info
         time.sleep(5)
-    raise TimeoutError(f"Pilot '{name}' scheduler not ready after {timeout_s}s")
+    raise TimeoutError(f"Cluster '{name}' scheduler not ready after {timeout_s}s")
 
 
-def tail_pilot_logs(name: str, project_root: Path | None = None,
+def tail_cluster_logs(name: str, project_root: Path | None = None,
                     follow: bool = False, lines: int = 200) -> None:
-    """Stream the SLURM output file for a pilot to stdout."""
+    """Stream the SLURM output file for a cluster to stdout."""
     state = _read_state(name)
     if state is None:
-        raise RuntimeError(f"No active state for pilot '{name}'")
+        raise RuntimeError(f"No active state for cluster '{name}'")
     project_root = project_root or Path.cwd()
-    log_path = project_root / "results" / ".slurm" / f"lc-pilot-{name}-{state.job_id}.out"
+    log_path = project_root / "results" / ".slurm" / f"lc-cluster-{name}-{state.job_id}.out"
     if not log_path.exists():
         raise FileNotFoundError(f"Log file not found: {log_path}")
     cmd = ["tail", f"-n{lines}"]

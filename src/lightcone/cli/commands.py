@@ -87,7 +87,7 @@ def _load_lightcone_config(project_path: Path) -> dict:
 @click.argument("directory", type=click.Path(path_type=Path), default=".")
 @click.option("--no-git", is_flag=True, help="Don't initialize git repository")
 @click.option("--no-venv", is_flag=True, help="Don't create Python virtual environment")
-@click.option("--pilot", default=None, help="Default pilot for `lc run` (omit for local)")
+@click.option("--cluster", default=None, help="Default cluster for `lc run` (omit for local)")
 @click.option(
     "--permissions",
     type=click.Choice(["yolo", "recommended", "minimal"]),
@@ -106,7 +106,7 @@ def _load_lightcone_config(project_path: Path) -> dict:
 )
 def init(
     directory: Path, no_git: bool, no_venv: bool,
-    pilot: str | None, permissions: str,
+    cluster: str | None, permissions: str,
     existing_project: Path | None, sub_analysis: bool,
 ) -> None:
     """Create a new ASTRA analysis project with full agentic scaffolding."""
@@ -118,7 +118,7 @@ def init(
         _init_existing_project(
             directory, source=existing_project,
             no_git=no_git, no_venv=no_venv,
-            pilot=pilot, permissions=permissions,
+            cluster=cluster, permissions=permissions,
         )
         return
 
@@ -143,19 +143,19 @@ def init(
     _create_or_append_gitignore(directory)
     _create_boilerplate_astra_yaml(directory)
     _create_claude_md(directory)
-    _create_claude_settings(directory, permissions, pilot=pilot)
-    _create_lightcone_config(directory, pilot=pilot, permissions=permissions)
+    _create_claude_settings(directory, permissions, cluster=cluster)
+    _create_lightcone_config(directory, cluster=cluster, permissions=permissions)
     _create_venv(directory, no_venv)
     _init_git_repo(directory, no_git)
 
     console.print(f"[green]✓[/green] Created ASTRA analysis project: [cyan]{directory}[/cyan]")
-    if pilot:
-        console.print(f"  Pilot: [cyan]{pilot}[/cyan]")
-        from lightcone.engine.pilots import load_pilot_config
-        if load_pilot_config(pilot) is None:
+    if cluster:
+        console.print(f"  Cluster: [cyan]{cluster}[/cyan]")
+        from lightcone.engine.clusters import load_cluster_config
+        if load_cluster_config(cluster) is None:
             console.print(
-                f"  [yellow]Note:[/yellow] pilot '{pilot}' is not configured. "
-                f"Run [cyan]lc pilot add {pilot}[/cyan] before running `lc run`."
+                f"  [yellow]Note:[/yellow] cluster '{cluster}' is not configured. "
+                f"Run [cyan]lc cluster add {cluster}[/cyan] before running `lc run`."
             )
 
     from lightcone.engine.container import detect_container_runtime
@@ -206,7 +206,7 @@ def _create_or_append_gitignore(directory: Path) -> None:
 def _init_existing_project(
     directory: Path, *, source: Path,
     no_git: bool, no_venv: bool,
-    pilot: str | None, permissions: str,
+    cluster: str | None, permissions: str,
 ) -> None:
     """Add lightcone-cli infrastructure to an existing project."""
     source = source.resolve()
@@ -256,8 +256,8 @@ def _init_existing_project(
     if not (directory / "requirements.txt").exists():
         (directory / "requirements.txt").write_text("")
 
-    _create_claude_settings(directory, permissions, pilot=pilot)
-    _create_lightcone_config(directory, pilot=pilot, permissions=permissions)
+    _create_claude_settings(directory, permissions, cluster=cluster)
+    _create_lightcone_config(directory, cluster=cluster, permissions=permissions)
     _create_venv(directory, no_venv)
     _init_git_repo(directory, no_git)
 
@@ -416,26 +416,26 @@ def _create_claude_md(directory: Path) -> None:
 
 
 def _create_lightcone_config(
-    directory: Path, *, pilot: str | None, permissions: str,
+    directory: Path, *, cluster: str | None, permissions: str,
 ) -> None:
-    """Create ``.lightcone/lightcone.yaml`` with optional pilot + permissions tier."""
+    """Create ``.lightcone/lightcone.yaml`` with optional cluster + permissions tier."""
     config: dict[str, Any] = {"permissions": permissions}
-    if pilot:
-        config["pilot"] = pilot
+    if cluster:
+        config["cluster"] = cluster
     (directory / ".lightcone").mkdir(parents=True, exist_ok=True)
     (directory / ".lightcone" / "lightcone.yaml").write_text(
         yaml.dump(config, default_flow_style=False, sort_keys=False)
     )
-    msg = f"pilot: {pilot}" if pilot else "local execution"
+    msg = f"cluster: {cluster}" if cluster else "local execution"
     console.print(f"[green]✓[/green] Created .lightcone/lightcone.yaml ({msg})")
 
 
 def _create_claude_settings(
-    directory: Path, tier: str = "recommended", *, pilot: str | None = None,
+    directory: Path, tier: str = "recommended", *, cluster: str | None = None,
 ) -> None:
     """Create Claude Code settings with lightcone-cli skills, hooks, and permissions.
 
-    If a pilot is configured, its site's scratch-deny rules are merged into the
+    If a cluster is configured, its site's scratch-deny rules are merged into the
     permissions block.
     """
     claude_dir = directory / ".claude"
@@ -466,11 +466,11 @@ def _create_claude_settings(
     permissions: dict[str, list[str]] = {
         k: list(v) for k, v in PERMISSION_TIERS[tier].items()
     }
-    # If a pilot is configured, merge its site's scratch-deny rules.
-    if pilot and "deny" in permissions:
-        from lightcone.engine.pilots import load_pilot_config
+    # If a cluster is configured, merge its site's scratch-deny rules.
+    if cluster and "deny" in permissions:
+        from lightcone.engine.clusters import load_cluster_config
         from lightcone.engine.site_registry import get_site_scratch_deny_rules
-        cfg = load_pilot_config(pilot)
+        cfg = load_cluster_config(cluster)
         if cfg:
             site_deny = get_site_scratch_deny_rules(cfg.get("site") or "")
             existing = set(permissions["deny"])
@@ -578,41 +578,41 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
 
 
 # =============================================================================
-# Run command — dispatches local vs pilot
+# Run command — dispatches local vs cluster
 # =============================================================================
 
 
 @main.command()
 @click.argument("outputs", nargs=-1)
 @click.option("--universe", "-u", default=None, help="Universe to materialize for")
-@click.option("--pilot", default=None, help="Run on the named pilot's Dask cluster")
+@click.option("--cluster", default=None, help="Run on the named cluster's Dask cluster")
 @click.option("--local", "force_local", is_flag=True,
-              help="Force local execution even if a pilot is configured")
+              help="Force local execution even if a cluster is configured")
 @click.option("--no-build", is_flag=True, help="Skip automatic container image builds")
 def run(
     outputs: tuple[str, ...],
     universe: str | None,
-    pilot: str | None,
+    cluster: str | None,
     force_local: bool,
     no_build: bool,
 ) -> None:
     """Materialize ASTRA outputs.
 
-    Without ``--pilot`` or a project default, runs locally with auto-detected
-    container runtime.  When a pilot is resolved, dispatches assets via
+    Without ``--cluster`` or a project default, runs locally with auto-detected
+    container runtime.  When a cluster is resolved, dispatches assets via
     ``dagster-dask`` to the live cluster.
 
     Examples:
         lc run                              # all outputs, default universe
         lc run accuracy                     # specific output
         lc run -u baseline                  # specific universe
-        lc run --pilot perlmutter           # explicit pilot
-        lc run --local                      # force local even with pilot configured
+        lc run --cluster perlmutter           # explicit cluster
+        lc run --local                      # force local even with cluster configured
     """
     import dagster as dg
 
     from lightcone.engine.assets import build_definitions
-    from lightcone.engine.pilots import find_running_pilot, resolve_pilot
+    from lightcone.engine.clusters import find_running_cluster, resolve_cluster
 
     project_path = Path.cwd()
     if not (project_path / "astra.yaml").exists():
@@ -622,22 +622,22 @@ def run(
     output_names = list(outputs)
     universe_id = universe or "baseline"
 
-    pilot_resolution: tuple[str, dict] | None = None
+    cluster_resolution: tuple[str, dict] | None = None
     if not force_local:
         try:
-            pilot_resolution = resolve_pilot(project_path, cli_pilot=pilot)
+            cluster_resolution = resolve_cluster(project_path, cli_cluster=cluster)
         except FileNotFoundError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise SystemExit(1)
 
-    pilot_name: str | None = None
-    pilot_config: dict | None = None
-    if pilot_resolution is not None:
-        pilot_name, pilot_config = pilot_resolution
+    cluster_name: str | None = None
+    cluster_config: dict | None = None
+    if cluster_resolution is not None:
+        cluster_name, cluster_config = cluster_resolution
 
-    # Build the Dagster Definitions.  When a pilot is active, the executor
+    # Build the Dagster Definitions.  When a cluster is active, the executor
     # is the dagster-dask one; otherwise the default in-process executor.
-    if pilot_config is not None:
+    if cluster_config is not None:
         try:
             from dagster_dask import dask_executor
         except ImportError:
@@ -647,12 +647,12 @@ def run(
             )
             raise SystemExit(1)
         defs = build_definitions(
-            project_path, pilot_config=pilot_config, universe_id=universe_id,
+            project_path, cluster_config=cluster_config, universe_id=universe_id,
             no_build=no_build, executor_def=dask_executor,
         )
     else:
         defs = build_definitions(
-            project_path, pilot_config=None, universe_id=universe_id,
+            project_path, cluster_config=None, universe_id=universe_id,
             no_build=no_build,
         )
 
@@ -680,7 +680,7 @@ def run(
         )
     instance = dg.DagsterInstance.from_config(str(dagster_yaml_path.parent))
 
-    if pilot_config is None:
+    if cluster_config is None:
         # Local path — in-process materialization.
         console.print("[bold]Materializing outputs (local)...[/bold]")
         try:
@@ -699,20 +699,20 @@ def run(
             raise SystemExit(1)
         return
 
-    # Pilot path — dispatch via dagster-dask to the running cluster.
-    assert pilot_name is not None  # guaranteed by the pilot_resolution branch
-    info = find_running_pilot(pilot_name)
+    # Cluster path — dispatch via dagster-dask to the running cluster.
+    assert cluster_name is not None  # guaranteed by the cluster_resolution branch
+    info = find_running_cluster(cluster_name)
     if info is None:
         console.print(
-            f"[red]Error:[/red] No active pilot for '{pilot_name}'.\n"
-            f"  Start one with: [cyan]lc pilot start {pilot_name}[/cyan]"
+            f"[red]Error:[/red] No active cluster for '{cluster_name}'.\n"
+            f"  Start one with: [cyan]lc cluster start {cluster_name}[/cyan]"
         )
         raise SystemExit(1)
 
-    from lightcone.engine.dask_entrypoint import get_pilot_job
+    from lightcone.engine.dask_entrypoint import get_cluster_job
 
     os.environ["LIGHTCONE_PROJECT_PATH"] = str(project_path)
-    os.environ["LIGHTCONE_PILOT"] = pilot_name
+    os.environ["LIGHTCONE_CLUSTER"] = cluster_name
     os.environ["LIGHTCONE_UNIVERSE"] = universe_id
 
     run_config = {
@@ -722,12 +722,12 @@ def run(
     }
     op_selection = [_asset_key_to_op_name(k, universe_id) for k in selection]
     console.print(
-        f"[bold]Materializing outputs on pilot '{pilot_name}' "
+        f"[bold]Materializing outputs on cluster '{cluster_name}' "
         f"({info.scheduler_address})...[/bold]"
     )
     try:
         result = dg.execute_job(
-            get_pilot_job(), instance=instance,
+            get_cluster_job(), instance=instance,
             run_config=run_config, op_selection=op_selection or None,
         )
     except Exception as e:
@@ -760,7 +760,7 @@ def _asset_key_to_op_name(key: Any, universe_id: str) -> str:
     "--runtime", "-r",
     type=click.Choice(["docker", "podman", "podman-hpc"]),
     default=None,
-    help="Container runtime to build with (auto-detected from pilot config)",
+    help="Container runtime to build with (auto-detected from cluster config)",
 )
 def build(force: bool, runtime: str | None) -> None:
     """Build container images from Containerfile specs in astra.yaml."""
@@ -779,16 +779,16 @@ def build(force: bool, runtime: str | None) -> None:
         raise SystemExit(1)
 
     if runtime is None:
-        from lightcone.engine.pilots import resolve_pilot
+        from lightcone.engine.clusters import resolve_cluster
         try:
-            pilot_resolution = resolve_pilot(project_path, cli_pilot=None)
+            cluster_resolution = resolve_cluster(project_path, cli_cluster=None)
         except FileNotFoundError:
-            pilot_resolution = None
-        if pilot_resolution is not None:
-            _, pilot_config = pilot_resolution
+            cluster_resolution = None
+        if cluster_resolution is not None:
+            _, cluster_config = cluster_resolution
             from lightcone.engine.site_registry import get_site_defaults
-            site_defaults = get_site_defaults(pilot_config.get("site", "")) or {}
-            runtime = pilot_config.get("container_runtime") or site_defaults.get(
+            site_defaults = get_site_defaults(cluster_config.get("site", "")) or {}
+            runtime = cluster_config.get("container_runtime") or site_defaults.get(
                 "container_runtime", "podman-hpc"
             )
         if runtime is None:
@@ -1023,28 +1023,28 @@ def dev(port: int, universe: str) -> None:
 
 
 # =============================================================================
-# Pilot command group
+# Cluster command group
 # =============================================================================
 
 
 @main.group()
-def pilot() -> None:
-    """Manage long-lived SLURM Dask pilots — `lc pilot --help` for subcommands."""
+def cluster() -> None:
+    """Manage long-lived SLURM Dask clusters — `lc cluster --help` for subcommands."""
 
 
-@pilot.command("list")
-def pilot_list() -> None:
-    """List configured pilots and their live state."""
+@cluster.command("list")
+def cluster_list() -> None:
+    """List configured clusters and their live state."""
     from rich.table import Table
 
-    from lightcone.engine.pilots import list_pilots, pilot_info
+    from lightcone.engine.clusters import cluster_info, list_clusters
 
-    names = list_pilots()
+    names = list_clusters()
     if not names:
-        console.print("No pilots configured. Run [cyan]lc pilot add[/cyan] to create one.")
+        console.print("No clusters configured. Run [cyan]lc cluster add[/cyan] to create one.")
         return
 
-    table = Table(title="Pilots")
+    table = Table(title="Clusters")
     table.add_column("Name", style="cyan")
     table.add_column("Site")
     table.add_column("State")
@@ -1052,7 +1052,7 @@ def pilot_list() -> None:
     table.add_column("Scheduler")
 
     for name in names:
-        info = pilot_info(name)
+        info = cluster_info(name)
         if info is None:
             continue
         state = info.slurm_state
@@ -1065,20 +1065,20 @@ def pilot_list() -> None:
     console.print(table)
 
 
-@pilot.command("add")
+@cluster.command("add")
 @click.argument("name", required=False)
 @click.option("--site", default=None, help="Site key (defaults to detection from hostname)")
-def pilot_add(name: str | None, site: str | None) -> None:
-    """Create a new pilot YAML, prefilled from the site registry.
+def cluster_add(name: str | None, site: str | None) -> None:
+    """Create a new cluster YAML, prefilled from the site registry.
 
     The wizard asks only for the SLURM ``account``.  Everything else
     (qos, walltime, container_runtime, scratch_root, worker_init) comes
     from the site defaults.  Opens the file in ``$EDITOR`` so you can
-    inspect or tweak it before running ``lc pilot start``.
+    inspect or tweak it before running ``lc cluster start``.
     """
     import socket
 
-    from lightcone.engine.pilots import save_pilot_config
+    from lightcone.engine.clusters import save_cluster_config
     from lightcone.engine.site_registry import (
         SITE_DEFAULTS,
         detect_site,
@@ -1095,15 +1095,15 @@ def pilot_add(name: str | None, site: str | None) -> None:
         site = click.prompt("Site", type=click.Choice(list(SITE_DEFAULTS)))
 
     site_def = get_site_defaults(site) or {}
-    pilot_defaults = site_def.get("pilot", {})
+    cluster_defaults = site_def.get("cluster", {})
     suggested = site_def.get("suggested_options", {})
 
-    pilot_name = name or site
+    cluster_name = name or site
     account = click.prompt("  SLURM account/allocation", default="")
-    qos = pilot_defaults.get("default_qos") or (
+    qos = cluster_defaults.get("default_qos") or (
         suggested.get("qos", {}).get("default") or "regular"
     )
-    walltime = pilot_defaults.get("default_walltime") or "24h"
+    walltime = cluster_defaults.get("default_walltime") or "24h"
     constraint = (suggested.get("constraint") or {}).get("default")
 
     config: dict[str, Any] = {
@@ -1120,7 +1120,7 @@ def pilot_add(name: str | None, site: str | None) -> None:
             },
         ],
     }
-    path = save_pilot_config(pilot_name, config)
+    path = save_cluster_config(cluster_name, config)
     console.print(f"\n[green]✓[/green] Wrote {path}")
 
     if click.confirm(f"Open {path} in $EDITOR for review?", default=True):
@@ -1128,46 +1128,46 @@ def pilot_add(name: str | None, site: str | None) -> None:
         subprocess.call([editor, str(path)])
 
 
-@pilot.command("edit")
+@cluster.command("edit")
 @click.argument("name")
-def pilot_edit(name: str) -> None:
-    """Open a pilot's YAML in ``$EDITOR``."""
-    from lightcone.engine.pilots import get_pilots_dir, load_pilot_config
+def cluster_edit(name: str) -> None:
+    """Open a cluster's YAML in ``$EDITOR``."""
+    from lightcone.engine.clusters import get_clusters_dir, load_cluster_config
 
-    if load_pilot_config(name) is None:
-        console.print(f"[red]Error:[/red] No pilot named '{name}'.")
+    if load_cluster_config(name) is None:
+        console.print(f"[red]Error:[/red] No cluster named '{name}'.")
         raise SystemExit(1)
-    path = get_pilots_dir() / f"{name}.yaml"
+    path = get_clusters_dir() / f"{name}.yaml"
     editor = os.environ.get("EDITOR", "vi")
     subprocess.call([editor, str(path)])
 
 
-@pilot.command("start")
+@cluster.command("start")
 @click.argument("name", required=False)
-@click.option("--qos", default=None, help="Override the pilot's qos for this submission")
+@click.option("--qos", default=None, help="Override the cluster's qos for this submission")
 @click.option("--walltime", default=None, help="Override walltime (e.g. 30m, 24h)")
 @click.option("--strategy", type=click.Choice(["fit", "switch"]), default="fit",
               help="QoS preflight strategy when limits are exceeded (default: fit)")
 @click.option("--wait/--detach", "wait_for_ready", default=True,
               help="Block until the Dask scheduler is reachable (default: --wait)")
-def pilot_start(
+def cluster_start(
     name: str | None, qos: str | None, walltime: str | None,
     strategy: str, wait_for_ready: bool,
 ) -> None:
-    """Submit the pilot via ``sbatch`` and (optionally) wait for the Dask scheduler."""
-    from lightcone.engine.pilots import (
-        list_pilots,
-        start_pilot,
+    """Submit the cluster via ``sbatch`` and (optionally) wait for the Dask scheduler."""
+    from lightcone.engine.clusters import (
+        list_clusters,
+        start_cluster,
         wait_for_scheduler,
     )
 
     if name is None:
-        pilots = list_pilots()
-        if len(pilots) != 1:
-            console.print("[red]Error:[/red] Specify a pilot name.")
-            console.print(f"  Configured: {', '.join(pilots) or 'none'}")
+        clusters = list_clusters()
+        if len(clusters) != 1:
+            console.print("[red]Error:[/red] Specify a cluster name.")
+            console.print(f"  Configured: {', '.join(clusters) or 'none'}")
             raise SystemExit(1)
-        name = pilots[0]
+        name = clusters[0]
 
     overrides: dict[str, Any] = {}
     if qos:
@@ -1176,13 +1176,13 @@ def pilot_start(
         overrides["walltime"] = walltime
 
     try:
-        info = start_pilot(name, cli_overrides=overrides, strategy=strategy)
+        info = start_cluster(name, cli_overrides=overrides, strategy=strategy)
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
 
     job_id = info.state.job_id if info.state else "?"
-    console.print(f"[green]✓[/green] Submitted pilot '{name}' as job {job_id}")
+    console.print(f"[green]✓[/green] Submitted cluster '{name}' as job {job_id}")
 
     if wait_for_ready:
         console.print("  Waiting for Dask scheduler to come up...")
@@ -1192,39 +1192,39 @@ def pilot_start(
             console.print(f"[red]Error:[/red] {e}")
             raise SystemExit(1)
         console.print(
-            f"[green]✓[/green] Pilot '{name}' RUNNING. Scheduler: "
+            f"[green]✓[/green] Cluster '{name}' RUNNING. Scheduler: "
             f"[cyan]{info.scheduler_address}[/cyan]"
         )
 
 
-@pilot.command("stop")
+@cluster.command("stop")
 @click.argument("name", required=False)
-def pilot_stop(name: str | None) -> None:
-    """Cancel the pilot's SLURM job and remove its state."""
-    from lightcone.engine.pilots import list_pilots, stop_pilot
+def cluster_stop(name: str | None) -> None:
+    """Cancel the cluster's SLURM job and remove its state."""
+    from lightcone.engine.clusters import list_clusters, stop_cluster
 
     if name is None:
-        pilots = list_pilots()
-        if len(pilots) != 1:
-            console.print("[red]Error:[/red] Specify a pilot name.")
+        clusters = list_clusters()
+        if len(clusters) != 1:
+            console.print("[red]Error:[/red] Specify a cluster name.")
             raise SystemExit(1)
-        name = pilots[0]
-    stop_pilot(name)
-    console.print(f"[green]✓[/green] Pilot '{name}' stopped")
+        name = clusters[0]
+    stop_cluster(name)
+    console.print(f"[green]✓[/green] Cluster '{name}' stopped")
 
 
-@pilot.command("status")
+@cluster.command("status")
 @click.argument("name", required=False)
-def pilot_status(name: str | None) -> None:
-    """Show the live state of a pilot (or all pilots)."""
-    from lightcone.engine.pilots import list_pilots, pilot_info
+def cluster_status(name: str | None) -> None:
+    """Show the live state of a cluster (or all clusters)."""
+    from lightcone.engine.clusters import cluster_info, list_clusters
 
-    names = [name] if name else list_pilots()
+    names = [name] if name else list_clusters()
     if not names:
-        console.print("No pilots configured.")
+        console.print("No clusters configured.")
         return
     for n in names:
-        info = pilot_info(n)
+        info = cluster_info(n)
         if info is None:
             console.print(f"  [red]✗[/red] {n}: not configured")
             continue
@@ -1239,37 +1239,37 @@ def pilot_status(name: str | None) -> None:
             console.print(f"  scheduler: [cyan]{info.scheduler_address}[/cyan]")
 
 
-@pilot.command("logs")
+@cluster.command("logs")
 @click.argument("name", required=False)
 @click.option("-f", "--follow", is_flag=True, help="Follow log output")
 @click.option("-n", default=200, type=int, help="Number of lines to tail (default 200)")
-def pilot_logs(name: str | None, follow: bool, n: int) -> None:
-    """Tail the SLURM stdout log for a pilot."""
-    from lightcone.engine.pilots import list_pilots, tail_pilot_logs
+def cluster_logs(name: str | None, follow: bool, n: int) -> None:
+    """Tail the SLURM stdout log for a cluster."""
+    from lightcone.engine.clusters import list_clusters, tail_cluster_logs
 
     if name is None:
-        pilots = list_pilots()
-        if len(pilots) != 1:
-            console.print("[red]Error:[/red] Specify a pilot name.")
+        clusters = list_clusters()
+        if len(clusters) != 1:
+            console.print("[red]Error:[/red] Specify a cluster name.")
             raise SystemExit(1)
-        name = pilots[0]
+        name = clusters[0]
     try:
-        tail_pilot_logs(name, follow=follow, lines=n)
+        tail_cluster_logs(name, follow=follow, lines=n)
     except (FileNotFoundError, RuntimeError) as e:
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
 
 
-@pilot.command("refresh-cache")
+@cluster.command("refresh-cache")
 @click.argument("site", required=False)
-def pilot_refresh_cache(site: str | None) -> None:
+def cluster_refresh_cache(site: str | None) -> None:
     """Re-query SLURM (sacctmgr/scontrol) and rewrite the cluster cache for SITE."""
-    from lightcone.engine.pilots import list_pilots, load_pilot_config, refresh_cluster_cache
+    from lightcone.engine.clusters import list_clusters, load_cluster_config, refresh_cluster_cache
 
     if site is None:
         sites: set[str] = {
-            s for name in list_pilots()
-            if (s := (load_pilot_config(name) or {}).get("site"))
+            s for name in list_clusters()
+            if (s := (load_cluster_config(name) or {}).get("site"))
         }
         if len(sites) != 1:
             console.print("[red]Error:[/red] Specify a site explicitly.")

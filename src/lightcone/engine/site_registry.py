@@ -1,8 +1,8 @@
 """Known site defaults.
 
-When ``lc pilot add`` detects a known site, it pre-populates a pilot YAML
+When ``lc cluster add`` detects a known site, it pre-populates a cluster YAML
 from the entry below.  Users override any default during the wizard or by
-editing the pilot file later.
+editing the cluster file later.
 
 To add a new site, append an entry to :data:`SITE_DEFAULTS`.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 #: Per-site defaults.  Each entry carries ``container_runtime`` (the CLI
-#: invoked on compute nodes), an optional ``pilot`` block with sbatch
+#: invoked on compute nodes), an optional ``cluster`` block with sbatch
 #: defaults (``scratch_root``, ``default_qos``, ``default_walltime``,
 #: ``worker_init_template``), ``cache_key_overrides`` capturing non-
 #: conventional sacctmgr naming (e.g. Perlmutter's ``regular_1`` for the
@@ -41,8 +41,8 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
                 },
             },
         },
-        # Pilot defaults — fields the user almost never overrides.
-        "pilot": {
+        # Cluster defaults — fields the user almost never overrides.
+        "cluster": {
             "scratch_root": "$PSCRATCH",
             "default_qos": "regular",
             "default_walltime": "24h",

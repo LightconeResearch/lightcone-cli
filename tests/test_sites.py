@@ -68,12 +68,12 @@ class TestGetSiteDefaults:
         site = get_site_defaults("perlmutter")
         assert site["cache_key_overrides"]["regular/cpu"] == "regular_1"
 
-    def test_perlmutter_pilot_block(self):
+    def test_perlmutter_cluster_block(self):
         site = get_site_defaults("perlmutter")
-        pilot = site["pilot"]
-        assert pilot["scratch_root"] == "$PSCRATCH"
-        assert "default_qos" in pilot
-        assert "worker_init_template" in pilot
+        cluster = site["cluster"]
+        assert cluster["scratch_root"] == "$PSCRATCH"
+        assert "default_qos" in cluster
+        assert "worker_init_template" in cluster
 
     def test_unknown(self):
         assert get_site_defaults("nonexistent") is None
@@ -113,6 +113,6 @@ class TestSiteDefaultsSchema:
         for key, site in SITE_DEFAULTS.items():
             assert "scratch_paths" in site, f"Site '{key}' missing scratch_paths"
 
-    def test_sites_have_pilot_block(self):
+    def test_sites_have_cluster_block(self):
         for key, site in SITE_DEFAULTS.items():
-            assert "pilot" in site, f"Site '{key}' missing pilot defaults"
+            assert "cluster" in site, f"Site '{key}' missing cluster defaults"

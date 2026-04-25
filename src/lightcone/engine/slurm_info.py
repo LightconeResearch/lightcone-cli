@@ -443,14 +443,14 @@ def recommend_qos(
     site (``site_registry.SITE_DEFAULTS[site].suggested_options.qos.choices``).
     *constraint* is the user-selected constraint, held fixed for all
     candidates — "switch" never crosses hardware families.  Each candidate
-    resolves to a cache record via :func:`lightcone.engine.pilots._resolve_cache_key`.
+    resolves to a cache record via :func:`lightcone.engine.clusters._resolve_cache_key`.
 
     Sort order:
       1. *preferred_qos* first (if eligible),
       2. eligible options by priority (descending),
       3. ineligible options last.
     """
-    from lightcone.engine.pilots import _resolve_cache_key as resolve_cache_key
+    from lightcone.engine.clusters import _resolve_cache_key as resolve_cache_key
 
     recommendations: list[QoSRecommendation] = []
     cache_by_qos: dict[str, str] = {}

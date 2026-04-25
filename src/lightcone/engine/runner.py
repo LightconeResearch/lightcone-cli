@@ -1,11 +1,11 @@
 """ASTRA container runner — executes recipes locally or in a container.
 
-The runner does not know about SLURM.  When a pilot is active, Dagster's
+The runner does not know about SLURM.  When a cluster is active, Dagster's
 ``dagster-dask`` executor ships each step to a Dask worker on a compute
 node; on that worker, the runner executes the asset body exactly as it
 would on the orchestrator host (it shells out to the configured container
 runtime, e.g. ``podman-hpc run …``).  All sbatch-related machinery lives
-in :mod:`lightcone.engine.pilots`.
+in :mod:`lightcone.engine.clusters`.
 """
 from __future__ import annotations
 

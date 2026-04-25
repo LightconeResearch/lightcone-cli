@@ -1,6 +1,6 @@
 """Tests for ASTRA Container Runner — local/docker/venv backends only.
 
-SLURM-specific tests moved to :mod:`tests.test_pilots`; the runner no
+SLURM-specific tests moved to :mod:`tests.test_clusters`; the runner no
 longer knows about sbatch.
 """
 from __future__ import annotations

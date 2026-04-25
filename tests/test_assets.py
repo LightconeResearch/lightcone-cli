@@ -93,9 +93,9 @@ class TestBuildAssetDefinitions:
         defs = build_definitions(sample_astra_yaml)
         assert isinstance(defs, dg.Definitions)
 
-    def test_pilot_config_selects_container_runtime(self, sample_astra_yaml):
-        """A pilot config wires container_runtime through to the runner."""
-        pilot_config = {
+    def test_cluster_config_selects_container_runtime(self, sample_astra_yaml):
+        """A cluster config wires container_runtime through to the runner."""
+        cluster_config = {
             "site": "perlmutter",
             "account": "m1234",
             "qos": "debug",
@@ -106,7 +106,7 @@ class TestBuildAssetDefinitions:
             "lightcone.engine.assets.ASTRAContainerRunner",
         ) as mock_runner_cls:
             build_definitions(
-                sample_astra_yaml, pilot_config=pilot_config, no_build=True,
+                sample_astra_yaml, cluster_config=cluster_config, no_build=True,
             )
             kwargs = mock_runner_cls.call_args[1]
             assert kwargs["container_runtime"] == "podman-hpc"
