@@ -13,16 +13,52 @@ from lightcone.engine.tree import collect_tree_outputs
 logger = logging.getLogger(__name__)
 
 
-def _get_dagster_instance(project_path: Path) -> dg.DagsterInstance | None:
-    """Load a DagsterInstance from the project's dagster.yaml.
+def _active_cluster_postgres_url() -> str | None:
+    """Return a running cluster's Postgres URL if one is registered, else None.
 
-    Returns None if dagster.yaml doesn't exist or the instance can't be loaded
-    (e.g. corrupted SQLite). Callers treat None as "no events recorded."
-
-    Temporarily changes to project_path so that relative paths in dagster.yaml
-    (e.g. ``base_dir: results/.dagster``) resolve correctly.
+    Picks the first record with a ``postgres_url`` and a live SLURM job —
+    matches how :mod:`lc run` resolves clusters.  Status queries are
+    read-only, so any active PG-backed cluster works.
     """
-    # Check .lightcone/ first, then root for backwards compat
+    try:
+        from lightcone.engine.clusters import list_state_records
+        from lightcone.engine.clusters._slurm import query_slurm_state
+    except ImportError:
+        return None
+    for record in list_state_records():
+        if not record.postgres_url:
+            continue
+        if query_slurm_state(record.job_id) in {"PENDING", "RUNNING"}:
+            return record.postgres_url
+    return None
+
+
+def _get_dagster_instance(project_path: Path) -> dg.DagsterInstance | None:
+    """Load a DagsterInstance for read-only status queries.
+
+    Prefers an active cluster's bundled Postgres (if any) — bypasses the
+    SQLite-on-shared-FS issue from compute nodes.  Falls back to the
+    project's ``dagster.yaml`` (SQLite) for the laptop / login-only case.
+
+    Returns ``None`` if no instance can be loaded; callers treat that as
+    "no events recorded."
+    """
+    pg_url = _active_cluster_postgres_url()
+    if pg_url:
+        try:
+            instance_dir = project_path / ".lightcone" / "dagster-pg-local"
+            instance_dir.mkdir(parents=True, exist_ok=True)
+            (instance_dir / "dagster.yaml").write_text(
+                f"storage:\n  postgres:\n    postgres_url: {pg_url}\n"
+            )
+            return dg.DagsterInstance.from_config(str(instance_dir))
+        except Exception:
+            logger.warning(
+                "Failed to load Dagster instance from cluster Postgres %s",
+                pg_url, exc_info=True,
+            )
+            return None
+
     dagster_yaml = project_path / ".lightcone" / "dagster.yaml"
     if not dagster_yaml.exists():
         dagster_yaml = project_path / "dagster.yaml"

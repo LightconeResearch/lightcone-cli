@@ -188,6 +188,10 @@ class ClusterRecord:
     scheduler_file: str
     mode: ClusterMode = "sbatch"
     process_pids: list[int] = field(default_factory=list)
+    #: ``postgresql://…`` URI of the cluster-bundled Postgres daemon, or
+    #: ``None`` when the cluster runs without persistent Dagster storage
+    #: (older clusters, or environments without ``pixeltable-pgserver``).
+    postgres_url: str | None = None
 
 
 @dataclass

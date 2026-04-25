@@ -627,3 +627,103 @@ class TestFindAttachedClusterForJob:
         from lightcone.engine.clusters import find_attached_cluster_for_job
 
         assert find_attached_cluster_for_job("999") is None
+
+
+# ---------------------------------------------------------------------------
+# Bundled Postgres (cluster.postgres_url)
+# ---------------------------------------------------------------------------
+
+
+class TestPostgresUrlPersistence:
+    def test_attach_records_postgres_url(self, monkeypatch, tmp_path):
+        """attach_to_allocation calls start_pg and stores the URI in the record."""
+        from lightcone.engine.clusters import _slurm
+
+        monkeypatch.setenv("SLURM_JOB_ID", "5050")
+        monkeypatch.setenv("SLURM_JOB_NUM_NODES", "1")
+        monkeypatch.setenv("SLURM_CPUS_ON_NODE", "8")
+
+        # Override the conftest stub with a sentinel we can match against.
+        sentinel_url = "postgresql://lc@nid001:5432/lc"
+        monkeypatch.setattr(_slurm, "start_pg", lambda project_root: sentinel_url)
+
+        with patch(
+            "lightcone.engine.clusters._slurm.subprocess.Popen",
+            side_effect=[MagicMock(pid=10), MagicMock(pid=11)],
+        ):
+            info = _slurm.attach_to_allocation(project_root=tmp_path)
+
+        assert info.record is not None
+        assert info.record.postgres_url == sentinel_url
+
+    def test_start_records_postgres_url(self, perlmutter_yaml, monkeypatch, tmp_path):
+        """start_slurm_cluster passes start_pg's URI through to the record."""
+        from lightcone.engine.clusters import _slurm
+
+        sentinel_url = "postgresql://lc@login01:5432/lc"
+        monkeypatch.setattr(_slurm, "start_pg", lambda project_root: sentinel_url)
+
+        sbatch = MagicMock(returncode=0, stdout="Submitted batch job 7777\n", stderr="")
+        with patch(
+            "lightcone.engine.clusters._slurm.subprocess.run",
+            return_value=sbatch,
+        ), patch(
+            "lightcone.engine.clusters._slurm.ensure_worker_env",
+        ):
+            info = _slurm.start_slurm_cluster(
+                "perlmutter", perlmutter_yaml, {}, project_root=tmp_path,
+            )
+        assert info.record is not None
+        assert info.record.postgres_url == sentinel_url
+
+    def test_stop_calls_stop_pg_when_url_recorded(self, monkeypatch, tmp_path):
+        """stop_slurm_cluster invokes stop_pg only when postgres_url is set."""
+        from lightcone.engine.clusters import _slurm
+
+        write_record(_record(
+            name="perlmutter", job_id="123", mode="sbatch",
+            scheduler_file=str(tmp_path / "sched.json"),
+            postgres_url="postgresql://lc@x:5432/lc",
+        ))
+        called: dict = {}
+        monkeypatch.setattr(
+            _slurm, "stop_pg", lambda project_root: called.setdefault("root", project_root),
+        )
+        with patch("lightcone.engine.clusters._slurm.subprocess.run"):
+            _slurm.stop_slurm_cluster("perlmutter", project_root=tmp_path)
+        assert called.get("root") == tmp_path
+
+    def test_stop_skips_stop_pg_when_no_url(self, monkeypatch, tmp_path):
+        """stop_slurm_cluster doesn't call stop_pg for legacy records."""
+        from lightcone.engine.clusters import _slurm
+
+        write_record(_record(
+            name="perlmutter", job_id="123", mode="sbatch",
+            scheduler_file=str(tmp_path / "sched.json"),
+            # postgres_url defaults to None
+        ))
+        called: dict = {}
+        monkeypatch.setattr(
+            _slurm, "stop_pg", lambda project_root: called.setdefault("root", project_root),
+        )
+        with patch("lightcone.engine.clusters._slurm.subprocess.run"):
+            _slurm.stop_slurm_cluster("perlmutter", project_root=tmp_path)
+        assert "root" not in called  # stop_pg never invoked
+
+    def test_legacy_record_loads_with_postgres_url_none(self):
+        """Old state files (pre-PG) round-trip with postgres_url=None."""
+        path = state_path("legacy")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "name": "legacy",
+            "type": "slurm",
+            "job_id": "1",
+            "site": "perlmutter",
+            "submitted_at": "2025-01-01T00:00:00+00:00",
+            "walltime_seconds": 3600,
+            "scheduler_file": "/tmp/sched.json",
+            "mode": "sbatch",
+        }))
+        record = read_record("legacy")
+        assert record is not None
+        assert record.postgres_url is None

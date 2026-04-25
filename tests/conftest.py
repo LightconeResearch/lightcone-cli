@@ -30,3 +30,19 @@ def _isolate_lightcone_home(tmp_path, monkeypatch):
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+
+
+@pytest.fixture(autouse=True)
+def _stub_pg(monkeypatch):
+    """Stub out the bundled Postgres lifecycle for tests by default.
+
+    ``start_pg`` returns a fake URI, ``stop_pg`` is a no-op.  Tests that
+    want to assert PG behaviour should patch these directly with their
+    own expectations.
+    """
+    import lightcone.engine.clusters._pg as _pg
+    import lightcone.engine.clusters._slurm as _slurm
+    monkeypatch.setattr(_pg, "start_pg", lambda project_root: "postgresql://test/db")
+    monkeypatch.setattr(_pg, "stop_pg", lambda project_root: None)
+    monkeypatch.setattr(_slurm, "start_pg", lambda project_root: "postgresql://test/db")
+    monkeypatch.setattr(_slurm, "stop_pg", lambda project_root: None)

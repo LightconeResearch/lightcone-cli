@@ -70,56 +70,50 @@ def _find_dagster_yaml(project_path: Path) -> Path | None:
     return candidate if candidate.exists() else None
 
 
-def _scratch_dagster_dir(project_path: Path) -> Path | None:
-    """Per-project Dagster instance dir on scratch, or ``None`` if no scratch."""
-    for var in ("PSCRATCH", "SCRATCH"):
-        v = os.environ.get(var)
-        if v:
-            return Path(v) / "lightcone" / "dagster" / project_path.name
-    return None
-
-
-def _resolve_dagster_instance_dir(project_path: Path) -> Path:
-    """Return the directory to pass to ``DagsterInstance.from_config``.
-
-    On compute nodes (``$SLURM_JOB_ID`` set), materializes a transient
-    ``dagster.yaml`` on scratch with ``storage.sqlite.base_dir`` overridden
-    to a scratch path — SQLite cannot reliably operate on NERSC's NFS
-    home from compute nodes (it raises ``disk I/O error``).  The user's
-    other ``dagster.yaml`` keys (loggers, run launcher, etc.) are
-    preserved.
-
-    On login nodes, returns the project's own ``dagster.yaml`` parent
-    unchanged (auto-generating the default if absent).
+def _ensure_default_dagster_yaml(project_path: Path) -> Path:
+    """Return the project's ``dagster.yaml`` path, generating a SQLite
+    default in ``.lightcone/`` if one doesn't exist yet.
     """
     dagster_yaml_path = _find_dagster_yaml(project_path)
-    if dagster_yaml_path is None:
-        lightcone_dir = project_path / ".lightcone"
-        lightcone_dir.mkdir(parents=True, exist_ok=True)
-        dagster_yaml_path = lightcone_dir / "dagster.yaml"
-        dagster_yaml_path.write_text(
+    if dagster_yaml_path is not None:
+        return dagster_yaml_path
+    lightcone_dir = project_path / ".lightcone"
+    lightcone_dir.mkdir(parents=True, exist_ok=True)
+    dagster_yaml_path = lightcone_dir / "dagster.yaml"
+    dagster_yaml_path.write_text(
+        yaml.dump(
+            {"storage": {"sqlite": {"base_dir": "results/.dagster"}}},
+            default_flow_style=False, sort_keys=False,
+        )
+    )
+    return dagster_yaml_path
+
+
+def _build_dagster_instance(project_path: Path, postgres_url: str | None) -> Any:
+    """Construct a Dagster instance for ``lc run`` / ``lc status``.
+
+    When *postgres_url* is provided (the active cluster's bundled PG
+    daemon), build the instance against that URL — bypasses the SQLite-
+    on-NFS problem entirely on compute nodes.  Otherwise fall back to
+    the project's local ``dagster.yaml`` (SQLite, fine on login nodes
+    and laptops).
+    """
+    import dagster as dg
+
+    if postgres_url:
+        scratch_local = project_path / ".lightcone" / "dagster-pg-local"
+        scratch_local.mkdir(parents=True, exist_ok=True)
+        config_yaml = scratch_local / "dagster.yaml"
+        config_yaml.write_text(
             yaml.dump(
-                {"storage": {"sqlite": {"base_dir": "results/.dagster"}}},
+                {"storage": {"postgres": {"postgres_url": postgres_url}}},
                 default_flow_style=False, sort_keys=False,
             )
         )
+        return dg.DagsterInstance.from_config(str(scratch_local))
 
-    if not os.environ.get("SLURM_JOB_ID"):
-        return dagster_yaml_path.parent
-
-    scratch_dir = _scratch_dagster_dir(project_path)
-    if scratch_dir is None:
-        # No scratch — fall through; SQLite may or may not work, but we
-        # don't want to silently swap behaviour without a real alternative.
-        return dagster_yaml_path.parent
-    scratch_dir.mkdir(parents=True, exist_ok=True)
-
-    user_config = yaml.safe_load(dagster_yaml_path.read_text()) or {}
-    user_config.setdefault("storage", {})["sqlite"] = {"base_dir": str(scratch_dir)}
-    (scratch_dir / "dagster.yaml").write_text(
-        yaml.dump(user_config, default_flow_style=False, sort_keys=False),
-    )
-    return scratch_dir
+    yaml_path = _ensure_default_dagster_yaml(project_path)
+    return dg.DagsterInstance.from_config(str(yaml_path.parent))
 
 
 def _load_lightcone_config(project_path: Path) -> dict:
@@ -716,13 +710,17 @@ def run(
             if not (spec.metadata or {}).get("external", False)
         ]
 
-    instance_dir = _resolve_dagster_instance_dir(project_path)
-    if os.environ.get("SLURM_JOB_ID") and _scratch_dagster_dir(project_path) is not None:
+    cluster_postgres_url: str | None = None
+    if cluster_name is not None:
+        from lightcone.engine.clusters import cluster_info as _cluster_info_lookup
+        info = _cluster_info_lookup(cluster_name)
+        if info is not None and info.record is not None:
+            cluster_postgres_url = info.record.postgres_url
+    instance = _build_dagster_instance(project_path, cluster_postgres_url)
+    if cluster_postgres_url:
         console.print(
-            f"  [dim]Dagster storage: {instance_dir} "
-            "(redirected to scratch for compute-node SQLite)[/dim]"
+            f"  [dim]Dagster storage: cluster Postgres at {cluster_postgres_url}[/dim]"
         )
-    instance = dg.DagsterInstance.from_config(str(instance_dir))
 
     os.environ["LIGHTCONE_PROJECT_PATH"] = str(project_path)
     os.environ["LIGHTCONE_UNIVERSE"] = universe_id

@@ -39,6 +39,7 @@ from lightcone.engine.clusters._common import (
     walltime_to_slurm,
     write_record,
 )
+from lightcone.engine.clusters._pg import start_pg, stop_pg
 from lightcone.engine.site_registry import SITE_DEFAULTS, detect_site
 
 logger = logging.getLogger(__name__)
@@ -657,6 +658,7 @@ def attach_to_allocation(
     )
 
     walltime_seconds = _slurm_walltime_seconds_from_env()
+    postgres_url = start_pg(project_root)
 
     record = ClusterRecord(
         name=name,
@@ -668,6 +670,7 @@ def attach_to_allocation(
         scheduler_file=sched_file_path,
         mode="attached",
         process_pids=[sched_proc.pid, worker_proc.pid],
+        postgres_url=postgres_url,
     )
     write_record(record)
     logger.info(
@@ -764,6 +767,7 @@ def start_slurm_cluster(
     if job_id is None:
         raise RuntimeError(f"could not parse job id from sbatch output: {submit.stdout!r}")
 
+    postgres_url = start_pg(project_root)
     record = ClusterRecord(
         name=name,
         type="slurm",
@@ -772,19 +776,20 @@ def start_slurm_cluster(
         submitted_at=datetime.now(UTC).isoformat(),
         walltime_seconds=parse_walltime_seconds(spec.walltime),
         scheduler_file=f"{spec.scratch_root}/lightcone/clusters/{name}.json",
+        postgres_url=postgres_url,
     )
     write_record(record)
     logger.info("Cluster '%s' submitted as SLURM job %s", name, job_id)
     return ClusterInfo(spec=spec, record=record, state="PENDING", scheduler_address=None)
 
 
-def stop_slurm_cluster(name: str) -> None:
+def stop_slurm_cluster(name: str, *, project_root: Path | None = None) -> None:
     """Tear down a SLURM-backed cluster.
 
     Mode-aware: ``sbatch`` clusters get ``scancel``-ed (we own the job);
     ``attached`` clusters get the dask scheduler/workers killed by PID,
     leaving the user's allocation intact.  Both paths clean up the
-    scheduler-file and state file.
+    bundled Postgres daemon, the scheduler-file, and the state file.
     """
     record = read_record(name)
     if record is None:
@@ -807,6 +812,8 @@ def stop_slurm_cluster(name: str) -> None:
     else:
         subprocess.run(["scancel", record.job_id], check=False)
         logger.info("Cluster '%s' stopped (cancelled SLURM job %s)", name, record.job_id)
+    if record.postgres_url:
+        stop_pg(project_root or Path.cwd())
     sched_file = Path(expand_path(record.scheduler_file))
     if sched_file.exists():
         sched_file.unlink()

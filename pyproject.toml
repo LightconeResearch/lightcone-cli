@@ -20,6 +20,7 @@ dependencies = [
     "dagster-dask>=0.25",
     "distributed>=2024.0",
     "langfuse>=2.0",
+    "pixeltable-pgserver>=0.5.1",
 ]
 
 [dependency-groups]

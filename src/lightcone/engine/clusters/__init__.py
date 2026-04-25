@@ -146,12 +146,14 @@ def attach_cluster(
     return attach_to_allocation(project_root=project_root)
 
 
-def stop_cluster(name: str) -> None:
+def stop_cluster(name: str, *, project_root: Path | None = None) -> None:
     """Tear down a cluster (mode-aware) and clean up its state.
 
     For ``sbatch`` mode this ``scancel``s the job; for ``attached`` mode
     it kills the dask scheduler/worker processes and leaves the user's
-    salloc allocation intact.
+    salloc allocation intact.  The bundled Postgres daemon (if any) is
+    shut down for both modes.  ``project_root`` is forwarded to the
+    substrate so it can locate the project-local PG data dir.
     """
     # Prefer the substrate recorded in the state file (covers attached
     # clusters that have no yaml). Fall back to yaml when no state exists
@@ -164,7 +166,7 @@ def stop_cluster(name: str) -> None:
         cluster_type = config.get("type")
     if cluster_type == "slurm":
         from lightcone.engine.clusters._slurm import stop_slurm_cluster
-        stop_slurm_cluster(name)
+        stop_slurm_cluster(name, project_root=project_root)
         return
     raise ValueError(f"unknown cluster type {cluster_type!r}")
 
