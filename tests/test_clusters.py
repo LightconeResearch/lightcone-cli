@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from lightcone.engine.clusters import (
+    ClusterRecord,
     ClusterSpec,
     WorkerPool,
     list_clusters,
@@ -18,6 +19,11 @@ from lightcone.engine.clusters import (
     save_cluster_config,
     spec_from_config,
     walltime_to_slurm,
+)
+from lightcone.engine.clusters._common import (
+    read_record,
+    state_path,
+    write_record,
 )
 from lightcone.engine.clusters._slurm import (
     ensure_worker_env,
@@ -324,3 +330,300 @@ class TestQoSPreflight:
         spec = _spec(qos="regular", walltime="2h")
         result = validate_against_qos(spec)
         assert result.walltime == "2h"
+
+
+# ---------------------------------------------------------------------------
+# Attach (in-allocation) — `lc cluster attach`
+# ---------------------------------------------------------------------------
+
+
+def _record(**overrides) -> ClusterRecord:
+    base = dict(
+        name="x",
+        type="slurm",
+        job_id="42",
+        site="perlmutter",
+        submitted_at=datetime.now(UTC).isoformat(),
+        walltime_seconds=3600,
+        scheduler_file="/tmp/sched.json",
+    )
+    base.update(overrides)
+    return ClusterRecord(**base)
+
+
+class TestAttachToAllocation:
+    def test_errors_outside_allocation(self, monkeypatch):
+        from lightcone.engine.clusters._slurm import attach_to_allocation
+
+        monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+        with pytest.raises(RuntimeError, match="Not inside a SLURM allocation"):
+            attach_to_allocation()
+
+    def test_writes_attached_state_and_does_not_sbatch(
+        self, monkeypatch, tmp_path,
+    ):
+        from lightcone.engine.clusters._slurm import attach_to_allocation
+
+        monkeypatch.setenv("SLURM_JOB_ID", "12345")
+        monkeypatch.setenv("SLURM_JOB_NUM_NODES", "2")
+        monkeypatch.setenv("SLURM_CPUS_ON_NODE", "64")
+
+        # Avoid real subprocess + filesystem expansion.
+        sched_proc = MagicMock(pid=111)
+        worker_proc = MagicMock(pid=222)
+        # First Popen = scheduler, second = worker srun.
+        with patch(
+            "lightcone.engine.clusters._slurm.subprocess.Popen",
+            side_effect=[sched_proc, worker_proc],
+        ) as popen, patch(
+            "lightcone.engine.clusters._slurm.subprocess.run",
+        ) as run, patch(
+            "lightcone.engine.clusters._slurm.expand_path",
+            side_effect=lambda v: str(tmp_path / "scratch"),
+        ):
+            info = attach_to_allocation(project_root=tmp_path)
+
+        # No sbatch / scancel should have been called.
+        for call in run.call_args_list:
+            assert call.args[0][0] != "sbatch"
+
+        # Two Popen calls — scheduler + worker srun.
+        assert popen.call_count == 2
+        sched_argv, worker_argv = popen.call_args_list[0].args[0], popen.call_args_list[1].args[0]
+        assert sched_argv[:2] == ["dask", "scheduler"]
+        assert worker_argv[0] == "srun"
+        assert "--nodes=2" in worker_argv
+
+        # Record persisted with mode=attached and PIDs.
+        assert info.record is not None
+        assert info.record.mode == "attached"
+        assert info.record.process_pids == [111, 222]
+        assert info.record.job_id == "12345"
+
+        # State file matches the synthesized name.
+        record = read_record("_attached_12345")
+        assert record is not None
+        assert record.mode == "attached"
+
+    def test_idempotent_when_already_attached(self, monkeypatch):
+        from lightcone.engine.clusters._slurm import attach_to_allocation
+
+        monkeypatch.setenv("SLURM_JOB_ID", "9999")
+        monkeypatch.setenv("SLURM_JOB_NUM_NODES", "1")
+        monkeypatch.setenv("SLURM_CPUS_ON_NODE", "8")
+
+        # Pre-seed a live attached record.
+        write_record(_record(
+            name="_attached_9999", job_id="9999", mode="attached",
+            process_pids=[111, 222],
+        ))
+        # Make squeue / sacct say "RUNNING".
+        with patch(
+            "lightcone.engine.clusters._slurm.query_slurm_state",
+            return_value="RUNNING",
+        ), patch(
+            "lightcone.engine.clusters._slurm.read_scheduler_address",
+            return_value="tcp://nid000123:8786",
+        ), patch(
+            "lightcone.engine.clusters._slurm.subprocess.Popen",
+        ) as popen:
+            info = attach_to_allocation()
+        # No new processes should be spawned.
+        popen.assert_not_called()
+        # Returned info reflects the existing record.
+        assert info.record is not None
+        assert info.record.process_pids == [111, 222]
+
+    def test_sweeps_stale_attached_record(self, monkeypatch, tmp_path):
+        from lightcone.engine.clusters._slurm import attach_to_allocation
+
+        monkeypatch.setenv("SLURM_JOB_ID", "111")
+        monkeypatch.setenv("SLURM_JOB_NUM_NODES", "1")
+        monkeypatch.setenv("SLURM_CPUS_ON_NODE", "4")
+
+        # Pre-existing attached record from a dead job — should be cleaned up
+        # before the new one is created.
+        write_record(_record(
+            name="_attached_111", job_id="111", mode="attached",
+            scheduler_file=str(tmp_path / "old.json"),
+        ))
+        with patch(
+            "lightcone.engine.clusters._slurm.query_slurm_state",
+            return_value="DEAD",
+        ), patch(
+            "lightcone.engine.clusters._slurm.subprocess.Popen",
+            side_effect=[MagicMock(pid=1), MagicMock(pid=2)],
+        ), patch(
+            "lightcone.engine.clusters._slurm.expand_path",
+            side_effect=lambda v: str(tmp_path / "scratch"),
+        ):
+            info = attach_to_allocation(project_root=tmp_path)
+
+        assert info.record is not None
+        assert info.record.process_pids == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# Idempotent start_slurm_cluster
+# ---------------------------------------------------------------------------
+
+
+class TestStartIdempotency:
+    def test_returns_existing_when_running(self, perlmutter_yaml):
+        from lightcone.engine.clusters._slurm import start_slurm_cluster
+
+        write_record(_record(name="perlmutter", job_id="987"))
+        with patch(
+            "lightcone.engine.clusters._slurm.query_slurm_state",
+            return_value="RUNNING",
+        ), patch(
+            "lightcone.engine.clusters._slurm.read_scheduler_address",
+            return_value="tcp://nid000:8786",
+        ), patch(
+            "lightcone.engine.clusters._slurm.subprocess.run",
+        ) as run:
+            info = start_slurm_cluster("perlmutter", perlmutter_yaml, {})
+        # Should NOT call sbatch.
+        for call in run.call_args_list:
+            assert call.args[0][0] != "sbatch"
+        assert info.record is not None
+        assert info.record.job_id == "987"
+        assert info.state == "RUNNING"
+
+    def test_sweeps_stale_state_and_resubmits(self, perlmutter_yaml, tmp_path):
+        from lightcone.engine.clusters._slurm import start_slurm_cluster
+
+        # Stale record (dead job).
+        write_record(_record(name="perlmutter", job_id="111"))
+        sbatch_result = MagicMock(returncode=0, stdout="Submitted batch job 22222\n", stderr="")
+        with patch(
+            "lightcone.engine.clusters._slurm.query_slurm_state",
+            return_value="DEAD",
+        ), patch(
+            "lightcone.engine.clusters._slurm.subprocess.run",
+            return_value=sbatch_result,
+        ), patch(
+            "lightcone.engine.clusters._slurm.ensure_worker_env",
+        ):
+            info = start_slurm_cluster("perlmutter", perlmutter_yaml, {}, project_root=tmp_path)
+        assert info.record is not None
+        assert info.record.job_id == "22222"
+
+
+# ---------------------------------------------------------------------------
+# Mode-aware stop_slurm_cluster
+# ---------------------------------------------------------------------------
+
+
+class TestStopModeAware:
+    def test_attached_kills_pids_and_does_not_scancel(self, tmp_path):
+        from lightcone.engine.clusters._slurm import stop_slurm_cluster
+
+        write_record(_record(
+            name="_attached_55", job_id="55", mode="attached",
+            scheduler_file=str(tmp_path / "sched.json"),
+            process_pids=[101, 102],
+        ))
+        with patch(
+            "lightcone.engine.clusters._slurm.os.kill",
+        ) as kill, patch(
+            "lightcone.engine.clusters._slurm.subprocess.run",
+        ) as run:
+            stop_slurm_cluster("_attached_55")
+
+        # Two SIGTERMs — one per pid; no scancel.
+        assert kill.call_count == 2
+        for call in run.call_args_list:
+            assert call.args[0][0] != "scancel"
+        assert not state_path("_attached_55").exists()
+
+    def test_sbatch_calls_scancel(self, tmp_path):
+        from lightcone.engine.clusters._slurm import stop_slurm_cluster
+
+        write_record(_record(
+            name="perlmutter", job_id="777", mode="sbatch",
+            scheduler_file=str(tmp_path / "sched.json"),
+        ))
+        with patch(
+            "lightcone.engine.clusters._slurm.subprocess.run",
+        ) as run:
+            stop_slurm_cluster("perlmutter")
+        # scancel should have been called.
+        cancel_calls = [c for c in run.call_args_list if c.args[0][0] == "scancel"]
+        assert len(cancel_calls) == 1
+        assert cancel_calls[0].args[0] == ["scancel", "777"]
+
+
+# ---------------------------------------------------------------------------
+# State file forward/backward-compat for the new `mode`/`process_pids` fields
+# ---------------------------------------------------------------------------
+
+
+class TestStateRecordCompat:
+    def test_old_record_without_mode_defaults_to_sbatch(self):
+        # Simulate a state file written before the `mode` field existed.
+        path = state_path("legacy")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "name": "legacy",
+            "type": "slurm",
+            "job_id": "1",
+            "site": "perlmutter",
+            "submitted_at": "2025-01-01T00:00:00+00:00",
+            "walltime_seconds": 3600,
+            "scheduler_file": "/tmp/sched.json",
+        }))
+        record = read_record("legacy")
+        assert record is not None
+        assert record.mode == "sbatch"
+        assert record.process_pids == []
+
+    def test_extra_fields_are_ignored(self):
+        path = state_path("future")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "name": "future",
+            "type": "slurm",
+            "job_id": "2",
+            "site": "perlmutter",
+            "submitted_at": "2025-01-01T00:00:00+00:00",
+            "walltime_seconds": 3600,
+            "scheduler_file": "/tmp/sched.json",
+            "mode": "attached",
+            "process_pids": [1, 2],
+            "future_field_we_dont_know_about": True,
+        }))
+        record = read_record("future")
+        assert record is not None
+        assert record.mode == "attached"
+        assert record.process_pids == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# `find_attached_cluster_for_job` — used by `lc run` resolution
+# ---------------------------------------------------------------------------
+
+
+class TestFindAttachedClusterForJob:
+    def test_returns_match(self):
+        from lightcone.engine.clusters import find_attached_cluster_for_job
+
+        write_record(_record(
+            name="_attached_42", job_id="42", mode="attached",
+        ))
+        with patch(
+            "lightcone.engine.clusters._slurm.query_slurm_state",
+            return_value="RUNNING",
+        ), patch(
+            "lightcone.engine.clusters._slurm.read_scheduler_address",
+            return_value="tcp://nid:8786",
+        ):
+            info = find_attached_cluster_for_job("42")
+        assert info is not None
+        assert info.record is not None
+        assert info.record.name == "_attached_42"
+
+    def test_returns_none_when_no_match(self):
+        from lightcone.engine.clusters import find_attached_cluster_for_job
+
+        assert find_attached_cluster_for_job("999") is None

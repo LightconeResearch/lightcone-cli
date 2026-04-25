@@ -10,6 +10,9 @@ Future ``_k8s.py`` mirrors this surface.
 from __future__ import annotations
 
 import logging
+import os
+import signal
+import socket
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +25,7 @@ from lightcone.engine.clusters._common import (
     ClusterInfo,
     ClusterRecord,
     ClusterSpec,
+    WorkerPool,
     env_path_for_site,
     expand_path,
     get_cache_dir,
@@ -34,7 +38,7 @@ from lightcone.engine.clusters._common import (
     walltime_to_slurm,
     write_record,
 )
-from lightcone.engine.site_registry import SITE_DEFAULTS
+from lightcone.engine.site_registry import SITE_DEFAULTS, detect_site
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +122,68 @@ def _total_nodes(spec: ClusterSpec) -> int:
     return sum(w.nodes for w in spec.workers)
 
 
+def _argv_to_sbatch_line(argv: list[str]) -> str:
+    """Format ``_worker_srun_argv`` output as a shell line for the sbatch script.
+
+    Groups ``--flag value`` pairs onto one token, double-quotes values that
+    need shell expansion or contain spaces/equals, and joins with backslash
+    continuations matching the existing sbatch script style.
+    """
+    parts: list[str] = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "dask" and i + 1 < len(argv) and argv[i + 1] == "worker":
+            parts.append("dask worker")
+            i += 2
+            continue
+        if tok.startswith("--") and "=" not in tok and i + 1 < len(argv):
+            value = argv[i + 1]
+            if value.isdigit():
+                parts.append(f"{tok} {value}")
+            else:
+                parts.append(f'{tok} "{value}"')
+            i += 2
+            continue
+        parts.append(tok)
+        i += 1
+    return " \\\n     ".join(parts)
+
+
+def _worker_srun_argv(
+    pool: WorkerPool,
+    sched_file: str,
+    local_dir: str,
+    *,
+    per_pool_constraint: bool = False,
+) -> list[str]:
+    """Build raw argv for one ``srun … dask worker …`` invocation.
+
+    Used directly by :func:`attach_to_allocation` (subprocess.Popen) and
+    by :func:`render_sbatch` (which shell-quotes selected tokens for the
+    sbatch script).  ``sched_file`` and ``local_dir`` may be either literal
+    paths (for Popen) or shell-variable references (for sbatch).
+    """
+    args = [
+        "srun",
+        f"--nodes={pool.nodes}",
+        f"--ntasks={pool.nodes}",
+        "--ntasks-per-node=1",
+    ]
+    if per_pool_constraint and pool.constraint:
+        args.append(f"--constraint={pool.constraint}")
+    args.extend([
+        "dask", "worker",
+        "--scheduler-file", sched_file,
+        "--nworkers", str(pool.threads_per_node),
+        "--memory-limit", pool.memory,
+        "--local-directory", local_dir,
+    ])
+    if pool.resources:
+        args.extend(["--resources", _resources_to_dask_arg(pool.resources)])
+    return args
+
+
 def render_sbatch(spec: ClusterSpec) -> str:
     """Render the sbatch script that brings up the persistent Dask cluster.
 
@@ -174,22 +240,11 @@ def render_sbatch(spec: ClusterSpec) -> str:
     ]
 
     for i, pool in enumerate(spec.workers):
-        srun_parts = [
-            "srun",
-            f"--nodes={pool.nodes}",
-            f"--ntasks={pool.nodes}",
-            "--ntasks-per-node=1",
-        ]
-        if per_pool_constraint and pool.constraint:
-            srun_parts.append(f"--constraint={pool.constraint}")
-        srun_parts.append("dask worker")
-        srun_parts.append('--scheduler-file "$SCHED_FILE"')
-        srun_parts.append(f"--nworkers {pool.threads_per_node}")
-        srun_parts.append(f'--memory-limit "{pool.memory}"')
-        srun_parts.append(f'--local-directory "{local_dir}"')
-        if pool.resources:
-            srun_parts.append(f'--resources "{_resources_to_dask_arg(pool.resources)}"')
-        rendered = " \\\n     ".join(srun_parts)
+        argv = _worker_srun_argv(
+            pool, "$SCHED_FILE", local_dir,
+            per_pool_constraint=per_pool_constraint,
+        )
+        rendered = _argv_to_sbatch_line(argv)
         lines.append(f"# pool {i}: {pool.nodes} node(s)" + (
             f", resources={pool.resources}" if pool.resources else ""
         ))
@@ -428,20 +483,208 @@ def query_slurm_state(job_id: str) -> str:
 def slurm_cluster_info(name: str, config: dict[str, Any] | None = None) -> ClusterInfo | None:
     """Return spec + record + live SLURM state for the named cluster.
 
-    *config* may be passed in by the dispatcher to avoid a duplicate
-    ``load_cluster_config`` read.
+    Dispatches on ``record.mode``: an ``attached`` record yields a
+    synthesized spec (no yaml required); a ``sbatch`` record uses the
+    yaml as today.  *config* may be passed in by the dispatcher to avoid
+    a duplicate ``load_cluster_config`` read on the yaml path.
     """
+    record = read_record(name)
+    if record is not None and record.mode == "attached":
+        spec = _spec_from_attached_record(record)
+        state = query_slurm_state(record.job_id)
+        address = read_scheduler_address(record.scheduler_file) if state == "RUNNING" else None
+        return ClusterInfo(spec=spec, record=record, state=state, scheduler_address=address)
+
     if config is None:
         config = load_cluster_config(name)
         if config is None:
             return None
     spec = spec_from_config(name, config)
-    record = read_record(name)
     if record is None:
         return ClusterInfo(spec=spec, record=None, state="NONE", scheduler_address=None)
     state = query_slurm_state(record.job_id)
     address = read_scheduler_address(record.scheduler_file) if state == "RUNNING" else None
     return ClusterInfo(spec=spec, record=record, state=state, scheduler_address=address)
+
+
+def _spec_from_attached_record(record: ClusterRecord) -> ClusterSpec:
+    """Synthesize a display-only :class:`ClusterSpec` for an attached cluster.
+
+    Attached clusters have no yaml — the worker-pool layout was derived
+    from SLURM env at attach time.  Most fields are placeholders for
+    display purposes (status output, list table); the live SLURM job and
+    scheduler address come from the record + live queries.
+    """
+    site_defaults = SITE_DEFAULTS.get(record.site, {})
+    cluster_defaults = (site_defaults.get("slurm") or {})
+    scratch_root = cluster_defaults.get("scratch_root") or "$HOME/scratch"
+    container_runtime = site_defaults.get("container_runtime") or "podman-hpc"
+    return ClusterSpec(
+        name=record.name,
+        type="slurm",
+        site=record.site,
+        account="(attached)",
+        qos="(attached)",
+        walltime=f"{record.walltime_seconds // 60}m" if record.walltime_seconds else "?",
+        # Display-only stub; the real worker layout was honoured at attach time.
+        workers=[WorkerPool(nodes=1, threads_per_node=1, memory="auto")],
+        container_runtime=container_runtime,
+        scratch_root=scratch_root,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Attach (in-allocation) lifecycle
+# ---------------------------------------------------------------------------
+
+
+def _scratch_root_for_site(site: str) -> str:
+    """Return the site's preferred scratch root, expanded for the local FS."""
+    cluster_defaults = (SITE_DEFAULTS.get(site, {}).get("slurm") or {})
+    return cluster_defaults.get("scratch_root") or "$HOME/scratch"
+
+
+def attach_to_allocation(
+    *,
+    project_root: Path | None = None,
+) -> ClusterInfo:
+    """Spawn a Dask cluster inside the current SLURM allocation.
+
+    Reads SLURM env vars (``SLURM_JOB_ID``, ``SLURM_JOB_NUM_NODES``,
+    ``SLURM_CPUS_ON_NODE``) to derive a single uniform worker pool.
+    Spawns ``dask scheduler`` on the current node and ``srun … dask
+    worker …`` across the allocation.  Both processes are detached
+    (``start_new_session=True``) with stdout/stderr redirected to log
+    files in ``<project_root>/results/.slurm/``.
+
+    Returns the :class:`ClusterInfo`.  Raises :class:`RuntimeError` if
+    not inside a SLURM allocation.
+    """
+    job_id = os.environ.get("SLURM_JOB_ID")
+    if not job_id:
+        raise RuntimeError(
+            "Not inside a SLURM allocation ($SLURM_JOB_ID is unset). "
+            "Use `lc cluster start <name>` to submit a fresh job, or "
+            "`salloc` first to grab an interactive allocation."
+        )
+
+    name = f"_attached_{job_id}"
+
+    # Idempotent: already-attached for this allocation? Return existing.
+    existing = read_record(name)
+    if existing is not None:
+        info = slurm_cluster_info(name)
+        if info and info.state in {"PENDING", "RUNNING"}:
+            logger.info("Cluster '%s' already attached (state=%s).", name, info.state)
+            return info
+        # Stale state from a prior allocation that died — sweep before continuing.
+        state_path(name).unlink()
+        sched_file = Path(expand_path(existing.scheduler_file))
+        if sched_file.exists():
+            sched_file.unlink()
+
+    # Sweep dead `_attached_*` records from prior allocations.
+    _sweep_dead_attached_records()
+
+    nodes = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
+    cpus_per_node = int(os.environ.get("SLURM_CPUS_ON_NODE", "0")) or 1
+    site = detect_site(socket.gethostname()) or "_attached"
+    scratch = expand_path(_scratch_root_for_site(site))
+
+    sched_file_path = f"{scratch}/lightcone/clusters/{name}.json"
+    Path(sched_file_path).parent.mkdir(parents=True, exist_ok=True)
+    local_dir = f"{scratch}/lightcone/clusters/scratch"
+    Path(local_dir).mkdir(parents=True, exist_ok=True)
+
+    pool = WorkerPool(
+        nodes=nodes,
+        threads_per_node=cpus_per_node,
+        memory="auto",
+    )
+
+    project_root = project_root or Path.cwd()
+    log_dir = project_root / "results" / ".slurm"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    sched_log = log_dir / f"lc-cluster-{name}-scheduler.log"
+    worker_log = log_dir / f"lc-cluster-{name}-workers.log"
+
+    sched_argv = [
+        "dask", "scheduler",
+        "--scheduler-file", sched_file_path,
+        "--port", "8786",
+        "--dashboard-address", ":8787",
+    ]
+    sched_proc = subprocess.Popen(
+        sched_argv,
+        stdout=open(sched_log, "w"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        cwd=str(project_root),
+    )
+
+    worker_argv = _worker_srun_argv(pool, sched_file_path, local_dir)
+    worker_proc = subprocess.Popen(
+        worker_argv,
+        stdout=open(worker_log, "w"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        cwd=str(project_root),
+    )
+
+    walltime_seconds = _slurm_walltime_seconds_from_env()
+
+    record = ClusterRecord(
+        name=name,
+        type="slurm",
+        job_id=job_id,
+        site=site,
+        submitted_at=datetime.now(UTC).isoformat(),
+        walltime_seconds=walltime_seconds,
+        scheduler_file=sched_file_path,
+        mode="attached",
+        process_pids=[sched_proc.pid, worker_proc.pid],
+    )
+    write_record(record)
+    logger.info(
+        "Attached cluster '%s' to allocation %s (%d nodes, %d cpus/node).",
+        name, job_id, nodes, cpus_per_node,
+    )
+
+    spec = _spec_from_attached_record(record)
+    return ClusterInfo(spec=spec, record=record, state="PENDING", scheduler_address=None)
+
+
+def _slurm_walltime_seconds_from_env() -> int:
+    """Best-effort walltime for the current allocation, in seconds."""
+    # SLURM doesn't expose time-remaining directly via env; SLURM_TIMELIMIT
+    # carries the requested limit in minutes when set. Fall back to 0 if
+    # absent (display-only — record is informational for attached mode).
+    raw = os.environ.get("SLURM_TIMELIMIT") or "0"
+    try:
+        return int(raw) * 60
+    except ValueError:
+        return 0
+
+
+def _sweep_dead_attached_records() -> None:
+    """Remove ``_attached_*`` state files whose SLURM jobs are no longer alive."""
+    from lightcone.engine.clusters._common import list_state_records
+
+    for record in list_state_records():
+        if record.mode != "attached":
+            continue
+        if query_slurm_state(record.job_id) in {"DEAD", "COMPLETED", "FAILED", "CANCELLED"}:
+            try:
+                state_path(record.name).unlink()
+            except FileNotFoundError:
+                pass
+            sched_file = Path(expand_path(record.scheduler_file))
+            if sched_file.exists():
+                try:
+                    sched_file.unlink()
+                except OSError:
+                    pass
 
 
 def start_slurm_cluster(
@@ -462,12 +705,17 @@ def start_slurm_cluster(
     if existing_record is not None:
         existing = slurm_cluster_info(name, config=config)
         if existing and existing.state in {"PENDING", "RUNNING"}:
-            raise RuntimeError(
-                f"Cluster '{name}' already has an active job "
-                f"({existing_record.job_id}, state={existing.state}). "
-                f"Run `lc cluster stop {name}` first."
+            # Idempotent: cluster already up. Caller treats this as success.
+            logger.info(
+                "Cluster '%s' already running (job %s, state=%s).",
+                name, existing_record.job_id, existing.state,
             )
+            return existing
+        # Stale state file (recorded job is dead) — sweep and proceed.
         state_path(name).unlink()
+        sched_file = Path(expand_path(existing_record.scheduler_file))
+        if sched_file.exists():
+            sched_file.unlink()
 
     spec = spec_from_config(name, config)
     spec = validate_against_qos(spec, strategy=strategy)
@@ -507,17 +755,38 @@ def start_slurm_cluster(
 
 
 def stop_slurm_cluster(name: str) -> None:
-    """``scancel`` the job and remove the state file (and stale scheduler-file)."""
+    """Tear down a SLURM-backed cluster.
+
+    Mode-aware: ``sbatch`` clusters get ``scancel``-ed (we own the job);
+    ``attached`` clusters get the dask scheduler/workers killed by PID,
+    leaving the user's allocation intact.  Both paths clean up the
+    scheduler-file and state file.
+    """
     record = read_record(name)
     if record is None:
         logger.info("No active state for cluster '%s' — nothing to stop.", name)
         return
-    subprocess.run(["scancel", record.job_id], check=False)
+    if record.mode == "attached":
+        for pid in record.process_pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                logger.warning(
+                    "No permission to kill pid %d for cluster '%s'.", pid, name,
+                )
+        logger.info(
+            "Cluster '%s' stopped (killed dask processes; allocation %s untouched)",
+            name, record.job_id,
+        )
+    else:
+        subprocess.run(["scancel", record.job_id], check=False)
+        logger.info("Cluster '%s' stopped (cancelled SLURM job %s)", name, record.job_id)
     sched_file = Path(expand_path(record.scheduler_file))
     if sched_file.exists():
         sched_file.unlink()
     state_path(name).unlink()
-    logger.info("Cluster '%s' stopped (cancelled SLURM job %s)", name, record.job_id)
 
 
 def tail_slurm_logs(

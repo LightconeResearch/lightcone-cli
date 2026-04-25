@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
@@ -165,6 +165,16 @@ class ClusterSpec:
     worker_init: str | None = None
 
 
+#: How the cluster was brought up.
+#:
+#: * ``"sbatch"`` — submitted by ``lc cluster start``; SLURM owns the
+#:   allocation and ``scancel`` is the right teardown verb.
+#: * ``"attached"`` — created by ``lc cluster attach`` from inside an
+#:   existing salloc; the user owns the allocation and tear-down only kills
+#:   our own dask processes (scheduler + srun-launchers tracked by PID).
+ClusterMode = Literal["sbatch", "attached"]
+
+
 @dataclass
 class ClusterRecord:
     """Submission record persisted to ``<name>.state.json`` after start."""
@@ -176,6 +186,8 @@ class ClusterRecord:
     submitted_at: str                   # ISO 8601 UTC
     walltime_seconds: int
     scheduler_file: str
+    mode: ClusterMode = "sbatch"
+    process_pids: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -274,9 +286,21 @@ def write_record(record: ClusterRecord) -> Path:
 def read_record(name: str) -> ClusterRecord | None:
     try:
         with open(state_path(name)) as f:
-            return ClusterRecord(**json.load(f))
+            data = json.load(f)
     except FileNotFoundError:
         return None
+    known = {f.name for f in fields(ClusterRecord)}
+    return ClusterRecord(**{k: v for k, v in data.items() if k in known})
+
+
+def list_state_records() -> list[ClusterRecord]:
+    """Return all persisted ``ClusterRecord``s (any mode), alphabetical by name."""
+    records: list[ClusterRecord] = []
+    for path in sorted(get_clusters_dir().glob("*.state.json")):
+        rec = read_record(path.name.removesuffix(".state.json"))
+        if rec is not None:
+            records.append(rec)
+    return records
 
 
 # ---------------------------------------------------------------------------

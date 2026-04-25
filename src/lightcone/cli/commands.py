@@ -613,7 +613,11 @@ def run(
     from dagster_dask import dask_executor
 
     from lightcone.engine.assets import build_definitions
-    from lightcone.engine.clusters import find_running_cluster, resolve_cluster
+    from lightcone.engine.clusters import (
+        find_attached_cluster_for_job,
+        find_running_cluster,
+        resolve_cluster,
+    )
     from lightcone.engine.dask_entrypoint import get_cluster_job
 
     project_path = Path.cwd()
@@ -627,13 +631,25 @@ def run(
     cluster_name: str | None = None
     cluster_config: dict | None = None
     if not force_local:
-        try:
-            resolution = resolve_cluster(project_path, cli_cluster=cluster)
-        except FileNotFoundError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise SystemExit(1)
-        if resolution is not None:
-            cluster_name, cluster_config = resolution
+        # Resolution order:
+        #   1. --cluster X flag (handled inside resolve_cluster)
+        #   2. Attached cluster matching $SLURM_JOB_ID (if no --cluster)
+        #   3. Project default / single configured (resolve_cluster fallback)
+        if cluster is None:
+            slurm_job_id = os.environ.get("SLURM_JOB_ID")
+            if slurm_job_id:
+                attached = find_attached_cluster_for_job(slurm_job_id)
+                if attached is not None and attached.record is not None:
+                    cluster_name = attached.record.name
+                    cluster_config = None  # attached clusters have no yaml
+        if cluster_name is None:
+            try:
+                resolution = resolve_cluster(project_path, cli_cluster=cluster)
+            except FileNotFoundError as e:
+                console.print(f"[red]Error:[/red] {e}")
+                raise SystemExit(1)
+            if resolution is not None:
+                cluster_name, cluster_config = resolution
 
     if output_names:
         selection = [dg.AssetKey([universe_id] + o.split(".")) for o in output_names]
@@ -993,35 +1009,63 @@ def cluster() -> None:
 
 @cluster.command("list")
 def cluster_list() -> None:
-    """List configured clusters and their live state."""
+    """List configured + attached clusters and their live state."""
     from rich.table import Table
 
-    from lightcone.engine.clusters import cluster_info, list_clusters
+    from lightcone.engine.clusters import (
+        cluster_info,
+        list_attached_clusters,
+        list_clusters,
+    )
 
-    names = list_clusters()
-    if not names:
-        console.print("No clusters configured. Run [cyan]lc cluster add[/cyan] to create one.")
+    yaml_names = list_clusters()
+    attached = list_attached_clusters()
+    if not yaml_names and not attached:
+        console.print(
+            "No clusters configured or attached. "
+            "Run [cyan]lc cluster add[/cyan] to create one, or "
+            "[cyan]lc cluster attach[/cyan] from inside a SLURM allocation."
+        )
         return
 
     table = Table(title="Clusters")
     table.add_column("Name", style="cyan")
+    table.add_column("Mode")
     table.add_column("Site")
     table.add_column("State")
     table.add_column("Job ID")
     table.add_column("Scheduler")
 
-    for name in names:
+    rendered: set[str] = set()
+    for name in yaml_names:
         info = cluster_info(name)
         if info is None:
             continue
-        state = info.state
-        job_id = info.record.job_id if info.record else "—"
-        sched = info.scheduler_address or "—"
-        colour = {
-            "RUNNING": "green", "PENDING": "yellow", "NONE": "dim",
-        }.get(state, "red")
-        table.add_row(name, info.spec.site, f"[{colour}]{state}[/{colour}]", job_id, sched)
+        rendered.add(name)
+        _render_cluster_row(table, name, info)
+    for record in attached:
+        if record.name in rendered:
+            continue
+        info = cluster_info(record.name)
+        if info is None:
+            continue
+        _render_cluster_row(table, record.name, info)
     console.print(table)
+
+
+def _render_cluster_row(table: Any, name: str, info: Any) -> None:
+    """Append one row to the cluster list table."""
+    state = info.state
+    mode = info.record.mode if info.record else "—"
+    job_id = info.record.job_id if info.record else "—"
+    sched = info.scheduler_address or "—"
+    colour = {
+        "RUNNING": "green", "PENDING": "yellow", "NONE": "dim",
+    }.get(state, "red")
+    table.add_row(
+        name, mode, info.spec.site,
+        f"[{colour}]{state}[/{colour}]", job_id, sched,
+    )
 
 
 @cluster.command("add")
@@ -1116,20 +1160,20 @@ def cluster_start(
     name: str | None, qos: str | None, walltime: str | None,
     strategy: str, wait_for_ready: bool,
 ) -> None:
-    """Submit the cluster via ``sbatch`` and (optionally) wait for the Dask scheduler."""
-    from lightcone.engine.clusters import (
-        list_clusters,
-        start_cluster,
-        wait_for_scheduler,
-    )
+    """Submit a *named, configured* cluster via ``sbatch``.
+
+    Idempotent — if the named cluster is already running, prints its
+    address and exits.  For "use the SLURM allocation I'm already in",
+    use [cyan]lc cluster attach[/cyan] instead.
+
+    With no NAME, prints a status table of configured + attached clusters
+    and exits with code 1 — pick one explicitly.
+    """
+    from lightcone.engine.clusters import start_cluster, wait_for_scheduler
 
     if name is None:
-        clusters = list_clusters()
-        if len(clusters) != 1:
-            console.print("[red]Error:[/red] Specify a cluster name.")
-            console.print(f"  Configured: {', '.join(clusters) or 'none'}")
-            raise SystemExit(1)
-        name = clusters[0]
+        _print_cluster_status_for_picker()
+        raise SystemExit(1)
 
     overrides: dict[str, Any] = {}
     if qos:
@@ -1144,6 +1188,14 @@ def cluster_start(
         raise SystemExit(1)
 
     job_id = info.record.job_id if info.record else "?"
+    if info.state in {"RUNNING"} and info.scheduler_address:
+        # Idempotent short-circuit.
+        console.print(
+            f"[green]✓[/green] Cluster '{name}' already RUNNING (job {job_id}). "
+            f"Scheduler: [cyan]{info.scheduler_address}[/cyan]"
+        )
+        return
+
     console.print(f"[green]✓[/green] Submitted cluster '{name}' as job {job_id}")
 
     if wait_for_ready:
@@ -1159,18 +1211,127 @@ def cluster_start(
         )
 
 
+@cluster.command("attach")
+@click.option("--wait/--detach", "wait_for_ready", default=True,
+              help="Block until the Dask scheduler is reachable (default: --wait)")
+def cluster_attach(wait_for_ready: bool) -> None:
+    """Spawn a Dask cluster inside the current SLURM allocation.
+
+    Run from inside a [cyan]salloc[/cyan] shell.  No name or yaml needed:
+    worker layout is derived from SLURM env vars.  The cluster lives until
+    the allocation ends or [cyan]lc cluster stop[/cyan] is called.
+    """
+    from lightcone.engine.clusters import attach_cluster, wait_for_scheduler
+
+    try:
+        info = attach_cluster()
+    except RuntimeError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise SystemExit(1)
+
+    assert info.record is not None
+    name = info.record.name
+    job_id = info.record.job_id
+    nodes = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
+    console.print(
+        f"[green]✓[/green] Attaching cluster to SLURM allocation {job_id} "
+        f"({nodes} node{'s' if nodes != 1 else ''})..."
+    )
+
+    if wait_for_ready:
+        console.print("  Waiting for Dask scheduler to come up...")
+        try:
+            info = wait_for_scheduler(name)
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise SystemExit(1)
+        console.print(
+            f"[green]✓[/green] Cluster '{name}' RUNNING. Scheduler: "
+            f"[cyan]{info.scheduler_address}[/cyan]"
+        )
+
+
+def _print_cluster_status_for_picker() -> None:
+    """Print a status table + hint when ``lc cluster start`` is called with no name."""
+    from rich.table import Table
+
+    from lightcone.engine.clusters import (
+        cluster_info,
+        list_attached_clusters,
+        list_clusters,
+    )
+
+    yaml_names = list_clusters()
+    attached = list_attached_clusters()
+    in_allocation = bool(os.environ.get("SLURM_JOB_ID"))
+
+    if not yaml_names and not attached:
+        console.print(
+            "[red]Error:[/red] No clusters configured or attached.\n"
+            "  • [cyan]lc cluster add[/cyan] to create one\n"
+            "  • [cyan]lc cluster attach[/cyan] from inside a SLURM allocation"
+        )
+        return
+
+    table = Table(title="Clusters — pick one to start")
+    table.add_column("Name", style="cyan")
+    table.add_column("Mode")
+    table.add_column("Site")
+    table.add_column("State")
+    table.add_column("Job ID")
+    table.add_column("Scheduler")
+    rendered: set[str] = set()
+    for n in yaml_names:
+        info = cluster_info(n)
+        if info is None:
+            continue
+        rendered.add(n)
+        _render_cluster_row(table, n, info)
+    for record in attached:
+        if record.name in rendered:
+            continue
+        info = cluster_info(record.name)
+        if info is None:
+            continue
+        _render_cluster_row(table, record.name, info)
+    console.print(table)
+
+    attach_hint = (
+        "use your current SLURM allocation"
+        if in_allocation
+        else "first do `salloc …`, then attach"
+    )
+    console.print(
+        "\n[bold]Be explicit about which cluster to start:[/bold]\n"
+        "  • [cyan]lc cluster start <name>[/cyan]  — submit a named cluster via sbatch\n"
+        f"  • [cyan]lc cluster attach[/cyan]            — {attach_hint}\n"
+    )
+
+
 @cluster.command("stop")
 @click.argument("name", required=False)
 def cluster_stop(name: str | None) -> None:
-    """Cancel the cluster's SLURM job and remove its state."""
-    from lightcone.engine.clusters import list_clusters, stop_cluster
+    """Tear down a cluster.
+
+    For ``sbatch`` clusters this ``scancel``s the job; for ``attached``
+    clusters it kills the dask processes and leaves the salloc allocation
+    intact.  With no NAME, picks the only running cluster if there is one.
+    """
+    from lightcone.engine.clusters import (
+        list_attached_clusters,
+        list_clusters,
+        stop_cluster,
+    )
 
     if name is None:
-        clusters = list_clusters()
-        if len(clusters) != 1:
-            console.print("[red]Error:[/red] Specify a cluster name.")
+        candidates = list(list_clusters()) + [r.name for r in list_attached_clusters()]
+        if len(candidates) != 1:
+            console.print(
+                "[red]Error:[/red] Specify a cluster name.\n"
+                f"  Known: {', '.join(candidates) or 'none'}"
+            )
             raise SystemExit(1)
-        name = clusters[0]
+        name = candidates[0]
     stop_cluster(name)
     console.print(f"[green]✓[/green] Cluster '{name}' stopped")
 
@@ -1178,12 +1339,22 @@ def cluster_stop(name: str | None) -> None:
 @cluster.command("status")
 @click.argument("name", required=False)
 def cluster_status(name: str | None) -> None:
-    """Show the live state of a cluster (or all clusters)."""
-    from lightcone.engine.clusters import cluster_info, list_clusters
+    """Show the live state of a cluster (or all clusters + attached)."""
+    from lightcone.engine.clusters import (
+        cluster_info,
+        list_attached_clusters,
+        list_clusters,
+    )
 
-    names = [name] if name else list_clusters()
+    if name is not None:
+        names = [name]
+    else:
+        names = list(list_clusters())
+        for r in list_attached_clusters():
+            if r.name not in names:
+                names.append(r.name)
     if not names:
-        console.print("No clusters configured.")
+        console.print("No clusters configured or attached.")
         return
     for n in names:
         info = cluster_info(n)
@@ -1191,12 +1362,18 @@ def cluster_status(name: str | None) -> None:
             console.print(f"  [red]✗[/red] {n}: not configured")
             continue
         state = info.state
-        console.print(f"[bold]{n}[/bold]  site={info.spec.site}  state={state}")
+        mode = info.record.mode if info.record else "—"
+        console.print(
+            f"[bold]{n}[/bold]  mode={mode}  site={info.spec.site}  state={state}"
+        )
         if info.record:
             console.print(f"  job_id: {info.record.job_id}")
             console.print(f"  submitted: {info.record.submitted_at}")
-            console.print(f"  walltime: {info.record.walltime_seconds // 60}m")
+            if info.record.walltime_seconds:
+                console.print(f"  walltime: {info.record.walltime_seconds // 60}m")
             console.print(f"  scheduler_file: {info.record.scheduler_file}")
+            if info.record.mode == "attached" and info.record.process_pids:
+                console.print(f"  pids: {info.record.process_pids}")
         if info.scheduler_address:
             console.print(f"  scheduler: [cyan]{info.scheduler_address}[/cyan]")
 
