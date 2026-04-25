@@ -1,34 +1,39 @@
 # Clusters
 
-A *cluster* is a long-lived SLURM allocation that hosts a persistent Dask
-scheduler and pool of workers. After `lc cluster start`, every `lc run`
-connects to the same cluster via `dagster-dask` with `cluster: existing`
-— **zero queue wait** for the second-through-Nth invocation.
+A *cluster* is a persistent rendezvous to a Dask scheduler. The substrate
+that provides the scheduler (today: SLURM via `sbatch`; planned: k8s via
+`dask-kubernetes`) is a private detail of how the cluster comes up and
+goes down — `lc run` always dispatches via `dagster-dask` regardless of
+which substrate hosts the scheduler.
 
-This page describes the YAML schema and how lightcone-cli renders it
-into an sbatch script. The
-[`lc cluster`](../cli/cluster.md) reference documents the CLI surface.
+This page describes the YAML schema and how lightcone-cli renders it.
+The [`lc cluster`](../cli/cluster.md) reference documents the CLI surface.
 
 ## File layout
 
 ```
 ~/.lightcone/
 ├── clusters/
-│   ├── <name>.yaml           # static config
-│   └── <name>.state.json     # live state — present iff started
+│   ├── <name>.yaml             # static config (declares type:)
+│   └── <name>.state.json       # live substrate state — present iff started
 ├── cache/
-│   └── <site>.cluster.yaml   # site-keyed cluster info for QoS preflight
+│   └── <site>.slurm.yaml       # SLURM-specific sacctmgr/scontrol cache
 └── envs/
-    └── <site>/               # auto-provisioned uv venv for workers
+    └── <site>/                 # auto-provisioned uv venv for SLURM workers
 ```
 
-## Schema (single-pool, the common case)
+Future substrates add their own files here without overlapping (k8s would
+read kubeconfig from the standard location and write its state-file
+analogue alongside).
+
+## Schema (single-pool SLURM, the common case)
 
 ```yaml
-site: perlmutter        # one of the sites in lightcone.engine.site_registry
-account: m1234          # SLURM account/allocation
+type: slurm                # required discriminator; values: slurm
+site: perlmutter           # one of the sites in lightcone.engine.site_registry
+account: m1234             # SLURM account/allocation
 qos: regular
-walltime: 24h           # 24h | 30m | 01:30:00
+walltime: 24h              # 24h | 30m | 01:30:00
 
 workers:
   - nodes: 4
@@ -37,8 +42,11 @@ workers:
 ```
 
 `scratch_root`, `container_runtime`, and `worker_init` come from
-`site_registry.SITE_DEFAULTS[site].cluster` and only appear in the YAML
-when the user overrides them.
+`site_registry.SITE_DEFAULTS[site].slurm` and only appear in the YAML
+when the user overrides them. Each substrate has its own block in the
+site registry — when k8s lands, sites can declare a `k8s:` block beside
+their `slurm:` block, and the matching block is consulted based on the
+cluster YAML's `type:`.
 
 ## Schema (multi-pool, mixed CPU + GPU)
 
@@ -46,6 +54,7 @@ When a single cluster needs to host both CPU and GPU workers, declare
 multiple pools:
 
 ```yaml
+type: slurm
 site: perlmutter
 account: m1234
 qos: regular
@@ -68,11 +77,16 @@ ASTRA recipes that request `resources.gpus > 0` are tagged with
 to a worker advertising the matching `--resources GPU=N` (the GPU pool).
 Recipes without GPU requests have no tag and run on any worker.
 
-## Sbatch rendering
+This routing mechanism is substrate-agnostic — when k8s arrives, the
+GPU pool will be a labeled node group with `nvidia.com/gpu: 4` resource
+limits, and the same `dagster-dask/resource_requirements` op tag will
+route GPU recipes there.
+
+## Sbatch rendering (SLURM)
 
 `lc cluster start` writes the rendered sbatch to
-`<project>/results/.slurm/lc-cluster-<name>.sbatch`. A simplified single-pool
-example:
+`<project>/results/.slurm/lc-cluster-<name>.sbatch`. A simplified
+single-pool example:
 
 ```bash
 #!/bin/bash
@@ -105,7 +119,7 @@ wait "$SCHED_PID"
 A multi-pool cluster emits one `srun` per pool, each with its own
 `--constraint` and `--resources` tag.
 
-## Worker env auto-bootstrap
+## Worker env auto-bootstrap (SLURM)
 
 The first `lc cluster start` for a site provisions
 `~/.lightcone/envs/<site>/` as a `uv venv` and installs
@@ -114,10 +128,13 @@ The first `lc cluster start` for a site provisions
 non-standard Python (e.g. `module load python` first) override
 `worker_init` in the cluster YAML.
 
-## QoS preflight
+(For a future k8s cluster type, the equivalent is a worker-image build
+declared by the cluster YAML; same idea, different mechanism.)
+
+## QoS preflight (SLURM)
 
 Before submitting, `lc cluster start` consults the cluster cache at
-`~/.lightcone/cache/<site>.cluster.yaml` and validates the cluster's
+`~/.lightcone/cache/<site>.slurm.yaml` and validates the cluster's
 `(qos, nodes, walltime)` against the QoS limits. Two strategies are
 supported:
 
@@ -125,17 +142,18 @@ supported:
 - `switch` — pick a different QoS from the site's choices that fits the
   requested resources, holding the constraint fixed.
 
-`lc cluster refresh-cache <site>` re-runs `sacctmgr` / `scontrol` discovery
-and rewrites the cache. The cache is also auto-refreshed if older than
-30 days at start time.
+`lc cluster refresh-cache <site>` re-runs `sacctmgr` / `scontrol`
+discovery and rewrites the cache. The cache is also auto-refreshed if
+older than 30 days at start time.
 
 ## State and lifetime
 
-`lc cluster start` writes:
+`lc cluster start` writes a substrate-tagged state file:
 
 ```json
 {
   "name": "perlmutter",
+  "type": "slurm",
   "job_id": "12345678",
   "site": "perlmutter",
   "submitted_at": "2026-04-25T10:00:00Z",
@@ -145,10 +163,17 @@ and rewrites the cache. The cache is also auto-refreshed if older than
 ```
 
 The Dask scheduler address (`tcp://host:port`) is **not** cached — it's
-read live from the scheduler-file each time `lc run` resolves the cluster,
-so a cluster restart picks up a new address without intervention.
+read live from the scheduler-file each time `lc run` resolves the
+cluster, so a cluster restart picks up a new address without intervention.
 
-`lc cluster stop` cancels the SLURM job, removes the scheduler-file, and
-deletes the state file. When SLURM hits walltime, the cluster dies cleanly
-and the next `lc run` reports `slurm_state == "DEAD"` with a clear
-message instructing the user to restart.
+`lc cluster stop` tears down the substrate (scancel + cleanup for SLURM)
+and deletes the state file. When SLURM hits walltime, the cluster dies
+cleanly and the next `lc run` reports `slurm_state == "DEAD"` with a
+clear message instructing the user to restart.
+
+## Local "cluster"
+
+`lc run` without a configured cluster spins up a fresh
+`distributed.LocalCluster` for the run via `dagster-dask`'s built-in
+`cluster: { local: {} }` mode. There's no config file, no state file —
+the local case is handled inline. Cost: ~1-2s startup tax per run.
