@@ -49,6 +49,8 @@ def build_cluster_job() -> Any:
                 f"~/.lightcone/clusters/{cluster_name}.yaml"
             )
 
+    from lightcone.engine.assets import LIGHTCONE_RUN_JOB
+
     defs = build_definitions(
         project_path,
         cluster_config=cluster_config,
@@ -56,7 +58,7 @@ def build_cluster_job() -> Any:
         no_build=True,                  # workers never rebuild containers
         executor_def=dask_executor,
     )
-    return defs.get_implicit_global_asset_job_def()
+    return defs.resolve_job_def(LIGHTCONE_RUN_JOB)
 
 
 def get_cluster_job() -> Any:

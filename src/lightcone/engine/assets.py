@@ -20,6 +20,10 @@ from lightcone.engine.tree import (
 #: step to a Dask worker advertising matching ``--resources``.
 DASK_RESOURCE_REQUIREMENTS_KEY = "dagster-dask/resource_requirements"
 
+#: Name of the asset job that ``lc run`` materializes.  Public because the
+#: dagster-dask reconstructable callable looks it up by name on workers.
+LIGHTCONE_RUN_JOB = "lightcone_run"
+
 logger = logging.getLogger(__name__)
 
 
@@ -409,5 +413,13 @@ def build_definitions(
     )
 
     if executor_def is not None:
-        return dg.Definitions(assets=assets, executor=executor_def)
+        # Define a named asset job so dagster-dask can ship it across
+        # processes via reconstructable(). Dagster's auto-generated
+        # ``__ASSET_JOB`` is rejected by the worker-side repository
+        # registration (Dagster ≥ 1.13).
+        run_job = dg.define_asset_job(
+            name=LIGHTCONE_RUN_JOB,
+            executor_def=executor_def,
+        )
+        return dg.Definitions(assets=assets, jobs=[run_job])
     return dg.Definitions(assets=assets)
