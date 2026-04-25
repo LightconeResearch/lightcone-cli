@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
+from astra.helpers import load_yaml, save_yaml
 
 from lightcone.engine.site_registry import SITE_DEFAULTS
 
@@ -66,17 +66,16 @@ def list_clusters() -> list[str]:
 def load_cluster_config(name: str) -> dict[str, Any] | None:
     """Load ``~/.lightcone/clusters/<name>.yaml`` or ``None`` if absent."""
     path = get_clusters_dir() / f"{name}.yaml"
-    if not path.exists():
+    try:
+        return load_yaml(path) or {}
+    except FileNotFoundError:
         return None
-    with open(path) as f:
-        return yaml.safe_load(f) or {}
 
 
 def save_cluster_config(name: str, config: dict[str, Any]) -> Path:
     """Write a cluster config and return its path."""
     path = get_clusters_dir() / f"{name}.yaml"
-    with open(path, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    save_yaml(config, path)
     return path
 
 
@@ -104,18 +103,19 @@ def resolve_cluster(
         return cli_cluster, config
 
     project_cfg_path = project_path / ".lightcone" / "lightcone.yaml"
-    if project_cfg_path.exists():
-        with open(project_cfg_path) as f:
-            project_cfg = yaml.safe_load(f) or {}
-        name = project_cfg.get("cluster")
-        if name:
-            config = load_cluster_config(name)
-            if config is None:
-                raise FileNotFoundError(
-                    f"Project requests cluster '{name}' but it is not configured. "
-                    f"Run: lc cluster add {name}"
-                )
-            return name, config
+    try:
+        project_cfg = load_yaml(project_cfg_path) or {}
+    except FileNotFoundError:
+        project_cfg = {}
+    name = project_cfg.get("cluster")
+    if name:
+        config = load_cluster_config(name)
+        if config is None:
+            raise FileNotFoundError(
+                f"Project requests cluster '{name}' but it is not configured. "
+                f"Run: lc cluster add {name}"
+            )
+        return name, config
 
     clusters = list_clusters()
     if len(clusters) == 1:
@@ -129,15 +129,17 @@ def resolve_cluster(
 # ---------------------------------------------------------------------------
 
 
+#: Substrate-neutral runtime states.  ``NONE`` means no submission record
+#: exists; the rest mirror conventional batch-system lifecycles.  SLURM
+#: state codes are mapped onto these in ``_slurm._SLURM_STATE_MAP``.
+RuntimeState = Literal[
+    "NONE", "PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "DEAD",
+]
+
+
 @dataclass
 class WorkerPool:
-    """One homogeneous pool of Dask workers.
-
-    SLURM populates ``nodes``/``constraint``; future substrates may use
-    different placement vocabulary (e.g. k8s ``replicas``/``node_selector``)
-    in their own dataclass.  ``resources`` is the substrate-agnostic Dask
-    resource advertisement consumed by ``--resources``.
-    """
+    """One homogeneous pool of Dask workers."""
 
     nodes: int
     threads_per_node: int = 64
@@ -148,13 +150,7 @@ class WorkerPool:
 
 @dataclass
 class ClusterSpec:
-    """Static cluster config — what the user wrote in YAML.
-
-    SLURM-specific fields (``account``, ``qos``, ``walltime``, etc.) are
-    here today; when a non-SLURM substrate lands they will move into a
-    type-specific subclass.  Until then keeping one dataclass keeps the
-    rendering helpers simple.
-    """
+    """Static cluster config — what the user wrote in YAML."""
 
     name: str
     type: ClusterType
@@ -166,12 +162,12 @@ class ClusterSpec:
     container_runtime: str
     scratch_root: str                   # may contain ``$VAR``; expanded in script
     extra_sbatch: list[str] = field(default_factory=list)
-    worker_init: str | None = None      # only set if user overrode the site default
+    worker_init: str | None = None
 
 
 @dataclass
-class ClusterState:
-    """Live state recorded after ``lc cluster start`` (``<name>.state.json``)."""
+class ClusterRecord:
+    """Submission record persisted to ``<name>.state.json`` after start."""
 
     name: str
     type: ClusterType
@@ -184,14 +180,14 @@ class ClusterState:
 
 @dataclass
 class ClusterInfo:
-    """Spec + state + live substrate state, joined for display."""
+    """Spec + submission record + live runtime state, joined for display."""
 
     spec: ClusterSpec
-    state: ClusterState | None
-    slurm_state: Literal[
-        "PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "DEAD", "NONE",
-    ]
+    record: ClusterRecord | None
+    state: RuntimeState
     scheduler_address: str | None       # ``"tcp://host:port"`` once Dask is up
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -221,9 +217,7 @@ def spec_from_config(name: str, config: dict[str, Any]) -> ClusterSpec:
     if not site:
         raise ValueError(f"Cluster '{name}': missing required field 'site'")
     site_defaults = SITE_DEFAULTS.get(site, {})
-    # SLURM-specific defaults block in the site registry; future substrates
-    # have their own blocks (``k8s:``, …) and won't read this one.
-    cluster_defaults = site_defaults.get("slurm", {})
+    cluster_defaults = site_defaults.get(cluster_type, {})
 
     raw_workers = config.get("workers") or []
     if not raw_workers:
@@ -270,20 +264,19 @@ def state_path(name: str) -> Path:
     return get_clusters_dir() / f"{name}.state.json"
 
 
-def write_state(state: ClusterState) -> Path:
-    path = state_path(state.name)
+def write_record(record: ClusterRecord) -> Path:
+    path = state_path(record.name)
     with open(path, "w") as f:
-        json.dump(asdict(state), f, indent=2)
+        json.dump(asdict(record), f, indent=2)
     return path
 
 
-def read_state(name: str) -> ClusterState | None:
-    path = state_path(name)
-    if not path.exists():
+def read_record(name: str) -> ClusterRecord | None:
+    try:
+        with open(state_path(name)) as f:
+            return ClusterRecord(**json.load(f))
+    except FileNotFoundError:
         return None
-    with open(path) as f:
-        data = json.load(f)
-    return ClusterState(**data)
 
 
 # ---------------------------------------------------------------------------
@@ -298,19 +291,15 @@ def expand_path(value: str) -> str:
 
 def read_scheduler_address(scheduler_file: str) -> str | None:
     """Return the live ``tcp://host:port`` from a Dask scheduler-file."""
-    path = Path(expand_path(scheduler_file))
-    if not path.exists():
-        return None
     try:
-        with open(path) as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
+        with open(expand_path(scheduler_file)) as f:
+            return json.load(f).get("address")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
-    return data.get("address")
 
 
 # ---------------------------------------------------------------------------
-# Walltime helpers (substrate-agnostic; SLURM happens to want HH:MM:SS too)
+# Walltime helpers
 # ---------------------------------------------------------------------------
 
 

@@ -624,7 +624,6 @@ def run(
     output_names = list(outputs)
     universe_id = universe or "baseline"
 
-    # --- Resolve which cluster (if any) backs this run ---
     cluster_name: str | None = None
     cluster_config: dict | None = None
     if not force_local:
@@ -636,21 +635,19 @@ def run(
         if resolution is not None:
             cluster_name, cluster_config = resolution
 
-    # --- Build Definitions on the orchestrator side (for selection enumeration) ---
-    defs = build_definitions(
-        project_path, cluster_config=cluster_config, universe_id=universe_id,
-        no_build=no_build, executor_def=dask_executor,
-    )
-    all_assets = list(defs.resolve_all_asset_specs())
     if output_names:
         selection = [dg.AssetKey([universe_id] + o.split(".")) for o in output_names]
     else:
+        # No explicit outputs — enumerate every recipe-backed asset.
+        defs = build_definitions(
+            project_path, cluster_config=cluster_config, universe_id=universe_id,
+            no_build=no_build, executor_def=dask_executor,
+        )
         selection = [
-            spec.key for spec in all_assets
+            spec.key for spec in defs.resolve_all_asset_specs()
             if not (spec.metadata or {}).get("external", False)
         ]
 
-    # --- Dagster instance ---
     dagster_yaml_path = _find_dagster_yaml(project_path)
     if dagster_yaml_path is None:
         lightcone_dir = project_path / ".lightcone"
@@ -664,12 +661,10 @@ def run(
         )
     instance = dg.DagsterInstance.from_config(str(dagster_yaml_path.parent))
 
-    # --- Resolve the Dask cluster mode for the run_config ---
     os.environ["LIGHTCONE_PROJECT_PATH"] = str(project_path)
     os.environ["LIGHTCONE_UNIVERSE"] = universe_id
 
     if cluster_name is None:
-        # Local — dagster-dask spins up an ephemeral distributed.LocalCluster.
         os.environ["LIGHTCONE_CLUSTER"] = ""
         cluster_mode: dict[str, Any] = {"local": {}}
         location_label = "local"
@@ -1019,8 +1014,8 @@ def cluster_list() -> None:
         info = cluster_info(name)
         if info is None:
             continue
-        state = info.slurm_state
-        job_id = info.state.job_id if info.state else "—"
+        state = info.state
+        job_id = info.record.job_id if info.record else "—"
         sched = info.scheduler_address or "—"
         colour = {
             "RUNNING": "green", "PENDING": "yellow", "NONE": "dim",
@@ -1148,7 +1143,7 @@ def cluster_start(
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
 
-    job_id = info.state.job_id if info.state else "?"
+    job_id = info.record.job_id if info.record else "?"
     console.print(f"[green]✓[/green] Submitted cluster '{name}' as job {job_id}")
 
     if wait_for_ready:
@@ -1195,13 +1190,13 @@ def cluster_status(name: str | None) -> None:
         if info is None:
             console.print(f"  [red]✗[/red] {n}: not configured")
             continue
-        state = info.slurm_state
+        state = info.state
         console.print(f"[bold]{n}[/bold]  site={info.spec.site}  state={state}")
         if info.state:
-            console.print(f"  job_id: {info.state.job_id}")
-            console.print(f"  submitted: {info.state.submitted_at}")
-            console.print(f"  walltime: {info.state.walltime_seconds // 60}m")
-            console.print(f"  scheduler_file: {info.state.scheduler_file}")
+            console.print(f"  job_id: {info.record.job_id}")
+            console.print(f"  submitted: {info.record.submitted_at}")
+            console.print(f"  walltime: {info.record.walltime_seconds // 60}m")
+            console.print(f"  scheduler_file: {info.record.scheduler_file}")
         if info.scheduler_address:
             console.print(f"  scheduler: [cyan]{info.scheduler_address}[/cyan]")
 
