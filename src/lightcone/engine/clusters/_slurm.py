@@ -104,7 +104,7 @@ def _resolve_worker_init(spec: ClusterSpec) -> str:
     if spec.worker_init:
         return spec.worker_init.rstrip() + "\n"
     site_defaults = SITE_DEFAULTS.get(spec.site, {})
-    template = (site_defaults.get("cluster") or {}).get("worker_init_template")
+    template = (site_defaults.get("slurm") or {}).get("worker_init_template")
     if template:
         return template.rstrip() + "\n"
     return f"source $HOME/.lightcone/envs/{spec.site}/bin/activate\n"

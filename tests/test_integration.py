@@ -118,6 +118,7 @@ class TestIntegration:
         )
 
         save_cluster_config("test-cluster", {
+            "type": "slurm",
             "site": "perlmutter",
             "account": "m1234",
             "workers": [{"nodes": 1}],

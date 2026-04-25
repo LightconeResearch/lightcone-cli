@@ -221,7 +221,9 @@ def spec_from_config(name: str, config: dict[str, Any]) -> ClusterSpec:
     if not site:
         raise ValueError(f"Cluster '{name}': missing required field 'site'")
     site_defaults = SITE_DEFAULTS.get(site, {})
-    cluster_defaults = site_defaults.get("cluster", {})
+    # SLURM-specific defaults block in the site registry; future substrates
+    # have their own blocks (``k8s:``, …) and won't read this one.
+    cluster_defaults = site_defaults.get("slurm", {})
 
     raw_workers = config.get("workers") or []
     if not raw_workers:

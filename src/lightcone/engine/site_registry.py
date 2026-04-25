@@ -4,6 +4,10 @@ When ``lc cluster add`` detects a known site, it pre-populates a cluster YAML
 from the entry below.  Users override any default during the wizard or by
 editing the cluster file later.
 
+Each substrate that runs at a site has its own block (``slurm:`` today,
+future ``k8s:``).  When a substrate is added, the matching block defines
+the per-substrate defaults — the existing blocks don't change.
+
 To add a new site, append an entry to :data:`SITE_DEFAULTS`.
 """
 from __future__ import annotations
@@ -11,8 +15,8 @@ from __future__ import annotations
 from typing import Any
 
 #: Per-site defaults.  Each entry carries ``container_runtime`` (the CLI
-#: invoked on compute nodes), an optional ``cluster`` block with sbatch
-#: defaults (``scratch_root``, ``default_qos``, ``default_walltime``,
+#: invoked on compute nodes), per-substrate default blocks (e.g. ``slurm``
+#: with ``scratch_root``/``default_qos``/``default_walltime``/
 #: ``worker_init_template``), ``cache_key_overrides`` capturing non-
 #: conventional sacctmgr naming (e.g. Perlmutter's ``regular_1`` for the
 #: CPU ``regular`` queue), and ``scratch_paths`` used to seed Claude Code
@@ -41,8 +45,8 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
                 },
             },
         },
-        # Cluster defaults — fields the user almost never overrides.
-        "cluster": {
+        # SLURM cluster defaults — fields the user almost never overrides.
+        "slurm": {
             "scratch_root": "$PSCRATCH",
             "default_qos": "regular",
             "default_walltime": "24h",

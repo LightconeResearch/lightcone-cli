@@ -1059,7 +1059,9 @@ def cluster_add(name: str | None, site: str | None) -> None:
         site = click.prompt("Site", type=click.Choice(list(SITE_DEFAULTS)))
 
     site_def = get_site_defaults(site) or {}
-    cluster_defaults = site_def.get("cluster", {})
+    # `lc cluster add` defaults to type=slurm today; the next k8s patch
+    # will pick the right block based on the chosen type.
+    cluster_defaults = site_def.get("slurm", {})
     suggested = site_def.get("suggested_options", {})
 
     cluster_name = name or site
@@ -1071,6 +1073,7 @@ def cluster_add(name: str | None, site: str | None) -> None:
     constraint = (suggested.get("constraint") or {}).get("default")
 
     config: dict[str, Any] = {
+        "type": "slurm",
         "site": site,
         "account": account,
         "qos": qos,

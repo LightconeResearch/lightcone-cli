@@ -68,12 +68,12 @@ class TestGetSiteDefaults:
         site = get_site_defaults("perlmutter")
         assert site["cache_key_overrides"]["regular/cpu"] == "regular_1"
 
-    def test_perlmutter_cluster_block(self):
+    def test_perlmutter_slurm_block(self):
         site = get_site_defaults("perlmutter")
-        cluster = site["cluster"]
-        assert cluster["scratch_root"] == "$PSCRATCH"
-        assert "default_qos" in cluster
-        assert "worker_init_template" in cluster
+        slurm = site["slurm"]
+        assert slurm["scratch_root"] == "$PSCRATCH"
+        assert "default_qos" in slurm
+        assert "worker_init_template" in slurm
 
     def test_unknown(self):
         assert get_site_defaults("nonexistent") is None
@@ -113,6 +113,10 @@ class TestSiteDefaultsSchema:
         for key, site in SITE_DEFAULTS.items():
             assert "scratch_paths" in site, f"Site '{key}' missing scratch_paths"
 
-    def test_sites_have_cluster_block(self):
+    def test_sites_have_at_least_one_substrate_block(self):
+        """Every site must declare at least one substrate (slurm, k8s, …)."""
+        substrate_keys = {"slurm", "k8s"}
         for key, site in SITE_DEFAULTS.items():
-            assert "cluster" in site, f"Site '{key}' missing cluster defaults"
+            assert substrate_keys & set(site.keys()), (
+                f"Site '{key}' missing per-substrate defaults block"
+            )
