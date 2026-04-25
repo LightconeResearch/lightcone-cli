@@ -1138,7 +1138,7 @@ def cluster_start(
         overrides["walltime"] = walltime
 
     try:
-        info = start_cluster(name, cli_overrides=overrides, strategy=strategy)
+        info = start_cluster(name, overrides=overrides, strategy=strategy)
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
@@ -1192,7 +1192,7 @@ def cluster_status(name: str | None) -> None:
             continue
         state = info.state
         console.print(f"[bold]{n}[/bold]  site={info.spec.site}  state={state}")
-        if info.state:
+        if info.record:
             console.print(f"  job_id: {info.record.job_id}")
             console.print(f"  submitted: {info.record.submitted_at}")
             console.print(f"  walltime: {info.record.walltime_seconds // 60}m")

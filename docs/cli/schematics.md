@@ -32,7 +32,7 @@ Each panel in the interactive reference covers one command or skill and includes
 
 ### Commands covered
 
-`lc init` · `lc run` · `lc build` · `lc status` · `lc dev` · `lc setup` · `lc target` · `lc update`
+`lc init` · `lc run` · `lc build` · `lc status` · `lc dev` · `lc cluster` · `lc update`
 
 ### Skills covered
 

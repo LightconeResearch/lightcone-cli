@@ -38,14 +38,15 @@ Key test patterns:
 - **Runner tests**: create runner with `tmp_path` as project root, call `execute()` — verify exit code and metadata.
 - **Integration tests**: `test_integration.py` and `test_cli_run.py` cover end-to-end flows.
 
-The `_fake_config` fixture monkeypatches `get_config_path()` to prevent the auto-setup wizard from firing during tests:
+The `_isolate_lightcone_home` fixture redirects `~/.lightcone/` to a per-test temp directory to prevent tests from touching the developer's real config:
 
 ```python
 @pytest.fixture(autouse=True)
-def _fake_config(tmp_path, monkeypatch):
-    config = tmp_path / "config.yaml"
-    config.write_text("default_target: local\n")
-    monkeypatch.setattr("lightcone.engine.targets.get_config_path", lambda: config)
+def _isolate_lightcone_home(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
 ```
 
 ## Linting and type checking

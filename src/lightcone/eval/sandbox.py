@@ -171,12 +171,6 @@ class EvalSandbox:
         # and lc init refuses to run in that case. Instead, upload directly.
         self._install_claude_plugins()
 
-        # Configure lightcone-cli default target so `lc status` works without setup wizard
-        self.exec(
-            "mkdir -p ~/.lightcone"
-            " && echo 'default_target: local' > ~/.lightcone/config.yaml"
-        )
-
         # Git init (exec runs as evaluser via Dockerfile USER directive)
         self.exec(
             f"cd {self.WORK_DIR}"

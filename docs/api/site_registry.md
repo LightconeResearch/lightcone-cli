@@ -1,6 +1,6 @@
 # lightcone.engine.site_registry
 
-Known HPC site defaults. Used by `lc setup` and `lc target add` to auto-populate scheduler configuration.
+Known HPC site defaults. Used by `lc cluster add` to auto-populate scheduler configuration.
 
 ---
 
@@ -22,12 +22,6 @@ Returns `[(site_key, display_name), ...]` for all sites in `SITE_DEFAULTS`.
 
 ---
 
-## `resolve_account(site_key, account, constraint) → str`
-
-Applies site-specific account suffixes. For example, on Perlmutter GPU jobs need `m4031_g` instead of `m4031` — `resolve_account("perlmutter", "m4031", "gpu")` returns `"m4031_g"`.
-
----
-
 ## `get_site_scratch_deny_rules(site_key) → list[str]`
 
 Returns Claude Code `Edit()` deny rules for the site's scratch paths. For Perlmutter:
@@ -36,35 +30,42 @@ Returns Claude Code `Edit()` deny rules for the site's scratch paths. For Perlmu
 ["Edit(//pscratch/**)", "Edit(//global/cscratch1/**)", "Edit(//global/cfs/cdirs/**)"]
 ```
 
-These are merged into `.claude/settings.json` by `lc init` when a non-local target is configured.
+These are merged into `.claude/settings.json` by `lc init` when an HPC cluster is configured.
 
 ---
 
 ## Adding a new site
 
-Add an entry to `SITE_DEFAULTS` in `site_registry.py`:
+Add an entry to `SITE_DEFAULTS` in `src/lightcone/engine/site_registry.py`:
 
 ```python
 SITE_DEFAULTS["frontier"] = {
     "hostname_patterns": ["frontier.olcf.ornl.gov", "frontier"],
     "display_name": "OLCF Frontier",
-    "backend": "slurm",
-    "connection": {"hostname": "frontier.olcf.ornl.gov"},
-    "node_types": {
-        "gpu": {
-            "description": "AMD MI250X GPU",
-            "constraint": "gpu",
-            "container_flags": [],
+    "container_runtime": "singularity",
+    "suggested_options": {
+        "qos": {
+            "default": "normal",
+            "choices": {
+                "normal": "Standard priority",
+            },
+        },
+        "constraint": {
+            "default": "gpu",
+            "choices": {
+                "gpu": "AMD MI250X GPU nodes",
+            },
         },
     },
-    "qos_options": {
-        "normal": {"description": "Standard priority", "default": True},
-    },
-    "container_runtimes": ["singularity"],
-    "resource_limits": {
-        "max_nodes": 8,
-        "max_walltime_minutes": 120,
-        "max_concurrent_jobs": 4,
+    # SLURM substrate defaults
+    "slurm": {
+        "scratch_root": "$MEMBERWORK/prj123",
+        "default_qos": "normal",
+        "default_walltime": "2h",
+        "worker_init_template": (
+            "module load python\n"
+            "source $HOME/.lightcone/envs/frontier/bin/activate\n"
+        ),
     },
     "scratch_paths": ["//lustre/orion/**"],
 }
@@ -75,4 +76,3 @@ SITE_DEFAULTS["frontier"] = {
 | Key | Display name | Hostname |
 |-----|-------------|---------|
 | `perlmutter` | NERSC Perlmutter | `perlmutter.nersc.gov` |
-| `local` | Local | — |

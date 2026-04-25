@@ -4,7 +4,7 @@ See the full API reference at [api/site_registry.md](../api/site_registry.md).
 
 ## How site detection works
 
-When creating a target via `lc target add`, the user provides a hostname. `detect_site()` checks the hostname against `hostname_patterns` for each registered site:
+When adding a cluster via `lc cluster add`, the user provides a hostname. `detect_site()` checks the hostname against `hostname_patterns` for each registered site:
 
 ```python
 for site_key, site in SITE_DEFAULTS.items():
@@ -15,27 +15,24 @@ for site_key, site in SITE_DEFAULTS.items():
             return site_key
 ```
 
-## Site defaults applied to new targets
+## Site defaults applied to new clusters
 
 When a site is detected, `get_site_defaults()` fills in:
 
-- `backend`: always `"slurm"` for HPC sites
-- `connection.hostname`: the canonical hostname
-- `container_runtimes`: list of supported runtimes (user can pick)
-- `node_types`: dict of node types with descriptions, constraint values, and container flags
-- `qos_options`: dict of QOS with descriptions and defaults
-- `resource_limits`: default caps for max nodes, walltime, and concurrent jobs
+- `container_runtime`: the container CLI used on compute nodes (e.g. `podman-hpc`)
+- `suggested_options`: QoS and constraint choices shown during `lc cluster add`
+- `slurm.scratch_root`: default scratch filesystem root for sbatch scripts
+- `slurm.default_qos` / `slurm.default_walltime`: sane defaults for the cluster YAML
+- `slurm.worker_init_template`: shell snippet prepended to the sbatch worker init block
 - `scratch_paths`: HPC scratch paths used as Claude Code `Edit()` deny rules
 
 ## Perlmutter specifics
 
-| Node type | Constraint | Account suffix |
-|-----------|-----------|---------------|
-| GPU (A100 40GB) | `gpu` | `_g` |
-| GPU (A100 80GB) | `gpu&hbm80g` | `_g` |
-| CPU only | `cpu` | (none) |
-
-The `_g` account suffix is applied automatically by `resolve_account()` for GPU jobs.
+| Node type | Constraint | Notes |
+|-----------|-----------|-------|
+| CPU only | `cpu` | 128 cores/node |
+| GPU (A100 40GB) | `gpu` | 4 GPUs/node |
+| GPU (A100 80GB) | `gpu&hbm80g` | 256 nodes |
 
 Scratch paths guarded against accidental writes:
 - `//pscratch/**`

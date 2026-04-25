@@ -1,6 +1,6 @@
 # Adding an HPC Site
 
-HPC site defaults live in `src/lightcone/dagster/site_registry.py`. See the full reference at [API: site_registry](../api/site_registry.md#adding-a-new-site).
+HPC site defaults live in `src/lightcone/engine/site_registry.py`. See the full reference at [API: site_registry](../api/site_registry.md#adding-a-new-site).
 
 ## Minimal example
 
@@ -8,42 +8,50 @@ HPC site defaults live in `src/lightcone/dagster/site_registry.py`. See the full
 SITE_DEFAULTS["my_cluster"] = {
     "hostname_patterns": ["mycluster.example.org", "mycluster"],
     "display_name": "My HPC Cluster",
-    "backend": "slurm",
-    "connection": {
-        "hostname": "mycluster.example.org",
-    },
-    "node_types": {
-        "gpu": {
-            "description": "GPU nodes",
-            "constraint": "gpu",
-            "container_flags": [],
+    "container_runtime": "singularity",
+    "suggested_options": {
+        "qos": {
+            "default": "normal",
+            "choices": {
+                "normal": "Standard priority",
+                "debug":  "Short interactive jobs",
+            },
+        },
+        "constraint": {
+            "default": "gpu",
+            "choices": {
+                "gpu": "GPU nodes",
+                "cpu": "CPU-only nodes",
+            },
         },
     },
-    "qos_options": {
-        "normal": {"description": "Standard priority", "default": True},
+    # SLURM substrate defaults
+    "slurm": {
+        "scratch_root": "$SCRATCH",
+        "default_qos": "normal",
+        "default_walltime": "4h",
+        "worker_init_template": (
+            "module load python\n"
+            "source $HOME/.lightcone/envs/my_cluster/bin/activate\n"
+        ),
     },
-    "container_runtimes": ["podman"],
-    "resource_limits": {
-        "max_nodes": 4,
-        "max_walltime_minutes": 240,
-        "max_concurrent_jobs": 4,
-    },
+    "scratch_paths": ["//scratch/**"],
 }
 ```
 
 ## Testing
 
-After adding a site, verify it appears in the setup wizard:
-
-```bash
-lc setup   # → select "Configure HPC" → your site should appear
-```
-
-And that `detect_site()` recognises the hostname:
+After adding a site, verify that `detect_site()` recognises the hostname:
 
 ```python
 from lightcone.engine.site_registry import detect_site
 assert detect_site("mycluster.example.org") == "my_cluster"
+```
+
+And that `lc cluster add` surfaces the site name and pre-populates defaults:
+
+```bash
+lc cluster add my_cluster   # → wizard should detect the site and fill in defaults
 ```
 
 ## Documentation

@@ -19,7 +19,7 @@ CLAUDE.md             # This file
 Containerfile         # Container image for execution
 requirements.txt      # Python deps (keep in sync with scripts)
 .lightcone/               # lightcone-cli internals
-  lightcone.yaml          # lightcone-cli config (default target, etc.)
+  lightcone.yaml          # lightcone-cli config (cluster, permissions)
   dagster.yaml        # Dagster instance config
 universes/
   baseline.yaml       # Default decision selections

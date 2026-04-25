@@ -4,30 +4,29 @@
 
 ```
 tests/
-├── conftest.py               # shared fixtures (_fake_config, tmp project helpers)
+├── conftest.py               # shared fixtures (_isolate_lightcone_home, tmp project helpers)
 ├── test_cli.py               # CLI command tests
 ├── test_cli_run.py           # lc run integration tests
 ├── test_integration.py       # end-to-end tests
-└── dagster/
-    ├── test_assets.py        # build_asset_definitions tests
-    ├── test_runner.py        # ASTRAContainerRunner tests
-    ├── test_status.py        # status query tests
-    └── test_targets.py       # target config tests
+├── test_assets.py            # build_asset_definitions tests
+├── test_runner.py            # ASTRAContainerRunner tests
+├── test_clusters.py          # cluster CRUD, sbatch rendering, QoS preflight tests
+└── test_sites.py             # site registry tests
 ```
 
 ## Key fixtures
 
-### `_fake_config` (autouse)
+### `_isolate_lightcone_home` (autouse)
 
-Prevents the auto-setup wizard from firing during CLI tests by monkeypatching `get_config_path()`:
+Redirects `~/.lightcone/` reads and writes to a per-test temp directory so tests never touch the developer's real config. Cluster CRUD, cluster cache, and worker-env paths all derive from `Path.home()`:
 
 ```python
 @pytest.fixture(autouse=True)
-def _fake_config(tmp_path, monkeypatch):
-    config = tmp_path / "fake_config.yaml"
-    config.write_text("default_target: local\n")
-    monkeypatch.setattr("lightcone.engine.targets.get_config_path", lambda: config)
-    monkeypatch.setattr("lightcone.cli.commands.get_config_path", lambda: config)
+def _isolate_lightcone_home(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
 ```
 
 ### `tmp_project` (helper)
