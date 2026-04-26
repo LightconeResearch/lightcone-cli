@@ -1,155 +1,195 @@
-"""Tests for container image building from Containerfiles."""
+"""Tests for the container runtime layer.
 
+Covers tag computation, build invocation, runtime detection/config, and
+the recipe wrap that the Snakefile generator embeds into ``shell()``.
+"""
 from __future__ import annotations
 
+import shlex
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from lightcone.engine.container import (
+    RUNTIMES,
     ContainerBuildError,
     build_image,
-    build_image_podman_hpc,
     compute_image_tag,
-    detect_container_runtime,
+    detect_runtime,
     find_dependency_files,
     get_container_status,
     image_exists_locally,
     image_exists_podman_hpc,
-    resolve_container_for_slurm,
-    resolve_container_spec,
+    is_containerfile,
+    load_runtime,
+    resolve_image_for_run,
+    wrap_recipe,
 )
 
 
 @pytest.fixture
-def project(tmp_path):
-    """Create a minimal project with a Containerfile."""
-    containerfile = tmp_path / "Containerfile"
-    containerfile.write_text("FROM python:3.12-slim\n")
+def project(tmp_path: Path) -> Path:
+    """Minimal project with a Containerfile."""
+    (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
     return tmp_path
 
 
 @pytest.fixture
-def project_with_deps(project):
-    """Project with Containerfile and dependency files."""
+def project_with_deps(project: Path) -> Path:
     (project / "requirements.txt").write_text("numpy\npandas\n")
     (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
     return project
 
 
+# ---- find_dependency_files / compute_image_tag ----------------------------
+
+
 class TestFindDependencyFiles:
-    def test_finds_requirements_txt(self, project):
+    def test_finds_requirements_txt(self, project: Path) -> None:
         (project / "requirements.txt").write_text("numpy\n")
         found = find_dependency_files(project)
-        assert len(found) == 1
-        assert found[0].name == "requirements.txt"
+        assert [f.name for f in found] == ["requirements.txt"]
 
-    def test_finds_pyproject_toml(self, project):
+    def test_finds_pyproject_toml(self, project: Path) -> None:
         (project / "pyproject.toml").write_text("[project]\n")
         found = find_dependency_files(project)
-        assert len(found) == 1
-        assert found[0].name == "pyproject.toml"
+        assert [f.name for f in found] == ["pyproject.toml"]
 
-    def test_skips_missing_files(self, project):
-        # No dependency files in project fixture
-        found = find_dependency_files(project)
-        assert found == []
+    def test_skips_missing_files(self, project: Path) -> None:
+        assert find_dependency_files(project) == []
 
-    def test_finds_multiple(self, project_with_deps):
-        found = find_dependency_files(project_with_deps)
-        names = [f.name for f in found]
-        assert "requirements.txt" in names
-        assert "pyproject.toml" in names
+    def test_finds_multiple(self, project_with_deps: Path) -> None:
+        names = {f.name for f in find_dependency_files(project_with_deps)}
+        assert {"requirements.txt", "pyproject.toml"} <= names
 
 
 class TestComputeImageTag:
-    def test_deterministic(self, project):
-        containerfile = project / "Containerfile"
-        tag1 = compute_image_tag("test", containerfile, project)
-        tag2 = compute_image_tag("test", containerfile, project)
-        assert tag1 == tag2
+    def test_deterministic(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        assert compute_image_tag("test", cf, project) == compute_image_tag("test", cf, project)
 
-    def test_tag_format(self, project):
-        containerfile = project / "Containerfile"
-        tag = compute_image_tag("my-project", containerfile, project)
+    def test_tag_format(self, project: Path) -> None:
+        tag = compute_image_tag("my-project", project / "Containerfile", project)
         assert tag.startswith("lc-my-project-")
-        # 12 hex chars after the prefix
-        hash_part = tag.removeprefix("lc-my-project-")
-        assert len(hash_part) == 12
+        assert len(tag.removeprefix("lc-my-project-")) == 12
 
-    def test_changes_with_containerfile(self, project):
-        containerfile = project / "Containerfile"
-        tag1 = compute_image_tag("test", containerfile, project)
-        containerfile.write_text("FROM ubuntu:22.04\n")
-        tag2 = compute_image_tag("test", containerfile, project)
+    def test_changes_with_containerfile(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        tag1 = compute_image_tag("test", cf, project)
+        cf.write_text("FROM ubuntu:22.04\n")
+        tag2 = compute_image_tag("test", cf, project)
         assert tag1 != tag2
 
-    def test_changes_with_requirements(self, project):
-        containerfile = project / "Containerfile"
-        tag1 = compute_image_tag("test", containerfile, project)
+    def test_changes_with_requirements(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        tag1 = compute_image_tag("test", cf, project)
         (project / "requirements.txt").write_text("numpy\n")
-        tag2 = compute_image_tag("test", containerfile, project)
+        tag2 = compute_image_tag("test", cf, project)
         assert tag1 != tag2
 
-    def test_sanitises_project_name(self, project):
-        containerfile = project / "Containerfile"
-        tag = compute_image_tag("My Project", containerfile, project)
+    def test_sanitises_project_name(self, project: Path) -> None:
+        tag = compute_image_tag("My Project", project / "Containerfile", project)
         assert tag.startswith("lc-my-project-")
+
+
+# ---- image_exists_locally / image_exists_podman_hpc -----------------------
 
 
 class TestImageExistsLocally:
     @patch("lightcone.engine.container.subprocess.run")
-    def test_exists(self, mock_run):
+    def test_docker_exists(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(returncode=0)
-        assert image_exists_locally("lc-test-abc123") is True
+        assert image_exists_locally("lc-foo", runtime="docker") is True
+        assert mock_run.call_args[0][0][0] == "docker"
 
     @patch("lightcone.engine.container.subprocess.run")
-    def test_not_exists(self, mock_run):
+    def test_podman_exists(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0)
+        assert image_exists_locally("lc-foo", runtime="podman") is True
+        assert mock_run.call_args[0][0][0] == "podman"
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_not_exists(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(returncode=1)
-        assert image_exists_locally("lc-test-abc123") is False
+        assert image_exists_locally("lc-foo", runtime="docker") is False
 
     @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
-    def test_docker_not_installed(self, mock_run):
-        assert image_exists_locally("lc-test-abc123") is False
+    def test_runtime_not_installed(self, mock_run: MagicMock) -> None:
+        assert image_exists_locally("lc-foo", runtime="docker") is False
+
+    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=True)
+    def test_podman_hpc_delegates(self, mock_phpc: MagicMock) -> None:
+        assert image_exists_locally("lc-foo", runtime="podman-hpc") is True
+        mock_phpc.assert_called_once_with("lc-foo")
+
+
+class TestImageExistsPodmanHpc:
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_exists(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0)
+        assert image_exists_podman_hpc("img:v1") is True
+
+    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
+    def test_not_installed(self, mock_run: MagicMock) -> None:
+        assert image_exists_podman_hpc("img:v1") is False
+
+
+# ---- build_image ----------------------------------------------------------
 
 
 class TestBuildImage:
     @patch("lightcone.engine.container.subprocess.run")
-    def test_success(self, mock_run, project):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="built", stderr=""
-        )
-        result = build_image(
-            "lc-test-abc123",
-            project / "Containerfile",
-            project,
-        )
-        assert result.tag == "lc-test-abc123"
-        assert result.already_existed is False
-        assert result.exit_code == 0
+    def test_docker_success(self, mock_run: MagicMock, project: Path) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        result = build_image("lc-test", project / "Containerfile", project, runtime="docker")
+        assert result.tag == "lc-test"
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "docker"
+        assert cmd[1] == "build"
 
     @patch("lightcone.engine.container.subprocess.run")
-    def test_failure(self, mock_run, project):
-        mock_run.return_value = MagicMock(
-            returncode=1, stdout="", stderr="some error"
-        )
+    def test_podman_success(self, mock_run: MagicMock, project: Path) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        result = build_image("lc-test", project / "Containerfile", project, runtime="podman")
+        assert result.tag == "lc-test"
+        assert mock_run.call_args[0][0][0] == "podman"
+
+    @patch("lightcone.engine.container._podman_hpc_migrate")
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_podman_hpc_migrates_after_build(
+        self, mock_run: MagicMock, mock_migrate: MagicMock, project: Path
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        build_image("lc-test", project / "Containerfile", project, runtime="podman-hpc")
+        mock_migrate.assert_called_once_with("lc-test")
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_failure_raises(self, mock_run: MagicMock, project: Path) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
         with pytest.raises(ContainerBuildError, match="docker build failed"):
-            build_image("lc-test-abc123", project / "Containerfile", project, runtime="docker")
+            build_image("lc-test", project / "Containerfile", project, runtime="docker")
 
     @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
-    def test_docker_not_installed(self, mock_run, project):
-        with pytest.raises(ContainerBuildError, match="docker is not installed"):
-            build_image("lc-test-abc123", project / "Containerfile", project)
+    def test_runtime_missing_raises(self, mock_run: MagicMock, project: Path) -> None:
+        with pytest.raises(ContainerBuildError, match="podman is not installed"):
+            build_image("lc-test", project / "Containerfile", project, runtime="podman")
+
+    def test_unsupported_runtime_raises(self, project: Path) -> None:
+        with pytest.raises(ContainerBuildError, match="Unsupported build runtime"):
+            build_image(
+                "lc-test", project / "Containerfile", project, runtime="apptainer"
+            )
 
     @patch("lightcone.engine.container.subprocess.run")
-    def test_build_args(self, mock_run, project):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="", stderr=""
-        )
+    def test_build_args(self, mock_run: MagicMock, project: Path) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         build_image(
-            "lc-test-abc123",
+            "lc-test",
             project / "Containerfile",
             project,
+            runtime="docker",
             build_args={"PY_VERSION": "3.12"},
         )
         cmd = mock_run.call_args[0][0]
@@ -157,226 +197,218 @@ class TestBuildImage:
         assert "PY_VERSION=3.12" in cmd
 
 
-class TestResolveContainerSpec:
-    def test_none_returns_none(self, project):
-        assert resolve_container_spec(None, project, "test") is None
+# ---- detect_runtime / load_runtime ---------------------------------------
 
-    def test_image_name_returns_as_is(self, project):
-        assert resolve_container_spec("python:3.12", project, "test") == "python:3.12"
 
-    def test_containerfile_path_dry_run(self, project):
-        tag = resolve_container_spec("Containerfile", project, "test", dry_run=True)
-        assert tag is not None
-        assert tag.startswith("lc-test-")
+class TestDetectRuntime:
+    @patch("lightcone.engine.container.shutil.which")
+    def test_docker_preferred(self, mock_which: MagicMock) -> None:
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        assert detect_runtime() == "docker"
 
-    def test_nonexistent_path_treated_as_image(self, tmp_path):
-        # A string that doesn't point to an existing file is a pre-built image
-        assert resolve_container_spec("NoSuchFile", tmp_path, "test") == "NoSuchFile"
+    @patch("lightcone.engine.container.shutil.which")
+    def test_podman_only(self, mock_which: MagicMock) -> None:
+        mock_which.side_effect = lambda name: "/usr/bin/podman" if name == "podman" else None
+        assert detect_runtime() == "podman"
 
-    @patch("lightcone.engine.container.image_exists_locally", return_value=True)
-    def test_exists_skip_build(self, mock_exists, project):
-        tag = resolve_container_spec("Containerfile", project, "test")
-        assert tag is not None
-        assert tag.startswith("lc-test-")
+    @patch("lightcone.engine.container.shutil.which", return_value=None)
+    def test_none_available(self, mock_which: MagicMock) -> None:
+        assert detect_runtime() is None
 
-    @patch("lightcone.engine.container.build_image")
-    @patch("lightcone.engine.container.image_exists_locally", return_value=False)
-    def test_not_exists_builds(self, mock_exists, mock_build, project):
-        mock_build.return_value = MagicMock(tag="lc-test-abc123")
-        tag = resolve_container_spec("Containerfile", project, "test")
-        assert tag is not None
-        mock_build.assert_called_once()
+    def test_no_apptainer(self) -> None:
+        # Apptainer/singularity must NOT be in the supported runtimes list —
+        # we own container invocation and only support OCI runtimes.
+        assert "apptainer" not in RUNTIMES
+        assert "singularity" not in RUNTIMES
 
-    @patch("lightcone.engine.container.build_image")
-    @patch("lightcone.engine.container.image_exists_locally", return_value=True)
-    def test_force_rebuilds(self, mock_exists, mock_build, project):
-        mock_build.return_value = MagicMock(tag="lc-test-abc123")
-        tag = resolve_container_spec("Containerfile", project, "test", force=True)
-        assert tag is not None
-        mock_build.assert_called_once()
+
+class TestLoadRuntime:
+    def _write_config(self, tmp_path: Path, content: dict) -> None:
+        cfg_dir = tmp_path / ".lightcone"
+        cfg_dir.mkdir()
+        (cfg_dir / "config.yaml").write_text(yaml.safe_dump(content))
+
+    def test_no_config_uses_auto(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.detect_runtime", lambda: "docker"
+        )
+        assert load_runtime() == "docker"
+
+    def test_auto_with_no_runtime_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.detect_runtime", lambda: None
+        )
+        assert load_runtime() == "none"
+
+    def test_explicit_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        self._write_config(tmp_path, {"container": {"runtime": "none"}})
+        assert load_runtime() == "none"
+
+    def test_explicit_runtime_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name == "podman" else None,
+        )
+        self._write_config(tmp_path, {"container": {"runtime": "podman"}})
+        assert load_runtime() == "podman"
+
+    def test_explicit_runtime_missing_on_path_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.shutil.which", lambda _: None
+        )
+        self._write_config(tmp_path, {"container": {"runtime": "podman"}})
+        with pytest.raises(ContainerBuildError, match="not on PATH"):
+            load_runtime()
+
+    def test_unknown_runtime_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        self._write_config(tmp_path, {"container": {"runtime": "apptainer"}})
+        with pytest.raises(ContainerBuildError, match="Unknown container.runtime"):
+            load_runtime()
+
+
+# ---- resolve_image_for_run -----------------------------------------------
+
+
+class TestResolveImageForRun:
+    def test_none_returns_none(self, project: Path) -> None:
+        assert resolve_image_for_run(
+            None, project_path=project, project_name="test"
+        ) is None
+
+    def test_registry_image_passes_through(self, project: Path) -> None:
+        assert resolve_image_for_run(
+            "python:3.12-slim", project_path=project, project_name="test"
+        ) == "python:3.12-slim"
+
+    def test_namespaced_registry_image_passes_through(self, project: Path) -> None:
+        assert resolve_image_for_run(
+            "ghcr.io/foo/bar:tag", project_path=project, project_name="test"
+        ) == "ghcr.io/foo/bar:tag"
+
+    def test_containerfile_resolves_to_tag(self, project: Path) -> None:
+        result = resolve_image_for_run(
+            "Containerfile", project_path=project, project_name="test"
+        )
+        assert result is not None
+        assert result.startswith("lc-test-")
+
+
+# ---- wrap_recipe ----------------------------------------------------------
+
+
+class TestWrapRecipe:
+    def test_no_image_passthrough(self) -> None:
+        assert wrap_recipe("echo hi", image=None, runtime="podman") == "echo hi"
+
+    def test_runtime_none_passthrough(self) -> None:
+        assert wrap_recipe(
+            "echo hi", image="python:3.12-slim", runtime="none"
+        ) == "echo hi"
+
+    def test_podman_wrap_basic(self) -> None:
+        wrapped = wrap_recipe(
+            "echo hi", image="python:3.12-slim", runtime="podman"
+        )
+        assert wrapped.startswith("podman run --rm ")
+        assert "python:3.12-slim" in wrapped
+        # The recipe is shell-quoted to survive nested shells.
+        assert shlex.quote("echo hi") in wrapped
+
+    def test_docker_wrap(self) -> None:
+        wrapped = wrap_recipe("echo hi", image="img:v1", runtime="docker")
+        assert wrapped.startswith("docker run --rm ")
+
+    def test_podman_hpc_wrap(self) -> None:
+        wrapped = wrap_recipe("echo hi", image="img:v1", runtime="podman-hpc")
+        assert wrapped.startswith("podman-hpc run --rm ")
+
+    def test_preserves_snakemake_placeholders(self) -> None:
+        """Snakemake's ``{output[0]}`` must survive the wrap so it can
+        substitute at exec time."""
+        wrapped = wrap_recipe(
+            "echo > {output[0]}/x", image="img:v1", runtime="podman"
+        )
+        assert "{output[0]}" in wrapped
+
+    def test_preserves_recipe_with_single_quotes(self) -> None:
+        """Recipes may contain single quotes (e.g. ``python -c 'print(1)'``).
+        The shlex.quote escape must survive nested shell parsing."""
+        recipe = """python -c 'print("hi")'"""
+        wrapped = wrap_recipe(recipe, image="img:v1", runtime="podman")
+        # Round-trip through shlex.split should yield the original recipe
+        # as the last argument (the bash -c argument).
+        tokens = shlex.split(wrapped)
+        assert tokens[-1] == recipe
+
+    def test_unsupported_runtime_raises(self) -> None:
+        with pytest.raises(ContainerBuildError, match="Unsupported run runtime"):
+            wrap_recipe("echo", image="img:v1", runtime="apptainer")
+
+    def test_bind_mounts_pwd(self) -> None:
+        """Recipes that write to relative paths need $PWD bind-mounted."""
+        wrapped = wrap_recipe("echo", image="img:v1", runtime="podman")
+        assert '-v "$PWD":"$PWD"' in wrapped
+        assert '-w "$PWD"' in wrapped
+
+
+# ---- get_container_status -------------------------------------------------
 
 
 class TestGetContainerStatus:
-    def test_none(self, project):
-        s = get_container_status(None, project, "test")
+    def test_none(self, project: Path) -> None:
+        s = get_container_status(None, project, "test", runtime="docker")
         assert s.type == "none"
 
-    def test_prebuilt(self, project):
-        s = get_container_status("python:3.12", project, "test")
+    def test_prebuilt(self, project: Path) -> None:
+        s = get_container_status("python:3.12", project, "test", runtime="docker")
         assert s.type == "prebuilt"
         assert s.image == "python:3.12"
 
-    def test_nonexistent_path_treated_as_prebuilt(self, tmp_path):
-        # A string that doesn't point to an existing file is a pre-built image
-        s = get_container_status("NoSuchFile", tmp_path, "test")
-        assert s.type == "prebuilt"
-        assert s.image == "NoSuchFile"
-
     @patch("lightcone.engine.container.image_exists_locally", return_value=False)
-    def test_containerfile_not_built(self, mock_exists, project):
-        s = get_container_status("Containerfile", project, "test")
+    def test_containerfile_not_built(
+        self, mock_exists: MagicMock, project: Path
+    ) -> None:
+        s = get_container_status("Containerfile", project, "test", runtime="docker")
         assert s.type == "build"
         assert s.exists is False
         assert s.image is not None
 
     @patch("lightcone.engine.container.image_exists_locally", return_value=True)
-    def test_containerfile_built(self, mock_exists, project):
-        s = get_container_status("Containerfile", project, "test")
+    def test_containerfile_built(
+        self, mock_exists: MagicMock, project: Path
+    ) -> None:
+        s = get_container_status("Containerfile", project, "test", runtime="docker")
         assert s.type == "build"
         assert s.exists is True
-        assert s.image is not None
+
+    def test_runtime_none_skips_existence_check(self, project: Path) -> None:
+        s = get_container_status("Containerfile", project, "test", runtime="none")
+        assert s.type == "build"
+        assert s.exists is None
 
 
-# ---------------------------------------------------------------------------
-# HPC container runtimes
-# ---------------------------------------------------------------------------
+# ---- is_containerfile -----------------------------------------------------
 
 
-class TestImageExistsPodmanHpc:
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_exists(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0)
-        assert image_exists_podman_hpc("my-image:v1") is True
+class TestIsContainerfile:
+    def test_existing_file(self, project: Path) -> None:
+        assert is_containerfile("Containerfile", project) is True
 
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_not_exists(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1)
-        assert image_exists_podman_hpc("my-image:v1") is False
-
-    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
-    def test_not_installed(self, mock_run):
-        assert image_exists_podman_hpc("my-image:v1") is False
-
-
-class TestBuildImagePodmanHpc:
-    @patch("lightcone.engine.container._podman_hpc_migrate")
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_success(self, mock_run, mock_migrate, project):
-        mock_run.return_value = MagicMock(returncode=0, stdout="built", stderr="")
-        result = build_image_podman_hpc(
-            "lc-test-abc123", project / "Containerfile", project,
-        )
-        assert result.tag == "lc-test-abc123"
-        assert result.already_existed is False
-        # Should also have migrated
-        mock_migrate.assert_called_once_with("lc-test-abc123")
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_failure(self, mock_run, project):
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="build error")
-        with pytest.raises(ContainerBuildError, match="podman-hpc build failed"):
-            build_image_podman_hpc(
-                "lc-test-abc123", project / "Containerfile", project,
-            )
-
-    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
-    def test_not_installed(self, mock_run, project):
-        with pytest.raises(ContainerBuildError, match="podman-hpc is not installed"):
-            build_image_podman_hpc(
-                "lc-test-abc123", project / "Containerfile", project,
-            )
-
-
-class TestResolveContainerForSlurm:
-    def test_none_returns_none(self, project):
-        assert resolve_container_for_slurm(None, project, "test", "podman-hpc") is None
-
-    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=True)
-    def test_prebuilt_podman_already_exists(self, mock_exists, project):
-        result = resolve_container_for_slurm(
-            "my-image:v1", project, "test", "podman-hpc",
-        )
-        assert result == "my-image:v1"
-
-    @patch("lightcone.engine.container._podman_hpc_migrate")
-    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=False)
-    def test_prebuilt_podman_migrates(self, mock_exists, mock_migrate, project):
-        result = resolve_container_for_slurm(
-            "my-image:v1", project, "test", "podman-hpc",
-        )
-        assert result == "my-image:v1"
-        mock_migrate.assert_called_once_with("my-image:v1")
-
-    @patch("lightcone.engine.container.build_image_podman_hpc")
-    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=False)
-    def test_containerfile_podman_builds(self, mock_exists, mock_build, project):
-        mock_build.return_value = MagicMock(tag="lc-test-abc123")
-        tag = resolve_container_for_slurm("Containerfile", project, "test", "podman-hpc")
-        assert tag is not None
-        assert tag.startswith("lc-test-")
-        mock_build.assert_called_once()
-
-    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=True)
-    def test_containerfile_podman_cached(self, mock_exists, project):
-        tag = resolve_container_for_slurm("Containerfile", project, "test", "podman-hpc")
-        assert tag is not None
-        assert tag.startswith("lc-test-")
-
-    @patch("lightcone.engine.container._podman_hpc_migrate")
-    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=False)
-    def test_nonexistent_path_treated_as_image(self, mock_exists, mock_migrate, tmp_path):
-        # A string that doesn't point to an existing file is a pre-built image
-        tag = resolve_container_for_slurm("NoSuchFile", tmp_path, "test", "podman-hpc")
-        assert tag == "NoSuchFile"
-        mock_migrate.assert_called_once_with("NoSuchFile")
-
-
-class TestDetectContainerRuntime:
-    @patch("lightcone.engine.container.shutil.which")
-    def test_docker_found(self, mock_which):
-        mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
-        assert detect_container_runtime() == "docker"
-
-    @patch("lightcone.engine.container.shutil.which")
-    def test_podman_only(self, mock_which):
-        mock_which.side_effect = lambda name: "/usr/bin/podman" if name == "podman" else None
-        assert detect_container_runtime() == "podman"
-
-    @patch("lightcone.engine.container.shutil.which")
-    def test_docker_preferred_over_podman(self, mock_which):
-        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
-        assert detect_container_runtime() == "docker"
-
-    @patch("lightcone.engine.container.shutil.which", return_value=None)
-    def test_neither_found(self, mock_which):
-        assert detect_container_runtime() is None
-
-
-class TestPodmanSupport:
-    @pytest.fixture()
-    def project(self, tmp_path):
-        (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
-        (tmp_path / "requirements.txt").write_text("numpy\n")
-        return tmp_path
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_image_exists_with_podman(self, mock_run, project):
-        mock_run.return_value = MagicMock(returncode=0)
-        assert image_exists_locally("some-tag", runtime="podman") is True
-        mock_run.assert_called_once()
-        assert mock_run.call_args[0][0][0] == "podman"
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_build_image_with_podman(self, mock_run, project):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        result = build_image(
-            "test-tag", project / "Containerfile", project, runtime="podman",
-        )
-        assert result.tag == "test-tag"
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "podman"
-        assert cmd[1] == "build"
-
-    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
-    def test_build_image_podman_not_installed(self, mock_run, project):
-        with pytest.raises(ContainerBuildError, match="podman is not installed"):
-            build_image("test-tag", project / "Containerfile", project, runtime="podman")
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_resolve_container_spec_with_podman(self, mock_run, project):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        tag = resolve_container_spec("Containerfile", project, "test", runtime="podman")
-        assert tag is not None
-        # First call should be image inspect, second should be build
-        calls = mock_run.call_args_list
-        assert calls[0][0][0][0] == "podman"
+    def test_missing_file(self, project: Path) -> None:
+        assert is_containerfile("python:3.12-slim", project) is False

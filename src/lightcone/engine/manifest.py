@@ -4,38 +4,37 @@ The integrity layer of lightcone-cli. Every materialized output gets a
 sidecar JSON manifest at ``<output_dir>/.lightcone-manifest.json`` that
 records:
 
-- ``code_version``: sha256(recipe + container image + decisions + finalizer
-  source). Embedded in the rule's shell command so Snakemake's ``code``
-  rerun-trigger detects drift automatically.
+- ``code_version``: sha256(recipe + container image + decisions). Embedded
+  in the rule's shell command so Snakemake's ``code`` rerun-trigger detects
+  drift automatically.
 - ``data_version``: sha256 of the output directory's contents. Lets
   ``lc verify`` prove the bytes on disk are what the manifest claims.
 - ``input_versions``: each declared input's ``data_version`` (if it's a
   materialized output) or ``(mtime, size)`` fingerprint (if it's an
   external file). This is the chain.
 
-Manifests are written by ``_lc_finalize.py``, the standalone script that
-runs at the end of every rule's containerized shell recipe. This module
-exposes the host-side helpers (``code_version``, ``read_manifest``,
-``fingerprint_external``) and re-exports ``sha256_dir`` and
-``MANIFEST_FILENAME`` from the finalizer so verify and finalize hash data
-the exact same way.
+Manifests are written by :func:`write_manifest`, called from each rule's
+``run:`` block on the host immediately after the recipe shell exits. The
+``os.replace`` rename is the atomic commit point: either the rule produced
+both data and manifest, or it failed and Snakemake will rerun it.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import socket
+import time
 from pathlib import Path
 from typing import Any
 
-# Single source of truth for the hash algorithm and manifest filename.
-# The finalizer is the canonical implementation; we import here so
-# ``lc verify`` recomputes data_version exactly the way the rule wrote it.
-from lightcone.engine._lc_finalize import (
-    MANIFEST_FILENAME,
-    SCHEMA_VERSION,
-    _hash_file,
-    sha256_dir,
-)
+MANIFEST_FILENAME = ".lightcone-manifest.json"
+SCHEMA_VERSION = 1
+
+#: Filenames inside an output directory that the data_version hash MUST
+#: ignore: the manifest itself (chicken-and-egg) and Snakemake's
+#: ``directory()`` mtime marker (touched AFTER the rule body completes).
+_HASH_EXCLUDE = frozenset({MANIFEST_FILENAME, ".snakemake_timestamp"})
 
 __all__ = [
     "MANIFEST_FILENAME",
@@ -46,6 +45,37 @@ __all__ = [
     "sha256_dir",
     "write_manifest",
 ]
+
+
+def _hash_file(path: Path, h: hashlib._Hash) -> None:
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+
+
+def sha256_dir(path: Path) -> str:
+    """Deterministic content hash of a directory.
+
+    Walks ``path`` recursively, hashes each file along with its relative
+    path (so renames change the hash), and excludes the manifest plus
+    Snakemake's directory-output timestamp marker.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    h = hashlib.sha256()
+    files: list[Path] = [
+        p for p in path.rglob("*") if p.is_file() and p.name not in _HASH_EXCLUDE
+    ]
+    for p in sorted(files, key=lambda x: x.relative_to(path).as_posix()):
+        rel = p.relative_to(path).as_posix().encode("utf-8")
+        h.update(b"path:")
+        h.update(rel)
+        h.update(b"\0")
+        h.update(b"data:")
+        _hash_file(p, h)
+        h.update(b"\0")
+    return f"sha256:{h.hexdigest()}"
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -75,15 +105,6 @@ def fingerprint_external(path: Path, *, strict: bool = False) -> str:
     return f"mtime-size:{st.st_mtime_ns}-{st.st_size}"
 
 
-def _finalizer_source_hash() -> str:
-    """Hash the bytes of ``_lc_finalize.py`` so that any change to the
-    integrity layer invalidates every existing manifest."""
-    from lightcone.engine import _lc_finalize
-
-    src = Path(_lc_finalize.__file__).read_bytes()
-    return _sha256_bytes(src)
-
-
 def code_version(
     *,
     recipe: str,
@@ -92,16 +113,16 @@ def code_version(
 ) -> str:
     """Compute a deterministic code version for an output.
 
-    Hashes the recipe text, container image identifier, canonicalized
-    decisions, and the finalizer source. Anything that changes the
-    materialization semantics — including the manifest schema itself —
-    flows through this hash.
+    Hashes the recipe text, container image identifier, and canonicalized
+    decisions. Anything that changes the materialization semantics flows
+    through this hash; the *runtime* used to invoke the container
+    (docker/podman/podman-hpc) is intentionally excluded — the same image
+    produces the same data regardless of which OCI tool launched it.
     """
     payload = {
         "recipe": recipe,
         "container_image": container_image,
         "decisions": decisions,
-        "finalizer": _finalizer_source_hash(),
     }
     return _sha256_bytes(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -128,12 +149,12 @@ def write_manifest(
     inputs: dict[str, Path],
     cfg: dict[str, Any],
 ) -> Path:
-    """Write a manifest for an already-materialized output.
+    """Atomically write the manifest for an already-materialized output.
 
-    This is a host-side helper used primarily by tests to construct
-    fixture manifests. The production write path is
-    ``_lc_finalize.finalize`` invoked from the rule's ``shell:`` recipe.
-    Both produce manifests with identical schema and field semantics.
+    Called from each rule's ``run:`` block after the recipe shell exits.
+    Hashes the output dir, resolves input versions (chaining to upstream
+    manifests when present, falling back to external fingerprints), and
+    commits the manifest via ``os.replace``.
 
     Args:
         output_dir: Directory containing the materialized output files.
@@ -144,10 +165,6 @@ def write_manifest(
             ``universe_id``, ``recipe``, ``container_image``, ``decisions``,
             ``code_version``, ``git_sha``, ``lc_version``.
     """
-    import os
-    import socket
-    import time
-
     output_dir = Path(output_dir)
 
     input_versions: dict[str, str] = {}

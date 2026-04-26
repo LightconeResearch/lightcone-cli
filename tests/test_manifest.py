@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine import _lc_finalize
 from lightcone.engine.manifest import (
     MANIFEST_FILENAME,
     SCHEMA_VERSION,
@@ -33,7 +32,6 @@ def test_sha256_dir_empty(tmp_path: Path) -> None:
     d = tmp_path / "out"
     d.mkdir()
     h = sha256_dir(d)
-    # Empty dir gets a stable, well-known hash (sha256 of empty stream).
     assert h.startswith("sha256:")
     assert len(h) == len("sha256:") + 64
 
@@ -124,7 +122,6 @@ def test_fingerprint_external_directory(tmp_path: Path) -> None:
     d = tmp_path / "input_dir"
     _write(d / "a.txt", b"data")
     fp = fingerprint_external(d)
-    # Directories always go through the same content hash.
     assert fp.startswith("sha256:")
 
 
@@ -139,13 +136,13 @@ def test_fingerprint_external_missing_returns_marker(tmp_path: Path) -> None:
 def test_code_version_deterministic() -> None:
     cv1 = code_version(
         recipe="python script.py --x 1",
-        container_image="lc-foo-abc123.sif",
+        container_image="lc-foo-abc123",
         decisions={"k": "a", "j": 1},
     )
     cv2 = code_version(
         recipe="python script.py --x 1",
-        container_image="lc-foo-abc123.sif",
-        decisions={"j": 1, "k": "a"},  # key order shouldn't matter
+        container_image="lc-foo-abc123",
+        decisions={"j": 1, "k": "a"},
     )
     assert cv1 == cv2
     assert cv1.startswith("sha256:")
@@ -174,139 +171,6 @@ def test_code_version_handles_none_container() -> None:
     assert cv.startswith("sha256:")
 
 
-def test_code_version_changes_when_finalizer_changes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The finalizer source is hashed into code_version. Editing the
-    integrity layer must invalidate every existing manifest."""
-    cv_before = code_version(recipe="r", container_image="c", decisions={})
-    # Pretend the finalizer's bytes changed.
-    monkeypatch.setattr(
-        "lightcone.engine.manifest._finalizer_source_hash",
-        lambda: "sha256:deadbeef",
-    )
-    cv_after = code_version(recipe="r", container_image="c", decisions={})
-    assert cv_before != cv_after
-
-
-# ---- _lc_finalize.finalize -----------------------------------------------
-
-
-def _write_cfg(lightcone_dir: Path, cfg: dict) -> None:
-    lightcone_dir.mkdir(parents=True, exist_ok=True)
-    (lightcone_dir / "snakefile-config.json").write_text(json.dumps(cfg))
-
-
-def test_finalize_writes_manifest_atomically(tmp_path: Path) -> None:
-    """End-to-end: finalize() reads cfg, hashes output, writes manifest."""
-    out = tmp_path / "results" / "u1" / "foo"
-    _write(out / "data.csv", b"x,y\n1,2\n")
-    lightcone = tmp_path / ".lightcone"
-    _write_cfg(
-        lightcone,
-        {
-            "foo": {
-                "u1": {
-                    "output_id": "foo",
-                    "universe_id": "u1",
-                    "recipe": "echo",
-                    "container_image": "python:3.12-slim",
-                    "decisions": {},
-                    "code_version": "sha256:abc",
-                    "git_sha": "deadbeef",
-                    "lc_version": "0.0",
-                    "inputs": {},
-                }
-            }
-        },
-    )
-
-    _lc_finalize.finalize("foo", "u1", out, lightcone)
-
-    m = json.loads((out / MANIFEST_FILENAME).read_text())
-    assert m["output_id"] == "foo"
-    assert m["data_version"].startswith("sha256:")
-    # No leftover .tmp file — atomic rename completed.
-    assert not (out / (MANIFEST_FILENAME + ".tmp")).exists()
-
-
-def test_finalize_chains_upstream_data_version(tmp_path: Path) -> None:
-    """When an input dir has a manifest, its data_version flows into
-    input_versions — the chain is built from cfg-resolved paths."""
-    upstream = tmp_path / "results" / "u1" / "up"
-    _write(upstream / "out.bin", b"u")
-    lightcone = tmp_path / ".lightcone"
-    _write_cfg(
-        lightcone,
-        {
-            "up": {
-                "u1": {
-                    "output_id": "up",
-                    "universe_id": "u1",
-                    "recipe": "x",
-                    "container_image": None,
-                    "decisions": {},
-                    "code_version": "sha256:up",
-                    "git_sha": "g",
-                    "lc_version": "0",
-                    "inputs": {},
-                }
-            },
-            "down": {
-                "u1": {
-                    "output_id": "down",
-                    "universe_id": "u1",
-                    "recipe": "y",
-                    "container_image": None,
-                    "decisions": {},
-                    "code_version": "sha256:down",
-                    "git_sha": "g",
-                    "lc_version": "0",
-                    "inputs": {"up": str(upstream)},
-                }
-            },
-        },
-    )
-    _lc_finalize.finalize("up", "u1", upstream, lightcone)
-    upstream_dv = json.loads((upstream / MANIFEST_FILENAME).read_text())["data_version"]
-
-    downstream = tmp_path / "results" / "u1" / "down"
-    _write(downstream / "result.bin", b"d")
-    _lc_finalize.finalize("down", "u1", downstream, lightcone)
-
-    dn = json.loads((downstream / MANIFEST_FILENAME).read_text())
-    assert dn["input_versions"]["up"] == upstream_dv
-
-
-def test_finalize_hash_matches_verify_hash(tmp_path: Path) -> None:
-    """The host-side ``sha256_dir`` (used by lc verify) must produce the
-    same hash as the finalizer's data_version, since both live in
-    ``_lc_finalize.py``. Single-source-of-truth invariant."""
-    out = tmp_path / "out"
-    _write(out / "a.bin", b"abc")
-    _write(out / "nested" / "b.bin", b"def")
-    lightcone = tmp_path / ".lightcone"
-    _write_cfg(
-        lightcone,
-        {
-            "x": {
-                "u": {
-                    "output_id": "x",
-                    "universe_id": "u",
-                    "recipe": "r",
-                    "container_image": None,
-                    "decisions": {},
-                    "code_version": "sha256:c",
-                    "git_sha": "g",
-                    "lc_version": "0",
-                    "inputs": {},
-                }
-            }
-        },
-    )
-    _lc_finalize.finalize("x", "u", out, lightcone)
-    written_dv = json.loads((out / MANIFEST_FILENAME).read_text())["data_version"]
-    assert written_dv == sha256_dir(out)
-
-
 # ---- write_manifest -------------------------------------------------------
 
 
@@ -323,7 +187,7 @@ def test_write_manifest_basic(tmp_path: Path) -> None:
             "output_id": "foo",
             "universe_id": "u1",
             "recipe": "python script.py",
-            "container_image": "lc-foo-abc.sif",
+            "container_image": "lc-foo-abc",
             "decisions": {"k": 1},
             "code_version": "sha256:abc",
             "git_sha": "deadbeef",
@@ -339,7 +203,7 @@ def test_write_manifest_basic(tmp_path: Path) -> None:
     assert m["output_id"] == "foo"
     assert m["universe_id"] == "u1"
     assert m["recipe"] == "python script.py"
-    assert m["container_image"] == "lc-foo-abc.sif"
+    assert m["container_image"] == "lc-foo-abc"
     assert m["decisions"] == {"k": 1}
     assert m["code_version"] == "sha256:abc"
     assert m["git_sha"] == "deadbeef"
@@ -394,9 +258,8 @@ def test_write_manifest_chains_upstream_data_version(tmp_path: Path) -> None:
     assert dn_manifest["input_versions"]["upstream"] == upstream_dv
 
 
-def test_write_manifest_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """write_manifest must not leave a half-written manifest if json.dumps
-    or the write fails midway."""
+def test_write_manifest_atomic(tmp_path: Path) -> None:
+    """No leftover .tmp file after a successful write."""
     out = tmp_path / "out"
     _write(out / "x", b"1")
 
@@ -412,6 +275,31 @@ def test_write_manifest_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     }
     write_manifest(output_dir=out, inputs={}, cfg=cfg)
     assert (out / MANIFEST_FILENAME).exists()
+    assert not (out / (MANIFEST_FILENAME + ".tmp")).exists()
+
+
+def test_write_manifest_data_version_matches_sha256_dir(tmp_path: Path) -> None:
+    """The data_version recorded by write_manifest is the same hash that
+    ``sha256_dir`` would compute — single source of truth for verify."""
+    out = tmp_path / "out"
+    _write(out / "a.bin", b"abc")
+    _write(out / "nested" / "b.bin", b"def")
+    write_manifest(
+        output_dir=out,
+        inputs={},
+        cfg={
+            "output_id": "x",
+            "universe_id": "u",
+            "recipe": "r",
+            "container_image": None,
+            "decisions": {},
+            "code_version": "sha256:c",
+            "git_sha": "g",
+            "lc_version": "0",
+        },
+    )
+    written_dv = json.loads((out / MANIFEST_FILENAME).read_text())["data_version"]
+    assert written_dv == sha256_dir(out)
 
 
 # ---- read_manifest --------------------------------------------------------

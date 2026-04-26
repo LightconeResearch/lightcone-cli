@@ -2,18 +2,26 @@
 
 The Snakefile is a thin shell over the astra spec: one rule per output
 with a recipe, parameterized by ``{universe}``. Each rule's body is a
-``shell:`` recipe that runs the user's command then invokes
-``.lightcone/_lc_finalize.py`` to atomically write the provenance
-manifest. Snakemake's ``container:`` directive (honored when
-``--sdm apptainer`` is passed) wraps the entire shell — recipe AND
-finalizer — inside the container, which means the manifest is committed
-in the same containerized process that produced the data.
+``run:`` block:
 
-All per-(rule, universe) details — recipe text, container image,
-resolved decisions, precomputed code_version, resolved input paths —
-live in ``.lightcone/snakefile-config.json``, keyed by rule and universe.
-The finalizer reads this file at runtime; the Snakefile itself stays
-tiny.
+    shell(params.cfg["shell_command"])
+    write_manifest(output_dir=Path(output.data), inputs={...}, cfg=params.cfg)
+
+The ``shell_command`` is the recipe pre-wrapped at generation time —
+when a container is configured, the wrap is something like
+``podman run --rm -v "$PWD":"$PWD" -w "$PWD" <image> bash -c '<recipe>'``.
+We deliberately do **not** use Snakemake's ``container:`` directive or
+``--sdm apptainer``; we own the runtime end-to-end. See
+:mod:`lightcone.engine.container`.
+
+After the recipe shell exits, the host calls ``write_manifest`` directly.
+The ``os.replace`` rename inside ``write_manifest`` is the atomic commit
+point — either the rule produced both data and manifest or it failed and
+Snakemake reruns the rule.
+
+All per-(rule, universe) details — recipe, container image, decisions,
+precomputed code_version, resolved input paths — live in
+``.lightcone/snakefile-config.json`` keyed by ``(rule_key, universe)``.
 """
 from __future__ import annotations
 
@@ -24,6 +32,7 @@ from typing import Any
 
 from astra.helpers import get_inputs, load_yaml, resolve_analysis_tree
 
+from lightcone.engine.container import resolve_image_for_run, wrap_recipe
 from lightcone.engine.manifest import code_version
 from lightcone.engine.tree import (
     TreeOutput,
@@ -34,7 +43,6 @@ from lightcone.engine.tree import (
 LIGHTCONE_DIR = ".lightcone"
 SNAKEFILE_NAME = "Snakefile"
 CONFIG_NAME = "snakefile-config.json"
-FINALIZER_NAME = "_lc_finalize.py"
 
 
 def _git_sha(project_path: Path) -> str | None:
@@ -78,7 +86,7 @@ def _resolve_container_for(
         sub = tree_out.analysis_spec.get("container")
         if sub is not None:
             return sub  # type: ignore[no-any-return]
-    return root_spec.get("container")  # type: ignore[no-any-return]
+    return root_spec.get("container")
 
 
 def _input_path_for(
@@ -90,17 +98,10 @@ def _input_path_for(
     """For a recipe input id, return the wildcard path to the upstream
     output's directory, or ``None`` if the input refers to an external
     file (handled separately).
-
-    The simple case — a sibling output id — covers the iris pipeline
-    pattern: ``recipe.inputs: [features]`` resolves to the sibling
-    output's directory.
     """
-    # Cross-analysis dotted reference, e.g. "feature_extraction.features".
     if "." in inp_id:
-        _, out_id = inp_id.split(".", 1)
         return output_dirs.get(inp_id)
 
-    # Local-scope sibling output (most common in practice).
     if tree_out.analysis_id is not None:
         qualified = f"{tree_out.analysis_id}.{inp_id}"
         if qualified in output_dirs:
@@ -108,7 +109,6 @@ def _input_path_for(
     if inp_id in output_dirs:
         return output_dirs[inp_id]
 
-    # Sub-analysis input declaration with `from:` -> resolve through it.
     analysis_inputs = {i.get("id"): i for i in get_inputs(tree_out.analysis_spec)}
     inp_def = analysis_inputs.get(inp_id)
     if inp_def and inp_def.get("from"):
@@ -119,60 +119,6 @@ def _input_path_for(
             return output_dirs[from_ref]
 
     return None
-
-
-_APPTAINER_SCHEMES = (
-    "docker://",
-    "oras://",
-    "library://",
-    "shub://",
-    "http://",
-    "https://",
-    "docker-daemon://",
-    "oci-archive:",
-    "oci:",
-)
-
-
-def _resolve_container_uri(spec_str: str | None, project_path: Path) -> str | None:
-    """Translate an astra.yaml ``container:`` value into a URI that
-    apptainer accepts (i.e. what we emit in Snakemake's ``container:``
-    directive).
-
-    - ``None`` or empty → ``None`` (no container directive emitted).
-    - Already-schemed URI (``docker://...``, ``oras://...``, etc.) → unchanged.
-    - Path to a Containerfile in the project → reference the built SIF at
-      ``.lightcone/images/lc-<name>-<hash>.sif``. (User must run ``lc build``
-      first; we don't try to discover the hash here because that requires the
-      full build context.)
-    - Bare image name like ``python:3.12-slim`` → prepend ``docker://``.
-    """
-    if not spec_str:
-        return None
-    if any(spec_str.startswith(s) for s in _APPTAINER_SCHEMES):
-        return spec_str
-    candidate = project_path / spec_str
-    if candidate.is_file():
-        # Containerfile — reference the SIF that lc build produced. We
-        # use a glob-friendly placeholder; the user must have built it.
-        # Build path: .lightcone/images/lc-<name>-<hash>.sif (computed in
-        # engine.container.compute_image_tag). We inline it here.
-        from lightcone.engine.container import compute_image_tag
-
-        # Project name fallback chain: spec.name → directory name. We
-        # accept both since the build step uses the same fallback.
-        # The caller passes the raw spec_str; we recompute the tag here.
-        try:
-            from astra.helpers import load_yaml  # local import; kept private
-
-            spec = load_yaml(project_path / "astra.yaml")
-            project_name = (spec.get("name") or project_path.name).lower().replace(" ", "-")
-        except Exception:
-            project_name = project_path.name.lower().replace(" ", "-")
-        tag = compute_image_tag(project_name, candidate, project_path)
-        return f".lightcone/images/{tag}.sif"
-    # Bare registry image name → docker pull.
-    return f"docker://{spec_str}"
 
 
 def _output_dir_pattern(tree_out: TreeOutput) -> str:
@@ -224,22 +170,10 @@ def _render_snakefile(
 
     Each rule descriptor has: ``name`` (Snakemake-safe), ``key`` (cfg
     lookup), ``output_dir`` (wildcard pattern), ``inputs`` (dict of
-    declared input id → wildcard path; only for sibling outputs, NOT
-    external file inputs).
+    declared input id → wildcard path, only for sibling outputs).
 
-    Each rule body is a ``shell:`` block:
-
-    ::
-
-        set -euo pipefail
-        <recipe>
-        python3 .lightcone/_lc_finalize.py <key> <universe> <output>
-
-    The finalizer is invoked after the recipe in the same shell. The
-    manifest's ``os.replace`` is the atomic commit point: either the
-    rule produced both data and manifest, or it failed and Snakemake
-    will rerun. ``set -euo pipefail`` ensures a recipe failure stops
-    before the finalizer runs.
+    Rule body is a ``run:`` block that calls ``shell()`` on the
+    pre-wrapped command and then ``write_manifest()`` host-side.
     """
     universes_repr = repr(universes)
     rule_all_inputs = []
@@ -252,6 +186,14 @@ def _render_snakefile(
 
     lines: list[str] = []
     lines.append('"""Auto-generated from astra.yaml — do not edit by hand."""')
+    lines.append("import json")
+    lines.append("from pathlib import Path")
+    lines.append("from lightcone.engine.manifest import write_manifest")
+    lines.append("")
+    lines.append("PROJECT = Path(workflow.basedir).parent")
+    lines.append(
+        'CFG = json.loads((PROJECT / ".lightcone" / "snakefile-config.json").read_text())'
+    )
     lines.append(f"UNIVERSES = {universes_repr}")
     lines.append("")
     lines.append("rule all:")
@@ -268,33 +210,32 @@ def _render_snakefile(
         lines.append("    output:")
         lines.append(f'        data=directory("{r["output_dir"]}"),')
         lines.append(f'        manifest="{r["output_dir"]}/.lightcone-manifest.json",')
-        if r.get("container_uri"):
-            # Snakemake's container directive — when --sdm apptainer is set,
-            # the entire shell: block (recipe + finalizer) runs in this image.
-            lines.append(f'    container: "{r["container_uri"]}"')
-        # The recipe is inlined verbatim at column 0 so Snakemake's
-        # standard substitution (``{output[0]}``, ``{input.X}``,
-        # ``{wildcards.universe}``) works unchanged AND so multi-line
-        # Python in ``python -c`` keeps its required indentation. The
-        # finalizer call sits at the bottom of the same shell block —
-        # its ``os.replace`` is the atomic commit point.
-        recipe_text = r["recipe"].rstrip("\n")
-        lines.append("    shell:")
-        lines.append('        r"""')
-        lines.append("set -euo pipefail")
+        lines.append("    params:")
+        lines.append(f'        cfg=lambda wc: CFG["{r["key"]}"][wc.universe],')
+        lines.append("    run:")
         # User-facing progress marker — printed to stderr at the start of
-        # each rule execution. Picked up by `lc run` so the user sees what
-        # is being materialized without any snakemake-isms leaking through.
+        # each rule. Picked up by ``lc run`` so the user sees the rule key
+        # and universe rather than snakemake-isms.
         lines.append(
-            f'printf "\\033[2m▶\\033[0m %s \\033[2m[%s]\\033[0m\\n" '
-            f'"{r["key"]}" "{{wildcards.universe}}" >&2'
+            f'        shell(\'printf "\\033[2m▶\\033[0m {r["key"]} '
+            f'\\033[2m[%s]\\033[0m\\n" "{{wildcards.universe}}" >&2\')'
         )
-        lines.append(recipe_text)
-        lines.append(
-            f"python3 .lightcone/{FINALIZER_NAME} "
-            f"{r['key']} {{wildcards.universe}} {{output.data}}"
-        )
-        lines.append('"""')
+        lines.append('        shell(params.cfg["shell_command"])')
+        if r["inputs"]:
+            inp_pairs = ", ".join(
+                f'"{k}": Path(input.{k})' for k in r["inputs"]
+            )
+            lines.append("        write_manifest(")
+            lines.append("            output_dir=Path(output.data),")
+            lines.append(f"            inputs={{{inp_pairs}}},")
+            lines.append("            cfg=params.cfg,")
+            lines.append("        )")
+        else:
+            lines.append("        write_manifest(")
+            lines.append("            output_dir=Path(output.data),")
+            lines.append("            inputs={},")
+            lines.append("            cfg=params.cfg,")
+            lines.append("        )")
         lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -304,19 +245,26 @@ def generate(
     project_path: Path,
     *,
     universes: list[str],
-) -> tuple[Path, Path, bool]:
+    runtime: str = "none",
+) -> tuple[Path, Path]:
     """Write ``.lightcone/Snakefile`` and ``.lightcone/snakefile-config.json``.
 
-    Returns ``(snakefile_path, config_path, uses_containers)`` where
-    ``uses_containers`` is ``True`` if any rule emits a ``container:``
-    directive — the caller uses this to decide whether to pass
-    ``--sdm apptainer`` to ``snakemake``.
+    Args:
+        project_path: Project root containing ``astra.yaml``.
+        universes: Universe ids to expand rules over.
+        runtime: Container runtime to wrap recipes with. One of
+            ``docker | podman | podman-hpc | none``. ``none`` runs
+            recipes on the host without isolation. Resolution is done
+            here once, not per-rule, so all rules use a consistent
+            runtime. See :func:`lightcone.engine.container.load_runtime`.
+
+    Returns ``(snakefile_path, config_path)``.
     """
     project_path = Path(project_path).resolve()
     spec = resolve_analysis_tree(load_yaml(project_path / "astra.yaml"), project_path)
+    project_name = (spec.get("name") or project_path.name).lower().replace(" ", "-")
 
     tree_outputs = collect_tree_outputs(spec)
-    # Index of cfg-key -> wildcard output dir (used to wire up rule inputs)
     output_dirs: dict[str, str] = {}
     for to in tree_outputs:
         if to.output_def.get("recipe") is None:
@@ -338,8 +286,8 @@ def generate(
         rule_name = _rule_name(to)
         out_dir_pattern = _output_dir_pattern(to)
         recipe_inputs = recipe.get("inputs") or []
+        recipe_command = recipe.get("command", "")
 
-        # Resolve sibling-output input wildcards.
         rule_inputs: dict[str, str] = {}
         for inp_id in recipe_inputs:
             up = _input_path_for(to, inp_id, spec, output_dirs)
@@ -348,11 +296,14 @@ def generate(
                 key = inp_id.replace(".", "__")
                 rule_inputs[key] = up
 
-        # Resolve container: raw spec_str feeds code_version (so an edit to
-        # astra.yaml changes the hash); container_uri is what we hand to
-        # Snakemake's container: directive.
+        # Container resolution: raw spec_str feeds code_version (so an
+        # edit to astra.yaml changes the hash); image_tag is what the
+        # runtime invokes. Both are computed here so the Snakefile body
+        # itself stays runtime-agnostic.
         container_image = _resolve_container_for(to, spec)
-        container_uri = _resolve_container_uri(container_image, project_path)
+        image_tag = resolve_image_for_run(
+            container_image, project_path=project_path, project_name=project_name
+        )
 
         rules.append(
             {
@@ -360,22 +311,19 @@ def generate(
                 "key": rule_key,
                 "output_dir": out_dir_pattern,
                 "inputs": rule_inputs,
-                "container_uri": container_uri,
-                "recipe": recipe.get("command", ""),
             }
         )
 
-        # Per-universe cfg blob — read by the finalizer at runtime to
-        # construct the manifest. Includes the resolved input directory
-        # paths so the finalizer can chain to upstream manifests without
-        # needing to know the project's directory layout.
         cfg.setdefault(rule_key, {})
         for u in universes:
             decisions = _decisions_for_output(to, u, project_path, spec)
             cv = code_version(
-                recipe=recipe.get("command", ""),
+                recipe=recipe_command,
                 container_image=container_image,
                 decisions=decisions,
+            )
+            shell_command = wrap_recipe(
+                recipe_command, image=image_tag, runtime=runtime
             )
             resolved_inputs = {
                 k: v.replace("{universe}", u) for k, v in rule_inputs.items()
@@ -383,9 +331,9 @@ def generate(
             cfg[rule_key][u] = {
                 "output_id": to.output_id,
                 "universe_id": u,
-                "recipe": recipe.get("command", ""),
+                "recipe": recipe_command,
+                "shell_command": shell_command,
                 "container_image": container_image,
-                "container_uri": container_uri,
                 "decisions": decisions,
                 "code_version": cv,
                 "git_sha": git_sha,
@@ -397,26 +345,16 @@ def generate(
     lightcone_dir.mkdir(parents=True, exist_ok=True)
     snakefile_path = lightcone_dir / SNAKEFILE_NAME
     config_path = lightcone_dir / CONFIG_NAME
-    finalizer_path = lightcone_dir / FINALIZER_NAME
 
     snakefile_path.write_text(_render_snakefile(rules, universes))
     config_path.write_text(json.dumps(cfg, indent=2, sort_keys=True))
-    # Copy the canonical finalizer into the project so the rule's shell
-    # can invoke it as ``python3 .lightcone/_lc_finalize.py``. Overwritten
-    # every generation — the wheel is the only place this script
-    # meaningfully lives.
-    from lightcone.engine import _lc_finalize as _finalizer_module
 
-    finalizer_path.write_text(Path(_finalizer_module.__file__).read_text())
-
-    uses_containers = any(r.get("container_uri") for r in rules)
-    return snakefile_path, config_path, uses_containers
+    return snakefile_path, config_path
 
 
 def discover_universes(project_path: Path) -> list[str]:
     """Discover universe ids from ``universes/*.yaml``. If none exist,
-    returns ``["default"]`` as a sentinel that lets ``lc run`` proceed
-    on a project that hasn't created any explicit universes yet.
+    returns ``["default"]``.
     """
     universes_dir = project_path / "universes"
     if not universes_dir.exists():
@@ -425,5 +363,4 @@ def discover_universes(project_path: Path) -> list[str]:
     return ids or ["default"]
 
 
-# Re-exported for the CLI.
 __all__ = ["generate", "discover_universes", "LIGHTCONE_DIR"]

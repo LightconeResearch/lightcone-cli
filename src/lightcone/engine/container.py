@@ -1,23 +1,49 @@
-"""Container image building from Containerfiles.
+"""Container runtime layer.
 
-Resolves container specs in astra.yaml — a single string that is either
-a pre-built image name (e.g., ``python:3.9``) or a path to a Containerfile
-(e.g., ``Containerfile``, ``containers/Dockerfile``).  The runtime figures
-out whether to pull or build by checking if the path exists as a file.
+We commit to **Dockerfile syntax** for ``Containerfile`` and **own** the
+container invocation end-to-end — Snakemake's built-in ``container:``
+directive and ``--sdm apptainer`` pipeline are deliberately not used. A
+single config knob picks the OCI runtime; building and running both go
+through it.
+
+Two surfaces:
+
+* :func:`compute_image_tag` and :func:`build_image` cover the **build**
+  phase — ``lc build`` invokes them to produce ``lc-<project>-<hash>``
+  in the runtime's local image store.
+
+* :func:`wrap_recipe` covers the **run** phase — the Snakefile generator
+  calls it to convert a raw recipe into a shell command that executes
+  inside the configured container runtime.
+
+Supported runtimes:
+    * ``docker`` / ``podman`` — local desktop or build host
+    * ``podman-hpc`` — NERSC-style login nodes; ``build`` migrates the
+      image so compute-node apptainer can read it. ``run`` still uses
+      ``podman-hpc`` directly.
+    * ``none`` — no container; recipe runs on the host. Useful for
+      development and for projects that don't need isolation.
 """
-
 from __future__ import annotations
 
 import hashlib
 import logging
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
-# Files whose contents contribute to the image tag hash.
+#: Runtimes we know how to build and run with. Order is detection priority:
+#: docker first because it's the laptop default; podman as the rootless
+#: equivalent; podman-hpc only relevant on login nodes.
+RUNTIMES: tuple[str, ...] = ("docker", "podman", "podman-hpc")
+
+#: Files whose contents contribute to the image tag hash.
 DEPENDENCY_FILES = (
     "requirements.txt",
     "requirements-dev.txt",
@@ -28,21 +54,6 @@ DEPENDENCY_FILES = (
     "poetry.lock",
     "Pipfile.lock",
 )
-
-
-def detect_container_runtime() -> str | None:
-    """Detect which container runtime is available locally.
-
-    Order: Docker → Podman → Apptainer → Singularity. Returns the binary
-    name or ``None`` if none is found.
-
-    This does **not** check for ``podman-hpc``, which is only relevant
-    for SLURM targets and handled separately.
-    """
-    for runtime in ("docker", "podman", "apptainer", "singularity"):
-        if shutil.which(runtime) is not None:
-            return runtime
-    return None
 
 
 class ContainerBuildError(Exception):
@@ -60,14 +71,85 @@ class ContainerBuildResult:
     stderr: str = ""
 
 
+@dataclass
+class ContainerStatus:
+    """Status information for a container spec."""
+
+    type: str  # "none", "prebuilt", "build"
+    image: str | None = None
+    exists: bool | None = None
+    containerfile: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Runtime detection / config
+# ---------------------------------------------------------------------------
+
+
+def detect_runtime() -> str | None:
+    """Return the first available runtime in :data:`RUNTIMES`, or ``None``."""
+    for runtime in RUNTIMES:
+        if shutil.which(runtime) is not None:
+            return runtime
+    return None
+
+
+def _global_config_path() -> Path:
+    return Path.home() / ".lightcone" / "config.yaml"
+
+
+def load_runtime(*, project_path: Path | None = None) -> str:
+    """Resolve the container runtime to use.
+
+    Reads ``container.runtime`` from ``~/.lightcone/config.yaml`` (the
+    project_path is accepted for future per-project overrides but is not
+    consulted today). Values:
+
+    * ``auto`` (default) — first available runtime in :data:`RUNTIMES`,
+      else ``"none"``.
+    * ``docker | podman | podman-hpc`` — explicit.
+    * ``none`` — no container; recipes run on the host.
+
+    Raises ``ContainerBuildError`` if an explicit runtime is configured
+    but its binary is missing on PATH.
+    """
+    cfg_path = _global_config_path()
+    runtime = "auto"
+    if cfg_path.is_file():
+        try:
+            data = yaml.safe_load(cfg_path.read_text()) or {}
+            runtime = (data.get("container") or {}).get("runtime") or "auto"
+        except yaml.YAMLError:
+            logger.warning("Could not parse %s; using runtime: auto", cfg_path)
+            runtime = "auto"
+
+    if runtime == "auto":
+        return detect_runtime() or "none"
+    if runtime == "none":
+        return "none"
+    if runtime not in RUNTIMES:
+        raise ContainerBuildError(
+            f"Unknown container.runtime {runtime!r} in {cfg_path}. "
+            f"Expected one of: auto, none, {', '.join(RUNTIMES)}."
+        )
+    if shutil.which(runtime) is None:
+        raise ContainerBuildError(
+            f"Configured container.runtime {runtime!r} is not on PATH. "
+            f"Install {runtime} or set container.runtime to a different value "
+            f"in {cfg_path}."
+        )
+    return runtime
+
+
+# ---------------------------------------------------------------------------
+# Image tag computation
+# ---------------------------------------------------------------------------
+
+
 def find_dependency_files(project_path: Path) -> list[Path]:
     """Return sorted list of dependency files found in *project_path*."""
-    found: list[Path] = []
-    for name in DEPENDENCY_FILES:
-        p = project_path / name
-        if p.is_file():
-            found.append(p)
-    return sorted(found)
+    found = [project_path / name for name in DEPENDENCY_FILES]
+    return sorted(p for p in found if p.is_file())
 
 
 def hash_file_contents(files: list[Path]) -> str:
@@ -90,16 +172,39 @@ def compute_image_tag(
     project root.
     """
     digest = hash_file_contents([containerfile, *find_dependency_files(project_path)])[:12]
-    # Sanitise project name for use as a Docker tag component.
     safe_name = project_name.lower().replace(" ", "-")
     return f"lc-{safe_name}-{digest}"
 
 
-def image_exists_locally(tag: str, runtime: str = "docker") -> bool:
-    """Check whether *tag* exists in the local container image store."""
+def is_containerfile(spec: str, project_path: Path) -> bool:
+    """Return ``True`` if *spec* refers to an existing file (Containerfile)."""
+    return (project_path / spec).is_file()
+
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+
+
+def image_exists_locally(tag: str, *, runtime: str) -> bool:
+    """Check whether *tag* exists in the runtime's local image store."""
+    if runtime == "podman-hpc":
+        return image_exists_podman_hpc(tag)
     try:
         result = subprocess.run(
             [runtime, "image", "inspect", tag],
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def image_exists_podman_hpc(tag: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["podman-hpc", "image", "exists", tag],
             capture_output=True,
             check=False,
         )
@@ -112,23 +217,23 @@ def build_image(
     tag: str,
     containerfile: Path,
     context: Path,
+    *,
+    runtime: str,
     build_args: dict[str, str] | None = None,
-    runtime: str = "docker",
 ) -> ContainerBuildResult:
-    """Build a container image with the specified runtime (Docker or Podman).
+    """Build a container image with the given *runtime*.
 
-    Note: *build_args* is a low-level parameter available when calling this
-    function directly.  The high-level :func:`resolve_container_spec` API does
-    not expose build args — pass ``--build-arg`` values by pre-building the
-    image and referencing it by name in ``astra.yaml``.
+    For ``podman-hpc``, the image is automatically migrated after build
+    so compute nodes can access it.
 
     Raises :class:`ContainerBuildError` on failure.
     """
-    cmd: list[str] = [
-        runtime, "build",
-        "-t", tag,
-        "-f", str(containerfile),
-    ]
+    if runtime not in RUNTIMES:
+        raise ContainerBuildError(
+            f"Unsupported build runtime {runtime!r}; expected one of {RUNTIMES}."
+        )
+
+    cmd: list[str] = [runtime, "build", "-t", tag, "-f", str(containerfile)]
     for key, value in (build_args or {}).items():
         cmd += ["--build-arg", f"{key}={value}"]
     cmd.append(str(context))
@@ -146,124 +251,8 @@ def build_image(
             f"{runtime} build failed (exit code {proc.returncode}):\n{proc.stderr}"
         )
 
-    return ContainerBuildResult(
-        tag=tag,
-        already_existed=False,
-        exit_code=proc.returncode,
-        stdout=proc.stdout,
-        stderr=proc.stderr,
-    )
-
-
-def is_containerfile(spec: str, project_path: Path) -> bool:
-    """Return ``True`` if *spec* refers to an existing file (Containerfile)."""
-    return (project_path / spec).is_file()
-
-
-def resolve_container_spec(
-    spec: str | None,
-    project_path: Path,
-    project_name: str,
-    *,
-    force: bool = False,
-    dry_run: bool = False,
-    runtime: str = "docker",
-) -> str | None:
-    """Resolve a container spec to an image tag string.
-
-    * ``None`` -> ``None``
-    * ``str`` pointing to an existing file -> build from Containerfile
-    * ``str`` otherwise -> returned as-is (pre-built image name)
-
-    If *dry_run* is ``True``, returns the tag that *would* be used without
-    actually building.
-
-    .. warning::
-        Any string that does not resolve to an existing file is treated as a
-        pre-built image name.  A typo such as ``container: Containerfle``
-        will *not* raise an error here — the failure surfaces later at
-        execution time with a cryptic "image not found" message.  Double-check
-        Containerfile paths with ``lc build --dry-run`` to catch mistakes
-        early.
-    """
-    if spec is None:
-        return None
-
-    if not is_containerfile(spec, project_path):
-        # Pre-built image name — return as-is.
-        return spec
-
-    containerfile = project_path / spec
-    tag = compute_image_tag(project_name, containerfile, project_path)
-
-    if dry_run:
-        return tag
-
-    if not force and image_exists_locally(tag, runtime=runtime):
-        logger.info("Image %s already exists, skipping build.", tag)
-        return tag
-
-    logger.info("Building image %s from %s ...", tag, containerfile)
-    build_image(tag, containerfile, project_path, runtime=runtime)
-    return tag
-
-
-@dataclass
-class ContainerStatus:
-    """Status information for a container spec."""
-
-    type: str  # "none", "prebuilt", "build"
-    image: str | None = None
-    exists: bool | None = None
-    containerfile: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# HPC container runtimes (podman-hpc)
-# ---------------------------------------------------------------------------
-
-
-def build_image_podman_hpc(
-    tag: str,
-    containerfile: Path,
-    context: Path,
-    build_args: dict[str, str] | None = None,
-) -> ContainerBuildResult:
-    """Build a container image with ``podman-hpc build``.
-
-    Runs on NERSC login nodes.  After building, the image is automatically
-    migrated so it is available on compute nodes.
-
-    Note: *build_args* is a low-level parameter available when calling this
-    function directly.  The high-level :func:`resolve_container_for_slurm` API
-    does not expose build args — see :func:`build_image` for details.
-
-    Raises :class:`ContainerBuildError` on failure.
-    """
-    cmd: list[str] = [
-        "podman-hpc", "build",
-        "-t", tag,
-        "-f", str(containerfile),
-    ]
-    for key, value in (build_args or {}).items():
-        cmd += ["--build-arg", f"{key}={value}"]
-    cmd.append(str(context))
-
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except FileNotFoundError:
-        raise ContainerBuildError(
-            "podman-hpc is not installed or not on PATH. "
-            "Are you running on a NERSC login node?"
-        )
-
-    if proc.returncode != 0:
-        raise ContainerBuildError(
-            f"podman-hpc build failed (exit code {proc.returncode}):\n{proc.stderr}"
-        )
-
-    # Migrate the image so compute nodes can access it.
-    _podman_hpc_migrate(tag)
+    if runtime == "podman-hpc":
+        _podman_hpc_migrate(tag)
 
     return ContainerBuildResult(
         tag=tag,
@@ -292,65 +281,85 @@ def _podman_hpc_migrate(tag: str) -> None:
     logger.info("podman-hpc migrate %s succeeded.", tag)
 
 
-def image_exists_podman_hpc(tag: str) -> bool:
-    """Check whether *tag* exists in the local podman-hpc image store."""
-    try:
-        result = subprocess.run(
-            ["podman-hpc", "image", "exists", tag],
-            capture_output=True,
-            check=False,
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
+# ---------------------------------------------------------------------------
+# Run-time recipe wrap
+# ---------------------------------------------------------------------------
 
 
-def resolve_container_for_slurm(
+def resolve_image_for_run(
     spec: str | None,
+    *,
     project_path: Path,
     project_name: str,
-    container_runtime: str,
-    *,
-    force: bool = False,
 ) -> str | None:
-    """Resolve a container spec for SLURM execution, building if needed.
+    """Translate an astra.yaml ``container:`` value into the image tag
+    that the runtime will execute.
 
-    Containerfile paths (strings pointing to existing files) are built with
-    ``podman-hpc build`` and migrated automatically.  Pre-built image names
-    are migrated if not already available.
-
-    Returns the image tag string to use, or ``None`` if no container.
+    * ``None`` / empty → ``None`` (no container).
+    * Path to a Containerfile in the project → the content-addressed tag
+      that ``lc build`` would have produced (``lc-<name>-<hash>``).
+    * Anything else (registry image, e.g. ``python:3.12-slim``, or a
+      pre-namespaced ``ghcr.io/foo/bar:tag``) → returned as-is for the
+      runtime to pull.
     """
-    if spec is None:
+    if not spec:
         return None
+    if is_containerfile(spec, project_path):
+        return compute_image_tag(project_name, project_path / spec, project_path)
+    return spec
 
-    if not is_containerfile(spec, project_path):
-        # Pre-built image reference
-        if not force and image_exists_podman_hpc(spec):
-            logger.info("Image %s already available in podman-hpc, skipping migrate.", spec)
-        else:
-            logger.info("Migrating %s for podman-hpc compute nodes...", spec)
-            _podman_hpc_migrate(spec)
-        return spec
 
-    # Containerfile path — build from source.
-    containerfile = project_path / spec
-    tag = compute_image_tag(project_name, containerfile, project_path)
+def wrap_recipe(
+    recipe: str,
+    *,
+    image: str | None,
+    runtime: str,
+) -> str:
+    """Wrap *recipe* so it executes inside *image* under *runtime*.
 
-    if not force and image_exists_podman_hpc(tag):
-        logger.info("Image %s already exists in podman-hpc, skipping build.", tag)
-        return tag
+    Returns a shell-command string suitable for Snakemake's ``shell()``.
+    Snakemake's ``{output[0]}`` / ``{input.X}`` / ``{wildcards.universe}``
+    placeholders inside *recipe* are preserved — they substitute through
+    Python's ``str.format`` at execution time, after wrapping.
 
-    logger.info("Building image %s with podman-hpc from %s ...", tag, containerfile)
-    build_image_podman_hpc(tag, containerfile, project_path)
-    return tag
+    No-op cases:
+        * *image* is ``None`` → recipe returned unchanged
+        * *runtime* is ``"none"`` → recipe returned unchanged
+
+    The recipe is shell-quoted with :func:`shlex.quote` and passed as the
+    argument to ``bash -c`` inside the container, which keeps single
+    quotes, dollar signs, and other shell metacharacters intact across
+    the host bash → runtime CLI → container bash boundaries.
+    """
+    if image is None or runtime == "none":
+        return recipe
+    if runtime not in RUNTIMES:
+        raise ContainerBuildError(
+            f"Unsupported run runtime {runtime!r}; expected one of {RUNTIMES} or 'none'."
+        )
+    inner = shlex.quote(recipe)
+    # Bind-mount and chdir to $PWD so recipes that write to relative paths
+    # (e.g. ``> {output[0]}/data.txt``) land in the project tree the same
+    # way they would on the host. Snakemake invokes us with cwd=project,
+    # so $PWD is the project root.
+    return (
+        f'{runtime} run --rm '
+        f'-v "$PWD":"$PWD" -w "$PWD" '
+        f'{image} bash -c {inner}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Status
+# ---------------------------------------------------------------------------
 
 
 def get_container_status(
     spec: str | None,
     project_path: Path,
     project_name: str,
-    runtime: str = "docker",
+    *,
+    runtime: str,
 ) -> ContainerStatus:
     """Return status information for a container spec without building."""
     if spec is None:
@@ -361,7 +370,7 @@ def get_container_status(
 
     containerfile = project_path / spec
     tag = compute_image_tag(project_name, containerfile, project_path)
-    exists = image_exists_locally(tag, runtime=runtime)
+    exists = image_exists_locally(tag, runtime=runtime) if runtime != "none" else None
     return ContainerStatus(
         type="build",
         image=tag,

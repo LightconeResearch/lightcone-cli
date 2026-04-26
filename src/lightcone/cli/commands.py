@@ -261,12 +261,14 @@ def run(
     verbose: bool,
 ) -> None:
     """Materialize outputs declared in astra.yaml."""
+    from lightcone.engine.container import load_runtime
     from lightcone.engine.snakefile import discover_universes, generate
 
     project = _project_root()
     universes = [universe] if universe else discover_universes(project)
 
-    snakefile_path, _, uses_containers = generate(project, universes=universes)
+    runtime = load_runtime(project_path=project)
+    snakefile_path, _ = generate(project, universes=universes, runtime=runtime)
 
     targets: list[str] = []
     if outputs:
@@ -282,12 +284,8 @@ def run(
         "--cores", str(cores or os.cpu_count() or 1),
         "--rerun-triggers", *rerun_triggers.split(","),
     ]
-    if uses_containers:
-        # Tell Snakemake to honor the per-rule ``container:`` directives.
-        # Without this flag, those directives are silently ignored — which
-        # means recipes run on the host while we record the manifest as if
-        # they ran in a container.
-        cmd.extend(["--sdm", "apptainer"])
+    # Container invocation is wrapped into the recipe at generation time;
+    # we don't use Snakemake's ``container:`` directive or ``--sdm`` at all.
     if dry_run:
         cmd.append("-n")
     if force:
@@ -330,9 +328,6 @@ _EXECUTOR_NOISE_PREFIXES = (
     "Workflow defines that rule",
     "Shared connection",
     "Activating conda",
-    "Activating singularity",
-    "Singularity image",
-    "Pulling singularity image",
     "Assuming unrestricted shared filesystem",
     "Shutting down,",
     "Exiting because a job execution failed",
@@ -506,42 +501,48 @@ def verify(universe: str | None) -> None:
 @click.option(
     "--runtime",
     default=None,
-    help="docker | podman | apptainer | singularity (autodetected if omitted)",
+    help="docker | podman | podman-hpc (overrides ~/.lightcone/config.yaml)",
 )
 def build(force: bool, runtime: str | None) -> None:
     """Build container images declared in astra.yaml.
 
-    For docker/podman, builds an OCI image tagged ``lc-<project>-<hash>``.
-    For apptainer/singularity, builds a SIF at
-    ``.lightcone/images/lc-<project>-<hash>.sif``.
+    Containerfile syntax is Dockerfile syntax — we use ``docker``,
+    ``podman``, or ``podman-hpc`` directly. Each Containerfile builds to
+    an OCI image tagged ``lc-<project>-<hash>`` in the runtime's local
+    image store. Pre-built registry images (``python:3.12-slim``,
+    ``ghcr.io/foo/bar:tag``) are skipped — the runtime pulls them at
+    ``lc run`` time.
     """
     from astra.helpers import load_yaml, resolve_analysis_tree
 
     from lightcone.engine.container import (
+        ContainerBuildError,
+        build_image,
         compute_image_tag,
-        detect_container_runtime,
         image_exists_locally,
         is_containerfile,
+        load_runtime,
     )
     from lightcone.engine.tree import collect_tree_outputs
 
     project = _project_root()
     spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
-    runtime = runtime or detect_container_runtime() or ""
 
-    if not runtime:
+    try:
+        resolved_runtime = runtime or load_runtime(project_path=project)
+    except ContainerBuildError as e:
+        raise click.ClickException(str(e))
+
+    if resolved_runtime == "none":
         console.print(
-            "[yellow]No container runtime found "
-            "(checked docker, podman, apptainer, singularity). "
-            "Skipping build.[/yellow]"
+            "[yellow]No container runtime available "
+            "(checked docker, podman, podman-hpc). "
+            "Install one to build images, or set [cyan]container.runtime[/cyan] "
+            "in [cyan]~/.lightcone/config.yaml[/cyan].[/yellow]"
         )
         return
 
     project_name = (spec.get("name") or project.name).lower().replace(" ", "-")
-    is_sif_runtime = runtime in ("apptainer", "singularity")
-    sif_dir = project / ".lightcone" / "images"
-    if is_sif_runtime:
-        sif_dir.mkdir(parents=True, exist_ok=True)
 
     seen: set[str] = set()
     for to in collect_tree_outputs(spec):
@@ -560,28 +561,18 @@ def build(force: bool, runtime: str | None) -> None:
             )
             continue
 
-        tag = compute_image_tag(project_name, project / spec_str, project)
-        if is_sif_runtime:
-            target = sif_dir / f"{tag}.sif"
-            if target.exists() and not force:
-                console.print(f"[dim]Cached[/dim] {spec_str} → {target}")
-                continue
-            console.print(f"[cyan]Building[/cyan] {spec_str} → {target}")
-            cmd = [runtime, "build"]
-            if force:
-                cmd.append("--force")
-            cmd.extend([str(target), str(project / spec_str)])
-        else:
-            if image_exists_locally(tag, runtime=runtime) and not force:
-                console.print(f"[dim]Cached[/dim] {spec_str} → {tag}")
-                continue
-            console.print(f"[cyan]Building[/cyan] {spec_str} → {tag}")
-            cmd = [
-                runtime, "build", "-t", tag, "-f", str(project / spec_str), str(project)
-            ]
-        proc = subprocess.run(cmd)
-        if proc.returncode != 0:
-            raise click.ClickException(f"Build failed: {' '.join(cmd)}")
+        containerfile = project / spec_str
+        tag = compute_image_tag(project_name, containerfile, project)
+        if image_exists_locally(tag, runtime=resolved_runtime) and not force:
+            console.print(f"[dim]Cached[/dim] {spec_str} → {tag}")
+            continue
+        console.print(
+            f"[cyan]Building[/cyan] {spec_str} → {tag} [dim](via {resolved_runtime})[/dim]"
+        )
+        try:
+            build_image(tag, containerfile, project, runtime=resolved_runtime)
+        except ContainerBuildError as e:
+            raise click.ClickException(str(e))
     console.print("[green]Done.[/green]")
 
 
@@ -598,5 +589,16 @@ def setup() -> None:
     if config.exists():
         console.print(f"Config already exists at {config}")
         return
-    config.write_text(yaml.safe_dump({"default_target": "local"}))
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "default_target": "local",
+                # Container runtime used by `lc build` and embedded in every
+                # recipe by `lc run`. ``auto`` picks the first of
+                # docker/podman/podman-hpc found on PATH; set explicitly to
+                # pin. ``none`` disables containerization entirely.
+                "container": {"runtime": "auto"},
+            }
+        )
+    )
     console.print(f"[green]Created[/green] {config}")
