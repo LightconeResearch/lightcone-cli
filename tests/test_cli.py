@@ -324,10 +324,10 @@ class TestRunDispatch:
         )
         return project
 
-    def test_run_local_uses_dask_local_mode(
+    def test_run_without_cluster_uses_ephemeral_local_mode(
         self, runner: CliRunner, tmp_path: Path, monkeypatch,
     ):
-        """Without a configured cluster, lc run dispatches via cluster: {local: {}}."""
+        """Without a project cluster, lc run spawns ephemeral PG + LocalCluster."""
         project = self._make_project(tmp_path, runner)
         monkeypatch.chdir(project)
 
@@ -341,13 +341,20 @@ class TestRunDispatch:
                 success = True
             return _R()
 
-        with patch("dagster.execute_job", fake_execute_job):
-            result = runner.invoke(main, ["run", "--local"])
+        import dagster as dg
+        with patch("dagster.execute_job", fake_execute_job), patch(
+            "lightcone.cli.commands._build_dagster_instance",
+            lambda project_path, postgres_url: dg.DagsterInstance.ephemeral(),
+        ):
+            result = runner.invoke(main, ["run"])
 
         assert result.exit_code == 0, result.output
+        # Ephemeral path: dagster-dask is told to spin up a LocalCluster.
         assert captured["run_config"] == {
             "execution": {"config": {"cluster": {"local": {}}}}
         }
+        # Surface the educational hint so users know there's a faster path.
+        assert "Ephemeral cluster" in result.output
 
 
 class TestRemovedCommands:

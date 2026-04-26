@@ -21,6 +21,7 @@ dependencies = [
     "distributed>=2024.0",
     "langfuse>=2.0",
     "pixeltable-pgserver>=0.5.1",
+    "dagster-postgres>=0.29.2",
 ]
 
 [dependency-groups]

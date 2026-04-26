@@ -1,15 +1,21 @@
 """Cluster abstraction — manage long-lived Dask clusters across substrates.
 
-A *cluster* is a persistent rendezvous to a Dask scheduler. The substrate
-that provides the scheduler (today: SLURM) is a private implementation
-detail dispatched from the ``type:`` field in the cluster YAML.
+A *cluster* is a persistent rendezvous point for the project: a Dask
+scheduler + workers, a Postgres daemon backing Dagster's storage, and a
+state file that records "this is the live cluster for this project".
 
-Adding a new substrate is one new module + one branch per dispatching
-function below.
+Each project has at most one active cluster at a time; the state file
+lives at ``<project>/.lightcone/cluster.state.json``.  The substrate
+(SLURM-sbatch / SLURM-attached / local LocalCluster) is dispatched from
+the recorded :class:`~lightcone.engine.clusters._common.ClusterMode`.
+
+User-facing entry points (``lc cluster start``, ``stop``, ``status``)
+all take a *project_root* and operate on that one project's cluster.
 """
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +33,11 @@ from lightcone.engine.clusters._common import (
     get_clusters_dir,
     get_envs_dir,
     list_clusters,
-    list_state_records,
     load_cluster_config,
     parse_walltime_seconds,
-    read_record,
+    project_state_path,
+    read_project_state,
     read_scheduler_address,
-    resolve_cluster,
     save_cluster_config,
     spec_from_config,
     walltime_to_slurm,
@@ -55,203 +60,162 @@ __all__ = [
     "get_clusters_dir",
     "get_envs_dir",
     "list_clusters",
-    "list_state_records",
     "load_cluster_config",
     "save_cluster_config",
-    "resolve_cluster",
     "parse_walltime_seconds",
-    "read_record",
+    "project_state_path",
+    "read_project_state",
     "read_scheduler_address",
     "spec_from_config",
     "walltime_to_slurm",
     "start_cluster",
-    "attach_cluster",
     "stop_cluster",
     "cluster_info",
-    "find_running_cluster",
-    "find_attached_cluster_for_job",
-    "list_attached_clusters",
     "wait_for_scheduler",
     "tail_cluster_logs",
     "refresh_cluster_cache",
+    "is_login_node",
 ]
 
 
-# ---------------------------------------------------------------------------
-# Type-dispatched lifecycle
-# ---------------------------------------------------------------------------
+def is_login_node() -> bool:
+    """Return ``True`` on a recognised HPC login node (no SLURM allocation).
 
-
-def _resolve_type(name: str) -> tuple[ClusterType, dict[str, Any]]:
-    """Load the cluster YAML and return ``(type, config)``.
-
-    Raises ``FileNotFoundError`` if the YAML is missing, ``ValueError``
-    if it lacks a ``type:`` discriminator.
+    Used by the dispatcher to refuse the ``local`` fall-through on login
+    nodes — they're shared, idle-killed, and not appropriate execution
+    environments for long-lived services.  Detection: a known site is
+    set in the environment but ``$SLURM_JOB_ID`` is not.
     """
-    config = load_cluster_config(name)
-    if config is None:
-        raise FileNotFoundError(
-            f"No cluster named '{name}'. Configured: {list_clusters() or 'none'}"
-        )
-    cluster_type = config.get("type")
-    if cluster_type is None:
-        raise ValueError(
-            f"Cluster '{name}': missing required field 'type' (set `type: slurm`)"
-        )
-    return cluster_type, config
-
-
-def _record_type(name: str) -> ClusterType | None:
-    """Return the substrate type from a state file, or ``None`` if absent."""
-    record = read_record(name)
-    return record.type if record is not None else None
+    if os.environ.get("SLURM_JOB_ID"):
+        return False
+    return bool(os.environ.get("NERSC_HOST") or os.environ.get("LMOD_SYSTEM_NAME"))
 
 
 def start_cluster(
-    name: str,
     *,
+    target: str | None = None,
     project_root: Path | None = None,
     overrides: dict[str, Any] | None = None,
     strategy: str = "fit",
 ) -> ClusterInfo:
-    """Submit a *named, configured* cluster via its substrate.
+    """Bring up the project's cluster.
 
-    Always uses the ``cluster.yaml`` for *name* and submits a fresh job
-    (today: ``sbatch``).  Idempotent — if a recorded job for *name* is
-    already alive, returns the existing :class:`ClusterInfo` without
-    re-submitting.  For "use the SLURM allocation I'm already in", call
-    :func:`attach_cluster` instead.
+    Dispatches by context:
+
+    * ``--target X`` (a configured cluster yaml) → submit via sbatch.
+    * ``$SLURM_JOB_ID`` set → attach to the current SLURM allocation.
+    * On a recognised login node with neither of the above → refuse,
+      with a helpful pointer to ``--target`` or ``salloc``.
+    * Otherwise → run a local Dask LocalCluster + Postgres in-process.
     """
-    cluster_type, config = _resolve_type(name)
-    if cluster_type == "slurm":
+    project_root = (project_root or Path.cwd()).resolve()
+
+    if target is not None:
+        config = load_cluster_config(target)
+        if config is None:
+            raise FileNotFoundError(
+                f"No cluster target named '{target}'. "
+                f"Configured: {list_clusters() or 'none'}"
+            )
+        cluster_type = config.get("type")
+        if cluster_type != "slurm":
+            raise ValueError(f"unknown cluster type {cluster_type!r}")
         from lightcone.engine.clusters._slurm import start_slurm_cluster
         return start_slurm_cluster(
-            name, config, overrides or {},
+            target, config, overrides or {},
             project_root=project_root, strategy=strategy,
         )
-    raise ValueError(f"unknown cluster type {cluster_type!r}")
+
+    if os.environ.get("SLURM_JOB_ID"):
+        from lightcone.engine.clusters._slurm import attach_to_allocation
+        return attach_to_allocation(project_root=project_root)
+
+    if is_login_node():
+        raise RuntimeError(
+            "Refusing to start a local cluster on a login node — long-lived "
+            "services aren't appropriate there. Either:\n"
+            "  • specify a target:  lc cluster start --target <name>\n"
+            "  • or grab an allocation first:  salloc … && lc cluster start"
+        )
+
+    from lightcone.engine.clusters._local import start_local_cluster
+    return start_local_cluster(project_root)
 
 
-def attach_cluster(
-    *,
-    project_root: Path | None = None,
-) -> ClusterInfo:
-    """Spawn a Dask cluster inside the current SLURM allocation.
+def stop_cluster(*, project_root: Path | None = None) -> None:
+    """Tear down the project's active cluster (any mode).
 
-    Reads ``$SLURM_JOB_ID`` and friends from the environment.  Raises
-    :class:`RuntimeError` if not inside an allocation.  No yaml is
-    consulted; worker layout is derived from SLURM env.
+    Dispatches by the recorded mode in the state file.  No-op if no
+    cluster is active.
     """
-    from lightcone.engine.clusters._slurm import attach_to_allocation
-    return attach_to_allocation(project_root=project_root)
-
-
-def stop_cluster(name: str, *, project_root: Path | None = None) -> None:
-    """Tear down a cluster (mode-aware) and clean up its state.
-
-    For ``sbatch`` mode this ``scancel``s the job; for ``attached`` mode
-    it kills the dask scheduler/worker processes and leaves the user's
-    salloc allocation intact.  The bundled Postgres daemon (if any) is
-    shut down for both modes.  ``project_root`` is forwarded to the
-    substrate so it can locate the project-local PG data dir.
-    """
-    # Prefer the substrate recorded in the state file (covers attached
-    # clusters that have no yaml). Fall back to yaml when no state exists
-    # so that a "stop" on a never-started yaml cluster is still a no-op.
-    cluster_type = _record_type(name)
-    if cluster_type is None:
-        config = load_cluster_config(name)
-        if config is None:
-            return
-        cluster_type = config.get("type")
-    if cluster_type == "slurm":
-        from lightcone.engine.clusters._slurm import stop_slurm_cluster
-        stop_slurm_cluster(name, project_root=project_root)
+    project_root = (project_root or Path.cwd()).resolve()
+    record = read_project_state(project_root)
+    if record is None:
         return
-    raise ValueError(f"unknown cluster type {cluster_type!r}")
+    if record.mode == "local":
+        from lightcone.engine.clusters._local import stop_local_cluster
+        stop_local_cluster(project_root=project_root)
+        return
+    from lightcone.engine.clusters._slurm import stop_slurm_cluster
+    stop_slurm_cluster(project_root=project_root)
 
 
-def cluster_info(name: str) -> ClusterInfo | None:
-    """Spec + record + live substrate state for *name*, or ``None`` if absent.
-
-    Resolves attached clusters from their state file alone (no yaml
-    required); resolves yaml-backed clusters via :func:`load_cluster_config`.
-    """
-    cluster_type = _record_type(name)
-    if cluster_type is None:
-        config = load_cluster_config(name)
-        if config is None:
-            return None
-        cluster_type = config.get("type")
-    else:
-        config = load_cluster_config(name)  # may be None for attached
-    if cluster_type == "slurm":
-        from lightcone.engine.clusters._slurm import slurm_cluster_info
-        return slurm_cluster_info(name, config=config)
-    raise ValueError(f"unknown cluster type {cluster_type!r}")
-
-
-def find_running_cluster(name: str) -> ClusterInfo | None:
-    """Return the cluster if its scheduler is reachable; ``None`` otherwise."""
-    info = cluster_info(name)
-    if info is None or info.state != "RUNNING" or not info.scheduler_address:
+def cluster_info(project_root: Path | None = None) -> ClusterInfo | None:
+    """Return spec + record + live state for the project's active cluster."""
+    project_root = (project_root or Path.cwd()).resolve()
+    record = read_project_state(project_root)
+    if record is None:
         return None
-    return info
+    if record.mode == "local":
+        from lightcone.engine.clusters._local import local_cluster_info
+        return local_cluster_info(project_root)
+    from lightcone.engine.clusters._slurm import slurm_cluster_info
+    return slurm_cluster_info(project_root)
 
 
-def list_attached_clusters() -> list[ClusterRecord]:
-    """Return all currently-recorded ``mode=attached`` clusters."""
-    return [r for r in list_state_records() if r.mode == "attached"]
-
-
-def find_attached_cluster_for_job(job_id: str) -> ClusterInfo | None:
-    """Return the attached cluster matching *job_id*, or ``None``."""
-    for record in list_attached_clusters():
-        if record.job_id == job_id:
-            return cluster_info(record.name)
-    return None
-
-
-def wait_for_scheduler(name: str, timeout_s: int = 600) -> ClusterInfo:
-    """Block until the cluster is RUNNING and the Dask scheduler is reachable.
-
-    Works for both yaml-backed and attached clusters.
-    """
+def wait_for_scheduler(
+    project_root: Path | None = None, timeout_s: int = 600,
+) -> ClusterInfo:
+    """Block until the project's cluster is RUNNING and reachable."""
     import time
 
-    cluster_type = _record_type(name)
-    if cluster_type is None:
-        cluster_type, _config = _resolve_type(name)
-    if cluster_type != "slurm":
-        raise ValueError(f"unknown cluster type {cluster_type!r}")
-    from lightcone.engine.clusters._slurm import slurm_cluster_info
-
+    project_root = (project_root or Path.cwd()).resolve()
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        info = slurm_cluster_info(name)
-        if info is None or info.record is None:
-            raise RuntimeError(f"No state for cluster '{name}'")
+        info = cluster_info(project_root)
+        if info is None:
+            raise RuntimeError("No active cluster for this project.")
         if info.state in {"FAILED", "CANCELLED", "COMPLETED", "DEAD"}:
-            raise RuntimeError(f"Cluster '{name}' ended in state {info.state}")
+            raise RuntimeError(
+                f"Cluster '{info.record.name if info.record else '?'}' "
+                f"ended in state {info.state}"
+            )
         if info.state == "RUNNING" and info.scheduler_address:
             return info
-        time.sleep(5)
-    raise TimeoutError(f"Cluster '{name}' scheduler not ready after {timeout_s}s")
+        time.sleep(3)
+    raise TimeoutError(f"Cluster scheduler not ready after {timeout_s}s")
 
 
 def tail_cluster_logs(
-    name: str,
     project_root: Path | None = None,
     follow: bool = False,
     lines: int = 200,
 ) -> None:
-    """Stream the substrate's stdout log for a cluster."""
-    cluster_type, _config = _resolve_type(name)
-    if cluster_type == "slurm":
-        from lightcone.engine.clusters._slurm import tail_slurm_logs
-        tail_slurm_logs(name, project_root=project_root, follow=follow, lines=lines)
+    """Stream the project cluster's stdout log."""
+    project_root = (project_root or Path.cwd()).resolve()
+    record = read_project_state(project_root)
+    if record is None:
+        raise RuntimeError("No active cluster for this project.")
+    if record.mode == "local":
+        log = project_root / "results" / ".slurm" / "lc-cluster-local.log"
+        if not log.exists():
+            raise FileNotFoundError(f"Log file not found: {log}")
+        cmd = ["tail", f"-n{lines}"] + (["-f"] if follow else []) + [str(log)]
+        import subprocess
+        subprocess.run(cmd, check=False)
         return
-    raise ValueError(f"unknown cluster type {cluster_type!r}")
+    from lightcone.engine.clusters._slurm import tail_slurm_logs
+    tail_slurm_logs(project_root=project_root, follow=follow, lines=lines)
 
 
 def refresh_cluster_cache(site: str, *, cluster_type: ClusterType = "slurm") -> Any:

@@ -62,58 +62,24 @@ def _find_lightcone_yaml(project_path: Path) -> Path | None:
     return candidate if candidate.exists() else None
 
 
-def _find_dagster_yaml(project_path: Path) -> Path | None:
-    candidate = project_path / ".lightcone" / "dagster.yaml"
-    if candidate.exists():
-        return candidate
-    candidate = project_path / "dagster.yaml"
-    return candidate if candidate.exists() else None
+def _build_dagster_instance(project_path: Path, postgres_url: str) -> Any:
+    """Construct a Dagster instance against the project's Postgres URL.
 
-
-def _ensure_default_dagster_yaml(project_path: Path) -> Path:
-    """Return the project's ``dagster.yaml`` path, generating a SQLite
-    default in ``.lightcone/`` if one doesn't exist yet.
-    """
-    dagster_yaml_path = _find_dagster_yaml(project_path)
-    if dagster_yaml_path is not None:
-        return dagster_yaml_path
-    lightcone_dir = project_path / ".lightcone"
-    lightcone_dir.mkdir(parents=True, exist_ok=True)
-    dagster_yaml_path = lightcone_dir / "dagster.yaml"
-    dagster_yaml_path.write_text(
-        yaml.dump(
-            {"storage": {"sqlite": {"base_dir": "results/.dagster"}}},
-            default_flow_style=False, sort_keys=False,
-        )
-    )
-    return dagster_yaml_path
-
-
-def _build_dagster_instance(project_path: Path, postgres_url: str | None) -> Any:
-    """Construct a Dagster instance for ``lc run`` / ``lc status``.
-
-    When *postgres_url* is provided (the active cluster's bundled PG
-    daemon), build the instance against that URL — bypasses the SQLite-
-    on-NFS problem entirely on compute nodes.  Otherwise fall back to
-    the project's local ``dagster.yaml`` (SQLite, fine on login nodes
-    and laptops).
+    Always Postgres (cluster-managed or ephemeral).  No SQLite path —
+    SQLite + shared HPC filesystems is broken from compute nodes and the
+    cluster lifecycle now always brings up PG.
     """
     import dagster as dg
 
-    if postgres_url:
-        scratch_local = project_path / ".lightcone" / "dagster-pg-local"
-        scratch_local.mkdir(parents=True, exist_ok=True)
-        config_yaml = scratch_local / "dagster.yaml"
-        config_yaml.write_text(
-            yaml.dump(
-                {"storage": {"postgres": {"postgres_url": postgres_url}}},
-                default_flow_style=False, sort_keys=False,
-            )
+    cfg_dir = project_path / ".lightcone" / "dagster-instance"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "dagster.yaml").write_text(
+        yaml.dump(
+            {"storage": {"postgres": {"postgres_url": postgres_url}}},
+            default_flow_style=False, sort_keys=False,
         )
-        return dg.DagsterInstance.from_config(str(scratch_local))
-
-    yaml_path = _ensure_default_dagster_yaml(project_path)
-    return dg.DagsterInstance.from_config(str(yaml_path.parent))
+    )
+    return dg.DagsterInstance.from_config(str(cfg_dir))
 
 
 def _load_lightcone_config(project_path: Path) -> dict:
@@ -631,39 +597,30 @@ def _create_venv(directory: Path, no_venv: bool) -> bool:
 @main.command()
 @click.argument("outputs", nargs=-1)
 @click.option("--universe", "-u", default=None, help="Universe to materialize for")
-@click.option("--cluster", default=None, help="Run on the named cluster's Dask cluster")
-@click.option("--local", "force_local", is_flag=True,
-              help="Force local execution even if a cluster is configured")
 @click.option("--no-build", is_flag=True, help="Skip automatic container image builds")
 def run(
     outputs: tuple[str, ...],
     universe: str | None,
-    cluster: str | None,
-    force_local: bool,
     no_build: bool,
 ) -> None:
-    """Materialize ASTRA outputs via dagster-dask.
+    """Materialize ASTRA outputs.
 
-    Without ``--cluster`` or a project default, ``dagster-dask`` spins up
-    an ephemeral ``distributed.LocalCluster`` per run.  When a cluster is
-    resolved, dispatches assets to its live Dask scheduler instead.
+    Uses the project's active cluster if one is up (``lc cluster start``).
+    Otherwise spawns an ephemeral Postgres + ``distributed.LocalCluster``
+    for the duration of the run — fine for one-shot work, but slower per-
+    invocation.  For repeated runs, prefer starting a persistent cluster.
 
     Examples:
-        lc run                              # all outputs, default universe
-        lc run accuracy                     # specific output
-        lc run -u baseline                  # specific universe
-        lc run --cluster perlmutter         # explicit cluster
-        lc run --local                      # force local even with cluster configured
+        lc run                          # all outputs, default universe
+        lc run accuracy                 # specific output
+        lc run -u baseline              # specific universe
     """
     import dagster as dg
     from dagster_dask import dask_executor
 
     from lightcone.engine.assets import build_definitions
-    from lightcone.engine.clusters import (
-        find_attached_cluster_for_job,
-        find_running_cluster,
-        resolve_cluster,
-    )
+    from lightcone.engine.clusters import cluster_info
+    from lightcone.engine.clusters._pg import start_pg, stop_pg
     from lightcone.engine.dask_entrypoint import get_cluster_job
 
     project_path = Path.cwd()
@@ -674,35 +631,44 @@ def run(
     output_names = list(outputs)
     universe_id = universe or "baseline"
 
-    cluster_name: str | None = None
-    cluster_config: dict | None = None
-    if not force_local:
-        # Resolution order:
-        #   1. --cluster X flag (handled inside resolve_cluster)
-        #   2. Attached cluster matching $SLURM_JOB_ID (if no --cluster)
-        #   3. Project default / single configured (resolve_cluster fallback)
-        if cluster is None:
-            slurm_job_id = os.environ.get("SLURM_JOB_ID")
-            if slurm_job_id:
-                attached = find_attached_cluster_for_job(slurm_job_id)
-                if attached is not None and attached.record is not None:
-                    cluster_name = attached.record.name
-                    cluster_config = None  # attached clusters have no yaml
-        if cluster_name is None:
-            try:
-                resolution = resolve_cluster(project_path, cli_cluster=cluster)
-            except FileNotFoundError as e:
-                console.print(f"[red]Error:[/red] {e}")
-                raise SystemExit(1)
-            if resolution is not None:
-                cluster_name, cluster_config = resolution
+    info = cluster_info(project_path)
+    ephemeral = info is None or info.state != "RUNNING" or not info.scheduler_address
+
+    if ephemeral:
+        console.print(
+            "[dim]Ephemeral cluster (PG + LocalCluster). "
+            "For faster repeated runs: [cyan]lc cluster start[/cyan][/dim]"
+        )
+        postgres_url = start_pg(project_path)
+        if postgres_url is None:
+            console.print(
+                "[red]Error:[/red] pixeltable-pgserver is required for lc run "
+                "(persistent storage). `pip install pixeltable-pgserver`."
+            )
+            raise SystemExit(1)
+        cluster_mode: dict[str, Any] = {"local": {}}
+        location_label = "ephemeral local cluster"
+        cluster_record_name = ""
+    else:
+        assert info is not None and info.record is not None
+        postgres_url = info.record.postgres_url
+        if postgres_url is None:
+            console.print(
+                "[red]Error:[/red] Active cluster has no Postgres URL — "
+                "stop and re-start it to provision one."
+            )
+            raise SystemExit(1)
+        cluster_mode = {"existing": {"address": info.scheduler_address}}
+        location_label = (
+            f"cluster '{info.record.name}' ({info.scheduler_address})"
+        )
+        cluster_record_name = info.record.name
 
     if output_names:
         selection = [dg.AssetKey([universe_id] + o.split(".")) for o in output_names]
     else:
-        # No explicit outputs — enumerate every recipe-backed asset.
         defs = build_definitions(
-            project_path, cluster_config=cluster_config, universe_id=universe_id,
+            project_path, cluster_config=None, universe_id=universe_id,
             no_build=no_build, executor_def=dask_executor,
         )
         selection = [
@@ -710,36 +676,10 @@ def run(
             if not (spec.metadata or {}).get("external", False)
         ]
 
-    cluster_postgres_url: str | None = None
-    if cluster_name is not None:
-        from lightcone.engine.clusters import cluster_info as _cluster_info_lookup
-        info = _cluster_info_lookup(cluster_name)
-        if info is not None and info.record is not None:
-            cluster_postgres_url = info.record.postgres_url
-    instance = _build_dagster_instance(project_path, cluster_postgres_url)
-    if cluster_postgres_url:
-        console.print(
-            f"  [dim]Dagster storage: cluster Postgres at {cluster_postgres_url}[/dim]"
-        )
-
+    instance = _build_dagster_instance(project_path, postgres_url)
     os.environ["LIGHTCONE_PROJECT_PATH"] = str(project_path)
     os.environ["LIGHTCONE_UNIVERSE"] = universe_id
-
-    if cluster_name is None:
-        os.environ["LIGHTCONE_CLUSTER"] = ""
-        cluster_mode: dict[str, Any] = {"local": {}}
-        location_label = "local"
-    else:
-        info = find_running_cluster(cluster_name)
-        if info is None:
-            console.print(
-                f"[red]Error:[/red] No active cluster for '{cluster_name}'.\n"
-                f"  Start one with: [cyan]lc cluster start {cluster_name}[/cyan]"
-            )
-            raise SystemExit(1)
-        os.environ["LIGHTCONE_CLUSTER"] = cluster_name
-        cluster_mode = {"existing": {"address": info.scheduler_address}}
-        location_label = f"cluster '{cluster_name}' ({info.scheduler_address})"
+    os.environ["LIGHTCONE_CLUSTER"] = cluster_record_name
 
     run_config = {"execution": {"config": {"cluster": cluster_mode}}}
     op_selection = [_asset_key_to_op_name(k, universe_id) for k in selection]
@@ -750,9 +690,9 @@ def run(
             get_cluster_job(), instance=instance,
             run_config=run_config, op_selection=op_selection or None,
         )
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise SystemExit(1)
+    finally:
+        if ephemeral:
+            stop_pg(project_path)
     if result.success:
         console.print("[green]✓[/green] Materialization complete")
     else:
@@ -799,16 +739,12 @@ def build(force: bool, runtime: str | None) -> None:
         raise SystemExit(1)
 
     if runtime is None:
-        from lightcone.engine.clusters import resolve_cluster
-        try:
-            cluster_resolution = resolve_cluster(project_path, cli_cluster=None)
-        except FileNotFoundError:
-            cluster_resolution = None
-        if cluster_resolution is not None:
-            _, cluster_config = cluster_resolution
+        from lightcone.engine.clusters import cluster_info
+        info = cluster_info(project_path)
+        if info is not None and info.spec is not None:
             from lightcone.engine.site_registry import get_site_defaults
-            site_defaults = get_site_defaults(cluster_config.get("site", "")) or {}
-            runtime = cluster_config.get("container_runtime") or site_defaults.get(
+            site_defaults = get_site_defaults(info.spec.site) or {}
+            runtime = info.spec.container_runtime or site_defaults.get(
                 "container_runtime", "podman-hpc"
             )
         if runtime is None:
@@ -1025,9 +961,23 @@ def dev(port: int, universe: str) -> None:
             f.write(defs_code)
             defs_file = f.name
 
-        dagster_yaml_path = _find_dagster_yaml(project_path)
-        dagster_home = str(dagster_yaml_path.parent) if dagster_yaml_path else str(project_path)
-        env = {**os.environ, "DAGSTER_HOME": dagster_home}
+        from lightcone.engine.clusters import cluster_info
+        info = cluster_info(project_path)
+        if info is None or info.record is None or not info.record.postgres_url:
+            console.print(
+                "[red]Error:[/red] lc dev requires an active cluster with Postgres.\n"
+                "  Start one with: [cyan]lc cluster start[/cyan]"
+            )
+            raise SystemExit(1)
+        cfg_dir = project_path / ".lightcone" / "dagster-instance"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        (cfg_dir / "dagster.yaml").write_text(
+            yaml.dump(
+                {"storage": {"postgres": {"postgres_url": info.record.postgres_url}}},
+                default_flow_style=False, sort_keys=False,
+            )
+        )
+        env = {**os.environ, "DAGSTER_HOME": str(cfg_dir)}
         subprocess.run(
             ["dagster-webserver", "-f", defs_file, "-h", "0.0.0.0", "-p", str(port)],
             check=True, env=env,
@@ -1054,47 +1004,43 @@ def cluster() -> None:
 
 @cluster.command("list")
 def cluster_list() -> None:
-    """List configured + attached clusters and their live state."""
+    """List configured target templates + the project's active cluster."""
     from rich.table import Table
 
-    from lightcone.engine.clusters import (
-        cluster_info,
-        list_attached_clusters,
-        list_clusters,
-    )
+    from lightcone.engine.clusters import cluster_info, list_clusters
 
-    yaml_names = list_clusters()
-    attached = list_attached_clusters()
-    if not yaml_names and not attached:
+    project_path = Path.cwd()
+    targets = list_clusters()
+    info = cluster_info(project_path)
+
+    if not targets and info is None:
         console.print(
-            "No clusters configured or attached. "
-            "Run [cyan]lc cluster add[/cyan] to create one, or "
-            "[cyan]lc cluster attach[/cyan] from inside a SLURM allocation."
+            "No cluster targets configured and no active cluster.\n"
+            "  • [cyan]lc cluster add <name>[/cyan] to create a target template\n"
+            "  • [cyan]lc cluster start[/cyan] to start a local cluster"
         )
         return
 
-    table = Table(title="Clusters")
+    if targets:
+        console.print("[bold]Configured targets[/bold] (use with [cyan]--target[/cyan]):")
+        for t in targets:
+            console.print(f"  • {t}")
+
+    console.print("\n[bold]Active cluster (this project)[/bold]")
+    if info is None:
+        console.print(
+            "  none — start one with [cyan]lc cluster start[/cyan]"
+            " (or [cyan]--target <name>[/cyan])"
+        )
+        return
+    table = Table()
     table.add_column("Name", style="cyan")
     table.add_column("Mode")
     table.add_column("Site")
     table.add_column("State")
     table.add_column("Job ID")
     table.add_column("Scheduler")
-
-    rendered: set[str] = set()
-    for name in yaml_names:
-        info = cluster_info(name)
-        if info is None:
-            continue
-        rendered.add(name)
-        _render_cluster_row(table, name, info)
-    for record in attached:
-        if record.name in rendered:
-            continue
-        info = cluster_info(record.name)
-        if info is None:
-            continue
-        _render_cluster_row(table, record.name, info)
+    _render_cluster_row(table, info.record.name if info.record else "?", info)
     console.print(table)
 
 
@@ -1194,31 +1140,32 @@ def cluster_edit(name: str) -> None:
 
 
 @cluster.command("start")
-@click.argument("name", required=False)
-@click.option("--qos", default=None, help="Override the cluster's qos for this submission")
+@click.option("--target", default=None,
+              help="Name of a configured cluster yaml to submit via sbatch")
+@click.option("--qos", default=None, help="Override the target's qos for this submission")
 @click.option("--walltime", default=None, help="Override walltime (e.g. 30m, 24h)")
 @click.option("--strategy", type=click.Choice(["fit", "switch"]), default="fit",
               help="QoS preflight strategy when limits are exceeded (default: fit)")
 @click.option("--wait/--detach", "wait_for_ready", default=True,
-              help="Block until the Dask scheduler is reachable (default: --wait)")
+              help="Block until the cluster is reachable (default: --wait)")
 def cluster_start(
-    name: str | None, qos: str | None, walltime: str | None,
+    target: str | None, qos: str | None, walltime: str | None,
     strategy: str, wait_for_ready: bool,
 ) -> None:
-    """Submit a *named, configured* cluster via ``sbatch``.
+    """Bring up the project's cluster.
 
-    Idempotent — if the named cluster is already running, prints its
-    address and exits.  For "use the SLURM allocation I'm already in",
-    use [cyan]lc cluster attach[/cyan] instead.
+    Dispatches by context:
 
-    With no NAME, prints a status table of configured + attached clusters
-    and exits with code 1 — pick one explicitly.
+    \b
+    • [cyan]--target NAME[/cyan]            → submit a configured target via sbatch
+    • inside a SLURM allocation     → attach to the current allocation
+    • on a recognised login node    → refuse (specify --target or salloc first)
+    • otherwise (laptop / dev)      → run a local Dask LocalCluster + Postgres
+
+    Idempotent: if a cluster is already active for this project, prints
+    its address and exits.
     """
     from lightcone.engine.clusters import start_cluster, wait_for_scheduler
-
-    if name is None:
-        _print_cluster_status_for_picker()
-        raise SystemExit(1)
 
     overrides: dict[str, Any] = {}
     if qos:
@@ -1226,27 +1173,38 @@ def cluster_start(
     if walltime:
         overrides["walltime"] = walltime
 
+    project_path = Path.cwd()
     try:
-        info = start_cluster(name, overrides=overrides, strategy=strategy)
+        info = start_cluster(
+            target=target,
+            project_root=project_path,
+            overrides=overrides,
+            strategy=strategy,
+        )
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)
 
+    name = info.record.name if info.record else "?"
+    mode = info.record.mode if info.record else "?"
     job_id = info.record.job_id if info.record else "?"
-    if info.state in {"RUNNING"} and info.scheduler_address:
-        # Idempotent short-circuit.
+    address = info.scheduler_address
+
+    if info.state == "RUNNING" and address:
         console.print(
-            f"[green]✓[/green] Cluster '{name}' already RUNNING (job {job_id}). "
-            f"Scheduler: [cyan]{info.scheduler_address}[/cyan]"
+            f"[green]✓[/green] Cluster '{name}' already RUNNING (mode={mode}, "
+            f"job {job_id}). Scheduler: [cyan]{address}[/cyan]"
         )
         return
 
-    console.print(f"[green]✓[/green] Submitted cluster '{name}' as job {job_id}")
+    console.print(
+        f"[green]✓[/green] Started cluster '{name}' (mode={mode}, job {job_id})"
+    )
 
     if wait_for_ready:
-        console.print("  Waiting for Dask scheduler to come up...")
+        console.print("  Waiting for scheduler to come up...")
         try:
-            info = wait_for_scheduler(name)
+            info = wait_for_scheduler(project_path)
         except Exception as e:
             console.print(f"[red]Error:[/red] {e}")
             raise SystemExit(1)
@@ -1254,191 +1212,70 @@ def cluster_start(
             f"[green]✓[/green] Cluster '{name}' RUNNING. Scheduler: "
             f"[cyan]{info.scheduler_address}[/cyan]"
         )
-
-
-@cluster.command("attach")
-@click.option("--wait/--detach", "wait_for_ready", default=True,
-              help="Block until the Dask scheduler is reachable (default: --wait)")
-def cluster_attach(wait_for_ready: bool) -> None:
-    """Spawn a Dask cluster inside the current SLURM allocation.
-
-    Run from inside a [cyan]salloc[/cyan] shell.  No name or yaml needed:
-    worker layout is derived from SLURM env vars.  The cluster lives until
-    the allocation ends or [cyan]lc cluster stop[/cyan] is called.
-    """
-    from lightcone.engine.clusters import attach_cluster, wait_for_scheduler
-
-    try:
-        info = attach_cluster()
-    except RuntimeError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise SystemExit(1)
-
-    assert info.record is not None
-    name = info.record.name
-    job_id = info.record.job_id
-    nodes = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
-    console.print(
-        f"[green]✓[/green] Attaching cluster to SLURM allocation {job_id} "
-        f"({nodes} node{'s' if nodes != 1 else ''})..."
-    )
-
-    if wait_for_ready:
-        console.print("  Waiting for Dask scheduler to come up...")
-        try:
-            info = wait_for_scheduler(name)
-        except Exception as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise SystemExit(1)
-        console.print(
-            f"[green]✓[/green] Cluster '{name}' RUNNING. Scheduler: "
-            f"[cyan]{info.scheduler_address}[/cyan]"
-        )
-
-
-def _print_cluster_status_for_picker() -> None:
-    """Print a status table + hint when ``lc cluster start`` is called with no name."""
-    from rich.table import Table
-
-    from lightcone.engine.clusters import (
-        cluster_info,
-        list_attached_clusters,
-        list_clusters,
-    )
-
-    yaml_names = list_clusters()
-    attached = list_attached_clusters()
-    in_allocation = bool(os.environ.get("SLURM_JOB_ID"))
-
-    if not yaml_names and not attached:
-        console.print(
-            "[red]Error:[/red] No clusters configured or attached.\n"
-            "  • [cyan]lc cluster add[/cyan] to create one\n"
-            "  • [cyan]lc cluster attach[/cyan] from inside a SLURM allocation"
-        )
-        return
-
-    table = Table(title="Clusters — pick one to start")
-    table.add_column("Name", style="cyan")
-    table.add_column("Mode")
-    table.add_column("Site")
-    table.add_column("State")
-    table.add_column("Job ID")
-    table.add_column("Scheduler")
-    rendered: set[str] = set()
-    for n in yaml_names:
-        info = cluster_info(n)
-        if info is None:
-            continue
-        rendered.add(n)
-        _render_cluster_row(table, n, info)
-    for record in attached:
-        if record.name in rendered:
-            continue
-        info = cluster_info(record.name)
-        if info is None:
-            continue
-        _render_cluster_row(table, record.name, info)
-    console.print(table)
-
-    attach_hint = (
-        "use your current SLURM allocation"
-        if in_allocation
-        else "first do `salloc …`, then attach"
-    )
-    console.print(
-        "\n[bold]Be explicit about which cluster to start:[/bold]\n"
-        "  • [cyan]lc cluster start <name>[/cyan]  — submit a named cluster via sbatch\n"
-        f"  • [cyan]lc cluster attach[/cyan]            — {attach_hint}\n"
-    )
 
 
 @cluster.command("stop")
-@click.argument("name", required=False)
-def cluster_stop(name: str | None) -> None:
-    """Tear down a cluster.
+def cluster_stop() -> None:
+    """Tear down the project's active cluster.
 
-    For ``sbatch`` clusters this ``scancel``s the job; for ``attached``
-    clusters it kills the dask processes and leaves the salloc allocation
-    intact.  With no NAME, picks the only running cluster if there is one.
+    Mode-aware: ``sbatch`` clusters get ``scancel``-ed (we own the job);
+    ``attached`` clusters get the dask processes killed (the salloc
+    allocation is left intact); ``local`` clusters get the LocalCluster
+    daemon and Postgres terminated.
     """
-    from lightcone.engine.clusters import (
-        list_attached_clusters,
-        list_clusters,
-        stop_cluster,
-    )
+    from lightcone.engine.clusters import cluster_info, stop_cluster
 
-    if name is None:
-        candidates = list(list_clusters()) + [r.name for r in list_attached_clusters()]
-        if len(candidates) != 1:
-            console.print(
-                "[red]Error:[/red] Specify a cluster name.\n"
-                f"  Known: {', '.join(candidates) or 'none'}"
-            )
-            raise SystemExit(1)
-        name = candidates[0]
-    stop_cluster(name)
+    project_path = Path.cwd()
+    info = cluster_info(project_path)
+    if info is None:
+        console.print("No active cluster for this project.")
+        return
+    name = info.record.name if info.record else "?"
+    stop_cluster(project_root=project_path)
     console.print(f"[green]✓[/green] Cluster '{name}' stopped")
 
 
 @cluster.command("status")
-@click.argument("name", required=False)
-def cluster_status(name: str | None) -> None:
-    """Show the live state of a cluster (or all clusters + attached)."""
-    from lightcone.engine.clusters import (
-        cluster_info,
-        list_attached_clusters,
-        list_clusters,
-    )
+def cluster_status() -> None:
+    """Show the live state of the project's active cluster."""
+    from lightcone.engine.clusters import cluster_info
 
-    if name is not None:
-        names = [name]
-    else:
-        names = list(list_clusters())
-        for r in list_attached_clusters():
-            if r.name not in names:
-                names.append(r.name)
-    if not names:
-        console.print("No clusters configured or attached.")
-        return
-    for n in names:
-        info = cluster_info(n)
-        if info is None:
-            console.print(f"  [red]✗[/red] {n}: not configured")
-            continue
-        state = info.state
-        mode = info.record.mode if info.record else "—"
+    project_path = Path.cwd()
+    info = cluster_info(project_path)
+    if info is None:
         console.print(
-            f"[bold]{n}[/bold]  mode={mode}  site={info.spec.site}  state={state}"
+            "No active cluster for this project. "
+            "Start one with [cyan]lc cluster start[/cyan]."
         )
-        if info.record:
-            console.print(f"  job_id: {info.record.job_id}")
-            console.print(f"  submitted: {info.record.submitted_at}")
-            if info.record.walltime_seconds:
-                console.print(f"  walltime: {info.record.walltime_seconds // 60}m")
-            console.print(f"  scheduler_file: {info.record.scheduler_file}")
-            if info.record.mode == "attached" and info.record.process_pids:
-                console.print(f"  pids: {info.record.process_pids}")
-        if info.scheduler_address:
-            console.print(f"  scheduler: [cyan]{info.scheduler_address}[/cyan]")
+        return
+    name = info.record.name if info.record else "?"
+    mode = info.record.mode if info.record else "—"
+    console.print(
+        f"[bold]{name}[/bold]  mode={mode}  site={info.spec.site}  state={info.state}"
+    )
+    if info.record:
+        console.print(f"  job_id: {info.record.job_id}")
+        console.print(f"  submitted: {info.record.submitted_at}")
+        if info.record.walltime_seconds:
+            console.print(f"  walltime: {info.record.walltime_seconds // 60}m")
+        console.print(f"  scheduler_file: {info.record.scheduler_file}")
+        if info.record.process_pids:
+            console.print(f"  pids: {info.record.process_pids}")
+        if info.record.postgres_url:
+            console.print(f"  postgres: [cyan]{info.record.postgres_url}[/cyan]")
+    if info.scheduler_address:
+        console.print(f"  scheduler: [cyan]{info.scheduler_address}[/cyan]")
 
 
 @cluster.command("logs")
-@click.argument("name", required=False)
 @click.option("-f", "--follow", is_flag=True, help="Follow log output")
 @click.option("-n", default=200, type=int, help="Number of lines to tail (default 200)")
-def cluster_logs(name: str | None, follow: bool, n: int) -> None:
-    """Tail the SLURM stdout log for a cluster."""
-    from lightcone.engine.clusters import list_clusters, tail_cluster_logs
+def cluster_logs(follow: bool, n: int) -> None:
+    """Tail the project cluster's stdout log."""
+    from lightcone.engine.clusters import tail_cluster_logs
 
-    if name is None:
-        clusters = list_clusters()
-        if len(clusters) != 1:
-            console.print("[red]Error:[/red] Specify a cluster name.")
-            raise SystemExit(1)
-        name = clusters[0]
     try:
-        tail_cluster_logs(name, follow=follow, lines=n)
+        tail_cluster_logs(project_root=Path.cwd(), follow=follow, lines=n)
     except (FileNotFoundError, RuntimeError) as e:
         console.print(f"[red]Error:[/red] {e}")
         raise SystemExit(1)

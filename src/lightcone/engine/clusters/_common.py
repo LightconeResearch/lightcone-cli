@@ -167,17 +167,24 @@ class ClusterSpec:
 
 #: How the cluster was brought up.
 #:
-#: * ``"sbatch"`` — submitted by ``lc cluster start``; SLURM owns the
-#:   allocation and ``scancel`` is the right teardown verb.
-#: * ``"attached"`` — created by ``lc cluster attach`` from inside an
-#:   existing salloc; the user owns the allocation and tear-down only kills
-#:   our own dask processes (scheduler + srun-launchers tracked by PID).
-ClusterMode = Literal["sbatch", "attached"]
+#: * ``"sbatch"`` — submitted by ``lc cluster start --target NAME`` from
+#:   a login node; SLURM owns the allocation and ``scancel`` is the right
+#:   teardown verb.
+#: * ``"attached"`` — created by ``lc cluster start`` from inside an
+#:   existing salloc; the user owns the allocation and teardown only
+#:   kills our own dask processes (tracked by PID).
+#: * ``"local"`` — created by ``lc cluster start`` on a laptop / dev
+#:   machine; runs ``distributed.LocalCluster`` + Postgres in-process.
+ClusterMode = Literal["sbatch", "attached", "local"]
 
 
 @dataclass
 class ClusterRecord:
-    """Submission record persisted to ``<name>.state.json`` after start."""
+    """Submission record persisted to ``<project>/.lightcone/cluster.state.json``.
+
+    One per project — the state file represents "this project's currently
+    active cluster", whatever its substrate.
+    """
 
     name: str
     type: ClusterType
@@ -189,9 +196,13 @@ class ClusterRecord:
     mode: ClusterMode = "sbatch"
     process_pids: list[int] = field(default_factory=list)
     #: ``postgresql://…`` URI of the cluster-bundled Postgres daemon, or
-    #: ``None`` when the cluster runs without persistent Dagster storage
-    #: (older clusters, or environments without ``pixeltable-pgserver``).
+    #: ``None`` when the cluster runs without persistent Dagster storage.
     postgres_url: str | None = None
+    #: Pre-resolved ``tcp://host:port`` for the dask scheduler, recorded
+    #: directly when the substrate doesn't expose one through a
+    #: scheduler-file (the ``local`` backend, today).  ``sbatch`` and
+    #: ``attached`` modes leave this ``None`` and use ``scheduler_file``.
+    scheduler_address: str | None = None
 
 
 @dataclass
@@ -272,24 +283,32 @@ def spec_from_config(name: str, config: dict[str, Any]) -> ClusterSpec:
 
 
 # ---------------------------------------------------------------------------
-# State file CRUD
+# State file CRUD — per-project
 # ---------------------------------------------------------------------------
+#
+# Each project has at most one active cluster.  Its record lives at
+# ``<project>/.lightcone/cluster.state.json`` so that two projects on the
+# same machine don't fight over a shared name and so that copying a
+# project tree to another host carries all the runtime context with it.
 
 
-def state_path(name: str) -> Path:
-    return get_clusters_dir() / f"{name}.state.json"
+def project_state_path(project_root: Path) -> Path:
+    """Return the per-project state-file path."""
+    return project_root / ".lightcone" / "cluster.state.json"
 
 
-def write_record(record: ClusterRecord) -> Path:
-    path = state_path(record.name)
+def write_project_state(project_root: Path, record: ClusterRecord) -> Path:
+    path = project_state_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         json.dump(asdict(record), f, indent=2)
     return path
 
 
-def read_record(name: str) -> ClusterRecord | None:
+def read_project_state(project_root: Path) -> ClusterRecord | None:
+    path = project_state_path(project_root)
     try:
-        with open(state_path(name)) as f:
+        with open(path) as f:
             data = json.load(f)
     except FileNotFoundError:
         return None
@@ -297,14 +316,8 @@ def read_record(name: str) -> ClusterRecord | None:
     return ClusterRecord(**{k: v for k, v in data.items() if k in known})
 
 
-def list_state_records() -> list[ClusterRecord]:
-    """Return all persisted ``ClusterRecord``s (any mode), alphabetical by name."""
-    records: list[ClusterRecord] = []
-    for path in sorted(get_clusters_dir().glob("*.state.json")):
-        rec = read_record(path.name.removesuffix(".state.json"))
-        if rec is not None:
-            records.append(rec)
-    return records
+def clear_project_state(project_root: Path) -> None:
+    project_state_path(project_root).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

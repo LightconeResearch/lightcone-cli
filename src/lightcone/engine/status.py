@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import dagster as dg
@@ -13,67 +12,47 @@ from lightcone.engine.tree import collect_tree_outputs
 logger = logging.getLogger(__name__)
 
 
-def _active_cluster_postgres_url() -> str | None:
-    """Return a running cluster's Postgres URL if one is registered, else None.
-
-    Picks the first record with a ``postgres_url`` and a live SLURM job —
-    matches how :mod:`lc run` resolves clusters.  Status queries are
-    read-only, so any active PG-backed cluster works.
-    """
-    try:
-        from lightcone.engine.clusters import list_state_records
-        from lightcone.engine.clusters._slurm import query_slurm_state
-    except ImportError:
-        return None
-    for record in list_state_records():
-        if not record.postgres_url:
-            continue
-        if query_slurm_state(record.job_id) in {"PENDING", "RUNNING"}:
-            return record.postgres_url
-    return None
-
-
 def _get_dagster_instance(project_path: Path) -> dg.DagsterInstance | None:
     """Load a DagsterInstance for read-only status queries.
 
-    Prefers an active cluster's bundled Postgres (if any) — bypasses the
-    SQLite-on-shared-FS issue from compute nodes.  Falls back to the
-    project's ``dagster.yaml`` (SQLite) for the laptop / login-only case.
-
-    Returns ``None`` if no instance can be loaded; callers treat that as
-    "no events recorded."
+    Uses the project's active cluster's Postgres URL when one is up.
+    Returns ``None`` otherwise — callers fall through to filesystem
+    inspection (the IO manager guarantees ``results/<universe>/<output>/``
+    is the canonical location for any materialized output).
     """
-    pg_url = _active_cluster_postgres_url()
-    if pg_url:
-        try:
-            instance_dir = project_path / ".lightcone" / "dagster-pg-local"
-            instance_dir.mkdir(parents=True, exist_ok=True)
-            (instance_dir / "dagster.yaml").write_text(
-                f"storage:\n  postgres:\n    postgres_url: {pg_url}\n"
-            )
-            return dg.DagsterInstance.from_config(str(instance_dir))
-        except Exception:
-            logger.warning(
-                "Failed to load Dagster instance from cluster Postgres %s",
-                pg_url, exc_info=True,
-            )
-            return None
-
-    dagster_yaml = project_path / ".lightcone" / "dagster.yaml"
-    if not dagster_yaml.exists():
-        dagster_yaml = project_path / "dagster.yaml"
-    if not dagster_yaml.exists():
-        return None
-    config_dir = dagster_yaml.parent
-    old_cwd = os.getcwd()
     try:
-        os.chdir(project_path)
-        return dg.DagsterInstance.from_config(str(config_dir))
-    except Exception:
-        logger.warning("Failed to load Dagster instance from %s", project_path, exc_info=True)
+        from lightcone.engine.clusters import cluster_info
+    except ImportError:
         return None
-    finally:
-        os.chdir(old_cwd)
+    info = cluster_info(project_path)
+    if info is None or info.record is None or not info.record.postgres_url:
+        return None
+    try:
+        cfg_dir = project_path / ".lightcone" / "dagster-instance"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        (cfg_dir / "dagster.yaml").write_text(
+            f"storage:\n  postgres:\n    postgres_url: {info.record.postgres_url}\n"
+        )
+        return dg.DagsterInstance.from_config(str(cfg_dir))
+    except Exception:
+        logger.warning(
+            "Failed to load Dagster instance from cluster Postgres %s",
+            info.record.postgres_url, exc_info=True,
+        )
+        return None
+
+
+def _output_dir_materialized(project_path: Path, universe_id: str, qualified: str) -> bool:
+    """Filesystem check: does the output dir exist and contain anything?
+
+    The IO manager writes to ``results/<universe>/<qualified>/``; presence
+    of any file in it is the canonical "materialized" signal when the
+    Dagster instance isn't reachable.
+    """
+    out_dir = project_path / "results" / universe_id / qualified
+    if not out_dir.is_dir():
+        return False
+    return any(out_dir.iterdir())
 
 
 def get_output_status(
@@ -84,25 +63,24 @@ def get_output_status(
     """Get materialization status for all outputs in a universe.
 
     Returns dict mapping qualified output_id to status string:
-    - "no_recipe": output declared but has no recipe block
-    - "pending": has recipe, not yet materialized
-    - "materialized": has recipe and Dagster event log confirms materialization
+    - ``"no_recipe"``: output declared but has no recipe block
+    - ``"pending"``: has recipe, not yet materialized
+    - ``"materialized"``: has recipe and either Dagster events confirm
+      materialization or the IO manager's output dir is non-empty
+    - ``"alias"``: aliased to another output (``from:`` reference)
 
-    For sub-analysis outputs, keys are qualified: "analysis_id/output_id".
-    Root-level outputs use just "output_id".
+    For sub-analysis outputs, keys are qualified: ``"analysis_id/output_id"``.
+    Root-level outputs use just ``"output_id"``.
     """
     spec = load_yaml(project_path / "astra.yaml")
-    # Resolve sub-analysis tree
     spec = resolve_analysis_tree(spec, project_path)
 
     if instance is None:
         instance = _get_dagster_instance(project_path)
 
-    # Collect all outputs from the tree
     tree_outputs = collect_tree_outputs(spec)
 
-    # Build asset keys for outputs with recipes, then batch-query Dagster
-    recipe_keys: dict[str, dg.AssetKey] = {}  # qualified_id -> asset key
+    recipe_keys: dict[str, dg.AssetKey] = {}
     for tree_out in tree_outputs:
         out_id = tree_out.output_id
         if not out_id or not tree_out.output_def.get("recipe"):
@@ -134,13 +112,16 @@ def get_output_status(
             qualified = out_id
 
         if not tree_out.output_def.get("recipe"):
-            # Check for alias outputs (from: sub.output)
             from_ref = tree_out.output_def.get("from")
             if from_ref and tree_out.analysis_id is None:
                 status[qualified] = "alias"
                 continue
             status[qualified] = "no_recipe"
         elif qualified in materialized:
+            status[qualified] = "materialized"
+        elif _output_dir_materialized(project_path, universe_id, qualified):
+            # Dagster instance unreachable but output exists on disk —
+            # trust the filesystem (canonical IO manager layout).
             status[qualified] = "materialized"
         else:
             status[qualified] = "pending"
@@ -151,15 +132,11 @@ def get_output_status(
 def get_all_universe_status(
     project_path: Path,
 ) -> dict[str, dict[str, str]]:
-    """Get status for all universes.
-
-    Returns dict mapping universe_id to output status dict.
-    """
+    """Get status for all universes."""
     universes_dir = project_path / "universes"
     if not universes_dir.exists():
         return {}
 
-    # Create instance once and share across all universe checks
     instance = _get_dagster_instance(project_path)
 
     result: dict[str, dict[str, str]] = {}

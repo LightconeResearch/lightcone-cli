@@ -26,18 +26,17 @@ from lightcone.engine.clusters._common import (
     ClusterRecord,
     ClusterSpec,
     WorkerPool,
+    clear_project_state,
     env_path_for_site,
     expand_path,
     get_cache_dir,
-    get_clusters_dir,
     load_cluster_config,
     parse_walltime_seconds,
-    read_record,
+    read_project_state,
     read_scheduler_address,
     spec_from_config,
-    state_path,
     walltime_to_slurm,
-    write_record,
+    write_project_state,
 )
 from lightcone.engine.clusters._pg import start_pg, stop_pg
 from lightcone.engine.site_registry import SITE_DEFAULTS, detect_site
@@ -482,30 +481,29 @@ def query_slurm_state(job_id: str) -> str:
     return _SLURM_STATE_MAP.get(raw, "DEAD")
 
 
-def slurm_cluster_info(name: str, config: dict[str, Any] | None = None) -> ClusterInfo | None:
-    """Return spec + record + live SLURM state for the named cluster.
+def slurm_cluster_info(project_root: Path) -> ClusterInfo | None:
+    """Return spec + record + live state for the project's active SLURM cluster.
 
-    Dispatches on ``record.mode``: an ``attached`` record yields a
-    synthesized spec (no yaml required); a ``sbatch`` record uses the
-    yaml as today.  *config* may be passed in by the dispatcher to avoid
-    a duplicate ``load_cluster_config`` read on the yaml path.
+    Reads the project state file; returns ``None`` if no cluster is
+    registered or the recorded record is for a non-SLURM substrate.
     """
-    record = read_record(name)
-    if record is not None and record.mode == "attached":
+    record = read_project_state(project_root)
+    if record is None or record.type != "slurm":
+        return None
+    if record.mode == "attached":
         spec = _spec_from_attached_record(record)
-        state = query_slurm_state(record.job_id)
-        address = read_scheduler_address(record.scheduler_file) if state == "RUNNING" else None
-        return ClusterInfo(spec=spec, record=record, state=state, scheduler_address=address)
-
-    if config is None:
-        config = load_cluster_config(name)
-        if config is None:
-            return None
-    spec = spec_from_config(name, config)
-    if record is None:
-        return ClusterInfo(spec=spec, record=None, state="NONE", scheduler_address=None)
+    else:
+        config = load_cluster_config(record.name)
+        spec = (
+            spec_from_config(record.name, config)
+            if config is not None
+            else _spec_from_attached_record(record)  # fall-back display-only spec
+        )
     state = query_slurm_state(record.job_id)
-    address = read_scheduler_address(record.scheduler_file) if state == "RUNNING" else None
+    address = (
+        record.scheduler_address
+        or (read_scheduler_address(record.scheduler_file) if state == "RUNNING" else None)
+    )
     return ClusterInfo(spec=spec, record=record, state=state, scheduler_address=address)
 
 
@@ -588,49 +586,45 @@ def attach_to_allocation(
     if not job_id:
         raise RuntimeError(
             "Not inside a SLURM allocation ($SLURM_JOB_ID is unset). "
-            "Use `lc cluster start <name>` to submit a fresh job, or "
-            "`salloc` first to grab an interactive allocation."
+            "Use `lc cluster start --target <name>` to submit a fresh job, "
+            "or `salloc` first."
         )
 
-    name = f"_attached_{job_id}"
+    project_root = project_root or Path.cwd()
 
-    # Idempotent: already-attached for this allocation? Return existing.
-    existing = read_record(name)
+    # Idempotent: an already-active cluster for this project on this
+    # allocation just gets returned.  Stale records (job dead) are swept
+    # before we proceed.
+    existing = read_project_state(project_root)
     if existing is not None:
-        info = slurm_cluster_info(name)
-        if info and info.state in {"PENDING", "RUNNING"}:
-            logger.info("Cluster '%s' already attached (state=%s).", name, info.state)
+        info = slurm_cluster_info(project_root)
+        if info and info.state in {"PENDING", "RUNNING"} and existing.job_id == job_id:
+            logger.info(
+                "Cluster '%s' already attached to allocation %s (state=%s).",
+                existing.name, job_id, info.state,
+            )
             return info
-        # Stale state from a prior allocation that died — sweep before continuing.
-        state_path(name).unlink()
+        clear_project_state(project_root)
         sched_file = Path(expand_path(existing.scheduler_file))
         if sched_file.exists():
             sched_file.unlink()
 
-    # Sweep dead `_attached_*` records from prior allocations.
-    _sweep_dead_attached_records()
-
+    name = f"_attached_{job_id}"
     nodes = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
     cpus_per_node = int(os.environ.get("SLURM_CPUS_ON_NODE", "0")) or 1
     site = _detect_site_in_allocation()
 
-    # Scheduler-file lives next to the state file in ~/.lightcone/clusters/.
-    # That path is small, always writable from compute + login, and avoids
-    # the brittle $HOME/scratch symlink some sites set up.
-    sched_file_path = str(get_clusters_dir() / f"{name}.scheduler.json")
+    # Scheduler-file lives in the project's .lightcone/ — single source of
+    # truth, alongside the cluster state file.
+    sched_file_path = str(project_root / ".lightcone" / f"scheduler-{job_id}.json")
+    Path(sched_file_path).parent.mkdir(parents=True, exist_ok=True)
     local_dir = _attached_worker_local_dir()
     Path(local_dir).mkdir(parents=True, exist_ok=True)
 
-    pool = WorkerPool(
-        nodes=nodes,
-        threads_per_node=cpus_per_node,
-        memory="auto",
-    )
+    pool = WorkerPool(nodes=nodes, threads_per_node=cpus_per_node, memory="auto")
 
-    project_root = project_root or Path.cwd()
     log_dir = project_root / "results" / ".slurm"
     log_dir.mkdir(parents=True, exist_ok=True)
-
     sched_log = log_dir / f"lc-cluster-{name}-scheduler.log"
     worker_log = log_dir / f"lc-cluster-{name}-workers.log"
 
@@ -672,7 +666,7 @@ def attach_to_allocation(
         process_pids=[sched_proc.pid, worker_proc.pid],
         postgres_url=postgres_url,
     )
-    write_record(record)
+    write_project_state(project_root, record)
     logger.info(
         "Attached cluster '%s' to allocation %s (%d nodes, %d cpus/node).",
         name, job_id, nodes, cpus_per_node,
@@ -694,65 +688,48 @@ def _slurm_walltime_seconds_from_env() -> int:
         return 0
 
 
-def _sweep_dead_attached_records() -> None:
-    """Remove ``_attached_*`` state files whose SLURM jobs are no longer alive."""
-    from lightcone.engine.clusters._common import list_state_records
-
-    for record in list_state_records():
-        if record.mode != "attached":
-            continue
-        if query_slurm_state(record.job_id) in {"DEAD", "COMPLETED", "FAILED", "CANCELLED"}:
-            try:
-                state_path(record.name).unlink()
-            except FileNotFoundError:
-                pass
-            sched_file = Path(expand_path(record.scheduler_file))
-            if sched_file.exists():
-                try:
-                    sched_file.unlink()
-                except OSError:
-                    pass
-
-
 def start_slurm_cluster(
-    name: str,
+    target: str,
     config: dict[str, Any],
     overrides: dict[str, Any],
     *,
     project_root: Path | None = None,
     strategy: str = "fit",
 ) -> ClusterInfo:
-    """Submit the SLURM allocation and record state."""
+    """Submit a sbatch'd SLURM cluster from a named *target* yaml.
+
+    Idempotent — if a cluster is already active for this project, returns
+    its info instead of submitting a fresh job.  Stale records (job
+    dead) are swept before submitting.
+    """
     if overrides:
         for k, v in overrides.items():
             if v is not None:
                 config[k] = v
 
-    existing_record = read_record(name)
-    if existing_record is not None:
-        existing = slurm_cluster_info(name, config=config)
-        if existing and existing.state in {"PENDING", "RUNNING"}:
-            # Idempotent: cluster already up. Caller treats this as success.
+    project_root = project_root or Path.cwd()
+    existing = read_project_state(project_root)
+    if existing is not None:
+        info = slurm_cluster_info(project_root)
+        if info and info.state in {"PENDING", "RUNNING"}:
             logger.info(
-                "Cluster '%s' already running (job %s, state=%s).",
-                name, existing_record.job_id, existing.state,
+                "Cluster '%s' already active for this project (job %s, state=%s).",
+                existing.name, existing.job_id, info.state,
             )
-            return existing
-        # Stale state file (recorded job is dead) — sweep and proceed.
-        state_path(name).unlink()
-        sched_file = Path(expand_path(existing_record.scheduler_file))
+            return info
+        clear_project_state(project_root)
+        sched_file = Path(expand_path(existing.scheduler_file))
         if sched_file.exists():
             sched_file.unlink()
 
-    spec = spec_from_config(name, config)
+    spec = spec_from_config(target, config)
     spec = validate_against_qos(spec, strategy=strategy)
     ensure_worker_env(spec)
 
     script = render_sbatch(spec)
-    project_root = project_root or Path.cwd()
     scripts_dir = project_root / "results" / ".slurm"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    script_path = scripts_dir / f"lc-cluster-{name}.sbatch"
+    script_path = scripts_dir / f"lc-cluster-{target}.sbatch"
     script_path.write_text(script)
     script_path.chmod(0o755)
 
@@ -769,31 +746,32 @@ def start_slurm_cluster(
 
     postgres_url = start_pg(project_root)
     record = ClusterRecord(
-        name=name,
+        name=target,
         type="slurm",
         job_id=job_id,
         site=spec.site,
         submitted_at=datetime.now(UTC).isoformat(),
         walltime_seconds=parse_walltime_seconds(spec.walltime),
-        scheduler_file=f"{spec.scratch_root}/lightcone/clusters/{name}.json",
+        scheduler_file=f"{spec.scratch_root}/lightcone/clusters/{target}.json",
         postgres_url=postgres_url,
     )
-    write_record(record)
-    logger.info("Cluster '%s' submitted as SLURM job %s", name, job_id)
+    write_project_state(project_root, record)
+    logger.info("Cluster '%s' submitted as SLURM job %s", target, job_id)
     return ClusterInfo(spec=spec, record=record, state="PENDING", scheduler_address=None)
 
 
-def stop_slurm_cluster(name: str, *, project_root: Path | None = None) -> None:
-    """Tear down a SLURM-backed cluster.
+def stop_slurm_cluster(*, project_root: Path | None = None) -> None:
+    """Tear down the project's active SLURM cluster.
 
     Mode-aware: ``sbatch`` clusters get ``scancel``-ed (we own the job);
     ``attached`` clusters get the dask scheduler/workers killed by PID,
     leaving the user's allocation intact.  Both paths clean up the
-    bundled Postgres daemon, the scheduler-file, and the state file.
+    bundled Postgres daemon, the scheduler-file, and the project state file.
     """
-    record = read_record(name)
+    project_root = project_root or Path.cwd()
+    record = read_project_state(project_root)
     if record is None:
-        logger.info("No active state for cluster '%s' — nothing to stop.", name)
+        logger.info("No active cluster for project — nothing to stop.")
         return
     if record.mode == "attached":
         for pid in record.process_pids:
@@ -803,35 +781,41 @@ def stop_slurm_cluster(name: str, *, project_root: Path | None = None) -> None:
                 pass
             except PermissionError:
                 logger.warning(
-                    "No permission to kill pid %d for cluster '%s'.", pid, name,
+                    "No permission to kill pid %d for cluster '%s'.", pid, record.name,
                 )
         logger.info(
             "Cluster '%s' stopped (killed dask processes; allocation %s untouched)",
-            name, record.job_id,
+            record.name, record.job_id,
         )
     else:
         subprocess.run(["scancel", record.job_id], check=False)
-        logger.info("Cluster '%s' stopped (cancelled SLURM job %s)", name, record.job_id)
+        logger.info(
+            "Cluster '%s' stopped (cancelled SLURM job %s)",
+            record.name, record.job_id,
+        )
     if record.postgres_url:
-        stop_pg(project_root or Path.cwd())
+        stop_pg(project_root)
     sched_file = Path(expand_path(record.scheduler_file))
     if sched_file.exists():
         sched_file.unlink()
-    state_path(name).unlink()
+    clear_project_state(project_root)
 
 
 def tail_slurm_logs(
-    name: str,
+    *,
     project_root: Path | None = None,
     follow: bool = False,
     lines: int = 200,
 ) -> None:
-    """Stream the SLURM stdout file for a cluster."""
-    record = read_record(name)
-    if record is None:
-        raise RuntimeError(f"No active state for cluster '{name}'")
+    """Stream the SLURM stdout file for the project's active cluster."""
     project_root = project_root or Path.cwd()
-    log_path = project_root / "results" / ".slurm" / f"lc-cluster-{name}-{record.job_id}.out"
+    record = read_project_state(project_root)
+    if record is None:
+        raise RuntimeError("No active cluster for this project.")
+    log_path = (
+        project_root / "results" / ".slurm"
+        / f"lc-cluster-{record.name}-{record.job_id}.out"
+    )
     if not log_path.exists():
         raise FileNotFoundError(f"Log file not found: {log_path}")
     cmd = ["tail", f"-n{lines}"]

@@ -1,4 +1,6 @@
-"""Tests for ``lightcone.engine.clusters`` — config CRUD, sbatch rendering, QoS preflight."""
+"""Tests for ``lightcone.engine.clusters`` — config CRUD, sbatch rendering,
+QoS preflight, per-project state file, dispatcher, lifecycle (sbatch /
+attached / local), bundled Postgres."""
 from __future__ import annotations
 
 import json
@@ -11,19 +13,22 @@ from lightcone.engine.clusters import (
     ClusterRecord,
     ClusterSpec,
     WorkerPool,
+    is_login_node,
     list_clusters,
     load_cluster_config,
     parse_walltime_seconds,
+    project_state_path,
+    read_project_state,
     read_scheduler_address,
-    resolve_cluster,
     save_cluster_config,
     spec_from_config,
+    start_cluster,
+    stop_cluster,
     walltime_to_slurm,
 )
 from lightcone.engine.clusters._common import (
-    read_record,
-    state_path,
-    write_record,
+    clear_project_state,
+    write_project_state,
 )
 from lightcone.engine.clusters._slurm import (
     ensure_worker_env,
@@ -56,7 +61,7 @@ class TestWalltime:
 
 
 # ---------------------------------------------------------------------------
-# Config CRUD
+# Config CRUD (cluster yaml templates in ~/.lightcone/clusters/)
 # ---------------------------------------------------------------------------
 
 
@@ -95,8 +100,8 @@ class TestSpecFromConfig:
         assert spec.site == "perlmutter"
         assert spec.account == "m1234"
         assert spec.qos == "regular"
-        assert spec.scratch_root == "$PSCRATCH"          # from site_registry
-        assert spec.container_runtime == "podman-hpc"    # from site_registry
+        assert spec.scratch_root == "$PSCRATCH"
+        assert spec.container_runtime == "podman-hpc"
         assert len(spec.workers) == 1
         assert spec.workers[0].nodes == 4
 
@@ -117,41 +122,6 @@ class TestSpecFromConfig:
             spec_from_config(
                 "x", {"type": "slurm", "site": "perlmutter", "account": "m1"},
             )
-
-
-# ---------------------------------------------------------------------------
-# Cluster resolution
-# ---------------------------------------------------------------------------
-
-
-class TestResolveCluster:
-    def test_explicit_cli_flag_wins(self, tmp_path, perlmutter_yaml):
-        save_cluster_config("perlmutter", perlmutter_yaml)
-        save_cluster_config("debug", {**perlmutter_yaml, "qos": "debug"})
-        name, _ = resolve_cluster(tmp_path, cli_cluster="debug")
-        assert name == "debug"
-
-    def test_unknown_cli_flag_raises(self, tmp_path):
-        with pytest.raises(FileNotFoundError):
-            resolve_cluster(tmp_path, cli_cluster="ghost")
-
-    def test_project_config(self, tmp_path, perlmutter_yaml):
-        save_cluster_config("perlmutter", perlmutter_yaml)
-        cfg_dir = tmp_path / ".lightcone"
-        cfg_dir.mkdir()
-        (cfg_dir / "lightcone.yaml").write_text("cluster: perlmutter\n")
-        name, _ = resolve_cluster(tmp_path, cli_cluster=None)
-        assert name == "perlmutter"
-
-    def test_single_cluster_fallback(self, tmp_path, perlmutter_yaml):
-        save_cluster_config("perlmutter", perlmutter_yaml)
-        name, _ = resolve_cluster(tmp_path, cli_cluster=None)
-        assert name == "perlmutter"
-
-    def test_no_resolution_returns_none(self, tmp_path, perlmutter_yaml):
-        save_cluster_config("a", perlmutter_yaml)
-        save_cluster_config("b", perlmutter_yaml)
-        assert resolve_cluster(tmp_path, cli_cluster=None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +179,6 @@ class TestSbatchRender:
         ])
         script = render_sbatch(spec)
         assert "#SBATCH --constraint=cpu" in script
-        # No per-srun --constraint when uniform.
         assert script.count("--constraint=") == 1
 
     def test_multipool_cpu_gpu_emits_two_srun(self):
@@ -218,13 +187,10 @@ class TestSbatchRender:
             WorkerPool(nodes=1, constraint="gpu", resources={"GPU": 4}),
         ])
         script = render_sbatch(spec)
-        # Total nodes = sum of pools.
         assert "#SBATCH --nodes=4" in script
-        # Two srun lines, each with its own constraint.
         assert script.count("srun") >= 2
         assert "--constraint=cpu" in script
         assert "--constraint=gpu" in script
-        # GPU pool advertises Dask resources; CPU pool doesn't.
         assert '--resources "GPU=4"' in script
 
     def test_missing_account_raises(self):
@@ -286,7 +252,7 @@ class TestEnsureWorkerEnv:
 
 
 # ---------------------------------------------------------------------------
-# QoS preflight (port of TestQoSEligibility from test_runner)
+# QoS preflight
 # ---------------------------------------------------------------------------
 
 
@@ -310,7 +276,6 @@ class TestQoSPreflight:
         from lightcone.engine.clusters._slurm import validate_against_qos
 
         spec = _spec(qos="debug", walltime="2h")
-        # Should not raise; logs a warning.
         result = validate_against_qos(spec)
         assert result.qos == "debug"
 
@@ -318,9 +283,8 @@ class TestQoSPreflight:
         from lightcone.engine.clusters._slurm import validate_against_qos
 
         self._populate_cache()
-        spec = _spec(qos="debug", walltime="2h")        # debug caps at 30 min
+        spec = _spec(qos="debug", walltime="2h")
         result = validate_against_qos(spec, strategy="fit")
-        # walltime should now fit within debug's 30-min cap.
         assert parse_walltime_seconds(result.walltime) <= 30 * 60
 
     def test_eligible_passthrough(self):
@@ -333,7 +297,7 @@ class TestQoSPreflight:
 
 
 # ---------------------------------------------------------------------------
-# Attach (in-allocation) — `lc cluster attach`
+# Per-project state file CRUD
 # ---------------------------------------------------------------------------
 
 
@@ -351,6 +315,180 @@ def _record(**overrides) -> ClusterRecord:
     return ClusterRecord(**base)
 
 
+class TestProjectStateFile:
+    def test_round_trip(self, tmp_path):
+        rec = _record()
+        write_project_state(tmp_path, rec)
+        loaded = read_project_state(tmp_path)
+        assert loaded == rec
+
+    def test_state_path_in_project_lightcone_dir(self, tmp_path):
+        assert project_state_path(tmp_path) == tmp_path / ".lightcone" / "cluster.state.json"
+
+    def test_read_missing_returns_none(self, tmp_path):
+        assert read_project_state(tmp_path) is None
+
+    def test_clear_is_idempotent(self, tmp_path):
+        clear_project_state(tmp_path)  # no file
+        write_project_state(tmp_path, _record())
+        clear_project_state(tmp_path)
+        assert read_project_state(tmp_path) is None
+
+    def test_extra_fields_in_state_file_are_ignored(self, tmp_path):
+        path = project_state_path(tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "name": "fwd",
+            "type": "slurm",
+            "job_id": "1",
+            "site": "perlmutter",
+            "submitted_at": "2025-01-01T00:00:00+00:00",
+            "walltime_seconds": 0,
+            "scheduler_file": "/tmp/sched.json",
+            "future_field_we_dont_know": True,
+        }))
+        rec = read_project_state(tmp_path)
+        assert rec is not None
+        assert rec.name == "fwd"
+
+
+# ---------------------------------------------------------------------------
+# Login-node detection
+# ---------------------------------------------------------------------------
+
+
+class TestLoginNodeDetection:
+    def test_no_slurm_no_nersc(self, monkeypatch):
+        monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+        monkeypatch.delenv("NERSC_HOST", raising=False)
+        monkeypatch.delenv("LMOD_SYSTEM_NAME", raising=False)
+        assert is_login_node() is False
+
+    def test_nersc_set_no_slurm(self, monkeypatch):
+        monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+        monkeypatch.setenv("NERSC_HOST", "perlmutter")
+        assert is_login_node() is True
+
+    def test_inside_salloc_is_not_login(self, monkeypatch):
+        monkeypatch.setenv("SLURM_JOB_ID", "123")
+        monkeypatch.setenv("NERSC_HOST", "perlmutter")
+        assert is_login_node() is False
+
+
+# ---------------------------------------------------------------------------
+# Unified `start_cluster` dispatcher
+# ---------------------------------------------------------------------------
+
+
+class TestStartClusterDispatch:
+    def test_target_dispatches_to_sbatch(self, perlmutter_yaml, monkeypatch, tmp_path):
+        save_cluster_config("perlmutter", perlmutter_yaml)
+        monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+        sbatch_calls: list = []
+
+        def fake_start_slurm(target, config, overrides, *, project_root, strategy):
+            sbatch_calls.append((target, project_root))
+            from lightcone.engine.clusters._common import ClusterInfo
+            return ClusterInfo(
+                spec=spec_from_config(target, config),
+                record=_record(name=target, mode="sbatch"),
+                state="PENDING", scheduler_address=None,
+            )
+
+        monkeypatch.setattr(
+            "lightcone.engine.clusters._slurm.start_slurm_cluster", fake_start_slurm,
+        )
+        info = start_cluster(target="perlmutter", project_root=tmp_path)
+        assert sbatch_calls == [("perlmutter", tmp_path.resolve())]
+        assert info.record.mode == "sbatch"
+
+    def test_inside_salloc_dispatches_to_attach(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SLURM_JOB_ID", "9999")
+        called: list = []
+
+        def fake_attach(*, project_root):
+            called.append(project_root)
+            from lightcone.engine.clusters._common import ClusterInfo
+            return ClusterInfo(
+                spec=_spec(),
+                record=_record(name="_attached_9999", mode="attached", job_id="9999"),
+                state="PENDING", scheduler_address=None,
+            )
+
+        monkeypatch.setattr(
+            "lightcone.engine.clusters._slurm.attach_to_allocation", fake_attach,
+        )
+        info = start_cluster(project_root=tmp_path)
+        assert called == [tmp_path.resolve()]
+        assert info.record.mode == "attached"
+
+    def test_login_node_refuses_local(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+        monkeypatch.setenv("NERSC_HOST", "perlmutter")
+        with pytest.raises(RuntimeError, match="Refusing to start a local cluster"):
+            start_cluster(project_root=tmp_path)
+
+    def test_laptop_dispatches_to_local(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+        monkeypatch.delenv("NERSC_HOST", raising=False)
+        monkeypatch.delenv("LMOD_SYSTEM_NAME", raising=False)
+        called: list = []
+
+        def fake_local(project_root):
+            called.append(project_root)
+            from lightcone.engine.clusters._common import ClusterInfo
+            return ClusterInfo(
+                spec=_spec(), record=_record(name="_local", mode="local"),
+                state="RUNNING", scheduler_address="tcp://localhost:8786",
+            )
+
+        monkeypatch.setattr(
+            "lightcone.engine.clusters._local.start_local_cluster", fake_local,
+        )
+        info = start_cluster(project_root=tmp_path)
+        assert called == [tmp_path.resolve()]
+        assert info.record.mode == "local"
+
+    def test_unknown_target_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="No cluster target"):
+            start_cluster(target="ghost", project_root=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Unified `stop_cluster` dispatcher
+# ---------------------------------------------------------------------------
+
+
+class TestStopClusterDispatch:
+    def test_no_active_cluster_is_noop(self, tmp_path):
+        stop_cluster(project_root=tmp_path)  # no error
+
+    def test_local_dispatches_to_local_stop(self, monkeypatch, tmp_path):
+        write_project_state(tmp_path, _record(name="_local", mode="local"))
+        called: list = []
+        monkeypatch.setattr(
+            "lightcone.engine.clusters._local.stop_local_cluster",
+            lambda *, project_root: called.append(project_root),
+        )
+        stop_cluster(project_root=tmp_path)
+        assert called == [tmp_path.resolve()]
+
+    def test_slurm_dispatches_to_slurm_stop(self, monkeypatch, tmp_path):
+        write_project_state(tmp_path, _record(name="perl", mode="sbatch"))
+        called: list = []
+        monkeypatch.setattr(
+            "lightcone.engine.clusters._slurm.stop_slurm_cluster",
+            lambda *, project_root: called.append(project_root),
+        )
+        stop_cluster(project_root=tmp_path)
+        assert called == [tmp_path.resolve()]
+
+
+# ---------------------------------------------------------------------------
+# Attach lifecycle (in-allocation)
+# ---------------------------------------------------------------------------
+
+
 class TestAttachToAllocation:
     def test_errors_outside_allocation(self, monkeypatch):
         from lightcone.engine.clusters._slurm import attach_to_allocation
@@ -359,371 +497,131 @@ class TestAttachToAllocation:
         with pytest.raises(RuntimeError, match="Not inside a SLURM allocation"):
             attach_to_allocation()
 
-    def test_writes_attached_state_and_does_not_sbatch(
-        self, monkeypatch, tmp_path,
-    ):
+    def test_writes_attached_state_with_pg_url(self, monkeypatch, tmp_path):
         from lightcone.engine.clusters._slurm import attach_to_allocation
 
         monkeypatch.setenv("SLURM_JOB_ID", "12345")
         monkeypatch.setenv("SLURM_JOB_NUM_NODES", "2")
         monkeypatch.setenv("SLURM_CPUS_ON_NODE", "64")
 
-        # Avoid real subprocess + filesystem expansion.
         sched_proc = MagicMock(pid=111)
         worker_proc = MagicMock(pid=222)
-        # First Popen = scheduler, second = worker srun.
         with patch(
             "lightcone.engine.clusters._slurm.subprocess.Popen",
             side_effect=[sched_proc, worker_proc],
         ) as popen, patch(
             "lightcone.engine.clusters._slurm.subprocess.run",
-        ) as run, patch(
-            "lightcone.engine.clusters._slurm.expand_path",
-            side_effect=lambda v: str(tmp_path / "scratch"),
-        ):
-            info = attach_to_allocation(project_root=tmp_path)
+        ) as run:
+            attach_to_allocation(project_root=tmp_path)
 
-        # No sbatch / scancel should have been called.
         for call in run.call_args_list:
             assert call.args[0][0] != "sbatch"
 
-        # Two Popen calls — scheduler + worker srun.
         assert popen.call_count == 2
-        sched_argv, worker_argv = popen.call_args_list[0].args[0], popen.call_args_list[1].args[0]
+        sched_argv = popen.call_args_list[0].args[0]
+        worker_argv = popen.call_args_list[1].args[0]
         assert sched_argv[:2] == ["dask", "scheduler"]
         assert worker_argv[0] == "srun"
         assert "--nodes=2" in worker_argv
 
-        # Record persisted with mode=attached and PIDs.
-        assert info.record is not None
-        assert info.record.mode == "attached"
-        assert info.record.process_pids == [111, 222]
-        assert info.record.job_id == "12345"
-
-        # State file matches the synthesized name.
-        record = read_record("_attached_12345")
+        record = read_project_state(tmp_path)
         assert record is not None
         assert record.mode == "attached"
-
-    def test_idempotent_when_already_attached(self, monkeypatch):
-        from lightcone.engine.clusters._slurm import attach_to_allocation
-
-        monkeypatch.setenv("SLURM_JOB_ID", "9999")
-        monkeypatch.setenv("SLURM_JOB_NUM_NODES", "1")
-        monkeypatch.setenv("SLURM_CPUS_ON_NODE", "8")
-
-        # Pre-seed a live attached record.
-        write_record(_record(
-            name="_attached_9999", job_id="9999", mode="attached",
-            process_pids=[111, 222],
-        ))
-        # Make squeue / sacct say "RUNNING".
-        with patch(
-            "lightcone.engine.clusters._slurm.query_slurm_state",
-            return_value="RUNNING",
-        ), patch(
-            "lightcone.engine.clusters._slurm.read_scheduler_address",
-            return_value="tcp://nid000123:8786",
-        ), patch(
-            "lightcone.engine.clusters._slurm.subprocess.Popen",
-        ) as popen:
-            info = attach_to_allocation()
-        # No new processes should be spawned.
-        popen.assert_not_called()
-        # Returned info reflects the existing record.
-        assert info.record is not None
-        assert info.record.process_pids == [111, 222]
-
-    def test_sweeps_stale_attached_record(self, monkeypatch, tmp_path):
-        from lightcone.engine.clusters._slurm import attach_to_allocation
-
-        monkeypatch.setenv("SLURM_JOB_ID", "111")
-        monkeypatch.setenv("SLURM_JOB_NUM_NODES", "1")
-        monkeypatch.setenv("SLURM_CPUS_ON_NODE", "4")
-
-        # Pre-existing attached record from a dead job — should be cleaned up
-        # before the new one is created.
-        write_record(_record(
-            name="_attached_111", job_id="111", mode="attached",
-            scheduler_file=str(tmp_path / "old.json"),
-        ))
-        with patch(
-            "lightcone.engine.clusters._slurm.query_slurm_state",
-            return_value="DEAD",
-        ), patch(
-            "lightcone.engine.clusters._slurm.subprocess.Popen",
-            side_effect=[MagicMock(pid=1), MagicMock(pid=2)],
-        ), patch(
-            "lightcone.engine.clusters._slurm.expand_path",
-            side_effect=lambda v: str(tmp_path / "scratch"),
-        ):
-            info = attach_to_allocation(project_root=tmp_path)
-
-        assert info.record is not None
-        assert info.record.process_pids == [1, 2]
+        assert record.job_id == "12345"
+        assert record.process_pids == [111, 222]
+        # The conftest pg stub populates a non-None URL.
+        assert record.postgres_url == "postgresql://test/db"
 
 
 # ---------------------------------------------------------------------------
-# Idempotent start_slurm_cluster
+# Sbatch start lifecycle (--target)
 # ---------------------------------------------------------------------------
 
 
-class TestStartIdempotency:
-    def test_returns_existing_when_running(self, perlmutter_yaml):
+class TestStartSlurmCluster:
+    def test_records_state_with_pg_url(self, perlmutter_yaml, tmp_path):
         from lightcone.engine.clusters._slurm import start_slurm_cluster
 
-        write_record(_record(name="perlmutter", job_id="987"))
-        with patch(
-            "lightcone.engine.clusters._slurm.query_slurm_state",
-            return_value="RUNNING",
-        ), patch(
-            "lightcone.engine.clusters._slurm.read_scheduler_address",
-            return_value="tcp://nid000:8786",
-        ), patch(
-            "lightcone.engine.clusters._slurm.subprocess.run",
-        ) as run:
-            info = start_slurm_cluster("perlmutter", perlmutter_yaml, {})
-        # Should NOT call sbatch.
-        for call in run.call_args_list:
-            assert call.args[0][0] != "sbatch"
-        assert info.record is not None
-        assert info.record.job_id == "987"
-        assert info.state == "RUNNING"
-
-    def test_sweeps_stale_state_and_resubmits(self, perlmutter_yaml, tmp_path):
-        from lightcone.engine.clusters._slurm import start_slurm_cluster
-
-        # Stale record (dead job).
-        write_record(_record(name="perlmutter", job_id="111"))
         sbatch_result = MagicMock(returncode=0, stdout="Submitted batch job 22222\n", stderr="")
         with patch(
-            "lightcone.engine.clusters._slurm.query_slurm_state",
-            return_value="DEAD",
-        ), patch(
             "lightcone.engine.clusters._slurm.subprocess.run",
             return_value=sbatch_result,
         ), patch(
             "lightcone.engine.clusters._slurm.ensure_worker_env",
         ):
-            info = start_slurm_cluster("perlmutter", perlmutter_yaml, {}, project_root=tmp_path)
+            info = start_slurm_cluster(
+                "perlmutter", perlmutter_yaml, {}, project_root=tmp_path,
+            )
+
         assert info.record is not None
         assert info.record.job_id == "22222"
+        assert info.record.postgres_url == "postgresql://test/db"
+        # State persisted under per-project location.
+        record = read_project_state(tmp_path)
+        assert record is not None and record.job_id == "22222"
 
+    def test_idempotent_when_already_running(self, perlmutter_yaml, tmp_path):
+        from lightcone.engine.clusters._slurm import start_slurm_cluster
 
-# ---------------------------------------------------------------------------
-# Mode-aware stop_slurm_cluster
-# ---------------------------------------------------------------------------
-
-
-class TestStopModeAware:
-    def test_attached_kills_pids_and_does_not_scancel(self, tmp_path):
-        from lightcone.engine.clusters._slurm import stop_slurm_cluster
-
-        write_record(_record(
-            name="_attached_55", job_id="55", mode="attached",
-            scheduler_file=str(tmp_path / "sched.json"),
-            process_pids=[101, 102],
-        ))
-        with patch(
-            "lightcone.engine.clusters._slurm.os.kill",
-        ) as kill, patch(
-            "lightcone.engine.clusters._slurm.subprocess.run",
-        ) as run:
-            stop_slurm_cluster("_attached_55")
-
-        # Two SIGTERMs — one per pid; no scancel.
-        assert kill.call_count == 2
-        for call in run.call_args_list:
-            assert call.args[0][0] != "scancel"
-        assert not state_path("_attached_55").exists()
-
-    def test_sbatch_calls_scancel(self, tmp_path):
-        from lightcone.engine.clusters._slurm import stop_slurm_cluster
-
-        write_record(_record(
-            name="perlmutter", job_id="777", mode="sbatch",
-            scheduler_file=str(tmp_path / "sched.json"),
-        ))
-        with patch(
-            "lightcone.engine.clusters._slurm.subprocess.run",
-        ) as run:
-            stop_slurm_cluster("perlmutter")
-        # scancel should have been called.
-        cancel_calls = [c for c in run.call_args_list if c.args[0][0] == "scancel"]
-        assert len(cancel_calls) == 1
-        assert cancel_calls[0].args[0] == ["scancel", "777"]
-
-
-# ---------------------------------------------------------------------------
-# State file forward/backward-compat for the new `mode`/`process_pids` fields
-# ---------------------------------------------------------------------------
-
-
-class TestStateRecordCompat:
-    def test_old_record_without_mode_defaults_to_sbatch(self):
-        # Simulate a state file written before the `mode` field existed.
-        path = state_path("legacy")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "name": "legacy",
-            "type": "slurm",
-            "job_id": "1",
-            "site": "perlmutter",
-            "submitted_at": "2025-01-01T00:00:00+00:00",
-            "walltime_seconds": 3600,
-            "scheduler_file": "/tmp/sched.json",
-        }))
-        record = read_record("legacy")
-        assert record is not None
-        assert record.mode == "sbatch"
-        assert record.process_pids == []
-
-    def test_extra_fields_are_ignored(self):
-        path = state_path("future")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "name": "future",
-            "type": "slurm",
-            "job_id": "2",
-            "site": "perlmutter",
-            "submitted_at": "2025-01-01T00:00:00+00:00",
-            "walltime_seconds": 3600,
-            "scheduler_file": "/tmp/sched.json",
-            "mode": "attached",
-            "process_pids": [1, 2],
-            "future_field_we_dont_know_about": True,
-        }))
-        record = read_record("future")
-        assert record is not None
-        assert record.mode == "attached"
-        assert record.process_pids == [1, 2]
-
-
-# ---------------------------------------------------------------------------
-# `find_attached_cluster_for_job` — used by `lc run` resolution
-# ---------------------------------------------------------------------------
-
-
-class TestFindAttachedClusterForJob:
-    def test_returns_match(self):
-        from lightcone.engine.clusters import find_attached_cluster_for_job
-
-        write_record(_record(
-            name="_attached_42", job_id="42", mode="attached",
-        ))
+        write_project_state(
+            tmp_path,
+            _record(name="perlmutter", job_id="987", postgres_url="postgresql://x/y"),
+        )
         with patch(
             "lightcone.engine.clusters._slurm.query_slurm_state",
             return_value="RUNNING",
         ), patch(
             "lightcone.engine.clusters._slurm.read_scheduler_address",
             return_value="tcp://nid:8786",
-        ):
-            info = find_attached_cluster_for_job("42")
-        assert info is not None
-        assert info.record is not None
-        assert info.record.name == "_attached_42"
-
-    def test_returns_none_when_no_match(self):
-        from lightcone.engine.clusters import find_attached_cluster_for_job
-
-        assert find_attached_cluster_for_job("999") is None
-
-
-# ---------------------------------------------------------------------------
-# Bundled Postgres (cluster.postgres_url)
-# ---------------------------------------------------------------------------
-
-
-class TestPostgresUrlPersistence:
-    def test_attach_records_postgres_url(self, monkeypatch, tmp_path):
-        """attach_to_allocation calls start_pg and stores the URI in the record."""
-        from lightcone.engine.clusters import _slurm
-
-        monkeypatch.setenv("SLURM_JOB_ID", "5050")
-        monkeypatch.setenv("SLURM_JOB_NUM_NODES", "1")
-        monkeypatch.setenv("SLURM_CPUS_ON_NODE", "8")
-
-        # Override the conftest stub with a sentinel we can match against.
-        sentinel_url = "postgresql://lc@nid001:5432/lc"
-        monkeypatch.setattr(_slurm, "start_pg", lambda project_root: sentinel_url)
-
-        with patch(
-            "lightcone.engine.clusters._slurm.subprocess.Popen",
-            side_effect=[MagicMock(pid=10), MagicMock(pid=11)],
-        ):
-            info = _slurm.attach_to_allocation(project_root=tmp_path)
-
-        assert info.record is not None
-        assert info.record.postgres_url == sentinel_url
-
-    def test_start_records_postgres_url(self, perlmutter_yaml, monkeypatch, tmp_path):
-        """start_slurm_cluster passes start_pg's URI through to the record."""
-        from lightcone.engine.clusters import _slurm
-
-        sentinel_url = "postgresql://lc@login01:5432/lc"
-        monkeypatch.setattr(_slurm, "start_pg", lambda project_root: sentinel_url)
-
-        sbatch = MagicMock(returncode=0, stdout="Submitted batch job 7777\n", stderr="")
-        with patch(
-            "lightcone.engine.clusters._slurm.subprocess.run",
-            return_value=sbatch,
         ), patch(
-            "lightcone.engine.clusters._slurm.ensure_worker_env",
-        ):
-            info = _slurm.start_slurm_cluster(
+            "lightcone.engine.clusters._slurm.subprocess.run",
+        ) as run:
+            info = start_slurm_cluster(
                 "perlmutter", perlmutter_yaml, {}, project_root=tmp_path,
             )
+        for call in run.call_args_list:
+            assert call.args[0][0] != "sbatch"
         assert info.record is not None
-        assert info.record.postgres_url == sentinel_url
+        assert info.record.job_id == "987"
 
-    def test_stop_calls_stop_pg_when_url_recorded(self, monkeypatch, tmp_path):
-        """stop_slurm_cluster invokes stop_pg only when postgres_url is set."""
-        from lightcone.engine.clusters import _slurm
 
-        write_record(_record(
-            name="perlmutter", job_id="123", mode="sbatch",
+# ---------------------------------------------------------------------------
+# Mode-aware stop
+# ---------------------------------------------------------------------------
+
+
+class TestStopSlurmCluster:
+    def test_attached_kills_pids_and_does_not_scancel(self, tmp_path):
+        from lightcone.engine.clusters._slurm import stop_slurm_cluster
+
+        write_project_state(tmp_path, _record(
+            name="_attached_55", job_id="55", mode="attached",
             scheduler_file=str(tmp_path / "sched.json"),
-            postgres_url="postgresql://lc@x:5432/lc",
+            process_pids=[101, 102],
+            postgres_url="postgresql://x/y",
         ))
-        called: dict = {}
-        monkeypatch.setattr(
-            _slurm, "stop_pg", lambda project_root: called.setdefault("root", project_root),
-        )
-        with patch("lightcone.engine.clusters._slurm.subprocess.run"):
-            _slurm.stop_slurm_cluster("perlmutter", project_root=tmp_path)
-        assert called.get("root") == tmp_path
+        with patch(
+            "lightcone.engine.clusters._slurm.os.kill",
+        ) as kill, patch(
+            "lightcone.engine.clusters._slurm.subprocess.run",
+        ) as run:
+            stop_slurm_cluster(project_root=tmp_path)
+        assert kill.call_count == 2
+        for call in run.call_args_list:
+            assert call.args[0][0] != "scancel"
+        assert read_project_state(tmp_path) is None
 
-    def test_stop_skips_stop_pg_when_no_url(self, monkeypatch, tmp_path):
-        """stop_slurm_cluster doesn't call stop_pg for legacy records."""
-        from lightcone.engine.clusters import _slurm
+    def test_sbatch_calls_scancel(self, tmp_path):
+        from lightcone.engine.clusters._slurm import stop_slurm_cluster
 
-        write_record(_record(
-            name="perlmutter", job_id="123", mode="sbatch",
+        write_project_state(tmp_path, _record(
+            name="perlmutter", job_id="777", mode="sbatch",
             scheduler_file=str(tmp_path / "sched.json"),
-            # postgres_url defaults to None
         ))
-        called: dict = {}
-        monkeypatch.setattr(
-            _slurm, "stop_pg", lambda project_root: called.setdefault("root", project_root),
-        )
-        with patch("lightcone.engine.clusters._slurm.subprocess.run"):
-            _slurm.stop_slurm_cluster("perlmutter", project_root=tmp_path)
-        assert "root" not in called  # stop_pg never invoked
-
-    def test_legacy_record_loads_with_postgres_url_none(self):
-        """Old state files (pre-PG) round-trip with postgres_url=None."""
-        path = state_path("legacy")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "name": "legacy",
-            "type": "slurm",
-            "job_id": "1",
-            "site": "perlmutter",
-            "submitted_at": "2025-01-01T00:00:00+00:00",
-            "walltime_seconds": 3600,
-            "scheduler_file": "/tmp/sched.json",
-            "mode": "sbatch",
-        }))
-        record = read_record("legacy")
-        assert record is not None
-        assert record.postgres_url is None
+        with patch(
+            "lightcone.engine.clusters._slurm.subprocess.run",
+        ) as run:
+            stop_slurm_cluster(project_root=tmp_path)
+        cancel_calls = [c for c in run.call_args_list if c.args[0][0] == "scancel"]
+        assert len(cancel_calls) == 1
+        assert cancel_calls[0].args[0] == ["scancel", "777"]

@@ -86,8 +86,14 @@ outputs:
         assert status["pending_output"] == "pending"
         assert status["no_recipe_output"] == "no_recipe"
 
-    def test_files_without_dagster_event_still_pending(self, tmp_path):
-        """Files on disk without a Dagster event should show 'pending'."""
+    def test_files_on_disk_without_dagster_event_count_as_materialized(self, tmp_path):
+        """Files in the IO manager's canonical location are the ground truth.
+
+        When the Dagster instance isn't reachable (no active cluster), status
+        falls back to filesystem inspection — the IO manager guarantees
+        ``results/<universe>/<output>/`` is canonical, so non-empty means
+        the output exists.
+        """
         astra_yaml = tmp_path / "astra.yaml"
         astra_yaml.write_text("""
 version: "1.0"
@@ -99,14 +105,12 @@ outputs:
     recipe:
       command: python run.py
 """)
-        # Create files on disk (simulating manual script run)
         result_dir = tmp_path / "results" / "baseline" / "result"
         result_dir.mkdir(parents=True)
         (result_dir / "output.json").write_text("{}")
 
-        # No Dagster instance / no events → should be pending
         status = get_output_status(tmp_path, "baseline")
-        assert status["result"] == "pending"
+        assert status["result"] == "materialized"
 
     def test_different_universes_independent(self, tmp_path):
         """Materializing in one universe should not affect another."""
@@ -148,7 +152,11 @@ outputs:
         assert result == {}
 
     def test_multiple_universes(self, tmp_path, monkeypatch):
-        """Should return status for each universe YAML file."""
+        """Should return status for each universe YAML file.
+
+        Uses filesystem ground-truth (output dir non-empty = materialized)
+        since there's no active cluster in the test.
+        """
         astra_yaml = tmp_path / "astra.yaml"
         astra_yaml.write_text("""
 version: "1.0"
@@ -168,19 +176,10 @@ outputs:
         (universes_dir / "alt.yaml").write_text(
             'id: alt\ndecisions: {}\n'
         )
-
-        # Create .lightcone/dagster.yaml — use absolute base_dir so it works regardless of CWD
-        lightcone_dir = tmp_path / ".lightcone"
-        lightcone_dir.mkdir(parents=True, exist_ok=True)
-        dagster_dir = tmp_path / "results" / ".dagster"
-        dagster_dir.mkdir(parents=True, exist_ok=True)
-        (lightcone_dir / "dagster.yaml").write_text(
-            f"storage:\n  sqlite:\n    base_dir: {dagster_dir}\n"
-        )
-        # chdir so DagsterInstance resolves paths correctly
-        monkeypatch.chdir(tmp_path)
-        instance = dg.DagsterInstance.from_config(str(lightcone_dir))
-        materialize_via_dagster(instance, "baseline", "result")
+        # baseline has on-disk output; alt does not.
+        baseline_out = tmp_path / "results" / "baseline" / "result"
+        baseline_out.mkdir(parents=True)
+        (baseline_out / "output.json").write_text("{}")
 
         result = get_all_universe_status(tmp_path)
         assert "baseline" in result
