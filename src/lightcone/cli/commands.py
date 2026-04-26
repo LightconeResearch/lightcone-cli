@@ -267,8 +267,40 @@ def run(
     project = _project_root()
     universes = [universe] if universe else discover_universes(project)
 
-    runtime = load_runtime(project_path=project)
-    snakefile_path, _ = generate(project, universes=universes, runtime=runtime)
+    choice = load_runtime(project_path=project)
+    snakefile_path, cfg_path = generate(
+        project, universes=universes, runtime=choice.runtime
+    )
+
+    # Provenance guard: when ``runtime: auto`` silently fell back to
+    # ``none`` and the spec declares any containers, the recipe will run
+    # on the host while the manifest's ``container_image`` field still
+    # records the declared image — i.e. a provenance lie. Warn loudly so
+    # the user installs a runtime, sets ``runtime: none`` explicitly, or
+    # removes the container declarations.
+    if choice.runtime == "none" and not choice.explicit:
+        cfg_data = json.loads(cfg_path.read_text())
+        declared = sorted({
+            entry["container_image"]
+            for rule_entries in cfg_data.values()
+            for entry in rule_entries.values()
+            if entry.get("container_image")
+        })
+        if declared:
+            console.print(
+                "[yellow]⚠ No container runtime found on PATH "
+                "(checked docker, podman, podman-hpc).[/yellow]\n"
+                "  The following declared containers will be ignored:\n"
+                + "\n".join(f"    [dim]•[/dim] {c}" for c in declared)
+                + "\n  Recipes will run on the host without isolation, "
+                "but each manifest will still record\n"
+                "  the declared [cyan]container_image[/cyan] — recorded "
+                "provenance will not match what executed.\n"
+                "  Install [cyan]docker[/cyan], [cyan]podman[/cyan], or "
+                "[cyan]podman-hpc[/cyan], or set\n"
+                "  [cyan]container: {runtime: none}[/cyan] in "
+                "[cyan]~/.lightcone/config.yaml[/cyan] to silence.\n"
+            )
 
     targets: list[str] = []
     if outputs:
@@ -522,6 +554,7 @@ def build(force: bool, runtime: str | None) -> None:
         image_exists_locally,
         is_containerfile,
         load_runtime,
+        pull_image,
     )
     from lightcone.engine.tree import collect_tree_outputs
 
@@ -529,7 +562,11 @@ def build(force: bool, runtime: str | None) -> None:
     spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
 
     try:
-        resolved_runtime = runtime or load_runtime(project_path=project)
+        if runtime:
+            resolved_runtime = runtime
+        else:
+            choice = load_runtime(project_path=project)
+            resolved_runtime = choice.runtime
     except ContainerBuildError as e:
         raise click.ClickException(str(e))
 
@@ -556,9 +593,18 @@ def build(force: bool, runtime: str | None) -> None:
             continue
         seen.add(spec_str)
         if not is_containerfile(spec_str, project):
+            # Registry image — pull so ``lc run`` can use ``--pull=never``
+            # without depending on the runtime's registry resolution.
+            if image_exists_locally(spec_str, runtime=resolved_runtime) and not force:
+                console.print(f"[dim]Cached[/dim] {spec_str}")
+                continue
             console.print(
-                f"[dim]Skipping {spec_str} — registry image, no build needed.[/dim]"
+                f"[cyan]Pulling[/cyan] {spec_str} [dim](via {resolved_runtime})[/dim]"
             )
+            try:
+                pull_image(spec_str, runtime=resolved_runtime)
+            except ContainerBuildError as e:
+                raise click.ClickException(str(e))
             continue
 
         containerfile = project / spec_str

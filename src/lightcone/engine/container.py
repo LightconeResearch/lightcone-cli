@@ -81,6 +81,29 @@ class ContainerStatus:
     containerfile: str | None = None
 
 
+@dataclass(frozen=True)
+class RuntimeChoice:
+    """Result of resolving the container runtime to use.
+
+    ``runtime`` is the resolved value (``docker | podman | podman-hpc | none``).
+    ``explicit`` is ``True`` when the user pinned this value in
+    ``~/.lightcone/config.yaml`` — i.e. they typed ``runtime: docker``,
+    ``runtime: podman``, … or ``runtime: none``. ``False`` means
+    ``runtime: auto`` (or no config), and the runtime is whatever
+    detection produced — including ``none`` as a silent fallback.
+
+    Callers use ``explicit`` to decide whether silently running without
+    isolation is acceptable. When the user explicitly opted out, no
+    surprise. When auto fell back to ``none`` against the spec's
+    declared containers, the manifest's ``container_image`` field would
+    misrepresent what actually executed — that is a provenance hazard
+    and the caller should warn or refuse to proceed.
+    """
+
+    runtime: str
+    explicit: bool
+
+
 # ---------------------------------------------------------------------------
 # Runtime detection / config
 # ---------------------------------------------------------------------------
@@ -98,7 +121,7 @@ def _global_config_path() -> Path:
     return Path.home() / ".lightcone" / "config.yaml"
 
 
-def load_runtime(*, project_path: Path | None = None) -> str:
+def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
     """Resolve the container runtime to use.
 
     Reads ``container.runtime`` from ``~/.lightcone/config.yaml`` (the
@@ -106,39 +129,40 @@ def load_runtime(*, project_path: Path | None = None) -> str:
     consulted today). Values:
 
     * ``auto`` (default) — first available runtime in :data:`RUNTIMES`,
-      else ``"none"``.
-    * ``docker | podman | podman-hpc`` — explicit.
-    * ``none`` — no container; recipes run on the host.
+      else falls back to ``"none"`` with ``explicit=False``.
+    * ``docker | podman | podman-hpc`` — explicit; binary must exist.
+    * ``none`` — explicit opt-out; recipes run on the host.
 
-    Raises ``ContainerBuildError`` if an explicit runtime is configured
-    but its binary is missing on PATH.
+    Raises :class:`ContainerBuildError` if an explicit runtime is
+    configured but its binary is missing on PATH, or if the configured
+    value is unrecognised.
     """
     cfg_path = _global_config_path()
-    runtime = "auto"
+    requested = "auto"
     if cfg_path.is_file():
         try:
             data = yaml.safe_load(cfg_path.read_text()) or {}
-            runtime = (data.get("container") or {}).get("runtime") or "auto"
+            requested = (data.get("container") or {}).get("runtime") or "auto"
         except yaml.YAMLError:
             logger.warning("Could not parse %s; using runtime: auto", cfg_path)
-            runtime = "auto"
+            requested = "auto"
 
-    if runtime == "auto":
-        return detect_runtime() or "none"
-    if runtime == "none":
-        return "none"
-    if runtime not in RUNTIMES:
+    if requested == "auto":
+        return RuntimeChoice(runtime=detect_runtime() or "none", explicit=False)
+    if requested == "none":
+        return RuntimeChoice(runtime="none", explicit=True)
+    if requested not in RUNTIMES:
         raise ContainerBuildError(
-            f"Unknown container.runtime {runtime!r} in {cfg_path}. "
+            f"Unknown container.runtime {requested!r} in {cfg_path}. "
             f"Expected one of: auto, none, {', '.join(RUNTIMES)}."
         )
-    if shutil.which(runtime) is None:
+    if shutil.which(requested) is None:
         raise ContainerBuildError(
-            f"Configured container.runtime {runtime!r} is not on PATH. "
-            f"Install {runtime} or set container.runtime to a different value "
+            f"Configured container.runtime {requested!r} is not on PATH. "
+            f"Install {requested} or set container.runtime to a different value "
             f"in {cfg_path}."
         )
-    return runtime
+    return RuntimeChoice(runtime=requested, explicit=True)
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +287,40 @@ def build_image(
     )
 
 
+def pull_image(image: str, *, runtime: str) -> None:
+    """Pull *image* into the runtime's local image store.
+
+    Used by ``lc build`` so that pre-built registry images (e.g.
+    ``python:3.12-slim``) are present before ``lc run`` invokes the
+    runtime with ``--pull=never``.
+
+    Raises :class:`ContainerBuildError` on failure or if *runtime* isn't
+    on PATH.
+    """
+    if runtime not in RUNTIMES:
+        raise ContainerBuildError(
+            f"Unsupported runtime {runtime!r}; expected one of {RUNTIMES}."
+        )
+    try:
+        proc = subprocess.run(
+            [runtime, "pull", image],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        raise ContainerBuildError(
+            f"{runtime} is not installed or not on PATH."
+        )
+    if proc.returncode != 0:
+        raise ContainerBuildError(
+            f"{runtime} pull {image} failed (exit code {proc.returncode}):\n"
+            f"{proc.stderr}"
+        )
+    if runtime == "podman-hpc":
+        _podman_hpc_migrate(image)
+
+
 def _podman_hpc_migrate(tag: str) -> None:
     """Run ``podman-hpc migrate <tag>`` to make image available on compute nodes."""
     try:
@@ -338,12 +396,20 @@ def wrap_recipe(
             f"Unsupported run runtime {runtime!r}; expected one of {RUNTIMES} or 'none'."
         )
     inner = shlex.quote(recipe)
-    # Bind-mount and chdir to $PWD so recipes that write to relative paths
-    # (e.g. ``> {output[0]}/data.txt``) land in the project tree the same
-    # way they would on the host. Snakemake invokes us with cwd=project,
-    # so $PWD is the project root.
+    # ``--pull=never`` is critical for podman, which by default does
+    # short-name resolution against ``unqualified-search-registries``
+    # in registries.conf — that fails for ``lc-<project>-<hash>`` tags
+    # produced by ``lc build`` even though the image sits in local
+    # storage. Telling the runtime not to fetch sidesteps the issue and
+    # is the same semantics on docker and podman-hpc. Registry images
+    # (``python:3.12-slim``, ``ghcr.io/...``) must be pulled in advance
+    # by ``lc build``.
+    #
+    # Bind-mount and chdir to $PWD so recipes that write to relative
+    # paths land in the project tree. Snakemake invokes us with
+    # cwd=project, so $PWD is the project root.
     return (
-        f'{runtime} run --rm '
+        f'{runtime} run --rm --pull=never '
         f'-v "$PWD":"$PWD" -w "$PWD" '
         f'{image} bash -c {inner}'
     )

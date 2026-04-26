@@ -24,6 +24,7 @@ from lightcone.engine.container import (
     image_exists_podman_hpc,
     is_containerfile,
     load_runtime,
+    pull_image,
     resolve_image_for_run,
     wrap_recipe,
 )
@@ -197,6 +198,43 @@ class TestBuildImage:
         assert "PY_VERSION=3.12" in cmd
 
 
+# ---- pull_image -----------------------------------------------------------
+
+
+class TestPullImage:
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_pull_success_docker(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        pull_image("python:3.12-slim", runtime="docker")
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["docker", "pull", "python:3.12-slim"]
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_pull_success_podman(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        pull_image("python:3.12-slim", runtime="podman")
+        assert mock_run.call_args[0][0][0] == "podman"
+
+    @patch("lightcone.engine.container._podman_hpc_migrate")
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_pull_podman_hpc_migrates(
+        self, mock_run: MagicMock, mock_migrate: MagicMock
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        pull_image("python:3.12-slim", runtime="podman-hpc")
+        mock_migrate.assert_called_once_with("python:3.12-slim")
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_pull_failure_raises(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
+        with pytest.raises(ContainerBuildError, match="docker pull"):
+            pull_image("python:3.12-slim", runtime="docker")
+
+    def test_unsupported_runtime_raises(self) -> None:
+        with pytest.raises(ContainerBuildError, match="Unsupported runtime"):
+            pull_image("img", runtime="apptainer")
+
+
 # ---- detect_runtime / load_runtime ---------------------------------------
 
 
@@ -235,21 +273,30 @@ class TestLoadRuntime:
         monkeypatch.setattr(
             "lightcone.engine.container.detect_runtime", lambda: "docker"
         )
-        assert load_runtime() == "docker"
+        choice = load_runtime()
+        assert choice.runtime == "docker"
+        assert choice.explicit is False
 
-    def test_auto_with_no_runtime_returns_none(
+    def test_auto_with_no_runtime_returns_none_implicitly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """auto + nothing on PATH → none, but explicit=False so the
+        caller can warn that this is a silent fallback."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(
             "lightcone.engine.container.detect_runtime", lambda: None
         )
-        assert load_runtime() == "none"
+        choice = load_runtime()
+        assert choice.runtime == "none"
+        assert choice.explicit is False
 
     def test_explicit_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """User opted out of containers — explicit=True, no warnings owed."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         self._write_config(tmp_path, {"container": {"runtime": "none"}})
-        assert load_runtime() == "none"
+        choice = load_runtime()
+        assert choice.runtime == "none"
+        assert choice.explicit is True
 
     def test_explicit_runtime_present(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -260,7 +307,9 @@ class TestLoadRuntime:
             lambda name: f"/usr/bin/{name}" if name == "podman" else None,
         )
         self._write_config(tmp_path, {"container": {"runtime": "podman"}})
-        assert load_runtime() == "podman"
+        choice = load_runtime()
+        assert choice.runtime == "podman"
+        assert choice.explicit is True
 
     def test_explicit_runtime_missing_on_path_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -325,18 +374,27 @@ class TestWrapRecipe:
         wrapped = wrap_recipe(
             "echo hi", image="python:3.12-slim", runtime="podman"
         )
-        assert wrapped.startswith("podman run --rm ")
+        assert wrapped.startswith("podman run --rm --pull=never ")
         assert "python:3.12-slim" in wrapped
         # The recipe is shell-quoted to survive nested shells.
         assert shlex.quote("echo hi") in wrapped
 
     def test_docker_wrap(self) -> None:
         wrapped = wrap_recipe("echo hi", image="img:v1", runtime="docker")
-        assert wrapped.startswith("docker run --rm ")
+        assert wrapped.startswith("docker run --rm --pull=never ")
 
     def test_podman_hpc_wrap(self) -> None:
         wrapped = wrap_recipe("echo hi", image="img:v1", runtime="podman-hpc")
-        assert wrapped.startswith("podman-hpc run --rm ")
+        assert wrapped.startswith("podman-hpc run --rm --pull=never ")
+
+    def test_pull_never_short_name_safe(self) -> None:
+        """``--pull=never`` is what makes locally-built short-name images
+        like ``lc-foo-abc123`` work under podman, which would otherwise
+        try to resolve the name against unqualified-search-registries."""
+        wrapped = wrap_recipe(
+            "echo", image="lc-foo-abc123", runtime="podman"
+        )
+        assert "--pull=never" in wrapped
 
     def test_preserves_snakemake_placeholders(self) -> None:
         """Snakemake's ``{output[0]}`` must survive the wrap so it can
