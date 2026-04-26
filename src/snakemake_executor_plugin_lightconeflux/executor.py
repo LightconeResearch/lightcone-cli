@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shlex
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from snakemake_interface_common.exceptions import WorkflowError
 from snakemake_interface_executor_plugins.executors.base import (  # type: ignore[import-untyped]
@@ -21,6 +22,22 @@ try:
     from flux.job import JobspecV1
 except ImportError:
     flux = None
+
+
+def _inject_memory(resources: list[dict[str, Any]], mem_mb: int) -> None:
+    """Add a `memory` resource under every slot in a jobspec resource tree.
+
+    `from_command` builds a tree with `slot` nodes that hold `core` (and
+    optionally `gpu`) children. Adding `memory` as a sibling expresses the
+    per-slot memory requirement in RFC 14 form.
+    """
+    for r in resources:
+        if r.get("type") == "slot":
+            r.setdefault("with", []).append(
+                {"type": "memory", "count": mem_mb, "unit": "MB"}
+            )
+        if "with" in r:
+            _inject_memory(r["with"], mem_mb)
 
 
 class LightconeFluxExecutor(RemoteExecutor):  # type: ignore[misc]
@@ -64,6 +81,10 @@ class LightconeFluxExecutor(RemoteExecutor):  # type: ignore[misc]
         nodes = job.resources.get("nodes")
         if nodes:
             fluxjob.num_nodes = int(nodes)
+
+        mem_mb = job.resources.get("mem_mb")
+        if mem_mb:
+            _inject_memory(fluxjob.resources, int(mem_mb))
 
         flux_future = self._fexecutor.submit(fluxjob)
         aux = {"flux_future": flux_future, "flux_logfile": flux_logfile}

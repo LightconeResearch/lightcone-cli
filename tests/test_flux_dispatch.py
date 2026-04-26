@@ -69,3 +69,50 @@ def test_plugin_module_imports_without_flux_core() -> None:
 
     assert mod.common_settings.non_local_exec is True
     assert mod.Executor is not None
+
+
+def test_inject_memory_into_simple_slot_tree() -> None:
+    """Single-slot tree (`from_command(num_tasks=N, cores_per_task=C)`)."""
+    from snakemake_executor_plugin_lightconeflux.executor import _inject_memory
+
+    resources = [
+        {"type": "slot", "label": "task", "count": 1, "with": [{"type": "core", "count": 4}]}
+    ]
+    _inject_memory(resources, 8000)
+
+    children = resources[0]["with"]
+    assert {"type": "core", "count": 4} in children
+    assert {"type": "memory", "count": 8000, "unit": "MB"} in children
+
+
+def test_inject_memory_into_multinode_tree() -> None:
+    """Multi-node tree (`from_command(..., num_nodes=K)`) — slot is nested."""
+    from snakemake_executor_plugin_lightconeflux.executor import _inject_memory
+
+    resources = [
+        {
+            "type": "node",
+            "count": 2,
+            "with": [
+                {
+                    "type": "slot",
+                    "label": "task",
+                    "count": 4,
+                    "with": [{"type": "core", "count": 1}],
+                }
+            ],
+        }
+    ]
+    _inject_memory(resources, 16000)
+
+    slot_children = resources[0]["with"][0]["with"]
+    assert any(c["type"] == "memory" and c["count"] == 16000 for c in slot_children)
+
+
+def test_inject_memory_creates_with_list_when_missing() -> None:
+    """A slot without an existing `with` key is rare but should still work."""
+    from snakemake_executor_plugin_lightconeflux.executor import _inject_memory
+
+    resources = [{"type": "slot", "label": "task", "count": 1}]
+    _inject_memory(resources, 4000)
+    assert resources[0]["with"] == [{"type": "memory", "count": 4000, "unit": "MB"}]

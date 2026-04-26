@@ -6,6 +6,9 @@ Vendored and adapted from upstream ``snakemake-executor-plugin-flux``
 Differences from upstream:
 - Maps ``gpus`` / ``gpus_per_task`` resources to ``JobspecV1.gpus_per_task``.
 - Maps ``nodes`` resource to ``JobspecV1.num_nodes``.
+- Maps ``mem_mb`` by injecting a ``memory`` resource under each slot in the
+  jobspec. Honored by memory-aware Flux instances; recorded but unenforced
+  on default-configured instances (which is no worse than dropping it).
 - Fixes ``cancel_jobs`` (upstream references attributes that do not exist on
   ``SubmittedJobInfo``).
 """
