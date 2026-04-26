@@ -16,6 +16,12 @@ from snakemake_interface_executor_plugins.jobs import (  # type: ignore[import-u
     JobExecutorInterface,
 )
 
+from lightcone.engine.dask_cluster import (
+    RESOURCE_CPUS,
+    RESOURCE_GPUS,
+    RESOURCE_MEMORY,
+)
+
 
 def _run_shell(cmd: str) -> int:
     """Worker-side: run the shell command and return its exit code.
@@ -30,13 +36,13 @@ def _build_resources(job: JobExecutorInterface) -> dict[str, float]:
     res: dict[str, float] = {}
     cpus = job.resources.get("cpus_per_task") or job.threads
     if cpus:
-        res["cpus"] = float(cpus)
+        res[RESOURCE_CPUS] = float(cpus)
     mem_mb = job.resources.get("mem_mb")
     if mem_mb:
-        res["memory"] = float(mem_mb) * 1e6
+        res[RESOURCE_MEMORY] = float(mem_mb) * 1e6
     gpus = job.resources.get("gpus_per_task") or job.resources.get("gpus")
     if gpus:
-        res["gpus"] = float(gpus)
+        res[RESOURCE_GPUS] = float(gpus)
     return res
 
 

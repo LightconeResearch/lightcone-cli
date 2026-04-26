@@ -21,10 +21,16 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+
+# Resource keys advertised by workers and requested per-task. These strings
+# form a contract between the worker bootstrap (here) and the executor plugin
+# (snakemake_executor_plugin_dask.executor). Dask matches by string equality.
+RESOURCE_CPUS = "cpus"
+RESOURCE_MEMORY = "memory"
+RESOURCE_GPUS = "gpus"
 
 
 @dataclass
@@ -57,11 +63,11 @@ def _detect_node_shape() -> _NodeShape:
 
 def _resources_arg(shape: _NodeShape) -> str:
     """Format `--resources` for `dask worker`."""
-    parts = [f"cpus={shape.cpus}"]
+    parts = [f"{RESOURCE_CPUS}={shape.cpus}"]
     if shape.mem_bytes:
-        parts.append(f"memory={shape.mem_bytes}")
+        parts.append(f"{RESOURCE_MEMORY}={shape.mem_bytes}")
     if shape.gpus:
-        parts.append(f"gpus={shape.gpus}")
+        parts.append(f"{RESOURCE_GPUS}={shape.gpus}")
     return " ".join(parts)
 
 
@@ -91,7 +97,7 @@ def _local_cluster(*, verbose: bool) -> Iterator[str]:
     cluster = LocalCluster(
         n_workers=1,
         threads_per_worker=shape.cpus,
-        resources={"cpus": shape.cpus},
+        resources={RESOURCE_CPUS: shape.cpus},
         dashboard_address=":0",
     )
     if verbose:
@@ -165,20 +171,3 @@ def _slurm_backed_cluster(*, verbose: bool) -> Iterator[str]:
             workers.kill()
             workers.wait()
         cluster.close()
-
-
-def _wait_for_workers(addr: str, n_workers: int, timeout: int) -> None:
-    """Reusable for tests/integration callers; thin shim around Client."""
-    from dask.distributed import Client
-
-    client = Client(addr)
-    try:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if len(client.scheduler_info()["workers"]) >= n_workers:
-                return
-            time.sleep(0.5)
-        registered = len(client.scheduler_info()["workers"])
-        raise TimeoutError(f"Only {registered} of {n_workers} workers registered")
-    finally:
-        client.close()

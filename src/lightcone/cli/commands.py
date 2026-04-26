@@ -339,7 +339,9 @@ def run(
         cmd.extend(["--quiet", "rules", "progress", "host", "reason"])
     cmd.extend(targets)
 
-    if executor == "local":
+    # Dry-run dispatches no jobs, so spinning up a Dask cluster (especially
+    # the SLURM-srun path) would be wasted setup. Run snakemake directly.
+    if executor == "local" or dry_run:
         sys.exit(_invoke_snakemake(cmd, env=None, dry_run=dry_run, verbose=verbose))
 
     from lightcone.engine.dask_cluster import cluster_for_run
