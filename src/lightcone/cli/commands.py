@@ -345,7 +345,7 @@ def run(
     from lightcone.engine.dask_cluster import cluster_for_run
 
     with cluster_for_run(verbose=verbose) as scheduler_addr:
-        cmd = [*cmd, "--executor", "lightconedask"]
+        cmd = [*cmd, "--executor", "dask"]
         env = {**os.environ, "DASK_SCHEDULER_ADDRESS": scheduler_addr}
         sys.exit(_invoke_snakemake(cmd, env=env, dry_run=dry_run, verbose=verbose))
 

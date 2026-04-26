@@ -313,7 +313,7 @@ Users who want a single allocation with many job-steps inside it (today's `attac
 
 The scheduler is always in-process — its lifetime equals the run's lifetime. No service to manage, no orphaned schedulers if the driver crashes.
 
-Snakemake dispatches each rule via our own executor plugin at `src/snakemake_executor_plugin_lightconedask/` (~120 lines): `client.submit(_run_shell, cmd, resources={cpus, memory, gpus}, pure=False)`. Per-rule `threads`/`mem_mb`/`gpus_per_task` translate 1:1 to per-task Dask resources, and the scheduler bin-packs tasks into workers up to each worker's advertised budget. Listing or canceling running jobs is `squeue` / `scancel` directly, and a Dask dashboard is exposed on a random port for live introspection.
+Snakemake dispatches each rule via our own executor plugin at `src/snakemake_executor_plugin_dask/` (~120 lines): `client.submit(_run_shell, cmd, resources={cpus, memory, gpus}, pure=False)`. Per-rule `threads`/`mem_mb`/`gpus_per_task` translate 1:1 to per-task Dask resources, and the scheduler bin-packs tasks into workers up to each worker's advertised budget. Listing or canceling running jobs is `squeue` / `scancel` directly, and a Dask dashboard is exposed on a random port for live introspection.
 
 The same plugin and bootstrap path covers laptop → workstation → SLURM allocation, so there is one execution code path everywhere; substrate choice was deliberate after evaluating Flux (richer hierarchical scheduling but install friction on non-Perlmutter sites).
 

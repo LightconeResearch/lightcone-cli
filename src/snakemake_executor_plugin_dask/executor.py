@@ -40,14 +40,14 @@ def _build_resources(job: JobExecutorInterface) -> dict[str, float]:
     return res
 
 
-class LightconeDaskExecutor(RemoteExecutor):  # type: ignore[misc]
+class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
     def __init__(self, workflow, logger):  # type: ignore[no-untyped-def]
         super().__init__(workflow, logger)
         try:
             from dask.distributed import Client
         except ImportError as exc:
             raise WorkflowError(
-                "dask.distributed is required for the lightconedask executor "
+                "dask.distributed is required for the dask executor "
                 "(`pip install distributed`)."
             ) from exc
 

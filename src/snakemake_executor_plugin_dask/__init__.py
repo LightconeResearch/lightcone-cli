@@ -16,7 +16,7 @@ from snakemake_interface_executor_plugins.settings import (  # type: ignore[impo
     CommonSettings,
 )
 
-from .executor import LightconeDaskExecutor as Executor  # noqa: F401
+from .executor import DaskExecutor as Executor  # noqa: F401
 
 common_settings = CommonSettings(
     job_deploy_sources=True,

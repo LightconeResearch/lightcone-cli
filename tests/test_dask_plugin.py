@@ -1,4 +1,4 @@
-"""Unit tests for the lightconedask Snakemake executor plugin.
+"""Unit tests for the dask Snakemake executor plugin.
 
 The Snakemake executor base classes are heavy and tied to a live Workflow
 instance, so we don't instantiate the plugin's `Executor` directly here.
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from snakemake_executor_plugin_lightconedask.executor import (
+from snakemake_executor_plugin_dask.executor import (
     _build_resources,
     _run_shell,
 )
@@ -62,7 +62,7 @@ def test_build_resources_full_set() -> None:
 
 def test_plugin_module_exposes_common_settings_and_executor() -> None:
     """Snakemake imports the plugin module to read these on discovery."""
-    import snakemake_executor_plugin_lightconedask as mod
+    import snakemake_executor_plugin_dask as mod
 
     assert mod.common_settings.non_local_exec is True
     assert mod.Executor is not None
