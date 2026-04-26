@@ -1,0 +1,135 @@
+"""Unit tests for the cluster bootstrap.
+
+We test the routing decision (which branch fires given env vars) and the
+node-shape detection. The actual `LocalCluster` spin-up is exercised in a
+single smoke test; the `srun`-backed path is mocked because real
+multi-node testing requires SLURM.
+"""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from unittest.mock import patch
+
+import pytest
+
+from lightcone.engine.dask_cluster import (
+    _detect_node_shape,
+    _resources_arg,
+    cluster_for_run,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in (
+        "DASK_SCHEDULER_ADDRESS",
+        "SLURM_JOB_ID",
+        "SLURM_NNODES",
+        "SLURM_CPUS_ON_NODE",
+        "SLURM_MEM_PER_NODE",
+        "SLURM_GPUS_ON_NODE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_detect_shape_falls_back_to_os(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("os.cpu_count", lambda: 8)
+    shape = _detect_node_shape()
+    assert shape.cpus == 8
+    assert shape.gpus == 0
+
+
+def test_detect_shape_reads_slurm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLURM_CPUS_ON_NODE", "64")
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "256000")  # 256 GB in MB
+    monkeypatch.setenv("SLURM_GPUS_ON_NODE", "4")
+    shape = _detect_node_shape()
+    assert shape.cpus == 64
+    assert shape.mem_bytes == 256_000_000_000
+    assert shape.gpus == 4
+
+
+def test_resources_arg_minimal() -> None:
+    from lightcone.engine.dask_cluster import _NodeShape
+
+    arg = _resources_arg(_NodeShape(cpus=8, mem_bytes=0, gpus=0))
+    assert arg == "cpus=8"
+
+
+def test_resources_arg_full() -> None:
+    from lightcone.engine.dask_cluster import _NodeShape
+
+    arg = _resources_arg(_NodeShape(cpus=64, mem_bytes=256_000_000_000, gpus=4))
+    assert arg == "cpus=64 memory=256000000000 gpus=4"
+
+
+def test_existing_scheduler_address_yields_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DASK_SCHEDULER_ADDRESS", "tcp://example:8786")
+
+    with cluster_for_run() as addr:
+        assert addr == "tcp://example:8786"
+
+
+def test_no_env_uses_local_cluster() -> None:
+    """The local-cluster branch should actually start a (tiny) cluster."""
+    sentinel: dict[str, str] = {}
+
+    @contextmanager
+    def _fake_local(*, verbose: bool):
+        sentinel["called"] = "local"
+        yield "tcp://stub:9999"
+
+    with patch("lightcone.engine.dask_cluster._local_cluster", _fake_local):
+        with cluster_for_run() as addr:
+            assert addr == "tcp://stub:9999"
+            assert sentinel["called"] == "local"
+
+
+def test_slurm_env_takes_slurm_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLURM_JOB_ID", "12345")
+    sentinel: dict[str, str] = {}
+
+    @contextmanager
+    def _fake_slurm(*, verbose: bool):
+        sentinel["called"] = "slurm"
+        yield "tcp://stub:9999"
+
+    with patch("lightcone.engine.dask_cluster._slurm_backed_cluster", _fake_slurm):
+        with cluster_for_run() as addr:
+            assert addr == "tcp://stub:9999"
+            assert sentinel["called"] == "slurm"
+
+
+def test_existing_scheduler_address_wins_over_slurm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If both are set, the explicit address takes precedence."""
+    monkeypatch.setenv("DASK_SCHEDULER_ADDRESS", "tcp://existing:8786")
+    monkeypatch.setenv("SLURM_JOB_ID", "12345")
+
+    @contextmanager
+    def _should_not_run(*, verbose: bool):
+        raise AssertionError("slurm path should not have been taken")
+        yield  # pragma: no cover
+
+    with patch("lightcone.engine.dask_cluster._slurm_backed_cluster", _should_not_run):
+        with cluster_for_run() as addr:
+            assert addr == "tcp://existing:8786"
+
+
+@pytest.mark.slow
+def test_local_cluster_smoke() -> None:
+    """End-to-end: a real LocalCluster spins up, accepts a task, tears down."""
+    from dask.distributed import Client
+
+    from lightcone.engine.dask_cluster import _local_cluster
+
+    with _local_cluster(verbose=False) as addr:
+        client = Client(addr)
+        try:
+            assert client.submit(lambda x: x + 1, 41).result() == 42
+        finally:
+            client.close()

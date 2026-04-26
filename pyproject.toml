@@ -19,11 +19,10 @@ dependencies = [
     "snakemake-executor-plugin-slurm>=1.0",
     "snakemake-interface-executor-plugins>=9.0",
     "snakemake-interface-common>=1.14",
+    "dask>=2024.1",
+    "distributed>=2024.1",
     "langfuse>=2.0",
 ]
-
-[project.optional-dependencies]
-flux = ["flux-python"]
 
 [dependency-groups]
 eval = [
@@ -56,7 +55,10 @@ build-backend = "hatchling.build"
 source = "vcs"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lightcone", "src/snakemake_executor_plugin_lightconeflux"]
+packages = [
+    "src/lightcone",
+    "src/snakemake_executor_plugin_lightconedask",
+]
 
 [tool.hatch.build.targets.wheel.force-include]
 "claude/lightcone" = "lightcone/cli/claude/lightcone"
@@ -64,7 +66,7 @@ packages = ["src/lightcone", "src/snakemake_executor_plugin_lightconeflux"]
 [tool.hatch.build.targets.sdist]
 include = [
     "src/lightcone",
-    "src/snakemake_executor_plugin_lightconeflux",
+    "src/snakemake_executor_plugin_lightconedask",
     "claude/lightcone",
 ]
 
@@ -82,5 +84,13 @@ namespace_packages = true
 explicit_package_bases = true
 mypy_path = "src"
 
+[[tool.mypy.overrides]]
+module = ["dask.*", "distributed.*"]
+ignore_missing_imports = true
+follow_untyped_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: tests that spin up real subsystems (dask cluster, etc.) — opt-in via -m slow",
+]

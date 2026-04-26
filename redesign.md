@@ -305,13 +305,17 @@ def verify(universe, strict):
 
 There is **no scheduler daemon, no Postgres, no Dask, and no `lc cluster` command.** Snakemake's slurm plugin submits sbatch jobs directly from the head node; staleness state is just files in `.snakemake/`. The `lc cluster start/attach/stop` lifecycle goes away entirely because there is no service to keep alive.
 
-Users who want a single allocation with many job-steps inside it (today's `attach` mode) run `salloc` themselves and invoke `lc run` inside the allocation. `lc run` then auto-detects the environment:
+Users who want a single allocation with many job-steps inside it (today's `attach` mode) run `salloc` themselves and invoke `lc run` inside the allocation. `lc run` then auto-detects the environment via `lightcone.engine.dask_cluster.cluster_for_run`:
 
-- `FLUX_URI` set → snakemake dispatches to the running Flux instance via our vendored executor (`--executor lightconeflux`).
-- `SLURM_JOB_ID` set, no `FLUX_URI` → wrap the snakemake call in `srun --mpi=pmi2 flux start --`, which bootstraps a Flux instance across the allocation; snakemake then dispatches to it.
-- Neither → run locally as before.
+- `DASK_SCHEDULER_ADDRESS` set → connect to the existing scheduler.
+- `SLURM_JOB_ID` set → start an in-process scheduler (`LocalCluster(n_workers=0)`); `srun --ntasks-per-node=1 dask worker $ADDR` launches one worker per node, each advertising the node's full `cpus`/`memory`/`gpus` as Dask resources.
+- Neither → `LocalCluster()` sized to the local machine.
 
-The vendored executor lives at `src/snakemake_executor_plugin_lightconeflux/` (~100 lines, adapted from `snakemake-executor-plugin-flux`) and adds GPU + multi-node resource mapping that upstream lacks. Listing or canceling running jobs is `squeue` / `scancel` / `flux jobs` / `flux cancel` directly — those are not a `lc` concern.
+The scheduler is always in-process — its lifetime equals the run's lifetime. No service to manage, no orphaned schedulers if the driver crashes.
+
+Snakemake dispatches each rule via our own executor plugin at `src/snakemake_executor_plugin_lightconedask/` (~120 lines): `client.submit(_run_shell, cmd, resources={cpus, memory, gpus}, pure=False)`. Per-rule `threads`/`mem_mb`/`gpus_per_task` translate 1:1 to per-task Dask resources, and the scheduler bin-packs tasks into workers up to each worker's advertised budget. Listing or canceling running jobs is `squeue` / `scancel` directly, and a Dask dashboard is exposed on a random port for live introspection.
+
+The same plugin and bootstrap path covers laptop → workstation → SLURM allocation, so there is one execution code path everywhere; substrate choice was deliberate after evaluating Flux (richer hierarchical scheduling but install friction on non-Perlmutter sites).
 
 The entire `engine/clusters/` directory (~1000 LOC of cluster lifecycle, Postgres bootstrap, scheduler management) is **deleted**, not replaced.
 
