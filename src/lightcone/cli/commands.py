@@ -242,14 +242,15 @@ def _install_claude_plugin(
 @main.command()
 @click.argument("outputs", nargs=-1)
 @click.option("--universe", "-u", default=None, help="Universe to materialize")
-@click.option("--cores", "-j", default=None, type=int, help="Snakemake --cores")
+@click.option("--cores", "-j", default=None, type=int, help="Parallel jobs")
 @click.option(
     "--rerun-triggers",
     default="code,input,mtime",
     help="Comma-separated rerun-triggers (default: code,input,mtime)",
 )
-@click.option("--dry-run", "-n", is_flag=True, help="Snakemake dry-run")
+@click.option("--dry-run", "-n", is_flag=True, help="Show what would run without running")
 @click.option("--force", "-f", is_flag=True, help="Force re-materialization")
+@click.option("--verbose", "-v", is_flag=True, help="Show full executor output")
 def run(
     outputs: tuple[str, ...],
     universe: str | None,
@@ -257,8 +258,9 @@ def run(
     rerun_triggers: str,
     dry_run: bool,
     force: bool,
+    verbose: bool,
 ) -> None:
-    """Materialize outputs by generating a Snakefile and invoking snakemake."""
+    """Materialize outputs declared in astra.yaml."""
     from lightcone.engine.snakefile import discover_universes, generate
 
     project = _project_root()
@@ -290,11 +292,118 @@ def run(
         cmd.append("-n")
     if force:
         cmd.append("--forceall")
+    if not verbose:
+        # Suppress the executor's progress/rule/host/reason chatter; rule
+        # bodies still print our own ``▶`` marker via stderr, and errors
+        # from the executor still come through. We do NOT pass ``all``
+        # here because it silences workflow errors too.
+        cmd.extend(["--quiet", "rules", "progress", "host", "reason"])
     cmd.extend(targets)
 
-    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-    proc = subprocess.run(cmd)
-    sys.exit(proc.returncode)
+    if verbose:
+        console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+
+    if dry_run or verbose:
+        proc = subprocess.run(cmd)
+        sys.exit(proc.returncode)
+
+    sys.exit(_run_filtered(cmd))
+
+
+# Lines emitted by the executor that we drop in the default (non-verbose)
+# path. Substring match on the trimmed line — these are stable banner-style
+# messages, not error content. Anything not matched passes through so real
+# diagnostics are never hidden.
+_EXECUTOR_NOISE_PREFIXES = (
+    "Building DAG of jobs",
+    "Using shell:",
+    "Provided cores:",
+    "Provided remote nodes:",
+    "Rules claiming more threads",
+    "Job stats:",
+    "Select jobs to execute",
+    "Execute ",
+    "host:",
+    "Complete log:",
+    "Complete log(s):",
+    "Nothing to be done",
+    "Workflow defines that rule",
+    "Shared connection",
+    "Activating conda",
+    "Activating singularity",
+    "Singularity image",
+    "Pulling singularity image",
+    "Assuming unrestricted shared filesystem",
+    "Shutting down,",
+    "Exiting because a job execution failed",
+    "At least one job did not complete",
+    "Trying to restart job",
+    "Finished jobid",
+    "Finished job ",
+    "Workflow finished",
+    "RuleException",
+    "WorkflowError",
+    "CalledProcessError in file",
+)
+
+
+def _run_filtered(cmd: list[str]) -> int:
+    """Run the executor and pass through only meaningful lines.
+
+    Rule bodies print their own ``▶`` progress marker; this filter drops
+    the executor's banner lines and recipe-replay error blocks so the
+    output reads as lightcone's, not the executor's. Genuine error
+    content (recipe stdout/stderr, unfamiliar diagnostic lines) passes
+    through untouched.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+
+    # When the executor logs a failed shell job it prints a multi-line
+    # block: ``Command 'set -euo pipefail; <recipe>' returned non-zero
+    # exit status N.``. The recipe's own stdout/stderr already came out
+    # earlier, so this replay is pure noise — mute from "Command 'set"
+    # to the closing "returned non-zero exit status" line. Also mute the
+    # single line after "Removing output files of failed job" (which is
+    # just the bare result path).
+    in_command_replay = False
+    swallow_next = 0
+    for raw in proc.stdout:
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+
+        if in_command_replay:
+            if "returned non-zero exit status" in stripped:
+                in_command_replay = False
+            continue
+        if swallow_next > 0:
+            swallow_next -= 1
+            continue
+        if stripped.startswith("Command 'set -euo pipefail"):
+            in_command_replay = "returned non-zero exit status" not in stripped
+            continue
+        if stripped.startswith("Removing output files of failed job"):
+            swallow_next = 1
+            continue
+
+        if not stripped:
+            continue
+        if any(stripped.startswith(p) for p in _EXECUTOR_NOISE_PREFIXES):
+            continue
+        # The job-stats table that follows "Job stats:" — drop the rows
+        # too. They look like "rulename    1" or "total    3" or a
+        # separator line of dashes.
+        if stripped.startswith("---") or stripped == "total":
+            continue
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+    return proc.wait()
 
 
 def _target_for(project: Path, output_id: str, universe: str) -> str:

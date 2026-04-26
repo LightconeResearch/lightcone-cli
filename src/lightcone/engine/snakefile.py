@@ -282,6 +282,13 @@ def _render_snakefile(
         lines.append("    shell:")
         lines.append('        r"""')
         lines.append("set -euo pipefail")
+        # User-facing progress marker — printed to stderr at the start of
+        # each rule execution. Picked up by `lc run` so the user sees what
+        # is being materialized without any snakemake-isms leaking through.
+        lines.append(
+            f'printf "\\033[2m▶\\033[0m %s \\033[2m[%s]\\033[0m\\n" '
+            f'"{r["key"]}" "{{wildcards.universe}}" >&2'
+        )
         lines.append(recipe_text)
         lines.append(
             f"python3 .lightcone/{FINALIZER_NAME} "
