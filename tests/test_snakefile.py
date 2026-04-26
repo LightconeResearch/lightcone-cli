@@ -151,6 +151,48 @@ def test_generate_passes_through_already_schemed_uri(tmp_path: Path) -> None:
     assert 'container: "docker://library/python:3.11"' in text
 
 
+def test_generate_copies_finalizer_into_lightcone_dir(tmp_path: Path) -> None:
+    """The finalizer must be re-exported on every generation so the rule
+    body can shell out to ``python3 .lightcone/_lc_finalize.py``."""
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]})
+    generate(tmp_path, universes=["u1"])
+    finalizer = tmp_path / ".lightcone" / "_lc_finalize.py"
+    assert finalizer.exists()
+    # Must contain the finalize entry point we shell out to.
+    assert "def finalize(" in finalizer.read_text()
+
+
+def test_generated_rules_use_shell_with_finalizer(tmp_path: Path) -> None:
+    """Each rule's body must be a ``shell:`` block that ends with a call
+    to the finalizer. This is the atomicity contract: recipe success +
+    finalizer success commits the manifest in one shell job."""
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo hi"}}]})
+    snakefile, _, _ = generate(tmp_path, universes=["u1"])
+    text = snakefile.read_text()
+    assert "    shell:" in text
+    assert "    run:" not in text
+    assert "python3 .lightcone/_lc_finalize.py foo" in text
+
+
+def test_cfg_includes_resolved_input_paths(tmp_path: Path) -> None:
+    """Finalizer reads upstream input paths from the cfg (not from
+    Snakemake), so the generator must resolve ``{universe}`` to a
+    concrete path per cfg entry."""
+    _spec(
+        tmp_path,
+        {
+            "outputs": [
+                {"id": "foo", "recipe": {"command": "echo"}},
+                {"id": "bar", "recipe": {"command": "echo", "inputs": ["foo"]}},
+            ]
+        },
+    )
+    _, cfg_path, _ = generate(tmp_path, universes=["u1"])
+    cfg = json.loads(cfg_path.read_text())
+    # bar's u1 cfg entry has an inputs dict with a concrete path.
+    assert cfg["bar"]["u1"]["inputs"] == {"foo": "results/u1/foo"}
+
+
 def test_generated_snakefile_parses_with_snakemake(tmp_path: Path) -> None:
     """End-to-end: the generated Snakefile must be syntactically valid
     Snakemake. We use ``snakemake -n -s ...`` (dry run)."""

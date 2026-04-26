@@ -4,67 +4,48 @@ The integrity layer of lightcone-cli. Every materialized output gets a
 sidecar JSON manifest at ``<output_dir>/.lightcone-manifest.json`` that
 records:
 
-- ``code_version``: sha256(recipe + container image + decisions). Embedded
-  in the rule's shell command so Snakemake's ``code`` rerun-trigger detects
-  drift automatically.
+- ``code_version``: sha256(recipe + container image + decisions + finalizer
+  source). Embedded in the rule's shell command so Snakemake's ``code``
+  rerun-trigger detects drift automatically.
 - ``data_version``: sha256 of the output directory's contents. Lets
   ``lc verify`` prove the bytes on disk are what the manifest claims.
 - ``input_versions``: each declared input's ``data_version`` (if it's a
   materialized output) or ``(mtime, size)`` fingerprint (if it's an
   external file). This is the chain.
 
-The manifest itself is excluded from the data_version computation to avoid
-a chicken-and-egg loop.
+Manifests are written by ``_lc_finalize.py``, the standalone script that
+runs at the end of every rule's containerized shell recipe. This module
+exposes the host-side helpers (``code_version``, ``read_manifest``,
+``fingerprint_external``) and re-exports ``sha256_dir`` and
+``MANIFEST_FILENAME`` from the finalizer so verify and finalize hash data
+the exact same way.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import socket
-import time
 from pathlib import Path
 from typing import Any
 
-MANIFEST_FILENAME = ".lightcone-manifest.json"
-SCHEMA_VERSION = 1
+# Single source of truth for the hash algorithm and manifest filename.
+# The finalizer is the canonical implementation; we import here so
+# ``lc verify`` recomputes data_version exactly the way the rule wrote it.
+from lightcone.engine._lc_finalize import (
+    MANIFEST_FILENAME,
+    SCHEMA_VERSION,
+    _hash_file,
+    sha256_dir,
+)
 
-#: Filenames inside an output directory that the data_version hash MUST
-#: ignore: the manifest itself (chicken-and-egg) and Snakemake's
-#: ``directory()`` mtime marker (touched by Snakemake AFTER the rule body
-#: completes, which would otherwise invalidate every hash we just wrote).
-_HASH_EXCLUDE = frozenset({MANIFEST_FILENAME, ".snakemake_timestamp"})
-
-
-def _hash_file(path: Path, h: hashlib._Hash) -> None:
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(64 * 1024), b""):
-            h.update(chunk)
-
-
-def sha256_dir(path: Path) -> str:
-    """Deterministic content hash of a directory.
-
-    Walks ``path`` recursively, hashes each file along with its
-    relative path (so renames change the hash), and excludes the
-    manifest file plus Snakemake's directory-output timestamp marker.
-    """
-    if not path.exists():
-        raise FileNotFoundError(path)
-    h = hashlib.sha256()
-    files: list[Path] = []
-    for p in path.rglob("*"):
-        if p.is_file() and p.name not in _HASH_EXCLUDE:
-            files.append(p)
-    for p in sorted(files, key=lambda x: x.relative_to(path).as_posix()):
-        rel = p.relative_to(path).as_posix().encode("utf-8")
-        h.update(b"path:")
-        h.update(rel)
-        h.update(b"\0")
-        h.update(b"data:")
-        _hash_file(p, h)
-        h.update(b"\0")
-    return f"sha256:{h.hexdigest()}"
+__all__ = [
+    "MANIFEST_FILENAME",
+    "SCHEMA_VERSION",
+    "code_version",
+    "fingerprint_external",
+    "read_manifest",
+    "sha256_dir",
+    "write_manifest",
+]
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -81,10 +62,8 @@ def fingerprint_external(path: Path, *, strict: bool = False) -> str:
     """Fingerprint an external input.
 
     For files: ``(mtime, size)`` by default; sha256 when ``strict=True``.
-    For directories: always sha256 (cheap mtime-size doesn't capture
-    contents).
-    For missing paths: returns the literal string ``"missing"`` so
-    chain validation can flag it.
+    For directories: always sha256.
+    For missing paths: returns the literal string ``"missing"``.
     """
     if not path.exists():
         return "missing"
@@ -96,6 +75,15 @@ def fingerprint_external(path: Path, *, strict: bool = False) -> str:
     return f"mtime-size:{st.st_mtime_ns}-{st.st_size}"
 
 
+def _finalizer_source_hash() -> str:
+    """Hash the bytes of ``_lc_finalize.py`` so that any change to the
+    integrity layer invalidates every existing manifest."""
+    from lightcone.engine import _lc_finalize
+
+    src = Path(_lc_finalize.__file__).read_bytes()
+    return _sha256_bytes(src)
+
+
 def code_version(
     *,
     recipe: str,
@@ -104,24 +92,34 @@ def code_version(
 ) -> str:
     """Compute a deterministic code version for an output.
 
-    Hashes the recipe text, container image identifier, and canonicalized
-    decisions dict. Anything that changes the materialization semantics
-    must flow through this hash.
+    Hashes the recipe text, container image identifier, canonicalized
+    decisions, and the finalizer source. Anything that changes the
+    materialization semantics — including the manifest schema itself —
+    flows through this hash.
     """
     payload = {
         "recipe": recipe,
         "container_image": container_image,
         "decisions": decisions,
+        "finalizer": _finalizer_source_hash(),
     }
     return _sha256_bytes(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
 
 
-def _write_atomic(path: Path, content: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content)
-    os.replace(tmp, path)
+def read_manifest(output_dir: Path) -> dict[str, Any] | None:
+    """Read the manifest at ``<output_dir>/.lightcone-manifest.json``.
+
+    Returns ``None`` if the manifest is missing or unparseable.
+    """
+    p = Path(output_dir) / MANIFEST_FILENAME
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())  # type: ignore[no-any-return]
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def write_manifest(
@@ -130,22 +128,27 @@ def write_manifest(
     inputs: dict[str, Path],
     cfg: dict[str, Any],
 ) -> Path:
-    """Write the sidecar manifest for a materialized output.
+    """Write a manifest for an already-materialized output.
+
+    This is a host-side helper used primarily by tests to construct
+    fixture manifests. The production write path is
+    ``_lc_finalize.finalize`` invoked from the rule's ``shell:`` recipe.
+    Both produce manifests with identical schema and field semantics.
 
     Args:
         output_dir: Directory containing the materialized output files.
         inputs: Mapping of declared input id → filesystem path. Each is
             either a directory containing a sibling manifest (upstream
             output) or an external file/dir.
-        cfg: Per-rule configuration. Required keys:
-            ``output_id``, ``universe_id``, ``recipe``, ``container_image``,
-            ``decisions``, ``code_version``, ``git_sha``, ``lc_version``.
-
-    Returns:
-        Path to the written manifest file.
+        cfg: Per-rule configuration. Required keys: ``output_id``,
+            ``universe_id``, ``recipe``, ``container_image``, ``decisions``,
+            ``code_version``, ``git_sha``, ``lc_version``.
     """
+    import os
+    import socket
+    import time
+
     output_dir = Path(output_dir)
-    data_version = sha256_dir(output_dir)
 
     input_versions: dict[str, str] = {}
     for inp_id, inp_path in inputs.items():
@@ -161,7 +164,7 @@ def write_manifest(
         "output_id": cfg["output_id"],
         "universe_id": cfg["universe_id"],
         "code_version": cfg["code_version"],
-        "data_version": data_version,
+        "data_version": sha256_dir(output_dir),
         "container_image": cfg.get("container_image"),
         "recipe": cfg["recipe"],
         "decisions": cfg.get("decisions", {}),
@@ -173,23 +176,8 @@ def write_manifest(
         "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
     }
 
-    manifest_path = output_dir / MANIFEST_FILENAME
-    _write_atomic(
-        manifest_path,
-        json.dumps(manifest, sort_keys=True, indent=2),
-    )
-    return manifest_path
-
-
-def read_manifest(output_dir: Path) -> dict[str, Any] | None:
-    """Read the manifest at ``<output_dir>/.lightcone-manifest.json``.
-
-    Returns ``None`` if the manifest is missing or unparseable.
-    """
-    p = Path(output_dir) / MANIFEST_FILENAME
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text())  # type: ignore[no-any-return]
-    except (json.JSONDecodeError, OSError):
-        return None
+    final_path = output_dir / MANIFEST_FILENAME
+    tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(manifest, sort_keys=True, indent=2))
+    os.replace(tmp_path, final_path)
+    return final_path

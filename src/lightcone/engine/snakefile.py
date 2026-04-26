@@ -2,15 +2,18 @@
 
 The Snakefile is a thin shell over the astra spec: one rule per output
 with a recipe, parameterized by ``{universe}``. Each rule's body is a
-``run:`` block that ``shell()`` s the recipe (containerized by Snakemake
-when ``container:`` is set) and then calls
-:func:`lightcone.engine.manifest.write_manifest` on the host to record
-the provenance sidecar.
+``shell:`` recipe that runs the user's command then invokes
+``.lightcone/_lc_finalize.py`` to atomically write the provenance
+manifest. Snakemake's ``container:`` directive (honored when
+``--sdm apptainer`` is passed) wraps the entire shell — recipe AND
+finalizer — inside the container, which means the manifest is committed
+in the same containerized process that produced the data.
 
-All per-(rule, universe) details — the recipe text, the container image,
-the resolved decisions, the precomputed code_version — live in a sidecar
-JSON at ``.lightcone/snakefile-config.json`` to keep the Snakefile small
-and to dodge shell-quoting hell when recipes contain single quotes.
+All per-(rule, universe) details — recipe text, container image,
+resolved decisions, precomputed code_version, resolved input paths —
+live in ``.lightcone/snakefile-config.json``, keyed by rule and universe.
+The finalizer reads this file at runtime; the Snakefile itself stays
+tiny.
 """
 from __future__ import annotations
 
@@ -31,6 +34,7 @@ from lightcone.engine.tree import (
 LIGHTCONE_DIR = ".lightcone"
 SNAKEFILE_NAME = "Snakefile"
 CONFIG_NAME = "snakefile-config.json"
+FINALIZER_NAME = "_lc_finalize.py"
 
 
 def _git_sha(project_path: Path) -> str | None:
@@ -222,6 +226,20 @@ def _render_snakefile(
     lookup), ``output_dir`` (wildcard pattern), ``inputs`` (dict of
     declared input id → wildcard path; only for sibling outputs, NOT
     external file inputs).
+
+    Each rule body is a ``shell:`` block:
+
+    ::
+
+        set -euo pipefail
+        <recipe>
+        python3 .lightcone/_lc_finalize.py <key> <universe> <output>
+
+    The finalizer is invoked after the recipe in the same shell. The
+    manifest's ``os.replace`` is the atomic commit point: either the
+    rule produced both data and manifest, or it failed and Snakemake
+    will rerun. ``set -euo pipefail`` ensures a recipe failure stops
+    before the finalizer runs.
     """
     universes_repr = repr(universes)
     rule_all_inputs = []
@@ -234,12 +252,6 @@ def _render_snakefile(
 
     lines: list[str] = []
     lines.append('"""Auto-generated from astra.yaml — do not edit by hand."""')
-    lines.append("import json")
-    lines.append("from pathlib import Path")
-    lines.append("from lightcone.engine.manifest import write_manifest")
-    lines.append("")
-    lines.append("PROJECT = Path(workflow.basedir).parent")
-    lines.append('CFG = json.loads((PROJECT / ".lightcone" / "snakefile-config.json").read_text())')
     lines.append(f"UNIVERSES = {universes_repr}")
     lines.append("")
     lines.append("rule all:")
@@ -257,28 +269,25 @@ def _render_snakefile(
         lines.append(f'        data=directory("{r["output_dir"]}"),')
         lines.append(f'        manifest="{r["output_dir"]}/.lightcone-manifest.json",')
         if r.get("container_uri"):
-            # Snakemake's container directive — Snakemake runs the rule's
-            # shell() calls inside this image when --sdm apptainer is set.
+            # Snakemake's container directive — when --sdm apptainer is set,
+            # the entire shell: block (recipe + finalizer) runs in this image.
             lines.append(f'    container: "{r["container_uri"]}"')
-        lines.append("    params:")
+        # The recipe is inlined verbatim at column 0 so Snakemake's
+        # standard substitution (``{output[0]}``, ``{input.X}``,
+        # ``{wildcards.universe}``) works unchanged AND so multi-line
+        # Python in ``python -c`` keeps its required indentation. The
+        # finalizer call sits at the bottom of the same shell block —
+        # its ``os.replace`` is the atomic commit point.
+        recipe_text = r["recipe"].rstrip("\n")
+        lines.append("    shell:")
+        lines.append('        r"""')
+        lines.append("set -euo pipefail")
+        lines.append(recipe_text)
         lines.append(
-            f'        cfg=lambda wc: CFG["{r["key"]}"][wc.universe],'
+            f"python3 .lightcone/{FINALIZER_NAME} "
+            f"{r['key']} {{wildcards.universe}} {{output.data}}"
         )
-        lines.append("    run:")
-        lines.append(
-            "        shell(params.cfg['recipe'])"
-        )
-        lines.append("        write_manifest(")
-        lines.append("            output_dir=Path(output.data),")
-        if r["inputs"]:
-            inp_pairs = ", ".join(
-                f'"{k}": Path(input.{k})' for k in r["inputs"]
-            )
-            lines.append(f"            inputs={{{inp_pairs}}},")
-        else:
-            lines.append("            inputs={},")
-        lines.append("            cfg=params.cfg,")
-        lines.append("        )")
+        lines.append('"""')
         lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -345,10 +354,14 @@ def generate(
                 "output_dir": out_dir_pattern,
                 "inputs": rule_inputs,
                 "container_uri": container_uri,
+                "recipe": recipe.get("command", ""),
             }
         )
 
-        # Per-universe cfg blob.
+        # Per-universe cfg blob — read by the finalizer at runtime to
+        # construct the manifest. Includes the resolved input directory
+        # paths so the finalizer can chain to upstream manifests without
+        # needing to know the project's directory layout.
         cfg.setdefault(rule_key, {})
         for u in universes:
             decisions = _decisions_for_output(to, u, project_path, spec)
@@ -357,6 +370,9 @@ def generate(
                 container_image=container_image,
                 decisions=decisions,
             )
+            resolved_inputs = {
+                k: v.replace("{universe}", u) for k, v in rule_inputs.items()
+            }
             cfg[rule_key][u] = {
                 "output_id": to.output_id,
                 "universe_id": u,
@@ -367,15 +383,24 @@ def generate(
                 "code_version": cv,
                 "git_sha": git_sha,
                 "lc_version": lc_version,
+                "inputs": resolved_inputs,
             }
 
     lightcone_dir = project_path / LIGHTCONE_DIR
     lightcone_dir.mkdir(parents=True, exist_ok=True)
     snakefile_path = lightcone_dir / SNAKEFILE_NAME
     config_path = lightcone_dir / CONFIG_NAME
+    finalizer_path = lightcone_dir / FINALIZER_NAME
 
     snakefile_path.write_text(_render_snakefile(rules, universes))
     config_path.write_text(json.dumps(cfg, indent=2, sort_keys=True))
+    # Copy the canonical finalizer into the project so the rule's shell
+    # can invoke it as ``python3 .lightcone/_lc_finalize.py``. Overwritten
+    # every generation — the wheel is the only place this script
+    # meaningfully lives.
+    from lightcone.engine import _lc_finalize as _finalizer_module
+
+    finalizer_path.write_text(Path(_finalizer_module.__file__).read_text())
 
     uses_containers = any(r.get("container_uri") for r in rules)
     return snakefile_path, config_path, uses_containers
