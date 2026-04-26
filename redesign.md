@@ -305,7 +305,13 @@ def verify(universe, strict):
 
 There is **no scheduler daemon, no Postgres, no Dask, and no `lc cluster` command.** Snakemake's slurm plugin submits sbatch jobs directly from the head node; staleness state is just files in `.snakemake/`. The `lc cluster start/attach/stop` lifecycle goes away entirely because there is no service to keep alive.
 
-Users who want a single allocation with many job-steps inside it (today's `attach` mode) run `salloc` themselves and invoke `lc run` inside the allocation; `snakemake-executor-plugin-slurm-jobstep` auto-detects and uses `srun`. Listing or canceling running jobs is `squeue` / `scancel` directly — those are not a `lc` concern.
+Users who want a single allocation with many job-steps inside it (today's `attach` mode) run `salloc` themselves and invoke `lc run` inside the allocation. `lc run` then auto-detects the environment:
+
+- `FLUX_URI` set → snakemake dispatches to the running Flux instance via our vendored executor (`--executor lightconeflux`).
+- `SLURM_JOB_ID` set, no `FLUX_URI` → wrap the snakemake call in `srun --mpi=pmi2 flux start --`, which bootstraps a Flux instance across the allocation; snakemake then dispatches to it.
+- Neither → run locally as before.
+
+The vendored executor lives at `src/snakemake_executor_plugin_lightconeflux/` (~100 lines, adapted from `snakemake-executor-plugin-flux`) and adds GPU + multi-node resource mapping that upstream lacks. Listing or canceling running jobs is `squeue` / `scancel` / `flux jobs` / `flux cancel` directly — those are not a `lc` concern.
 
 The entire `engine/clusters/` directory (~1000 LOC of cluster lifecycle, Postgres bootstrap, scheduler management) is **deleted**, not replaced.
 

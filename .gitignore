@@ -207,7 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 
-dev
+dev/
 eval-results
 
 # UV

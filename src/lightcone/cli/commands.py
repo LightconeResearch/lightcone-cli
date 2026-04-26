@@ -251,6 +251,12 @@ def _install_claude_plugin(
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would run without running")
 @click.option("--force", "-f", is_flag=True, help="Force re-materialization")
 @click.option("--verbose", "-v", is_flag=True, help="Show full executor output")
+@click.option(
+    "--executor",
+    type=click.Choice(["auto", "local", "flux"]),
+    default="auto",
+    help="Execution backend (default: auto-detect from FLUX_URI / SLURM_JOB_ID).",
+)
 def run(
     outputs: tuple[str, ...],
     universe: str | None,
@@ -259,6 +265,7 @@ def run(
     dry_run: bool,
     force: bool,
     verbose: bool,
+    executor: str,
 ) -> None:
     """Materialize outputs declared in astra.yaml."""
     from lightcone.engine.container import load_runtime
@@ -330,6 +337,8 @@ def run(
         cmd.extend(["--quiet", "rules", "progress", "host", "reason"])
     cmd.extend(targets)
 
+    cmd = _wrap_for_flux(cmd, executor, verbose=verbose)
+
     if verbose:
         console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
 
@@ -338,6 +347,47 @@ def run(
         sys.exit(proc.returncode)
 
     sys.exit(_run_filtered(cmd))
+
+
+def _wrap_for_flux(cmd: list[str], executor: str, *, verbose: bool) -> list[str]:
+    """Route the snakemake call through Flux when an allocation is detected.
+
+    Two modes, both auto-detected:
+      - ``FLUX_URI`` is set → already inside Flux; add ``--executor lightconeflux``.
+      - ``SLURM_JOB_ID`` is set → inside an salloc/sbatch with no Flux yet;
+        wrap the snakemake call in ``srun --mpi=pmi2 flux start --`` so a
+        Flux instance bootstraps across the allocation, then snakemake
+        dispatches to it.
+    Otherwise (login node, or ``--executor local``) we leave the command
+    alone and snakemake runs locally.
+    """
+    if executor == "local":
+        return cmd
+
+    in_flux = bool(os.environ.get("FLUX_URI"))
+    in_slurm = bool(os.environ.get("SLURM_JOB_ID"))
+
+    if executor == "flux" and not (in_flux or in_slurm):
+        raise click.UsageError(
+            "--executor flux requires FLUX_URI or SLURM_JOB_ID to be set "
+            "(run inside an salloc/sbatch or an existing Flux instance)."
+        )
+
+    if not (in_flux or in_slurm):
+        return cmd
+
+    snakemake_cmd = [*cmd, "--executor", "lightconeflux"]
+    if in_flux:
+        if verbose:
+            console.print("[dim]→ Flux detected (FLUX_URI set); dispatching to it.[/dim]")
+        return snakemake_cmd
+
+    if verbose:
+        console.print(
+            "[dim]→ SLURM allocation detected; bootstrapping Flux via "
+            "`srun --mpi=pmi2 flux start`.[/dim]"
+        )
+    return ["srun", "--mpi=pmi2", "flux", "start", "--", *snakemake_cmd]
 
 
 # Lines emitted by the executor that we drop in the default (non-verbose)
