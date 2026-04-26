@@ -33,13 +33,13 @@ DEPENDENCY_FILES = (
 def detect_container_runtime() -> str | None:
     """Detect which container runtime is available locally.
 
-    Checks for Docker first, then Podman.  Returns the binary name
-    (``"docker"`` or ``"podman"``) or ``None`` if neither is found.
+    Order: Docker → Podman → Apptainer → Singularity. Returns the binary
+    name or ``None`` if none is found.
 
     This does **not** check for ``podman-hpc``, which is only relevant
     for SLURM targets and handled separately.
     """
-    for runtime in ("docker", "podman"):
+    for runtime in ("docker", "podman", "apptainer", "singularity"):
         if shutil.which(runtime) is not None:
             return runtime
     return None

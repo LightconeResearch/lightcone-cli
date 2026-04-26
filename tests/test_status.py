@@ -1,189 +1,165 @@
-"""Tests for materialization status queries."""
+"""Tests for engine/status.py — manifest-driven status walker."""
 from __future__ import annotations
 
-import dagster as dg
-from conftest import materialize_via_dagster
+from pathlib import Path
+from typing import Any
 
-from lightcone.engine.status import get_all_universe_status, get_output_status
+import yaml
 
-
-class TestOutputStatus:
-    def test_no_results_dir(self, tmp_path):
-        """Status should show 'pending' when recipe exists but no results."""
-        astra_yaml = tmp_path / "astra.yaml"
-        astra_yaml.write_text("""
-version: "1.0"
-name: test
-inputs: []
-outputs:
-  - id: result
-    type: metric
-    recipe:
-      command: python run.py
-""")
-        status = get_output_status(tmp_path, "baseline")
-        assert status["result"] == "pending"
-
-    def test_results_exist(self, tmp_path):
-        """Status should show 'materialized' when Dagster event exists."""
-        astra_yaml = tmp_path / "astra.yaml"
-        astra_yaml.write_text("""
-version: "1.0"
-name: test
-inputs: []
-outputs:
-  - id: result
-    type: metric
-    recipe:
-      command: python run.py
-""")
-        instance = dg.DagsterInstance.ephemeral()
-        materialize_via_dagster(instance, "baseline", "result")
-        status = get_output_status(tmp_path, "baseline", instance=instance)
-        assert status["result"] == "materialized"
-
-    def test_output_without_recipe(self, tmp_path):
-        """Output with no recipe should show 'no_recipe'."""
-        astra_yaml = tmp_path / "astra.yaml"
-        astra_yaml.write_text("""
-version: "1.0"
-name: test
-inputs: []
-outputs:
-  - id: result
-    type: metric
-    description: "A metric with no recipe yet"
-""")
-        status = get_output_status(tmp_path, "baseline")
-        assert status["result"] == "no_recipe"
-
-    def test_mixed_states(self, tmp_path):
-        """All three states should coexist."""
-        astra_yaml = tmp_path / "astra.yaml"
-        astra_yaml.write_text("""
-version: "1.0"
-name: test
-inputs: []
-outputs:
-  - id: done_output
-    type: metric
-    recipe:
-      command: python done.py
-  - id: pending_output
-    type: metric
-    recipe:
-      command: python pending.py
-  - id: no_recipe_output
-    type: figure
-    description: "Not integrated yet"
-""")
-        # Materialize only done_output via Dagster
-        instance = dg.DagsterInstance.ephemeral()
-        materialize_via_dagster(instance, "baseline", "done_output")
-
-        status = get_output_status(tmp_path, "baseline", instance=instance)
-        assert status["done_output"] == "materialized"
-        assert status["pending_output"] == "pending"
-        assert status["no_recipe_output"] == "no_recipe"
-
-    def test_files_without_dagster_event_still_pending(self, tmp_path):
-        """Files on disk without a Dagster event should show 'pending'."""
-        astra_yaml = tmp_path / "astra.yaml"
-        astra_yaml.write_text("""
-version: "1.0"
-name: test
-inputs: []
-outputs:
-  - id: result
-    type: metric
-    recipe:
-      command: python run.py
-""")
-        # Create files on disk (simulating manual script run)
-        result_dir = tmp_path / "results" / "baseline" / "result"
-        result_dir.mkdir(parents=True)
-        (result_dir / "output.json").write_text("{}")
-
-        # No Dagster instance / no events → should be pending
-        status = get_output_status(tmp_path, "baseline")
-        assert status["result"] == "pending"
-
-    def test_different_universes_independent(self, tmp_path):
-        """Materializing in one universe should not affect another."""
-        astra_yaml = tmp_path / "astra.yaml"
-        astra_yaml.write_text("""
-version: "1.0"
-name: test
-inputs: []
-outputs:
-  - id: result
-    type: metric
-    recipe:
-      command: python run.py
-""")
-        instance = dg.DagsterInstance.ephemeral()
-        materialize_via_dagster(instance, "baseline", "result")
-
-        baseline = get_output_status(tmp_path, "baseline", instance=instance)
-        assert baseline["result"] == "materialized"
-        alt = get_output_status(tmp_path, "alt", instance=instance)
-        assert alt["result"] == "pending"
+from lightcone.engine.manifest import code_version, write_manifest
+from lightcone.engine.status import OutputStatus, get_output_status
 
 
-class TestAllUniverseStatus:
-    def test_no_universes_dir(self, tmp_path):
-        """Should return empty dict when no universes directory exists."""
-        astra_yaml = tmp_path / "astra.yaml"
-        astra_yaml.write_text("""
-version: "1.0"
-name: test
-inputs: []
-outputs:
-  - id: result
-    type: metric
-    recipe:
-      command: python run.py
-""")
-        result = get_all_universe_status(tmp_path)
-        assert result == {}
+def _write_spec(project_root: Path, spec: dict[str, Any]) -> None:
+    project_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "astra.yaml").write_text(yaml.safe_dump(spec))
 
-    def test_multiple_universes(self, tmp_path, monkeypatch):
-        """Should return status for each universe YAML file."""
-        astra_yaml = tmp_path / "astra.yaml"
-        astra_yaml.write_text("""
-version: "1.0"
-name: test
-inputs: []
-outputs:
-  - id: result
-    type: metric
-    recipe:
-      command: python run.py
-""")
-        universes_dir = tmp_path / "universes"
-        universes_dir.mkdir()
-        (universes_dir / "baseline.yaml").write_text(
-            'id: baseline\ndecisions: {}\n'
-        )
-        (universes_dir / "alt.yaml").write_text(
-            'id: alt\ndecisions: {}\n'
-        )
 
-        # Create .lightcone/dagster.yaml — use absolute base_dir so it works regardless of CWD
-        lightcone_dir = tmp_path / ".lightcone"
-        lightcone_dir.mkdir(parents=True, exist_ok=True)
-        dagster_dir = tmp_path / "results" / ".dagster"
-        dagster_dir.mkdir(parents=True, exist_ok=True)
-        (lightcone_dir / "dagster.yaml").write_text(
-            f"storage:\n  sqlite:\n    base_dir: {dagster_dir}\n"
-        )
-        # chdir so DagsterInstance resolves paths correctly
-        monkeypatch.chdir(tmp_path)
-        instance = dg.DagsterInstance.from_config(str(lightcone_dir))
-        materialize_via_dagster(instance, "baseline", "result")
+def _materialize(
+    project_root: Path,
+    output_id: str,
+    universe_id: str,
+    *,
+    recipe: str,
+    decisions: dict[str, Any] | None = None,
+    container_image: str | None = None,
+) -> Path:
+    out = project_root / "results" / universe_id / output_id
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "data.txt").write_text("output bytes")
+    cv = code_version(
+        recipe=recipe,
+        container_image=container_image,
+        decisions=decisions or {},
+    )
+    write_manifest(
+        output_dir=out,
+        inputs={},
+        cfg={
+            "output_id": output_id,
+            "universe_id": universe_id,
+            "recipe": recipe,
+            "container_image": container_image,
+            "decisions": decisions or {},
+            "code_version": cv,
+            "git_sha": "abc",
+            "lc_version": "0.0",
+        },
+    )
+    return out
 
-        result = get_all_universe_status(tmp_path)
-        assert "baseline" in result
-        assert "alt" in result
-        assert result["baseline"]["result"] == "materialized"
-        assert result["alt"]["result"] == "pending"
+
+def test_status_missing_when_nothing_materialized(tmp_path: Path) -> None:
+    _write_spec(
+        tmp_path,
+        {
+            "outputs": [
+                {"id": "foo", "recipe": {"command": "echo foo"}},
+            ]
+        },
+    )
+    statuses = list(get_output_status(tmp_path, universe_id="u1"))
+    assert len(statuses) == 1
+    assert statuses[0].output_id == "foo"
+    assert statuses[0].status == "missing"
+
+
+def test_status_ok_when_manifest_matches(tmp_path: Path) -> None:
+    _write_spec(
+        tmp_path,
+        {
+            "outputs": [
+                {"id": "foo", "recipe": {"command": "echo foo"}},
+            ]
+        },
+    )
+    _materialize(tmp_path, "foo", "u1", recipe="echo foo")
+    statuses = list(get_output_status(tmp_path, universe_id="u1"))
+    assert statuses[0].status == "ok"
+    assert statuses[0].manifest is not None
+
+
+def test_status_stale_when_recipe_changed(tmp_path: Path) -> None:
+    _write_spec(
+        tmp_path,
+        {
+            "outputs": [
+                {"id": "foo", "recipe": {"command": "echo NEW"}},
+            ]
+        },
+    )
+    # Materialize with the OLD recipe
+    _materialize(tmp_path, "foo", "u1", recipe="echo old")
+    statuses = list(get_output_status(tmp_path, universe_id="u1"))
+    assert statuses[0].status == "stale"
+
+
+def test_status_no_recipe_for_alias(tmp_path: Path) -> None:
+    """Outputs declared with `from:` (no recipe) are aliases — they are
+    materialized as a side-effect of their upstream and have no own status.
+    """
+    _write_spec(
+        tmp_path,
+        {
+            "outputs": [
+                {"id": "alias_out", "from": "sub.real_out"},
+            ],
+            "analyses": {
+                "sub": {
+                    "outputs": [
+                        {"id": "real_out", "recipe": {"command": "echo r"}},
+                    ]
+                }
+            },
+        },
+    )
+    statuses = {s.output_id: s for s in get_output_status(tmp_path, universe_id="u1")}
+    assert "alias_out" in statuses
+    assert statuses["alias_out"].status == "alias"
+
+
+def test_status_walks_subanalyses(tmp_path: Path) -> None:
+    _write_spec(
+        tmp_path,
+        {
+            "outputs": [
+                {"id": "root_out", "recipe": {"command": "echo r"}},
+            ],
+            "analyses": {
+                "sub": {
+                    "outputs": [
+                        {"id": "sub_out", "recipe": {"command": "echo s"}},
+                    ]
+                }
+            },
+        },
+    )
+    statuses = list(get_output_status(tmp_path, universe_id="u1"))
+    ids = {s.output_id for s in statuses}
+    assert ids == {"root_out", "sub_out"}
+
+
+def test_status_outputstatus_dataclass(tmp_path: Path) -> None:
+    """OutputStatus is the public dataclass; check its shape."""
+    _write_spec(
+        tmp_path,
+        {"outputs": [{"id": "foo", "recipe": {"command": "echo foo"}}]},
+    )
+    _materialize(tmp_path, "foo", "u1", recipe="echo foo")
+    [s] = get_output_status(tmp_path, universe_id="u1")
+    assert isinstance(s, OutputStatus)
+    assert s.output_id == "foo"
+    assert s.universe_id == "u1"
+    assert s.status == "ok"
+    assert s.output_dir.exists()
+
+
+def test_status_universe_specific(tmp_path: Path) -> None:
+    """Asking for one universe must not pick up materializations from another."""
+    _write_spec(
+        tmp_path,
+        {"outputs": [{"id": "foo", "recipe": {"command": "echo foo"}}]},
+    )
+    _materialize(tmp_path, "foo", "u1", recipe="echo foo")
+    statuses = list(get_output_status(tmp_path, universe_id="u2"))
+    assert statuses[0].status == "missing"

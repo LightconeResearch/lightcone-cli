@@ -14,9 +14,9 @@ dependencies = [
     "click>=8.0",
     "pyyaml>=6.0",
     "rich>=13.0",
-    "dagster>=1.9",
-    "dagster-webserver>=1.9",
-    "dagster-docker>=0.25",
+    "jinja2>=3.0",
+    "snakemake>=9.0",
+    "snakemake-executor-plugin-slurm>=1.0",
     "langfuse>=2.0",
 ]
 

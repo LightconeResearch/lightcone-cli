@@ -5,8 +5,6 @@ import json
 import math
 from pathlib import Path
 
-import pytest
-
 from lightcone.engine.validation import validate_output
 
 

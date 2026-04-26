@@ -5,7 +5,7 @@
 **lightcone-cli** is Lightcone Research's agentic layer for ASTRA (Agentic Schema for Transparent Research Analysis). It ships the `lc` executable and Claude Code skills/hooks used during interactive analysis work.
 
 - **ASTRA** = pure specification: schema, validation, prior insights & findings, evidence verification, helpers, minimal CLI
-- **lightcone-cli** = agentic layer: Claude Code skills, project scaffolding, Dagster execution, HPC targets, container builds, telemetry
+- **lightcone-cli** = agentic layer: Claude Code skills, project scaffolding, **Snakemake-based execution**, container builds, telemetry
 
 lightcone-cli depends on ASTRA. The `astra` CLI handles spec operations; the `lc` CLI handles execution and agent operations.
 
@@ -19,27 +19,51 @@ Any new `lightcone-*` package must:
 2. Not create `src/lightcone/__init__.py`.
 3. Ship only its own subpackage under `src/lightcone/<name>/`.
 
+## Architecture
+
+The execution layer is a thin shim over Snakemake. The integrity layer (per-output content-addressed manifests) is the only thing we own substantively.
+
+```
+astra.yaml ── snakefile generator ──> .lightcone/Snakefile
+                                            │
+                            snakemake (CLI subprocess)
+                                            │
+            ┌───────────────────────────────┼───────────────────────────────┐
+            │              │                │                │              │
+       DAG resolution  staleness     cluster submission  container exec   conda
+       (Snakemake)     (mtime+code)  (slurm plugin)      (apptainer/docker)
+            │
+            └─── per-rule run: block: shell() recipe + write_manifest()
+                                            │
+                                  results/<u>/<o>/...
+                                  results/<u>/<o>/.lightcone-manifest.json
+```
+
+**What Snakemake owns** (we do not write code for any of this): DAG construction, topological execution, parallelism (`--cores`, `--jobs`), cluster submission (`snakemake-executor-plugin-slurm`), per-rule resources, profiles, dry-run, DAG visualization, staleness detection (`--rerun-triggers`), locking, log capture, retry, container runtime invocation.
+
+**What we own**: a Snakefile generator, the manifest layer (write/read/verify), a status walker, and a verify routine.
+
 ## Repository Structure
 
 ```
 src/lightcone/              # namespace — NO __init__.py
 ├── cli/                    # Click surface
 │   ├── __init__.py         # exposes main()
-│   ├── commands.py         # all Click commands (init, run, build, status, dev, target, setup, update)
-│   ├── plugin.py           # get_plugin_source_dir — leaf module (no imports from commands.py)
+│   ├── commands.py         # init, run, status, verify, build, setup
+│   ├── plugin.py           # get_plugin_source_dir
 │   └── claude/             # force-included Claude plugin bundle (in installed wheel only)
-├── engine/                 # execution substrate — Dagster + HPC + containers
+├── engine/                 # execution substrate — Snakemake-based
 │   ├── __init__.py
-│   ├── assets.py           # Asset factory — turns astra.yaml recipes into Dagster assets
-│   ├── container.py        # Content-addressed container builds (Docker, podman-hpc)
-│   ├── io_manager.py       # Maps (output, universe) → results/{universe}/{output}/
-│   ├── runner.py           # Execution backends: Docker, local, SLURM
-│   ├── site_registry.py    # Known HPC site defaults (Perlmutter, etc.)
-│   ├── status.py           # Materialization status queries
-│   ├── targets.py          # Target config management (~/.lightcone/targets/)
-│   └── tree.py             # Sub-analysis tree traversal
+│   ├── manifest.py         # write_manifest, sha256_dir, code_version — the integrity layer
+│   ├── snakefile.py        # generates .lightcone/Snakefile from astra.yaml
+│   ├── container.py        # Content-addressed container builds (Docker, podman-hpc, apptainer)
+│   ├── status.py           # Manifest-driven status walker (no Snakemake import)
+│   ├── verify.py           # Recompute hashes; validate provenance chain
+│   ├── tree.py             # Sub-analysis tree traversal (kept from before)
+│   ├── validation.py       # Post-materialization output shape checks
+│   └── site_registry.py    # Known HPC site defaults (Perlmutter, etc.)
 └── eval/                   # Quantitative eval harness (top-level; peer of cli/engine)
-    ├── cli.py              # `lc eval` subcommand group (registered by lightcone.cli.commands)
+    ├── cli.py              # `lc eval` subcommand group
     ├── harness.py, sandbox.py, graders.py, build.py, report.py, models.py
 
 claude/lightcone/           # Claude plugin source — force-included into the wheel
@@ -51,17 +75,13 @@ claude/lightcone/           # Claude plugin source — force-included into the w
 └── scripts/                # Session hooks (bash): venv activation, validate-on-save, status display
 
 tests/                      # pytest — mirrors src/ structure
-pyproject.toml              # hatchling + hatch-vcs, ASTRA as git dep
+pyproject.toml              # hatchling + hatch-vcs, ASTRA + Snakemake as deps
 ```
-
-### Engine/CLI dependency contract
-
-`lightcone.engine` must import nothing from `lightcone.cli` or `lightcone.eval`. This keeps the door open to carving `lightcone-engine` into its own PyPI dist when a future `lightcone-ui` needs it — no code changes required.
 
 ## Development Commands
 
 ```bash
-uv sync --group dev   # installs pytest, ruff, mypy into the uv env
+uv sync --group dev   # installs pytest, ruff, mypy
 uv run pytest
 uv run ruff check src/ tests/
 uv run mypy src/
@@ -73,100 +93,72 @@ A `justfile` is available for common tasks — run `just` to see all recipes:
 just test          # run pytest
 just lint          # ruff + mypy
 just docs          # build the documentation site
-just docs-serve    # live preview at http://127.0.0.1:8000
-just install       # uv sync --all-groups
-```
-
-## Documentation
-
-Maintainer documentation lives in `docs/` and is built with [Zensical](https://zensical.org). Configuration is in `zensical.toml`.
-
-```
-docs/
-├── index.md           # Overview, repo structure, key invariants
-├── architecture.md    # Dagster integration, container mgmt, plugin system
-├── cli/               # One page per lc command
-├── api/               # One page per Python module
-├── skills/            # Skill reference + authoring guide
-├── telemetry/         # Langfuse hooks, session lifecycle, opt-out
-├── hpc/               # SLURM, site registry, targets, container builds
-└── contributing/      # Dev setup, adding backends/sites, testing
-```
-
-Dependencies are declared in `pyproject.toml` under `[dependency-groups].docs` and managed with `uv`:
-
-```bash
-just docs-serve     # syncs docs group then serves with live reload at http://127.0.0.1:8000
-just docs-strict    # build with --strict (accepted flag, not yet enforced by zensical)
 ```
 
 ## Architecture & Data Flow
 
 ```
-astra.yaml → build_definitions() → Dagster assets → ASTRAContainerRunner → results/{universe}/{output}/
-                                         ↑                    ↑
-                                    ASTRAIOManager        Docker / local / SLURM
+astra.yaml ── snakefile.generate() ──> .lightcone/Snakefile + .lightcone/snakefile-config.json
+                                            │
+                                    snakemake -s ... -d ...
+                                            │
+                                      per-rule run:
+                                            │
+                       shell(recipe)  ────────────────► write_manifest()
+                       (in container if container: set;     (host-side)
+                        Snakemake handles invocation)
+                                            │
+                                  results/<u>/<o>/data.txt
+                                  results/<u>/<o>/.lightcone-manifest.json
 ```
 
-- `build_definitions()` (`lightcone.engine.assets`) loads astra.yaml, creates one Dagster asset per output with a recipe
-- Asset dependencies come from `recipe.inputs` — Dagster resolves execution order
-- `ASTRAContainerRunner` (`lightcone.engine.runner`) dispatches to Docker, local subprocess, or SLURM based on target config
-- Docker backend falls back to local execution on failure (with warning)
-- SLURM backend generates sbatch scripts, submits via `sbatch`, polls via `sacct`/`squeue`
+- `snakefile.generate(project, universes=[...])` reads `astra.yaml`, writes `.lightcone/Snakefile`, and writes a sidecar JSON keyed by `(rule, universe)` containing the recipe text, container image, decisions, and precomputed `code_version`.
+- The Snakefile body for each rule is a `run:` block: `shell(params.cfg["recipe"])` then `write_manifest(...)`.
+- `code_version = sha256(recipe + container_image + decisions)`. Embedded in the rule's shell command literally so Snakemake's built-in `code` rerun-trigger detects drift.
+- `data_version = sha256_dir(output_dir)`. Written into the manifest after the recipe completes; used by `lc verify` to detect tampering. Excludes the manifest file itself and `.snakemake_timestamp`.
+- The manifest is a *declared output* of every rule. A missing manifest causes Snakemake to re-run the rule, blocking the agent-faked-file scenario.
 
 ## Key Invariants
 
 **Spec & execution:**
 - `astra.yaml` is the single source of truth — all inputs, outputs, recipes, decisions, containers
-- Output paths are always `results/{universe_id}/{output_id}/` — enforced by IO manager, no customization
-- Container is a single string: image name (e.g., `python:3.9`) is pulled; file path (e.g., `Containerfile`) is built. No `container_build` dict — runtime detects via file existence.
-- Container image tags are deterministic: SHA256(Containerfile + dependency files) → `lc-{name}-{hash}`
-- Universe decision parameters are injected as CLI args: `--key value` passed to recipe commands
-- Per-recipe container specs override analysis-level defaults
+- Output paths are always `results/<universe>/<output>/` for root and inline sub-analyses; `<sub_path>/results/<universe>/<output>/` for path-rooted sub-analyses
+- Container image hashes are deterministic: SHA256(Containerfile + dependency files) → `lc-<name>-<hash>`
+- The Snakefile and snakefile-config.json are regenerated on every `lc run` — never edit them by hand
 
-**Config resolution (used everywhere):**
-- Target: `--target` flag > `.lightcone/lightcone.yaml` > `~/.lightcone/config.yaml` > `"local"`
-- Permission tier: `--permissions` flag > saved default in `~/.lightcone/config.yaml` > interactive prompt
-- Most commands require `astra.yaml` in cwd; exceptions: `setup`, `target`
+**Integrity:**
+- Every materialized output has `<output_dir>/.lightcone-manifest.json` recording code_version, data_version, container, recipe, decisions, input_versions, git_sha, lc_version, host
+- `lc verify` recomputes data_version and walks the chain; failures surface as `tampered_data`, `broken_chain`, or `missing_manifest`
+- `lc status` reads only manifests — works offline, no Snakemake or DB needed
 
-**Plugin system:**
-- Skills, hooks, and scripts are bundled in the wheel (`claude/lightcone/` → `lightcone/cli/claude/lightcone/`)
-- `lc init` copies them into each project's `.claude/` directory
-- Plugin source discovery lives in `lightcone.cli.plugin.get_plugin_source_dir` — tries bundled location first, falls back to dev location (`claude/lightcone/` at repo root)
-- Bash scripts must be chmod +x
-
-## CLI Patterns
-
-All commands use Click. Key patterns:
-- `@main.command()` for top-level commands, `@main.group()` for subgroups (`target`)
-- Target/config resolution is shared logic, not per-command
-- `lc setup` auto-triggers if `~/.lightcone/config.yaml` doesn't exist when running other commands
-- Three permission tiers: `yolo` (all allowed), `recommended` (workflow allowed), `minimal` (read-only)
+**CLI surface:**
+- `lc init` — scaffold project with .claude/, CLAUDE.md, .gitignore, .lightcone/, results/, universes/
+- `lc run [outputs...]` — generate Snakefile, invoke snakemake
+- `lc status` — manifest-driven status report
+- `lc verify` — chain integrity check
+- `lc build` — pre-build container images from Containerfiles
+- `lc setup` — minimal global config (~/.lightcone/config.yaml)
 
 ## Extending the Codebase
 
 | To... | Read | Key patterns |
 |---|---|---|
-| Add a CLI command | `src/lightcone/cli/commands.py` | `@main.command()`, config resolution, `click.echo` with Rich |
-| Add an HPC site | `src/lightcone/engine/site_registry.py` | Add to `SITE_DEFAULTS` dict with hostname_patterns, node_types, qos_options |
-| Add an execution backend | `src/lightcone/engine/runner.py` | Add `_run_{backend}()` method, update `execute()` dispatch |
-| Add container features | `src/lightcone/engine/container.py` | `DEPENDENCY_FILES` tuple, `compute_image_tag()`, build/resolve functions |
+| Add a CLI command | `src/lightcone/cli/commands.py` | `@main.command()`, project discovery via `_project_root()` |
+| Change manifest semantics | `src/lightcone/engine/manifest.py` + `tests/test_manifest.py` | Bump `SCHEMA_VERSION`; add a test |
+| Change Snakefile shape | `src/lightcone/engine/snakefile.py` + `tests/test_snakefile.py` | Includes a `snakemake -n` parse test |
+| Add container features | `src/lightcone/engine/container.py` | `compute_image_tag()`, build/resolve functions |
 | Create a skill | `claude/lightcone/skills/` | SKILL.md with YAML frontmatter (`name`, `description`, `allowed-tools`) |
-| Add a telemetry hook | `claude/lightcone/hooks/` | Follow `langfuse_hook.py` pattern: read JSON payload, emit to Langfuse |
 
 ## Test Patterns
 
-- CLI tests: `CliRunner().invoke(main, ["command", ...])` — check exit code, output, file side effects
-- Asset tests: call `build_asset_definitions(spec, runner=mock_runner)` — verify keys, deps, metadata
-- Runner tests: create runner with tmp project root, call `execute()` — verify exit code and metadata
-- Common fixture: `_fake_config` monkeypatches `get_config_path` to prevent auto-setup wizard in tests
-- Integration tests in `test_integration.py` and `test_cli_run.py` cover end-to-end flows
+- `tests/test_manifest.py` — pure-function tests for the integrity layer
+- `tests/test_snakefile.py` — generator tests; final test runs `snakemake -n` on the output
+- `tests/test_status.py` / `tests/test_verify.py` — end-to-end against a tmp project
+- `tests/test_cli.py` — Click `CliRunner().invoke(main, [...])` patterns
 
 ## Conventions
 
 - Ruff for linting (E, F, I, N, W, UP), line length 100, target Python 3.11
 - mypy strict mode with `namespace_packages = true`, `explicit_package_bases = true`
-- Status states: `"ok"` (materialized), `"pending"` (has recipe, not run), `"no_recipe"` (declared, no recipe)
-- SLURM scripts/output stored in `results/.slurm/`
-- Dagster instance storage at `results/.dagster/` (SQLite)
-- Telemetry opt-out: `TRACE_TO_LANGFUSE=false`
+- Manifest filename is fixed: `.lightcone-manifest.json` (don't change without bumping `SCHEMA_VERSION`)
+- Snakemake's `directory()` outputs require excluding `.snakemake_timestamp` from the hash
