@@ -338,3 +338,24 @@ def test_read_manifest_corrupt_returns_none(tmp_path: Path) -> None:
     out.mkdir()
     (out / MANIFEST_FILENAME).write_text("not json")
     assert read_manifest(out) is None
+
+
+def test_read_manifest_propagates_oserror(tmp_path: Path) -> None:
+    """Permission errors must surface, not be silently confused with a
+    missing manifest by ``lc verify`` / ``lc status``."""
+    import os
+    import sys
+
+    if sys.platform == "win32" or os.geteuid() == 0:
+        pytest.skip("permission test requires non-root POSIX")
+
+    out = tmp_path / "out"
+    out.mkdir()
+    manifest_path = out / MANIFEST_FILENAME
+    manifest_path.write_text("{}")
+    manifest_path.chmod(0o000)
+    try:
+        with pytest.raises(PermissionError):
+            read_manifest(out)
+    finally:
+        manifest_path.chmod(0o644)

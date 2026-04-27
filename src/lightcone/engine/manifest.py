@@ -4,9 +4,11 @@ The integrity layer of lightcone-cli. Every materialized output gets a
 sidecar JSON manifest at ``<output_dir>/.lightcone-manifest.json`` that
 records:
 
-- ``code_version``: sha256(recipe + container image + decisions). Embedded
-  in the rule's shell command so Snakemake's ``code`` rerun-trigger detects
-  drift automatically.
+- ``code_version``: sha256(recipe + container image + decisions). Stored
+  in each rule's per-universe ``params.cfg`` so Snakemake's ``params``
+  rerun-trigger detects drift automatically. (The ``code`` trigger only
+  sees the rule body source, which is universe-parameterized and never
+  changes — that is why ``lc run`` defaults to including ``params``.)
 - ``data_version``: sha256 of the output directory's contents. Lets
   ``lc verify`` prove the bytes on disk are what the manifest claims.
 - ``input_versions``: each declared input's ``data_version`` (if it's a
@@ -132,14 +134,17 @@ def code_version(
 def read_manifest(output_dir: Path) -> dict[str, Any] | None:
     """Read the manifest at ``<output_dir>/.lightcone-manifest.json``.
 
-    Returns ``None`` if the manifest is missing or unparseable.
+    Returns ``None`` if the manifest is missing or unparseable. ``OSError``
+    (permission denied, I/O failure) is intentionally **not** caught —
+    those are real problems that should not silently look like a missing
+    manifest in ``lc verify`` / ``lc status`` output.
     """
     p = Path(output_dir) / MANIFEST_FILENAME
     if not p.exists():
         return None
     try:
         return json.loads(p.read_text())  # type: ignore[no-any-return]
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError:
         return None
 
 

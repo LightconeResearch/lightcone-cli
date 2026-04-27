@@ -108,6 +108,10 @@ class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
                 self.report_job_success(j)
 
     def cancel_jobs(self, active_jobs: list[SubmittedJobInfo]) -> None:
+        # Snakemake calls cancel_jobs for partial cancellations as well as
+        # at terminal shutdown, so we MUST NOT close the client here —
+        # that would break any subsequent submissions in the same run.
+        # The client is closed in shutdown() exclusively.
         for j in active_jobs:
             future = j.aux.get("future")
             if future is not None and not future.done():
@@ -117,7 +121,6 @@ class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
                     self.logger.warning(
                         f"Failed to cancel dask task {j.external_jobid}: {exc}"
                     )
-        self.shutdown()
 
     def shutdown(self) -> None:
         try:

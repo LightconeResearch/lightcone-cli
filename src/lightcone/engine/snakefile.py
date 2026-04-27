@@ -322,9 +322,18 @@ def generate(
                 container_image=container_image,
                 decisions=decisions,
             )
-            shell_command = wrap_recipe(
+            wrapped = wrap_recipe(
                 recipe_command, image=image_tag, runtime=runtime
             )
+            # Prefix the executed command with a no-op ``:`` builtin
+            # carrying the code_version. This makes the actual shell
+            # command differ when the recipe / container / decisions
+            # drift, which (a) lets Snakemake's ``shellcmd`` trigger see
+            # the change and (b) leaves a breadcrumb in any shell trace.
+            # The drift detection that actually fires today is the
+            # ``params`` trigger (cfg is per-universe and contains
+            # code_version) — see ``lc run --rerun-triggers``.
+            shell_command = f": lc_code_version={cv};\n{wrapped}"
             resolved_inputs = {
                 k: v.replace("{universe}", u) for k, v in rule_inputs.items()
             }

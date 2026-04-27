@@ -245,8 +245,8 @@ def _install_claude_plugin(
 @click.option("--cores", "-j", default=None, type=int, help="Parallel jobs")
 @click.option(
     "--rerun-triggers",
-    default="code,input,mtime",
-    help="Comma-separated rerun-triggers (default: code,input,mtime)",
+    default="code,input,mtime,params",
+    help="Comma-separated rerun-triggers (default: code,input,mtime,params)",
 )
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would run without running")
 @click.option("--force", "-f", is_flag=True, help="Force re-materialization")

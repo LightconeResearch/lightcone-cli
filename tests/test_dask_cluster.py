@@ -120,6 +120,127 @@ def test_existing_scheduler_address_wins_over_slurm(
             assert addr == "tcp://existing:8786"
 
 
+def test_slurm_backed_cluster_binds_to_routable_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-node SLURM allocations need the scheduler bound to a hostname
+    workers on other nodes can reach. The default LocalCluster host of
+    127.0.0.1 fails silently with `wait_for_workers` timeouts.
+    """
+    monkeypatch.setenv("SLURM_JOB_ID", "12345")
+    monkeypatch.setenv("SLURM_NNODES", "2")
+    monkeypatch.setenv("SLURMD_NODENAME", "nid001234")
+    monkeypatch.setattr(
+        "lightcone.engine.dask_cluster.shutil.which", lambda _: "/usr/bin/dask"
+    )
+
+    captured: dict[str, object] = {}
+
+    class _FakeCluster:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+            self.scheduler_address = "tcp://nid001234:8786"
+
+        def close(self) -> None:
+            pass
+
+    class _FakeClient:
+        def __init__(self, addr: str) -> None:
+            captured["client_addr"] = addr
+
+        def wait_for_workers(self, n_workers: int, timeout: int) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class _FakePopen:
+        def __init__(self, cmd: list[str]) -> None:
+            captured["worker_cmd"] = cmd
+
+        def terminate(self) -> None:
+            pass
+
+        def wait(self, timeout: int | None = None) -> int:
+            return 0
+
+        def kill(self) -> None:
+            pass
+
+    monkeypatch.setattr("dask.distributed.LocalCluster", _FakeCluster)
+    monkeypatch.setattr("dask.distributed.Client", _FakeClient)
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    from lightcone.engine.dask_cluster import _slurm_backed_cluster
+
+    with _slurm_backed_cluster(verbose=False) as addr:
+        assert addr == "tcp://nid001234:8786"
+
+    assert captured.get("host") == "nid001234", (
+        f"LocalCluster must be told to bind to the SLURM nodename so remote "
+        f"workers can connect; got host={captured.get('host')!r}"
+    )
+
+
+def test_slurm_backed_cluster_falls_back_to_gethostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without SLURMD_NODENAME, fall back to socket.gethostname()."""
+    monkeypatch.setenv("SLURM_JOB_ID", "12345")
+    monkeypatch.setenv("SLURM_NNODES", "1")
+    monkeypatch.delenv("SLURMD_NODENAME", raising=False)
+    monkeypatch.setattr(
+        "lightcone.engine.dask_cluster.shutil.which", lambda _: "/usr/bin/dask"
+    )
+    monkeypatch.setattr(
+        "lightcone.engine.dask_cluster.socket.gethostname", lambda: "host-fallback"
+    )
+
+    captured: dict[str, object] = {}
+
+    class _FakeCluster:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+            self.scheduler_address = "tcp://host-fallback:8786"
+
+        def close(self) -> None:
+            pass
+
+    class _FakeClient:
+        def __init__(self, addr: str) -> None:
+            pass
+
+        def wait_for_workers(self, n_workers: int, timeout: int) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class _FakePopen:
+        def __init__(self, cmd: list[str]) -> None:
+            pass
+
+        def terminate(self) -> None:
+            pass
+
+        def wait(self, timeout: int | None = None) -> int:
+            return 0
+
+        def kill(self) -> None:
+            pass
+
+    monkeypatch.setattr("dask.distributed.LocalCluster", _FakeCluster)
+    monkeypatch.setattr("dask.distributed.Client", _FakeClient)
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    from lightcone.engine.dask_cluster import _slurm_backed_cluster
+
+    with _slurm_backed_cluster(verbose=False):
+        pass
+
+    assert captured.get("host") == "host-fallback"
+
+
 @pytest.mark.slow
 def test_local_cluster_smoke() -> None:
     """End-to-end: a real LocalCluster spins up, accepts a task, tears down."""

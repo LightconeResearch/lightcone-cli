@@ -87,9 +87,12 @@ def test_generate_includes_recipe_in_cfg(tmp_path: Path) -> None:
     cfg = json.loads(cfg_path.read_text())
     # The unwrapped recipe (what the user wrote) is what goes into the
     # manifest's ``recipe`` field. ``shell_command`` is the runtime-wrapped
-    # version — runtime="none" here, so they're equal.
+    # version, prefixed with a no-op carrying the code_version so drift is
+    # visible at the shell level.
     assert cfg["foo"]["u1"]["recipe"] == "python script.py --arg 1"
-    assert cfg["foo"]["u1"]["shell_command"] == "python script.py --arg 1"
+    sh = cfg["foo"]["u1"]["shell_command"]
+    assert "python script.py --arg 1" in sh
+    assert f"lc_code_version={cfg['foo']['u1']['code_version']}" in sh
 
 
 def test_generate_no_container_directive_emitted(tmp_path: Path) -> None:
@@ -131,10 +134,12 @@ def test_generate_wraps_recipe_with_runtime(tmp_path: Path) -> None:
     _, cfg_path = generate(tmp_path, universes=["u1"], runtime="podman")
     cfg = json.loads(cfg_path.read_text())
     sh = cfg["foo"]["u1"]["shell_command"]
-    assert sh.startswith("podman run --rm")
+    assert "podman run --rm" in sh
     assert "python:3.12-slim" in sh
     # Snakemake placeholders survive the wrap so they substitute at exec time.
     assert "{output[0]}" in sh
+    # The code_version breadcrumb is prefixed onto the wrapped command.
+    assert f"lc_code_version={cfg['foo']['u1']['code_version']}" in sh
 
 
 def test_generate_no_wrap_for_runtime_none(tmp_path: Path) -> None:
@@ -151,7 +156,9 @@ def test_generate_no_wrap_for_runtime_none(tmp_path: Path) -> None:
     )
     _, cfg_path = generate(tmp_path, universes=["u1"], runtime="none")
     cfg = json.loads(cfg_path.read_text())
-    assert cfg["foo"]["u1"]["shell_command"] == "echo hi"
+    sh = cfg["foo"]["u1"]["shell_command"]
+    assert sh.endswith("echo hi")
+    assert f"lc_code_version={cfg['foo']['u1']['code_version']}" in sh
 
 
 def test_generated_rules_use_run_block_with_write_manifest(tmp_path: Path) -> None:
@@ -187,6 +194,31 @@ def test_cfg_includes_resolved_input_paths(tmp_path: Path) -> None:
     _, cfg_path = generate(tmp_path, universes=["u1"])
     cfg = json.loads(cfg_path.read_text())
     assert cfg["bar"]["u1"]["inputs"] == {"foo": "results/u1/foo"}
+
+
+def test_recipe_edit_changes_params_for_rerun_trigger(tmp_path: Path) -> None:
+    """Editing a recipe must change ``params.cfg`` (which carries
+    ``code_version`` and ``shell_command``) so Snakemake's ``params``
+    rerun-trigger fires. The rule body source itself does NOT change —
+    only ``params`` — which is why ``lc run`` defaults to including
+    ``params`` in ``--rerun-triggers``.
+    """
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo v1"}}]})
+    snakefile_v1, cfg_path_v1 = generate(tmp_path, universes=["u1"])
+    body_v1 = snakefile_v1.read_text()
+    cfg_v1 = json.loads(cfg_path_v1.read_text())["foo"]["u1"]
+
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo v2"}}]})
+    snakefile_v2, cfg_path_v2 = generate(tmp_path, universes=["u1"])
+    body_v2 = snakefile_v2.read_text()
+    cfg_v2 = json.loads(cfg_path_v2.read_text())["foo"]["u1"]
+
+    assert body_v1 == body_v2, (
+        "Rule body is universe-parameterized and must not change on a "
+        "recipe edit — that is the whole reason we rely on the params trigger."
+    )
+    assert cfg_v1["code_version"] != cfg_v2["code_version"]
+    assert cfg_v1["shell_command"] != cfg_v2["shell_command"]
 
 
 def test_generated_snakefile_parses_with_snakemake(tmp_path: Path) -> None:

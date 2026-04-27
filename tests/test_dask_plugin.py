@@ -66,3 +66,42 @@ def test_plugin_module_exposes_common_settings_and_executor() -> None:
 
     assert mod.common_settings.non_local_exec is True
     assert mod.Executor is not None
+
+
+def test_cancel_jobs_does_not_close_client() -> None:
+    """Snakemake calls cancel_jobs for partial cancellations. The Dask
+    client must survive so subsequent submissions in the same run still
+    work — only ``shutdown()`` is allowed to close the client.
+    """
+    from snakemake_executor_plugin_dask.executor import DaskExecutor
+
+    closed = {"count": 0}
+
+    class _FakeFuture:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def done(self) -> bool:
+            return False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    class _FakeClient:
+        def close(self) -> None:
+            closed["count"] += 1
+
+    class _FakeLogger:
+        def warning(self, _msg: str) -> None:
+            pass
+
+    executor = DaskExecutor.__new__(DaskExecutor)
+    executor._client = _FakeClient()  # type: ignore[attr-defined]
+    executor.logger = _FakeLogger()  # type: ignore[attr-defined]
+
+    future = _FakeFuture()
+    job = SimpleNamespace(external_jobid="x", aux={"future": future})
+    executor.cancel_jobs([job])  # type: ignore[arg-type]
+
+    assert future.cancelled is True
+    assert closed["count"] == 0, "cancel_jobs must not close the dask client"

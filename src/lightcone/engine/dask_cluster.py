@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -125,7 +126,16 @@ def _slurm_backed_cluster(*, verbose: bool) -> Iterator[str]:
     shape = _detect_node_shape()
     nnodes = int(os.environ.get("SLURM_NNODES") or 1)
 
-    cluster = LocalCluster(n_workers=0, dashboard_address=":0")
+    # Default LocalCluster binds the scheduler to 127.0.0.1, which workers
+    # on remote nodes cannot reach. Bind to the driver's hostname so srun-
+    # launched workers across the allocation can connect. SLURMD_NODENAME
+    # is the SLURM-canonical name; gethostname() is a sane fallback.
+    scheduler_host = os.environ.get("SLURMD_NODENAME") or socket.gethostname()
+    cluster = LocalCluster(
+        n_workers=0,
+        host=scheduler_host,
+        dashboard_address=":0",
+    )
     addr = cluster.scheduler_address
 
     if verbose:
