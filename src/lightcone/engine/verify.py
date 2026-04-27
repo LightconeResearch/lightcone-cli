@@ -23,7 +23,11 @@ from typing import Literal
 from astra.helpers import load_yaml, resolve_analysis_tree
 
 from lightcone.engine.manifest import read_manifest, sha256_dir
-from lightcone.engine.tree import collect_tree_outputs, resolve_output_path
+from lightcone.engine.tree import (
+    collect_tree_outputs,
+    find_upstream_output,
+    resolve_output_path,
+)
 
 FailureKind = Literal["missing_manifest", "tampered_data", "broken_chain"]
 
@@ -45,8 +49,9 @@ def verify_outputs(
 ) -> Iterator[VerifyResult]:
     """Yield a :class:`VerifyResult` for every output with a recipe."""
     spec = resolve_analysis_tree(load_yaml(project_path / "astra.yaml"), project_path)
+    all_outputs = collect_tree_outputs(spec)
 
-    for tree_out in collect_tree_outputs(spec):
+    for tree_out in all_outputs:
         # Aliases have no own materialization to verify.
         if tree_out.output_def.get("recipe") is None:
             continue
@@ -98,9 +103,10 @@ def verify_outputs(
             # accept either: (a) it's a sibling output we can locate via
             # the tree, or (b) it's an external input (then recorded is
             # an mtime-size or sha256 fingerprint, no chain to walk).
-            up_dir = _find_upstream_dir(project_path, spec, inp_id, universe_id)
-            if up_dir is None:
+            up = find_upstream_output(tree_out, inp_id, all_outputs)
+            if up is None:
                 continue  # external; nothing to chain to
+            up_dir = resolve_output_path(project_path, up, universe_id) / up.output_id
             up_manifest = read_manifest(up_dir)
             if up_manifest is None:
                 chain_failure = f"upstream '{inp_id}' missing manifest"
@@ -131,16 +137,3 @@ def verify_outputs(
         )
 
 
-def _find_upstream_dir(
-    project_path: Path,
-    spec: dict,
-    inp_id: str,
-    universe_id: str,
-) -> Path | None:
-    """Locate the materialized output directory for an input id, if it
-    refers to a sibling output rather than an external input.
-    """
-    for tree_out in collect_tree_outputs(spec):
-        if tree_out.output_id == inp_id and tree_out.output_def.get("recipe") is not None:
-            return resolve_output_path(project_path, tree_out, universe_id) / inp_id
-    return None

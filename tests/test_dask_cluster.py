@@ -14,7 +14,11 @@ from unittest.mock import patch
 import pytest
 
 from lightcone.engine.dask_cluster import (
+    RESOURCE_CPUS,
+    RESOURCE_GPUS,
+    RESOURCE_MEMORY,
     _detect_node_shape,
+    _NodeShape,
     _resources_arg,
     cluster_for_run,
 )
@@ -51,15 +55,11 @@ def test_detect_shape_reads_slurm_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_resources_arg_minimal() -> None:
-    from lightcone.engine.dask_cluster import _NodeShape
-
     arg = _resources_arg(_NodeShape(cpus=8, mem_bytes=0, gpus=0))
     assert arg == "cpus=8"
 
 
 def test_resources_arg_full() -> None:
-    from lightcone.engine.dask_cluster import _NodeShape
-
     arg = _resources_arg(_NodeShape(cpus=64, mem_bytes=256_000_000_000, gpus=4))
     assert arg == "cpus=64 memory=256000000000 gpus=4"
 
@@ -239,6 +239,40 @@ def test_slurm_backed_cluster_falls_back_to_gethostname(
         pass
 
     assert captured.get("host") == "host-fallback"
+
+
+def test_local_cluster_advertises_memory_and_gpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dask only schedules a task on a worker that advertises every
+    requested resource key — so the local worker must expose mem and
+    gpus too, otherwise rules with ``mem_mb``/``gpus_per_task`` hang.
+    """
+    monkeypatch.setattr(
+        "lightcone.engine.dask_cluster._detect_node_shape",
+        lambda: _NodeShape(cpus=4, mem_bytes=16_000_000_000, gpus=2),
+    )
+
+    captured: dict[str, object] = {}
+
+    class _FakeCluster:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+            self.scheduler_address = "tcp://stub:0"
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("dask.distributed.LocalCluster", _FakeCluster)
+
+    from lightcone.engine.dask_cluster import _local_cluster
+
+    with _local_cluster(verbose=False):
+        pass
+
+    resources = captured.get("resources")
+    assert isinstance(resources, dict)
+    assert set(resources.keys()) == {RESOURCE_CPUS, RESOURCE_MEMORY, RESOURCE_GPUS}
 
 
 @pytest.mark.slow

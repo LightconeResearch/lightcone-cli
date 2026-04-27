@@ -30,19 +30,33 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from astra.helpers import get_inputs, load_yaml, resolve_analysis_tree
+from astra.helpers import load_yaml, resolve_analysis_tree
 
-from lightcone.engine.container import resolve_image_for_run, wrap_recipe
+from lightcone.engine.container import make_image_tag_resolver, wrap_recipe
 from lightcone.engine.manifest import code_version
 from lightcone.engine.tree import (
     TreeOutput,
     collect_tree_outputs,
+    find_upstream_output,
+    resolve_container_spec,
     resolve_universe_decisions,
 )
 
 LIGHTCONE_DIR = ".lightcone"
 SNAKEFILE_NAME = "Snakefile"
 CONFIG_NAME = "snakefile-config.json"
+
+# Appended to every rule body. Warnings only — never raises, never
+# blocks the manifest. Empty / all-NaN / wrong-extension outputs are
+# common silent failures we want surfaced in the run log.
+_VALIDATION_SNIPPET = """\
+        for _w in validate_output(
+            Path(output.data),
+            params.cfg.get("output_type"),
+            params.cfg["output_id"],
+        ):
+            print(f"\\033[33m⚠\\033[0m {_w}", file=sys.stderr)\
+"""
 
 
 def _git_sha(project_path: Path) -> str | None:
@@ -67,58 +81,6 @@ def _lc_version() -> str:
         return version("lightcone-cli")
     except Exception:
         return "unknown"
-
-
-def _resolve_container_for(
-    tree_out: TreeOutput,
-    root_spec: dict[str, Any],
-) -> str | None:
-    """Spec-string of the container that applies to this output.
-
-    Recipe-level beats sub-analysis-level beats root-level. We use the
-    raw spec string (Containerfile path or image tag) as the identity —
-    the same string any future build will hash to the same image.
-    """
-    recipe = tree_out.output_def.get("recipe") or {}
-    if "container" in recipe:
-        return recipe["container"]  # type: ignore[no-any-return]
-    if tree_out.analysis_id is not None:
-        sub = tree_out.analysis_spec.get("container")
-        if sub is not None:
-            return sub  # type: ignore[no-any-return]
-    return root_spec.get("container")
-
-
-def _input_path_for(
-    tree_out: TreeOutput,
-    inp_id: str,
-    spec: dict[str, Any],
-    output_dirs: dict[str, str],
-) -> str | None:
-    """For a recipe input id, return the wildcard path to the upstream
-    output's directory, or ``None`` if the input refers to an external
-    file (handled separately).
-    """
-    if "." in inp_id:
-        return output_dirs.get(inp_id)
-
-    if tree_out.analysis_id is not None:
-        qualified = f"{tree_out.analysis_id}.{inp_id}"
-        if qualified in output_dirs:
-            return output_dirs[qualified]
-    if inp_id in output_dirs:
-        return output_dirs[inp_id]
-
-    analysis_inputs = {i.get("id"): i for i in get_inputs(tree_out.analysis_spec)}
-    inp_def = analysis_inputs.get(inp_id)
-    if inp_def and inp_def.get("from"):
-        from_ref = inp_def["from"].removeprefix("../").removeprefix("/")
-        if from_ref in output_dirs:
-            return output_dirs[from_ref]
-        if "." in from_ref and from_ref in output_dirs:
-            return output_dirs[from_ref]
-
-    return None
 
 
 def _output_dir_pattern(tree_out: TreeOutput) -> str:
@@ -187,8 +149,10 @@ def _render_snakefile(
     lines: list[str] = []
     lines.append('"""Auto-generated from astra.yaml — do not edit by hand."""')
     lines.append("import json")
+    lines.append("import sys")
     lines.append("from pathlib import Path")
     lines.append("from lightcone.engine.manifest import write_manifest")
+    lines.append("from lightcone.engine.validation import validate_output")
     lines.append("")
     lines.append("PROJECT = Path(workflow.basedir).parent")
     lines.append(
@@ -236,6 +200,7 @@ def _render_snakefile(
             lines.append("            inputs={},")
             lines.append("            cfg=params.cfg,")
             lines.append("        )")
+        lines.append(_VALIDATION_SNIPPET)
         lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -265,17 +230,13 @@ def generate(
     project_name = (spec.get("name") or project_path.name).lower().replace(" ", "-")
 
     tree_outputs = collect_tree_outputs(spec)
-    output_dirs: dict[str, str] = {}
-    for to in tree_outputs:
-        if to.output_def.get("recipe") is None:
-            continue
-        output_dirs[_rule_key(to)] = _output_dir_pattern(to)
 
     rules: list[dict[str, Any]] = []
     cfg: dict[str, dict[str, dict[str, Any]]] = {}
 
     git_sha = _git_sha(project_path)
     lc_version = _lc_version()
+    resolve_image = make_image_tag_resolver(project_path, project_name)
 
     for to in tree_outputs:
         recipe = to.output_def.get("recipe")
@@ -290,20 +251,14 @@ def generate(
 
         rule_inputs: dict[str, str] = {}
         for inp_id in recipe_inputs:
-            up = _input_path_for(to, inp_id, spec, output_dirs)
+            up = find_upstream_output(to, inp_id, tree_outputs)
             if up is not None:
                 # Snakemake input dict keys must be valid identifiers.
                 key = inp_id.replace(".", "__")
-                rule_inputs[key] = up
+                rule_inputs[key] = _output_dir_pattern(up)
 
-        # Container resolution: raw spec_str feeds code_version (so an
-        # edit to astra.yaml changes the hash); image_tag is what the
-        # runtime invokes. Both are computed here so the Snakefile body
-        # itself stays runtime-agnostic.
-        container_image = _resolve_container_for(to, spec)
-        image_tag = resolve_image_for_run(
-            container_image, project_path=project_path, project_name=project_name
-        )
+        container_image = resolve_container_spec(to, spec)
+        image_tag = resolve_image(container_image)
 
         rules.append(
             {
@@ -317,9 +272,11 @@ def generate(
         cfg.setdefault(rule_key, {})
         for u in universes:
             decisions = _decisions_for_output(to, u, project_path, spec)
+            # ``image_tag`` (not the raw spec string) so a Containerfile
+            # edit propagates through ``code_version`` to ``lc status``.
             cv = code_version(
                 recipe=recipe_command,
-                container_image=container_image,
+                container_image=image_tag,
                 decisions=decisions,
             )
             wrapped = wrap_recipe(
@@ -339,6 +296,7 @@ def generate(
             }
             cfg[rule_key][u] = {
                 "output_id": to.output_id,
+                "output_type": to.output_def.get("type"),
                 "universe_id": u,
                 "recipe": recipe_command,
                 "shell_command": shell_command,

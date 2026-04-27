@@ -31,6 +31,7 @@ import logging
 import shlex
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -365,6 +366,31 @@ def resolve_image_for_run(
     if is_containerfile(spec, project_path):
         return compute_image_tag(project_name, project_path / spec, project_path)
     return spec
+
+
+def make_image_tag_resolver(
+    project_path: Path,
+    project_name: str,
+) -> Callable[[str | None], str | None]:
+    """Memoizing wrapper around :func:`resolve_image_for_run`.
+
+    Multiple outputs typically share the same Containerfile, and resolving
+    a Containerfile path re-hashes it plus all dependency files
+    (lockfiles can be MB each). The returned closure caches by spec
+    string for the lifetime of the caller's loop.
+    """
+    cache: dict[str | None, str | None] = {}
+
+    def resolve(spec: str | None) -> str | None:
+        if spec in cache:
+            return cache[spec]
+        tag = resolve_image_for_run(
+            spec, project_path=project_path, project_name=project_name
+        )
+        cache[spec] = tag
+        return tag
+
+    return resolve
 
 
 def wrap_recipe(

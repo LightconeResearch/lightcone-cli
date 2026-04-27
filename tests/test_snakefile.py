@@ -221,6 +221,61 @@ def test_recipe_edit_changes_params_for_rerun_trigger(tmp_path: Path) -> None:
     assert cfg_v1["shell_command"] != cfg_v2["shell_command"]
 
 
+def test_containerfile_edit_changes_code_version(tmp_path: Path) -> None:
+    """Editing a Containerfile changes ``code_version`` so ``lc status``
+    reports stale and the manifest records the image content faithfully.
+    """
+    containerfile = tmp_path / "Containerfile"
+    containerfile.write_text("FROM python:3.12-slim\n")
+    _spec(
+        tmp_path,
+        {
+            "outputs": [
+                {
+                    "id": "foo",
+                    "recipe": {"command": "echo", "container": "Containerfile"},
+                }
+            ]
+        },
+    )
+    _, cfg_path_v1 = generate(tmp_path, universes=["u1"], runtime="podman")
+    cv_v1 = json.loads(cfg_path_v1.read_text())["foo"]["u1"]["code_version"]
+
+    containerfile.write_text("FROM python:3.12-slim\nRUN pip install numpy\n")
+    _, cfg_path_v2 = generate(tmp_path, universes=["u1"], runtime="podman")
+    cv_v2 = json.loads(cfg_path_v2.read_text())["foo"]["u1"]["code_version"]
+
+    assert cv_v1 != cv_v2, (
+        "code_version must change when the Containerfile contents change "
+        "so that lc status correctly reports stale."
+    )
+
+
+def test_validation_wired_into_rule_body(tmp_path: Path) -> None:
+    """The generated rule body must call validate_output after
+    write_manifest so empty/all-NaN outputs surface as warnings."""
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]})
+    snakefile, _ = generate(tmp_path, universes=["u1"])
+    text = snakefile.read_text()
+    assert "from lightcone.engine.validation import validate_output" in text
+    assert "validate_output(" in text
+
+
+def test_cfg_includes_output_type(tmp_path: Path) -> None:
+    """Validation needs the declared output type — pass it through cfg."""
+    _spec(
+        tmp_path,
+        {
+            "outputs": [
+                {"id": "foo", "type": "metric", "recipe": {"command": "echo"}},
+            ]
+        },
+    )
+    _, cfg_path = generate(tmp_path, universes=["u1"])
+    cfg = json.loads(cfg_path.read_text())
+    assert cfg["foo"]["u1"]["output_type"] == "metric"
+
+
 def test_generated_snakefile_parses_with_snakemake(tmp_path: Path) -> None:
     """End-to-end: the generated Snakefile must be valid Snakemake."""
     _spec(

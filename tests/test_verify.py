@@ -174,6 +174,83 @@ def test_verify_skips_aliases(tmp_path: Path) -> None:
     assert "alias" not in ids
 
 
+def test_verify_detects_broken_chain_for_qualified_input(tmp_path: Path) -> None:
+    """Recipe inputs referencing a sub-analysis output by qualified id
+    (``sub.real``) must resolve through to the producing manifest so a
+    drifted upstream surfaces as ``broken_chain``.
+    """
+    sub_dir = tmp_path / "sub"
+    (sub_dir / "results" / "u1" / "real").mkdir(parents=True, exist_ok=True)
+    _spec(
+        tmp_path,
+        {
+            "outputs": [
+                {
+                    "id": "downstream",
+                    "recipe": {"command": "echo d", "inputs": ["sub.real"]},
+                }
+            ],
+            "analyses": {
+                "sub": {
+                    "path": "./sub",
+                    "outputs": [{"id": "real", "recipe": {"command": "echo r"}}],
+                }
+            },
+        },
+    )
+
+    # Materialize the upstream sub-analysis output at its real on-disk path.
+    up = sub_dir / "results" / "u1" / "real"
+    (up / "data.txt").write_text("upstream v1")
+    write_manifest(
+        output_dir=up,
+        inputs={},
+        cfg={
+            "output_id": "real",
+            "universe_id": "u1",
+            "recipe": "echo r",
+            "container_image": None,
+            "decisions": {},
+            "code_version": code_version(
+                recipe="echo r", container_image=None, decisions={}
+            ),
+            "git_sha": "g",
+            "lc_version": "0.0",
+        },
+    )
+    # Materialize downstream; its recorded input_version chains to up.
+    _materialize(
+        tmp_path, "downstream", "u1", recipe="echo d", inputs={"sub.real": up}
+    )
+
+    # Now mutate the upstream and rewrite its manifest so its
+    # ``data_version`` drifts. Downstream's chain must detect this.
+    (up / "data.txt").write_text("upstream v2")
+    write_manifest(
+        output_dir=up,
+        inputs={},
+        cfg={
+            "output_id": "real",
+            "universe_id": "u1",
+            "recipe": "echo r",
+            "container_image": None,
+            "decisions": {},
+            "code_version": code_version(
+                recipe="echo r", container_image=None, decisions={}
+            ),
+            "git_sha": "g",
+            "lc_version": "0.0",
+        },
+    )
+
+    results = {r.output_id: r for r in verify_outputs(tmp_path, universe_id="u1")}
+    assert not results["downstream"].passed
+    assert results["downstream"].failure == "broken_chain", (
+        "qualified-id (sub.real) inputs must be resolved through the "
+        "tree, not silently treated as external."
+    )
+
+
 def test_verifyresult_dataclass(tmp_path: Path) -> None:
     _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo f"}}]})
     _materialize(tmp_path, "foo", "u1", recipe="echo f")

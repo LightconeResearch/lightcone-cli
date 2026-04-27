@@ -202,6 +202,78 @@ def resolve_output_path(
     return project_path / "results" / universe_id
 
 
+def resolve_container_spec(
+    tree_output: TreeOutput,
+    root_spec: dict[str, Any],
+) -> str | None:
+    """Pick the container declaration in priority order:
+    recipe-level > sub-analysis-level > root-level.
+    Returns the raw spec string (Containerfile path or registry image
+    tag), or ``None`` when no container is declared at any level.
+    """
+    recipe = tree_output.output_def.get("recipe") or {}
+    if "container" in recipe:
+        return recipe["container"]  # type: ignore[no-any-return]
+    if tree_output.analysis_id is not None:
+        sub = tree_output.analysis_spec.get("container")
+        if sub is not None:
+            return sub  # type: ignore[no-any-return]
+    return root_spec.get("container")
+
+
+def find_upstream_output(
+    consumer: TreeOutput,
+    inp_id: str,
+    all_outputs: list[TreeOutput],
+) -> TreeOutput | None:
+    """Resolve a recipe input id to the producing :class:`TreeOutput`, if any.
+
+    Mirrors the lookup the Snakefile generator does for ``rule.input``:
+
+    * dotted ``"<analysis_id>.<output_id>"`` → match by qualified key
+    * inside a sub-analysis, bare ``inp_id`` → first try
+      ``"<consumer.analysis_id>.<inp_id>"``, then bare
+    * ``inp_id`` referencing an analysis-level input with a ``from:``
+      pointing at a sibling output → resolve through that
+
+    Returns ``None`` for inputs that refer to external files (no upstream
+    rule produces them).
+    """
+    by_qualified: dict[str, TreeOutput] = {}
+    by_bare: dict[str, TreeOutput] = {}
+    for to in all_outputs:
+        if to.output_def.get("recipe") is None:
+            continue
+        if to.analysis_id is not None:
+            by_qualified[f"{to.analysis_id}.{to.output_id}"] = to
+        else:
+            by_qualified[to.output_id] = to
+        by_bare.setdefault(to.output_id, to)
+
+    if "." in inp_id and inp_id in by_qualified:
+        return by_qualified[inp_id]
+
+    if consumer.analysis_id is not None:
+        qualified = f"{consumer.analysis_id}.{inp_id}"
+        if qualified in by_qualified:
+            return by_qualified[qualified]
+
+    if inp_id in by_qualified:
+        return by_qualified[inp_id]
+
+    # ``from:`` redirects on the consumer's analysis-level inputs.
+    analysis_inputs = {i.get("id"): i for i in get_inputs(consumer.analysis_spec)}
+    inp_def = analysis_inputs.get(inp_id)
+    if inp_def and inp_def.get("from"):
+        ref = inp_def["from"].removeprefix("../").removeprefix("/")
+        if ref in by_qualified:
+            return by_qualified[ref]
+        if "." not in ref and ref in by_bare:
+            return by_bare[ref]
+
+    return None
+
+
 def resolve_input_path(
     project_path: Path,
     spec: dict[str, Any],

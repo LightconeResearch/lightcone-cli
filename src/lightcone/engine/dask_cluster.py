@@ -62,14 +62,25 @@ def _detect_node_shape() -> _NodeShape:
     return _NodeShape(cpus=cpus, mem_bytes=mem_bytes, gpus=gpus)
 
 
+def _resource_dict(shape: _NodeShape) -> dict[str, float]:
+    """Resource keys advertised by a worker for this node shape.
+
+    Single source of truth for which keys workers expose — both the
+    in-process LocalCluster and the srun-launched ``dask worker``s
+    advertise the same set so the executor's per-task requests resolve
+    on either path.
+    """
+    res: dict[str, float] = {RESOURCE_CPUS: float(shape.cpus)}
+    if shape.mem_bytes:
+        res[RESOURCE_MEMORY] = float(shape.mem_bytes)
+    if shape.gpus:
+        res[RESOURCE_GPUS] = float(shape.gpus)
+    return res
+
+
 def _resources_arg(shape: _NodeShape) -> str:
     """Format `--resources` for `dask worker`."""
-    parts = [f"{RESOURCE_CPUS}={shape.cpus}"]
-    if shape.mem_bytes:
-        parts.append(f"{RESOURCE_MEMORY}={shape.mem_bytes}")
-    if shape.gpus:
-        parts.append(f"{RESOURCE_GPUS}={shape.gpus}")
-    return " ".join(parts)
+    return " ".join(f"{k}={int(v)}" for k, v in _resource_dict(shape).items())
 
 
 @contextmanager
@@ -95,10 +106,13 @@ def _local_cluster(*, verbose: bool) -> Iterator[str]:
     from dask.distributed import LocalCluster
 
     shape = _detect_node_shape()
+    # Workers must advertise every key the executor may request — Dask
+    # matches by exact key presence — or rules with ``mem_mb`` /
+    # ``gpus_per_task`` would never schedule on a workstation.
     cluster = LocalCluster(
         n_workers=1,
         threads_per_worker=shape.cpus,
-        resources={RESOURCE_CPUS: shape.cpus},
+        resources=_resource_dict(shape),
         dashboard_address=":0",
     )
     if verbose:

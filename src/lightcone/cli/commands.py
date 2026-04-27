@@ -46,7 +46,8 @@ PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
             "Edit(//scratch/**)",
             "Edit(//pscratch/**)",
             "Bash(sudo *)",
-            "Bash(rm -rf /*)",
+            "Bash(rm -rf *)",
+            "Bash(rm -fr *)",
             "Bash(git push *)",
             "Bash(git push)",
         ],
@@ -330,7 +331,10 @@ def run(
     if dry_run:
         cmd.append("-n")
     if force:
-        cmd.append("--forceall")
+        # ``--force`` scopes to explicit targets; ``rule all`` itself
+        # has no recipe, so force-all is the only useful sense when no
+        # targets were named.
+        cmd.append("--force" if outputs else "--forceall")
     if not verbose:
         # Suppress the executor's progress/rule/host/reason chatter; rule
         # bodies still print our own ``▶`` marker via stderr, and errors
@@ -458,25 +462,41 @@ def _run_filtered(cmd: list[str], *, env: dict[str, str] | None = None) -> int:
 
 
 def _target_for(project: Path, output_id: str, universe: str) -> str:
-    """Translate an output id into a Snakemake target path (the manifest)."""
+    """Translate an output id into a Snakemake target path (the manifest).
+
+    Accepts either a bare ``output_id`` (root-level or unique sub-analysis
+    output) or a qualified ``analysis_id.output_id`` to disambiguate when
+    the same id appears in multiple sub-analyses.
+    """
     from astra.helpers import load_yaml, resolve_analysis_tree
 
-    from lightcone.engine.tree import collect_tree_outputs
+    from lightcone.engine.manifest import MANIFEST_FILENAME
+    from lightcone.engine.tree import collect_tree_outputs, resolve_output_path
 
     spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
+    matches = []
     for to in collect_tree_outputs(spec):
-        if to.output_id == output_id and to.output_def.get("recipe") is not None:
-            base = (
-                to.analysis_path.lstrip("./")
-                if to.analysis_path
-                else "results"
-            )
-            if to.analysis_path:
-                return f"{base}/results/{universe}/{output_id}/.lightcone-manifest.json"
-            return f"results/{universe}/{output_id}/.lightcone-manifest.json"
-    raise click.ClickException(
-        f"Output '{output_id}' not found in astra.yaml or has no recipe."
-    )
+        if to.output_def.get("recipe") is None:
+            continue
+        qualified = (
+            f"{to.analysis_id}.{to.output_id}" if to.analysis_id else to.output_id
+        )
+        if qualified == output_id or to.output_id == output_id:
+            matches.append((qualified, to))
+
+    if not matches:
+        raise click.ClickException(
+            f"Output '{output_id}' not found in astra.yaml or has no recipe."
+        )
+    if len(matches) > 1:
+        opts = ", ".join(q for q, _ in matches)
+        raise click.ClickException(
+            f"Output '{output_id}' is ambiguous; qualify it as one of: {opts}"
+        )
+
+    _, to = matches[0]
+    target = resolve_output_path(project, to, universe) / to.output_id / MANIFEST_FILENAME
+    return str(target.relative_to(project))
 
 
 # =============================================================================
