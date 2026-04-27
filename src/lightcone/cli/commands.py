@@ -663,11 +663,11 @@ def setup() -> None:
     config.write_text(
         yaml.safe_dump(
             {
-                "default_target": "local",
                 # Container runtime used by `lc build` and embedded in every
                 # recipe by `lc run`. ``auto`` picks the first of
-                # docker/podman/podman-hpc found on PATH; set explicitly to
-                # pin. ``none`` disables containerization entirely.
+                # podman/docker/podman-hpc found on PATH (skipping docker if
+                # its daemon is unreachable); set explicitly to pin. ``none``
+                # disables containerization entirely.
                 "container": {"runtime": "auto"},
             }
         )

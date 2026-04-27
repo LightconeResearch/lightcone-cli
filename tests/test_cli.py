@@ -23,7 +23,7 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     config = fake_home / ".lightcone" / "config.yaml"
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text("default_target: local\n")
+    config.write_text("container:\n  runtime: auto\n")
 
 
 # ---- top-level ------------------------------------------------------------

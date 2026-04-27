@@ -59,15 +59,14 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 
 1. **Add the recipe block** to `astra.yaml` under the output's `recipe:` key.
 2. **Validate:** `astra validate astra.yaml`
-3. **Check the target:** Run `lc target` to confirm the current target. If it is a remote/queued target, `lc run` will wait in the queue — that makes the build loop useless. Ask the user to switch the project to the `local` target (`lc target --set local`) and run the loop from a machine that can actually execute recipes (e.g. their laptop with Docker, or a compute session they've already opened).
-4. **Run it:** `lc run <OUTPUT> --universe {{UNIVERSE}}`
-5. **If it fails:** Read the error output carefully and diagnose the root cause before retrying. Never re-run the same command without changing something first. Common causes:
+3. **Run it:** `lc run <OUTPUT> --universe {{UNIVERSE}}`. `lc run` always dispatches through a Dask cluster — `LocalCluster` on a workstation, srun-launched workers inside a SLURM allocation. Run the loop on a machine that can actually execute recipes (the user's laptop with a container runtime, or a compute session they've already opened).
+4. **If it fails:** Read the error output carefully and diagnose the root cause before retrying. Never re-run the same command without changing something first. Common causes:
    - Container not built → `lc build`
    - Upstream not materialized → materialize dependency first
    - Script error inside container → fix the script, then re-run
    If a second attempt also fails, note the failure in your commit message and in the build plan, then move on to other work. Come back to it in a later iteration with fresh context.
-6. **If it succeeds:** Verify the result file exists at `results/{{UNIVERSE}}/<output_id>.<ext>` and looks well-formed.
-7. **Commit** with a message noting what was materialized.
+5. **If it succeeds:** Verify the result file exists at `results/{{UNIVERSE}}/<output_id>/` and looks well-formed.
+6. **Commit** with a message noting what was materialized.
 
 ## Rules
 
