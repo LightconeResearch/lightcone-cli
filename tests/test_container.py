@@ -240,14 +240,42 @@ class TestPullImage:
 
 class TestDetectRuntime:
     @patch("lightcone.engine.container.shutil.which")
-    def test_docker_preferred(self, mock_which: MagicMock) -> None:
+    def test_podman_preferred(self, mock_which: MagicMock) -> None:
+        # Both installed — podman wins (rootless, no daemon to wedge).
         mock_which.side_effect = lambda name: f"/usr/bin/{name}"
-        assert detect_runtime() == "docker"
+        assert detect_runtime() == "podman"
 
     @patch("lightcone.engine.container.shutil.which")
-    def test_podman_only(self, mock_which: MagicMock) -> None:
-        mock_which.side_effect = lambda name: "/usr/bin/podman" if name == "podman" else None
-        assert detect_runtime() == "podman"
+    def test_docker_only(self, mock_which: MagicMock) -> None:
+        mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
+        with patch(
+            "lightcone.engine.container._docker_daemon_up", return_value=True
+        ):
+            assert detect_runtime() == "docker"
+
+    @patch("lightcone.engine.container.shutil.which")
+    def test_docker_skipped_when_daemon_down(self, mock_which: MagicMock) -> None:
+        # docker on PATH but its daemon is unreachable → fall through.
+        # Without this probe, a laptop with docker installed but stopped
+        # would silently pick docker and every recipe would fail with a
+        # socket error. With nothing else available, returns None.
+        mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
+        with patch(
+            "lightcone.engine.container._docker_daemon_up", return_value=False
+        ):
+            assert detect_runtime() is None
+
+    @patch("lightcone.engine.container.shutil.which")
+    def test_docker_daemon_down_falls_through_to_podman(
+        self, mock_which: MagicMock
+    ) -> None:
+        # Both binaries present, docker daemon down → podman is picked
+        # regardless of order in RUNTIMES.
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        with patch(
+            "lightcone.engine.container._docker_daemon_up", return_value=False
+        ):
+            assert detect_runtime() == "podman"
 
     @patch("lightcone.engine.container.shutil.which", return_value=None)
     def test_none_available(self, mock_which: MagicMock) -> None:

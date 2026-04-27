@@ -243,35 +243,30 @@ def _install_claude_plugin(
 @main.command()
 @click.argument("outputs", nargs=-1)
 @click.option("--universe", "-u", default=None, help="Universe to materialize")
-@click.option("--cores", "-j", default=None, type=int, help="Parallel jobs")
+@click.option("--jobs", "-j", default=None, type=int, help="Parallel jobs")
 @click.option(
     "--rerun-triggers",
     default="code,input,mtime,params",
     help="Comma-separated rerun-triggers (default: code,input,mtime,params)",
 )
-@click.option("--dry-run", "-n", is_flag=True, help="Show what would run without running")
 @click.option("--force", "-f", is_flag=True, help="Force re-materialization")
 @click.option("--verbose", "-v", is_flag=True, help="Show full executor output")
-@click.option(
-    "--executor",
-    type=click.Choice(["auto", "local", "dask"]),
-    default="auto",
-    help="Execution backend. 'auto' uses Dask (LocalCluster on a workstation, "
-    "srun-launched workers inside an SLURM allocation, or an existing scheduler "
-    "if DASK_SCHEDULER_ADDRESS is set). 'local' bypasses Dask entirely.",
-)
 def run(
     outputs: tuple[str, ...],
     universe: str | None,
-    cores: int | None,
+    jobs: int | None,
     rerun_triggers: str,
-    dry_run: bool,
     force: bool,
     verbose: bool,
-    executor: str,
 ) -> None:
-    """Materialize outputs declared in astra.yaml."""
+    """Materialize outputs declared in astra.yaml.
+
+    Always dispatches through a Dask cluster: a ``LocalCluster`` on a
+    workstation, srun-launched workers inside a SLURM allocation, or an
+    existing scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
+    """
     from lightcone.engine.container import load_runtime
+    from lightcone.engine.dask_cluster import cluster_for_run
     from lightcone.engine.snakefile import discover_universes, generate
 
     project = _project_root()
@@ -319,17 +314,19 @@ def run(
                 targets.append(_target_for(project, o, u))
     # If no specific targets, pass nothing → snakemake runs `rule all`.
 
+    n = str(jobs or os.cpu_count() or 1)
+    # Snakemake requires ``--cores`` to bound per-rule CPU; the dask
+    # plugin requires ``--jobs`` to bound parallel dispatch. We surface
+    # one knob and pass it as both.
     cmd = [
         "snakemake",
         "-s", str(snakefile_path),
         "-d", str(project),
-        "--cores", str(cores or os.cpu_count() or 1),
+        "--cores", n,
+        "--jobs", n,
+        "--executor", "dask",
         "--rerun-triggers", *rerun_triggers.split(","),
     ]
-    # Container invocation is wrapped into the recipe at generation time;
-    # we don't use Snakemake's ``container:`` directive or ``--sdm`` at all.
-    if dry_run:
-        cmd.append("-n")
     if force:
         # ``--force`` scopes to explicit targets; ``rule all`` itself
         # has no recipe, so force-all is the only useful sense when no
@@ -343,28 +340,12 @@ def run(
         cmd.extend(["--quiet", "rules", "progress", "host", "reason"])
     cmd.extend(targets)
 
-    # Dry-run dispatches no jobs, so spinning up a Dask cluster (especially
-    # the SLURM-srun path) would be wasted setup. Run snakemake directly.
-    if executor == "local" or dry_run:
-        sys.exit(_invoke_snakemake(cmd, env=None, dry_run=dry_run, verbose=verbose))
-
-    from lightcone.engine.dask_cluster import cluster_for_run
-
     with cluster_for_run(verbose=verbose) as scheduler_addr:
-        cmd = [*cmd, "--executor", "dask"]
         env = {**os.environ, "DASK_SCHEDULER_ADDRESS": scheduler_addr}
-        sys.exit(_invoke_snakemake(cmd, env=env, dry_run=dry_run, verbose=verbose))
-
-
-def _invoke_snakemake(
-    cmd: list[str], *, env: dict[str, str] | None, dry_run: bool, verbose: bool
-) -> int:
-    if verbose:
-        console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-    if dry_run or verbose:
-        proc = subprocess.run(cmd, env=env)
-        return proc.returncode
-    return _run_filtered(cmd, env=env)
+        if verbose:
+            console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+            sys.exit(subprocess.run(cmd, env=env).returncode)
+        sys.exit(_run_filtered(cmd, env=env))
 
 
 # Lines emitted by the executor that we drop in the default (non-verbose)

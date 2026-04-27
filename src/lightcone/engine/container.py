@@ -40,9 +40,10 @@ import yaml
 logger = logging.getLogger(__name__)
 
 #: Runtimes we know how to build and run with. Order is detection priority:
-#: docker first because it's the laptop default; podman as the rootless
-#: equivalent; podman-hpc only relevant on login nodes.
-RUNTIMES: tuple[str, ...] = ("docker", "podman", "podman-hpc")
+#: podman first (rootless, no daemon to wedge), then docker (still common on
+#: laptops; we additionally probe ``docker info`` so a down daemon doesn't
+#: silently win over a healthy podman), then podman-hpc on login nodes.
+RUNTIMES: tuple[str, ...] = ("podman", "docker", "podman-hpc")
 
 #: Files whose contents contribute to the image tag hash.
 DEPENDENCY_FILES = (
@@ -111,11 +112,34 @@ class RuntimeChoice:
 
 
 def detect_runtime() -> str | None:
-    """Return the first available runtime in :data:`RUNTIMES`, or ``None``."""
+    """Return the first usable runtime in :data:`RUNTIMES`, or ``None``.
+
+    A runtime is "usable" when its binary is on PATH and (for docker)
+    its daemon answers ``docker info``. Without the daemon probe, a
+    laptop with docker installed but its daemon stopped would resolve
+    to docker and every recipe would fail with a socket error — even
+    when a healthy podman is sitting right next to it.
+    """
     for runtime in RUNTIMES:
-        if shutil.which(runtime) is not None:
-            return runtime
+        if shutil.which(runtime) is None:
+            continue
+        if runtime == "docker" and not _docker_daemon_up():
+            continue
+        return runtime
     return None
+
+
+def _docker_daemon_up() -> bool:
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+    return result.returncode == 0
 
 
 def _global_config_path() -> Path:
