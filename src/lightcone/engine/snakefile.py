@@ -2,10 +2,9 @@
 
 The Snakefile is a thin shell over the astra spec: one rule per output
 with a recipe, parameterized by ``{universe}``. Each rule's body is a
-``run:`` block:
-
-    shell(params.cfg["shell_command"])
-    write_manifest(output_dir=Path(output.data), inputs={...}, cfg=params.cfg)
+``run:`` block that calls :func:`lightcone.engine.runner.run_rule`,
+which encapsulates the recipe execution, manifest write, and validation
+hook in one place.
 
 The ``shell_command`` is the recipe pre-wrapped at generation time —
 when a container is configured, the wrap is something like
@@ -14,10 +13,9 @@ We deliberately do **not** use Snakemake's ``container:`` directive or
 ``--sdm apptainer``; we own the runtime end-to-end. See
 :mod:`lightcone.engine.container`.
 
-After the recipe shell exits, the host calls ``write_manifest`` directly.
-The ``os.replace`` rename inside ``write_manifest`` is the atomic commit
-point — either the rule produced both data and manifest or it failed and
-Snakemake reruns the rule.
+The ``os.replace`` rename inside ``write_manifest`` (called by
+``run_rule``) is the atomic commit point — either the rule produced
+both data and manifest or it failed and Snakemake reruns the rule.
 
 All per-(rule, universe) details — recipe, container image, decisions,
 precomputed code_version, resolved input paths — live in
@@ -45,18 +43,6 @@ from lightcone.engine.tree import (
 LIGHTCONE_DIR = ".lightcone"
 SNAKEFILE_NAME = "Snakefile"
 CONFIG_NAME = "snakefile-config.json"
-
-# Appended to every rule body. Warnings only — never raises, never
-# blocks the manifest. Empty / all-NaN / wrong-extension outputs are
-# common silent failures we want surfaced in the run log.
-_VALIDATION_SNIPPET = """\
-        for _w in validate_output(
-            Path(output.data),
-            params.cfg.get("output_type"),
-            params.cfg["output_id"],
-        ):
-            print(f"\\033[33m⚠\\033[0m {_w}", file=sys.stderr)\
-"""
 
 
 def _git_sha(project_path: Path) -> str | None:
@@ -149,10 +135,8 @@ def _render_snakefile(
     lines: list[str] = []
     lines.append('"""Auto-generated from astra.yaml — do not edit by hand."""')
     lines.append("import json")
-    lines.append("import sys")
     lines.append("from pathlib import Path")
-    lines.append("from lightcone.engine.manifest import write_manifest")
-    lines.append("from lightcone.engine.validation import validate_output")
+    lines.append("from lightcone.engine.runner import run_rule")
     lines.append("")
     lines.append("PROJECT = Path(workflow.basedir).parent")
     lines.append(
@@ -177,30 +161,40 @@ def _render_snakefile(
         lines.append("    params:")
         lines.append(f'        cfg=lambda wc: CFG["{r["key"]}"][wc.universe],')
         lines.append("    run:")
-        # User-facing progress marker — printed to stderr at the start of
-        # each rule. Picked up by ``lc run`` so the user sees the rule key
-        # and universe rather than snakemake-isms.
-        lines.append(
-            f'        shell(\'printf "\\033[2m▶\\033[0m {r["key"]} '
-            f'\\033[2m[%s]\\033[0m\\n" "{{wildcards.universe}}" >&2\')'
+        # The runner emits sentinel-prefixed lines (``▶ … recipe stdout
+        # … ✓``) which the dask executor's ``_run_shell`` extracts and
+        # forwards under a cross-node lock. The whole rule body lives
+        # in :func:`lightcone.engine.runner.run_rule` — keeping the
+        # generated Snakefile slim and the execution surface in Python
+        # rather than in shell strings.
+        #
+        # Brace substitution: recipes use Snakemake-style placeholders
+        # (``{output.data}``, ``{params.cfg[decisions][minimizer]}``,
+        # ``{wildcards.universe}``) that ``shell()`` would expand
+        # automatically. Now that we drive subprocess directly, we do
+        # the equivalent ``str.format`` against the rule's standard
+        # context here. Literal braces in recipes must be escaped as
+        # ``{{`` ``}}``, the same convention Snakemake's shell follows.
+        inp_pairs = ", ".join(
+            f'"{k}": Path(input.{k})' for k in r["inputs"]
         )
-        lines.append('        shell(params.cfg["shell_command"])')
-        if r["inputs"]:
-            inp_pairs = ", ".join(
-                f'"{k}": Path(input.{k})' for k in r["inputs"]
-            )
-            lines.append("        write_manifest(")
-            lines.append("            output_dir=Path(output.data),")
-            lines.append(f"            inputs={{{inp_pairs}}},")
-            lines.append("            cfg=params.cfg,")
-            lines.append("        )")
-        else:
-            lines.append("        write_manifest(")
-            lines.append("            output_dir=Path(output.data),")
-            lines.append("            inputs={},")
-            lines.append("            cfg=params.cfg,")
-            lines.append("        )")
-        lines.append(_VALIDATION_SNIPPET)
+        lines.append("        _cmd = params.cfg[\"shell_command\"].format(")
+        lines.append(
+            "            output=output, input=input, params=params,"
+        )
+        lines.append(
+            "            wildcards=wildcards, threads=threads,"
+            " resources=resources,"
+        )
+        lines.append("        )")
+        lines.append("        run_rule(")
+        lines.append(f'            rule_key="{r["key"]}",')
+        lines.append("            universe=wildcards.universe,")
+        lines.append("            shell_command=_cmd,")
+        lines.append("            output_dir=Path(output.data),")
+        lines.append(f"            inputs={{{inp_pairs}}},")
+        lines.append("            cfg=dict(params.cfg),")
+        lines.append("        )")
         lines.append("")
 
     return "\n".join(lines) + "\n"

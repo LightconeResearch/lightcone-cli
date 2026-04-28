@@ -108,12 +108,33 @@ def _project_root(start: Path | None = None) -> Path:
     default="recommended",
     help="Claude Code permission tier",
 )
-def init(directory: Path, no_git: bool, no_venv: bool, permissions: str) -> None:
+@click.option(
+    "--scratch",
+    "scratch_override",
+    default=None,
+    type=str,
+    help=(
+        "Scratch root for snakemake state, dask spill, and run locks. "
+        "Overrides the site default. Shell expressions like $SCRATCH are "
+        "expanded at run time (kept verbatim in the project config)."
+    ),
+)
+def init(
+    directory: Path,
+    no_git: bool,
+    no_venv: bool,
+    permissions: str,
+    scratch_override: str | None,
+) -> None:
     """Scaffold a new ASTRA project with Claude Code integration.
 
     Creates ``astra.yaml`` (boilerplate), ``CLAUDE.md``, ``.claude/`` (skills,
     agents, hooks, settings), ``.gitignore``, and an optional Python venv.
     """
+    import socket
+
+    from lightcone.engine.site_registry import detect_site, get_site_defaults
+
     directory = directory.resolve()
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -126,10 +147,13 @@ def init(directory: Path, no_git: bool, no_venv: bool, permissions: str) -> None
     # .gitignore
     (directory / ".gitignore").write_text(_GITIGNORE)
 
-    # .lightcone/ project state dir
+    # .lightcone/ project state dir + lightcone.yaml
     (directory / ".lightcone").mkdir(exist_ok=True)
+    project_cfg: dict[str, object] = {"target": "local"}
+    if scratch_override:
+        project_cfg["scratch_root"] = scratch_override
     (directory / ".lightcone" / "lightcone.yaml").write_text(
-        yaml.safe_dump({"target": "local"})
+        yaml.safe_dump(project_cfg)
     )
 
     # results/ directory placeholder
@@ -153,6 +177,25 @@ def init(directory: Path, no_git: bool, no_venv: bool, permissions: str) -> None
         subprocess.run(["python", "-m", "venv", ".venv"], cwd=directory, check=False)
 
     console.print(f"\n[green]Project initialized at[/green] {directory}")
+
+    # Surface the resolved scratch root if a known site was detected — gives
+    # users early visibility into where lc run will keep its operational
+    # state (snakemake metadata, dask spill, cross-node locks). On NERSC
+    # this is critical: $HOME and CFS are mounted via DVS (no flock, slow
+    # small-file I/O), so lightcone keeps everything on $SCRATCH (Lustre).
+    site_key = detect_site(socket.gethostname())
+    if site_key:
+        site = get_site_defaults(site_key) or {}
+        scratch_expr = scratch_override or site.get("scratch_root")
+        if scratch_expr:
+            console.print(
+                f"\n[dim]Detected site:[/dim] {site.get('display_name', site_key)}"
+            )
+            console.print(
+                f"[dim]Scratch root for lc run:[/dim] [cyan]{scratch_expr}[/cyan] "
+                f"[dim](resolved at run time)[/dim]"
+            )
+
     console.print("\nNext steps:")
     console.print("  • Edit [cyan]astra.yaml[/cyan] to declare outputs and recipes")
     console.print("  • [cyan]lc run[/cyan] to materialize outputs")
@@ -189,7 +232,8 @@ __pycache__/
 # lightcone state
 .lightcone/Snakefile
 .lightcone/snakefile-config.json
-.snakemake/
+.snakemake
+.snakemake.legacy
 
 # Materialized results — track at your discretion
 # results/
@@ -267,12 +311,31 @@ def run(
     """
     from lightcone.engine.container import load_runtime
     from lightcone.engine.dask_cluster import cluster_for_run
+    from lightcone.engine.scratch import (
+        ensure_snakemake_symlink,
+        prepare_run_dirs,
+        resolve_scratch_root,
+    )
     from lightcone.engine.snakefile import discover_universes, generate
 
     project = _project_root()
     universes = [universe] if universe else discover_universes(project)
 
+    # Resolve scratch and prepare per-run directories before anything
+    # else. Snakemake's ``.snakemake/`` is redirected via symlink so its
+    # workflow lock and metadata land on a filesystem that honours
+    # ``flock`` (Lustre on NERSC) rather than DVS-mounted home/CFS where
+    # locks are silent no-ops. Dask spill and our cross-node stdout lock
+    # live alongside it.
+    rundirs = prepare_run_dirs(project)
+    ensure_snakemake_symlink(project, rundirs.snakemake_state)
+    if verbose:
+        console.print(
+            f"[dim]Scratch root:[/dim] {resolve_scratch_root(project)}"
+        )
+
     choice = load_runtime(project_path=project)
+    _ensure_images(project, runtime=choice.runtime)
     snakefile_path, cfg_path = generate(
         project, universes=universes, runtime=choice.runtime
     )
@@ -332,114 +395,72 @@ def run(
         # has no recipe, so force-all is the only useful sense when no
         # targets were named.
         cmd.append("--force" if outputs else "--forceall")
-    if not verbose:
-        # Suppress the executor's progress/rule/host/reason chatter; rule
-        # bodies still print our own ``▶`` marker via stderr, and errors
-        # from the executor still come through. We do NOT pass ``all``
-        # here because it silences workflow errors too.
-        cmd.extend(["--quiet", "rules", "progress", "host", "reason"])
     cmd.extend(targets)
 
-    with cluster_for_run(verbose=verbose) as scheduler_addr:
-        env = {**os.environ, "DASK_SCHEDULER_ADDRESS": scheduler_addr}
+    with cluster_for_run(
+        verbose=verbose, local_directory=str(rundirs.dask_local)
+    ) as scheduler_addr:
+        env = {
+            **os.environ,
+            "DASK_SCHEDULER_ADDRESS": scheduler_addr,
+            # The dask plugin's worker-side ``_run_shell`` takes this
+            # ``flock`` before forwarding a rule's lightcone output, so
+            # parallel rules' blocks never interleave at the line level
+            # — even across nodes. The lockfile sits under our scratch
+            # root specifically to avoid DVS on NERSC.
+            "LIGHTCONE_OUT_LOCK": str(rundirs.lock_path),
+        }
         if verbose:
             console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
             sys.exit(subprocess.run(cmd, env=env).returncode)
-        sys.exit(_run_filtered(cmd, env=env))
+        sys.exit(_run_silent(cmd, env=env, scratch_root=rundirs.root))
 
 
-# Lines emitted by the executor that we drop in the default (non-verbose)
-# path. Substring match on the trimmed line — these are stable banner-style
-# messages, not error content. Anything not matched passes through so real
-# diagnostics are never hidden.
-_EXECUTOR_NOISE_PREFIXES = (
-    "Building DAG of jobs",
-    "Using shell:",
-    "Provided cores:",
-    "Provided remote nodes:",
-    "Rules claiming more threads",
-    "Job stats:",
-    "Select jobs to execute",
-    "Execute ",
-    "host:",
-    "Complete log:",
-    "Complete log(s):",
-    "Nothing to be done",
-    "Workflow defines that rule",
-    "Shared connection",
-    "Activating conda",
-    "Assuming unrestricted shared filesystem",
-    "Shutting down,",
-    "Exiting because a job execution failed",
-    "At least one job did not complete",
-    "Trying to restart job",
-    "Finished jobid",
-    "Finished job ",
-    "Workflow finished",
-    "RuleException",
-    "WorkflowError",
-    "CalledProcessError in file",
-)
+def _run_silent(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    scratch_root: Path,
+) -> int:
+    """Run snakemake with its own output suppressed.
 
-
-def _run_filtered(cmd: list[str], *, env: dict[str, str] | None = None) -> int:
-    """Run the executor and pass through only meaningful lines.
-
-    Rule bodies print their own ``▶`` progress marker; this filter drops
-    the executor's banner lines and recipe-replay error blocks so the
-    output reads as lightcone's, not the executor's. Genuine error
-    content (recipe stdout/stderr, unfamiliar diagnostic lines) passes
-    through untouched.
+    All user-facing output for the run flows through dask workers
+    (``_run_shell`` in the executor plugin → terminal stdout under
+    ``flock``). The parent snakemake process here only emits its own
+    bootstrap chatter (DAG building, rule selection, "Workflow finished")
+    plus, on failure, a workflow-level diagnostic. We discard stdout
+    wholesale and tail stderr into a bounded ring buffer so a workflow
+    crash leaves a real log behind without that log being visible
+    during a successful run.
     """
+    from collections import deque
+
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
-        env=env,
     )
-    assert proc.stdout is not None
-
-    # When the executor logs a failed shell job it prints a multi-line
-    # block: ``Command 'set -euo pipefail; <recipe>' returned non-zero
-    # exit status N.``. The recipe's own stdout/stderr already came out
-    # earlier, so this replay is pure noise — mute from "Command 'set"
-    # to the closing "returned non-zero exit status" line. Also mute the
-    # single line after "Removing output files of failed job" (which is
-    # just the bare result path).
-    in_command_replay = False
-    swallow_next = 0
-    for raw in proc.stdout:
-        line = raw.rstrip("\n")
-        stripped = line.strip()
-
-        if in_command_replay:
-            if "returned non-zero exit status" in stripped:
-                in_command_replay = False
-            continue
-        if swallow_next > 0:
-            swallow_next -= 1
-            continue
-        if stripped.startswith("Command 'set -euo pipefail"):
-            in_command_replay = "returned non-zero exit status" not in stripped
-            continue
-        if stripped.startswith("Removing output files of failed job"):
-            swallow_next = 1
-            continue
-
-        if not stripped:
-            continue
-        if any(stripped.startswith(p) for p in _EXECUTOR_NOISE_PREFIXES):
-            continue
-        # The job-stats table that follows "Job stats:" — drop the rows
-        # too. They look like "rulename    1" or "total    3" or a
-        # separator line of dashes.
-        if stripped.startswith("---") or stripped == "total":
-            continue
-        sys.stdout.write(line + "\n")
-        sys.stdout.flush()
-    return proc.wait()
+    assert proc.stderr is not None
+    tail: deque[str] = deque(maxlen=400)
+    for line in proc.stderr:
+        tail.append(line)
+    rc = proc.wait()
+    if rc != 0:
+        log = scratch_root / f"snakemake-stderr-{os.getpid()}.log"
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text("".join(tail))
+            console.print(
+                f"\n[red]✗ Workflow failed.[/red] "
+                f"Last snakemake stderr saved to [cyan]{log}[/cyan]."
+            )
+        except OSError:
+            # Last-ditch: dump to stderr if scratch is unwritable.
+            sys.stderr.write("".join(tail))
+    return rc
 
 
 def _target_for(project: Path, output_id: str, universe: str) -> str:
@@ -487,13 +508,39 @@ def _target_for(project: Path, output_id: str, universe: str) -> str:
 
 @main.command()
 @click.option("--universe", "-u", default=None)
-def status(universe: str | None) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit machine-readable JSON instead of a styled table.",
+)
+def status(universe: str | None, as_json: bool) -> None:
     """Report materialization status for every declared output."""
     from lightcone.engine.snakefile import discover_universes
     from lightcone.engine.status import get_output_status
 
     project = _project_root()
     universes = [universe] if universe else discover_universes(project)
+
+    if as_json:
+        payload = {
+            "universes": [
+                {
+                    "universe_id": u,
+                    "outputs": [
+                        {
+                            "output_id": s.output_id,
+                            "analysis_id": s.analysis_id,
+                            "status": s.status,
+                        }
+                        for s in get_output_status(project, universe_id=u)
+                    ],
+                }
+                for u in universes
+            ],
+        }
+        click.echo(json.dumps(payload, indent=2))
+        return
 
     for u in universes:
         console.print(f"\n[bold]Universe[/bold] [cyan]{u}[/cyan]")
@@ -570,28 +617,11 @@ def build(force: bool, runtime: str | None) -> None:
     ``ghcr.io/foo/bar:tag``) are skipped — the runtime pulls them at
     ``lc run`` time.
     """
-    from astra.helpers import load_yaml, resolve_analysis_tree
-
-    from lightcone.engine.container import (
-        ContainerBuildError,
-        build_image,
-        compute_image_tag,
-        image_exists_locally,
-        is_containerfile,
-        load_runtime,
-        pull_image,
-    )
-    from lightcone.engine.tree import collect_tree_outputs
+    from lightcone.engine.container import ContainerBuildError, load_runtime
 
     project = _project_root()
-    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
-
     try:
-        if runtime:
-            resolved_runtime = runtime
-        else:
-            choice = load_runtime(project_path=project)
-            resolved_runtime = choice.runtime
+        resolved_runtime = runtime or load_runtime(project_path=project).runtime
     except ContainerBuildError as e:
         raise click.ClickException(str(e))
 
@@ -604,6 +634,35 @@ def build(force: bool, runtime: str | None) -> None:
         )
         return
 
+    _ensure_images(project, runtime=resolved_runtime, force=force)
+    console.print("[green]Done.[/green]")
+
+
+def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
+    """Build/pull every container image referenced in astra.yaml.
+
+    No-op when *runtime* is ``"none"``. Idempotent: skips images already
+    present in the runtime's local image store. Used by ``lc build`` (with
+    ``--force`` exposed) and as a pre-flight by ``lc run`` so the first
+    invocation after editing a Containerfile doesn't fail mid-DAG with a
+    missing image.
+    """
+    if runtime == "none":
+        return
+
+    from astra.helpers import load_yaml, resolve_analysis_tree
+
+    from lightcone.engine.container import (
+        ContainerBuildError,
+        build_image,
+        compute_image_tag,
+        image_exists_locally,
+        is_containerfile,
+        pull_image,
+    )
+    from lightcone.engine.tree import collect_tree_outputs
+
+    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
     project_name = (spec.get("name") or project.name).lower().replace(" ", "-")
 
     seen: set[str] = set()
@@ -620,31 +679,28 @@ def build(force: bool, runtime: str | None) -> None:
         if not is_containerfile(spec_str, project):
             # Registry image — pull so ``lc run`` can use ``--pull=never``
             # without depending on the runtime's registry resolution.
-            if image_exists_locally(spec_str, runtime=resolved_runtime) and not force:
-                console.print(f"[dim]Cached[/dim] {spec_str}")
+            if image_exists_locally(spec_str, runtime=runtime) and not force:
                 continue
             console.print(
-                f"[cyan]Pulling[/cyan] {spec_str} [dim](via {resolved_runtime})[/dim]"
+                f"[cyan]Pulling[/cyan] {spec_str} [dim](via {runtime})[/dim]"
             )
             try:
-                pull_image(spec_str, runtime=resolved_runtime)
+                pull_image(spec_str, runtime=runtime)
             except ContainerBuildError as e:
                 raise click.ClickException(str(e))
             continue
 
         containerfile = project / spec_str
         tag = compute_image_tag(project_name, containerfile, project)
-        if image_exists_locally(tag, runtime=resolved_runtime) and not force:
-            console.print(f"[dim]Cached[/dim] {spec_str} → {tag}")
+        if image_exists_locally(tag, runtime=runtime) and not force:
             continue
         console.print(
-            f"[cyan]Building[/cyan] {spec_str} → {tag} [dim](via {resolved_runtime})[/dim]"
+            f"[cyan]Building[/cyan] {spec_str} → {tag} [dim](via {runtime})[/dim]"
         )
         try:
-            build_image(tag, containerfile, project, runtime=resolved_runtime)
+            build_image(tag, containerfile, project, runtime=runtime)
         except ContainerBuildError as e:
             raise click.ClickException(str(e))
-    console.print("[green]Done.[/green]")
 
 
 # =============================================================================
@@ -673,3 +729,12 @@ def setup() -> None:
         )
     )
     console.print(f"[green]Created[/green] {config}")
+
+
+# Register eval subgroup (requires optional 'eval' extra)
+try:
+    from lightcone.eval.cli import eval_group
+
+    main.add_command(eval_group, "eval")
+except ImportError:
+    pass

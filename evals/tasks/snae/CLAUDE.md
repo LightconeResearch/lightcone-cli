@@ -25,7 +25,6 @@ ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built
 
 ```
 astra.yaml              # Specification: decisions, inputs, outputs
-lightcone.yaml            # lightcone-cli config (default target, etc.)
 CLAUDE.md             # This file
 Containerfile         # Container image for execution
 requirements.txt      # Python deps (keep in sync with scripts)
@@ -40,8 +39,8 @@ results/<universe>/   # Outputs by universe (produced by lc run)
 Three overlapping phases:
 
 1. **Write & Debug** -- Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
-2. **Integrate** -- Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status` (`no recipe` / `pending` / `ok`). Container build specs (Containerfile or image string) can be set at the analysis level or per-recipe.
-3. **Materialize** -- `lc run` executes via Dagster in containers (Docker or SLURM). Falls back to local execution if Docker is unavailable. Done when `lc status` shows all `ok`.
+2. **Integrate** -- Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status`. Container build specs (Containerfile or image string) can be set at the analysis level or per-recipe.
+3. **Materialize** -- `lc run` executes recipes inside their declared containers and writes a per-output manifest. Done when `lc status` shows all `ok`.
 
 **An output is not done until `lc run` produces it.** Running scripts directly is for debugging only — final results must always come from `lc run` so they are reproducible inside containers.
 
@@ -78,17 +77,18 @@ astra universe generate -n NAME [-d "desc"]   # Generate universe from defaults
 astra universe check universes/x.yaml         # Check universe constraints
 
 # lc -- execution operations
-lc run [OUTPUT] [--universe NAME]        # Execute recipes via Dagster (auto-builds)
-lc status [--universe NAME]              # Materialization + container status
+lc run [OUTPUT] [--universe NAME]        # Execute recipes (auto-builds containers)
+lc status [--universe NAME] [--json]     # Materialization status (text or JSON)
 ```
 
 ### Status Interpretation
 
-`lc status` shows outputs vs universes. **Progression:** `no recipe` --> `pending` --> `ok`
+`lc status` shows each declared output's materialization state per universe.
 
-- `ok` -- Recipe exists, results on disk. Done.
-- `pending` -- Recipe exists, not materialized. Run `lc run`.
-- `no recipe` -- No `recipe:` block yet. Still in Write & Debug phase.
+- `ok` -- Recipe exists, results on disk, manifest matches the current spec. Done.
+- `stale` -- Recipe or decisions changed since the last run. Re-run `lc run`.
+- `missing` -- Recipe exists but no manifest. Run `lc run`.
+- `alias` -- Output has no recipe of its own; produced as a side effect of an upstream output.
 
 ---
 

@@ -1,8 +1,10 @@
 # mypy: disable-error-code="no-untyped-call"
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
+import sys
 from collections.abc import AsyncGenerator
 
 from snakemake_interface_common.exceptions import WorkflowError
@@ -21,14 +23,56 @@ from lightcone.engine.dask_cluster import (
     RESOURCE_GPUS,
     RESOURCE_MEMORY,
 )
+from lightcone.engine.runner import SENTINEL
 
 
 def _run_shell(cmd: str) -> int:
-    """Worker-side: run the shell command and return its exit code.
+    """Worker-side: run the child snakemake command, forward its lightcone
+    output, and return its exit code.
 
-    Stdout/stderr stream to whatever the worker is configured to log.
+    The command is a child snakemake invocation that loads the generated
+    Snakefile and executes one rule's ``run:`` block. That block calls
+    :func:`lightcone.engine.runner.run_rule`, which streams structured
+    output prefixed with :data:`lightcone.engine.runner.SENTINEL`.
+
+    We capture both stdout and stderr from the child snakemake; anything
+    not prefixed (snakemake's bootstrap, dask noise, stray prints) is
+    dropped. Lightcone-prefixed lines are forwarded to *our* stdout —
+    inherited from ``lc run``'s terminal across local LocalCluster
+    workers and srun-launched remote workers alike — as one atomic block
+    per rule, serialised across workers and nodes by an ``flock`` on the
+    path pointed to by ``LIGHTCONE_OUT_LOCK``.
+
+    The lockfile must live on a filesystem that supports advisory locks.
+    On NERSC, ``$HOME`` and ``/global/cfs`` are mounted on compute nodes
+    via DVS, which silently swallows ``flock``; lc run resolves the path
+    onto Lustre via :mod:`lightcone.engine.scratch`.
     """
-    return subprocess.run(cmd, shell=True, check=False).returncode
+    p = subprocess.run(
+        cmd, shell=True, capture_output=True, text=True, check=False
+    )
+
+    forwarded: list[str] = []
+    for stream in (p.stdout, p.stderr):
+        for line in stream.splitlines():
+            if line.startswith(SENTINEL):
+                forwarded.append(line[len(SENTINEL):])
+    if forwarded:
+        block = "\n".join(forwarded) + "\n"
+        lock_path = os.environ.get("LIGHTCONE_OUT_LOCK")
+        if lock_path:
+            with open(lock_path, "w") as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    sys.stdout.write(block)
+                    sys.stdout.flush()
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+        else:
+            sys.stdout.write(block)
+            sys.stdout.flush()
+
+    return p.returncode
 
 
 def _build_resources(job: JobExecutorInterface) -> dict[str, float]:

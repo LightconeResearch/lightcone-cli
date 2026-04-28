@@ -25,6 +25,13 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
             "hostname": "perlmutter.nersc.gov",
         },
         "container_runtime": "podman-hpc",
+        # Where lightcone keeps its operational state (snakemake metadata,
+        # dask spill, cross-node stdout locks). NERSC's $HOME and CFS are
+        # mounted on compute via DVS, which silently swallows ``flock`` and
+        # is slow for small-file I/O — Lustre ($SCRATCH) is the only sane
+        # choice. Stored as a shell expression so it expands to each user's
+        # private scratch path at run time.
+        "scratch_root": "$SCRATCH",
         "suggested_options": {
             "qos": {
                 "default": "debug",

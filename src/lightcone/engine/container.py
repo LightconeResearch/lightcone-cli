@@ -27,7 +27,9 @@ Supported runtimes:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import re
 import shlex
 import shutil
 import subprocess
@@ -55,7 +57,35 @@ DEPENDENCY_FILES = (
     "setup.cfg",
     "poetry.lock",
     "Pipfile.lock",
+    "uv.lock",
+    "conda-lock.yml",
+    "environment.yml",
+    "environment.yaml",
 )
+
+#: Subdirectories ignored when hashing a ``COPY .`` of the build context.
+#: These won't be in the docker build context for any sane project (they're
+#: either VCS, caches, results, or virtualenvs); listing them here keeps the
+#: tag from churning every time someone touches ``results/`` or runs tests.
+_COPY_DIR_EXCLUDE: frozenset[str] = frozenset({
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "results",
+    ".lightcone",
+    ".snakemake",
+    "node_modules",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".eggs",
+    "dist",
+})
+
+#: Matches a Dockerfile-style flag like ``--from=builder`` or ``--chown=u:g``.
+_FLAG_RE = re.compile(r"^--[A-Za-z][A-Za-z0-9-]*(=\S+)?$")
 
 
 class ContainerBuildError(Exception):
@@ -201,11 +231,36 @@ def find_dependency_files(project_path: Path) -> list[Path]:
     return sorted(p for p in found if p.is_file())
 
 
+def _hash_file_into(path: Path, h: hashlib._Hash) -> None:
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+
+
+def _hash_named_file(path: Path, label: str, h: hashlib._Hash) -> None:
+    """Mix *path*'s identity and contents into *h* with explicit framing.
+
+    Path-prefix + null separators stop boundary-shifting collisions —
+    e.g. moving a line from ``requirements.txt`` to ``requirements-dev.txt``
+    no longer yields the same digest as keeping it in place.
+    """
+    h.update(label.encode("utf-8"))
+    h.update(b"\0")
+    h.update(path.name.encode("utf-8"))
+    h.update(b"\0")
+    _hash_file_into(path, h)
+    h.update(b"\0")
+
+
 def hash_file_contents(files: list[Path]) -> str:
-    """Return a SHA-256 hex digest of the concatenated contents of *files*."""
+    """Return a SHA-256 hex digest over the framed contents of *files*.
+
+    The digest mixes each file's basename and a label byte in addition to
+    its contents, so reordering or relabelling produces different digests.
+    """
     h = hashlib.sha256()
     for f in files:
-        h.update(f.read_bytes())
+        _hash_named_file(f, "f", h)
     return h.hexdigest()
 
 
@@ -216,13 +271,152 @@ def compute_image_tag(
 ) -> str:
     """Compute a content-addressed image tag.
 
-    The tag is ``lc-<project_name>-<12-char-sha256>``.  The hash covers
-    the Containerfile contents plus any dependency files found in the
-    project root.
+    The tag is ``lc-<project_name>-<12-char-sha256>``.  The hash covers:
+
+    * the Containerfile contents,
+    * any dependency files in the project root listed in
+      :data:`DEPENDENCY_FILES`,
+    * the contents of every ``COPY``/``ADD`` source path referenced from
+      the Containerfile (files hashed directly, directories walked
+      recursively with stable ordering).
+
+    Sources behind ``--from=<stage>`` and URL/git ``ADD`` arguments are
+    skipped — they're not part of the host build context. ``COPY .``
+    folds in the project root with cache/results/VCS subtrees ignored.
     """
-    digest = hash_file_contents([containerfile, *find_dependency_files(project_path)])[:12]
+    h = hashlib.sha256()
+    _hash_named_file(containerfile, "containerfile", h)
+    for dep in find_dependency_files(project_path):
+        _hash_named_file(dep, "dep", h)
+
+    text = containerfile.read_text(errors="replace")
+    for src_str in _parse_copy_sources(text):
+        for resolved in _expand_copy_source(src_str, project_path):
+            rel = _safe_relpath(resolved, project_path)
+            h.update(b"copy\0")
+            h.update(rel.encode("utf-8"))
+            h.update(b"\0")
+            if resolved.is_file():
+                h.update(b"file\0")
+                _hash_file_into(resolved, h)
+            elif resolved.is_dir():
+                h.update(b"dir\0")
+                _hash_dir_into(resolved, h)
+            h.update(b"\0")
+
+    digest = h.hexdigest()[:12]
     safe_name = project_name.lower().replace(" ", "-")
     return f"lc-{safe_name}-{digest}"
+
+
+def _safe_relpath(path: Path, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return path.name
+
+
+def _hash_dir_into(directory: Path, h: hashlib._Hash) -> None:
+    """Hash *directory* recursively, skipping :data:`_COPY_DIR_EXCLUDE` subtrees.
+
+    Files are hashed in sorted relative-path order with path-prefix framing,
+    so renames and reorderings change the digest.
+    """
+    files: list[Path] = []
+    for p in directory.rglob("*"):
+        if not p.is_file():
+            continue
+        if any(part in _COPY_DIR_EXCLUDE for part in p.relative_to(directory).parts):
+            continue
+        files.append(p)
+    for p in sorted(files, key=lambda x: x.relative_to(directory).as_posix()):
+        rel = p.relative_to(directory).as_posix().encode("utf-8")
+        h.update(b"path\0")
+        h.update(rel)
+        h.update(b"\0data\0")
+        _hash_file_into(p, h)
+        h.update(b"\0")
+
+
+def _parse_copy_sources(containerfile_text: str) -> list[str]:
+    """Return raw source strings from ``COPY``/``ADD`` lines.
+
+    Skips ``--from=<stage>`` copies (those reference another build stage,
+    not the host context) and URL/git arguments (network resources, not
+    part of the local context we can hash). Glob patterns and relative
+    paths are returned verbatim — :func:`_expand_copy_source` resolves
+    them against the project tree.
+
+    Handles backslash line continuations and the JSON exec form
+    (``COPY ["src", "dest"]``). Heredoc COPY (``COPY <<EOF``) is not
+    interpreted.
+    """
+    sources: list[str] = []
+    text = re.sub(r"\\\r?\n", "", containerfile_text)
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        head, _, body = line.partition(" ")
+        if head.upper() not in ("COPY", "ADD"):
+            continue
+        body = body.strip()
+        if not body:
+            continue
+
+        if body.startswith("["):
+            try:
+                items = json.loads(body)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(items, list) or len(items) < 2:
+                continue
+            for s in items[:-1]:
+                if isinstance(s, str) and "://" not in s:
+                    sources.append(s)
+            continue
+
+        try:
+            tokens = shlex.split(body)
+        except ValueError:
+            continue
+        from_stage = False
+        operands: list[str] = []
+        for tok in tokens:
+            if _FLAG_RE.match(tok):
+                if tok.startswith("--from="):
+                    from_stage = True
+                continue
+            operands.append(tok)
+        if from_stage or len(operands) < 2:
+            continue
+        for s in operands[:-1]:
+            if "://" in s or s.startswith("git@"):
+                continue
+            sources.append(s)
+    return sources
+
+
+def _expand_copy_source(src: str, project_path: Path) -> list[Path]:
+    """Resolve a ``COPY``/``ADD`` source to actual paths under *project_path*.
+
+    Returns ``[project_path]`` for ``.`` (whole context). Globs are
+    expanded against *project_path*. Paths that escape the project root
+    are dropped — we don't hash arbitrary host filesystem.
+    """
+    src = src.lstrip("/")
+    if not src or src == ".":
+        return [project_path]
+    if any(c in src for c in "*?["):
+        return sorted(project_path.glob(src))
+    candidate = (project_path / src).resolve()
+    try:
+        candidate.relative_to(project_path.resolve())
+    except ValueError:
+        return []
+    if candidate.exists():
+        return [candidate]
+    return []
 
 
 def is_containerfile(spec: str, project_path: Path) -> bool:

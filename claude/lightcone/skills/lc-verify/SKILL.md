@@ -22,7 +22,7 @@ astra validate astra.yaml
 lc status --universe <universe_id>
 ```
 
-Every output should show `ok`. Flag anything pending, missing, or without a recipe.
+Every output should show `ok`. Flag anything `missing`, `stale`, or only present as an `alias`.
 
 ### 3. Decision-code alignment
 

@@ -161,15 +161,26 @@ def test_generate_no_wrap_for_runtime_none(tmp_path: Path) -> None:
     assert f"lc_code_version={cfg['foo']['u1']['code_version']}" in sh
 
 
-def test_generated_rules_use_run_block_with_write_manifest(tmp_path: Path) -> None:
-    """Each rule body is a ``run:`` block calling shell() and write_manifest().
-    No external finalize script — we own this path host-side."""
+def test_generated_rules_delegate_to_run_rule(tmp_path: Path) -> None:
+    """Each rule body is a ``run:`` block that calls ``run_rule()``.
+
+    The recipe execution, manifest write, and validation hook all live
+    inside :func:`lightcone.engine.runner.run_rule` — keeping the
+    generated Snakefile slim and behaviour in Python rather than in
+    shell strings.
+    """
     _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo hi"}}]})
     snakefile, _ = generate(tmp_path, universes=["u1"])
     text = snakefile.read_text()
     assert "    run:" in text
     assert "    shell:" not in text
-    assert "write_manifest(" in text
+    assert "run_rule(" in text
+    assert "from lightcone.engine.runner import run_rule" in text
+    # Direct shell()/write_manifest()/validate_output() calls in the
+    # generated body would mean we're double-executing or bypassing
+    # run_rule's lockable output frame.
+    assert "        shell(" not in text
+    assert "        write_manifest(" not in text
     assert "_lc_finalize" not in text
 
 
@@ -251,14 +262,14 @@ def test_containerfile_edit_changes_code_version(tmp_path: Path) -> None:
     )
 
 
-def test_validation_wired_into_rule_body(tmp_path: Path) -> None:
-    """The generated rule body must call validate_output after
-    write_manifest so empty/all-NaN outputs surface as warnings."""
+def test_validation_runs_via_run_rule(tmp_path: Path) -> None:
+    """Validation now runs inside ``run_rule()`` rather than inline in
+    the generated Snakefile. We just check that the runner is imported
+    — the runner's own tests cover the validation-on-success path."""
     _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]})
     snakefile, _ = generate(tmp_path, universes=["u1"])
     text = snakefile.read_text()
-    assert "from lightcone.engine.validation import validate_output" in text
-    assert "validate_output(" in text
+    assert "from lightcone.engine.runner import run_rule" in text
 
 
 def test_cfg_includes_output_type(tmp_path: Path) -> None:

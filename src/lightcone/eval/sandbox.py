@@ -71,10 +71,14 @@ class EvalSandbox:
 
         # Build the sandbox image
         if self.sandbox_image is None:
-            # Direct deps from astra + lightcone-cli pyproject.toml (pip resolves transitive)
+            # Direct deps from astra + lightcone-cli pyproject.toml (pip resolves transitive).
+            # Kept in sync with the runtime deps declared there — the local astra
+            # and lightcone-cli wheels are uploaded with --no-deps, so anything not
+            # listed here must come from the wheels themselves.
             deps = (
-                "click httpx jsonschema pydantic pypdf pyyaml rapidfuzz rich"
-                " dagster dagster-webserver dagster-docker langfuse"
+                "click httpx jinja2 jsonschema pydantic pypdf pyyaml rapidfuzz rich"
+                " snakemake snakemake-interface-executor-plugins"
+                " snakemake-interface-common dask distributed langfuse"
             )
             image = (
                 Image.debian_slim("3.12")

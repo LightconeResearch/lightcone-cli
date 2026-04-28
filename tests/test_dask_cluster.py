@@ -78,7 +78,7 @@ def test_no_env_uses_local_cluster() -> None:
     sentinel: dict[str, str] = {}
 
     @contextmanager
-    def _fake_local(*, verbose: bool):
+    def _fake_local(*, verbose: bool, local_directory: str | None = None):
         sentinel["called"] = "local"
         yield "tcp://stub:9999"
 
@@ -93,7 +93,7 @@ def test_slurm_env_takes_slurm_path(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel: dict[str, str] = {}
 
     @contextmanager
-    def _fake_slurm(*, verbose: bool):
+    def _fake_slurm(*, verbose: bool, local_directory: str | None = None):
         sentinel["called"] = "slurm"
         yield "tcp://stub:9999"
 
@@ -111,7 +111,7 @@ def test_existing_scheduler_address_wins_over_slurm(
     monkeypatch.setenv("SLURM_JOB_ID", "12345")
 
     @contextmanager
-    def _should_not_run(*, verbose: bool):
+    def _should_not_run(*, verbose: bool, local_directory: str | None = None):
         raise AssertionError("slurm path should not have been taken")
         yield  # pragma: no cover
 
@@ -173,7 +173,7 @@ def test_slurm_backed_cluster_binds_to_routable_host(
 
     from lightcone.engine.dask_cluster import _slurm_backed_cluster
 
-    with _slurm_backed_cluster(verbose=False) as addr:
+    with _slurm_backed_cluster(verbose=False, local_directory=None) as addr:
         assert addr == "tcp://nid001234:8786"
 
     assert captured.get("host") == "nid001234", (
@@ -235,7 +235,7 @@ def test_slurm_backed_cluster_falls_back_to_gethostname(
 
     from lightcone.engine.dask_cluster import _slurm_backed_cluster
 
-    with _slurm_backed_cluster(verbose=False):
+    with _slurm_backed_cluster(verbose=False, local_directory=None):
         pass
 
     assert captured.get("host") == "host-fallback"
@@ -267,7 +267,7 @@ def test_local_cluster_advertises_memory_and_gpus(
 
     from lightcone.engine.dask_cluster import _local_cluster
 
-    with _local_cluster(verbose=False):
+    with _local_cluster(verbose=False, local_directory=None):
         pass
 
     resources = captured.get("resources")
@@ -282,7 +282,7 @@ def test_local_cluster_smoke() -> None:
 
     from lightcone.engine.dask_cluster import _local_cluster
 
-    with _local_cluster(verbose=False) as addr:
+    with _local_cluster(verbose=False, local_directory=None) as addr:
         client = Client(addr)
         try:
             assert client.submit(lambda x: x + 1, 41).result() == 42

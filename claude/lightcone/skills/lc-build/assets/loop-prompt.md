@@ -4,7 +4,7 @@ You are inside a lc-build loop (universe: {{UNIVERSE}}). Each iteration: survey,
 
 Run these commands and read their output:
 
-1. `lc status --universe {{UNIVERSE}}` -- what's materialized, what's pending, what has no recipe
+1. `lc status --universe {{UNIVERSE}}` -- what's materialized (`ok`), missing, stale, or an alias of an upstream output
 2. `git log --oneline -10` -- what happened recently
 3. `astra validate astra.yaml` -- is the spec valid
 4. Read `.lightcone/plans/build-plan-{{UNIVERSE}}.md` -- your implementation plan (cross off completed items as you go)
@@ -51,7 +51,7 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
    The script must contain real, functional logic that produces genuine results from actual input data. No `# TODO` stubs, no hardcoded dummy values standing in for computation, no `pass` in place of real logic, no synthetic/mock data generation when real data is specified. If you cannot implement the full logic (e.g., missing a library or unclear algorithm), document the blocker in the build plan and move on — do not ship a fake version.
 2. **Test locally:** `python scripts/<name>.py --decision1 value1 --decision2 value2` using values from `universes/{{UNIVERSE}}.yaml`.
    Note: manual script runs may write to `results/` but do NOT register as materialized.
-   Only `lc run` creates the Dagster events that `lc status` recognizes.
+   Only `lc run` produces the per-output manifests that `lc status` reads.
 3. **Debug until it works.** Read tracebacks, check imports (`python -c "import module"`), verify decision parameter names match `astra.yaml`.
 4. **Commit** with a message describing what the script does.
 
@@ -59,7 +59,7 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 
 1. **Add the recipe block** to `astra.yaml` under the output's `recipe:` key.
 2. **Validate:** `astra validate astra.yaml`
-3. **Run it:** `lc run <OUTPUT> --universe {{UNIVERSE}}`. `lc run` always dispatches through a Dask cluster — `LocalCluster` on a workstation, srun-launched workers inside a SLURM allocation. Run the loop on a machine that can actually execute recipes (the user's laptop with a container runtime, or a compute session they've already opened).
+3. **Run it:** `lc run <OUTPUT> --universe {{UNIVERSE}}`. `lc run` is the only supported way to execute recipes — it handles container resolution, scheduling, and provenance. Run the loop on a machine that can actually execute recipes (the user's laptop with a container runtime, or a compute session they've already opened).
 4. **If it fails:** Read the error output carefully and diagnose the root cause before retrying. Never re-run the same command without changing something first. Common causes:
    - Container not built → `lc build`
    - Upstream not materialized → materialize dependency first

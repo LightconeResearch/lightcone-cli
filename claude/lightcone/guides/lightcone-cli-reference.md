@@ -7,14 +7,14 @@ Reference for lightcone-cli execution: CLI commands, development workflow, statu
 ```bash
 lc init [DIR]                            # Scaffold a new ASTRA project
 lc init NAME --sub-analysis              # Scaffold sub-analysis and wire into parent
-lc run [OUTPUT] [--universe NAME]        # Materialize outputs (always via Dask)
+lc run [OUTPUT] [--universe NAME]        # Materialize outputs
 lc build [--force] [--runtime docker]    # Build container images from specs
-lc status [--universe NAME]              # Materialization + container status
+lc status [--universe NAME] [--json]     # Materialization status (text or JSON)
 lc verify [--universe NAME]              # Recompute hashes and walk the provenance chain
 lc setup                                 # Write a minimal ~/.lightcone/config.yaml
 ```
 
-**Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Never invoke schedulers or container runtimes directly — it will bypass reproducibility guarantees.
+**Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Treat the underlying execution engine as a black box — never invoke schedulers or container runtimes directly, that will bypass reproducibility guarantees.
 
 ## Creating Sub-Analyses
 
@@ -31,8 +31,8 @@ After scaffolding, populate the sub-analysis's `astra.yaml` with inputs, outputs
 Three overlapping phases:
 
 1. **Write & Debug** — Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
-2. **Integrate** — Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status` (`no recipe` / `pending` / `ok`). Set `container:` at analysis level or per-recipe — pass an image name (e.g., `python:3.12-slim`) or a path to a Containerfile (e.g., `Containerfile`).
-3. **Materialize** — `lc run` dispatches recipes through a Dask cluster (`LocalCluster` on a workstation, srun-launched workers inside a SLURM allocation). Done when `lc status` shows all `ok`.
+2. **Integrate** — Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status` (`alias` / `missing` / `stale` / `ok`). Set `container:` at analysis level or per-recipe — pass an image name (e.g., `python:3.12-slim`) or a path to a Containerfile (e.g., `Containerfile`).
+3. **Materialize** — `lc run` executes recipes inside their declared containers and writes a content-addressed manifest next to each output. Done when `lc status` shows all `ok`.
 
 **An output is not done until `lc run` produces it.** Running scripts directly is for debugging only — final results must always come from `lc run` so they are reproducible.
 
@@ -45,13 +45,12 @@ Three overlapping phases:
 
 ## Status Interpretation
 
-`lc status` shows outputs vs universes. **Progression:** `no recipe` → `pending` → `ok`
+`lc status` shows each declared output's materialization state per universe. Pass `--json` for machine-readable output.
 
-- `ok` — Recipe exists, results on disk. Done.
-- `pending` — Recipe exists, not materialized. Run `lc run`.
-- `no recipe` — No `recipe:` block yet. Still in Write & Debug phase.
-
-Container status: `prebuilt: image`, `build: Containerfile (built)`, or `(not built)` (needs `lc build`).
+- `ok` — Recipe exists, results on disk, manifest matches the current spec. Done.
+- `stale` — Recipe or decisions changed since the last run. Re-run `lc run`.
+- `missing` — Recipe exists but no manifest (never run, or output deleted). Run `lc run`.
+- `alias` — Output has no recipe of its own; produced as a side effect of an upstream output (or a `from:` reference into a sub-analysis). Not independently materializable.
 
 ## Failure Diagnosis
 

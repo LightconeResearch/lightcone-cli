@@ -84,8 +84,19 @@ def _resources_arg(shape: _NodeShape) -> str:
 
 
 @contextmanager
-def cluster_for_run(*, verbose: bool = False) -> Iterator[str]:
-    """Yield a Dask scheduler address valid for the duration of `lc run`."""
+def cluster_for_run(
+    *,
+    verbose: bool = False,
+    local_directory: str | None = None,
+) -> Iterator[str]:
+    """Yield a Dask scheduler address valid for the duration of `lc run`.
+
+    *local_directory*, when given, is where dask workers stage their
+    spilled task data and internal state files. ``lc run`` resolves it
+    to a path under :mod:`lightcone.engine.scratch` so on NERSC the
+    spill lands on Lustre instead of DVS-mounted home/CFS (where small-
+    file I/O is slow and can pressure the gateway nodes).
+    """
     if addr := os.environ.get("DASK_SCHEDULER_ADDRESS"):
         if verbose:
             print(f"→ Using existing Dask scheduler at {addr}")
@@ -93,16 +104,22 @@ def cluster_for_run(*, verbose: bool = False) -> Iterator[str]:
         return
 
     if "SLURM_JOB_ID" in os.environ:
-        with _slurm_backed_cluster(verbose=verbose) as addr:
+        with _slurm_backed_cluster(
+            verbose=verbose, local_directory=local_directory
+        ) as addr:
             yield addr
         return
 
-    with _local_cluster(verbose=verbose) as addr:
+    with _local_cluster(
+        verbose=verbose, local_directory=local_directory
+    ) as addr:
         yield addr
 
 
 @contextmanager
-def _local_cluster(*, verbose: bool) -> Iterator[str]:
+def _local_cluster(
+    *, verbose: bool, local_directory: str | None
+) -> Iterator[str]:
     from dask.distributed import LocalCluster
 
     shape = _detect_node_shape()
@@ -114,6 +131,7 @@ def _local_cluster(*, verbose: bool) -> Iterator[str]:
         threads_per_worker=shape.cpus,
         resources=_resource_dict(shape),
         dashboard_address=":0",
+        local_directory=local_directory,
     )
     if verbose:
         print(
@@ -127,7 +145,9 @@ def _local_cluster(*, verbose: bool) -> Iterator[str]:
 
 
 @contextmanager
-def _slurm_backed_cluster(*, verbose: bool) -> Iterator[str]:
+def _slurm_backed_cluster(
+    *, verbose: bool, local_directory: str | None
+) -> Iterator[str]:
     from dask.distributed import LocalCluster
 
     if shutil.which("dask") is None:
@@ -149,6 +169,7 @@ def _slurm_backed_cluster(*, verbose: bool) -> Iterator[str]:
         n_workers=0,
         host=scheduler_host,
         dashboard_address=":0",
+        local_directory=local_directory,
     )
     addr = cluster.scheduler_address
 
@@ -174,6 +195,8 @@ def _slurm_backed_cluster(*, verbose: bool) -> Iterator[str]:
         _resources_arg(shape),
         "--no-dashboard",
     ]
+    if local_directory:
+        worker_cmd.extend(["--local-directory", local_directory])
     workers = subprocess.Popen(worker_cmd)
 
     try:

@@ -94,6 +94,86 @@ class TestComputeImageTag:
         tag = compute_image_tag("My Project", project / "Containerfile", project)
         assert tag.startswith("lc-my-project-")
 
+    def test_changes_with_uv_lock(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        tag1 = compute_image_tag("test", cf, project)
+        (project / "uv.lock").write_text("# v1\n")
+        tag2 = compute_image_tag("test", cf, project)
+        assert tag1 != tag2
+
+    def test_changes_with_copied_file(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY app.py /app/app.py\n")
+        (project / "app.py").write_text("print(1)\n")
+        tag1 = compute_image_tag("test", cf, project)
+        (project / "app.py").write_text("print(2)\n")
+        tag2 = compute_image_tag("test", cf, project)
+        assert tag1 != tag2
+
+    def test_changes_with_copied_directory(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY src/ /app/src/\n")
+        (project / "src").mkdir()
+        (project / "src" / "a.py").write_text("a = 1\n")
+        tag1 = compute_image_tag("test", cf, project)
+        (project / "src" / "b.py").write_text("b = 2\n")
+        tag2 = compute_image_tag("test", cf, project)
+        assert tag1 != tag2
+
+    def test_copy_dir_ignores_results(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY . /app/\n")
+        (project / "src").mkdir()
+        (project / "src" / "a.py").write_text("a = 1\n")
+        tag1 = compute_image_tag("test", cf, project)
+        # Touching results/ or .lightcone/ must not invalidate the tag —
+        # they aren't in the build context for any sane Containerfile.
+        (project / "results").mkdir()
+        (project / "results" / "out.txt").write_text("data\n")
+        (project / ".lightcone").mkdir()
+        (project / ".lightcone" / "Snakefile").write_text("rule x:\n")
+        tag2 = compute_image_tag("test", cf, project)
+        assert tag1 == tag2
+
+    def test_skips_from_stage_copy(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text(
+            "FROM python:3.12-slim AS builder\n"
+            "FROM python:3.12-slim\n"
+            "COPY --from=builder /tmp/x /app/x\n"
+        )
+        # No real source on host, but parsing must not raise or expand.
+        tag = compute_image_tag("test", cf, project)
+        assert tag.startswith("lc-test-")
+
+    def test_skips_url_add(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text(
+            "FROM python:3.12-slim\nADD https://example.com/x.tgz /app/x.tgz\n"
+        )
+        tag = compute_image_tag("test", cf, project)
+        assert tag.startswith("lc-test-")
+
+    def test_glob_copy_invalidates_on_match_change(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY *.py /app/\n")
+        (project / "main.py").write_text("x = 1\n")
+        tag1 = compute_image_tag("test", cf, project)
+        (project / "main.py").write_text("x = 2\n")
+        tag2 = compute_image_tag("test", cf, project)
+        assert tag1 != tag2
+
+    def test_swap_dep_file_names_not_collision(self, project: Path) -> None:
+        # Same total bytes, swapped between two dep files: must not collide
+        # (the old concat-without-delimiter scheme would have).
+        (project / "requirements.txt").write_text("numpy\n")
+        (project / "requirements-dev.txt").write_text("pandas\n")
+        tag1 = compute_image_tag("test", project / "Containerfile", project)
+        (project / "requirements.txt").write_text("pandas\n")
+        (project / "requirements-dev.txt").write_text("numpy\n")
+        tag2 = compute_image_tag("test", project / "Containerfile", project)
+        assert tag1 != tag2
+
 
 # ---- image_exists_locally / image_exists_podman_hpc -----------------------
 

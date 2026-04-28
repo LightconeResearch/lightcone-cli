@@ -35,7 +35,7 @@ The user should have provided a description inline (e.g., `/lc-feedback pipeline
 
 Triage the repo from context:
 - **ASTRA** — `astra` CLI, schema validation, YAML parsing, helpers
-- **lightcone-cli** — `lc` CLI, Dagster execution, recipes, container builds, scaffolding, skills, telemetry hooks
+- **lightcone-cli** — `lc` CLI, recipe execution, container builds, scaffolding, skills, telemetry hooks
 
 Default to **lightcone-cli** if ambiguous.
 
