@@ -542,10 +542,50 @@ class TestLoadRuntime:
             "lightcone.engine.container.shutil.which",
             lambda name: f"/usr/bin/{name}" if name == "podman" else None,
         )
+        monkeypatch.setattr("lightcone.engine.container._runtime_up", lambda _: True)
         self._write_config(tmp_path, {"container": {"runtime": "podman"}})
         choice = load_runtime()
         assert choice.runtime == "podman"
         assert choice.explicit is True
+
+    def test_explicit_podman_not_reachable_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name == "podman" else None,
+        )
+        monkeypatch.setattr("lightcone.engine.container._runtime_up", lambda _: False)
+        self._write_config(tmp_path, {"container": {"runtime": "podman"}})
+        with pytest.raises(ContainerBuildError, match="not reachable"):
+            load_runtime()
+
+    def test_explicit_podman_not_reachable_hints_machine_start(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name == "podman" else None,
+        )
+        monkeypatch.setattr("lightcone.engine.container._runtime_up", lambda _: False)
+        self._write_config(tmp_path, {"container": {"runtime": "podman"}})
+        with pytest.raises(ContainerBuildError, match="podman machine start"):
+            load_runtime()
+
+    def test_explicit_docker_not_reachable_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name == "docker" else None,
+        )
+        monkeypatch.setattr("lightcone.engine.container._runtime_up", lambda _: False)
+        self._write_config(tmp_path, {"container": {"runtime": "docker"}})
+        with pytest.raises(ContainerBuildError, match="not reachable"):
+            load_runtime()
 
     def test_explicit_runtime_missing_on_path_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

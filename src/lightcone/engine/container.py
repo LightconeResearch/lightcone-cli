@@ -233,6 +233,19 @@ def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
             f"Install {requested} or set container.runtime to a different value "
             f"in {cfg_path}."
         )
+    if not _runtime_up(requested):
+        if requested in ("podman", "podman-hpc"):
+            hint = (
+                "Start the Podman machine (`podman machine start` on macOS) "
+                "or the Podman service, then retry."
+            )
+        elif requested == "docker":
+            hint = "Start the Docker daemon and retry."
+        else:
+            hint = f"Verify {requested} is running and accessible."
+        raise ContainerBuildError(
+            f"Container runtime {requested!r} is not reachable. {hint}"
+        )
     return RuntimeChoice(runtime=requested, explicit=True)
 
 
