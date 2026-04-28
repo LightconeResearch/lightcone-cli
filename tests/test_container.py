@@ -277,6 +277,83 @@ class TestBuildImage:
         assert "--build-arg" in cmd
         assert "PY_VERSION=3.12" in cmd
 
+    def test_build_stages_context_off_source_tree(self, project: Path) -> None:
+        """Build context must be a tempdir, not the source project.
+
+        On NERSC, projects living on DVS-mounted home/CFS hit
+        ``llistxattr EPROTO`` when buildah's copier walks COPY sources.
+        Staging into ``$TMPDIR`` (tmpfs) is what lets builds succeed there.
+        """
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY app.py /app/app.py\n")
+        (project / "app.py").write_text("print('hi')\n")
+
+        captured: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            ctx = Path(cmd[-1])
+            captured["ctx"] = ctx
+            captured["files"] = sorted(
+                p.relative_to(ctx).as_posix()
+                for p in ctx.rglob("*")
+                if p.is_file()
+            )
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "lightcone.engine.container.subprocess.run", side_effect=fake_run
+        ):
+            build_image("lc-test", cf, project, runtime="podman")
+
+        assert captured["ctx"].resolve() != project.resolve()
+        assert not captured["ctx"].exists()
+        assert "Containerfile" in captured["files"]
+        assert "app.py" in captured["files"]
+
+    def test_build_stages_copy_dot_with_excludes(self, project: Path) -> None:
+        """``COPY .`` mirrors the project but skips excluded subtrees."""
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY . /app/\n")
+        (project / "src").mkdir()
+        (project / "src" / "main.py").write_text("x = 1\n")
+        (project / ".git").mkdir()
+        (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        (project / "results").mkdir()
+        (project / "results" / "out.txt").write_text("data\n")
+
+        captured: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            ctx = Path(cmd[-1])
+            captured["files"] = sorted(
+                p.relative_to(ctx).as_posix()
+                for p in ctx.rglob("*")
+                if p.is_file()
+            )
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "lightcone.engine.container.subprocess.run", side_effect=fake_run
+        ):
+            build_image("lc-test", cf, project, runtime="podman")
+
+        assert "src/main.py" in captured["files"]
+        assert "Containerfile" in captured["files"]
+        assert not any(f.startswith(".git/") for f in captured["files"])
+        assert not any(f.startswith("results/") for f in captured["files"])
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_build_cleans_stage_on_failure(
+        self, mock_run: MagicMock, project: Path
+    ) -> None:
+        """Staged tempdir is removed even when the build fails."""
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
+        with pytest.raises(ContainerBuildError):
+            build_image("lc-test", project / "Containerfile", project, runtime="docker")
+        ctx = Path(mock_run.call_args[0][0][-1])
+        assert not ctx.exists()
+
 
 # ---- pull_image -----------------------------------------------------------
 

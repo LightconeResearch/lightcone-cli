@@ -33,7 +33,8 @@ import re
 import shlex
 import shutil
 import subprocess
-from collections.abc import Callable
+import tempfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -264,6 +265,34 @@ def hash_file_contents(files: list[Path]) -> str:
     return h.hexdigest()
 
 
+def _iter_build_context_entries(
+    containerfile: Path, project_path: Path
+) -> Iterator[tuple[str, Path]]:
+    """Yield ``(kind, path)`` for everything that contributes to a build.
+
+    ``kind`` is one of ``"containerfile"``, ``"dep"``, ``"copy_file"``,
+    ``"copy_dir"``. Sharing this iteration between :func:`compute_image_tag`
+    and :func:`_populate_build_context` guarantees by construction that
+    the hashed set and the staged set cover identical files — so the tag
+    can never invalidate against a stage that's missing inputs (or vice
+    versa).
+
+    Sources behind ``--from=<stage>`` and URL/git ``ADD`` arguments are
+    skipped — they're not part of the host build context. ``COPY .``
+    yields the project root as a single ``copy_dir`` entry.
+    """
+    yield "containerfile", containerfile
+    for dep in find_dependency_files(project_path):
+        yield "dep", dep
+    text = containerfile.read_text(errors="replace")
+    for src_str in _parse_copy_sources(text):
+        for resolved in _expand_copy_source(src_str, project_path):
+            if resolved.is_file():
+                yield "copy_file", resolved
+            elif resolved.is_dir():
+                yield "copy_dir", resolved
+
+
 def compute_image_tag(
     project_name: str,
     containerfile: Path,
@@ -271,37 +300,30 @@ def compute_image_tag(
 ) -> str:
     """Compute a content-addressed image tag.
 
-    The tag is ``lc-<project_name>-<12-char-sha256>``.  The hash covers:
-
-    * the Containerfile contents,
-    * any dependency files in the project root listed in
-      :data:`DEPENDENCY_FILES`,
-    * the contents of every ``COPY``/``ADD`` source path referenced from
-      the Containerfile (files hashed directly, directories walked
-      recursively with stable ordering).
-
-    Sources behind ``--from=<stage>`` and URL/git ``ADD`` arguments are
-    skipped — they're not part of the host build context. ``COPY .``
-    folds in the project root with cache/results/VCS subtrees ignored.
+    The tag is ``lc-<project_name>-<12-char-sha256>``.  The hash covers
+    the Containerfile, every dependency file in :data:`DEPENDENCY_FILES`,
+    and the contents of every ``COPY``/``ADD`` source path referenced
+    from the Containerfile (files hashed directly, directories walked
+    recursively with stable ordering and :data:`_COPY_DIR_EXCLUDE`
+    subtrees skipped).
     """
     h = hashlib.sha256()
-    _hash_named_file(containerfile, "containerfile", h)
-    for dep in find_dependency_files(project_path):
-        _hash_named_file(dep, "dep", h)
-
-    text = containerfile.read_text(errors="replace")
-    for src_str in _parse_copy_sources(text):
-        for resolved in _expand_copy_source(src_str, project_path):
-            rel = _safe_relpath(resolved, project_path)
+    for kind, path in _iter_build_context_entries(containerfile, project_path):
+        if kind == "containerfile":
+            _hash_named_file(path, "containerfile", h)
+        elif kind == "dep":
+            _hash_named_file(path, "dep", h)
+        else:
+            rel = _safe_relpath(path, project_path)
             h.update(b"copy\0")
             h.update(rel.encode("utf-8"))
             h.update(b"\0")
-            if resolved.is_file():
+            if kind == "copy_file":
                 h.update(b"file\0")
-                _hash_file_into(resolved, h)
-            elif resolved.is_dir():
+                _hash_file_into(path, h)
+            else:
                 h.update(b"dir\0")
-                _hash_dir_into(resolved, h)
+                _hash_dir_into(path, h)
             h.update(b"\0")
 
     digest = h.hexdigest()[:12]
@@ -456,6 +478,48 @@ def image_exists_podman_hpc(tag: str) -> bool:
         return False
 
 
+def _populate_build_context(
+    staged: Path, containerfile: Path, source_context: Path
+) -> None:
+    """Mirror the Containerfile + its referenced sources into *staged*.
+
+    Why this exists: NERSC's home and CFS filesystems are mounted via
+    Cray DVS, which doesn't implement ``llistxattr`` (returns ``EPROTO``).
+    Buildah's copier — used by ``podman``, ``podman-hpc``, and any other
+    buildah-backed runtime — calls ``llistxattr`` unconditionally on every
+    ``COPY`` source and crashes when the project lives on DVS. Staging
+    the build context into ``$TMPDIR`` (tmpfs on Linux) sidesteps the
+    issue entirely without forcing the user to relocate their project.
+
+    The set of staged files is :func:`_iter_build_context_entries` — the
+    same iteration :func:`compute_image_tag` hashes — so the tag can't
+    invalidate against a stage that's missing files.
+    """
+    src_root = source_context.resolve()
+    for kind, path in _iter_build_context_entries(containerfile, source_context):
+        if kind in ("containerfile", "dep"):
+            shutil.copy2(path, staged / path.name)
+            continue
+        try:
+            rel = path.resolve().relative_to(src_root)
+        except ValueError:
+            continue
+        dest = staged / rel if rel.parts else staged
+        if kind == "copy_file":
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, dest)
+        else:  # copy_dir
+            _copy_tree_filtered(path, dest)
+
+
+def _copy_tree_filtered(src: Path, dst: Path) -> None:
+    """Copy *src* into *dst* recursively, skipping :data:`_COPY_DIR_EXCLUDE`."""
+    def _ignore(_dir: str, names: list[str]) -> list[str]:
+        return [n for n in names if n in _COPY_DIR_EXCLUDE]
+
+    shutil.copytree(src, dst, ignore=_ignore, symlinks=True, dirs_exist_ok=True)
+
+
 def build_image(
     tag: str,
     containerfile: Path,
@@ -466,8 +530,9 @@ def build_image(
 ) -> ContainerBuildResult:
     """Build a container image with the given *runtime*.
 
-    For ``podman-hpc``, the image is automatically migrated after build
-    so compute nodes can access it.
+    The build context is staged into a fresh tempdir before invocation
+    (see :func:`_populate_build_context`). For ``podman-hpc``, the image
+    is automatically migrated after build so compute nodes can access it.
 
     Raises :class:`ContainerBuildError` on failure.
     """
@@ -476,34 +541,38 @@ def build_image(
             f"Unsupported build runtime {runtime!r}; expected one of {RUNTIMES}."
         )
 
-    cmd: list[str] = [runtime, "build", "-t", tag, "-f", str(containerfile)]
-    for key, value in (build_args or {}).items():
-        cmd += ["--build-arg", f"{key}={value}"]
-    cmd.append(str(context))
+    with tempfile.TemporaryDirectory(prefix="lc-build-") as staged_str:
+        staged = Path(staged_str)
+        _populate_build_context(staged, containerfile, context)
+        staged_cf = staged / containerfile.name
+        cmd: list[str] = [runtime, "build", "-t", tag, "-f", str(staged_cf)]
+        for key, value in (build_args or {}).items():
+            cmd += ["--build-arg", f"{key}={value}"]
+        cmd.append(str(staged))
 
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except FileNotFoundError:
-        raise ContainerBuildError(
-            f"{runtime} is not installed or not on PATH. "
-            f"Install {runtime} to build container images."
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            raise ContainerBuildError(
+                f"{runtime} is not installed or not on PATH. "
+                f"Install {runtime} to build container images."
+            )
+
+        if proc.returncode != 0:
+            raise ContainerBuildError(
+                f"{runtime} build failed (exit code {proc.returncode}):\n{proc.stderr}"
+            )
+
+        if runtime == "podman-hpc":
+            _podman_hpc_migrate(tag)
+
+        return ContainerBuildResult(
+            tag=tag,
+            already_existed=False,
+            exit_code=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
         )
-
-    if proc.returncode != 0:
-        raise ContainerBuildError(
-            f"{runtime} build failed (exit code {proc.returncode}):\n{proc.stderr}"
-        )
-
-    if runtime == "podman-hpc":
-        _podman_hpc_migrate(tag)
-
-    return ContainerBuildResult(
-        tag=tag,
-        already_existed=False,
-        exit_code=proc.returncode,
-        stdout=proc.stdout,
-        stderr=proc.stderr,
-    )
 
 
 def pull_image(image: str, *, runtime: str) -> None:
