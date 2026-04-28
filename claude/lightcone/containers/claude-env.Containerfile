@@ -34,7 +34,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 ARG LIGHTCONE_VERSION
-RUN uv pip install --system "lightcone-cli==${LIGHTCONE_VERSION}"
+# Dev/local builds (e.g. "0.x.y.dev0+gabcdef" or "dev") are not published to
+# PyPI, so we cannot pin them. The ARG is still baked in for content-addressed
+# tag computation (the image rebuilds when lc is upgraded). For non-release
+# strings we install the latest stable release from PyPI instead.
+RUN case "${LIGHTCONE_VERSION}" in \
+    *dev*|*+*|dev) uv pip install --system lightcone-cli ;; \
+    *) uv pip install --system "lightcone-cli==${LIGHTCONE_VERSION}" ;; \
+    esac
 
 # Node.js LTS + Claude Code CLI
 ARG NODE_VERSION=22
