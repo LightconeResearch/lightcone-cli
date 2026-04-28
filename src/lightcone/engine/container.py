@@ -628,6 +628,60 @@ def _podman_hpc_migrate(tag: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# OCI tarball helpers
+# ---------------------------------------------------------------------------
+
+
+def tarball_path_for_tag(tag: str, project_path: Path) -> Path:
+    """Return the canonical OCI tarball path for *tag* in *project_path*."""
+    return project_path / ".lightcone" / "images" / f"{tag}.tar"
+
+
+def save_image_as_tarball(tag: str, tarball_path: Path, *, runtime: str) -> None:
+    """Export *tag* from the runtime's image store to an OCI tarball.
+
+    Creates parent directories as needed. Raises :class:`ContainerBuildError`
+    on failure. The tarball is deleted on error to avoid leaving a partial file.
+    """
+    tarball_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with tarball_path.open("wb") as fout:
+            result = subprocess.run(
+                [runtime, "save", tag],
+                stdout=fout,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+    except Exception as exc:
+        tarball_path.unlink(missing_ok=True)
+        raise ContainerBuildError(f"{runtime} save {tag} failed: {exc}") from exc
+    if result.returncode != 0:
+        tarball_path.unlink(missing_ok=True)
+        raise ContainerBuildError(
+            f"{runtime} save {tag} failed (exit {result.returncode}): "
+            f"{result.stderr.decode(errors='replace')}"
+        )
+
+
+def load_image_from_tarball(tarball_path: Path, *, runtime: str) -> None:
+    """Load an OCI tarball into the runtime's local image store.
+
+    Raises :class:`ContainerBuildError` on failure.
+    """
+    result = subprocess.run(
+        [runtime, "load", "-qi", str(tarball_path)],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ContainerBuildError(
+            f"{runtime} load from {tarball_path} failed "
+            f"(exit {result.returncode}): "
+            f"{result.stderr.decode(errors='replace')}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Run-time recipe wrap
 # ---------------------------------------------------------------------------
 

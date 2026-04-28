@@ -646,6 +646,80 @@ class TestGetContainerStatus:
         assert s.exists is None
 
 
+# ---- tarball helpers -------------------------------------------------------
+
+
+class TestTarballPathForTag:
+    def test_canonical_path(self, tmp_path: Path) -> None:
+        from lightcone.engine.container import tarball_path_for_tag
+
+        p = tarball_path_for_tag("lc-foo-abc123", tmp_path)
+        assert p == tmp_path / ".lightcone" / "images" / "lc-foo-abc123.tar"
+
+    def test_different_tags_differ(self, tmp_path: Path) -> None:
+        from lightcone.engine.container import tarball_path_for_tag
+
+        p1 = tarball_path_for_tag("lc-a-111111", tmp_path)
+        p2 = tarball_path_for_tag("lc-b-222222", tmp_path)
+        assert p1 != p2
+
+
+class TestSaveImageAsTarball:
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_calls_runtime_save(self, mock_run: MagicMock, tmp_path: Path) -> None:
+        from lightcone.engine.container import save_image_as_tarball
+
+        mock_run.return_value = MagicMock(returncode=0)
+        tarball = tmp_path / ".lightcone" / "images" / "lc-foo.tar"
+        save_image_as_tarball("lc-foo", tarball, runtime="docker")
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "docker"
+        assert cmd[1] == "save"
+        assert "lc-foo" in cmd
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_creates_parent_dir(self, mock_run: MagicMock, tmp_path: Path) -> None:
+        from lightcone.engine.container import save_image_as_tarball
+
+        mock_run.return_value = MagicMock(returncode=0)
+        tarball = tmp_path / "deep" / "nested" / "img.tar"
+        save_image_as_tarball("lc-foo", tarball, runtime="podman")
+        assert tarball.parent.exists()
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_failure_raises(self, mock_run: MagicMock, tmp_path: Path) -> None:
+        from lightcone.engine.container import save_image_as_tarball, ContainerBuildError
+
+        mock_run.return_value = MagicMock(returncode=1)
+        tarball = tmp_path / "img.tar"
+        with pytest.raises(ContainerBuildError, match="save"):
+            save_image_as_tarball("lc-foo", tarball, runtime="docker")
+
+
+class TestLoadImageFromTarball:
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_calls_runtime_load(self, mock_run: MagicMock, tmp_path: Path) -> None:
+        from lightcone.engine.container import load_image_from_tarball
+
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        tarball = tmp_path / "img.tar"
+        tarball.write_bytes(b"fake")
+        load_image_from_tarball(tarball, runtime="podman")
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "podman"
+        assert "load" in cmd
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_failure_raises(self, mock_run: MagicMock, tmp_path: Path) -> None:
+        from lightcone.engine.container import load_image_from_tarball, ContainerBuildError
+
+        mock_run.return_value = MagicMock(returncode=1, stderr=b"bad tarball")
+        tarball = tmp_path / "img.tar"
+        tarball.write_bytes(b"fake")
+        with pytest.raises(ContainerBuildError, match="load"):
+            load_image_from_tarball(tarball, runtime="docker")
+
+
 # ---- is_containerfile -----------------------------------------------------
 
 
