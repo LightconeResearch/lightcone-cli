@@ -11,7 +11,7 @@ FROM ubuntu:24.04
 ARG APPTAINER_VERSION=1.4.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fuse3 \
-    libfuse2 \
+    libfuse2t64 \
     squashfuse \
     buildah \
     fakeroot \
