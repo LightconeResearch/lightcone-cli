@@ -61,7 +61,7 @@ def _run_shell(cmd: str) -> int:
         block = "\n".join(forwarded) + "\n"
         lock_path = os.environ.get("LIGHTCONE_OUT_LOCK")
         if lock_path:
-            with open(lock_path, "w") as lf:
+            with open(lock_path, "a") as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
                 try:
                     sys.stdout.write(block)

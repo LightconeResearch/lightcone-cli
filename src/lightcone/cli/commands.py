@@ -471,7 +471,8 @@ def _run_silent(
         text=True,
         bufsize=1,
     )
-    assert proc.stderr is not None
+    if proc.stderr is None:
+        raise RuntimeError("subprocess stderr unexpectedly None")
     tail: deque[str] = deque(maxlen=400)
     for line in proc.stderr:
         tail.append(line)

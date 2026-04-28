@@ -49,6 +49,11 @@ def _detect_node_shape() -> _NodeShape:
 
     mem_mb = os.environ.get("SLURM_MEM_PER_NODE")
     if mem_mb:
+        # SLURM documents SLURM_MEM_PER_NODE in mebibytes (1 MiB = 1,048,576 bytes)
+        # but we convert using 1,000,000 (SI megabytes) to match executor.py's
+        # mem_mb → bytes conversion. This ~4.9% underestimate is intentional:
+        # it keeps workers and tasks on the same scale so scheduling is consistent,
+        # and erring toward conservative limits avoids OOM kills.
         mem_bytes = int(mem_mb) * 1_000_000
     else:
         try:

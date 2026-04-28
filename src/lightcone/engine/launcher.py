@@ -12,6 +12,7 @@ Inside the container:
 from __future__ import annotations
 
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +27,7 @@ from lightcone.engine.container import (
     save_image_as_tarball,
     tarball_path_for_tag,
 )
+from lightcone.engine.manifest import lc_version as _lc_version
 
 
 def _package_containers_dir() -> Path:
@@ -40,16 +42,6 @@ def _package_containers_dir() -> Path:
         "Could not locate the bundled containers directory. "
         "Is lightcone-cli installed correctly?"
     )
-
-
-def _lc_version() -> str:
-    """Return the installed lightcone-cli version string."""
-    try:
-        from importlib.metadata import version
-
-        return version("lightcone-cli")
-    except Exception:
-        return "dev"
 
 
 @dataclass(frozen=True)
@@ -82,11 +74,12 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
 BUILTIN_TARGETS: dict[str, LaunchTarget] = _make_builtin_targets()
 
 
-def resolve_launch_target(name: str, project_root: Path) -> LaunchTarget:
+def resolve_launch_target(name: str, project_root: Path | None = None) -> LaunchTarget:
     """Return the :class:`LaunchTarget` for *name*.
 
     Checks built-in targets first, then ``.lightcone/launch/<name>.yaml``
-    for future project-local targets (not yet implemented).
+    for future project-local targets (not yet implemented; *project_root*
+    is accepted now so call sites don't need updating when it is).
 
     Raises :class:`ContainerBuildError` if the target is unknown.
     """
@@ -98,12 +91,17 @@ def resolve_launch_target(name: str, project_root: Path) -> LaunchTarget:
     )
 
 
+# Matches ``ARG LIGHTCONE_VERSION`` with or without a trailing ``=<value>``,
+# so we handle both the bare form and an existing default.
+_ARG_VERSION_RE = re.compile(r"^ARG LIGHTCONE_VERSION(=[^\n]*)?\n", re.MULTILINE)
+
+
 def _render_containerfile(target: LaunchTarget, project_root: Path) -> Path:
     """Write a rendered copy of the target's Containerfile to .lightcone/containers/.
 
-    Substitutes ``ARG LIGHTCONE_VERSION`` with ``ARG LIGHTCONE_VERSION=<version>``
-    so the content hash — and therefore the image tag — changes when ``lc``
-    is upgraded.
+    Substitutes ``ARG LIGHTCONE_VERSION`` (bare or with a default) with
+    ``ARG LIGHTCONE_VERSION=<version>`` so the content hash — and therefore
+    the image tag — changes when ``lc`` is upgraded.
     """
     dest_dir = project_root / ".lightcone" / "containers"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -111,10 +109,7 @@ def _render_containerfile(target: LaunchTarget, project_root: Path) -> Path:
 
     version = _lc_version()
     content = target.containerfile.read_text()
-    content = content.replace(
-        "ARG LIGHTCONE_VERSION\n",
-        f"ARG LIGHTCONE_VERSION={version}\n",
-    )
+    content = _ARG_VERSION_RE.sub(f"ARG LIGHTCONE_VERSION={version}\n", content)
     dest.write_text(content)
     return dest
 

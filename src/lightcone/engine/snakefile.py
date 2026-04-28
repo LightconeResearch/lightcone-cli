@@ -32,6 +32,7 @@ from astra.helpers import load_yaml, resolve_analysis_tree
 
 from lightcone.engine.container import make_image_tag_resolver, wrap_recipe
 from lightcone.engine.manifest import code_version
+from lightcone.engine.manifest import lc_version as _lc_version
 from lightcone.engine.tree import (
     TreeOutput,
     collect_tree_outputs,
@@ -60,13 +61,6 @@ def _git_sha(project_path: Path) -> str | None:
     return None
 
 
-def _lc_version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("lightcone-cli")
-    except Exception:
-        return "unknown"
 
 
 def _output_dir_pattern(tree_out: TreeOutput) -> str:

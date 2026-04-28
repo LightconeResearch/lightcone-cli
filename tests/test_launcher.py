@@ -84,6 +84,20 @@ class TestRenderContainerfile:
         r2 = _render_containerfile(fake_target, project)
         assert r1.read_text() == r2.read_text()
 
+    def test_substitutes_existing_default(
+        self, tmp_path: Path, project: Path
+    ) -> None:
+        cf = tmp_path / "with_default.Containerfile"
+        cf.write_text(
+            "FROM ubuntu:24.04\nARG LIGHTCONE_VERSION=0.0.0\nRUN echo ${LIGHTCONE_VERSION}\n"
+        )
+        target = LaunchTarget(name="with_default", containerfile=cf, entrypoint=["bash"])
+        rendered = _render_containerfile(target, project)
+        content = rendered.read_text()
+        version = _lc_version()
+        assert f"ARG LIGHTCONE_VERSION={version}" in content
+        assert "ARG LIGHTCONE_VERSION=0.0.0" not in content
+
 
 class TestLaunchTarget:
     @patch("lightcone.engine.launcher.os.execvp")

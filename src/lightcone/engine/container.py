@@ -152,8 +152,16 @@ def detect_runtime() -> str | None:
     laptop with docker installed but its daemon stopped would resolve
     to docker and every recipe would fail with a socket error — even
     when a healthy podman is sitting right next to it.
+
+    ``apptainer`` is excluded from auto-detection: it only works correctly
+    inside the Claude container (where ``buildah`` is also present and a
+    OCI tarball cache is being maintained). On a host machine it would be
+    detected but ``build_image`` would crash because no ``tarball_path`` is
+    passed by the generic ``_ensure_images`` path.
     """
     for runtime in RUNTIMES:
+        if runtime == "apptainer":
+            continue
         if shutil.which(runtime) is None:
             continue
         if runtime == "docker" and not _docker_daemon_up():

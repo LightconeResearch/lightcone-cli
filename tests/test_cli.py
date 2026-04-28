@@ -32,7 +32,7 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_help_lists_core_commands(runner: CliRunner) -> None:
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("init", "run", "status", "verify", "build", "setup"):
+    for cmd in ("init", "launch", "run", "status", "verify", "build", "setup"):
         assert cmd in result.output
 
 
