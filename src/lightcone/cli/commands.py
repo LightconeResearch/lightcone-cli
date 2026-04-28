@@ -735,6 +735,49 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
 
 
 # =============================================================================
+# lc launch
+# =============================================================================
+
+
+@main.command("launch")
+@click.argument("target")
+def launch(target: str) -> None:
+    """Launch an interactive containerized environment for this project.
+
+    \b
+    Targets:
+      claude   Claude Code with lightcone-cli, buildah, and apptainer pre-installed.
+               Recipes build and execute inside nested containers from this environment.
+
+    \b
+    Example:
+      lc launch claude     # first run builds the container (~5 min), then drops into Claude Code
+    """
+    from lightcone.engine import launcher
+    from lightcone.engine.container import ContainerBuildError, load_runtime
+
+    project = _project_root()
+
+    try:
+        choice = load_runtime(project_path=project)
+    except ContainerBuildError as e:
+        raise click.ClickException(str(e))
+
+    if choice.runtime in ("none", "apptainer"):
+        raise click.ClickException(
+            f"lc launch requires a host container runtime "
+            f"(docker, podman, or podman-hpc); got {choice.runtime!r}. "
+            "Install docker or podman, or set container.runtime in "
+            "~/.lightcone/config.yaml."
+        )
+
+    try:
+        launcher.launch_target(target, choice=choice, project_root=project)
+    except ContainerBuildError as e:
+        raise click.ClickException(str(e))
+
+
+# =============================================================================
 # lc setup
 # =============================================================================
 
