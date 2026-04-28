@@ -2,6 +2,13 @@ FROM ubuntu:24.04
 
 # FUSE support — required by both Apptainer overlay and buildah overlay storage.
 # squashfuse enables SquashFS mounts used by Apptainer for OCI images.
+# Apptainer — pinned version, installed from the official .deb.
+# Handles OCI archive execution: apptainer exec oci-archive:<path> <cmd>
+# Both apt blocks are merged into one RUN so the apt lists remain live for the
+# .deb install and /var/log/apt/eipp.log.xz is not left stale between layers
+# (dpkg opens it with O_CREAT|O_EXCL; a pre-existing file from a prior layer
+# causes exit code 2 on NERSC / podman rootless builds).
+ARG APPTAINER_VERSION=1.4.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fuse3 \
     libfuse2 \
@@ -11,18 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Apptainer — pinned version, installed from the official .deb.
-# Handles OCI archive execution: apptainer exec oci-archive:<path> <cmd>
-# Use `apt-get install -y ./file.deb` instead of `dpkg -i` so apt resolves
-# any remaining dependencies automatically.
-ARG APPTAINER_VERSION=1.4.0
-RUN curl -fsSL \
-    "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${APPTAINER_VERSION}_amd64.deb" \
-    -o /tmp/apptainer.deb \
+    && curl -fsSL \
+        "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${APPTAINER_VERSION}_amd64.deb" \
+        -o /tmp/apptainer.deb \
     && apt-get install -y /tmp/apptainer.deb \
-    && rm /tmp/apptainer.deb
+    && rm /tmp/apptainer.deb \
+    && rm -rf /var/lib/apt/lists/*
 
 # Python + uv + lightcone-cli.
 # LIGHTCONE_VERSION is substituted at render time (lc launch writes a rendered
