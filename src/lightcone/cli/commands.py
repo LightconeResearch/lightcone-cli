@@ -208,9 +208,12 @@ def init(
             )
 
     console.print("\nNext steps:")
-    console.print("  • Edit [cyan]astra.yaml[/cyan] to declare outputs and recipes")
-    console.print("  • [cyan]lc run[/cyan] to materialize outputs")
-    console.print("  • [cyan]lc status[/cyan] to check what's done")
+    console.print("  1. [cyan]lc launch claude[/cyan] — enter the sandboxed analysis environment")
+    console.print("     Inside the container:")
+    console.print("     • Edit [cyan]astra.yaml[/cyan] to declare outputs, recipes, and containers")
+    console.print("     • [cyan]lc build[/cyan] to build recipe container images")
+    console.print("     • [cyan]lc run[/cyan]   to materialize outputs")
+    console.print("     • [cyan]lc status[/cyan] to check what's done")
 
 
 _BOILERPLATE_ASTRA = '''# astra.yaml — declarative analysis spec
