@@ -260,7 +260,7 @@ class TestBuildImage:
     def test_unsupported_runtime_raises(self, project: Path) -> None:
         with pytest.raises(ContainerBuildError, match="Unsupported build runtime"):
             build_image(
-                "lc-test", project / "Containerfile", project, runtime="apptainer"
+                "lc-test", project / "Containerfile", project, runtime="noop"
             )
 
     @patch("lightcone.engine.container.subprocess.run")
@@ -388,7 +388,7 @@ class TestPullImage:
             pull_image("python:3.12-slim", runtime="docker")
 
     def test_unsupported_runtime_raises(self) -> None:
-        with pytest.raises(ContainerBuildError, match="Unsupported runtime"):
+        with pytest.raises(ContainerBuildError, match="not supported for the apptainer runtime"):
             pull_image("img", runtime="apptainer")
 
 
@@ -438,11 +438,9 @@ class TestDetectRuntime:
     def test_none_available(self, mock_which: MagicMock) -> None:
         assert detect_runtime() is None
 
-    def test_no_apptainer(self) -> None:
-        # Apptainer/singularity must NOT be in the supported runtimes list —
-        # we own container invocation and only support OCI runtimes.
-        assert "apptainer" not in RUNTIMES
-        assert "singularity" not in RUNTIMES
+    def test_apptainer_in_runtimes(self) -> None:
+        # apptainer is supported as a nested execution runtime (inside lc launch containers)
+        assert "apptainer" in RUNTIMES
 
 
 class TestLoadRuntime:
@@ -511,7 +509,7 @@ class TestLoadRuntime:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        self._write_config(tmp_path, {"container": {"runtime": "apptainer"}})
+        self._write_config(tmp_path, {"container": {"runtime": "noop"}})
         with pytest.raises(ContainerBuildError, match="Unknown container.runtime"):
             load_runtime()
 
@@ -601,7 +599,7 @@ class TestWrapRecipe:
 
     def test_unsupported_runtime_raises(self) -> None:
         with pytest.raises(ContainerBuildError, match="Unsupported run runtime"):
-            wrap_recipe("echo", image="img:v1", runtime="apptainer")
+            wrap_recipe("echo", image="img:v1", runtime="noop")
 
     def test_bind_mounts_pwd(self) -> None:
         """Recipes that write to relative paths need $PWD bind-mounted."""
@@ -729,3 +727,83 @@ class TestIsContainerfile:
 
     def test_missing_file(self, project: Path) -> None:
         assert is_containerfile("python:3.12-slim", project) is False
+
+
+# ---- apptainer runtime support ---------------------------------------------
+
+
+class TestApptainerRuntime:
+    def test_image_exists_locally_checks_tarball(self, tmp_path: Path) -> None:
+        from lightcone.engine.container import image_exists_locally, tarball_path_for_tag
+
+        assert image_exists_locally("lc-foo-abc", runtime="apptainer", project_path=tmp_path) is False
+        tarball = tarball_path_for_tag("lc-foo-abc", tmp_path)
+        tarball.parent.mkdir(parents=True)
+        tarball.write_bytes(b"fake")
+        assert image_exists_locally("lc-foo-abc", runtime="apptainer", project_path=tmp_path) is True
+
+    def test_image_exists_locally_no_project_path_returns_false(self) -> None:
+        from lightcone.engine.container import image_exists_locally
+
+        assert image_exists_locally("lc-foo", runtime="apptainer") is False
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_build_image_apptainer_uses_buildah(
+        self, mock_run: MagicMock, tmp_path: Path
+    ) -> None:
+        from lightcone.engine.container import build_image
+
+        (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
+        tarball = tmp_path / ".lightcone" / "images" / "lc-test.tar"
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        result = build_image(
+            "lc-test",
+            tmp_path / "Containerfile",
+            tmp_path,
+            runtime="apptainer",
+            tarball_path=tarball,
+        )
+        assert result.tag == "lc-test"
+        # First call: buildah build
+        first_cmd = mock_run.call_args_list[0][0][0]
+        assert first_cmd[0] == "buildah"
+        assert "build" in first_cmd
+        # Second call: buildah push oci-archive:
+        second_cmd = mock_run.call_args_list[1][0][0]
+        assert second_cmd[0] == "buildah"
+        assert "push" in second_cmd
+        assert f"oci-archive:{tarball}" in " ".join(second_cmd)
+
+    def test_build_image_apptainer_requires_tarball_path(self, tmp_path: Path) -> None:
+        from lightcone.engine.container import build_image, ContainerBuildError
+
+        (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
+        with pytest.raises(ContainerBuildError, match="tarball_path is required"):
+            build_image(
+                "lc-test",
+                tmp_path / "Containerfile",
+                tmp_path,
+                runtime="apptainer",
+            )
+
+    def test_wrap_recipe_apptainer(self) -> None:
+        from lightcone.engine.container import wrap_recipe
+
+        wrapped = wrap_recipe("echo hi", image="lc-foo-abc123", runtime="apptainer")
+        assert wrapped.startswith("apptainer exec oci-archive:")
+        assert "lc-foo-abc123.tar" in wrapped
+        assert shlex.quote("echo hi") in wrapped
+
+    def test_wrap_recipe_apptainer_preserves_placeholders(self) -> None:
+        from lightcone.engine.container import wrap_recipe
+
+        wrapped = wrap_recipe(
+            "python run.py --out {output[0]}", image="lc-foo", runtime="apptainer"
+        )
+        assert "{output[0]}" in wrapped
+
+    def test_pull_image_apptainer_raises(self) -> None:
+        from lightcone.engine.container import pull_image, ContainerBuildError
+
+        with pytest.raises(ContainerBuildError, match="not supported for the apptainer runtime"):
+            pull_image("python:3.12-slim", runtime="apptainer")

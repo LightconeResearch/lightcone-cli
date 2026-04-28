@@ -21,6 +21,9 @@ Supported runtimes:
     * ``podman-hpc`` — NERSC-style login nodes; ``build`` migrates the
       image so compute-node apptainer can read it. ``run`` still uses
       ``podman-hpc`` directly.
+    * ``apptainer`` — inside the Claude Code container; ``build`` uses
+      ``buildah`` to produce OCI tarballs, ``run`` wraps recipes with
+      ``apptainer exec oci-archive:``.
     * ``none`` — no container; recipe runs on the host. Useful for
       development and for projects that don't need isolation.
 """
@@ -43,10 +46,9 @@ import yaml
 logger = logging.getLogger(__name__)
 
 #: Runtimes we know how to build and run with. Order is detection priority:
-#: podman first (rootless, no daemon to wedge), then docker (still common on
-#: laptops; we additionally probe ``docker info`` so a down daemon doesn't
-#: silently win over a healthy podman), then podman-hpc on login nodes.
-RUNTIMES: tuple[str, ...] = ("podman", "docker", "podman-hpc")
+#: podman first (rootless, no daemon to wedge), then docker (daemon probe),
+#: then podman-hpc on login nodes, then apptainer (inside Claude container).
+RUNTIMES: tuple[str, ...] = ("podman", "docker", "podman-hpc", "apptainer")
 
 #: Files whose contents contribute to the image tag hash.
 DEPENDENCY_FILES = (
@@ -451,8 +453,24 @@ def is_containerfile(spec: str, project_path: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def image_exists_locally(tag: str, *, runtime: str) -> bool:
-    """Check whether *tag* exists in the runtime's local image store."""
+def image_exists_locally(
+    tag: str,
+    *,
+    runtime: str,
+    project_path: Path | None = None,
+) -> bool:
+    """Check whether *tag* exists locally.
+
+    For docker/podman/podman-hpc: queries the runtime's image store.
+    For apptainer: checks whether the OCI tarball exists at
+    ``tarball_path_for_tag(tag, project_path)``. Returns ``False`` when
+    *project_path* is not provided (conservative — callers that know the
+    path should pass it).
+    """
+    if runtime == "apptainer":
+        if project_path is None:
+            return False
+        return tarball_path_for_tag(tag, project_path).exists()
     if runtime == "podman-hpc":
         return image_exists_podman_hpc(tag)
     try:
@@ -527,12 +545,16 @@ def build_image(
     *,
     runtime: str,
     build_args: dict[str, str] | None = None,
+    tarball_path: Path | None = None,
 ) -> ContainerBuildResult:
     """Build a container image with the given *runtime*.
 
     The build context is staged into a fresh tempdir before invocation
     (see :func:`_populate_build_context`). For ``podman-hpc``, the image
     is automatically migrated after build so compute nodes can access it.
+    For ``apptainer``, uses ``buildah`` to build and push an OCI tarball
+    to *tarball_path* (no staging — apptainer builds run inside the
+    Claude container where the filesystem is already on tmpfs, not DVS).
 
     Raises :class:`ContainerBuildError` on failure.
     """
@@ -540,6 +562,46 @@ def build_image(
         raise ContainerBuildError(
             f"Unsupported build runtime {runtime!r}; expected one of {RUNTIMES}."
         )
+
+    if runtime == "apptainer":
+        if tarball_path is None:
+            raise ContainerBuildError(
+                "tarball_path is required when building with the apptainer runtime. "
+                "Pass the desired .tar output path."
+            )
+        tarball_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            build_proc = subprocess.run(
+                [
+                    "buildah", "build",
+                    "--format=oci",
+                    f"--tag={tag}",
+                    str(context),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            raise ContainerBuildError(
+                "buildah is not installed or not on PATH. "
+                "Install buildah to build container images with the apptainer runtime."
+            )
+        if build_proc.returncode != 0:
+            raise ContainerBuildError(
+                f"buildah build failed (exit {build_proc.returncode}):\n{build_proc.stderr}"
+            )
+        push_proc = subprocess.run(
+            ["buildah", "push", tag, f"oci-archive:{tarball_path}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if push_proc.returncode != 0:
+            raise ContainerBuildError(
+                f"buildah push failed (exit {push_proc.returncode}):\n{push_proc.stderr}"
+            )
+        return ContainerBuildResult(tag=tag, already_existed=False)
 
     with tempfile.TemporaryDirectory(prefix="lc-build-") as staged_str:
         staged = Path(staged_str)
@@ -585,6 +647,11 @@ def pull_image(image: str, *, runtime: str) -> None:
     Raises :class:`ContainerBuildError` on failure or if *runtime* isn't
     on PATH.
     """
+    if runtime == "apptainer":
+        raise ContainerBuildError(
+            "pull_image is not supported for the apptainer runtime. "
+            "Use a Containerfile instead of a registry image reference."
+        )
     if runtime not in RUNTIMES:
         raise ContainerBuildError(
             f"Unsupported runtime {runtime!r}; expected one of {RUNTIMES}."
@@ -758,6 +825,10 @@ def wrap_recipe(
     """
     if image is None or runtime == "none":
         return recipe
+    if runtime == "apptainer":
+        tarball = f".lightcone/images/{image}.tar"
+        inner = shlex.quote(recipe)
+        return f"apptainer exec oci-archive:{tarball} bash -c {inner}"
     if runtime not in RUNTIMES:
         raise ContainerBuildError(
             f"Unsupported run runtime {runtime!r}; expected one of {RUNTIMES} or 'none'."
