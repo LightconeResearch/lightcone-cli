@@ -18,11 +18,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
-    && curl -fsSL \
-        "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${APPTAINER_VERSION}_amd64.deb" \
-        -o /tmp/apptainer.deb \
-    && apt-get install -y /tmp/apptainer.deb \
-    && rm /tmp/apptainer.deb \
+    && ARCH="$(dpkg --print-architecture)" \
+    && if [ "$ARCH" = "amd64" ]; then \
+        curl -fsSL \
+            "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${APPTAINER_VERSION}_amd64.deb" \
+            -o /tmp/apptainer.deb \
+        && apt-get install -y /tmp/apptainer.deb \
+        && rm /tmp/apptainer.deb; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 # Python + uv + lightcone-cli.
