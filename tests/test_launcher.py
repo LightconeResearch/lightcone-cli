@@ -1,20 +1,19 @@
 """Tests for the lc launch backend."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from lightcone.engine.container import ContainerBuildError, RuntimeChoice
 from lightcone.engine.launcher import (
     BUILTIN_TARGETS,
     LaunchTarget,
-    _render_containerfile,
     _lc_version,
+    _render_containerfile,
     resolve_launch_target,
 )
-from lightcone.engine.container import ContainerBuildError, RuntimeChoice
 
 
 @pytest.fixture

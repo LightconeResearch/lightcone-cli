@@ -686,7 +686,7 @@ class TestSaveImageAsTarball:
 
     @patch("lightcone.engine.container.subprocess.run")
     def test_failure_raises(self, mock_run: MagicMock, tmp_path: Path) -> None:
-        from lightcone.engine.container import save_image_as_tarball, ContainerBuildError
+        from lightcone.engine.container import ContainerBuildError, save_image_as_tarball
 
         mock_run.return_value = MagicMock(returncode=1)
         tarball = tmp_path / "img.tar"
@@ -709,7 +709,7 @@ class TestLoadImageFromTarball:
 
     @patch("lightcone.engine.container.subprocess.run")
     def test_failure_raises(self, mock_run: MagicMock, tmp_path: Path) -> None:
-        from lightcone.engine.container import load_image_from_tarball, ContainerBuildError
+        from lightcone.engine.container import ContainerBuildError, load_image_from_tarball
 
         mock_run.return_value = MagicMock(returncode=1, stderr=b"bad tarball")
         tarball = tmp_path / "img.tar"
@@ -736,11 +736,15 @@ class TestApptainerRuntime:
     def test_image_exists_locally_checks_tarball(self, tmp_path: Path) -> None:
         from lightcone.engine.container import image_exists_locally, tarball_path_for_tag
 
-        assert image_exists_locally("lc-foo-abc", runtime="apptainer", project_path=tmp_path) is False
+        assert (
+            image_exists_locally("lc-foo-abc", runtime="apptainer", project_path=tmp_path) is False
+        )
         tarball = tarball_path_for_tag("lc-foo-abc", tmp_path)
         tarball.parent.mkdir(parents=True)
         tarball.write_bytes(b"fake")
-        assert image_exists_locally("lc-foo-abc", runtime="apptainer", project_path=tmp_path) is True
+        assert (
+            image_exists_locally("lc-foo-abc", runtime="apptainer", project_path=tmp_path) is True
+        )
 
     def test_image_exists_locally_no_project_path_returns_false(self) -> None:
         from lightcone.engine.container import image_exists_locally
@@ -775,7 +779,7 @@ class TestApptainerRuntime:
         assert f"oci-archive:{tarball}" in " ".join(second_cmd)
 
     def test_build_image_apptainer_requires_tarball_path(self, tmp_path: Path) -> None:
-        from lightcone.engine.container import build_image, ContainerBuildError
+        from lightcone.engine.container import ContainerBuildError, build_image
 
         (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
         with pytest.raises(ContainerBuildError, match="tarball_path is required"):
@@ -803,7 +807,7 @@ class TestApptainerRuntime:
         assert "{output[0]}" in wrapped
 
     def test_pull_image_apptainer_raises(self) -> None:
-        from lightcone.engine.container import pull_image, ContainerBuildError
+        from lightcone.engine.container import ContainerBuildError, pull_image
 
         with pytest.raises(ContainerBuildError, match="not supported for the apptainer runtime"):
             pull_image("python:3.12-slim", runtime="apptainer")
