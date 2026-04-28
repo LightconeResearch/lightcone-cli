@@ -32,6 +32,17 @@ from lightcone.cli.plugin import get_plugin_source_dir
 console = Console()
 logger = logging.getLogger(__name__)
 
+_CONTAINER_WARNING = (
+    "⚠  Running outside the Claude container. "
+    "Use [bold]lc launch claude[/bold] for the full sandboxed workflow."
+)
+
+
+def _warn_if_not_containerized() -> None:
+    """Print a warning when lc build/run are invoked outside the Claude container."""
+    if not os.environ.get("LIGHTCONE_CONTAINER"):
+        console.print(_CONTAINER_WARNING)
+
 
 PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
     "yolo": {
@@ -309,6 +320,7 @@ def run(
     workstation, srun-launched workers inside a SLURM allocation, or an
     existing scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
     """
+    _warn_if_not_containerized()
     from lightcone.engine.container import load_runtime
     from lightcone.engine.dask_cluster import cluster_for_run
     from lightcone.engine.scratch import (
@@ -630,6 +642,7 @@ def build(force: bool, runtime: str | None) -> None:
     ``ghcr.io/foo/bar:tag``) are skipped — the runtime pulls them at
     ``lc run`` time.
     """
+    _warn_if_not_containerized()
     from lightcone.engine.container import ContainerBuildError, load_runtime
 
     project = _project_root()
@@ -672,6 +685,8 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
         image_exists_locally,
         is_containerfile,
         pull_image,
+        save_image_as_tarball,
+        tarball_path_for_tag,
     )
     from lightcone.engine.tree import collect_tree_outputs
 
@@ -705,13 +720,16 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
 
         containerfile = project / spec_str
         tag = compute_image_tag(project_name, containerfile, project)
-        if image_exists_locally(tag, runtime=runtime) and not force:
+        if image_exists_locally(tag, runtime=runtime, project_path=project) and not force:
+            console.print(f"[dim]Cached[/dim] {spec_str} → {tag}")
             continue
         console.print(
             f"[cyan]Building[/cyan] {spec_str} → {tag} [dim](via {runtime})[/dim]"
         )
         try:
             build_image(tag, containerfile, project, runtime=runtime)
+            tarball = tarball_path_for_tag(tag, project)
+            save_image_as_tarball(tag, tarball, runtime=runtime)
         except ContainerBuildError as e:
             raise click.ClickException(str(e))
 
