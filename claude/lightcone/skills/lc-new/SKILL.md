@@ -148,9 +148,9 @@ Show summary table:
 
 Then show a Next Up block (see ui-brand.md) with:
 
-- Run `/clear` to free up context, then `/lc-build` to start building
-- Or `/lc-build [description]` to guide what to focus on first (e.g. `/lc-build focus on the fitting script`)
-- Also available: `/lc-verify`
+- Run `/clear` to free context, then `lc launch claude` to enter the sandboxed container
+- Inside the container: `/lc-build` to start building (or `/lc-build [description]` to guide focus)
+- Also available inside the container: `/lc-verify`
 
 Prompt the user to `/clear` before starting implementation. The scoping conversation consumes significant context. Everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
 

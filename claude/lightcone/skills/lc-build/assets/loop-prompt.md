@@ -51,7 +51,7 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
    The script must contain real, functional logic that produces genuine results from actual input data. No `# TODO` stubs, no hardcoded dummy values standing in for computation, no `pass` in place of real logic, no synthetic/mock data generation when real data is specified. If you cannot implement the full logic (e.g., missing a library or unclear algorithm), document the blocker in the build plan and move on — do not ship a fake version.
 2. **Test locally:** `python scripts/<name>.py --decision1 value1 --decision2 value2` using values from `universes/{{UNIVERSE}}.yaml`.
    Note: manual script runs may write to `results/` but do NOT register as materialized.
-   Only `lc run` produces the per-output manifests that `lc status` reads.
+   Only `lc run` creates the manifest records that `lc status` recognizes.
 3. **Debug until it works.** Read tracebacks, check imports (`python -c "import module"`), verify decision parameter names match `astra.yaml`.
 4. **Commit** with a message describing what the script does.
 
@@ -59,7 +59,7 @@ These are the kinds of work you'll do, guided by the plan. Not a rigid sequence 
 
 1. **Add the recipe block** to `astra.yaml` under the output's `recipe:` key.
 2. **Validate:** `astra validate astra.yaml`
-3. **Run it:** `lc run <OUTPUT> --universe {{UNIVERSE}}`. `lc run` is the only supported way to execute recipes — it handles container resolution, scheduling, and provenance. Run the loop on a machine that can actually execute recipes (the user's laptop with a container runtime, or a compute session they've already opened).
+3. **Run it:** `lc run <OUTPUT> --universe {{UNIVERSE}}`. `lc run` always dispatches through a Dask cluster — `LocalCluster` on a workstation, srun-launched workers inside a SLURM allocation. This loop runs inside the `lc launch claude` container — the correct environment is already active.
 4. **If it fails:** Read the error output carefully and diagnose the root cause before retrying. Never re-run the same command without changing something first. Common causes:
    - Container not built → `lc build`
    - Upstream not materialized → materialize dependency first

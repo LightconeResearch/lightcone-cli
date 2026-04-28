@@ -7,7 +7,8 @@ Reference for lightcone-cli execution: CLI commands, development workflow, statu
 ```bash
 lc init [DIR]                            # Scaffold a new ASTRA project
 lc init NAME --sub-analysis              # Scaffold sub-analysis and wire into parent
-lc run [OUTPUT] [--universe NAME]        # Materialize outputs
+lc launch <target>                       # Enter the sandboxed analysis container (lc launch claude)
+lc run [OUTPUT] [--universe NAME]        # Materialize outputs (always via Dask)
 lc build [--force] [--runtime docker]    # Build container images from specs
 lc status [--universe NAME] [--json]     # Materialization status (text or JSON)
 lc verify [--universe NAME]              # Recompute hashes and walk the provenance chain
@@ -15,6 +16,19 @@ lc setup                                 # Write a minimal ~/.lightcone/config.y
 ```
 
 **Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Treat the underlying execution engine as a black box — never invoke schedulers or container runtimes directly, that will bypass reproducibility guarantees.
+
+## Container Environment
+
+`lc launch claude` is the canonical entry point for all analysis work. After `lc init`, always launch the container before doing anything else:
+
+```bash
+lc init my-project && cd my-project
+lc launch claude          # builds the container on first run (~5 min), then drops into Claude Code
+```
+
+Inside the container, `lc build`, `lc run`, `lc status`, and `lc verify` all work normally. Running them outside the container prints a warning — host-side execution is still possible but bypasses the reproducibility sandbox.
+
+The container mounts the project directory at the same absolute path so all output paths, tarball paths, and manifest paths are identical inside and outside.
 
 ## Creating Sub-Analyses
 
@@ -28,7 +42,7 @@ After scaffolding, populate the sub-analysis's `astra.yaml` with inputs, outputs
 
 ## Development Workflow
 
-Three overlapping phases:
+All three phases happen **inside the container** (entered via `lc launch claude`):
 
 1. **Write & Debug** — Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
 2. **Integrate** — Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status` (`alias` / `missing` / `stale` / `ok`). Set `container:` at analysis level or per-recipe — pass an image name (e.g., `python:3.12-slim`) or a path to a Containerfile (e.g., `Containerfile`).
