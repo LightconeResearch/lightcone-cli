@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfuse2 \
     squashfuse \
     buildah \
+    fakeroot \
     git \
     curl \
     ca-certificates \
@@ -14,11 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Apptainer — pinned version, installed from the official .deb.
 # Handles OCI archive execution: apptainer exec oci-archive:<path> <cmd>
+# Use `apt-get install -y ./file.deb` instead of `dpkg -i` so apt resolves
+# any remaining dependencies automatically.
 ARG APPTAINER_VERSION=1.4.0
 RUN curl -fsSL \
     "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${APPTAINER_VERSION}_amd64.deb" \
     -o /tmp/apptainer.deb \
-    && dpkg -i /tmp/apptainer.deb \
+    && apt-get install -y /tmp/apptainer.deb \
     && rm /tmp/apptainer.deb
 
 # Python + uv + lightcone-cli.
