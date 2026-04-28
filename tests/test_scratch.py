@@ -15,6 +15,8 @@ import yaml
 
 from lightcone.engine.scratch import (
     LIGHTCONE_SCRATCH_ENV,
+    RunLockBusyError,
+    acquire_run_lock,
     ensure_snakemake_symlink,
     prepare_run_dirs,
     project_hash,
@@ -179,6 +181,40 @@ def test_symlink_repoints(project: Path, tmp_path: Path) -> None:
     ensure_snakemake_symlink(project, a)
     ensure_snakemake_symlink(project, b)
     assert (project / ".snakemake").resolve() == b.resolve()
+
+
+# ---- acquire_run_lock -----------------------------------------------------
+
+
+def test_run_lock_clears_stale_snakemake_locks(
+    monkeypatch: pytest.MonkeyPatch, project: Path, tmp_path: Path
+) -> None:
+    """A snakemake lock left by a prior crashed run must not block the
+    next ``lc run`` — once we hold our project-level flock, those zero-
+    byte sentinels are known-stale and safe to remove."""
+    monkeypatch.setenv(LIGHTCONE_SCRATCH_ENV, str(tmp_path / "scratch"))
+    rd = prepare_run_dirs(project, run_id="test")
+    snake_locks = rd.snakemake_state / "locks"
+    snake_locks.mkdir(parents=True)
+    (snake_locks / "0.input.lock").touch()
+    (snake_locks / "0.output.lock").touch()
+    with acquire_run_lock(rd):
+        assert not (snake_locks / "0.input.lock").exists()
+        assert not (snake_locks / "0.output.lock").exists()
+
+
+def test_run_lock_rejects_concurrent_holder(
+    monkeypatch: pytest.MonkeyPatch, project: Path, tmp_path: Path
+) -> None:
+    """Two concurrent ``lc run`` invocations on the same project must
+    not silently queue — the second one bails so the user sees the
+    collision and decides what to do."""
+    monkeypatch.setenv(LIGHTCONE_SCRATCH_ENV, str(tmp_path / "scratch"))
+    rd = prepare_run_dirs(project, run_id="test")
+    with acquire_run_lock(rd):
+        with pytest.raises(RunLockBusyError):
+            with acquire_run_lock(rd):
+                pass  # pragma: no cover
 
 
 def test_legacy_real_dir_backed_up(project: Path, tmp_path: Path) -> None:

@@ -312,6 +312,8 @@ def run(
     from lightcone.engine.container import load_runtime
     from lightcone.engine.dask_cluster import cluster_for_run
     from lightcone.engine.scratch import (
+        RunLockBusyError,
+        acquire_run_lock,
         ensure_snakemake_symlink,
         prepare_run_dirs,
         resolve_scratch_root,
@@ -396,6 +398,17 @@ def run(
         # targets were named.
         cmd.append("--force" if outputs else "--forceall")
     cmd.extend(targets)
+
+    # Hold a project-level flock for the duration of the run. Acquiring
+    # it also clears any stale snakemake lock left by a previously
+    # crashed invocation — safe because we just proved we're alone on
+    # the project. Concurrent ``lc run`` on the same project bails
+    # cleanly rather than corrupting Snakemake state.
+    try:
+        run_lock_cm = acquire_run_lock(rundirs)
+        run_lock_cm.__enter__()
+    except RunLockBusyError as e:
+        raise click.ClickException(str(e))
 
     with cluster_for_run(
         verbose=verbose, local_directory=str(rundirs.dask_local)

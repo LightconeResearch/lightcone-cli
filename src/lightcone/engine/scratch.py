@@ -23,10 +23,14 @@ silently fail there. ``$SCRATCH`` is Lustre, which works correctly.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import os
+import shutil
 import socket
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +49,10 @@ class RunDirs:
     snakemake_state: Path  # ``<scratch>/.lightcone/snakemake/<project-hash>/.snakemake``
     dask_local: Path  # ``<scratch>/.lightcone/dask/<run-id>``
     lock_path: Path  # ``<scratch>/.lightcone/locks/<run-id>.lock``
+    # Project-level sentinel for the run-exclusion flock. Held for the
+    # duration of one ``lc run`` to prevent concurrent invocations on
+    # the same project from interleaving Snakemake state updates.
+    run_lock_path: Path  # ``<scratch>/.lightcone/locks/<project-hash>.run-lock``
 
 
 def resolve_scratch_root(project_path: Path) -> Path:
@@ -105,16 +113,19 @@ def prepare_run_dirs(project_path: Path, *, run_id: str | None = None) -> RunDir
     snakemake_state = root / "snakemake" / pkey / ".snakemake"
     dask_local = root / "dask" / rid
     lock_path = root / "locks" / f"{rid}.lock"
+    run_lock_path = root / "locks" / f"{pkey}.run-lock"
     for d in (root, snakemake_state.parent, dask_local, lock_path.parent):
         d.mkdir(parents=True, exist_ok=True)
-    # Touch the lockfile so workers can ``flock`` it without racing on
+    # Touch lockfiles so workers can ``flock`` them without racing on
     # ``O_CREAT``. Empty file is fine — flock is independent of contents.
     lock_path.touch(exist_ok=True)
+    run_lock_path.touch(exist_ok=True)
     return RunDirs(
         root=root,
         snakemake_state=snakemake_state,
         dask_local=dask_local,
         lock_path=lock_path,
+        run_lock_path=run_lock_path,
     )
 
 
@@ -154,3 +165,52 @@ def ensure_snakemake_symlink(project_path: Path, snakemake_state: Path) -> None:
 
             shutil.rmtree(link)
     link.symlink_to(snakemake_state, target_is_directory=True)
+
+
+class RunLockBusyError(RuntimeError):
+    """Raised when another ``lc run`` already holds the project's run-lock."""
+
+
+@contextlib.contextmanager
+def acquire_run_lock(rundirs: RunDirs) -> Iterator[None]:
+    """Hold an exclusive flock on the project's run-lock for the duration.
+
+    The lock is at ``<scratch>/.lightcone/locks/<project-hash>.run-lock``
+    so each project gets its own. Acquired non-blocking — concurrent
+    ``lc run`` invocations on the same project hit :class:`RunLockBusyError`
+    rather than queueing silently.
+
+    The kernel releases the lock automatically when the holding process
+    exits (clean shutdown, crash, or SIGKILL), so a previous run that
+    died ungracefully cannot leave us deadlocked. Any ``.snakemake/``
+    workflow lock that survived a prior crash gets cleared inside this
+    context — safe to do because we hold the project-wide lock.
+    """
+    fd = os.open(rundirs.run_lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as e:
+            raise RunLockBusyError(
+                f"Another ``lc run`` holds the lock at "
+                f"{rundirs.run_lock_path}. Wait for it to finish, or "
+                f"if you're certain it's gone, delete the lockfile."
+            ) from e
+        # We're alone. Clear any leftover snakemake lock from a prior
+        # crashed run — snakemake stores zero-byte sentinel files in
+        # ``.snakemake/locks/`` that aren't tied to a process and would
+        # otherwise refuse the next workflow start.
+        snake_locks = rundirs.snakemake_state / "locks"
+        if snake_locks.is_dir():
+            for entry in snake_locks.iterdir():
+                with contextlib.suppress(OSError):
+                    if entry.is_dir():
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink()
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
