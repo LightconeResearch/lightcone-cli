@@ -6,6 +6,7 @@ the recipe wrap that the Snakefile generator embeds into ``shell()``.
 from __future__ import annotations
 
 import shlex
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,7 @@ import yaml
 from lightcone.engine.container import (
     RUNTIMES,
     ContainerBuildError,
+    _runtime_up,
     build_image,
     compute_image_tag,
     detect_runtime,
@@ -395,42 +397,93 @@ class TestPullImage:
 # ---- detect_runtime / load_runtime ---------------------------------------
 
 
+class TestRuntimeUp:
+    def test_returns_true_when_info_succeeds(self) -> None:
+        with patch("lightcone.engine.container.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert _runtime_up("podman") is True
+            mock_run.assert_called_once_with(
+                ["podman", "info"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+
+    def test_returns_false_when_info_fails(self) -> None:
+        with patch("lightcone.engine.container.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            assert _runtime_up("podman") is False
+
+    def test_returns_false_on_timeout(self) -> None:
+        with patch(
+            "lightcone.engine.container.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["podman", "info"], 5),
+        ):
+            assert _runtime_up("podman") is False
+
+    def test_returns_false_on_file_not_found(self) -> None:
+        with patch(
+            "lightcone.engine.container.subprocess.run",
+            side_effect=FileNotFoundError,
+        ):
+            assert _runtime_up("podman") is False
+
+    def test_works_for_docker(self) -> None:
+        with patch("lightcone.engine.container.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert _runtime_up("docker") is True
+            mock_run.assert_called_once_with(
+                ["docker", "info"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+
+
 class TestDetectRuntime:
     @patch("lightcone.engine.container.shutil.which")
-    def test_podman_preferred(self, mock_which: MagicMock) -> None:
-        # Both installed — podman wins (rootless, no daemon to wedge).
+    @patch("lightcone.engine.container._runtime_up", return_value=True)
+    def test_podman_preferred(self, mock_up: MagicMock, mock_which: MagicMock) -> None:
+        # Both installed and reachable — podman wins (rootless, no daemon to wedge).
         mock_which.side_effect = lambda name: f"/usr/bin/{name}"
         assert detect_runtime() == "podman"
 
     @patch("lightcone.engine.container.shutil.which")
-    def test_docker_only(self, mock_which: MagicMock) -> None:
+    @patch("lightcone.engine.container._runtime_up", return_value=True)
+    def test_docker_only(self, mock_up: MagicMock, mock_which: MagicMock) -> None:
         mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
-        with patch(
-            "lightcone.engine.container._docker_daemon_up", return_value=True
-        ):
-            assert detect_runtime() == "docker"
+        assert detect_runtime() == "docker"
 
     @patch("lightcone.engine.container.shutil.which")
-    def test_docker_skipped_when_daemon_down(self, mock_which: MagicMock) -> None:
-        # docker on PATH but its daemon is unreachable → fall through.
-        # Without this probe, a laptop with docker installed but stopped
-        # would silently pick docker and every recipe would fail with a
-        # socket error. With nothing else available, returns None.
-        mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
+    @patch("lightcone.engine.container._runtime_up", return_value=False)
+    def test_all_skipped_when_not_reachable(
+        self, mock_up: MagicMock, mock_which: MagicMock
+    ) -> None:
+        # All binaries on PATH but none reachable → None.
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        assert detect_runtime() is None
+
+    @patch("lightcone.engine.container.shutil.which")
+    def test_podman_skipped_when_not_reachable_falls_through_to_docker(
+        self, mock_which: MagicMock
+    ) -> None:
+        # podman installed but VM not started (macOS) → docker is picked.
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
         with patch(
-            "lightcone.engine.container._docker_daemon_up", return_value=False
+            "lightcone.engine.container._runtime_up",
+            side_effect=lambda runtime: runtime == "docker",
         ):
-            assert detect_runtime() is None
+            assert detect_runtime() == "docker"
 
     @patch("lightcone.engine.container.shutil.which")
     def test_docker_daemon_down_falls_through_to_podman(
         self, mock_which: MagicMock
     ) -> None:
-        # Both binaries present, docker daemon down → podman is picked
-        # regardless of order in RUNTIMES.
+        # Both binaries present, docker not reachable → podman is picked.
         mock_which.side_effect = lambda name: f"/usr/bin/{name}"
         with patch(
-            "lightcone.engine.container._docker_daemon_up", return_value=False
+            "lightcone.engine.container._runtime_up",
+            side_effect=lambda runtime: runtime == "podman",
         ):
             assert detect_runtime() == "podman"
 

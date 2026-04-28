@@ -147,14 +147,13 @@ class RuntimeChoice:
 def detect_runtime() -> str | None:
     """Return the first usable runtime in :data:`RUNTIMES`, or ``None``.
 
-    A runtime is "usable" when its binary is on PATH and (for docker)
-    its daemon answers ``docker info``. Without the daemon probe, a
-    laptop with docker installed but its daemon stopped would resolve
-    to docker and every recipe would fail with a socket error — even
-    when a healthy podman is sitting right next to it.
+    A runtime is "usable" when its binary is on PATH and ``<runtime> info``
+    succeeds. The connectivity probe prevents selecting a runtime whose
+    daemon or VM is stopped (e.g. podman machine not started on macOS,
+    or Docker daemon not running) — the next candidate is tried instead.
 
     ``apptainer`` is excluded from auto-detection: it only works correctly
-    inside the Claude container (where ``buildah`` is also present and a
+    inside the Claude container (where ``buildah`` is also present and an
     OCI tarball cache is being maintained). On a host machine it would be
     detected but ``build_image`` would crash because no ``tarball_path`` is
     passed by the generic ``_ensure_images`` path.
@@ -164,16 +163,22 @@ def detect_runtime() -> str | None:
             continue
         if shutil.which(runtime) is None:
             continue
-        if runtime == "docker" and not _docker_daemon_up():
+        if not _runtime_up(runtime):
             continue
         return runtime
     return None
 
 
-def _docker_daemon_up() -> bool:
+def _runtime_up(runtime: str) -> bool:
+    """Return True if *runtime* is installed and its daemon/service is reachable.
+
+    Runs ``<runtime> info`` with a 5-second timeout. Returns False on
+    non-zero exit code, timeout, or missing binary so callers can fall
+    through to the next candidate without raising.
+    """
     try:
         result = subprocess.run(
-            ["docker", "info"],
+            [runtime, "info"],
             capture_output=True,
             timeout=5,
             check=False,
