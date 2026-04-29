@@ -97,7 +97,9 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
             devices=["/dev/fuse"],
             # Mount the host Claude Code config so settings, accepted terms,
             # and API-key auth are available without re-running setup.
-            home_mounts=[".claude"],
+            # ~/.claude.json  — primary config file (API key, auth tokens)
+            # ~/.claude/      — settings, backups, conversation history
+            home_mounts=[".claude.json", ".claude"],
         ),
     }
 

@@ -53,6 +53,7 @@ class TestBuiltinTargets:
         assert "ANTHROPIC_API_KEY" in t.env_passthrough
         assert "CLAUDE_CODE_OAUTH_TOKEN" in t.env_passthrough
         assert "/dev/fuse" in t.devices
+        assert ".claude.json" in t.home_mounts
         assert ".claude" in t.home_mounts
 
 
