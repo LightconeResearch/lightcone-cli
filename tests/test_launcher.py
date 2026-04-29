@@ -51,6 +51,7 @@ class TestBuiltinTargets:
         assert t.entrypoint == ["claude"]
         assert "ANTHROPIC_API_KEY" in t.env_passthrough
         assert "/dev/fuse" in t.devices
+        assert ".claude" in t.home_mounts
 
 
 class TestResolveTarget:
@@ -313,3 +314,46 @@ class TestLaunchTarget:
 
         mock_build.assert_called_once()
         mock_save.assert_called_once()
+
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.tarball_path_for_tag")
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-fake-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_home_mounts_added_when_dir_exists(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_tarball_path: MagicMock,
+        mock_exists: MagicMock,
+        mock_exec: MagicMock,
+        project: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from lightcone.engine.launcher import launch_target
+
+        # Target with a home_mount subdir
+        home_dir = tmp_path / "home"
+        claude_dir = home_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+        cf = tmp_path / "fake.Containerfile"
+        cf.write_text("FROM ubuntu:24.04\nARG LIGHTCONE_VERSION\n")
+        target = LaunchTarget(
+            name="fake",
+            containerfile=cf,
+            entrypoint=["bash"],
+            home_mounts=[".claude"],
+        )
+        mock_resolve.return_value = target
+        tarball = tmp_path / "lc-fake-abc123.tar"
+        tarball.write_bytes(b"fake")
+        mock_tarball_path.return_value = tarball
+        monkeypatch.setenv("HOME", str(home_dir))
+
+        choice = RuntimeChoice(runtime="docker", explicit=True)
+        launch_target(target.name, choice=choice, project_root=project)
+
+        cmd = mock_exec.call_args[0][1]
+        expected = str(claude_dir)
+        assert f"{expected}:{expected}" in " ".join(cmd)

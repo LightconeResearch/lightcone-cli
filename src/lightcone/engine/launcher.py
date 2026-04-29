@@ -72,6 +72,9 @@ class LaunchTarget:
     entrypoint: list[str]
     env_passthrough: list[str] = field(default_factory=list)
     devices: list[str] = field(default_factory=list)
+    #: Sub-paths of ``$HOME`` to bind-mount at the same absolute path inside
+    #: the container.  Only mounted when the path exists on the host.
+    home_mounts: list[str] = field(default_factory=list)
 
 
 def _make_builtin_targets() -> dict[str, LaunchTarget]:
@@ -86,6 +89,9 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
             entrypoint=["claude"],
             env_passthrough=["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "HOME", "TERM"],
             devices=["/dev/fuse"],
+            # Mount the host Claude Code config so settings, accepted terms,
+            # and API-key auth are available without re-running setup.
+            home_mounts=[".claude"],
         ),
     }
 
@@ -266,6 +272,13 @@ def _exec_interactive(
         val = os.environ.get(var)
         if val is not None:
             cmd += ["-e", f"{var}={val}"]
+
+    home = os.environ.get("HOME")
+    if home:
+        for subdir in target.home_mounts:
+            host_path = str(Path(home) / subdir)
+            if Path(host_path).exists():
+                cmd += ["-v", f"{host_path}:{host_path}"]
 
     for device in target.devices:
         if Path(device).exists():
