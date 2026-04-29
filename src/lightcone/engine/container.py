@@ -659,8 +659,11 @@ def build_image(
             )
 
         if proc.returncode != 0:
+            # Include stdout too: build-step failures (e.g. pip errors) are
+            # written to the build log (stdout), not just stderr.
+            detail = "\n".join(filter(None, [proc.stdout.strip(), proc.stderr.strip()]))
             raise ContainerBuildError(
-                f"{runtime} build failed (exit code {proc.returncode}):\n{proc.stderr}"
+                f"{runtime} build failed (exit code {proc.returncode}):\n{detail}"
             )
 
         if runtime == "podman-hpc":
