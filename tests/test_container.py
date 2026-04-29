@@ -439,6 +439,28 @@ class TestRuntimeUp:
                 check=False,
             )
 
+    def test_uses_version_flag_for_apptainer(self) -> None:
+        with patch("lightcone.engine.container.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert _runtime_up("apptainer") is True
+            mock_run.assert_called_once_with(
+                ["apptainer", "--version"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+
+    def test_uses_version_flag_for_singularity(self) -> None:
+        with patch("lightcone.engine.container.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert _runtime_up("singularity") is True
+            mock_run.assert_called_once_with(
+                ["singularity", "--version"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+
 
 class TestDetectRuntime:
     @patch("lightcone.engine.container.shutil.which")
@@ -494,6 +516,42 @@ class TestDetectRuntime:
     def test_apptainer_in_runtimes(self) -> None:
         # apptainer is supported as a nested execution runtime (inside lc launch containers)
         assert "apptainer" in RUNTIMES
+
+    def test_singularity_in_runtimes(self) -> None:
+        assert "singularity" in RUNTIMES
+
+    @patch("lightcone.engine.container.shutil.which")
+    @patch("lightcone.engine.container._runtime_up", return_value=True)
+    def test_apptainer_detected_when_buildah_present(
+        self, mock_up: MagicMock, mock_which: MagicMock
+    ) -> None:
+        # Only apptainer + buildah on PATH — should be selected.
+        mock_which.side_effect = lambda name: (
+            f"/usr/bin/{name}" if name in ("apptainer", "buildah") else None
+        )
+        assert detect_runtime() == "apptainer"
+
+    @patch("lightcone.engine.container.shutil.which")
+    @patch("lightcone.engine.container._runtime_up", return_value=True)
+    def test_singularity_detected_when_buildah_present(
+        self, mock_up: MagicMock, mock_which: MagicMock
+    ) -> None:
+        # Only singularity + buildah on PATH — should be selected.
+        mock_which.side_effect = lambda name: (
+            f"/usr/bin/{name}" if name in ("singularity", "buildah") else None
+        )
+        assert detect_runtime() == "singularity"
+
+    @patch("lightcone.engine.container.shutil.which")
+    @patch("lightcone.engine.container._runtime_up", return_value=True)
+    def test_daemonless_skipped_when_buildah_absent(
+        self, mock_up: MagicMock, mock_which: MagicMock
+    ) -> None:
+        # apptainer/singularity present but buildah absent → not selected.
+        mock_which.side_effect = lambda name: (
+            f"/usr/bin/{name}" if name in ("apptainer", "singularity") else None
+        )
+        assert detect_runtime() is None
 
 
 class TestLoadRuntime:

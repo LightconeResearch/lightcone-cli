@@ -48,7 +48,11 @@ logger = logging.getLogger(__name__)
 #: Runtimes we know how to build and run with. Order is detection priority:
 #: podman first (rootless, no daemon to wedge), then docker (daemon probe),
 #: then podman-hpc on login nodes, then apptainer (inside Claude container).
-RUNTIMES: tuple[str, ...] = ("podman", "docker", "podman-hpc", "apptainer")
+RUNTIMES: tuple[str, ...] = ("podman", "docker", "podman-hpc", "apptainer", "singularity")
+
+#: Runtimes that have no background daemon — liveness-probed with ``--version``
+#: rather than ``info``, and require ``buildah`` for image builds.
+_DAEMONLESS_RUNTIMES: frozenset[str] = frozenset({"apptainer", "singularity"})
 
 #: Files whose contents contribute to the image tag hash.
 DEPENDENCY_FILES = (
@@ -147,21 +151,20 @@ class RuntimeChoice:
 def detect_runtime() -> str | None:
     """Return the first usable runtime in :data:`RUNTIMES`, or ``None``.
 
-    A runtime is "usable" when its binary is on PATH and ``<runtime> info``
-    succeeds. The connectivity probe prevents selecting a runtime whose
-    daemon or VM is stopped (e.g. podman machine not started on macOS,
-    or Docker daemon not running) — the next candidate is tried instead.
+    A runtime is "usable" when its binary is on PATH and its liveness probe
+    succeeds (``<runtime> info`` for daemon runtimes, ``<runtime> --version``
+    for daemonless ones).  For daemonless runtimes (apptainer, singularity),
+    ``buildah`` must also be on PATH — these runtimes delegate image builds to
+    buildah and are only auto-selected when it is available.
 
-    ``apptainer`` is excluded from auto-detection: it only works correctly
-    inside the Claude container (where ``buildah`` is also present and an
-    OCI tarball cache is being maintained). On a host machine it would be
-    detected but ``build_image`` would crash because no ``tarball_path`` is
-    passed by the generic ``_ensure_images`` path.
+    Detection order follows :data:`RUNTIMES`: podman, docker, podman-hpc,
+    apptainer, singularity.  Daemon-stopped or buildah-absent candidates are
+    silently skipped so the first *working* runtime is returned.
     """
     for runtime in RUNTIMES:
-        if runtime == "apptainer":
-            continue
         if shutil.which(runtime) is None:
+            continue
+        if runtime in _DAEMONLESS_RUNTIMES and shutil.which("buildah") is None:
             continue
         if not _runtime_up(runtime):
             continue
@@ -172,13 +175,16 @@ def detect_runtime() -> str | None:
 def _runtime_up(runtime: str) -> bool:
     """Return True if *runtime* is installed and its daemon/service is reachable.
 
-    Runs ``<runtime> info`` with a 5-second timeout. Returns False on
-    non-zero exit code, timeout, or missing binary so callers can fall
-    through to the next candidate without raising.
+    For daemon-based runtimes (docker, podman, podman-hpc) runs ``<runtime> info``
+    with a 5-second timeout.  For daemonless runtimes (apptainer, singularity)
+    runs ``<runtime> --version`` — there is no daemon to query.  Returns False on
+    non-zero exit code, timeout, or missing binary so callers can fall through to
+    the next candidate without raising.
     """
+    probe = ["--version"] if runtime in _DAEMONLESS_RUNTIMES else ["info"]
     try:
         result = subprocess.run(
-            [runtime, "info"],
+            [runtime, *probe],
             capture_output=True,
             timeout=5,
             check=False,
