@@ -151,7 +151,11 @@ class TestRenderContainerfileDevWheel:
 
         content = rendered.read_text()
         assert f"COPY {wheel.name} /tmp/{wheel.name}" in content
-        assert f"uv pip install --system /tmp/{wheel.name}" in content
+        # Step 1: stable release resolves all transitive deps from PyPI.
+        assert "uv pip install --system lightcone-cli" in content
+        # Step 2: overlay the package itself with the local dev wheel, keeping
+        # the already-resolved dep set intact (--no-deps).
+        assert f"uv pip install --system --no-deps /tmp/{wheel.name}" in content
         assert "case" not in content
 
     def test_fallback_to_case_when_wheel_build_fails(
