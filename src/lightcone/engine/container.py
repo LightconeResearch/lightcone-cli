@@ -247,6 +247,12 @@ def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
             )
         elif requested == "docker":
             hint = "Start the Docker daemon and retry."
+        elif requested in _DAEMONLESS_RUNTIMES:
+            hint = (
+                f"Verify {requested} is installed correctly "
+                f"(`{requested} --version`). "
+                "Also ensure buildah is on PATH for image builds."
+            )
         else:
             hint = f"Verify {requested} is running and accessible."
         raise ContainerBuildError(
@@ -499,7 +505,7 @@ def image_exists_locally(
     *project_path* is not provided (conservative — callers that know the
     path should pass it).
     """
-    if runtime == "apptainer":
+    if runtime in _DAEMONLESS_RUNTIMES:
         if project_path is None:
             return False
         return tarball_path_for_tag(tag, project_path).exists()
@@ -595,10 +601,10 @@ def build_image(
             f"Unsupported build runtime {runtime!r}; expected one of {RUNTIMES}."
         )
 
-    if runtime == "apptainer":
+    if runtime in _DAEMONLESS_RUNTIMES:
         if tarball_path is None:
             raise ContainerBuildError(
-                "tarball_path is required when building with the apptainer runtime. "
+                f"tarball_path is required when building with the {runtime!r} runtime. "
                 "Pass the desired .tar output path."
             )
         tarball_path.parent.mkdir(parents=True, exist_ok=True)
@@ -617,7 +623,7 @@ def build_image(
         except FileNotFoundError:
             raise ContainerBuildError(
                 "buildah is not installed or not on PATH. "
-                "Install buildah to build container images with the apptainer runtime."
+                f"Install buildah to build container images with {runtime!r}."
             )
         if build_proc.returncode != 0:
             raise ContainerBuildError(
@@ -679,9 +685,9 @@ def pull_image(image: str, *, runtime: str) -> None:
     Raises :class:`ContainerBuildError` on failure or if *runtime* isn't
     on PATH.
     """
-    if runtime == "apptainer":
+    if runtime in _DAEMONLESS_RUNTIMES:
         raise ContainerBuildError(
-            "pull_image is not supported for the apptainer runtime. "
+            f"pull_image is not supported for the {runtime!r} runtime. "
             "Use a Containerfile instead of a registry image reference."
         )
     if runtime not in RUNTIMES:
@@ -857,10 +863,10 @@ def wrap_recipe(
     """
     if image is None or runtime == "none":
         return recipe
-    if runtime == "apptainer":
+    if runtime in _DAEMONLESS_RUNTIMES:
         tarball = f".lightcone/images/{image}.tar"
         inner = shlex.quote(recipe)
-        return f"apptainer exec oci-archive:{tarball} bash -c {inner}"
+        return f"{runtime} exec oci-archive:{tarball} bash -c {inner}"
     if runtime not in RUNTIMES:
         raise ContainerBuildError(
             f"Unsupported run runtime {runtime!r}; expected one of {RUNTIMES} or 'none'."

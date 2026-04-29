@@ -390,7 +390,9 @@ class TestPullImage:
             pull_image("python:3.12-slim", runtime="docker")
 
     def test_unsupported_runtime_raises(self) -> None:
-        with pytest.raises(ContainerBuildError, match="not supported for the apptainer runtime"):
+        with pytest.raises(
+            ContainerBuildError, match="not supported for the 'apptainer' runtime"
+        ):
             pull_image("img", runtime="apptainer")
 
 
@@ -642,6 +644,32 @@ class TestLoadRuntime:
         )
         monkeypatch.setattr("lightcone.engine.container._runtime_up", lambda _: False)
         self._write_config(tmp_path, {"container": {"runtime": "docker"}})
+        with pytest.raises(ContainerBuildError, match="not reachable"):
+            load_runtime()
+
+    def test_explicit_apptainer_not_reachable_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name == "apptainer" else None,
+        )
+        monkeypatch.setattr("lightcone.engine.container._runtime_up", lambda _: False)
+        self._write_config(tmp_path, {"container": {"runtime": "apptainer"}})
+        with pytest.raises(ContainerBuildError, match="not reachable"):
+            load_runtime()
+
+    def test_explicit_singularity_not_reachable_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name == "singularity" else None,
+        )
+        monkeypatch.setattr("lightcone.engine.container._runtime_up", lambda _: False)
+        self._write_config(tmp_path, {"container": {"runtime": "singularity"}})
         with pytest.raises(ContainerBuildError, match="not reachable"):
             load_runtime()
 
@@ -960,5 +988,82 @@ class TestApptainerRuntime:
     def test_pull_image_apptainer_raises(self) -> None:
         from lightcone.engine.container import ContainerBuildError, pull_image
 
-        with pytest.raises(ContainerBuildError, match="not supported for the apptainer runtime"):
+        with pytest.raises(
+            ContainerBuildError, match="not supported for the 'apptainer' runtime"
+        ):
             pull_image("python:3.12-slim", runtime="apptainer")
+
+    def test_image_exists_locally_singularity_checks_tarball(
+        self, tmp_path: Path
+    ) -> None:
+        from lightcone.engine.container import image_exists_locally, tarball_path_for_tag
+
+        assert (
+            image_exists_locally(
+                "lc-foo-abc", runtime="singularity", project_path=tmp_path
+            )
+            is False
+        )
+        tarball = tarball_path_for_tag("lc-foo-abc", tmp_path)
+        tarball.parent.mkdir(parents=True)
+        tarball.write_bytes(b"fake")
+        assert (
+            image_exists_locally(
+                "lc-foo-abc", runtime="singularity", project_path=tmp_path
+            )
+            is True
+        )
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_build_image_singularity_uses_buildah(
+        self, mock_run: MagicMock, tmp_path: Path
+    ) -> None:
+        from lightcone.engine.container import build_image
+
+        (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
+        tarball = tmp_path / ".lightcone" / "images" / "lc-test.tar"
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        result = build_image(
+            "lc-test",
+            tmp_path / "Containerfile",
+            tmp_path,
+            runtime="singularity",
+            tarball_path=tarball,
+        )
+        assert result.tag == "lc-test"
+        first_cmd = mock_run.call_args_list[0][0][0]
+        assert first_cmd[0] == "buildah"
+        assert "build" in first_cmd
+        second_cmd = mock_run.call_args_list[1][0][0]
+        assert second_cmd[0] == "buildah"
+        assert "push" in second_cmd
+
+    def test_build_image_singularity_requires_tarball_path(
+        self, tmp_path: Path
+    ) -> None:
+        from lightcone.engine.container import ContainerBuildError, build_image
+
+        (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
+        with pytest.raises(ContainerBuildError, match="tarball_path is required"):
+            build_image(
+                "lc-test",
+                tmp_path / "Containerfile",
+                tmp_path,
+                runtime="singularity",
+            )
+
+    def test_wrap_recipe_singularity(self) -> None:
+        from lightcone.engine.container import wrap_recipe
+
+        wrapped = wrap_recipe("echo hi", image="lc-foo-abc123", runtime="singularity")
+        assert wrapped.startswith("singularity exec oci-archive:")
+        assert "lc-foo-abc123.tar" in wrapped
+        assert shlex.quote("echo hi") in wrapped
+
+    def test_pull_image_singularity_raises(self) -> None:
+        from lightcone.engine.container import ContainerBuildError, pull_image
+
+        with pytest.raises(
+            ContainerBuildError, match="not supported for the 'singularity' runtime"
+        ):
+            pull_image("python:3.12-slim", runtime="singularity")
