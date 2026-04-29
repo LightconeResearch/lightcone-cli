@@ -91,7 +91,7 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
             # folder-trust prompt — appropriate because the container IS the
             # sandbox.  It also fixes the accidental "claude claude" invocation
             # that occurred when "claude" was listed as its own entrypoint arg.
-            entrypoint=["--dangerously-skip-permissions"],
+            entrypoint=[""],
             env_passthrough=[
                 "ANTHROPIC_API_KEY",
                 "ANTHROPIC_BASE_URL",
