@@ -127,14 +127,25 @@ def _is_dev_version(version: str) -> bool:
 def _find_source_root() -> Path | None:
     """Return the lightcone-cli project root for editable installs, or None.
 
-    For an editable install the layout is::
+    Two discovery strategies are tried in order:
 
-        <project_root>/src/lightcone/engine/launcher.py
+    1. **``LIGHTCONE_SRC`` environment variable** — set this to the project
+       root when running ``lc`` from a ``uv tool install`` (non-editable).
+       Must contain ``pyproject.toml``; silently ignored otherwise.
 
-    so ``Path(__file__).parents[3]`` is the project root.  For a regular
-    installed package the same path resolves to a site-packages parent, which
-    won't contain ``pyproject.toml`` — in that case we return ``None``.
+    2. **Editable-install heuristic** — for ``uv sync`` / ``pip install -e``
+       the layout is ``<project_root>/src/lightcone/engine/launcher.py`` so
+       ``Path(__file__).parents[3]`` is the project root.  For a regular
+       installed package the same path resolves to a site-packages parent,
+       which won't contain ``pyproject.toml`` — in that case we return
+       ``None``.
     """
+    env_src = os.environ.get("LIGHTCONE_SRC")
+    if env_src:
+        candidate = Path(env_src)
+        if (candidate / "pyproject.toml").exists():
+            return candidate
+
     candidate = Path(__file__).parents[3]
     if (candidate / "pyproject.toml").exists():
         return candidate
