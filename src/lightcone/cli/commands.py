@@ -634,17 +634,21 @@ def verify(universe: str | None) -> None:
 @click.option(
     "--runtime",
     default=None,
-    help="docker | podman | podman-hpc (overrides ~/.lightcone/config.yaml)",
+    help=(
+        "docker | podman | podman-hpc | apptainer | singularity "
+        "(overrides ~/.lightcone/config.yaml)"
+    ),
 )
 def build(force: bool, runtime: str | None) -> None:
     """Build container images declared in astra.yaml.
 
-    Containerfile syntax is Dockerfile syntax — we use ``docker``,
-    ``podman``, or ``podman-hpc`` directly. Each Containerfile builds to
-    an OCI image tagged ``lc-<project>-<hash>`` in the runtime's local
-    image store. Pre-built registry images (``python:3.12-slim``,
-    ``ghcr.io/foo/bar:tag``) are skipped — the runtime pulls them at
-    ``lc run`` time.
+    Containerfile syntax is Dockerfile syntax. For daemon-based runtimes
+    (``docker``, ``podman``, ``podman-hpc``), images are built into the
+    runtime's local store. For daemonless runtimes (``apptainer``,
+    ``singularity``), ``buildah`` is used to produce OCI tarballs in
+    ``.lightcone/images/``. Pre-built registry images (``python:3.12-slim``,
+    ``ghcr.io/foo/bar:tag``) are skipped for daemonless runtimes — use a
+    Containerfile instead.
     """
     _warn_if_not_containerized()
     from lightcone.engine.container import ContainerBuildError, load_runtime
@@ -683,6 +687,7 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
     from astra.helpers import load_yaml, resolve_analysis_tree
 
     from lightcone.engine.container import (
+        _DAEMONLESS_RUNTIMES,
         ContainerBuildError,
         build_image,
         compute_image_tag,
@@ -730,10 +735,18 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
         console.print(
             f"[cyan]Building[/cyan] {spec_str} → {tag} [dim](via {runtime})[/dim]"
         )
+        tarball = tarball_path_for_tag(tag, project)
         try:
-            build_image(tag, containerfile, project, runtime=runtime)
-            tarball = tarball_path_for_tag(tag, project)
-            save_image_as_tarball(tag, tarball, runtime=runtime)
+            if runtime in _DAEMONLESS_RUNTIMES:
+                # buildah writes the OCI tarball directly during build — no
+                # separate save step needed (and save_image_as_tarball would
+                # run '<runtime> save' which apptainer/singularity don't support).
+                build_image(
+                    tag, containerfile, project, runtime=runtime, tarball_path=tarball
+                )
+            else:
+                build_image(tag, containerfile, project, runtime=runtime)
+                save_image_as_tarball(tag, tarball, runtime=runtime)
         except ContainerBuildError as e:
             raise click.ClickException(str(e))
 
@@ -767,10 +780,11 @@ def launch(target: str) -> None:
     except ContainerBuildError as e:
         raise click.ClickException(str(e))
 
-    if choice.runtime in ("none", "apptainer"):
+    if choice.runtime == "none":
         raise click.ClickException(
-            f"lc launch requires a host container runtime "
-            f"(docker, podman, or podman-hpc); got {choice.runtime!r}. "
+            "lc launch requires a host container runtime "
+            "(docker, podman, podman-hpc, or apptainer/singularity with buildah); "
+            f"got {choice.runtime!r}. "
             "Install docker or podman, or set container.runtime in "
             "~/.lightcone/config.yaml."
         )
