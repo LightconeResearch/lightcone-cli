@@ -10,6 +10,7 @@ from lightcone.engine.container import ContainerBuildError, RuntimeChoice
 from lightcone.engine.launcher import (
     BUILTIN_TARGETS,
     LaunchTarget,
+    _build_dev_wheel,
     _is_dev_version,
     _lc_version,
     _render_containerfile,
@@ -188,6 +189,43 @@ class TestRenderContainerfileDevWheel:
                 _render_containerfile(fake_target, project)
 
         mock_build.assert_not_called()
+
+
+class TestBuildDevWheelReuse:
+    """_build_dev_wheel reuses an existing wheel for the same version."""
+
+    def test_reuses_existing_wheel_same_version(self, tmp_path: Path) -> None:
+        version = "0.1.0.dev0+gabc123"
+        wheel = tmp_path / f"lightcone_cli-{version}-py3-none-any.whl"
+        wheel.write_bytes(b"original wheel bytes")
+
+        with patch("lightcone.engine.launcher._find_source_root", return_value=tmp_path):
+            with patch("lightcone.engine.launcher._lc_version", return_value=version):
+                with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
+                    result = _build_dev_wheel(tmp_path)
+
+        # subprocess.run must NOT be called — wheel was reused
+        mock_run.assert_not_called()
+        assert result == wheel
+
+    def test_rebuilds_when_version_changed(self, tmp_path: Path) -> None:
+        old_wheel = tmp_path / "lightcone_cli-0.0.1.dev0+gold-py3-none-any.whl"
+        old_wheel.write_bytes(b"stale")
+        new_version = "0.1.0.dev0+gnew"
+        new_wheel = tmp_path / f"lightcone_cli-{new_version}-py3-none-any.whl"
+
+        def fake_build(*args: object, **kwargs: object) -> MagicMock:
+            new_wheel.write_bytes(b"fresh wheel")
+            return MagicMock(returncode=0)
+
+        with patch("lightcone.engine.launcher._find_source_root", return_value=tmp_path):
+            with patch("lightcone.engine.launcher._lc_version", return_value=new_version):
+                with patch("lightcone.engine.launcher.subprocess.run", side_effect=fake_build):
+                    result = _build_dev_wheel(tmp_path)
+
+        assert result == new_wheel
+        # Stale wheel should have been removed
+        assert not old_wheel.exists()
 
 
 class TestLaunchTarget:

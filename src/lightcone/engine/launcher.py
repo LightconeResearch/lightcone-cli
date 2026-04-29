@@ -167,13 +167,26 @@ def _build_dev_wheel(dest_dir: Path) -> Path | None:
     pick it up, and its contents feed into the image tag hash — meaning the
     container auto-rebuilds whenever the local source changes.
 
+    If a wheel for the *current* version already exists in *dest_dir* it is
+    returned immediately without rebuilding.  This is important: wheel builds
+    embed zip timestamps, so running ``uv build`` twice on unchanged source
+    produces different bytes → a different context hash → a different image
+    tag → a spurious full container rebuild on every ``lc launch``.
+
     Returns the wheel :class:`Path`, or ``None`` if the source root cannot be
     located (non-editable install) or the build fails.
     """
     src_root = _find_source_root()
     if src_root is None:
         return None
-    # Remove stale wheels from previous builds to avoid accumulation.
+
+    version = _lc_version()
+    # Reuse a wheel that was already built for this exact version.
+    existing = sorted(dest_dir.glob(f"lightcone_cli-{version}-*.whl"))
+    if existing:
+        return existing[-1]
+
+    # No matching wheel — remove stale wheels from other versions, then build.
     for old in dest_dir.glob("lightcone_cli-*.whl"):
         old.unlink(missing_ok=True)
     try:
