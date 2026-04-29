@@ -208,12 +208,13 @@ def _render_containerfile(target: LaunchTarget, project_root: Path) -> Path:
     if _is_dev_version(version) and _LIGHTCONE_INSTALL_RE.search(content):
         wheel = _build_dev_wheel(dest_dir)
         if wheel is not None:
-            # Install the dev wheel directly so uv resolves all current
-            # dependencies from PyPI.  The wheel file is in the build
-            # context (dest_dir) so podman/docker can COPY it in.
+            # uv tool install manages its own Python and places `lc` in
+            # ~/.local/bin (already on PATH in the Containerfile).
+            # Installing from the local wheel path lets uv resolve all
+            # current deps from PyPI without needing lightcone-cli on PyPI.
             wheel_block = (
                 f"COPY {wheel.name} /tmp/{wheel.name}\n"
-                f"RUN uv pip install --system /tmp/{wheel.name}\n"
+                f"RUN uv tool install /tmp/{wheel.name}\n"
             )
             content = _LIGHTCONE_INSTALL_RE.sub(wheel_block, content)
 

@@ -34,13 +34,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 ARG LIGHTCONE_VERSION
-# Dev/local builds (e.g. "0.x.y.dev0+gabcdef" or "dev") are not published to
-# PyPI, so we cannot pin them. The ARG is still baked in for content-addressed
-# tag computation (the image rebuilds when lc is upgraded). For non-release
-# strings we install the latest stable release from PyPI instead.
+# uv tool install manages its own Python (no system Python required) and
+# places the `lc` binary in ~/.local/bin (already on PATH above).
+# Dev/local builds are not published to PyPI; the ARG is still baked in for
+# content-addressed tag computation so the image rebuilds when lc is upgraded.
+# For non-release strings we install the latest stable release from PyPI.
 RUN case "${LIGHTCONE_VERSION}" in \
-    *dev*|*+*|dev) uv pip install --system lightcone-cli ;; \
-    *) uv pip install --system "lightcone-cli==${LIGHTCONE_VERSION}" ;; \
+    *dev*|*+*|dev) uv tool install lightcone-cli ;; \
+    *) uv tool install "lightcone-cli==${LIGHTCONE_VERSION}" ;; \
     esac
 
 # Node.js LTS + Claude Code CLI
