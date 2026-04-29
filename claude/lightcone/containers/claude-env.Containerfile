@@ -45,8 +45,8 @@ ARG LIGHTCONE_VERSION
 # content-addressed tag computation so the image rebuilds when lc is upgraded.
 # For non-release strings we install the latest stable release from PyPI.
 RUN case "${LIGHTCONE_VERSION}" in \
-    *dev*|*+*|dev) uv pip install --system lightcone-cli ;; \
-    *) uv pip install --system "lightcone-cli==${LIGHTCONE_VERSION}" ;; \
+    *dev*|*+*|dev) uv pip install --system --break-system-packages lightcone-cli ;; \
+    *) uv pip install --system --break-system-packages "lightcone-cli==${LIGHTCONE_VERSION}" ;; \
     esac
 
 # Node.js LTS + Claude Code CLI

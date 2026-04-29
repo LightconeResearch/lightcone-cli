@@ -214,7 +214,7 @@ def _render_containerfile(target: LaunchTarget, project_root: Path) -> Path:
             # any source compilation.
             wheel_block = (
                 f"COPY {wheel.name} /tmp/{wheel.name}\n"
-                f"RUN uv pip install --system /tmp/{wheel.name}\n"
+                f"RUN uv pip install --system --break-system-packages /tmp/{wheel.name}\n"
             )
             content = _LIGHTCONE_INSTALL_RE.sub(wheel_block, content)
 

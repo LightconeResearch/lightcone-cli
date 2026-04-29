@@ -100,11 +100,12 @@ class TestRenderContainerfile:
         assert "ARG LIGHTCONE_VERSION=0.0.0" not in content
 
 
+_BSP = "--break-system-packages"
 _INSTALL_BLOCK = (
     "# Dev/local builds are not published to PyPI ...\n"
     "RUN case \"${LIGHTCONE_VERSION}\" in \\\n"
-    "    *dev*|*+*|dev) uv pip install --system lightcone-cli ;; \\\n"
-    "    *) uv pip install --system \"lightcone-cli==${LIGHTCONE_VERSION}\" ;; \\\n"
+    f"    *dev*|*+*|dev) uv pip install --system {_BSP} lightcone-cli ;; \\\n"
+    f"    *) uv pip install --system {_BSP} \"lightcone-cli==${{LIGHTCONE_VERSION}}\" ;; \\\n"
     "    esac\n"
 )
 
@@ -151,7 +152,7 @@ class TestRenderContainerfileDevWheel:
 
         content = rendered.read_text()
         assert f"COPY {wheel.name} /tmp/{wheel.name}" in content
-        assert f"uv pip install --system /tmp/{wheel.name}" in content
+        assert f"uv pip install --system --break-system-packages /tmp/{wheel.name}" in content
         assert "--no-deps" not in content
         assert "case" not in content
 
