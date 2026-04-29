@@ -18,6 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
+    python3 \
+    python3-dev \
+    build-essential \
     && ARCH="$(dpkg --print-architecture)" \
     && if [ "$ARCH" = "amd64" ]; then \
         curl -fsSL \
@@ -34,14 +37,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 ARG LIGHTCONE_VERSION
-# uv tool install manages its own Python (no system Python required) and
-# places the `lc` binary in ~/.local/bin (already on PATH above).
+# python3 (installed above) is the system Python that uv --system targets.
+# ubuntu:24.04 base does not include Python by default; adding it via apt
+# ensures uv finds a system interpreter and can use pre-built manylinux wheels
+# (avoiding source-build failures for C-extension deps like immutables).
 # Dev/local builds are not published to PyPI; the ARG is still baked in for
 # content-addressed tag computation so the image rebuilds when lc is upgraded.
 # For non-release strings we install the latest stable release from PyPI.
 RUN case "${LIGHTCONE_VERSION}" in \
-    *dev*|*+*|dev) uv tool install lightcone-cli ;; \
-    *) uv tool install "lightcone-cli==${LIGHTCONE_VERSION}" ;; \
+    *dev*|*+*|dev) uv pip install --system lightcone-cli ;; \
+    *) uv pip install --system "lightcone-cli==${LIGHTCONE_VERSION}" ;; \
     esac
 
 # Node.js LTS + Claude Code CLI
