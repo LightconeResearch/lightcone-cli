@@ -87,7 +87,13 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
             name="claude",
             containerfile=containers_dir / "claude-env.Containerfile",
             entrypoint=["claude"],
-            env_passthrough=["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "HOME", "TERM"],
+            env_passthrough=[
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "HOME",
+                "TERM",
+            ],
             devices=["/dev/fuse"],
             # Mount the host Claude Code config so settings, accepted terms,
             # and API-key auth are available without re-running setup.
