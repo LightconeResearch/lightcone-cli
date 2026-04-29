@@ -32,8 +32,26 @@ from lightcone.engine.manifest import lc_version as _lc_version
 
 
 def _package_containers_dir() -> Path:
-    """Return the path to ``claude/lightcone/containers/`` in the package tree."""
+    """Return the path to the bundled ``containers/`` directory.
+
+    Two layouts are supported:
+
+    * **Editable install** (``uv sync`` / ``pip install -e .``): the package
+      source lives at ``src/lightcone/engine/launcher.py`` inside the project
+      tree, so climbing four parents reaches the project root, then
+      ``claude/lightcone/containers/`` is a sibling directory.
+
+    * **Wheel install** (``pip install lightcone-cli`` or any regular install):
+      ``pyproject.toml`` uses ``force-include`` to bundle the plugin directory
+      as ``lightcone/cli/claude/lightcone/``, so ``containers/`` sits two
+      parents above this file inside site-packages.
+    """
     candidates = [
+        # Wheel install: site-packages/lightcone/engine/launcher.py
+        #   → site-packages/lightcone/cli/claude/lightcone/containers/
+        Path(__file__).parent.parent / "cli" / "claude" / "lightcone" / "containers",
+        # Editable install: src/lightcone/engine/launcher.py
+        #   → <project_root>/claude/lightcone/containers/
         Path(__file__).parent.parent.parent.parent / "claude" / "lightcone" / "containers",
     ]
     for c in candidates:
