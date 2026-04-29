@@ -10,6 +10,7 @@ from lightcone.engine.container import ContainerBuildError, RuntimeChoice
 from lightcone.engine.launcher import (
     BUILTIN_TARGETS,
     LaunchTarget,
+    _is_dev_version,
     _lc_version,
     _render_containerfile,
     resolve_launch_target,
@@ -97,6 +98,93 @@ class TestRenderContainerfile:
         version = _lc_version()
         assert f"ARG LIGHTCONE_VERSION={version}" in content
         assert "ARG LIGHTCONE_VERSION=0.0.0" not in content
+
+
+_INSTALL_BLOCK = (
+    "# Dev/local builds (e.g. \"0.x.y.dev0+gabcdef\" or \"dev\") ...\n"
+    "RUN case \"${LIGHTCONE_VERSION}\" in \\\n"
+    "    *dev*|*+*|dev) uv pip install --system lightcone-cli ;; \\\n"
+    "    *) uv pip install --system \"lightcone-cli==${LIGHTCONE_VERSION}\" ;; \\\n"
+    "    esac\n"
+)
+
+
+@pytest.fixture
+def install_target(tmp_path: Path) -> LaunchTarget:
+    """Target whose Containerfile includes the lightcone install block."""
+    cf = tmp_path / "install.Containerfile"
+    cf.write_text(
+        "FROM ubuntu:24.04\n"
+        "ARG LIGHTCONE_VERSION\n"
+        + _INSTALL_BLOCK
+    )
+    return LaunchTarget(name="install", containerfile=cf, entrypoint=["bash"])
+
+
+class TestIsDevVersion:
+    def test_clean_release_is_not_dev(self) -> None:
+        assert _is_dev_version("1.2.3") is False
+
+    def test_dev_string_is_dev(self) -> None:
+        assert _is_dev_version("dev") is True
+
+    def test_dev_suffix_is_dev(self) -> None:
+        assert _is_dev_version("0.1.0.dev0+gabc123") is True
+
+    def test_local_identifier_is_dev(self) -> None:
+        assert _is_dev_version("1.0.0+local") is True
+
+    def test_rc_version_is_not_dev(self) -> None:
+        assert _is_dev_version("1.0.0rc1") is False
+
+
+class TestRenderContainerfileDevWheel:
+    def test_injects_copy_and_wheel_install_when_dev(
+        self, install_target: LaunchTarget, project: Path, tmp_path: Path
+    ) -> None:
+        wheel = tmp_path / "lightcone_cli-0.1.0.dev0-py3-none-any.whl"
+        wheel.write_bytes(b"fake wheel")
+
+        with patch("lightcone.engine.launcher._lc_version", return_value="0.1.0.dev0+gabc"):
+            with patch("lightcone.engine.launcher._build_dev_wheel", return_value=wheel):
+                rendered = _render_containerfile(install_target, project)
+
+        content = rendered.read_text()
+        assert f"COPY {wheel.name} /tmp/{wheel.name}" in content
+        assert f"uv pip install --system /tmp/{wheel.name}" in content
+        assert "case" not in content
+
+    def test_fallback_to_case_when_wheel_build_fails(
+        self, install_target: LaunchTarget, project: Path
+    ) -> None:
+        with patch("lightcone.engine.launcher._lc_version", return_value="0.1.0.dev0+gabc"):
+            with patch("lightcone.engine.launcher._build_dev_wheel", return_value=None):
+                rendered = _render_containerfile(install_target, project)
+
+        content = rendered.read_text()
+        assert "case" in content
+        assert "COPY" not in content
+
+    def test_no_wheel_logic_for_release_version(
+        self, install_target: LaunchTarget, project: Path
+    ) -> None:
+        with patch("lightcone.engine.launcher._lc_version", return_value="1.2.3"):
+            with patch("lightcone.engine.launcher._build_dev_wheel") as mock_build:
+                rendered = _render_containerfile(install_target, project)
+
+        mock_build.assert_not_called()
+        content = rendered.read_text()
+        assert "case" in content
+
+    def test_no_wheel_logic_without_install_block(
+        self, fake_target: LaunchTarget, project: Path
+    ) -> None:
+        """Containerfiles without the install block are not touched."""
+        with patch("lightcone.engine.launcher._lc_version", return_value="0.1.0.dev0+gabc"):
+            with patch("lightcone.engine.launcher._build_dev_wheel") as mock_build:
+                _render_containerfile(fake_target, project)
+
+        mock_build.assert_not_called()
 
 
 class TestLaunchTarget:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,6 +96,63 @@ def resolve_launch_target(name: str, project_root: Path | None = None) -> Launch
 # so we handle both the bare form and an existing default.
 _ARG_VERSION_RE = re.compile(r"^ARG LIGHTCONE_VERSION(=[^\n]*)?\n", re.MULTILINE)
 
+# Matches the comment + RUN block that handles lightcone-cli installation.
+# Present only in Containerfiles that use the dev-wheel fallback pattern.
+_LIGHTCONE_INSTALL_RE = re.compile(r"# Dev/local builds.*?esac\n", re.DOTALL)
+
+
+def _is_dev_version(version: str) -> bool:
+    """Return True if *version* is a dev/local build not published to PyPI."""
+    return version == "dev" or ".dev" in version or "+" in version
+
+
+def _find_source_root() -> Path | None:
+    """Return the lightcone-cli project root for editable installs, or None.
+
+    For an editable install the layout is::
+
+        <project_root>/src/lightcone/engine/launcher.py
+
+    so ``Path(__file__).parents[3]`` is the project root.  For a regular
+    installed package the same path resolves to a site-packages parent, which
+    won't contain ``pyproject.toml`` — in that case we return ``None``.
+    """
+    candidate = Path(__file__).parents[3]
+    if (candidate / "pyproject.toml").exists():
+        return candidate
+    return None
+
+
+def _build_dev_wheel(dest_dir: Path) -> Path | None:
+    """Build a wheel from the current source tree into *dest_dir*.
+
+    Used when the running version is a dev/PR build that is not on PyPI so
+    ``uv pip install lightcone-cli==<dev-version>`` would fail.  The wheel
+    is placed in the Containerfile build context so the ``COPY`` step can
+    pick it up, and its contents feed into the image tag hash — meaning the
+    container auto-rebuilds whenever the local source changes.
+
+    Returns the wheel :class:`Path`, or ``None`` if the source root cannot be
+    located (non-editable install) or the build fails.
+    """
+    src_root = _find_source_root()
+    if src_root is None:
+        return None
+    # Remove stale wheels from previous builds to avoid accumulation.
+    for old in dest_dir.glob("lightcone_cli-*.whl"):
+        old.unlink(missing_ok=True)
+    try:
+        subprocess.run(
+            ["uv", "build", "--wheel", "--out-dir", str(dest_dir)],
+            cwd=src_root,
+            check=True,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    wheels = sorted(dest_dir.glob("lightcone_cli-*.whl"))
+    return wheels[-1] if wheels else None
+
 
 def _render_containerfile(target: LaunchTarget, project_root: Path) -> Path:
     """Write a rendered copy of the target's Containerfile to .lightcone/containers/.
@@ -102,6 +160,13 @@ def _render_containerfile(target: LaunchTarget, project_root: Path) -> Path:
     Substitutes ``ARG LIGHTCONE_VERSION`` (bare or with a default) with
     ``ARG LIGHTCONE_VERSION=<version>`` so the content hash — and therefore
     the image tag — changes when ``lc`` is upgraded.
+
+    For dev/PR builds (version not on PyPI), if the Containerfile contains the
+    lightcone install block and the source tree is reachable, a wheel is built
+    from the local source and the install block is replaced with a direct
+    ``COPY <wheel> /tmp/ + uv pip install`` so the exact in-development code
+    ends up inside the container.  If the wheel build fails the existing
+    case-based fallback (latest stable from PyPI) is preserved.
     """
     dest_dir = project_root / ".lightcone" / "containers"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +175,16 @@ def _render_containerfile(target: LaunchTarget, project_root: Path) -> Path:
     version = _lc_version()
     content = target.containerfile.read_text()
     content = _ARG_VERSION_RE.sub(f"ARG LIGHTCONE_VERSION={version}\n", content)
+
+    if _is_dev_version(version) and _LIGHTCONE_INSTALL_RE.search(content):
+        wheel = _build_dev_wheel(dest_dir)
+        if wheel is not None:
+            wheel_block = (
+                f"COPY {wheel.name} /tmp/{wheel.name}\n"
+                f"RUN uv pip install --system /tmp/{wheel.name}\n"
+            )
+            content = _LIGHTCONE_INSTALL_RE.sub(wheel_block, content)
+
     dest.write_text(content)
     return dest
 
