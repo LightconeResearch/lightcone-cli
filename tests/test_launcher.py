@@ -49,7 +49,7 @@ class TestBuiltinTargets:
     def test_claude_target_fields(self) -> None:
         t = BUILTIN_TARGETS["claude"]
         assert t.name == "claude"
-        assert t.entrypoint == ["claude"]
+        assert t.entrypoint == ["--dangerously-skip-permissions"]
         assert "ANTHROPIC_API_KEY" in t.env_passthrough
         assert "CLAUDE_CODE_OAUTH_TOKEN" in t.env_passthrough
         assert "/dev/fuse" in t.devices

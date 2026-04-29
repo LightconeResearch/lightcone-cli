@@ -86,7 +86,12 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
         "claude": LaunchTarget(
             name="claude",
             containerfile=containers_dir / "claude-env.Containerfile",
-            entrypoint=["claude"],
+            # The Containerfile ENTRYPOINT is already "claude"; arguments here
+            # are appended to it.  --dangerously-skip-permissions suppresses the
+            # folder-trust prompt — appropriate because the container IS the
+            # sandbox.  It also fixes the accidental "claude claude" invocation
+            # that occurred when "claude" was listed as its own entrypoint arg.
+            entrypoint=["--dangerously-skip-permissions"],
             env_passthrough=[
                 "ANTHROPIC_API_KEY",
                 "ANTHROPIC_BASE_URL",
