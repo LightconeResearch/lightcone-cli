@@ -413,21 +413,15 @@ def run(
     # Snakemake requires ``--cores`` to bound per-rule CPU; the dask
     # plugin requires ``--jobs`` to bound parallel dispatch. We surface
     # one knob and pass it as both.
-    cmd = [
-        "snakemake",
-        "-s", str(snakefile_path),
-        "-d", str(project),
-        "--cores", n,
-        "--jobs", n,
-        "--executor", "dask",
-        "--rerun-triggers", *rerun_triggers.split(","),
-    ]
-    if force:
-        # ``--force`` scopes to explicit targets; ``rule all`` itself
-        # has no recipe, so force-all is the only useful sense when no
-        # targets were named.
-        cmd.append("--force" if outputs else "--forceall")
-    cmd.extend(targets)
+    cmd = _build_snakemake_cmd(
+        snakefile_path=snakefile_path,
+        project=project,
+        n=n,
+        rerun_triggers=rerun_triggers,
+        targets=targets,
+        force=force,
+        has_outputs=bool(outputs),
+    )
 
     # Hold a project-level flock for the duration of the run. Acquiring
     # it also clears any stale snakemake lock left by a previously
@@ -504,6 +498,42 @@ def _run_silent(
             # Last-ditch: dump to stderr if scratch is unwritable.
             sys.stderr.write("".join(tail))
     return rc
+
+
+def _build_snakemake_cmd(
+    *,
+    snakefile_path: Path,
+    project: Path,
+    n: str,
+    rerun_triggers: str,
+    targets: list[str],
+    force: bool,
+    has_outputs: bool,
+) -> list[str]:
+    """Build the snakemake argv list for ``lc run``.
+
+    ``--rerun-triggers`` uses ``nargs=+`` in snakemake's argparse, so without
+    an explicit ``--`` separator it greedily consumes the first positional
+    target path as an extra trigger value, causing an "invalid choice" error.
+    """
+    cmd: list[str] = [
+        "snakemake",
+        "-s", str(snakefile_path),
+        "-d", str(project),
+        "--cores", n,
+        "--jobs", n,
+        "--executor", "dask",
+        "--rerun-triggers", *rerun_triggers.split(","),
+    ]
+    if force:
+        # ``--force`` scopes to explicit targets; ``rule all`` itself
+        # has no recipe, so force-all is the only useful sense when no
+        # targets were named.
+        cmd.append("--force" if has_outputs else "--forceall")
+    if targets:
+        cmd.append("--")
+    cmd.extend(targets)
+    return cmd
 
 
 def _target_for(project: Path, output_id: str, universe: str) -> str:
