@@ -1,13 +1,26 @@
 """Tests for the site registry — site detection and the HostSite wrapper."""
 from __future__ import annotations
 
-from unittest.mock import patch
+from collections.abc import Callable
 
+import pytest
+
+from lightcone.engine import site_registry
 from lightcone.engine.site_registry import (
     HostSite,
     detect_current_site,
     detect_site,
 )
+
+
+@pytest.fixture
+def fake_hostname(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
+    """Return a setter that pins ``socket.gethostname`` for the test."""
+
+    def _set(name: str) -> None:
+        monkeypatch.setattr(site_registry.socket, "gethostname", lambda: name)
+
+    return _set
 
 
 class TestDetectSite:
@@ -55,33 +68,30 @@ class TestHostSite:
 
 
 class TestDetectCurrentSite:
-    @patch(
-        "lightcone.engine.site_registry.socket.gethostname",
-        return_value="login29.chn.perlmutter.nersc.gov",
-    )
-    def test_known_host_returns_populated_site(self, _hostname: object) -> None:
+    def test_known_host_returns_populated_site(
+        self, fake_hostname: Callable[[str], None]
+    ) -> None:
+        fake_hostname("login29.chn.perlmutter.nersc.gov")
         site = detect_current_site()
         assert site
         assert site.key == "perlmutter"
         assert site.get("container_runtime") == "podman-hpc"
         assert site.display_name == "NERSC Perlmutter"
 
-    @patch(
-        "lightcone.engine.site_registry.socket.gethostname",
-        return_value="generic-laptop",
-    )
-    def test_unknown_host_returns_empty_site(self, _hostname: object) -> None:
+    def test_unknown_host_returns_empty_site(
+        self, fake_hostname: Callable[[str], None]
+    ) -> None:
+        fake_hostname("generic-laptop")
         site = detect_current_site()
         assert not site
         assert site.key is None
         assert site.get("container_runtime") is None
 
-    @patch(
-        "lightcone.engine.site_registry.socket.gethostname",
-        return_value="generic-laptop",
-    )
-    def test_unknown_host_get_returns_default(self, _hostname: object) -> None:
+    def test_unknown_host_get_returns_default(
+        self, fake_hostname: Callable[[str], None]
+    ) -> None:
         # Field access on an unmatched site shouldn't require an explicit
         # truthiness guard at every call site — that's the whole point of
         # returning an empty HostSite rather than None.
+        fake_hostname("generic-laptop")
         assert detect_current_site().get("scratch_root", "/tmp") == "/tmp"

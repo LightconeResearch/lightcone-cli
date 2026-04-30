@@ -142,7 +142,6 @@ class HostSite:
 
     @property
     def display_name(self) -> str:
-        """Friendly site name; falls back to the key, then ``"unknown"``."""
         return self.defaults.get("display_name") or self.key or "unknown"
 
     def get(self, name: str, default: Any = None) -> Any:
