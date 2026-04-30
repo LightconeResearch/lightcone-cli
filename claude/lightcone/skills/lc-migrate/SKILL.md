@@ -1,6 +1,6 @@
 ---
 name: lc-migrate
-description: Migrate an existing project into ASTRA / lightcone-cli. Scans code, generates astra.yaml, parameterizes decisions, and runs until outputs materialize. Use after `lc init . --existing-project`. Triggers on "migrate", "convert", "existing project".
+description: Migrate an existing project into ASTRA / lightcone-cli. Scans code, generates astra.yaml, parameterizes decisions, and runs until outputs materialize. Triggers on "migrate", "convert", "existing project".
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash(astra:*), Bash(lc:*), Bash(python:*), Bash(pip:*), Bash(git:*), Bash(mkdir:*), Bash(ls:*), Agent, AskUserQuestion
 ---
 
