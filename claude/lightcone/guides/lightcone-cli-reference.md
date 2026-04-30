@@ -63,7 +63,8 @@ Three overlapping phases:
 
 **`astra.yaml` must always reflect the code and vice versa.** When you change one, update the other immediately:
 - Add a decision to code? Add it to `astra.yaml` and all universe files.
-- Add an output or change a script? Update the `recipe:` block in `astra.yaml`.
+- Add an output? Add the Output block with its `inputs:`, `decisions:`, and `recipe:` — the Output owns provenance, the recipe is just *how*.
+- Change a script's I/O, decisions, or command? Update the corresponding fields on the Output (`inputs:`/`decisions:`/`recipe:`).
 - Remove or rename something? Update both sides and run `astra validate astra.yaml`.
 
 ## Status Interpretation
@@ -101,4 +102,4 @@ lc run --constraint cpu                    # CPU-only hardware
 
 If your recipe's `resources` exceed the limits implied by the selected options, `lc run` will either trim the request to fit (`strategy: fit`, the default) or switch to a different `qos` choice (`strategy: switch`). Pass `--strategy switch` per run to prefer the latter.
 
-Recipe `resources` (gpus, memory, cpus, nodes, time_limit) are portable across targets — they inform how `lc run` dispatches work in the target's environment.
+Recipe `resources` (`cpus`, `memory`, `gpus`, `time_limit`, `disk`) are portable across targets — they inform how `lc run` dispatches work in the target's environment. Sized fields take string-with-units (`memory: "16Gi"`, `disk: "10Gi"`); `time_limit` takes a duration string (`"2h"`, `"30m"`); `cpus` is a float and `gpus` an integer.
