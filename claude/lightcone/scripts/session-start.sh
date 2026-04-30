@@ -14,32 +14,6 @@ fi
 
 cd "$cwd" 2>/dev/null || exit 0
 
-# Check for active lc-build loop (crash recovery)
-if [ -f ".claude/ralph-loop.local.md" ]; then
-    loop_iter=$(grep '^iteration:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
-    loop_max=$(grep '^max_iterations:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
-    loop_session=$(grep '^session_id:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
-    # Read universe from dedicated frontmatter field (falls back gracefully for old state files)
-    loop_universe=$(grep '^universe:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
-    loop_universe="${loop_universe:-unknown}"
-
-    current_session="${CLAUDE_CODE_SESSION_ID:-}"
-
-    # If the loop belongs to a different active session, show informational message only.
-    # This prevents a concurrent session from accidentally resuming or cancelling another session's loop.
-    if [ -n "$loop_session" ] && [ -n "$current_session" ] && [ "$loop_session" != "$current_session" ]; then
-        loop_info="lc-build loop active in another session (universe: ${loop_universe}, iteration ${loop_iter:-?}/${loop_max:-?}). This session is unaffected — manage the loop from its original session."
-        escaped_info=$(echo "$loop_info" | jq -Rs .)
-        echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $escaped_info}}"
-    else
-        loop_warning="Active lc-build loop detected (universe: ${loop_universe}, iteration ${loop_iter:-?}/${loop_max:-?})
-  Resume: /lc-build --universe ${loop_universe}    Cancel: /cancel-ralph"
-        escaped_warning=$(echo "$loop_warning" | jq -Rs .)
-        echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $escaped_warning}}"
-    fi
-    exit 0
-fi
-
 # Sync extraction model from ~/.lightcone/config.yaml to .claude/agents/lc-extractor.md
 if [ -f ".claude/agents/lc-extractor.md" ] && [ -f "$HOME/.lightcone/config.yaml" ]; then
     ext_model=$(grep '^extraction_model:' "$HOME/.lightcone/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d "'\"")

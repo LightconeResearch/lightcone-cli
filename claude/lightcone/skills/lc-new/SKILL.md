@@ -11,7 +11,6 @@ Create a new ASTRA analysis project through conversation. Build the spec iterati
 ## References
 
 - [ASTRA Reference](../../guides/astra-reference.md) -- spec structure, decision identification, recipes, universes
-- [UI Brand](../../guides/ui-brand.md) -- visual formatting patterns
 
 ## Setup
 
@@ -146,13 +145,7 @@ Show summary table:
 | sub_analysis  | ...       | ...     | ...      |
 ```
 
-Then show a Next Up block (see ui-brand.md) with:
-
-- Run `/clear` to free up context, then `/lc-build` to start building
-- Or `/lc-build [description]` to guide what to focus on first (e.g. `/lc-build focus on the fitting script`)
-- Also available: `/lc-verify`
-
-Prompt the user to `/clear` before starting implementation. The scoping conversation consumes significant context. Everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
+Then tell the user the spec is ready and they can begin implementation. Recommend running `/clear` first — the scoping conversation consumes significant context, and everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
 
 ---
 
