@@ -37,6 +37,7 @@ class OutputStatus:
     output_dir: Path
     status: StatusLiteral
     manifest: dict[str, Any] | None
+    recipe_command: str | None
 
 
 def _decisions_for(
@@ -110,8 +111,11 @@ def get_output_status(
                 output_dir=out_dir,
                 status="alias",
                 manifest=None,
+                recipe_command=None,
             )
             continue
+
+        recipe_command = recipe.get("command", "")
 
         manifest = read_manifest(out_dir)
         if manifest is None:
@@ -122,6 +126,7 @@ def get_output_status(
                 output_dir=out_dir,
                 status="missing",
                 manifest=None,
+                recipe_command=recipe_command,
             )
             continue
 
@@ -130,7 +135,7 @@ def get_output_status(
         # manifest at run time.
         image_tag = resolve_image(resolve_container_spec(tree_out, spec))
         current_cv = code_version(
-            recipe=recipe.get("command", ""),
+            recipe=recipe_command,
             container_image=image_tag,
             decisions=_decisions_for(tree_out, universe_decisions),
         )
@@ -142,6 +147,7 @@ def get_output_status(
                 output_dir=out_dir,
                 status="stale",
                 manifest=manifest,
+                recipe_command=recipe_command,
             )
             continue
 
@@ -152,4 +158,5 @@ def get_output_status(
             output_dir=out_dir,
             status="ok",
             manifest=manifest,
+            recipe_command=recipe_command,
         )

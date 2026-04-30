@@ -51,9 +51,7 @@ fi
 # Use -E (ERE) so `?` works on both BSD and GNU sed.
 analysis_name=$(grep -m1 "^name:" astra.yaml 2>/dev/null | sed -E 's/^name:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')
 
-# Count decisions
-decision_count=$(grep -c "^  [a-z_]*:$" astra.yaml 2>/dev/null | head -1)
-# More accurate: count keys under 'decisions:'
+# Count keys under 'decisions:' (block-form decisions only)
 decision_count=$(awk '/^decisions:/{found=1; next} found && /^  [a-z_]+:/{count++} found && /^[a-z]/{exit} END{print count}' astra.yaml 2>/dev/null)
 
 # Count universes
@@ -74,13 +72,15 @@ summary="ASTRA Project: ${analysis_name:-unnamed}
 - Validation: ${validation_status}
 - Reference: For astra.yaml syntax and spec format, read .claude/guides/astra-reference.md; for CLI and execution, read .claude/guides/lightcone-cli-reference.md"
 
-# If validation failed, add error summary
+# If validation failed, add error summary. We prefer the tail because the
+# leading lines are the success header (`✓ Schema validation passed` etc.)
+# and the actual error block is at the bottom. `head -5` historically hid
+# every real error.
 if [ "$validation_status" = "has errors" ]; then
-    # Get first few lines of errors
-    error_preview=$(echo "$validation_result" | head -5)
+    error_preview=$(echo "$validation_result" | tail -20)
     summary="$summary
 
-Validation errors (run 'astra validate astra.yaml' for details):
+Validation errors (run 'astra validate astra.yaml' for full output):
 $error_preview"
 fi
 

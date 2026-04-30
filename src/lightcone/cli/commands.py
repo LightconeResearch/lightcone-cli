@@ -607,6 +607,7 @@ def status(universe: str | None, as_json: bool) -> None:
                             "output_id": s.output_id,
                             "analysis_id": s.analysis_id,
                             "status": s.status,
+                            "recipe_command": s.recipe_command,
                         }
                         for s in get_output_status(project, universe_id=u)
                     ],
