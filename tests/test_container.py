@@ -403,7 +403,7 @@ class TestDetectRuntime:
         # RUNTIMES order applies. Site-aware behaviour is exercised in
         # TestSiteAwareDetection below.
         with patch(
-            "lightcone.engine.container.socket.gethostname",
+            "lightcone.engine.site_registry.socket.gethostname",
             return_value="generic-laptop",
         ):
             yield
@@ -462,7 +462,7 @@ class TestDetectRuntime:
 class TestSiteAwareDetection:
     @patch("lightcone.engine.container.shutil.which")
     @patch(
-        "lightcone.engine.container.socket.gethostname",
+        "lightcone.engine.site_registry.socket.gethostname",
         return_value="login29.chn.perlmutter.nersc.gov",
     )
     def test_perlmutter_picks_podman_hpc(
@@ -473,7 +473,7 @@ class TestSiteAwareDetection:
 
     @patch("lightcone.engine.container.shutil.which")
     @patch(
-        "lightcone.engine.container.socket.gethostname",
+        "lightcone.engine.site_registry.socket.gethostname",
         return_value="login29.chn.perlmutter.nersc.gov",
     )
     def test_falls_through_when_site_runtime_missing(
@@ -488,7 +488,7 @@ class TestSiteAwareDetection:
 
     @patch("lightcone.engine.container.shutil.which")
     @patch(
-        "lightcone.engine.container.socket.gethostname",
+        "lightcone.engine.site_registry.socket.gethostname",
         return_value="generic-laptop",
     )
     def test_unknown_site_uses_default_order(

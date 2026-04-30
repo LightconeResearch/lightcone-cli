@@ -28,7 +28,6 @@ import fcntl
 import hashlib
 import os
 import shutil
-import socket
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -36,7 +35,7 @@ from pathlib import Path
 
 import yaml
 
-from lightcone.engine.site_registry import detect_site, get_site_defaults
+from lightcone.engine.site_registry import detect_current_site
 
 LIGHTCONE_SCRATCH_ENV = "LIGHTCONE_SCRATCH"
 
@@ -74,15 +73,12 @@ def resolve_scratch_root(project_path: Path) -> Path:
         if val := data.get("scratch_root"):
             return Path(os.path.expandvars(str(val))).expanduser()
 
-    site_key = detect_site(socket.gethostname())
-    if site_key:
-        site = get_site_defaults(site_key) or {}
-        if val := site.get("scratch_root"):
-            expanded = os.path.expandvars(str(val))
-            # ``$VAR`` left intact means the env wasn't set — don't write
-            # to a literal path called ``$SCRATCH``. Fall through.
-            if not expanded.startswith("$") and "$" not in expanded:
-                return Path(expanded).expanduser()
+    if val := detect_current_site().get("scratch_root"):
+        expanded = os.path.expandvars(str(val))
+        # ``$VAR`` left intact means the env wasn't set — don't write
+        # to a literal path called ``$SCRATCH``. Fall through.
+        if not expanded.startswith("$") and "$" not in expanded:
+            return Path(expanded).expanduser()
 
     return Path(tempfile.gettempdir())
 

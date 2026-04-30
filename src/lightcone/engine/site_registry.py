@@ -5,9 +5,18 @@ the scratch root surfaced to the user and any deny rules used to keep
 edits off shared filesystems.
 
 To add a new site, append an entry to :data:`SITE_DEFAULTS`.
+
+The high-level entry point for the rest of the codebase is
+:func:`detect_current_site`, which returns a :class:`HostSite` bundling
+the matched site key with its declared defaults — keeping the
+``socket.gethostname() + detect_site + get_site_defaults`` chain in one
+place.
 """
 from __future__ import annotations
 
+import socket
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 #: Per-site defaults.  ``suggested_options`` follows the same shape as the
@@ -110,3 +119,50 @@ def get_site_scratch_deny_rules(site_key: str) -> list[str]:
         return []
     scratch_paths = site.get("scratch_paths", [])
     return [f"Edit({path})" for path in scratch_paths]
+
+
+@dataclass(frozen=True)
+class HostSite:
+    """The site (if any) the local host belongs to.
+
+    Returned by :func:`detect_current_site`. Use ``if site:`` to test
+    whether a known site was matched; use :meth:`get` (or
+    :attr:`defaults`) to read declared fields.
+
+    Adding a new "site asks for X" feature should not require a fourth
+    copy of the ``detect_site(socket.gethostname()) → get_site_defaults``
+    boilerplate — extend this class (or its consumers) instead.
+    """
+
+    key: str | None
+    defaults: Mapping[str, Any] = field(default_factory=dict)
+
+    def __bool__(self) -> bool:
+        return self.key is not None
+
+    @property
+    def display_name(self) -> str:
+        """Friendly site name; falls back to the key, then ``"unknown"``."""
+        return self.defaults.get("display_name") or self.key or "unknown"
+
+    def get(self, name: str, default: Any = None) -> Any:
+        """Look up a field declared in the site's defaults."""
+        return self.defaults.get(name, default)
+
+
+_UNKNOWN_HOST_SITE = HostSite(key=None, defaults={})
+
+
+def detect_current_site() -> HostSite:
+    """Return the :class:`HostSite` for the local host.
+
+    Single source of truth for "which site are we on?" — everything else
+    in the codebase should call this rather than re-deriving it from
+    :func:`socket.gethostname` and :func:`detect_site`. Returns a falsy
+    :class:`HostSite` (``key is None``) when the hostname matches no
+    known site.
+    """
+    key = detect_site(socket.gethostname())
+    if key is None:
+        return _UNKNOWN_HOST_SITE
+    return HostSite(key=key, defaults=get_site_defaults(key) or {})

@@ -32,7 +32,6 @@ import logging
 import re
 import shlex
 import shutil
-import socket
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
@@ -41,7 +40,7 @@ from pathlib import Path
 
 import yaml
 
-from lightcone.engine.site_registry import detect_site, get_site_defaults
+from lightcone.engine.site_registry import detect_current_site
 
 logger = logging.getLogger(__name__)
 
@@ -175,18 +174,12 @@ def _detection_order() -> tuple[str, ...]:
 
 
 def _site_preferred_runtime() -> str | None:
-    """Return ``container_runtime`` declared by the host's site, else ``None``.
+    """Return the host site's declared ``container_runtime``, else ``None``.
 
-    Looks up the local hostname against the site registry and reads
-    ``container_runtime`` from the matching entry. Returns ``None`` if
-    no site matches, no preference is declared, or the declared value
-    is not a known runtime — never raises.
+    Returns ``None`` when no site matches, no preference is declared, or
+    the declared value is not a known runtime — never raises.
     """
-    site_key = detect_site(socket.gethostname())
-    if site_key is None:
-        return None
-    site = get_site_defaults(site_key) or {}
-    preferred = site.get("container_runtime")
+    preferred = detect_current_site().get("container_runtime")
     return preferred if preferred in RUNTIMES else None
 
 

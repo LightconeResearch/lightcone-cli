@@ -149,11 +149,9 @@ def init(
     ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
     and an optional Python venv.
     """
-    import socket
-
     from astra.cli import init as astra_init
 
-    from lightcone.engine.site_registry import detect_site, get_site_defaults
+    from lightcone.engine.site_registry import detect_current_site
 
     directory = directory.resolve()
 
@@ -223,14 +221,11 @@ def init(
     # state (snakemake metadata, dask spill, cross-node locks). On NERSC
     # this is critical: $HOME and CFS are mounted via DVS (no flock, slow
     # small-file I/O), so lightcone keeps everything on $SCRATCH (Lustre).
-    site_key = detect_site(socket.gethostname())
-    if site_key:
-        site = get_site_defaults(site_key) or {}
+    site = detect_current_site()
+    if site:
         scratch_expr = scratch_override or site.get("scratch_root")
         if scratch_expr:
-            console.print(
-                f"\n[dim]Detected site:[/dim] {site.get('display_name', site_key)}"
-            )
+            console.print(f"\n[dim]Detected site:[/dim] {site.display_name}")
             console.print(
                 f"[dim]Scratch root for lc run:[/dim] [cyan]{scratch_expr}[/cyan] "
                 f"[dim](resolved at run time)[/dim]"
