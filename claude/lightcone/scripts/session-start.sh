@@ -14,32 +14,6 @@ fi
 
 cd "$cwd" 2>/dev/null || exit 0
 
-# Check for active lc-build loop (crash recovery)
-if [ -f ".claude/ralph-loop.local.md" ]; then
-    loop_iter=$(grep '^iteration:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
-    loop_max=$(grep '^max_iterations:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
-    loop_session=$(grep '^session_id:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
-    # Read universe from dedicated frontmatter field (falls back gracefully for old state files)
-    loop_universe=$(grep '^universe:' .claude/ralph-loop.local.md 2>/dev/null | awk '{print $2}')
-    loop_universe="${loop_universe:-unknown}"
-
-    current_session="${CLAUDE_CODE_SESSION_ID:-}"
-
-    # If the loop belongs to a different active session, show informational message only.
-    # This prevents a concurrent session from accidentally resuming or cancelling another session's loop.
-    if [ -n "$loop_session" ] && [ -n "$current_session" ] && [ "$loop_session" != "$current_session" ]; then
-        loop_info="lc-build loop active in another session (universe: ${loop_universe}, iteration ${loop_iter:-?}/${loop_max:-?}). This session is unaffected — manage the loop from its original session."
-        escaped_info=$(echo "$loop_info" | jq -Rs .)
-        echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $escaped_info}}"
-    else
-        loop_warning="Active lc-build loop detected (universe: ${loop_universe}, iteration ${loop_iter:-?}/${loop_max:-?})
-  Resume: /lc-build --universe ${loop_universe}    Cancel: /cancel-ralph"
-        escaped_warning=$(echo "$loop_warning" | jq -Rs .)
-        echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $escaped_warning}}"
-    fi
-    exit 0
-fi
-
 # Sync extraction model from ~/.lightcone/config.yaml to .claude/agents/lc-extractor.md
 if [ -f ".claude/agents/lc-extractor.md" ] && [ -f "$HOME/.lightcone/config.yaml" ]; then
     ext_model=$(grep '^extraction_model:' "$HOME/.lightcone/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d "'\"")
@@ -72,12 +46,12 @@ if ! command -v astra &> /dev/null; then
     exit 0
 fi
 
-# Gather analysis information
-analysis_name=$(grep -m1 "^  name:" astra.yaml 2>/dev/null | sed 's/.*name: *"\?\([^"]*\)"\?/\1/' | tr -d '"')
+# Gather analysis information. `astra init` writes `name:` at the top
+# level (no indent); previous indented form was pre-asset-centric.
+# Use -E (ERE) so `?` works on both BSD and GNU sed.
+analysis_name=$(grep -m1 "^name:" astra.yaml 2>/dev/null | sed -E 's/^name:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')
 
-# Count decisions
-decision_count=$(grep -c "^  [a-z_]*:$" astra.yaml 2>/dev/null | head -1)
-# More accurate: count keys under 'decisions:'
+# Count keys under 'decisions:' (block-form decisions only)
 decision_count=$(awk '/^decisions:/{found=1; next} found && /^  [a-z_]+:/{count++} found && /^[a-z]/{exit} END{print count}' astra.yaml 2>/dev/null)
 
 # Count universes
@@ -98,37 +72,43 @@ summary="ASTRA Project: ${analysis_name:-unnamed}
 - Validation: ${validation_status}
 - Reference: For astra.yaml syntax and spec format, read .claude/guides/astra-reference.md; for CLI and execution, read .claude/guides/lightcone-cli-reference.md"
 
-# If validation failed, add error summary
+# If validation failed, add error summary. We prefer the tail because the
+# leading lines are the success header (`✓ Schema validation passed` etc.)
+# and the actual error block is at the bottom. `head -5` historically hid
+# every real error.
 if [ "$validation_status" = "has errors" ]; then
-    # Get first few lines of errors
-    error_preview=$(echo "$validation_result" | head -5)
+    error_preview=$(echo "$validation_result" | tail -20)
     summary="$summary
 
-Validation errors (run 'astra validate astra.yaml' for details):
+Validation errors (run 'astra validate astra.yaml' for full output):
 $error_preview"
 fi
 
-# Add lc status if lc CLI is available
+# Add lc status if lc CLI is available. States are 'ok' / 'stale' /
+# 'missing' / 'alias' (manifest-driven). The output uses Rich glyphs:
+# '✓ ok', '✸ stale', '✗ miss', '→ alias'.
 if command -v lc &> /dev/null; then
     lc_status=$(lc status 2>&1)
     lc_exit=$?
     if [ $lc_exit -eq 0 ]; then
-        # Count outputs in each state
-        pending_count=$(echo "$lc_status" | grep -c "pending")
-        ok_count=$(echo "$lc_status" | grep -c "ok")
-        no_recipe_count=$(echo "$lc_status" | grep -c "no recipe")
+        ok_count=$(echo "$lc_status" | grep -c "✓ ok")
+        stale_count=$(echo "$lc_status" | grep -c "✸ stale")
+        missing_count=$(echo "$lc_status" | grep -c "✗ miss")
+        alias_count=$(echo "$lc_status" | grep -c "→ alias")
 
         summary="$summary
 
 Materialization status:
 - ok: ${ok_count}
-- pending: ${pending_count}
-- no recipe: ${no_recipe_count}"
+- stale: ${stale_count}
+- missing: ${missing_count}
+- alias: ${alias_count}"
 
-        if [ "$pending_count" -gt 0 ]; then
+        needs_run=$((missing_count + stale_count))
+        if [ "$needs_run" -gt 0 ]; then
             summary="$summary
 
-ACTION REQUIRED: ${pending_count} output(s) have recipes but are not yet materialized. Use \`lc run\` to produce them."
+ACTION REQUIRED: ${needs_run} output(s) need \`lc run\` (${missing_count} missing, ${stale_count} stale)."
         fi
     fi
 fi

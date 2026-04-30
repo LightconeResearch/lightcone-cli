@@ -1,30 +1,25 @@
 # CLAUDE.md
 
-## Project: {{name}}
+ASTRA analysis project, orchestrated by lightcone-cli.
 
-ASTRA (Agentic Schema for Transparent Research Analysis) analysis project, built with lightcone-cli.
+**Source of truth:**
+- `astra.yaml` — the analysis specification
+- `.claude/guides/astra-reference.md` — astra.yaml spec syntax
+- `.claude/guides/lightcone-cli-reference.md` — `lc` CLI commands, workflow, status, failures
 
-### Source of Truth
+### Quick Start
 
-- `astra.yaml` -- The analysis specification. Read this first.
-- `universes/` -- Decision selections (one YAML per universe).
-- `.claude/guides/astra-reference.md` -- Full reference for astra.yaml structure, sub-analyses, decision parameterization, recipe format, prior insights, findings, and universe management. Read when you need spec syntax.
-- `.claude/guides/lightcone-cli-reference.md` -- lightcone-cli execution reference: CLI commands, status interpretation, development workflow, failure diagnosis.
-
-### Project Layout
-
-```
-astra.yaml              # Specification: decisions, inputs, outputs
-CLAUDE.md             # This file
-Containerfile         # Container image for execution
-requirements.txt      # Python deps (keep in sync with scripts)
-.lightcone/             # lightcone-cli internals (managed by `lc`; do not edit)
-universes/
-  baseline.yaml       # Default decision selections
-scripts/              # Implementation scripts
-results/<universe>/   # Outputs by universe (produced by lc run)
+```bash
+lc status                 # what's done, stale, or missing
+lc verify                 # check provenance integrity
 ```
 
-## Working Notes
+### Keep astra.yaml and code in sync
 
-Use this section for context that doesn't belong in `astra.yaml` but matters across sessions: sub-analyses spawned and why, design decisions that shaped the spec, open questions, blockers, and anything you'd want to know if resuming this project cold.
+`astra.yaml` and the code must never diverge. When you change one, update the other in the same edit and run `astra validate astra.yaml`. See `lightcone-cli-reference.md` → "Spec-Code Invariant" for the full rules.
+
+---
+
+## Project Notes
+
+<!-- Add context that doesn't belong in astra.yaml: domain background, open questions, design decisions, blockers — anything you'd want on a cold resume. -->

@@ -1,6 +1,6 @@
 ---
 name: lc-migrate
-description: Migrate an existing project into ASTRA / lightcone-cli. Scans code, generates astra.yaml, parameterizes decisions, and runs until outputs materialize. Use after `lc init . --existing-project`. Triggers on "migrate", "convert", "existing project".
+description: Migrate an existing project into ASTRA / lightcone-cli. Scans code, generates astra.yaml, parameterizes decisions, and runs until outputs materialize. Triggers on "migrate", "convert", "existing project".
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash(astra:*), Bash(lc:*), Bash(python:*), Bash(pip:*), Bash(git:*), Bash(mkdir:*), Bash(ls:*), Agent, AskUserQuestion
 ---
 
@@ -14,9 +14,7 @@ End-to-end migration: scan existing code, generate the ASTRA spec, parameterize 
 
 ## Phase 1: Scan & Spec
 
-Spawn an Explore subagent to scan the project:
-
-First, read the Decisions section of [ASTRA Reference](../../guides/astra-reference.md), then spawn an Explore subagent. Include the decision criteria in the prompt so the subagent can classify candidates:
+First, read the Decisions section of [ASTRA Reference](../../guides/astra-reference.md), then spawn an Explore subagent to scan the project. Include the decision criteria in the prompt so the subagent can classify candidates:
 
 ```
 Agent(subagent_type="Explore", prompt="""
@@ -51,7 +49,7 @@ For reference, here are the decision criteria for classifying candidates:
 """)
 ```
 
-Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `.claude/guides/astra-reference.md`. Use the decision criteria from [ASTRA Reference](../../guides/astra-reference.md) to filter the subagent's candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
+Write the scan results to `CLAUDE.md` under `## Project Notes` as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `.claude/guides/astra-reference.md`. Use the decision criteria from [ASTRA Reference](../../guides/astra-reference.md) to filter the subagent's candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
 
 For each output, list the upstream artifacts it depends on under `Output.inputs: [...]` and the decisions it consumes under `Output.decisions: [...]`. Then add a `recipe.command` template that references each via `{inputs.<id>}` / `{decisions.<id>}` and writes to `{output}`. Example:
 
@@ -63,7 +61,7 @@ outputs:
     decisions: [magnitude_cut, redshift_min]
     recipe:
       command: >
-        python scripts/build_catalog.py
+        python src/build_catalog.py
         --survey {inputs.survey_data}
         --magnitude_cut {decisions.magnitude_cut}
         --redshift_min {decisions.redshift_min}
@@ -88,6 +86,11 @@ Parameterize the code so decisions can be varied across universes. The goal is m
 
 **Dependencies:** Check that `requirements.txt` includes all packages the code imports. If one doesn't exist, create it. If it's incomplete, add missing deps.
 
+**Containers:** Set `container:` in `astra.yaml` based on what the scan found.
+- Existing `Containerfile` or `Dockerfile`: point at it (e.g. `container: Containerfile`).
+- No container setup but a `requirements.txt`: write a minimal `Containerfile` (`FROM python:3.12-slim`, copy and `pip install -r requirements.txt`, then `COPY . .`) and point `container:` at it.
+- Nothing to go on: set `container: python:3.12-slim` as a starting point — the user can swap to a real `Containerfile` later.
+
 Whatever approach you use:
 
 - **Don't refactor, restructure, or improve the code.** Just add the parameter plumbing.
@@ -103,9 +106,9 @@ lc run --universe baseline
 
 If it fails, read the error, fix it, and retry. Iterate until `lc status` shows all outputs as `ok`.
 
-If the scan found existing results elsewhere in the project, compare them against the new outputs in `results/baseline/` to verify the migration preserved behavior.
+If the scan found existing results elsewhere in the project, compare them against the new outputs in `results/baseline/<output_id>/` to verify the migration preserved behavior.
 
-Then validate: `astra validate astra.yaml`. Present summary to user.
+Then validate the spec and the provenance chain: `astra validate astra.yaml` and `lc verify`. Present summary to user.
 
 ## Rules
 

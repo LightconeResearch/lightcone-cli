@@ -1,7 +1,7 @@
 ---
 name: lc-new
 description: Create a new ASTRA analysis project with integrated literature support. Scope the research question through conversation, structure outputs and decisions, search for and extract evidence from scientific papers, and build a complete astra.yaml specification. Use when starting a new analysis, when the user says "new project", "new analysis", or "scope". Triggers on "new", "scope", "research question", "start analysis".
-allowed-tools: Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md), Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md), Glob, Grep, Bash(astra:*), Bash(lc:*), Bash(mkdir:*), Bash(echo:*), WebSearch, WebFetch, AskUserQuestion, Task
+allowed-tools: Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md), Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md), Glob, Grep, Bash(astra:*), Bash(lc:*), WebSearch, WebFetch, AskUserQuestion, Agent
 ---
 
 # /lc-new
@@ -11,7 +11,7 @@ Create a new ASTRA analysis project through conversation. Build the spec iterati
 ## References
 
 - [ASTRA Reference](../../guides/astra-reference.md) -- spec structure, decision identification, recipes, universes
-- [UI Brand](../../guides/ui-brand.md) -- visual formatting patterns
+- [lightcone-cli Reference](../../guides/lightcone-cli-reference.md) -- `lc` workflow for the implementation phase that follows scoping
 
 ## Setup
 
@@ -30,7 +30,7 @@ Then sharpen:
 - "What would a clear answer look like?" (sharpens the description)
 - "Why does this matter?" (context for decisions)
 
-**Write to astra.yaml immediately** with `version`, `name`, `description`. This gives the user something visible right away.
+**Update astra.yaml** — set `name`. (`astra init` scaffolded a placeholder example decision/input/output plus a TODO `narrative` skeleton; the placeholder structure is replaced in Phases 2–3, and narrative prose is filled in Finalize once structure has settled — written too early it goes stale.)
 
 ---
 
@@ -118,12 +118,13 @@ Stage banner: FINALIZING
 astra universe generate -n baseline
 ```
 
+### Populate Narrative
+
+Replace the TODO entries in `astra.yaml`'s `narrative:` block now that structure is stable: `summary` (one-paragraph framing), `methods` (decisions and sub-analyses), `inputs`, `outputs`. Use `#path.to.element` anchors for cross-references. Leave `findings` as TODO until results exist.
+
 ### Populate CLAUDE.md
 
-Read the existing `CLAUDE.md` (created by `lc init`). Replace the `## Working Notes` section with context that is NOT already visible in `astra.yaml`. The spec is the source of truth for structure, decisions, and evidence -- CLAUDE.md captures only what would be lost after `/clear`:
-
-- **Domain Context**: important things the user explained during scoping -- data characteristics, constraints, why certain approaches were preferred. This is conversational context not captured in the spec.
-- **Implementation Notes**: domain-specific guidance from the conversation (libraries, data formats, gotchas)
+Read the existing `CLAUDE.md` (created by `lc init`). Fill the `## Project Notes` section per the inline guidance there — context from the conversation that's not in `astra.yaml` and would be lost after `/clear`. The spec is the source of truth for structure, decisions, and evidence.
 
 ### Review with User
 
@@ -146,13 +147,7 @@ Show summary table:
 | sub_analysis  | ...       | ...     | ...      |
 ```
 
-Then show a Next Up block (see ui-brand.md) with:
-
-- Run `/clear` to free up context, then `/lc-build` to start building
-- Or `/lc-build [description]` to guide what to focus on first (e.g. `/lc-build focus on the fitting script`)
-- Also available: `/lc-verify`
-
-Prompt the user to `/clear` before starting implementation. The scoping conversation consumes significant context. Everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
+Then tell the user the spec is ready and they can begin implementation. Recommend running `/clear` first — the scoping conversation consumes significant context, and everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
 
 ---
 
