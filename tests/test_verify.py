@@ -254,6 +254,38 @@ def test_verify_detects_broken_chain_for_qualified_input(tmp_path: Path) -> None
     )
 
 
+def test_verify_passes_with_external_input(tmp_path: Path) -> None:
+    """An output whose declared inputs include an analysis-level Input
+    (resolved to a file via ``source:``) must verify cleanly: the
+    Snakefile generator threads the external path into ``run_rule``'s
+    ``inputs`` dict, so write_manifest fingerprints it. Without that
+    plumbing, verify reports broken_chain. Regression for issue #90."""
+    src = tmp_path / "data" / "table.txt"
+    src.parent.mkdir()
+    src.write_text("z mu\n0.1 38.0\n")
+    _spec(
+        tmp_path,
+        {
+            "inputs": [
+                {"id": "union21_table", "type": "data", "source": "data/table.txt"},
+            ],
+            "outputs": [
+                {
+                    "id": "map_fit",
+                    "inputs": ["union21_table"],
+                    "recipe": {"command": "cp"},
+                }
+            ],
+        },
+    )
+    _materialize(
+        tmp_path, "map_fit", "u1", recipe="cp", inputs={"union21_table": src}
+    )
+
+    [r] = list(verify_outputs(tmp_path, universe_id="u1"))
+    assert r.passed, f"unexpected failure: {r.failure} — {r.detail}"
+
+
 def test_verifyresult_dataclass(tmp_path: Path) -> None:
     _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo f"}}]})
     _materialize(tmp_path, "foo", "u1", recipe="echo f")
