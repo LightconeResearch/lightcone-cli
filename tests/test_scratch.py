@@ -122,12 +122,10 @@ def test_prepare_run_dirs_creates_layout(
     monkeypatch.setenv(LIGHTCONE_SCRATCH_ENV, str(tmp_path / "scratch"))
     rd = prepare_run_dirs(project, run_id="42")
     assert rd.root == tmp_path / "scratch" / ".lightcone"
-    assert rd.dask_local == rd.root / "dask" / "42"
     assert rd.lock_path == rd.root / "locks" / "42.lock"
     assert rd.snakemake_state.parent.parent == rd.root / "snakemake"
     # Every path that callers rely on must exist on return.
     assert rd.root.is_dir()
-    assert rd.dask_local.is_dir()
     assert rd.lock_path.is_file()
     assert rd.snakemake_state.parent.is_dir()
 

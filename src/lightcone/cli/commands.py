@@ -373,9 +373,10 @@ def run(
 ) -> None:
     """Materialize outputs declared in astra.yaml.
 
-    Always dispatches through a Dask cluster: a ``LocalCluster`` on a
-    workstation, srun-launched workers inside a SLURM allocation, or an
-    existing scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
+    Always dispatches through a Dask cluster: the session-scoped
+    scheduler (spawned on first run, reused thereafter), or an existing
+    one if ``DASK_SCHEDULER_ADDRESS`` is set. See
+    :mod:`lightcone.engine.dask_daemon` for the lifecycle.
     """
     _abort_on_perlmutter_login()
 
@@ -474,9 +475,7 @@ def run(
     except RunLockBusyError as e:
         raise click.ClickException(str(e))
 
-    with cluster_for_run(
-        verbose=verbose, local_directory=str(rundirs.dask_local)
-    ) as scheduler_addr:
+    with cluster_for_run(project_path=project, verbose=verbose) as scheduler_addr:
         env = {
             **os.environ,
             "DASK_SCHEDULER_ADDRESS": scheduler_addr,
@@ -815,6 +814,32 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
             build_image(tag, containerfile, project, runtime=runtime)
         except ContainerBuildError as e:
             raise click.ClickException(str(e))
+
+
+# =============================================================================
+# lc dask
+# =============================================================================
+
+
+@main.group()
+def dask() -> None:
+    """Manage the session-scoped Dask scheduler."""
+
+
+@dask.command("stop")
+def dask_stop() -> None:
+    """Shut down the session-scoped Dask scheduler for this project.
+
+    Best-effort: silent when no scheduler is running. Wired to the
+    SessionEnd Claude Code hook so closing a session frees the
+    scheduler's resources promptly; otherwise the scheduler self-shuts
+    after its idle timeout.
+    """
+    from lightcone.engine.dask_daemon import stop
+
+    project = _project_root()
+    if stop(project):
+        console.print("[dim]Sent SIGTERM to Dask scheduler.[/dim]")
 
 
 # Register eval subgroup (requires optional 'eval' extra)

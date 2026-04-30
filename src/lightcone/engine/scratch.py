@@ -46,7 +46,6 @@ class RunDirs:
 
     root: Path  # ``<scratch>/.lightcone``
     snakemake_state: Path  # ``<scratch>/.lightcone/snakemake/<project-hash>/.snakemake``
-    dask_local: Path  # ``<scratch>/.lightcone/dask/<run-id>``
     lock_path: Path  # ``<scratch>/.lightcone/locks/<run-id>.lock``
     # Project-level sentinel for the run-exclusion flock. Held for the
     # duration of one ``lc run`` to prevent concurrent invocations on
@@ -98,19 +97,21 @@ def prepare_run_dirs(project_path: Path, *, run_id: str | None = None) -> RunDir
     """Create and return per-run scratch sub-directories.
 
     *run_id* defaults to the current PID — unique per ``lc run``
-    invocation, easily mappable to a process for debugging. Lock and
-    dask-local dirs are run-scoped (cleaned per invocation); snakemake
-    state is project-scoped (persistent across invocations).
+    invocation, easily mappable to a process for debugging. The
+    cross-node stdout lock is run-scoped (cleaned per invocation);
+    snakemake state and the project run-lock are project-scoped
+    (persistent across invocations). Dask-cluster spill lives under
+    :mod:`lightcone.engine.dask_daemon`'s scheduler-keyed dir, which
+    outlives any single run.
     """
     scratch = resolve_scratch_root(project_path)
     root = scratch / ".lightcone"
     rid = run_id or str(os.getpid())
     pkey = project_hash(project_path)
     snakemake_state = root / "snakemake" / pkey / ".snakemake"
-    dask_local = root / "dask" / rid
     lock_path = root / "locks" / f"{rid}.lock"
     run_lock_path = root / "locks" / f"{pkey}.run-lock"
-    for d in (root, snakemake_state.parent, dask_local, lock_path.parent):
+    for d in (root, snakemake_state.parent, lock_path.parent):
         d.mkdir(parents=True, exist_ok=True)
     # Touch lockfiles so workers can ``flock`` them without racing on
     # ``O_CREAT``. Empty file is fine — flock is independent of contents.
@@ -119,7 +120,6 @@ def prepare_run_dirs(project_path: Path, *, run_id: str | None = None) -> RunDir
     return RunDirs(
         root=root,
         snakemake_state=snakemake_state,
-        dask_local=dask_local,
         lock_path=lock_path,
         run_lock_path=run_lock_path,
     )
