@@ -55,6 +55,7 @@ class TestBuiltinTargets:
         assert "/dev/fuse" in t.devices
         assert ".claude.json" in t.home_mounts
         assert ".claude" in t.home_mounts
+        assert t.run_as_host_user is True
 
 
 class TestResolveTarget:
@@ -294,6 +295,47 @@ class TestLaunchTarget:
 
         cmd = mock_exec.call_args[0][1]
         assert "--no-setns" in cmd
+
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.tarball_path_for_tag")
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-fake-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_run_as_host_user_adds_user_flag(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_tarball_path: MagicMock,
+        mock_exists: MagicMock,
+        mock_exec: MagicMock,
+        project: Path,
+        tmp_path: Path,
+    ) -> None:
+        import os
+
+        from lightcone.engine.launcher import launch_target
+
+        target = LaunchTarget(
+            name="fake",
+            containerfile=tmp_path / "fake.Containerfile",
+            entrypoint=["--dangerously-skip-permissions"],
+            run_as_host_user=True,
+        )
+        (tmp_path / "fake.Containerfile").write_text(
+            "FROM ubuntu:24.04\nARG LIGHTCONE_VERSION\n"
+        )
+        mock_resolve.return_value = target
+        tarball = tmp_path / "lc-fake-abc123.tar"
+        tarball.write_bytes(b"fake")
+        mock_tarball_path.return_value = tarball
+
+        choice = RuntimeChoice(runtime="docker", explicit=True)
+        launch_target(target.name, choice=choice, project_root=project)
+
+        cmd = mock_exec.call_args[0][1]
+        assert "--user" in cmd
+        idx = cmd.index("--user")
+        assert cmd[idx + 1] == f"{os.getuid()}:{os.getgid()}"
 
     @patch("lightcone.engine.launcher.os.execvp")
     @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)

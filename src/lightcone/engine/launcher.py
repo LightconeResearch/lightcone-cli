@@ -75,6 +75,10 @@ class LaunchTarget:
     #: Sub-paths of ``$HOME`` to bind-mount at the same absolute path inside
     #: the container.  Only mounted when the path exists on the host.
     home_mounts: list[str] = field(default_factory=list)
+    #: When True, pass ``--user <uid>:<gid>`` so the container process runs as
+    #: the calling user rather than root.  Required for tools (e.g. Claude Code)
+    #: that refuse ``--dangerously-skip-permissions`` under root.
+    run_as_host_user: bool = False
 
 
 def _make_builtin_targets() -> dict[str, LaunchTarget]:
@@ -91,7 +95,7 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
             # folder-trust prompt — appropriate because the container IS the
             # sandbox.  It also fixes the accidental "claude claude" invocation
             # that occurred when "claude" was listed as its own entrypoint arg.
-            entrypoint=[""],
+            entrypoint=["--dangerously-skip-permissions"],
             env_passthrough=[
                 "ANTHROPIC_API_KEY",
                 "ANTHROPIC_BASE_URL",
@@ -105,6 +109,10 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
             # ~/.claude.json  — primary config file (API key, auth tokens)
             # ~/.claude/      — settings, backups, conversation history
             home_mounts=[".claude.json", ".claude"],
+            # Claude Code refuses --dangerously-skip-permissions as root;
+            # running as the host UID/GID also ensures correct ownership on
+            # the mounted project directory.
+            run_as_host_user=True,
         ),
     }
 
@@ -309,6 +317,9 @@ def _exec_interactive(
     for device in target.devices:
         if Path(device).exists():
             cmd += ["--device", device]
+
+    if target.run_as_host_user:
+        cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
 
     if choice.runtime == "podman-hpc":
         cmd.append("--no-setns")
