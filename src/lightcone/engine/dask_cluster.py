@@ -197,6 +197,11 @@ def _slurm_backed_cluster(
         "--resources",
         _resources_arg(shape),
         "--no-dashboard",
+        # Each srun task is a single run-scoped worker; an auto-restart
+        # nanny adds no value (srun won't relaunch the task either) and
+        # logs "Worker process died unexpectedly" when retire_workers
+        # asks the worker to exit on shutdown.
+        "--no-nanny",
     ]
     if local_directory:
         worker_cmd.extend(["--local-directory", local_directory])
@@ -222,10 +227,26 @@ def _slurm_backed_cluster(
             client.close()
         yield addr
     finally:
-        workers.terminate()
+        # Graceful shutdown: ask the scheduler to retire workers so each
+        # `dask worker` process exits on its own. srun then sees its task
+        # exit with code 0 and terminates silently. SIGTERM-ing srun
+        # directly (the prior path) prints "srun: forcing job
+        # termination" / "task 0: Killed" to stderr on every clean run.
         try:
-            workers.wait(timeout=10)
+            client = Client(addr, timeout="10s")
+            try:
+                client.retire_workers(close_workers=True, remove=True)
+            finally:
+                client.close()
+        except Exception:
+            pass
+        try:
+            workers.wait(timeout=20)
         except subprocess.TimeoutExpired:
-            workers.kill()
-            workers.wait()
+            workers.terminate()
+            try:
+                workers.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                workers.kill()
+                workers.wait()
         cluster.close()
