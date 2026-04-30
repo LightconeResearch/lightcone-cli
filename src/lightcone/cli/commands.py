@@ -293,7 +293,12 @@ def _install_claude_plugin(
     plugin_source: Path,
     permissions: str,
 ) -> None:
-    """Copy the bundled Claude Code plugin into the project's ``.claude/``."""
+    """Copy the bundled Claude Code plugin into the project's ``.claude/``.
+
+    The hook configuration ships with the plugin as ``hooks.json`` so
+    that hook entries live next to the scripts they reference. The CLI
+    only owns the ``--permissions`` tier selection.
+    """
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
     for sub in ("skills", "agents", "hooks", "scripts", "guides", "templates"):
@@ -303,57 +308,12 @@ def _install_claude_plugin(
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(src, dest)
+    hooks = json.loads((plugin_source / "hooks.json").read_text())
     settings = {
         "permissions": PERMISSION_TIERS[permissions],
-        "hooks": _PROJECT_HOOKS,
+        "hooks": hooks,
     }
     (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
-
-
-# Hook entries written into ``<project>/.claude/settings.json``. Scripts are
-# invoked via ``bash`` so a missing +x bit on a contributor's checkout
-# doesn't silently break the hook. Paths use ``${CLAUDE_PROJECT_DIR}`` so
-# the wiring is portable across machines and survives a project move.
-_PROJECT_HOOKS: dict[str, list[dict[str, object]]] = {
-    "SessionStart": [
-        {
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/activate-venv.sh",
-                    "timeout": 5,
-                },
-                {
-                    "type": "command",
-                    "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/session-start.sh",
-                    "timeout": 15,
-                },
-            ],
-        },
-    ],
-    "PostToolUse": [
-        {
-            "matcher": "Write|Edit",
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/validate-on-save.sh",
-                    "timeout": 15,
-                },
-            ],
-        },
-        {
-            "matcher": "Bash",
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/check-lc-run.sh",
-                    "timeout": 15,
-                },
-            ],
-        },
-    ],
-}
 
 
 # =============================================================================

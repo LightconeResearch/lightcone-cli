@@ -1,120 +1,72 @@
 #!/bin/bash
-# SessionStart hook: Show ASTRA analysis summary when entering a project
-# Provides context about the current analysis state
+# SessionStart hook: surface a terse project status to the agent.
+#
+# Reports validation status, materialization counts, and pointers to the
+# canonical reference docs. Project name / decision count / universe count
+# are intentionally omitted -- they are trivia the agent reads from
+# astra.yaml and CLAUDE.md when needed, and they cost against the 10k
+# additionalContext budget.
 
-# Read JSON input from stdin
 input=$(cat)
-
-# Get the current working directory
 cwd=$(echo "$input" | jq -r '.cwd // empty')
 
-if [ -z "$cwd" ]; then
-    exit 0
-fi
-
+[ -z "$cwd" ] && exit 0
 cd "$cwd" 2>/dev/null || exit 0
+[ -f "astra.yaml" ] || exit 0
 
-# Sync extraction model from ~/.lightcone/config.yaml to .claude/agents/lc-extractor.md
-if [ -f ".claude/agents/lc-extractor.md" ] && [ -f "$HOME/.lightcone/config.yaml" ]; then
-    ext_model=$(grep '^extraction_model:' "$HOME/.lightcone/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d "'\"")
-    # Default to sonnet if not configured
-    [ -z "$ext_model" ] && ext_model="sonnet"
-    if [ -n "$ext_model" ]; then
-        if ! grep -q "^model:" .claude/agents/lc-extractor.md 2>/dev/null; then
-            # Insert model field after description line
-            sed -i.bak '/^tools:/i\
-model: '"$ext_model" .claude/agents/lc-extractor.md 2>/dev/null && rm -f .claude/agents/lc-extractor.md.bak
-        else
-            # Update existing model field
-            sed -i.bak 's/^model: .*/model: '"$ext_model"'/' .claude/agents/lc-extractor.md 2>/dev/null && rm -f .claude/agents/lc-extractor.md.bak
-        fi
-    else
-        # Empty model = inherit, remove model line if present
-        sed -i.bak '/^model: /d' .claude/agents/lc-extractor.md 2>/dev/null && rm -f .claude/agents/lc-extractor.md.bak
-    fi
-fi
+# astra and lc both come from the project venv (prepended to PATH by
+# activate-venv.sh). If neither resolved, the venv setup is broken and
+# there is nothing useful we can report.
+command -v astra &>/dev/null || exit 0
+command -v lc &>/dev/null || exit 0
 
-# Check if this is an ASTRA project (has astra.yaml)
-if [ ! -f "astra.yaml" ]; then
-    exit 0
-fi
+validation_output=$(astra validate astra.yaml 2>&1)
+validation_ok=$?
 
-# Check if astra command is available
-if ! command -v astra &> /dev/null; then
-    # Provide minimal info without CLI
-    echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"This is an ASTRA project. The astra CLI is not installed - run 'pip install astra' to enable validation and other commands.\"}}"
-    exit 0
-fi
+status_json=$(lc status --json 2>/dev/null)
+counts=$(echo "$status_json" | jq -r '
+    [.universes[].outputs[].status] as $s |
+    {
+        ok: ($s | map(select(. == "ok")) | length),
+        stale: ($s | map(select(. == "stale")) | length),
+        missing: ($s | map(select(. == "missing")) | length),
+        alias: ($s | map(select(. == "alias")) | length)
+    } | "\(.ok) \(.stale) \(.missing) \(.alias)"
+' 2>/dev/null)
+read -r ok_count stale_count missing_count alias_count <<<"$counts"
+ok_count=${ok_count:-0}
+stale_count=${stale_count:-0}
+missing_count=${missing_count:-0}
+alias_count=${alias_count:-0}
 
-# Gather analysis information. `astra init` writes `name:` at the top
-# level (no indent); previous indented form was pre-asset-centric.
-# Use -E (ERE) so `?` works on both BSD and GNU sed.
-analysis_name=$(grep -m1 "^name:" astra.yaml 2>/dev/null | sed -E 's/^name:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')
-
-# Count keys under 'decisions:' (block-form decisions only)
-decision_count=$(awk '/^decisions:/{found=1; next} found && /^  [a-z_]+:/{count++} found && /^[a-z]/{exit} END{print count}' astra.yaml 2>/dev/null)
-
-# Count universes
-universe_count=$(ls -1 universes/*.yaml 2>/dev/null | wc -l | tr -d ' ')
-
-# Check validation status
-validation_result=$(astra validate astra.yaml 2>&1)
-if [ $? -eq 0 ]; then
-    validation_status="valid"
+if [ "$validation_ok" -eq 0 ]; then
+    summary="ASTRA project — validation: valid"
 else
-    validation_status="has errors"
+    summary="ASTRA project — validation: has errors"
 fi
 
-# Build summary
-summary="ASTRA Project: ${analysis_name:-unnamed}
-- Decisions: ${decision_count:-0}
-- Universes: ${universe_count:-0}
-- Validation: ${validation_status}
-- Reference: For astra.yaml syntax and spec format, read .claude/guides/astra-reference.md; for CLI and execution, read .claude/guides/lightcone-cli-reference.md"
+summary="$summary
+Materialization: ok=$ok_count stale=$stale_count missing=$missing_count alias=$alias_count
 
-# If validation failed, add error summary. We prefer the tail because the
-# leading lines are the success header (`✓ Schema validation passed` etc.)
-# and the actual error block is at the bottom. `head -5` historically hid
-# every real error.
-if [ "$validation_status" = "has errors" ]; then
-    error_preview=$(echo "$validation_result" | tail -20)
+References: .claude/guides/astra-reference.md (spec) and .claude/guides/lightcone-cli-reference.md (CLI)."
+
+if [ "$validation_ok" -ne 0 ]; then
+    # tail rather than head -- the leading lines are success markers
+    # ("✓ Schema validation passed" etc.) and the actual error block is
+    # at the bottom.
+    error_preview=$(echo "$validation_output" | tail -20)
     summary="$summary
 
 Validation errors (run 'astra validate astra.yaml' for full output):
 $error_preview"
 fi
 
-# Add lc status if lc CLI is available. States are 'ok' / 'stale' /
-# 'missing' / 'alias' (manifest-driven). The output uses Rich glyphs:
-# '✓ ok', '✸ stale', '✗ miss', '→ alias'.
-if command -v lc &> /dev/null; then
-    lc_status=$(lc status 2>&1)
-    lc_exit=$?
-    if [ $lc_exit -eq 0 ]; then
-        ok_count=$(echo "$lc_status" | grep -c "✓ ok")
-        stale_count=$(echo "$lc_status" | grep -c "✸ stale")
-        missing_count=$(echo "$lc_status" | grep -c "✗ miss")
-        alias_count=$(echo "$lc_status" | grep -c "→ alias")
+needs_run=$((missing_count + stale_count))
+if [ "$needs_run" -gt 0 ]; then
+    summary="$summary
 
-        summary="$summary
-
-Materialization status:
-- ok: ${ok_count}
-- stale: ${stale_count}
-- missing: ${missing_count}
-- alias: ${alias_count}"
-
-        needs_run=$((missing_count + stale_count))
-        if [ "$needs_run" -gt 0 ]; then
-            summary="$summary
-
-ACTION REQUIRED: ${needs_run} output(s) need \`lc run\` (${missing_count} missing, ${stale_count} stale)."
-        fi
-    fi
+ACTION REQUIRED: $needs_run output(s) need \`lc run\` ($missing_count missing, $stale_count stale)."
 fi
 
-# Output as JSON
-escaped_summary=$(echo "$summary" | jq -Rs .)
-echo "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $escaped_summary}}"
-
+jq -n --arg ctx "$summary" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
 exit 0

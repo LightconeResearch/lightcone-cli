@@ -1,44 +1,23 @@
 #!/bin/bash
-# Activate Python virtual environment if it exists in the project directory
-# This hook runs at SessionStart to ensure the venv is active for Claude Code
+# SessionStart hook: prepend the project venv to PATH for every Bash command
+# Claude Code spawns this session.
+#
+# We don't `source` activate -- we only need PATH and VIRTUAL_ENV. Sourcing
+# activate also runs prompt mutations and defines a deactivate function we
+# don't want, and any non-zero status under `set -e` would silently skip
+# the writeback (the failure mode behind issue #103). Writing the two
+# exports directly to CLAUDE_ENV_FILE is the documented mechanism and is
+# what every downstream hook implicitly relies on for `astra` / `lc` to
+# resolve to the project venv rather than whatever system install happens
+# to be on PATH.
 
-set -e
+VENV="$CLAUDE_PROJECT_DIR/.venv"
+[ -d "$VENV/bin" ] || exit 0
+[ -n "$CLAUDE_ENV_FILE" ] || exit 0
 
-# Check if we have a project directory
-if [ -z "$CLAUDE_PROJECT_DIR" ]; then
-    exit 0
-fi
-
-# Check for .venv in project directory
-VENV_DIR="$CLAUDE_PROJECT_DIR/.venv"
-if [ ! -d "$VENV_DIR" ]; then
-    exit 0
-fi
-
-# Determine activate script path based on OS
-if [ -f "$VENV_DIR/bin/activate" ]; then
-    ACTIVATE_SCRIPT="$VENV_DIR/bin/activate"
-elif [ -f "$VENV_DIR/Scripts/activate" ]; then
-    ACTIVATE_SCRIPT="$VENV_DIR/Scripts/activate"
-else
-    exit 0
-fi
-
-# Capture environment before activation
-BEFORE_PATH="$PATH"
-BEFORE_VIRTUAL_ENV="${VIRTUAL_ENV:-}"
-
-# Source the activation script
-# shellcheck source=/dev/null
-source "$ACTIVATE_SCRIPT"
-
-# If CLAUDE_ENV_FILE is set, write environment changes to it
-if [ -n "$CLAUDE_ENV_FILE" ]; then
-    # Write PATH update
-    echo "PATH=$PATH" >> "$CLAUDE_ENV_FILE"
-
-    # Write VIRTUAL_ENV
-    echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> "$CLAUDE_ENV_FILE"
-fi
+{
+    echo "export VIRTUAL_ENV=$VENV"
+    echo "export PATH=$VENV/bin:\$PATH"
+} >> "$CLAUDE_ENV_FILE"
 
 exit 0
