@@ -5,15 +5,23 @@ Reference for lightcone-cli execution: CLI commands, development workflow, statu
 ## CLI Reference
 
 ```bash
-lc init [DIR] [--permissions yolo|recommended|minimal]            # Scaffold a new ASTRA project
-lc run [OUTPUTS...] [--universe NAME] [--force] [--rerun-triggers TRIGGERS]  # Materialize outputs
+lc init [DIR] [--permissions yolo|recommended|minimal] [--scratch PATH]  # Scaffold a new ASTRA project
+lc run [OUTPUTS...] [--universe NAME] [--force] [--verbose] [--rerun-triggers TRIGGERS]  # Materialize outputs
 lc build [--force] [--runtime docker]                             # Build container images from specs
 lc status [--universe NAME] [--json]                              # Materialization status (text or JSON)
 lc verify [--universe NAME]                                       # Recompute hashes and walk the provenance chain
 lc eval {run,report,compare}                                      # Run/inspect eval suites (requires the 'eval' extra)
 ```
 
-The first `lc` invocation auto-creates `~/.lightcone/config.yaml` with defaults; edit it directly to pin a container runtime or set the extraction model.
+`lc run` is quiet by default — pass `--verbose` to see worker output. `--scratch` is only relevant on HPC sites where `$HOME` doesn't honor `flock` (NERSC etc.); it redirects Snakemake state and Dask spill onto the named filesystem.
+
+The first `lc` invocation auto-creates `~/.lightcone/config.yaml`:
+
+```yaml
+container:
+  runtime: auto    # or: docker | podman | podman-hpc | none
+# extraction_model: sonnet    # optional; controls the lc-extractor agent
+```
 
 **Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Treat the underlying execution engine as a black box — never invoke schedulers or container runtimes directly, that will bypass reproducibility guarantees.
 

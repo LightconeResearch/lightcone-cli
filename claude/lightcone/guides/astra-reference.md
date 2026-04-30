@@ -56,7 +56,7 @@ outputs:
     decisions: [scaling, use_pca, n_components]              # not on the recipe
     recipe:
       command: >-
-        python scripts/evaluate.py
+        python src/evaluate.py
         --train {inputs.training_data}
         --scaling {decisions.scaling}
         --out {output}
@@ -123,7 +123,7 @@ outputs:
     decisions: [scaling, classifier]        # Decisions that parameterize this output
     recipe:
       command: >-
-        python scripts/evaluate.py
+        python src/evaluate.py
         --model {inputs.trained_model}
         --scaling {decisions.scaling}
         --out {output}
@@ -146,11 +146,11 @@ outputs:
   - id: faint_metrics
     type: metric
     when: "~training_sample.bright_only"          # Only when NOT bright_only
-    recipe: { command: python scripts/evaluate.py }
+    recipe: { command: python src/evaluate.py }
   - id: combined_report
     type: report
     when: ["~training_sample.bright_only", model.svm]  # AND: both must be true
-    recipe: { command: python scripts/combo.py }
+    recipe: { command: python src/combo.py }
 ```
 
 ## Universe Management
@@ -370,7 +370,7 @@ narrative:
 astra init [DIRECTORY]                          # Scaffold a new analysis
 astra validate astra.yaml                       # Validate (run after every change)
 astra validate astra.yaml --verify-evidence     # + verify insight quotes against PDFs
-astra info [--decisions]                        # Analysis summary / decision details
+astra info [--decisions|--inputs|--outputs]     # Analysis summary / element details
 astra universe generate -n NAME [-d "desc"]     # Generate universe from defaults
 astra universe check universes/x.yaml           # Check universe constraints
 astra viz [--fmt ascii|mermaid]                 # Visualize decision space
