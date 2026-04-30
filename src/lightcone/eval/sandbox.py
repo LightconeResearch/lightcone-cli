@@ -71,12 +71,18 @@ class EvalSandbox:
 
         # Build the sandbox image
         if self.sandbox_image is None:
-            # Direct deps from astra + lightcone-cli pyproject.toml (pip resolves transitive).
-            # Kept in sync with the runtime deps declared there — the local astra
-            # and lightcone-cli wheels are uploaded with --no-deps, so anything not
-            # listed here must come from the wheels themselves.
+            # Pre-install third-party Python deps so the only thing we
+            # upload at trial-setup time is the lightcone-cli wheel
+            # built from the branch under test. ``astra-tools`` (which
+            # ships the ``astra`` module) and ``astra-spec`` come from
+            # PyPI here — astra isn't the package under test, just a
+            # dependency, so we let pip resolve like a normal user
+            # install. The lightcone-cli wheel is installed below with
+            # ``--no-deps``, so any runtime dep it relies on must be
+            # listed here.
             deps = (
-                "click httpx jinja2 jsonschema pydantic pypdf pyyaml rapidfuzz rich"
+                "astra-tools astra-spec"
+                " jinja2 jsonschema"
                 " snakemake snakemake-interface-executor-plugins"
                 " snakemake-interface-common dask distributed langfuse"
             )
@@ -325,10 +331,13 @@ class EvalSandbox:
             self._sandbox = None
 
     def _install_wheels(self, wheels: list[Path]) -> None:
-        """Upload and install wheel files into the sandbox.
+        """Upload and install the lightcone-cli wheel into the sandbox.
 
-        Third-party deps are pre-installed in the sandbox image.
-        Only the local astra/lightcone-cli wheels need to be uploaded and installed here.
+        The wheel is built from the branch under test in
+        :func:`lightcone.eval.build.build_eval_wheels`. ``--no-deps``
+        because every runtime dep is already in the sandbox image;
+        ``--force-reinstall`` so the local wheel always overrides any
+        pre-existing install and we never silently run a PyPI version.
         """
         self.exec("mkdir -p /tmp/deps")
 
@@ -338,7 +347,10 @@ class EvalSandbox:
             self.upload_file(remote_path, whl.read_bytes())
             remote_paths.append(remote_path)
 
-        whl_cmd = "pip install --no-deps " + " ".join(shlex.quote(p) for p in remote_paths)
+        whl_cmd = (
+            "pip install --no-deps --force-reinstall "
+            + " ".join(shlex.quote(p) for p in remote_paths)
+        )
         result = self.exec(whl_cmd, timeout=120)
         if result.exit_code != 0:
             logger.warning(
