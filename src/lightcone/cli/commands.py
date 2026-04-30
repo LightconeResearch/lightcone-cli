@@ -309,6 +309,37 @@ def _install_claude_plugin(
 # =============================================================================
 
 
+def _abort_on_perlmutter_login() -> None:
+    """Stop-gap: refuse ``lc run`` on a Perlmutter login node.
+
+    NERSC sets ``NERSC_HOST=perlmutter`` on every node; SLURM sets
+    ``SLURM_JOB_ID`` only inside an allocation. Their conjunction (NERSC
+    host + no allocation) unambiguously marks a login node, where shared
+    CPU and the absence of compute resources make a real run a bad idea.
+
+    Bypassed when ``DASK_SCHEDULER_ADDRESS`` is set, matching the branch
+    in ``cluster_for_run``: if the user is targeting an external
+    scheduler the login-node CPU does not matter.
+
+    Remove once proper site-backend gating exists.
+    """
+    if os.environ.get("LIGHTCONE_ALLOW_LOGIN_NODE"):
+        return
+    if os.environ.get("NERSC_HOST") != "perlmutter":
+        return
+    if "SLURM_JOB_ID" in os.environ:
+        return
+    if os.environ.get("DASK_SCHEDULER_ADDRESS"):
+        return
+    raise click.ClickException(
+        "Refusing to run on a Perlmutter login node — compute work must "
+        "run inside a SLURM allocation.\n"
+        "  Start one with, e.g.:\n"
+        "    salloc -N 1 -C gpu -q interactive -t 1:00:00 -A <account>\n"
+        "  then re-run `lc run` from inside."
+    )
+
+
 @main.command()
 @click.argument("outputs", nargs=-1)
 @click.option("--universe", "-u", default=None, help="Universe to materialize")
@@ -334,6 +365,8 @@ def run(
     workstation, srun-launched workers inside a SLURM allocation, or an
     existing scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
     """
+    _abort_on_perlmutter_login()
+
     from lightcone.engine.container import load_runtime
     from lightcone.engine.dask_cluster import cluster_for_run
     from lightcone.engine.scratch import (
