@@ -214,6 +214,16 @@ Artifact references are validated against declared outputs — `astra validate` 
 
 **Sub-analysis findings as prior insights:** When a sub-analysis explores a specific question (calibration study, simulation validation, sensitivity test), its findings can inform decisions elsewhere. The parent or sibling references the sub-analysis output as artifact evidence in its own `prior_insights`, e.g. `artifact: "build_mocks.noise_diagnostics"`. This creates a traceable chain from sub-analysis conclusion to downstream decision.
 
+### Adding a Paper as Prior Insight
+
+Found a paper through literature search? Three steps to wire it into the analysis:
+
+1. **Cache the PDF** — `astra paper add <doi>` downloads it to the project's paper cache. Pass `--pdf PATH` if you already have a local copy, or `--version N` for a specific arXiv version.
+2. **Add a `prior_insights:` entry** that cites the DOI (and optionally `version`) under `evidence:`. The `quote.exact` text must match the PDF verbatim; optional `prefix`/`suffix` (~20–100 chars on either side) disambiguate when the exact string occurs more than once.
+3. **Verify** — `astra paper verify-quotes <doi>` for one paper, or `astra validate astra.yaml --verify-evidence` to check every quote in the spec. A wrong `exact` string fails validation.
+
+`astra paper list` shows what's cached; `astra paper path <doi>` prints the PDF path so you can open it for review.
+
 ## Sub-Analyses
 
 ### What a Sub-Analysis Is
@@ -366,6 +376,9 @@ astra universe check universes/x.yaml           # Check universe constraints
 astra viz [--fmt ascii|mermaid]                 # Visualize decision space
 astra schema show analysis|universe|insights    # Show JSON schema
 astra paper add DOI [--version N] [--pdf PATH]  # Cache a paper for evidence checks
+astra paper list                                # List cached papers
+astra paper show DOI                            # Show metadata for a cached paper
+astra paper path DOI [--version N]              # Print the cached PDF's path
 astra paper verify-quotes DOI                   # Batch-verify quotes; reads {"quotes":[...]} JSON from stdin
 ```
 
