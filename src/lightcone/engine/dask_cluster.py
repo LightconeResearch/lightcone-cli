@@ -18,6 +18,7 @@ schedulers if the driver crashes.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import socket
@@ -132,6 +133,7 @@ def _local_cluster(
         resources=_resource_dict(shape),
         dashboard_address=":0",
         local_directory=local_directory,
+        silence_logs=logging.INFO if verbose else logging.WARNING,
     )
     if verbose:
         print(
@@ -170,6 +172,7 @@ def _slurm_backed_cluster(
         host=scheduler_host,
         dashboard_address=":0",
         local_directory=local_directory,
+        silence_logs=logging.INFO if verbose else logging.WARNING,
     )
     addr = cluster.scheduler_address
 
@@ -195,6 +198,11 @@ def _slurm_backed_cluster(
         _resources_arg(shape),
         "--no-dashboard",
     ]
+    if not verbose:
+        # Hide the worker's INFO-level connection chatter (Nanny start,
+        # scheduler registration, etc.) — useful only when debugging the
+        # cluster itself. WARNING+ still surface real issues.
+        worker_cmd.extend(["--silence-logs", "warning"])
     if local_directory:
         worker_cmd.extend(["--local-directory", local_directory])
     workers = subprocess.Popen(worker_cmd)
