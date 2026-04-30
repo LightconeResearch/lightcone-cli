@@ -221,8 +221,10 @@ def _render_snakefile(
 
     Each rule descriptor has ``name`` (Snakemake-safe), ``key`` (cfg
     lookup), ``output_dir`` (wildcard pattern), and ``inputs`` (list of
-    ``(raw_id, safe_key, path_pattern)`` triples — sibling outputs only,
-    in declaration order).
+    ``(raw_id, safe_key, path_pattern)`` triples — both sibling outputs
+    and analysis-level Inputs, in declaration order). External Input
+    patterns are static source strings; sibling-output patterns carry a
+    ``{universe}`` wildcard.
 
     The rule body is a thin call into :func:`runner.run_rule`. The
     ``inputs`` dict it builds is keyed by the **raw** input IDs (with
@@ -329,26 +331,24 @@ def generate(
 
         # v0.0.7: declared upstream inputs live on the Output, not the
         # Recipe. Each ID resolves to either a sibling output (a
-        # Snakemake input slot) or an analysis-level Input (resolved
-        # to a static source string at generation time).
+        # universe-templated path) or an analysis-level Input (a static
+        # source string). Both flow through the same Snakemake ``input:``
+        # slot so write_manifest fingerprints them and Snakemake gets to
+        # enforce existence and detect mtime drift uniformly.
         declared_inputs = to.output_def.get("inputs") or []
         recipe_command = recipe.get("command", "")
 
-        # ``rule_inputs`` is the per-rule descriptor's input list, in
-        # declaration order; ``external_inputs`` is the rest, resolved
-        # to source strings used only for template substitution.
         rule_inputs: list[tuple[str, str, str]] = []  # (raw_id, safe_key, pattern)
-        external_inputs: dict[str, str] = {}
         for inp_id in declared_inputs:
             up = find_upstream_output(to, inp_id, tree_outputs)
             if up is not None:
-                rule_inputs.append(
-                    (inp_id, _safe_input_key(inp_id), _output_dir_pattern(up))
-                )
-                continue
-            ext = resolve_external_input(to, inp_id, spec)
-            if ext is not None:
-                external_inputs[inp_id] = ext
+                pattern = _output_dir_pattern(up)
+            else:
+                ext = resolve_external_input(to, inp_id, spec)
+                if ext is None:
+                    continue  # unresolvable; ``astra validate`` flags it.
+                pattern = ext
+            rule_inputs.append((inp_id, _safe_input_key(inp_id), pattern))
 
         container_image = resolve_container_spec(to, spec)
         image_tag = resolve_image(container_image)
@@ -369,18 +369,11 @@ def generate(
 
             # Build the resolved input map in declaration order so
             # ``{inputs}`` joins paths in the same order the user wrote
-            # them. Sibling-output paths get the universe wildcard
-            # substituted; external sources pass through verbatim.
-            resolved_inputs: dict[str, str] = {}
-            sibling_patterns = {raw: pat for raw, _, pat in rule_inputs}
-            for inp_id in declared_inputs:
-                if inp_id in sibling_patterns:
-                    resolved_inputs[inp_id] = sibling_patterns[inp_id].replace(
-                        "{universe}", u
-                    )
-                elif inp_id in external_inputs:
-                    resolved_inputs[inp_id] = external_inputs[inp_id]
-                # else: unresolvable; ``astra validate`` flags it.
+            # them. The ``{universe}`` substitution is a no-op for static
+            # external paths.
+            resolved_inputs: dict[str, str] = {
+                raw: pat.replace("{universe}", u) for raw, _, pat in rule_inputs
+            }
 
             output_dir = out_dir_pattern.replace("{universe}", u)
             rendered = render_recipe(

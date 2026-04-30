@@ -475,3 +475,37 @@ def test_qualified_input_uses_raw_id_in_run_rule_call(tmp_path: Path) -> None:
     # The run_rule(inputs=...) dict literal uses the raw id.
     assert '"sub.real": Path(input.sub__real)' in text
 
+
+def test_external_input_flows_to_manifest(tmp_path: Path) -> None:
+    """An analysis-level Input with ``source:`` must reach the rule's
+    Snakemake input slot AND ``run_rule(inputs=...)`` so write_manifest
+    fingerprints it — otherwise ``lc verify`` reports broken_chain
+    because the spec declares an input that the manifest never recorded.
+    Regression test for issue #90.
+    """
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "table.txt").write_text("z mu\n0.1 38.0\n")
+    _spec(
+        tmp_path,
+        {
+            "inputs": [
+                {"id": "union21_table", "type": "data", "source": "data/table.txt"},
+            ],
+            "outputs": [
+                {
+                    "id": "map_fit",
+                    "inputs": ["union21_table"],
+                    "recipe": {"command": "cp {inputs.union21_table} {output}/copy.txt"},
+                }
+            ],
+        },
+    )
+    snakefile, _ = generate(tmp_path, universes=["u1"])
+    text = snakefile.read_text()
+    # The external source becomes a Snakemake input slot…
+    assert 'union21_table="data/table.txt"' in text
+    # …and threads through to run_rule's inputs dict so write_manifest
+    # records it under the raw declared id.
+    assert '"union21_table": Path(input.union21_table)' in text
+
+
