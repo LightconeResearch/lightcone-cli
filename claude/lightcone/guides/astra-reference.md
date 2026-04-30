@@ -8,13 +8,22 @@ An `astra.yaml` spec captures this for a single unit of work. The structure is *
 
 ## astra.yaml Structure
 
-Fields: `name`, `description`, `version`, `authors`, `tags`, `inputs`, `outputs`, `decisions`, `prior_insights`, `findings`, `analyses`, `container`.
+Fields: `id`, `version`, `name`, `narrative`, `authors`, `tags`, `inputs`, `outputs`, `decisions`, `prior_insights`, `findings`, `analyses`, `container`. `narrative` is the analysis-level prose field -- see [Narrative](#narrative) (typically filled in later, once the structural pieces have settled).
+
+**Reserved IDs.** No analysis entity (input, output, decision, option, finding, prior insight, evidence, sub-analysis) may use any of these names as its `id` -- they collide with the narrative anchor grammar:
+
+```
+inputs   outputs   decisions   findings   prior_insights
+analyses options   content     narrative
+```
+
+**`label` field.** Inputs, Outputs, Decisions, Options, and Insights all accept an optional `label:` -- a short human-readable name for compact rendering (margin glyphs, breadcrumbs, card titles). Tooling falls back to `id` when absent. `label` is required only on Options.
 
 ```yaml
 # Simple analysis -- everything at top level
 version: "1.0"
 name: "My Analysis"
-description: "What this analysis investigates."
+# narrative: { ... }  # see Narrative section; typically added later
 inputs:
   - id: training_data
     type: data
@@ -43,10 +52,31 @@ decisions:
 outputs:
   - id: accuracy
     type: metric
+    inputs: [training_data]                                  # provenance lives on the Output
+    decisions: [scaling, use_pca, n_components]              # not on the recipe
     recipe:
-      command: python scripts/evaluate.py
+      command: >-
+        python scripts/evaluate.py
+        --train {inputs.training_data}
+        --scaling {decisions.scaling}
+        --out {output}
 container: Containerfile
 ```
+
+### Cross-Analysis Inputs
+
+To consume the outputs of a separate ASTRA analysis as a whole-cloth dependency, declare an Input of `type: analysis` with `ref:` (and optionally `ref_version:` and `use_outputs:`):
+
+```yaml
+inputs:
+  - id: prior_study
+    type: analysis
+    ref: analyses/preprocessing_comparison
+    ref_version: "v1.2"
+    use_outputs: [best_method, performance_table]
+```
+
+This is distinct from `from:` -- `ref` points to an external analysis by reference; `from:` aliases an element within the current analysis tree (see [Composition Mechanics](#composition-mechanics)).
 
 ## Decisions
 
@@ -68,9 +98,7 @@ A decision is a methodological choice where a different defensible option could 
 
 ### Parameterization
 
-**Every decision must be parameterized in code** -- never hardcode a decision value. Accept all decisions as CLI args.
-
-**Underscore convention:** IDs use underscores in `astra.yaml` (`prior_range`). lightcone-cli passes `--prior_range wide`. Scripts must match: `parser.add_argument('--prior_range')`, **not** `--prior-range`.
+**Every decision must be parameterized in code** -- never hardcode a decision value. The recipe's `command:` template references it via `{decisions.<id>}` (see [Command Template Substitution](#command-template-substitution)).
 
 ### Constraints
 
@@ -79,33 +107,31 @@ A decision is a methodological choice where a different defensible option could 
 - `requires: ["decision.option"]` -- must be selected together
 - `excluded: true` + `excluded_reason: "..."` -- option considered but rejected (cannot be default or selected)
 
-## Writing Results
-
-Convention path: `results/<universe_id>/<output_id>.<ext>` -- no `path` field needed.
-
-- `metric` -- JSON (`{"value": 0.95}`)
-- `figure` -- PNG
-- `table` -- CSV
-- `data` -- Parquet/HDF5
-- `report` -- Markdown
-
 ## Recipe Format
 
-Inline on outputs. Fields: `command` (required), `inputs`, `container`, `resources`.
+ASTRA is asset-centric: the **Output** declares its provenance (`inputs`, `decisions`) and when it's active (`when`); the recipe is pure *how*. Recipe fields: `command` (required), `container`, `resources`.
 
 ```yaml
 outputs:
   - id: accuracy
     type: metric
+    inputs: [trained_model]                 # Dependencies live on the Output
+    decisions: [scaling, classifier]        # Decisions that parameterize this output
     recipe:
-      command: python scripts/evaluate.py
-      inputs: [trained_model]               # Dependency on other output
+      command: >-
+        python scripts/evaluate.py
+        --model {inputs.trained_model}
+        --scaling {decisions.scaling}
+        --out {output}
       container: ghcr.io/proj/ml:latest     # Overrides analysis-level default
       resources: { cpus: 4, memory: "32GB", gpus: 1, time_limit: "2h" }
-      # `gpus` is per-node. Multi-node recipes get nodes × gpus total GPUs.
 ```
 
 Set `container:` at analysis level (all recipes inherit); per-recipe `container:` overrides. Pass either a container image name (e.g., `python:3.12-slim`, `ghcr.io/org/img:latest`) or a path to a Containerfile (e.g., `Containerfile`, `containers/Dockerfile`). The runtime figures out whether to pull or build.
+
+### Command Template Substitution
+
+Runners expand `{...}` placeholders in `command:` before invoking it: `{inputs.<id>}` (input path), `{inputs}` (all input paths, declared order), `{decisions.<id>}` (active option ID), `{output}` (artifact path), `{{`/`}}` (literal braces). Every `{inputs.<id>}` and `{decisions.<id>}` must name something declared in the parent Output's `inputs:`/`decisions:` lists -- always **local IDs** (no `../`; bridging is declared once at the Input/Decision via `from:`).
 
 ### Conditional Outputs
 
@@ -125,11 +151,11 @@ outputs:
 
 ## Universe Management
 
-A universe selects one option per decision -- a defensible alternative analysis path. Bug fixes and refactors are normal commits, not universes.
+A universe selects one option per decision -- a defensible alternative analysis path. Bug fixes and refactors are normal commits, not universes. Universe IDs use the pattern `^[a-z][a-z0-9_-]*$` (hyphens allowed, unlike other ASTRA IDs).
 
 ```bash
 astra universe generate -n experiment1 -d "Testing hypothesis X"
-# Edit universes/experiment1.yaml, then: lc run --universe experiment1
+# Edit universes/experiment1.yaml, then run with the runner of your choice.
 ```
 
 **Adding a new decision:** (1) add to `astra.yaml` with options/default/rationale, (2) add parameter to code, (3) add to all existing universe files with default, (4) create new universe, (5) `astra validate astra.yaml`.
@@ -141,40 +167,46 @@ Two kinds of insight, distinguished by direction:
 - **Prior insights** (`prior_insights:`) — knowledge from outside the analysis that informs decisions. From literature (by DOI) or artifacts from a prior/parent analysis.
 - **Findings** (`findings:`) — conclusions from the analysis itself, backed by its own output artifacts.
 
-Both use the same model (id, claim, created_at, evidence). Placement determines direction.
+Both use the same Insight model: `id`, `label` (optional), `claim`, `created_at`, `evidence`, plus optional `derived` (true if synthesized/inferred from multiple sources), `scope` (applicability conditions), `tags`, `notes`. Placement determines direction.
+
+Each evidence item has its own fields: `id`, exactly one of `doi` (literature) or `artifact` (output ID), and either a `quote` (TextQuoteSelector with required `exact`, optional `prefix`/`suffix`) or `location` (FragmentSelector with `value` like `"page=6"` and/or 1-indexed `page`). DOI evidence may add `version` (arXiv version). Artifact evidence may add `snapshot` (path to an immutable artifact copy) and `source_commit` (git commit that produced it).
 
 ```yaml
 prior_insights:
   layer_norm_stability:
     id: layer_norm_stability
+    label: "LN stability"
     claim: "Layer normalization improves training stability"
     created_at: "2025-01-15T10:30:00"
+    derived: false
+    scope: "Transformer training with batch sizes < 64"
+    tags: [optimization]
     evidence:
       - id: e1
         doi: "10.48550/arXiv.1607.06450"
-        quote: { type: TextQuoteSelector, exact: "Exact text", prefix: "~20-100 chars before", suffix: "~20-100 chars after" }
-        location: { type: FragmentSelector, page: 5 }
-      - id: e2
-        doi: "10.48550/arXiv.1607.06450"
-        figure: { type: FigureSelector, label: "Figure 3a", caption: "..." }
-    scope: "Context where this applies (optional)"
+        version: 1
+        quote: { exact: "Exact text", prefix: "~20-100 chars before", suffix: "~20-100 chars after" }
+        location: { value: "page=5", page: 5 }
 
 findings:
   scaling_result:
     id: scaling_result
     claim: "StandardScaler achieves 97% accuracy vs 91% for MinMaxScaler"
     created_at: "2025-02-01T14:00:00"
+    derived: true
     evidence:
       - id: e1
-        artifact: "accuracy"            # Content selectors optional for artifacts
+        artifact: accuracy                       # references a declared output ID
+        snapshot: "snapshots/run_2025-02-01.json"
+        source_commit: "a3f9c12"
       - id: e2
-        artifact: "model_comparison"
-        quote: { type: TextQuoteSelector, exact: "StandardScaler achieved 97% accuracy vs 91% for MinMaxScaler" }
+        artifact: model_comparison
+        quote: { exact: "StandardScaler achieved 97% accuracy vs 91% for MinMaxScaler" }
 ```
 
 Link prior insights to decisions: `options: { layer_norm: { insights: [layer_norm_stability] } }`
 
-Artifact references are validated against declared outputs — `astra validate` flags any `artifact:` that doesn't match an output ID. Literature evidence requires at least one content selector (quote, figure, or table); artifact evidence does not.
+Artifact references are validated against declared outputs — `astra validate` flags any `artifact:` that doesn't match an output ID. Literature evidence (DOI) requires a `quote` (a `TextQuoteSelector` with required `exact` plus optional `prefix`/`suffix`); artifact evidence does not. Each evidence item must set exactly one of `doi` or `artifact`.
 
 **Sub-analysis findings as prior insights:** When a sub-analysis explores a specific question (calibration study, simulation validation, sensitivity test), its findings can inform decisions elsewhere. The parent or sibling references the sub-analysis output as artifact evidence in its own `prior_insights`, e.g. `artifact: "build_mocks.noise_diagnostics"`. This creates a traceable chain from sub-analysis conclusion to downstream decision.
 
@@ -216,7 +248,7 @@ A paper downloads galaxies, applies quality cuts, corrects for extinction, compu
 
 ### Composition Mechanics
 
-Each sub-analysis lives in its own directory with its own `astra.yaml`. The parent lists them with `path:` references:
+Sub-analyses can be **inline** (their content lives directly under the parent's `analyses:` map) or **external** (`path:` points to a directory with its own `astra.yaml`). `path:` is mutually exclusive with inline content -- a sub-analysis entry sets either `path:` or fields like `inputs`/`outputs`/`decisions`, not both. The parent below uses external sub-analyses:
 
 ```yaml
 # Root astra.yaml
@@ -234,8 +266,7 @@ decisions:
       wcdm: { label: "wCDM" }
 outputs:
   - id: trained_model
-    type: data
-    from: train_network.trained_model   # Alias -- produced by sub-analysis
+    from: train_network.trained_model   # Re-export from sub-analysis (pure alias)
 analyses:
   build_mocks:
     path: ./analyses/build_mocks
@@ -249,12 +280,13 @@ Inside each sub-analysis's own `astra.yaml`, `from:` wires inputs and decisions 
 # analyses/train_network/astra.yaml
 inputs:
   - id: training_data
-    type: data
-    from: build_mocks.mock_catalog       # Sibling output
+    from: ../build_mocks.mock_catalog    # Sibling output (escape upward, then descend)
 outputs:
   - id: trained_model
     type: data
-    recipe: { command: python src/train.py, resources: { gpus: 1, memory: "32GB" } }
+    inputs: [training_data]
+    decisions: [cosmology_model, noise_model]
+    recipe: { command: python src/train.py --train {inputs.training_data} --out {output}, resources: { gpus: 1, memory: "32GB" } }
 decisions:
   cosmology_model:
     from: ../cosmology_model             # Inherit parent decision
@@ -266,22 +298,71 @@ decisions:
       heteroscedastic: { label: "Heteroscedastic" }
 ```
 
-**Wiring patterns:**
-- **Input `from:`** -- `from: parent_input_id` (parent input) or `from: sibling_id.output_id` (sibling output).
-- **Decision `from: ../parent_id`** -- inherits a parent decision. The sub-analysis uses the parent's value; do not set it in the sub-analysis universe.
-- **Output `from: sub.output`** at root level creates an alias to a sub-analysis output.
-- **`universe:` field** in universe files selects which sub-analysis universe to load: `build_mocks: { universe: baseline }` loads `./analyses/build_mocks/universes/baseline.yaml`.
+**Path grammar.** `from:` paths use a uniform tree-path syntax: `../` escapes one scope upward (stack as needed), and `name.subname` descends into a named child scope. Multiple levels work in either direction. Per-slot direction:
+
+| Slot | Legal forms | Meaning |
+|---|---|---|
+| `Input.from` | `../id`, `../../id`, `../scope.out_id` | parent/ancestor Input, or a sibling sub's Output (escape up, then descend) |
+| `Decision.from` | `../id`, `../../id` | parent/ancestor Decision (downward-only flow; share via common ancestor) |
+| `Output.from` | `child.out_id`, `child.sub.out_id` | own child sub's Output (re-export; descend through nested children) |
+
+`from:` makes the node a pure pointer -- only `id` and `from` (plus `when` on Outputs) are allowed; everything else (`type`, `description`, `source`, `options`, `default`, `recipe`, …) is inherited from the source.
+
+The **`universe:` field** in universe files selects which sub-analysis universe to load: `build_mocks: { universe: baseline }` loads `./analyses/build_mocks/universes/baseline.yaml`.
+
+## Narrative
+
+`narrative` is the analysis-level prose field on any Analysis (root or sub). It's structured as five Markdown sections: `summary`, `findings`, `methods`, `inputs`, `outputs`. The schema is closed (`additionalProperties: false`) -- no other keys are allowed.
+
+**Recommendation:** fill `narrative` in *later*, once the structural pieces of the analysis (decisions, outputs, sub-analyses) have settled. Prose written too early goes stale fast and tends to describe what no longer exists. Per-element prose (what each Input, Output, Decision, Option, or Insight is and why) belongs on the elements themselves via `description`/`rationale`/`notes` -- those can be written from day one.
+
+**Conditional coverage.** All five sections are schema-optional, but `astra validate` enforces:
+
+| Section | Required when |
+|---|---|
+| `findings` | the analysis has entries under `findings:` |
+| `methods` | the analysis has entries under `decisions:` or `analyses:` |
+| `inputs` | the analysis has entries under `inputs:` |
+| `outputs` | the analysis has entries under `outputs:` |
+| `summary` | always optional |
+
+Authors narrate what they declare; stub analyses with only a summary stay clean.
+
+**Anchor references.** Inside any section, link to other elements with Markdown anchor links (`[text](#path.to.element)`) using the same tree-path grammar as `from:` -- `#decisions.scaling`, `#decisions.scaling.options.standard`, `#findings.best_model`, `#analyses.preprocessing` (whole sub-analysis), `#analyses.preprocessing.outputs.features` (element inside a sub-analysis), `#../decisions.method` to escape to a parent scope.
+
+**Inline images.** Standard Markdown image syntax inside any section -- `![alt](path/to/img.png)` for repo-relative paths or `![alt](https://...)` for URLs. Renderers like lightcone-ui pick them up the same way they pick up text.
+
+```yaml
+narrative:
+  summary: |
+    A two-stage pipeline for Iris classification that demonstrates
+    sub-analyses.
+  methods: |
+    The [feature_extraction sub-analysis](#analyses.feature_extraction)
+    produces encoded features, which feed
+    [classification](#analyses.classification). A
+    [test_split](#decisions.test_split) decision controls the holdout.
+  inputs: |
+    [iris_data](#inputs.iris_data) is Fisher's 150-sample, 4-feature,
+    3-class dataset.
+  outputs: |
+    The top level exposes [accuracy](#outputs.accuracy) and a
+    [pipeline_summary](#outputs.pipeline_summary) report.
+```
 
 ## CLI Reference (astra)
 
 ```bash
+astra init [DIRECTORY]                          # Scaffold a new analysis
 astra validate astra.yaml                       # Validate (run after every change)
 astra validate astra.yaml --verify-evidence     # + verify insight quotes against PDFs
-astra info [--decisions]                      # Analysis summary / decision details
-astra universe generate -n NAME [-d "desc"]   # Generate universe from defaults
-astra universe check universes/x.yaml         # Check universe constraints
-astra viz                                     # Visualize decision space
-astra schema show analysis                    # Show JSON schema
+astra info [--decisions]                        # Analysis summary / decision details
+astra universe generate -n NAME [-d "desc"]     # Generate universe from defaults
+astra universe check universes/x.yaml           # Check universe constraints
+astra viz [--fmt ascii|mermaid]                 # Visualize decision space
+astra schema show analysis|universe|insights    # Show JSON schema
+astra paper add DOI [--version N] [--pdf PATH]  # Cache a paper for evidence checks
+astra paper verify-quotes DOI                   # Batch-verify quotes; reads {"quotes":[...]} JSON from stdin
 ```
 
 ## Validation

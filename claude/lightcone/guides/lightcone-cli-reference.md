@@ -23,6 +23,22 @@ lc setup                                 # Interactive setup wizard
 
 **Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Never invoke schedulers or container runtimes directly — it will bypass reproducibility guarantees.
 
+## Result Paths
+
+`lc run` writes each output to `results/<universe_id>/<output_id>/` (the `{output}` placeholder in a recipe's `command:` resolves to a path under this convention). Typical file extensions per ASTRA output type:
+
+- `metric` -- JSON (`{"value": 0.95}`)
+- `figure` -- PNG
+- `table` -- CSV
+- `data` -- Parquet/HDF5
+- `report` -- Markdown
+
+These are lightcone-cli conventions; the ASTRA spec leaves on-disk layout and file format to the runner.
+
+## Decision Flag Naming
+
+Decision IDs use underscores in `astra.yaml` (e.g. `prior_range`). When a recipe `command:` references one as `{decisions.prior_range}`, lightcone-cli substitutes the **option ID** verbatim. If you pass it as a CLI flag in your recipe (e.g. `--prior_range {decisions.prior_range}`), your script's argparse must match: `parser.add_argument('--prior_range')`, **not** `--prior-range`.
+
 ## Creating Sub-Analyses
 
 `lc init NAME --sub-analysis` scaffolds a sub-analysis and wires it into the parent project. It:
