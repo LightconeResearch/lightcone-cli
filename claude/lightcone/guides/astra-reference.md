@@ -96,6 +96,10 @@ A decision is a methodological choice where a different defensible option could 
 - Data selection criteria (quality cuts, magnitude limits, spatial boundaries)
 - Correction and calibration choices (which reddening law, which zero-point, which prior)
 
+### Tags
+
+Decisions may carry an optional `tags:` list for grouping (e.g. `[preprocessing]`, `[physics]`, `[stats]`). Keep the tag vocabulary **small and consolidated** -- reuse existing tags rather than minting new ones, since tags are mostly useful for cross-cutting views over a shared decision space, and that view fragments quickly when every decision invents its own label.
+
 ### Parameterization
 
 **Every decision must be parameterized in code** -- never hardcode a decision value. The recipe's `command:` template references it via `{decisions.<id>}` (see [Command Template Substitution](#command-template-substitution)).
