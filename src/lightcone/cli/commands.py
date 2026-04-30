@@ -214,7 +214,7 @@ def init(
     if not no_venv:
         subprocess.run(["python", "-m", "venv", ".venv"], cwd=directory, check=False)
         subprocess.run(
-            [".venv/bin/python", "-m", "pip", "install", "-q", "astra-tools"],
+            [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"],
             cwd=directory,
             check=False,
         )
