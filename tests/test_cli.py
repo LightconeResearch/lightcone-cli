@@ -99,3 +99,75 @@ def test_verify_clean_project_returns_zero(
     monkeypatch.chdir(project)
     result = runner.invoke(main, ["verify"])
     assert result.exit_code == 0
+
+
+# ---- lc run command building ------------------------------------------------
+
+
+def test_run_cmd_inserts_separator_before_targets() -> None:
+    """Regression test for issue #87.
+
+    snakemake's --rerun-triggers uses nargs=+ so it greedily consumes the
+    first positional target path as an extra trigger value, producing:
+        error: argument --rerun-triggers: invalid choice:
+        'results/baseline/map_fit/.lightcone-manifest.json'
+    A '--' separator between the trigger values and target paths terminates
+    argparse flag processing and prevents this.
+    """
+    from lightcone.cli.commands import _build_snakemake_cmd
+
+    targets = ["results/baseline/map_fit/.lightcone-manifest.json"]
+    cmd = _build_snakemake_cmd(
+        snakefile_path=Path("/proj/.lightcone/Snakefile"),
+        project=Path("/proj"),
+        n="4",
+        rerun_triggers="code,input,mtime,params",
+        targets=targets,
+        force=False,
+        has_outputs=True,
+    )
+
+    assert "--" in cmd, "missing '--' separator; first target will be consumed as a trigger value"
+    sep_idx = cmd.index("--")
+    rt_idx = cmd.index("--rerun-triggers")
+    assert sep_idx > rt_idx, "'--' must appear after --rerun-triggers"
+    target_idx = cmd.index(targets[0])
+    assert target_idx > sep_idx, "target path must appear after '--'"
+
+
+def test_run_cmd_no_separator_when_no_targets() -> None:
+    """When no targets are supplied snakemake runs 'rule all'; '--' is unnecessary."""
+    from lightcone.cli.commands import _build_snakemake_cmd
+
+    cmd = _build_snakemake_cmd(
+        snakefile_path=Path("/proj/.lightcone/Snakefile"),
+        project=Path("/proj"),
+        n="4",
+        rerun_triggers="code,input,mtime,params",
+        targets=[],
+        force=False,
+        has_outputs=False,
+    )
+
+    assert "--" not in cmd
+
+
+def test_run_cmd_multiple_triggers_all_before_separator() -> None:
+    """All four trigger tokens must precede the '--' separator."""
+    from lightcone.cli.commands import _build_snakemake_cmd
+
+    targets = ["results/baseline/out/.lightcone-manifest.json"]
+    cmd = _build_snakemake_cmd(
+        snakefile_path=Path("/proj/.lightcone/Snakefile"),
+        project=Path("/proj"),
+        n="1",
+        rerun_triggers="code,input,mtime,params",
+        targets=targets,
+        force=False,
+        has_outputs=True,
+    )
+
+    sep_idx = cmd.index("--")
+    for trigger in ("code", "input", "mtime", "params"):
+        assert trigger in cmd, f"trigger '{trigger}' missing from cmd"
+        assert cmd.index(trigger) < sep_idx, f"trigger '{trigger}' must come before '--'"
