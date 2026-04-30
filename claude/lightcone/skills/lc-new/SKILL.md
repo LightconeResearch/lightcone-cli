@@ -29,7 +29,7 @@ Then sharpen:
 - "What would a clear answer look like?" (sharpens the description)
 - "Why does this matter?" (context for decisions)
 
-**Write to astra.yaml immediately** with `version`, `name`, `description`. This gives the user something visible right away.
+**Update astra.yaml immediately** — set `name` and replace the `narrative.summary` TODO with a one-paragraph framing of the question. (`astra init` already scaffolded `version` and the `narrative` skeleton.) This gives the user something visible right away.
 
 ---
 
