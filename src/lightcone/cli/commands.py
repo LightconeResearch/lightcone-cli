@@ -290,8 +290,55 @@ def _install_claude_plugin(
             shutil.copytree(src, dest)
     settings = {
         "permissions": PERMISSION_TIERS[permissions],
+        "hooks": _PROJECT_HOOKS,
     }
     (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
+
+
+# Hook entries written into ``<project>/.claude/settings.json``. Scripts are
+# invoked via ``bash`` so a missing +x bit on a contributor's checkout
+# doesn't silently break the hook. Paths use ``${CLAUDE_PROJECT_DIR}`` so
+# the wiring is portable across machines and survives a project move.
+_PROJECT_HOOKS: dict[str, list[dict[str, object]]] = {
+    "SessionStart": [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/activate-venv.sh",
+                    "timeout": 5,
+                },
+                {
+                    "type": "command",
+                    "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/session-start.sh",
+                    "timeout": 15,
+                },
+            ],
+        },
+    ],
+    "PostToolUse": [
+        {
+            "matcher": "Write|Edit",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/validate-on-save.sh",
+                    "timeout": 15,
+                },
+            ],
+        },
+        {
+            "matcher": "Bash",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/check-lc-run.sh",
+                    "timeout": 15,
+                },
+            ],
+        },
+    ],
+}
 
 
 # =============================================================================
