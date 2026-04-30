@@ -128,24 +128,50 @@ def init(
 ) -> None:
     """Scaffold a new ASTRA project with Claude Code integration.
 
-    Creates ``astra.yaml`` (boilerplate), ``CLAUDE.md``, ``.claude/`` (skills,
-    agents, hooks, settings), ``.gitignore``, and an optional Python venv.
+    Delegates the spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
+    base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
+    lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
+    ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
+    and an optional Python venv.
     """
     import socket
+
+    from astra.cli import init as astra_init
 
     from lightcone.engine.site_registry import detect_site, get_site_defaults
 
     directory = directory.resolve()
-    directory.mkdir(parents=True, exist_ok=True)
 
     if (directory / "astra.yaml").exists():
         raise click.ClickException(f"{directory}/astra.yaml already exists.")
 
-    # Boilerplate astra.yaml
-    (directory / "astra.yaml").write_text(_BOILERPLATE_ASTRA)
+    # Spec scaffold: astra.yaml, universes/baseline.yaml, base .gitignore,
+    # src/. We hold off on git init until our own files are in place so
+    # the initial commit captures the full project state.
+    try:
+        astra_init.callback(directory=directory, no_git=True)
+    except SystemExit as e:
+        raise click.ClickException(
+            f"astra init failed (exit code {e.code})."
+        ) from e
 
-    # .gitignore
-    (directory / ".gitignore").write_text(_GITIGNORE)
+    # Point the spec at our project-local Containerfile. The astra
+    # boilerplate ships ``container: python:3.12-slim`` so the scaffold
+    # is runnable as-is, but we want lightcone projects to build their
+    # own image so dependencies can evolve under content-addressed
+    # rebuilds.
+    astra_yaml_path = directory / "astra.yaml"
+    astra_yaml_path.write_text(
+        astra_yaml_path.read_text().replace(
+            "container: python:3.12-slim", "container: Containerfile", 1
+        )
+    )
+    (directory / "Containerfile").write_text(_CONTAINERFILE)
+    (directory / "requirements.txt").write_text(_REQUIREMENTS)
+
+    # Append lightcone-specific entries to the .gitignore astra wrote.
+    gitignore_path = directory / ".gitignore"
+    gitignore_path.write_text(gitignore_path.read_text() + _GITIGNORE_APPEND)
 
     # .lightcone/ project state dir + lightcone.yaml
     (directory / ".lightcone").mkdir(exist_ok=True)
@@ -158,7 +184,6 @@ def init(
 
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
-    (directory / "universes").mkdir(exist_ok=True)
 
     # Claude Code plugin bundle
     plugin_source = get_plugin_source_dir()
@@ -168,7 +193,7 @@ def init(
     # Project CLAUDE.md (a stub)
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
 
-    # git init
+    # git init last so the initial commit captures every scaffolded file.
     if not no_git:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
 
@@ -202,41 +227,31 @@ def init(
     console.print("  • [cyan]lc status[/cyan] to check what's done")
 
 
-_BOILERPLATE_ASTRA = '''# astra.yaml — declarative analysis spec
-# See https://docs.lightcone.science for the full schema.
-$schema: "https://astra-spec.org/v1/schema.json"
-version: "1.0"
-name: "My Analysis"
-description: "Replace with a description of what this project does."
+_CONTAINERFILE = """\
+FROM python:3.12-slim
 
-inputs: []
+WORKDIR /app
 
-outputs:
-  - id: example_output
-    type: data
-    description: "An example output. Replace with your own."
-    recipe:
-      command: |
-        echo "Hello from a recipe" > {output[0]}/result.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-decisions: {}
-'''
+COPY . .
+"""
 
 
-_GITIGNORE = """# Python
-__pycache__/
-*.pyc
-.venv/
-*.egg-info/
+_REQUIREMENTS = """\
+numpy
+pandas
+"""
 
-# lightcone state
+
+_GITIGNORE_APPEND = """
+# lightcone-cli
 .lightcone/Snakefile
 .lightcone/snakefile-config.json
-.snakemake
-.snakemake.legacy
-
-# Materialized results — track at your discretion
-# results/
+.snakemake/
+.snakemake.legacy/
+results/
 """
 
 _PROJECT_CLAUDE_MD = """# Project Notes for Claude

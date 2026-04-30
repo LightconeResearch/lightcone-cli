@@ -3,7 +3,10 @@
 Each rule's ``run:`` block boils down to one call to :func:`run_rule`.
 The helper:
 
-* runs the wrapped recipe with stdout/stderr captured,
+* runs the rule's pre-rendered shell command (template substitution and
+  container wrapping happen at Snakefile-generation time — see
+  :func:`lightcone.engine.snakefile.render_recipe`) with stdout and
+  stderr captured,
 * emits a ``▶ rule [universe]`` header, the recipe's output, and a
   ``✓ rule [universe]   <duration>`` (or ``✗ … exit=N``) trailer,
   each line framed with a sentinel prefix the executor extracts,
@@ -50,12 +53,11 @@ def run_rule(
     *,
     rule_key: str,
     universe: str,
-    shell_command: str,
     output_dir: Path,
     inputs: dict[str, Path],
     cfg: dict[str, Any],
 ) -> None:
-    """Execute one rule's recipe and write its manifest.
+    """Execute one rule's pre-rendered shell command and write its manifest.
 
     Called from the generated Snakefile's ``run:`` block. Recipe stdout
     and stderr are interleaved by capture order (stdout first, then
@@ -73,7 +75,7 @@ def run_rule(
     _emit(f"\033[2m▶\033[0m {rule_key} \033[2m[{universe}]\033[0m")
 
     proc = subprocess.run(
-        shell_command,
+        cfg["shell_command"],
         shell=True,
         capture_output=True,
         text=True,
@@ -91,7 +93,7 @@ def run_rule(
             f"\033[31m✗\033[0m {rule_key} \033[2m[{universe}]\033[0m   "
             f"exit={proc.returncode}   {dt:.1f}s"
         )
-        raise subprocess.CalledProcessError(proc.returncode, shell_command)
+        raise subprocess.CalledProcessError(proc.returncode, cfg["shell_command"])
 
     write_manifest(output_dir=output_dir, inputs=inputs, cfg=cfg)
 

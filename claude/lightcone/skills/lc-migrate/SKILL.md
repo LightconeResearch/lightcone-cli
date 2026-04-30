@@ -53,7 +53,24 @@ For reference, here are the decision criteria for classifying candidates:
 
 Write the scan results to `CLAUDE.md` under Analysis Context as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `.claude/guides/astra-reference.md`. Use the decision criteria from [ASTRA Reference](../../guides/astra-reference.md) to filter the subagent's candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
 
-Include `recipe:` blocks on each output pointing to the script that produces it. Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
+For each output, list the upstream artifacts it depends on under `Output.inputs: [...]` and the decisions it consumes under `Output.decisions: [...]`. Then add a `recipe.command` template that references each via `{inputs.<id>}` / `{decisions.<id>}` and writes to `{output}`. Example:
+
+```yaml
+outputs:
+  - id: galaxy_catalog
+    type: data
+    inputs: [survey_data]
+    decisions: [magnitude_cut, redshift_min]
+    recipe:
+      command: >
+        python scripts/build_catalog.py
+        --survey {inputs.survey_data}
+        --magnitude_cut {decisions.magnitude_cut}
+        --redshift_min {decisions.redshift_min}
+        --output {output}
+```
+
+Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
 
 Write to `astra.yaml` and `universes/baseline.yaml`, then validate: `astra validate astra.yaml`. Fix any errors.
 
@@ -74,8 +91,8 @@ Parameterize the code so decisions can be varied across universes. The goal is m
 Whatever approach you use:
 
 - **Don't refactor, restructure, or improve the code.** Just add the parameter plumbing.
-- **Underscore convention:** Decision IDs use underscores in `astra.yaml` (`outlier_sigma`). lightcone-cli passes `--outlier_sigma`. Argument parsing must match.
-- **Update output paths** to write to `results/{universe}/{output_id}.ext` following the convention in `CLAUDE.md`.
+- **The recipe template is what wires decisions to scripts.** Each `{decisions.<id>}` placeholder in `recipe.command` substitutes the active option ID at runtime, and the recipe author chooses the script-side flag name. Underscore IDs in the spec → match-them-yourself flags in the script (e.g. `--outlier_sigma {decisions.outlier_sigma}` paired with `parser.add_argument('--outlier_sigma')`). There is no auto-injection.
+- **Output paths.** The recipe receives the output directory as `{output}` — pass that through to the script (`--output {output}`) and have the script write its artifact inside that directory (e.g. `{output}/data.parquet`).
 - **Update recipes** in `astra.yaml` if the entry point or command changed.
 
 ## Phase 3: Run & Debug

@@ -57,7 +57,8 @@ def test_verify_clean_chain_passes(tmp_path: Path) -> None:
                 {"id": "upstream", "recipe": {"command": "echo u"}},
                 {
                     "id": "downstream",
-                    "recipe": {"command": "echo d", "inputs": ["upstream"]},
+                    "inputs": ["upstream"],
+                    "recipe": {"command": "echo d"},
                 },
             ]
         },
@@ -91,7 +92,8 @@ def test_verify_detects_broken_chain(tmp_path: Path) -> None:
                 {"id": "upstream", "recipe": {"command": "echo u"}},
                 {
                     "id": "downstream",
-                    "recipe": {"command": "echo d", "inputs": ["upstream"]},
+                    "inputs": ["upstream"],
+                    "recipe": {"command": "echo d"},
                 },
             ]
         },
@@ -175,9 +177,9 @@ def test_verify_skips_aliases(tmp_path: Path) -> None:
 
 
 def test_verify_detects_broken_chain_for_qualified_input(tmp_path: Path) -> None:
-    """Recipe inputs referencing a sub-analysis output by qualified id
-    (``sub.real``) must resolve through to the producing manifest so a
-    drifted upstream surfaces as ``broken_chain``.
+    """``Output.inputs`` referencing a sub-analysis output by qualified
+    id (``sub.real``) must resolve through to the producing manifest so
+    a drifted upstream surfaces as ``broken_chain``.
     """
     sub_dir = tmp_path / "sub"
     (sub_dir / "results" / "u1" / "real").mkdir(parents=True, exist_ok=True)
@@ -187,7 +189,8 @@ def test_verify_detects_broken_chain_for_qualified_input(tmp_path: Path) -> None
             "outputs": [
                 {
                     "id": "downstream",
-                    "recipe": {"command": "echo d", "inputs": ["sub.real"]},
+                    "inputs": ["sub.real"],
+                    "recipe": {"command": "echo d"},
                 }
             ],
             "analyses": {

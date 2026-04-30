@@ -89,10 +89,11 @@ def verify_outputs(
             )
             continue
 
-        # Walk the recorded chain.
+        # Walk the recorded chain. ``Output.inputs`` (v0.0.7) carries
+        # the upstream artifact IDs; recipe blocks no longer hold them.
         chain_failure: str | None = None
-        recipe_inputs = (tree_out.output_def.get("recipe") or {}).get("inputs") or []
-        for inp_id in recipe_inputs:
+        declared_inputs = tree_out.output_def.get("inputs") or []
+        for inp_id in declared_inputs:
             recorded = manifest.get("input_versions", {}).get(inp_id)
             if recorded is None:
                 # The manifest doesn't even know about an upstream the

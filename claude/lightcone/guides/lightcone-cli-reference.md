@@ -54,7 +54,8 @@ Three overlapping phases:
 
 ## Failure Diagnosis
 
-- **Script arg not recognized** — Use underscores in argparse to match decision IDs
-- **Recipe input not found** — Materialize upstream outputs first
+- **Script arg not recognized** — The recipe's `command` template controls how decisions reach the script. Make sure each `{decisions.<id>}` is paired with a flag the script's argparse defines (e.g. `--<id> {decisions.<id>}` ↔ `parser.add_argument('--<id>')`).
+- **Recipe input not found** — Materialize upstream outputs first.
+- **Undeclared placeholder error** — A `{decisions.<id>}` or `{inputs.<id>}` in the recipe references something not listed in `Output.decisions` / `Output.inputs`. Add it to the Output's declaration, or remove the placeholder.
 
 After failure: fix, then `lc run <output_id> --universe <name>`.

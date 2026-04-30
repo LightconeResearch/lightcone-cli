@@ -44,10 +44,25 @@ def _decisions_for(
     universe_decisions: dict[str, Any],
 ) -> dict[str, Any]:
     """Return the decisions visible to a given output for code_version
-    computation. We use the full merged universe decision set, so any
-    decision change anywhere in the universe invalidates downstream.
+    computation.
+
+    v0.0.7: ``Output.decisions`` is the explicit provenance contract —
+    the set of decisions whose option choices can change this output.
+    The Snakefile generator hashes only those into ``code_version``;
+    we mirror that scoping here so ``lc status`` stays in sync.
+    Outputs that do not declare decisions hash an empty dict.
     """
-    return universe_decisions
+    declared = tree_output.output_def.get("decisions") or []
+    if not declared:
+        return {}
+    scoped: dict[str, Any] = {}
+    prefix = f"{tree_output.analysis_id}." if tree_output.analysis_id else ""
+    for dec_id in declared:
+        if prefix and (qualified := f"{prefix}{dec_id}") in universe_decisions:
+            scoped[dec_id] = universe_decisions[qualified]
+        elif dec_id in universe_decisions:
+            scoped[dec_id] = universe_decisions[dec_id]
+    return scoped
 
 
 def _load_universe_decisions(

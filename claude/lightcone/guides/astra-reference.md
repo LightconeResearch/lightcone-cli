@@ -14,7 +14,8 @@ Fields: `name`, `description`, `version`, `authors`, `tags`, `inputs`, `outputs`
 # Simple analysis -- everything at top level
 version: "1.0"
 name: "My Analysis"
-description: "What this analysis investigates."
+narrative:
+  summary: "What this analysis investigates."
 inputs:
   - id: training_data
     type: data
@@ -43,8 +44,16 @@ decisions:
 outputs:
   - id: accuracy
     type: metric
+    inputs: [training_data]                        # upstream artifacts (Input or sibling Output)
+    decisions: [scaling, use_pca, n_components]    # decisions that parameterize this output
     recipe:
-      command: python scripts/evaluate.py
+      command: >
+        python scripts/evaluate.py
+        --data {inputs.training_data}
+        --scaling {decisions.scaling}
+        --use_pca {decisions.use_pca}
+        --n_components {decisions.n_components}
+        --output {output}
 container: Containerfile
 ```
 
@@ -68,9 +77,9 @@ A decision is a methodological choice where a different defensible option could 
 
 ### Parameterization
 
-**Every decision must be parameterized in code** -- never hardcode a decision value. Accept all decisions as CLI args.
+**Every decision must be parameterized in code** -- never hardcode a decision value. Decisions reach the script via the recipe template's `{decisions.<id>}` placeholders (see [Recipe Format](#recipe-format)). The recipe author chooses how to pass them — typically as CLI args (`--scaling {decisions.scaling}` paired with `parser.add_argument("--scaling")` in the script), but env vars or sidecar files work too. There is no magic auto-injection: if a decision isn't referenced in the recipe template, the script never sees it.
 
-**Underscore convention:** IDs use underscores in `astra.yaml` (`prior_range`). lightcone-cli passes `--prior_range wide`. Scripts must match: `parser.add_argument('--prior_range')`, **not** `--prior-range`.
+**Decision provenance contract:** list every decision a script consumes under `Output.decisions: [...]`. Re-running the output with a different option for any listed decision must be expected to change the result. The validator enforces that every `{decisions.<id>}` placeholder appears in `Output.decisions`, and `code_version` (the cache key) hashes only those decisions — so changes to unrelated decisions don't invalidate cached results.
 
 ### Constraints
 
@@ -91,21 +100,43 @@ Convention path: `results/<universe_id>/<output_id>.<ext>` -- no `path` field ne
 
 ## Recipe Format
 
-Inline on outputs. Fields: `command` (required), `inputs`, `container`, `resources`.
+In v0.0.7, **`inputs` and `decisions` live on the Output, not on the Recipe.** The recipe is pure *how*: a `command` template plus its execution context (`container`, `resources`).
 
 ```yaml
 outputs:
   - id: accuracy
     type: metric
+    inputs: [trained_model]                  # upstream artifacts
+    decisions: [scaling, n_components]       # decisions that parameterize this output
     recipe:
-      command: python scripts/evaluate.py
-      inputs: [trained_model]               # Dependency on other output
-      container: ghcr.io/proj/ml:latest     # Overrides analysis-level default
+      command: >
+        python scripts/evaluate.py
+        --model {inputs.trained_model}
+        --scaling {decisions.scaling}
+        --n_components {decisions.n_components}
+        --output {output}
+      container: ghcr.io/proj/ml:latest      # Overrides analysis-level default
       resources: { cpus: 4, memory: "32GB", gpus: 1, time_limit: "2h" }
       # `gpus` is per-node. Multi-node recipes get nodes × gpus total GPUs.
 ```
 
+`Output.inputs` references resolve to either a sibling Output's directory or an analysis-level Input's source string (e.g. a path or `sklearn.datasets.load_iris`). The runner walks any `from:` aliases in the surrounding scope to find the source.
+
 Set `container:` at analysis level (all recipes inherit); per-recipe `container:` overrides. Pass either a container image name (e.g., `python:3.12-slim`, `ghcr.io/org/img:latest`) or a path to a Containerfile (e.g., `Containerfile`, `containers/Dockerfile`). The runtime figures out whether to pull or build.
+
+### Recipe Command Template
+
+The `command` is a template with these placeholders:
+
+| Placeholder | Substitutes to |
+|---|---|
+| `{output}` | The directory the artifact is written to (e.g. `results/baseline/accuracy/`) |
+| `{inputs.<id>}` | The named upstream input's resolved path or source string. `<id>` must be in `Output.inputs`. |
+| `{inputs}` | Space-joined values of every entry in `Output.inputs` (declaration order). |
+| `{decisions.<id>}` | The active option ID for the named decision in this universe. `<id>` must be in `Output.decisions`. |
+| `{{` / `}}` | Literal `{` / `}` (e.g. `awk '{{print $1}}'`). |
+
+Static constants belong inline in the command (`--max-iter 1000`); only varying values are decisions, only path/source values are inputs. Any other placeholder is rejected by `astra validate` and by the runner.
 
 ### Conditional Outputs
 
@@ -243,21 +274,29 @@ analyses:
     path: ./analyses/train_network
 ```
 
-Inside each sub-analysis's own `astra.yaml`, `from:` wires inputs and decisions to the parent or siblings:
+Inside each sub-analysis's own `astra.yaml`, `from:` wires inputs and decisions to the parent or siblings using the **unified `../` path grammar**:
 
 ```yaml
 # analyses/train_network/astra.yaml
 inputs:
   - id: training_data
-    type: data
-    from: build_mocks.mock_catalog       # Sibling output
+    from: ../build_mocks.mock_catalog     # Sibling sub-analysis's output (escape one scope, descend)
 outputs:
   - id: trained_model
     type: data
-    recipe: { command: python src/train.py, resources: { gpus: 1, memory: "32GB" } }
+    inputs: [training_data]
+    decisions: [cosmology_model, noise_model]
+    recipe:
+      command: >
+        python src/train.py
+        --data {inputs.training_data}
+        --cosmology {decisions.cosmology_model}
+        --noise {decisions.noise_model}
+        --output {output}
+      resources: { gpus: 1, memory: "32GB" }
 decisions:
   cosmology_model:
-    from: ../cosmology_model             # Inherit parent decision
+    from: ../cosmology_model              # Inherit parent decision (one scope up)
   noise_model:
     label: "Noise Model"
     default: heteroscedastic
@@ -266,11 +305,19 @@ decisions:
       heteroscedastic: { label: "Heteroscedastic" }
 ```
 
-**Wiring patterns:**
-- **Input `from:`** -- `from: parent_input_id` (parent input) or `from: sibling_id.output_id` (sibling output).
-- **Decision `from: ../parent_id`** -- inherits a parent decision. The sub-analysis uses the parent's value; do not set it in the sub-analysis universe.
-- **Output `from: sub.output`** at root level creates an alias to a sub-analysis output.
-- **`universe:` field** in universe files selects which sub-analysis universe to load: `build_mocks: { universe: baseline }` loads `./analyses/build_mocks/universes/baseline.yaml`.
+**Wiring patterns (v0.0.7 unified `from:` grammar):**
+
+| Where | Form | Meaning |
+|---|---|---|
+| Input | `from: ../id` | An ancestor input |
+| Input | `from: ../../id` | A grandparent input |
+| Input | `from: ../sibling.out_id` | A sibling sub-analysis's output |
+| Output | `from: child.out_id` | Re-export of an own child sub's output (no `../` — outputs only flow *up* via re-export, never reach laterally) |
+| Decision | `from: ../id`, `../../id` | An ancestor decision (downward and lateral references aren't allowed; lift shared decisions to a common ancestor) |
+
+An aliased node carries only `id`, `from`, and (where applicable) `when` — type, description, recipe, etc. are inherited from the source.
+
+The `universe:` field in universe files selects which sub-analysis universe to load: `build_mocks: { universe: baseline }` loads `./analyses/build_mocks/universes/baseline.yaml`. Decisions inherited via `from: ../...` use the ancestor's value automatically; do not set them in the sub-analysis universe file.
 
 ## CLI Reference (astra)
 

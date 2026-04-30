@@ -2,28 +2,27 @@
 
 The Snakefile is a thin shell over the astra spec: one rule per output
 with a recipe, parameterized by ``{universe}``. Each rule's body is a
-``run:`` block that calls :func:`lightcone.engine.runner.run_rule`,
-which encapsulates the recipe execution, manifest write, and validation
-hook in one place.
+``run:`` block that calls :func:`lightcone.engine.runner.run_rule` with
+the per-(rule, universe) cfg blob — which already contains the rendered
+and wrapped ``shell_command``. All template substitution and container
+wrapping happen here, at generation time, where every value is concrete
+for a given universe; the runner stays a thin executor.
 
-The ``shell_command`` is the recipe pre-wrapped at generation time —
-when a container is configured, the wrap is something like
-``podman run --rm -v "$PWD":"$PWD" -w "$PWD" <image> bash -c '<recipe>'``.
-We deliberately do **not** use Snakemake's ``container:`` directive or
-``--sdm apptainer``; we own the runtime end-to-end. See
-:mod:`lightcone.engine.container`.
+ASTRA v0.0.7 moved ``inputs`` and ``decisions`` declarations from
+``Recipe`` up to ``Output``. The recipe body is a *template* using a
+small placeholder grammar — see :func:`render_recipe`. We don't use
+Snakemake's ``container:`` directive or ``--sdm apptainer``: the
+generator wraps with the configured runtime end-to-end (see
+:mod:`lightcone.engine.container`).
 
 The ``os.replace`` rename inside ``write_manifest`` (called by
 ``run_rule``) is the atomic commit point — either the rule produced
-both data and manifest or it failed and Snakemake reruns the rule.
-
-All per-(rule, universe) details — recipe, container image, decisions,
-precomputed code_version, resolved input paths — live in
-``.lightcone/snakefile-config.json`` keyed by ``(rule_key, universe)``.
+both data and manifest, or it failed and Snakemake reruns the rule.
 """
 from __future__ import annotations
 
 import json
+import string
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -37,12 +36,84 @@ from lightcone.engine.tree import (
     collect_tree_outputs,
     find_upstream_output,
     resolve_container_spec,
+    resolve_external_input,
     resolve_universe_decisions,
 )
 
 LIGHTCONE_DIR = ".lightcone"
 SNAKEFILE_NAME = "Snakefile"
 CONFIG_NAME = "snakefile-config.json"
+
+_FORMATTER = string.Formatter()
+
+
+def render_recipe(
+    template: str,
+    *,
+    inputs: dict[str, str],
+    decisions: dict[str, str],
+    output: str,
+) -> str:
+    """Substitute v0.0.7 recipe template placeholders.
+
+    Recognized placeholders:
+
+    * ``{output}``         — directory the artifact is written to.
+    * ``{inputs}``         — space-separated values of every entry in
+                             ``inputs`` (in declaration order).
+    * ``{inputs.<id>}``    — the named upstream input's resolved value
+                             (a sibling output's directory path or an
+                             analysis-level Input's source string).
+    * ``{decisions.<id>}`` — the active option ID for the named
+                             decision in this universe.
+
+    ``{{`` and ``}}`` collapse to literal ``{`` / ``}``. Unknown
+    placeholders, undeclared references, and format-spec or conversion
+    flags raise :class:`KeyError` / :class:`ValueError`. ``astra
+    validate`` should already have caught these — the strict behaviour
+    here is defense-in-depth.
+    """
+    pieces: list[str] = []
+    for literal, field, spec, conv in _FORMATTER.parse(template):
+        pieces.append(literal)
+        if field is None:
+            continue
+        if spec or conv:
+            raise ValueError(
+                f"Recipe placeholder '{{{field}}}' must not use a format "
+                "spec or conversion"
+            )
+        if field == "output":
+            pieces.append(output)
+            continue
+        if field == "inputs":
+            pieces.append(" ".join(inputs.values()))
+            continue
+        head, dot, tail = field.partition(".")
+        if not dot:
+            raise ValueError(
+                f"Unknown recipe placeholder '{{{field}}}' "
+                "(use {inputs}, {inputs.<id>}, {decisions.<id>}, or {output})"
+            )
+        if head == "inputs":
+            if tail not in inputs:
+                raise KeyError(
+                    f"Recipe placeholder '{{inputs.{tail}}}' references an "
+                    "input not declared on this Output"
+                )
+            pieces.append(inputs[tail])
+        elif head == "decisions":
+            if tail not in decisions:
+                raise KeyError(
+                    f"Recipe placeholder '{{decisions.{tail}}}' references "
+                    "a decision not declared on this Output"
+                )
+            pieces.append(str(decisions[tail]))
+        else:
+            raise ValueError(
+                f"Unknown recipe placeholder namespace '{head}' in '{{{field}}}'"
+            )
+    return "".join(pieces)
 
 
 def _git_sha(project_path: Path) -> str | None:
@@ -95,8 +166,40 @@ def _rule_name(tree_out: TreeOutput) -> str:
     return _rule_key(tree_out).replace(".", "__")
 
 
-def _decisions_for_output(
+def _safe_input_key(raw_id: str) -> str:
+    """Snakemake's ``input:`` keys must be valid Python identifiers,
+    so ``sub.real`` becomes ``sub__real``. Raw IDs (with their dots
+    intact) are still used as keys in the manifest's ``input_versions``
+    map and inside the runner — verify and write_manifest see the same
+    spelling the user wrote in ``Output.inputs``.
+    """
+    return raw_id.replace(".", "__")
+
+
+def _scoped_decisions_for_output(
     tree_out: TreeOutput,
+    universe_decisions: dict[str, Any],
+) -> dict[str, Any]:
+    """Pick the active option ID for each decision the Output declares.
+
+    v0.0.7: ``Output.decisions`` lists the IDs of decisions that
+    parameterize this output. The runner only needs (and the recipe
+    template can only reference) those — anything else is out of scope.
+    """
+    declared = tree_out.output_def.get("decisions") or []
+    if not declared:
+        return {}
+    scoped: dict[str, Any] = {}
+    prefix = f"{tree_out.analysis_id}." if tree_out.analysis_id else ""
+    for dec_id in declared:
+        if prefix and (qualified := f"{prefix}{dec_id}") in universe_decisions:
+            scoped[dec_id] = universe_decisions[qualified]
+        elif dec_id in universe_decisions:
+            scoped[dec_id] = universe_decisions[dec_id]
+    return scoped
+
+
+def _universe_decisions(
     universe_id: str,
     project_path: Path,
     spec: dict[str, Any],
@@ -116,12 +219,15 @@ def _render_snakefile(
 ) -> str:
     """Render the Snakefile string from rule descriptors.
 
-    Each rule descriptor has: ``name`` (Snakemake-safe), ``key`` (cfg
-    lookup), ``output_dir`` (wildcard pattern), ``inputs`` (dict of
-    declared input id → wildcard path, only for sibling outputs).
+    Each rule descriptor has ``name`` (Snakemake-safe), ``key`` (cfg
+    lookup), ``output_dir`` (wildcard pattern), and ``inputs`` (list of
+    ``(raw_id, safe_key, path_pattern)`` triples — sibling outputs only,
+    in declaration order).
 
-    Rule body is a ``run:`` block that calls ``shell()`` on the
-    pre-wrapped command and then ``write_manifest()`` host-side.
+    The rule body is a thin call into :func:`runner.run_rule`. The
+    ``inputs`` dict it builds is keyed by the **raw** input IDs (with
+    their dots intact) so that ``write_manifest``'s ``input_versions``
+    matches what ``verify`` walks for chain integrity.
     """
     universes_repr = repr(universes)
     rule_all_inputs = []
@@ -153,44 +259,24 @@ def _render_snakefile(
         lines.append(f'rule {r["name"]}:')
         if r["inputs"]:
             lines.append("    input:")
-            for k, v in r["inputs"].items():
-                lines.append(f'        {k}="{v}",')
+            for _raw, safe, pattern in r["inputs"]:
+                lines.append(f'        {safe}="{pattern}",')
         lines.append("    output:")
         lines.append(f'        data=directory("{r["output_dir"]}"),')
         lines.append(f'        manifest="{r["output_dir"]}/.lightcone-manifest.json",')
         lines.append("    params:")
         lines.append(f'        cfg=lambda wc: CFG["{r["key"]}"][wc.universe],')
         lines.append("    run:")
-        # The runner emits sentinel-prefixed lines (``▶ … recipe stdout
-        # … ✓``) which the dask executor's ``_run_shell`` extracts and
-        # forwards under a cross-node lock. The whole rule body lives
-        # in :func:`lightcone.engine.runner.run_rule` — keeping the
-        # generated Snakefile slim and the execution surface in Python
-        # rather than in shell strings.
-        #
-        # Brace substitution: recipes use Snakemake-style placeholders
-        # (``{output.data}``, ``{params.cfg[decisions][minimizer]}``,
-        # ``{wildcards.universe}``) that ``shell()`` would expand
-        # automatically. Now that we drive subprocess directly, we do
-        # the equivalent ``str.format`` against the rule's standard
-        # context here. Literal braces in recipes must be escaped as
-        # ``{{`` ``}}``, the same convention Snakemake's shell follows.
+        # Manifest input_versions are keyed by raw declared input IDs
+        # (e.g. "sub.real"), not the safe Snakemake-input-directive key
+        # ("sub__real"). Verify walks the raw IDs from Output.inputs;
+        # this dict literal is what bridges the two.
         inp_pairs = ", ".join(
-            f'"{k}": Path(input.{k})' for k in r["inputs"]
+            f'"{raw}": Path(input.{safe})' for raw, safe, _pattern in r["inputs"]
         )
-        lines.append("        _cmd = params.cfg[\"shell_command\"].format(")
-        lines.append(
-            "            output=output, input=input, params=params,"
-        )
-        lines.append(
-            "            wildcards=wildcards, threads=threads,"
-            " resources=resources,"
-        )
-        lines.append("        )")
         lines.append("        run_rule(")
         lines.append(f'            rule_key="{r["key"]}",')
         lines.append("            universe=wildcards.universe,")
-        lines.append("            shell_command=_cmd,")
         lines.append("            output_dir=Path(output.data),")
         lines.append(f"            inputs={{{inp_pairs}}},")
         lines.append("            cfg=dict(params.cfg),")
@@ -235,21 +321,34 @@ def generate(
     for to in tree_outputs:
         recipe = to.output_def.get("recipe")
         if recipe is None:
-            continue  # alias output
+            continue  # alias output (re-export via ``from:``)
 
         rule_key = _rule_key(to)
         rule_name = _rule_name(to)
         out_dir_pattern = _output_dir_pattern(to)
-        recipe_inputs = recipe.get("inputs") or []
+
+        # v0.0.7: declared upstream inputs live on the Output, not the
+        # Recipe. Each ID resolves to either a sibling output (a
+        # Snakemake input slot) or an analysis-level Input (resolved
+        # to a static source string at generation time).
+        declared_inputs = to.output_def.get("inputs") or []
         recipe_command = recipe.get("command", "")
 
-        rule_inputs: dict[str, str] = {}
-        for inp_id in recipe_inputs:
+        # ``rule_inputs`` is the per-rule descriptor's input list, in
+        # declaration order; ``external_inputs`` is the rest, resolved
+        # to source strings used only for template substitution.
+        rule_inputs: list[tuple[str, str, str]] = []  # (raw_id, safe_key, pattern)
+        external_inputs: dict[str, str] = {}
+        for inp_id in declared_inputs:
             up = find_upstream_output(to, inp_id, tree_outputs)
             if up is not None:
-                # Snakemake input dict keys must be valid identifiers.
-                key = inp_id.replace(".", "__")
-                rule_inputs[key] = _output_dir_pattern(up)
+                rule_inputs.append(
+                    (inp_id, _safe_input_key(inp_id), _output_dir_pattern(up))
+                )
+                continue
+            ext = resolve_external_input(to, inp_id, spec)
+            if ext is not None:
+                external_inputs[inp_id] = ext
 
         container_image = resolve_container_spec(to, spec)
         image_tag = resolve_image(container_image)
@@ -265,41 +364,61 @@ def generate(
 
         cfg.setdefault(rule_key, {})
         for u in universes:
-            decisions = _decisions_for_output(to, u, project_path, spec)
+            universe_decisions = _universe_decisions(u, project_path, spec)
+            scoped_decisions = _scoped_decisions_for_output(to, universe_decisions)
+
+            # Build the resolved input map in declaration order so
+            # ``{inputs}`` joins paths in the same order the user wrote
+            # them. Sibling-output paths get the universe wildcard
+            # substituted; external sources pass through verbatim.
+            resolved_inputs: dict[str, str] = {}
+            sibling_patterns = {raw: pat for raw, _, pat in rule_inputs}
+            for inp_id in declared_inputs:
+                if inp_id in sibling_patterns:
+                    resolved_inputs[inp_id] = sibling_patterns[inp_id].replace(
+                        "{universe}", u
+                    )
+                elif inp_id in external_inputs:
+                    resolved_inputs[inp_id] = external_inputs[inp_id]
+                # else: unresolvable; ``astra validate`` flags it.
+
+            output_dir = out_dir_pattern.replace("{universe}", u)
+            rendered = render_recipe(
+                recipe_command,
+                inputs=resolved_inputs,
+                decisions=scoped_decisions,
+                output=output_dir,
+            )
+            wrapped = wrap_recipe(rendered, image=image_tag, runtime=runtime)
             # ``image_tag`` (not the raw spec string) so a Containerfile
             # edit propagates through ``code_version`` to ``lc status``.
             cv = code_version(
                 recipe=recipe_command,
                 container_image=image_tag,
-                decisions=decisions,
-            )
-            wrapped = wrap_recipe(
-                recipe_command, image=image_tag, runtime=runtime
+                decisions=scoped_decisions,
             )
             # Prefix the executed command with a no-op ``:`` builtin
-            # carrying the code_version. This makes the actual shell
-            # command differ when the recipe / container / decisions
-            # drift, which (a) lets Snakemake's ``shellcmd`` trigger see
-            # the change and (b) leaves a breadcrumb in any shell trace.
-            # The drift detection that actually fires today is the
-            # ``params`` trigger (cfg is per-universe and contains
-            # code_version) — see ``lc run --rerun-triggers``.
+            # carrying the code_version. This makes the wrapped command
+            # differ when the recipe / container / decisions drift, so
+            # (a) Snakemake's ``shellcmd`` trigger sees the change and
+            # (b) any shell trace carries a breadcrumb. The trigger
+            # that actually fires today is ``params`` (cfg is
+            # per-universe and contains ``shell_command``) — see
+            # ``lc run --rerun-triggers``.
             shell_command = f": lc_code_version={cv};\n{wrapped}"
-            resolved_inputs = {
-                k: v.replace("{universe}", u) for k, v in rule_inputs.items()
-            }
             cfg[rule_key][u] = {
                 "output_id": to.output_id,
                 "output_type": to.output_def.get("type"),
                 "universe_id": u,
+                # Raw template, preserved so the manifest's ``recipe``
+                # field records what the user authored.
                 "recipe": recipe_command,
                 "shell_command": shell_command,
                 "container_image": container_image,
-                "decisions": decisions,
+                "decisions": scoped_decisions,
                 "code_version": cv,
                 "git_sha": git_sha,
                 "lc_version": lc_version,
-                "inputs": resolved_inputs,
             }
 
     lightcone_dir = project_path / LIGHTCONE_DIR
@@ -324,4 +443,9 @@ def discover_universes(project_path: Path) -> list[str]:
     return ids or ["default"]
 
 
-__all__ = ["generate", "discover_universes", "LIGHTCONE_DIR"]
+__all__ = [
+    "LIGHTCONE_DIR",
+    "discover_universes",
+    "generate",
+    "render_recipe",
+]

@@ -32,24 +32,25 @@ def _capture(fn) -> tuple[str, BaseException | None]:
     return buf.getvalue(), err
 
 
-def _cfg(output_id: str = "foo") -> dict:
+def _cfg(output_id: str = "foo", *, shell_command: str = "echo hi") -> dict:
     """Minimal cfg matching what the Snakefile generator writes.
 
     ``manifest.write_manifest`` reads several keys; we provide the ones
     it touches without standing up a real container/decision pipeline.
+    The runner reads ``shell_command`` directly — substitution and
+    container wrapping happen at generation time.
     """
     return {
         "output_id": output_id,
         "output_type": "data",
         "universe_id": "u1",
         "recipe": "echo hi",
-        "shell_command": "echo hi",
+        "shell_command": shell_command,
         "container_image": None,
         "decisions": {},
         "code_version": "abc",
         "git_sha": None,
         "lc_version": "test",
-        "inputs": {},
     }
 
 
@@ -60,10 +61,9 @@ def test_emit_lines_carry_sentinel(tmp_path: Path) -> None:
         lambda: run_rule(
             rule_key="foo",
             universe="u1",
-            shell_command="echo hello",
             output_dir=out_dir,
             inputs={},
-            cfg=_cfg(),
+            cfg=_cfg(shell_command="echo hello"),
         )
     )
     assert err is None
@@ -84,10 +84,9 @@ def test_failed_recipe_raises_and_emits_cross(tmp_path: Path) -> None:
         lambda: run_rule(
             rule_key="foo",
             universe="u1",
-            shell_command="false",
             output_dir=out_dir,
             inputs={},
-            cfg=_cfg(),
+            cfg=_cfg(shell_command="false"),
         )
     )
     assert isinstance(err, subprocess.CalledProcessError)
@@ -107,10 +106,9 @@ def test_no_manifest_on_failure(tmp_path: Path) -> None:
         lambda: run_rule(
             rule_key="foo",
             universe="u1",
-            shell_command="false",
             output_dir=out_dir,
             inputs={},
-            cfg=_cfg(),
+            cfg=_cfg(shell_command="false"),
         )
     )
     assert err is not None
@@ -124,10 +122,9 @@ def test_manifest_written_on_success(tmp_path: Path) -> None:
         lambda: run_rule(
             rule_key="foo",
             universe="u1",
-            shell_command=f"touch {out_dir}/data.txt",
             output_dir=out_dir,
             inputs={},
-            cfg=_cfg(),
+            cfg=_cfg(shell_command=f"touch {out_dir}/data.txt"),
         )
     )
     assert err is None
@@ -141,10 +138,9 @@ def test_recipe_stdout_and_stderr_both_forwarded(tmp_path: Path) -> None:
         lambda: run_rule(
             rule_key="foo",
             universe="u1",
-            shell_command="echo on-stdout; echo on-stderr 1>&2",
             output_dir=out_dir,
             inputs={},
-            cfg=_cfg(),
+            cfg=_cfg(shell_command="echo on-stdout; echo on-stderr 1>&2"),
         )
     )
     assert err is None

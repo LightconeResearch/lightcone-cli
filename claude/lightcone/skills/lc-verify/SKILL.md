@@ -26,7 +26,12 @@ Every output should show `ok`. Flag anything `missing`, `stale`, or only present
 
 ### 3. Decision-code alignment
 
-**The most important check.** For every decision in `astra.yaml`, confirm the code accepts it as a parameter and does not hardcode its value. Compare `astra info --decisions` against `grep -r "add_argument" scripts/`.
+**The most important check.** For every output, every decision listed in `Output.decisions` must:
+
+1. Appear as a `{decisions.<id>}` placeholder in the same Output's recipe `command`. (`astra validate` enforces this; rerun if the spec changed.)
+2. Be accepted as a parameter by the script the recipe invokes, with no hardcoded value.
+
+Compare `astra info --decisions` against `grep -r "add_argument" scripts/` (or whatever the script's parsing convention is). Cross-check the recipe text to see how each decision is passed.
 
 ### 4. Results match spec
 
