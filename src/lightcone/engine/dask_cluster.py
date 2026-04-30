@@ -198,14 +198,17 @@ def _slurm_backed_cluster(
         _resources_arg(shape),
         "--no-dashboard",
     ]
-    if not verbose:
-        # Hide the worker's INFO-level connection chatter (Nanny start,
-        # scheduler registration, etc.) — useful only when debugging the
-        # cluster itself. WARNING+ still surface real issues.
-        worker_cmd.extend(["--silence-logs", "warning"])
     if local_directory:
         worker_cmd.extend(["--local-directory", local_directory])
-    workers = subprocess.Popen(worker_cmd)
+    # Hide the worker's INFO-level connection chatter (Nanny start,
+    # scheduler registration, etc.) — useful only when debugging the
+    # cluster itself. WARNING+ still surface real issues. The newer
+    # `dask worker` CLI dropped `--silence-logs`, so we drive it via
+    # Dask's config env var instead; srun inherits env by default.
+    worker_env = dict(os.environ)
+    if not verbose:
+        worker_env.setdefault("DASK_LOGGING__DISTRIBUTED", "warning")
+    workers = subprocess.Popen(worker_cmd, env=worker_env)
 
     try:
         from dask.distributed import Client

@@ -155,8 +155,9 @@ def test_slurm_backed_cluster_binds_to_routable_host(
             pass
 
     class _FakePopen:
-        def __init__(self, cmd: list[str]) -> None:
+        def __init__(self, cmd: list[str], **kwargs: object) -> None:
             captured["worker_cmd"] = cmd
+            captured["worker_kwargs"] = kwargs
 
         def terminate(self) -> None:
             pass
@@ -217,7 +218,7 @@ def test_slurm_backed_cluster_falls_back_to_gethostname(
             pass
 
     class _FakePopen:
-        def __init__(self, cmd: list[str]) -> None:
+        def __init__(self, cmd: list[str], **kwargs: object) -> None:
             pass
 
         def terminate(self) -> None:
