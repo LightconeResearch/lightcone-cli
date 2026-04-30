@@ -197,6 +197,11 @@ def _slurm_backed_cluster(
         "--resources",
         _resources_arg(shape),
         "--no-dashboard",
+        # Each srun task is a single run-scoped worker; an auto-restart
+        # nanny adds no value (srun won't relaunch the task either) and
+        # logs "Worker process died unexpectedly" when retire_workers
+        # asks the worker to exit on shutdown.
+        "--no-nanny",
     ]
     if local_directory:
         worker_cmd.extend(["--local-directory", local_directory])
