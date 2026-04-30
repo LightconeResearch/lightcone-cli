@@ -213,6 +213,11 @@ def init(
     # venv
     if not no_venv:
         subprocess.run(["python", "-m", "venv", ".venv"], cwd=directory, check=False)
+        subprocess.run(
+            [".venv/bin/python", "-m", "pip", "install", "-q", "astra-tools"],
+            cwd=directory,
+            check=False,
+        )
 
     console.print(f"\n[green]Project initialized at[/green] {directory}")
 
