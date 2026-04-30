@@ -6,6 +6,7 @@ the recipe wrap that the Snakefile generator embeds into ``shell()``.
 from __future__ import annotations
 
 import shlex
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -396,10 +397,27 @@ class TestPullImage:
 
 
 class TestDetectRuntime:
+    @pytest.fixture(autouse=True)
+    def _generic_hostname(self) -> Iterator[None]:
+        # Pin hostname to one that doesn't match any site so the default
+        # RUNTIMES order applies. Site-aware behaviour is exercised in
+        # TestSiteAwareDetection below.
+        with patch(
+            "lightcone.engine.container.socket.gethostname",
+            return_value="generic-laptop",
+        ):
+            yield
+
     @patch("lightcone.engine.container.shutil.which")
-    def test_podman_preferred(self, mock_which: MagicMock) -> None:
-        # Both installed — podman wins (rootless, no daemon to wedge).
+    def test_podman_hpc_preferred_when_present(self, mock_which: MagicMock) -> None:
         mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        assert detect_runtime() == "podman-hpc"
+
+    @patch("lightcone.engine.container.shutil.which")
+    def test_podman_preferred_over_docker(self, mock_which: MagicMock) -> None:
+        mock_which.side_effect = lambda name: (
+            None if name == "podman-hpc" else f"/usr/bin/{name}"
+        )
         assert detect_runtime() == "podman"
 
     @patch("lightcone.engine.container.shutil.which")
@@ -412,10 +430,6 @@ class TestDetectRuntime:
 
     @patch("lightcone.engine.container.shutil.which")
     def test_docker_skipped_when_daemon_down(self, mock_which: MagicMock) -> None:
-        # docker on PATH but its daemon is unreachable → fall through.
-        # Without this probe, a laptop with docker installed but stopped
-        # would silently pick docker and every recipe would fail with a
-        # socket error. With nothing else available, returns None.
         mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
         with patch(
             "lightcone.engine.container._docker_daemon_up", return_value=False
@@ -426,9 +440,9 @@ class TestDetectRuntime:
     def test_docker_daemon_down_falls_through_to_podman(
         self, mock_which: MagicMock
     ) -> None:
-        # Both binaries present, docker daemon down → podman is picked
-        # regardless of order in RUNTIMES.
-        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        mock_which.side_effect = lambda name: (
+            None if name == "podman-hpc" else f"/usr/bin/{name}"
+        )
         with patch(
             "lightcone.engine.container._docker_daemon_up", return_value=False
         ):
@@ -443,6 +457,45 @@ class TestDetectRuntime:
         # we own container invocation and only support OCI runtimes.
         assert "apptainer" not in RUNTIMES
         assert "singularity" not in RUNTIMES
+
+
+class TestSiteAwareDetection:
+    @patch("lightcone.engine.container.shutil.which")
+    @patch(
+        "lightcone.engine.container.socket.gethostname",
+        return_value="login29.chn.perlmutter.nersc.gov",
+    )
+    def test_perlmutter_picks_podman_hpc(
+        self, _hostname: MagicMock, mock_which: MagicMock
+    ) -> None:
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        assert detect_runtime() == "podman-hpc"
+
+    @patch("lightcone.engine.container.shutil.which")
+    @patch(
+        "lightcone.engine.container.socket.gethostname",
+        return_value="login29.chn.perlmutter.nersc.gov",
+    )
+    def test_falls_through_when_site_runtime_missing(
+        self, _hostname: MagicMock, mock_which: MagicMock
+    ) -> None:
+        # Site preference is a hint — explicit user config goes through
+        # load_runtime, which DOES error on missing binary.
+        mock_which.side_effect = lambda name: (
+            None if name == "podman-hpc" else f"/usr/bin/{name}"
+        )
+        assert detect_runtime() == "podman"
+
+    @patch("lightcone.engine.container.shutil.which")
+    @patch(
+        "lightcone.engine.container.socket.gethostname",
+        return_value="generic-laptop",
+    )
+    def test_unknown_site_uses_default_order(
+        self, _hostname: MagicMock, mock_which: MagicMock
+    ) -> None:
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        assert detect_runtime() == RUNTIMES[0]
 
 
 class TestLoadRuntime:
