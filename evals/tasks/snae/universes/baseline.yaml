@@ -1,6 +1,0 @@
-id: baseline
-description: Default configuration using standard practices
-decisions:
-  optimizer: nelder_mead
-  error_model: stat_and_sys
-  redshift_cut: z_min_001

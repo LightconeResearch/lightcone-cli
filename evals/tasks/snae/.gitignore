@@ -1,8 +1,0 @@
-# ASTRA Analysis
-results/
-.lightcone/
-__pycache__/
-*.py[cod]
-.venv/
-.ipynb_checkpoints/
-.DS_Store

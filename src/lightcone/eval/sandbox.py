@@ -156,39 +156,73 @@ class EvalSandbox:
         loop_prompt_template: str,
         wheels: list[Path] | None = None,
     ) -> None:
-        """Upload seed project and template the loop prompt."""
+        """Scaffold the project via ``lc init`` and overlay task seed files.
+
+        The scaffold (``.claude/``, ``CLAUDE.md``, ``Containerfile``,
+        ``requirements.txt``, ``.lightcone/``, ``.gitignore``, default
+        ``universes/baseline.yaml``) is produced by the same ``lc init``
+        command users run — no separate uploaded copies of skills/hooks
+        to drift out of sync. The task seed dir contributes only the
+        bits that ``lc init`` cannot generate: ``astra.yaml``, ``data/``,
+        and ``task.yaml``.
+        """
         assert self._sandbox is not None, "Call create() first"
 
-        # Upload and install dependency wheels
+        # Install dependency wheels system-wide so `lc` and `astra` are
+        # importable before we run them (lc init below, astra universe
+        # generate after the overlay).
         if wheels:
             self._install_wheels(wheels)
 
-        # Upload seed project files
-        self._upload_directory(seed_dir, self.WORK_DIR)
-
-        # Template the loop prompt
-        prompt = loop_prompt_template.replace("{{UNIVERSE}}", universe)
-        self.upload_file("/tmp/loop-prompt.md", prompt.encode())
-
-        # Upload lightcone-cli plugin files (.claude/ with skills, hooks, scripts, agents)
-        # We can't use `lc init` because the seed project already has astra.yaml,
-        # and lc init refuses to run in that case. Instead, upload directly.
-        self._install_claude_plugins()
-
-        # Seed a minimal global config. The `lc` main group would auto-create
-        # this on first invocation, but we write it explicitly so the runtime
-        # is pinned for reproducibility across eval runs.
+        # Seed a minimal global config before invoking `lc`. `lc`'s main
+        # group would auto-create this, but writing it explicitly pins
+        # the runtime for reproducibility across eval runs.
         self.exec(
             "mkdir -p ~/.lightcone"
             " && printf 'container:\\n  runtime: auto\\n' > ~/.lightcone/config.yaml"
         )
 
-        # Git init (exec runs as evaluser via Dockerfile USER directive)
+        # Scaffold the project using the lc init from the wheel under
+        # test. --no-venv: deps are pre-installed system-wide on the
+        # sandbox image. --no-git: we run git init below, after the
+        # overlay, so the seed commit captures the task files too.
+        result = self.exec(
+            f"mkdir -p {self.WORK_DIR}"
+            f" && lc init {self.WORK_DIR} --no-git --no-venv",
+            timeout=120,
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"`lc init` failed (exit {result.exit_code}):\n"
+                f"{result.output[-2000:]}"
+            )
+
+        # Overlay task seed files (astra.yaml, data/, task.yaml). The
+        # task's astra.yaml replaces the one `astra init` boilerplated.
+        self._upload_directory(seed_dir, self.WORK_DIR)
+
+        # Regenerate baseline.yaml from the task astra.yaml's defaults.
+        # The one lc init produced matches the boilerplate astra.yaml
+        # (different decisions), so it would no longer be coherent.
+        self.exec(
+            f"cd {self.WORK_DIR}"
+            f" && rm -f universes/baseline.yaml"
+            f" && astra universe generate -n baseline"
+            f" -d 'Default configuration using standard practices'",
+            timeout=60,
+        )
+
+        # Template and stage the loop prompt for the agent.
+        prompt = loop_prompt_template.replace("{{UNIVERSE}}", universe)
+        self.upload_file("/tmp/loop-prompt.md", prompt.encode())
+
+        # Initial commit captures the full project state (scaffold +
+        # task overlay + regenerated universe).
         self.exec(
             f"cd {self.WORK_DIR}"
             " && git config --global user.name Eval"
             " && git config --global user.email eval@lightcone"
-            " && git init && git add -A && git commit -m 'seed'"
+            " && git init -q && git add -A && git commit -q -m 'seed'"
         )
 
     def exec(self, cmd: str, timeout: int = 300, cwd: str | None = None) -> ExecuteResult:
@@ -289,43 +323,6 @@ class EvalSandbox:
                     "Failed to delete sandbox for trial %s", self.trial_id, exc_info=True
                 )
             self._sandbox = None
-
-    def _install_claude_plugins(self) -> None:
-        """Upload lightcone-cli's Claude Code plugin files (skills, hooks, scripts, agents)."""
-        from lightcone.cli.plugin import get_plugin_source_dir
-
-        plugin_source = get_plugin_source_dir()
-        if plugin_source is None:
-            logger.warning("Could not find lightcone-cli plugin source files — skipping")
-            return
-
-        claude_dir = f"{self.WORK_DIR}/.claude"
-
-        # Upload plugin subdirectories
-        for subdir in ("skills", "hooks", "scripts", "agents"):
-            src = plugin_source / subdir
-            if src.exists():
-                self._upload_directory(src, f"{claude_dir}/{subdir}")
-
-        # Upload CLAUDE.md template as project CLAUDE.md if not already present
-        template = plugin_source / "templates" / "CLAUDE.md"
-        if template.exists():
-            self.upload_file(f"{self.WORK_DIR}/CLAUDE.md", template.read_bytes())
-
-        # Make scripts executable
-        self.exec(
-            f"chmod -R +x {claude_dir}/scripts/ {claude_dir}/hooks/ 2>/dev/null || true"
-        )
-
-        # Create minimal settings.json (bypassPermissions, no hooks that need
-        # absolute paths or venvs — the eval sandbox is ephemeral)
-        settings = json.dumps({
-            "permissions": {"allow": ["Bash", "Read", "Edit", "Write", "WebSearch", "WebFetch"]},
-        })
-        self.upload_file(
-            f"{claude_dir}/settings.json",
-            settings.encode(),
-        )
 
     def _install_wheels(self, wheels: list[Path]) -> None:
         """Upload and install wheel files into the sandbox.
