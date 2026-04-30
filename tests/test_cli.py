@@ -15,15 +15,13 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture(autouse=True)
-def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect ``~/.lightcone/`` to a temp dir so tests don't pollute the user's
-    real config and can pass the main-group config check."""
+    real config. The global config is auto-created on first ``lc`` invocation."""
     fake_home = tmp_path / "_home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)
-    config = fake_home / ".lightcone" / "config.yaml"
-    config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text("container:\n  runtime: auto\n")
+    return fake_home
 
 
 # ---- top-level ------------------------------------------------------------
@@ -32,7 +30,7 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_help_lists_core_commands(runner: CliRunner) -> None:
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("init", "run", "status", "verify", "build", "setup"):
+    for cmd in ("init", "run", "status", "verify", "build"):
         assert cmd in result.output
 
 
@@ -40,6 +38,23 @@ def test_help_does_not_advertise_removed_commands(runner: CliRunner) -> None:
     result = runner.invoke(main, ["--help"])
     assert "  dev " not in result.output
     assert "  cluster " not in result.output
+    assert "  setup " not in result.output
+
+
+def test_first_invocation_auto_creates_global_config(
+    runner: CliRunner, _isolated_home: Path, tmp_path: Path
+) -> None:
+    config = _isolated_home / ".lightcone" / "config.yaml"
+    assert not config.exists()
+    # Any real subcommand triggers the group callback; ``init`` runs cleanly
+    # without a pre-existing project.
+    project = tmp_path / "proj"
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv"]
+    )
+    assert result.exit_code == 0, result.output
+    assert config.exists()
+    assert "runtime: auto" in config.read_text()
 
 
 # ---- lc init --------------------------------------------------------------

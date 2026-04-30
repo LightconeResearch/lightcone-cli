@@ -1,9 +1,8 @@
 """Known site defaults.
 
-When ``lc setup`` detects a known site, it pre-populates a target with
-orthogonal ``options`` (qos, constraint, ...) and scheduler-neutral
-guidance drawn from the entries below.  Users override any default
-during the wizard.
+When ``lc init`` runs on a known site, the matching entry below provides
+the scratch root surfaced to the user and any deny rules used to keep
+edits off shared filesystems.
 
 To add a new site, append an entry to :data:`SITE_DEFAULTS`.
 """

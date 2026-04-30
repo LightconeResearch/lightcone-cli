@@ -11,7 +11,9 @@ Commands:
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
 - ``lc build``  — build containers from Containerfiles.
-- ``lc setup``  — minimal first-run configuration.
+
+The global config at ``~/.lightcone/config.yaml`` is auto-created with
+defaults on first invocation if missing.
 """
 from __future__ import annotations
 
@@ -60,20 +62,33 @@ def _config_path() -> Path:
     return Path.home() / ".lightcone" / "config.yaml"
 
 
+def _ensure_global_config() -> None:
+    """Create ``~/.lightcone/config.yaml`` with defaults if missing."""
+    config = _config_path()
+    if config.exists():
+        return
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        yaml.safe_dump(
+            {
+                # Container runtime used by `lc build` and embedded in every
+                # recipe by `lc run`. ``auto`` picks the first of
+                # podman/docker/podman-hpc found on PATH (skipping docker if
+                # its daemon is unreachable); set explicitly to pin. ``none``
+                # disables containerization entirely.
+                "container": {"runtime": "auto"},
+            }
+        )
+    )
+
+
 @click.group()
 @click.version_option(package_name="lightcone-cli")
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """lightcone-cli — ASTRA-compliant agentic layer CLI."""
     ctx.ensure_object(dict)
-    if ctx.invoked_subcommand in ("setup", "init", "eval"):
-        return
-    if not _config_path().exists():
-        console.print(
-            "\n[bold yellow]No global configuration found.[/bold yellow] "
-            "Run [cyan]lc setup[/cyan] first.\n"
-        )
-        sys.exit(1)
+    _ensure_global_config()
 
 
 # =============================================================================
@@ -729,34 +744,6 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
             build_image(tag, containerfile, project, runtime=runtime)
         except ContainerBuildError as e:
             raise click.ClickException(str(e))
-
-
-# =============================================================================
-# lc setup
-# =============================================================================
-
-
-@main.command()
-def setup() -> None:
-    """Minimal global configuration. Creates ``~/.lightcone/config.yaml``."""
-    config = _config_path()
-    config.parent.mkdir(parents=True, exist_ok=True)
-    if config.exists():
-        console.print(f"Config already exists at {config}")
-        return
-    config.write_text(
-        yaml.safe_dump(
-            {
-                # Container runtime used by `lc build` and embedded in every
-                # recipe by `lc run`. ``auto`` picks the first of
-                # podman/docker/podman-hpc found on PATH (skipping docker if
-                # its daemon is unreachable); set explicitly to pin. ``none``
-                # disables containerization entirely.
-                "container": {"runtime": "auto"},
-            }
-        )
-    )
-    console.print(f"[green]Created[/green] {config}")
 
 
 # Register eval subgroup (requires optional 'eval' extra)

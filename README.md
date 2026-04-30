@@ -48,33 +48,20 @@ Files a GitHub issue against the right repo (ASTRA or lightcone-cli) with versio
 
 ## CLI Reference
 
-### Project setup
+### Global configuration
+
+The first `lc` invocation auto-creates `~/.lightcone/config.yaml` with `container.runtime: auto`. To pin a runtime or change other settings, edit the file directly.
+
+**Extraction model:** Literature extraction subagents default to Sonnet. To change this, set `extraction_model:` in `~/.lightcone/config.yaml` (options: `sonnet`, `haiku`, or omit for inherit).
+
+### Project scaffolding
 
 ```bash
-lc init my-analysis                         # full scaffolding with Claude Code config
-lc init my-analysis --target perlmutter-gpu  # pre-configure for an HPC target
-lc init my-analysis --no-git --no-venv      # skip git/venv creation
+lc init my-analysis                          # full scaffolding with Claude Code config
+lc init my-analysis --no-git --no-venv       # skip git/venv creation
+lc init my-analysis --permissions yolo       # Claude Code permission tier (yolo|recommended|minimal)
+lc init my-analysis --scratch '$SCRATCH/lc'  # override scratch root for snakemake state and dask spill
 ```
-
-### Targets and setup
-
-Targets configure where lightcone-cli executes jobs. They're user-level (`~/.lightcone/targets/`), shared across projects. **One target per machine** — each target declares a small set of orthogonal run *options* (`qos`, `constraint`, `time_limit`, `account`, `partition`) that the agent or user can override per run.
-
-```bash
-lc setup                            # interactive setup wizard (first-time)
-lc setup --list                     # list configured targets
-lc setup --default perlmutter       # change user-wide default target
-lc target add                       # create a new target interactively
-lc target                           # show current target + run options
-lc target --show perlmutter         # show a specific target's run options
-lc target --set perlmutter          # set project target
-lc target --list                    # list available targets
-lc target refresh perlmutter        # refresh cached option limits
-```
-
-Resolution order: `--target` flag > `.lightcone/lightcone.yaml` > `~/.lightcone/config.yaml` > local.
-
-**Extraction model:** Literature extraction subagents default to Sonnet. To change this, run `lc setup` and select "Change extraction model", or edit `extraction_model` in `~/.lightcone/config.yaml` directly (options: `sonnet`, `haiku`, or empty for inherit).
 
 ### Execution and monitoring
 
@@ -84,12 +71,15 @@ The agent runs these during `/lc-build`, but you can also run them directly:
 lc run                              # materialize all outputs for all universes
 lc run accuracy                     # materialize a specific output
 lc run --universe baseline          # materialize for a specific universe
-lc run --target perlmutter          # run on a configured HPC target
-lc run --qos regular --time-limit 2h  # override run options
-lc run --strategy switch            # swap qos instead of trimming resources
-lc status                           # show materialization status (ok / pending / no recipe)
+lc run --jobs 8                     # bound parallel job dispatch
+lc run --force                      # force re-materialization
+lc run --rerun-triggers code,input  # override Snakemake rerun-triggers (default: code,input,mtime,params)
+lc status                           # show materialization status (ok / stale / missing / alias)
 lc status --universe baseline       # status for a specific universe
-lc dev                              # launch Dagster webserver UI
+lc status --json                    # machine-readable output
+lc verify                           # recompute hashes and walk the provenance chain
+lc build                            # pre-build container images from Containerfiles
+lc build --force --runtime podman   # force rebuild and pin runtime
 ```
 
 ## Capabilities
@@ -110,18 +100,15 @@ The agent can search for papers, download PDFs by DOI, and extract prior insight
 
 Complex analyses can be decomposed into nested stages, each with their own inputs, outputs, decisions, and recipes. Sub-analyses use the same schema as the top level, and can reference each other's outputs.
 
-### Execution backends
+### Execution backend
 
-Recipes run via Docker, local subprocess, or SLURM batch submission depending on your target configuration. Recipe dependencies are resolved automatically — if output B depends on output A, A runs first. Per-recipe resource requests (CPUs, GPUs, memory, time limit) are translated to the appropriate backend flags.
+`lc run` generates a Snakefile from `astra.yaml` and shells out to Snakemake. Snakemake owns DAG construction, staleness detection, parallel dispatch, and per-rule resource translation; `lc` owns the integrity layer (per-output content-addressed manifests written next to each result).
 
-### Run options with auto-adjustment
+Jobs always dispatch through a Dask cluster: a `LocalCluster` on a workstation, srun-launched workers inside a SLURM allocation, or an existing scheduler if `DASK_SCHEDULER_ADDRESS` is set. Recipes execute inside their declared container via Docker, podman, or podman-hpc — set `container.runtime` in `~/.lightcone/config.yaml` (default `auto`) to pin one. Per-recipe `resources:` (cpus, gpus, memory, time limit) flow through to the cluster.
 
-Each target declares orthogonal run options (`qos`, `constraint`, `time_limit`, `account`, `partition`) with a default value and brief guidance on each choice. The agent (or user) picks any of them per invocation via `lc run --<option>`. When a recipe exceeds the limits implied by the selected options, lightcone-cli auto-adjusts:
+### Provenance integrity
 
-- **`fit` strategy** (default): trims resources (nodes, time limit) to stay in the selected `qos` for faster turnaround
-- **`switch` strategy**: keeps resources as-is and picks another `qos` choice that can handle them
-
-Container flags (`--gpu`, `--mpi`) are derived automatically from recipe resources — no manual configuration needed.
+Every materialized output gets a `.lightcone-manifest.json` capturing `code_version` (sha256 of recipe + container + decisions), `data_version` (sha256 of the output directory contents), input manifest versions, git SHA, lc version, and host. `lc verify` recomputes hashes and walks the chain — failures surface as `tampered_data`, `broken_chain`, or `missing_manifest`. `lc status` reads only manifests, so it works offline.
 
 ### Telemetry
 

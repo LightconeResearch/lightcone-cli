@@ -6,25 +6,25 @@ Reference for lightcone-cli execution: CLI commands, development workflow, statu
 
 ```bash
 lc init [DIR]                            # Scaffold a new ASTRA project
-lc init NAME --sub-analysis              # Scaffold sub-analysis and wire into parent
 lc run [OUTPUT] [--universe NAME]        # Materialize outputs
 lc build [--force] [--runtime docker]    # Build container images from specs
 lc status [--universe NAME] [--json]     # Materialization status (text or JSON)
 lc verify [--universe NAME]              # Recompute hashes and walk the provenance chain
-lc setup                                 # Write a minimal ~/.lightcone/config.yaml
 ```
+
+The first `lc` invocation auto-creates `~/.lightcone/config.yaml` with defaults; edit it directly to pin a container runtime or set the extraction model.
 
 **Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Treat the underlying execution engine as a black box — never invoke schedulers or container runtimes directly, that will bypass reproducibility guarantees.
 
 ## Creating Sub-Analyses
 
-`lc init NAME --sub-analysis` scaffolds a sub-analysis and wires it into the parent project. It:
+Sub-analyses are scaffolded by hand, since each one is just another `astra.yaml` nested in a directory. To add one:
 
-1. Creates `analyses/<name>/` with its own `astra.yaml`, `CLAUDE.md`, `scripts/`, `universes/baseline.yaml`, and `results/`
-2. Adds a `path:` entry to the parent `astra.yaml` under `analyses:`
-3. Adds a `universe: baseline` entry to all existing parent universe files
+1. Create `analyses/<name>/` with its own `astra.yaml` (and optionally `scripts/`, `universes/baseline.yaml`, `results/`).
+2. Add a `path:` entry to the parent `astra.yaml` under `analyses:` (e.g. `analyses: { my_sub: { path: ./analyses/my_sub } }`).
+3. Add a `<name>: { universe: baseline }` entry to each existing parent universe file.
 
-After scaffolding, populate the sub-analysis's `astra.yaml` with inputs, outputs, and decisions. Use `from:` references to wire inputs and decisions to the parent or siblings — see `astra-reference.md` under "Composition Mechanics."
+Populate the sub-analysis's `astra.yaml` with inputs, outputs, and decisions. Use `from:` references to wire inputs and decisions to the parent or siblings — see `astra-reference.md` under "Composition Mechanics."
 
 ## Development Workflow
 

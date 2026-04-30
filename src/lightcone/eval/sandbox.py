@@ -175,8 +175,9 @@ class EvalSandbox:
         # and lc init refuses to run in that case. Instead, upload directly.
         self._install_claude_plugins()
 
-        # Seed a minimal global config so the `lc` main group passes its
-        # "is the user set up?" check without prompting for `lc setup`.
+        # Seed a minimal global config. The `lc` main group would auto-create
+        # this on first invocation, but we write it explicitly so the runtime
+        # is pinned for reproducibility across eval runs.
         self.exec(
             "mkdir -p ~/.lightcone"
             " && printf 'container:\\n  runtime: auto\\n' > ~/.lightcone/config.yaml"
