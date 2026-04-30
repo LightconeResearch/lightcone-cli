@@ -46,8 +46,10 @@ if ! command -v astra &> /dev/null; then
     exit 0
 fi
 
-# Gather analysis information
-analysis_name=$(grep -m1 "^  name:" astra.yaml 2>/dev/null | sed 's/.*name: *"\?\([^"]*\)"\?/\1/' | tr -d '"')
+# Gather analysis information. `astra init` writes `name:` at the top
+# level (no indent); previous indented form was pre-asset-centric.
+# Use -E (ERE) so `?` works on both BSD and GNU sed.
+analysis_name=$(grep -m1 "^name:" astra.yaml 2>/dev/null | sed -E 's/^name:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')
 
 # Count decisions
 decision_count=$(grep -c "^  [a-z_]*:$" astra.yaml 2>/dev/null | head -1)
@@ -82,27 +84,31 @@ Validation errors (run 'astra validate astra.yaml' for details):
 $error_preview"
 fi
 
-# Add lc status if lc CLI is available
+# Add lc status if lc CLI is available. States are 'ok' / 'stale' /
+# 'missing' / 'alias' (manifest-driven). The output uses Rich glyphs:
+# '✓ ok', '✸ stale', '✗ miss', '→ alias'.
 if command -v lc &> /dev/null; then
     lc_status=$(lc status 2>&1)
     lc_exit=$?
     if [ $lc_exit -eq 0 ]; then
-        # Count outputs in each state
-        pending_count=$(echo "$lc_status" | grep -c "pending")
-        ok_count=$(echo "$lc_status" | grep -c "ok")
-        no_recipe_count=$(echo "$lc_status" | grep -c "no recipe")
+        ok_count=$(echo "$lc_status" | grep -c "✓ ok")
+        stale_count=$(echo "$lc_status" | grep -c "✸ stale")
+        missing_count=$(echo "$lc_status" | grep -c "✗ miss")
+        alias_count=$(echo "$lc_status" | grep -c "→ alias")
 
         summary="$summary
 
 Materialization status:
 - ok: ${ok_count}
-- pending: ${pending_count}
-- no recipe: ${no_recipe_count}"
+- stale: ${stale_count}
+- missing: ${missing_count}
+- alias: ${alias_count}"
 
-        if [ "$pending_count" -gt 0 ]; then
+        needs_run=$((missing_count + stale_count))
+        if [ "$needs_run" -gt 0 ]; then
             summary="$summary
 
-ACTION REQUIRED: ${pending_count} output(s) have recipes but are not yet materialized. Use \`lc run\` to produce them."
+ACTION REQUIRED: ${needs_run} output(s) need \`lc run\` (${missing_count} missing, ${stale_count} stale)."
         fi
     fi
 fi
