@@ -69,12 +69,10 @@ prior_insights:
         doi: "[DOI]"
         version: <version if arXiv, omit otherwise>
         quote:
-          type: TextQuoteSelector
           exact: "<VERIFIED exact quote from paper>"
           prefix: "<~20-100 chars BEFORE the quote>"
           suffix: "<~20-100 chars AFTER the quote>"
         location:
-          type: FragmentSelector
           page: <page number hint>
     scope: "<when this applies -- optional, include only if the claim has limited applicability>"
 
@@ -111,4 +109,4 @@ verification_summary:
 | `prefix/suffix mismatch` | Context text does not match surrounding text | Re-read the area around the quote, copy exact surrounding text |
 | Persistent `not_found` | OCR artifacts, ligatures, or Unicode differences | Try shorter quote avoiding problem characters; increase prefix/suffix |
 
-**Recovery**: Re-read the failing page, copy the exact text, update prefix/suffix, verify with `astra paper verify-quote`, then run `astra validate astra.yaml --verify-evidence`.
+**Recovery**: Re-read the failing page, copy the exact text, update prefix/suffix, verify with `astra paper verify-quotes`, then run `astra validate astra.yaml --verify-evidence`.
