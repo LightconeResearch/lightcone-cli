@@ -18,9 +18,7 @@ astra.yaml              # Specification: decisions, inputs, outputs
 CLAUDE.md             # This file
 Containerfile         # Container image for execution
 requirements.txt      # Python deps (keep in sync with scripts)
-.lightcone/               # lightcone-cli internals
-  lightcone.yaml          # lightcone-cli config (default target, etc.)
-  dagster.yaml        # Dagster instance config
+.lightcone/             # lightcone-cli internals (managed by `lc`; do not edit)
 universes/
   baseline.yaml       # Default decision selections
 scripts/              # Implementation scripts

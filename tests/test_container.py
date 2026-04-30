@@ -94,6 +94,86 @@ class TestComputeImageTag:
         tag = compute_image_tag("My Project", project / "Containerfile", project)
         assert tag.startswith("lc-my-project-")
 
+    def test_changes_with_uv_lock(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        tag1 = compute_image_tag("test", cf, project)
+        (project / "uv.lock").write_text("# v1\n")
+        tag2 = compute_image_tag("test", cf, project)
+        assert tag1 != tag2
+
+    def test_changes_with_copied_file(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY app.py /app/app.py\n")
+        (project / "app.py").write_text("print(1)\n")
+        tag1 = compute_image_tag("test", cf, project)
+        (project / "app.py").write_text("print(2)\n")
+        tag2 = compute_image_tag("test", cf, project)
+        assert tag1 != tag2
+
+    def test_changes_with_copied_directory(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY src/ /app/src/\n")
+        (project / "src").mkdir()
+        (project / "src" / "a.py").write_text("a = 1\n")
+        tag1 = compute_image_tag("test", cf, project)
+        (project / "src" / "b.py").write_text("b = 2\n")
+        tag2 = compute_image_tag("test", cf, project)
+        assert tag1 != tag2
+
+    def test_copy_dir_ignores_results(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY . /app/\n")
+        (project / "src").mkdir()
+        (project / "src" / "a.py").write_text("a = 1\n")
+        tag1 = compute_image_tag("test", cf, project)
+        # Touching results/ or .lightcone/ must not invalidate the tag —
+        # they aren't in the build context for any sane Containerfile.
+        (project / "results").mkdir()
+        (project / "results" / "out.txt").write_text("data\n")
+        (project / ".lightcone").mkdir()
+        (project / ".lightcone" / "Snakefile").write_text("rule x:\n")
+        tag2 = compute_image_tag("test", cf, project)
+        assert tag1 == tag2
+
+    def test_skips_from_stage_copy(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text(
+            "FROM python:3.12-slim AS builder\n"
+            "FROM python:3.12-slim\n"
+            "COPY --from=builder /tmp/x /app/x\n"
+        )
+        # No real source on host, but parsing must not raise or expand.
+        tag = compute_image_tag("test", cf, project)
+        assert tag.startswith("lc-test-")
+
+    def test_skips_url_add(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text(
+            "FROM python:3.12-slim\nADD https://example.com/x.tgz /app/x.tgz\n"
+        )
+        tag = compute_image_tag("test", cf, project)
+        assert tag.startswith("lc-test-")
+
+    def test_glob_copy_invalidates_on_match_change(self, project: Path) -> None:
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY *.py /app/\n")
+        (project / "main.py").write_text("x = 1\n")
+        tag1 = compute_image_tag("test", cf, project)
+        (project / "main.py").write_text("x = 2\n")
+        tag2 = compute_image_tag("test", cf, project)
+        assert tag1 != tag2
+
+    def test_swap_dep_file_names_not_collision(self, project: Path) -> None:
+        # Same total bytes, swapped between two dep files: must not collide
+        # (the old concat-without-delimiter scheme would have).
+        (project / "requirements.txt").write_text("numpy\n")
+        (project / "requirements-dev.txt").write_text("pandas\n")
+        tag1 = compute_image_tag("test", project / "Containerfile", project)
+        (project / "requirements.txt").write_text("pandas\n")
+        (project / "requirements-dev.txt").write_text("numpy\n")
+        tag2 = compute_image_tag("test", project / "Containerfile", project)
+        assert tag1 != tag2
+
 
 # ---- image_exists_locally / image_exists_podman_hpc -----------------------
 
@@ -197,6 +277,83 @@ class TestBuildImage:
         assert "--build-arg" in cmd
         assert "PY_VERSION=3.12" in cmd
 
+    def test_build_stages_context_off_source_tree(self, project: Path) -> None:
+        """Build context must be a tempdir, not the source project.
+
+        On NERSC, projects living on DVS-mounted home/CFS hit
+        ``llistxattr EPROTO`` when buildah's copier walks COPY sources.
+        Staging into ``$TMPDIR`` (tmpfs) is what lets builds succeed there.
+        """
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY app.py /app/app.py\n")
+        (project / "app.py").write_text("print('hi')\n")
+
+        captured: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            ctx = Path(cmd[-1])
+            captured["ctx"] = ctx
+            captured["files"] = sorted(
+                p.relative_to(ctx).as_posix()
+                for p in ctx.rglob("*")
+                if p.is_file()
+            )
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "lightcone.engine.container.subprocess.run", side_effect=fake_run
+        ):
+            build_image("lc-test", cf, project, runtime="podman")
+
+        assert captured["ctx"].resolve() != project.resolve()
+        assert not captured["ctx"].exists()
+        assert "Containerfile" in captured["files"]
+        assert "app.py" in captured["files"]
+
+    def test_build_stages_copy_dot_with_excludes(self, project: Path) -> None:
+        """``COPY .`` mirrors the project but skips excluded subtrees."""
+        cf = project / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY . /app/\n")
+        (project / "src").mkdir()
+        (project / "src" / "main.py").write_text("x = 1\n")
+        (project / ".git").mkdir()
+        (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        (project / "results").mkdir()
+        (project / "results" / "out.txt").write_text("data\n")
+
+        captured: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            ctx = Path(cmd[-1])
+            captured["files"] = sorted(
+                p.relative_to(ctx).as_posix()
+                for p in ctx.rglob("*")
+                if p.is_file()
+            )
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "lightcone.engine.container.subprocess.run", side_effect=fake_run
+        ):
+            build_image("lc-test", cf, project, runtime="podman")
+
+        assert "src/main.py" in captured["files"]
+        assert "Containerfile" in captured["files"]
+        assert not any(f.startswith(".git/") for f in captured["files"])
+        assert not any(f.startswith("results/") for f in captured["files"])
+
+    @patch("lightcone.engine.container.subprocess.run")
+    def test_build_cleans_stage_on_failure(
+        self, mock_run: MagicMock, project: Path
+    ) -> None:
+        """Staged tempdir is removed even when the build fails."""
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
+        with pytest.raises(ContainerBuildError):
+            build_image("lc-test", project / "Containerfile", project, runtime="docker")
+        ctx = Path(mock_run.call_args[0][0][-1])
+        assert not ctx.exists()
+
 
 # ---- pull_image -----------------------------------------------------------
 
@@ -240,14 +397,42 @@ class TestPullImage:
 
 class TestDetectRuntime:
     @patch("lightcone.engine.container.shutil.which")
-    def test_docker_preferred(self, mock_which: MagicMock) -> None:
+    def test_podman_preferred(self, mock_which: MagicMock) -> None:
+        # Both installed — podman wins (rootless, no daemon to wedge).
         mock_which.side_effect = lambda name: f"/usr/bin/{name}"
-        assert detect_runtime() == "docker"
+        assert detect_runtime() == "podman"
 
     @patch("lightcone.engine.container.shutil.which")
-    def test_podman_only(self, mock_which: MagicMock) -> None:
-        mock_which.side_effect = lambda name: "/usr/bin/podman" if name == "podman" else None
-        assert detect_runtime() == "podman"
+    def test_docker_only(self, mock_which: MagicMock) -> None:
+        mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
+        with patch(
+            "lightcone.engine.container._docker_daemon_up", return_value=True
+        ):
+            assert detect_runtime() == "docker"
+
+    @patch("lightcone.engine.container.shutil.which")
+    def test_docker_skipped_when_daemon_down(self, mock_which: MagicMock) -> None:
+        # docker on PATH but its daemon is unreachable → fall through.
+        # Without this probe, a laptop with docker installed but stopped
+        # would silently pick docker and every recipe would fail with a
+        # socket error. With nothing else available, returns None.
+        mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
+        with patch(
+            "lightcone.engine.container._docker_daemon_up", return_value=False
+        ):
+            assert detect_runtime() is None
+
+    @patch("lightcone.engine.container.shutil.which")
+    def test_docker_daemon_down_falls_through_to_podman(
+        self, mock_which: MagicMock
+    ) -> None:
+        # Both binaries present, docker daemon down → podman is picked
+        # regardless of order in RUNTIMES.
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        with patch(
+            "lightcone.engine.container._docker_daemon_up", return_value=False
+        ):
+            assert detect_runtime() == "podman"
 
     @patch("lightcone.engine.container.shutil.which", return_value=None)
     def test_none_available(self, mock_which: MagicMock) -> None:

@@ -71,10 +71,14 @@ class EvalSandbox:
 
         # Build the sandbox image
         if self.sandbox_image is None:
-            # Direct deps from astra + lightcone-cli pyproject.toml (pip resolves transitive)
+            # Direct deps from astra + lightcone-cli pyproject.toml (pip resolves transitive).
+            # Kept in sync with the runtime deps declared there — the local astra
+            # and lightcone-cli wheels are uploaded with --no-deps, so anything not
+            # listed here must come from the wheels themselves.
             deps = (
-                "click httpx jsonschema pydantic pypdf pyyaml rapidfuzz rich"
-                " dagster dagster-webserver dagster-docker langfuse"
+                "click httpx jinja2 jsonschema pydantic pypdf pyyaml rapidfuzz rich"
+                " snakemake snakemake-interface-executor-plugins"
+                " snakemake-interface-common dask distributed langfuse"
             )
             image = (
                 Image.debian_slim("3.12")
@@ -171,10 +175,12 @@ class EvalSandbox:
         # and lc init refuses to run in that case. Instead, upload directly.
         self._install_claude_plugins()
 
-        # Configure lightcone-cli default target so `lc status` works without setup wizard
+        # Seed a minimal global config. The `lc` main group would auto-create
+        # this on first invocation, but we write it explicitly so the runtime
+        # is pinned for reproducibility across eval runs.
         self.exec(
             "mkdir -p ~/.lightcone"
-            " && echo 'default_target: local' > ~/.lightcone/config.yaml"
+            " && printf 'container:\\n  runtime: auto\\n' > ~/.lightcone/config.yaml"
         )
 
         # Git init (exec runs as evaluser via Dockerfile USER directive)

@@ -14,7 +14,7 @@ Four rules guide every decision below.
 
 3. **The user-facing surface does not change.** `lc run`, `lc status`, `lc verify` keep their semantics. The fact that Snakemake is underneath is an implementation detail. Users should never have to write a Snakefile by hand or know that one exists.
 
-4. **This is a clean-slate replacement, executed in one go.** No backward compatibility, no dual-engine flag, no migration command. If we commit to this redesign, we delete the entire Dagster + Dask + Postgres engine and ship the Snakemake-based one as the new baseline. There are no existing production projects whose state we need to preserve; reasoning about migration paths is wasted complexity.
+4. **This is a clean-slate replacement, executed in one go.** No backward compatibility, no dual-engine flag, no migration command. If we commit to this redesign, we delete the entire Dagster + Postgres engine and ship the Snakemake-based one as the new baseline. There are no existing production projects whose state we need to preserve; reasoning about migration paths is wasted complexity.
 
 ---
 
@@ -25,46 +25,51 @@ astra.yaml ── Snakefile generator ──> .lightcone/Snakefile
                                             │
                             snakemake (CLI subprocess)
                                             │
-            ┌───────────────────────────────┼───────────────────────────────┐
-            │              │                │                │              │
-       DAG resolution  staleness     cluster submission  container exec   conda
-       (Snakemake)     (mtime+code)  (slurm plugin)      (apptainer/docker)│
-            │                                                              │
-            └─────────────────── per-rule run: block ──────────────────────┘
-                                            │
-                       ┌────────────────────┴────────────────────┐
-                       │                                          │
-              shell() the recipe                       write_manifest()
-              (containerized by Snakemake)             (host-side Python)
-                       │
-                       ▼
-               results/<u>/<o>/...
-               results/<u>/<o>/.lightcone-manifest.json
+            ┌───────────────────────────────┼──────────────────────────────┐
+            │              │                │                              │
+       DAG resolution  staleness     task dispatch (Dask executor plugin)  │
+       (Snakemake)     (mtime+code)  ── client.submit per rule ──┐         │
+            │                                                    │         │
+            │                            ┌───────────────────────┴───┐     │
+            │                            │ in-process scheduler in   │     │
+            │                            │ `lc run`; LocalCluster on │     │
+            │                            │ workstation, srun-launched│     │
+            │                            │ workers across SLURM nodes│     │
+            │                            └───────────┬───────────────┘     │
+            │                                        │                     │
+            └─────────────────── per-rule run: block ┘                     │
+                                            │                              │
+                       ┌────────────────────┴────────────────────┐         │
+                       │                                          │        │
+              shell() the recipe                       write_manifest()    │
+              (containerized via lc container runtime) (host-side Python)  │
+                       │                                                   │
+                       ▼                                                   │
+               results/<u>/<o>/...                                         │
+               results/<u>/<o>/.lightcone-manifest.json ──────────────────┘
 ```
 
 **What Snakemake owns** (we do not write code for any of this):
 
 - DAG construction from rule input/output declarations
 - Topological execution, dependency resolution, parallelism (`--cores`, `--jobs`)
-- Cluster submission via `snakemake-executor-plugin-slurm` (sbatch + status polling)
-- Per-rule resource requests (`mem_mb`, `runtime`, `slurm_partition`, `slurm_account`, `gpu`)
-- Profiles for site-specific config (`--profile`, `--workflow-profile`)
+- Per-rule resource requests (`mem_mb`, `threads`, `gpus_per_task`)
 - Dry-run (`-n`), DAG visualization (`--dag`, `--rulegraph`)
-- Built-in staleness detection (`--rerun-triggers code params input mtime software-env`)
+- Built-in staleness detection (`--rerun-triggers code params input mtime`)
 - Locking, log capture, retry logic (`--retries`)
-- **Container runtime invocation** — `--use-apptainer` pulls/caches SIFs, mounts the cwd, runs each rule's `shell()` calls inside the configured container
 - Conda env management (if a project ever needs it)
 
 **What we own** (this is the entire `lightcone-engine` package after the redesign):
 
 1. `lightcone.engine.snakefile` — generates `.lightcone/Snakefile` from `astra.yaml`
 2. `lightcone.engine.manifest` — `write_manifest()` plus the read/verify schema
-3. `lightcone.engine.container` — builds container images from Containerfiles with deterministic content-addressed hashes (kept from today)
+3. `lightcone.engine.container` — builds and invokes container images from Containerfiles with deterministic content-addressed hashes
 4. `lightcone.engine.status` — walks `results/` and reads manifests, no Snakemake dependency
 5. `lightcone.engine.verify` — recomputes hashes and validates the provenance chain
-6. `lightcone.engine.profile` — translates `lc target` config into a snakemake profile YAML
+6. `lightcone.engine.dask_cluster` — `cluster_for_run()` context manager: detects environment (workstation / inside `salloc` / pre-existing scheduler) and yields a Dask scheduler address for the run's lifetime
+7. `snakemake_executor_plugin_dask` — vendored Snakemake executor plugin: translates each rule into `client.submit(_run_shell, …)` with per-task resources
 
-Six focused modules. No execution backend dispatch (Snakemake does it), no IO manager (filesystem paths are conventional), no cluster lifecycle (no service to manage).
+Seven focused modules. No execution backend dispatch beyond Dask (Snakemake hands rules to the executor plugin; the plugin hands them to Dask), no IO manager (filesystem paths are conventional), no cluster lifecycle daemon (the scheduler is in-process inside `lc run`).
 
 ---
 
@@ -100,37 +105,17 @@ rule clean_catalog:
     output:
         data=directory("results/{universe}/clean_catalog/"),
         manifest="results/{universe}/clean_catalog/.lightcone-manifest.json",
-    container:
-        ".lightcone/images/lc-clean-a1b2c3d4.sif"
     params:
         cfg=lambda wc: CFG["clean_catalog"][wc.universe],
     resources:
-        mem_mb=8000, runtime=60,
+        mem_mb=8000, cpus_per_task=4,
     run:
-        shell("{params.cfg[recipe]}")          # runs INSIDE the container
+        # cfg["shell_command"] is the recipe pre-wrapped at generation
+        # time, e.g. `podman run --rm -v "$PWD":"$PWD" -w "$PWD"
+        # lc-clean-a1b2c3d4 bash -c '<recipe>'`. We do not use
+        # Snakemake's ``container:`` directive — see below.
+        shell(params.cfg["shell_command"])
         write_manifest(                         # runs on the HOST
-            path=output.manifest,
-            output_dir=output.data,
-            inputs=input,
-            cfg=params.cfg,
-        )
-
-
-rule power_spectrum:
-    input:
-        catalog="results/{universe}/clean_catalog/",
-    output:
-        data=directory("results/{universe}/power_spectrum/"),
-        manifest="results/{universe}/power_spectrum/.lightcone-manifest.json",
-    container:
-        ".lightcone/images/lc-ps-d0e1234f.sif"
-    params:
-        cfg=lambda wc: CFG["power_spectrum"][wc.universe],
-    resources:
-        mem_mb=32000, runtime=240, slurm_partition="gpu", gpu=1,
-    run:
-        shell("{params.cfg[recipe]}")
-        write_manifest(
             path=output.manifest,
             output_dir=output.data,
             inputs=input,
@@ -143,10 +128,11 @@ rule power_spectrum:
 - **One rule per `output_id`**, with `{universe}` as the only wildcard. This avoids ambiguity (one output_id ↔ one rule) and makes the Snakefile readable.
 - **The manifest is a declared output of every rule.** Snakemake re-runs any rule whose manifest is missing — agents cannot "fake" materialization by dropping just the data file. Snakemake's existence check enforces it.
 - **`directory()` for the output dir.** Recipes write multiple files; we model the whole directory as the output. Snakemake wipes it before each rule run.
-- **`run:` block, not `shell:`.** The `run:` body is plain Python executing on the host. `shell()` calls inside it are containerized by Snakemake when `container:` is set. This lets the recipe run in the container and `write_manifest()` run on the host, in one atomic rule body, with no CLI subcommand.
-- **`container:` references a local SIF** built by `lc build`. The path includes the deterministic content hash (`engine/container.py`), so the rule's code includes that hash literally — Snakemake's `code` rerun-trigger detects image rebuilds for free.
+- **`run:` block, not `shell:`.** The `run:` body is plain Python executing on a Dask worker. The `shell()` call inside it spawns the recipe; `write_manifest()` runs in the same Python process immediately after the recipe exits. One atomic rule body, no CLI subcommand.
+- **We invoke the container runtime ourselves**, not via `container:`. The pre-wrapped `shell_command` literally contains the `podman run …` / `docker run …` / `apptainer exec …` call. This keeps the manifest's `container_image` field as the strong evidence of what actually ran (we own the wrap), and lets us pick `podman-hpc` on Perlmutter, `podman` elsewhere, all with one `lc build` artifact.
+- **`code_version` is embedded in the shell command** as a leading no-op (`: lc_code_version=<sha>;`). Snakemake's `code` rerun-trigger hashes the rule body, so a recipe / container / decision change propagates a new sha into the rule body and the rule re-runs.
 - **All provenance details live in a sidecar JSON** (`.lightcone/snakefile-config.json`) referenced via `params.cfg`. The Snakefile itself stays small. The cfg blob holds recipe text, decisions, and code_version per (output, universe) pair.
-- **`resources:` come from astra.yaml.** Each output declares its needs (mem, time, partition, gpu); we translate to Snakemake's resource keys at generation time.
+- **`resources:` come from astra.yaml.** Each output declares its needs (`mem_mb`, `cpus_per_task`, `gpus_per_task`); the Dask executor plugin translates them 1:1 into per-task Dask resource constraints.
 
 That's the whole template. ~30 lines of Snakefile per output, generated from a Jinja template.
 
@@ -303,19 +289,30 @@ def verify(universe, strict):
 
 ### Cluster execution
 
-There is **no scheduler daemon, no Postgres, no Dask, and no `lc cluster` command.** Snakemake's slurm plugin submits sbatch jobs directly from the head node; staleness state is just files in `.snakemake/`. The `lc cluster start/attach/stop` lifecycle goes away entirely because there is no service to keep alive.
+There is **no scheduler daemon, no Postgres, and no `lc cluster` command.** The Dask scheduler is in-process inside `lc run`; its lifetime equals the run's lifetime. No service to keep alive across runs, no orphaned schedulers if the driver crashes, no `lc cluster start/attach/stop` lifecycle.
 
-Users who want a single allocation with many job-steps inside it (today's `attach` mode) run `salloc` themselves and invoke `lc run` inside the allocation. `lc run` then auto-detects the environment via `lightcone.engine.dask_cluster.cluster_for_run`:
+Users who want a single allocation with many tasks inside it (today's `attach` mode) run `salloc` themselves and invoke `lc run` inside the allocation. `lc run` then auto-detects the environment via `lightcone.engine.dask_cluster.cluster_for_run`:
 
-- `DASK_SCHEDULER_ADDRESS` set → connect to the existing scheduler.
-- `SLURM_JOB_ID` set → start an in-process scheduler (`LocalCluster(n_workers=0)`); `srun --ntasks-per-node=1 dask worker $ADDR` launches one worker per node, each advertising the node's full `cpus`/`memory`/`gpus` as Dask resources.
-- Neither → `LocalCluster()` sized to the local machine.
+| Trigger | Behavior |
+|---|---|
+| `DASK_SCHEDULER_ADDRESS` set | Connect to the existing scheduler. We don't own its lifecycle. |
+| `SLURM_JOB_ID` set | Start an in-process `LocalCluster(n_workers=0)` bound to the driver's hostname; `srun --ntasks=$NNODES --ntasks-per-node=1 dask worker $ADDR` launches one persistent worker per node, each advertising the node's full `cpus`/`memory`/`gpus` as Dask resources. |
+| Neither | `LocalCluster()` sized to the local machine (one worker, all cpus). |
 
-The scheduler is always in-process — its lifetime equals the run's lifetime. No service to manage, no orphaned schedulers if the driver crashes.
+Snakemake dispatches each rule via our vendored executor plugin at `src/snakemake_executor_plugin_dask/`: `client.submit(_run_shell, cmd, resources={cpus, memory, gpus}, pure=False)`. Per-rule `cpus_per_task` / `mem_mb` / `gpus_per_task` translate 1:1 to per-task Dask resources, and the scheduler bin-packs tasks into workers up to each worker's advertised budget. Listing or canceling running jobs is `squeue` / `scancel` directly; a Dask dashboard is exposed on a random port for live introspection.
 
-Snakemake dispatches each rule via our own executor plugin at `src/snakemake_executor_plugin_dask/` (~120 lines): `client.submit(_run_shell, cmd, resources={cpus, memory, gpus}, pure=False)`. Per-rule `threads`/`mem_mb`/`gpus_per_task` translate 1:1 to per-task Dask resources, and the scheduler bin-packs tasks into workers up to each worker's advertised budget. Listing or canceling running jobs is `squeue` / `scancel` directly, and a Dask dashboard is exposed on a random port for live introspection.
+The same plugin and bootstrap path covers laptop → workstation → multi-node SLURM allocation, so there is one execution code path everywhere.
 
-The same plugin and bootstrap path covers laptop → workstation → SLURM allocation, so there is one execution code path everywhere; substrate choice was deliberate after evaluating Flux (richer hierarchical scheduling but install friction on non-Perlmutter sites).
+#### Why Dask, not `slurm-jobstep` or `slurm`
+
+The reasonable Snakemake-native alternatives for the multi-node-within-one-allocation case are `--executor slurm` (per-rule `sbatch` from a head node) and `--executor slurm-jobstep` (per-rule `srun --jobid=$SLURM_JOB_ID …` inside an existing allocation). We considered both:
+
+- **`--executor slurm` is wrong shape for our HPC story.** It assumes a head node submitting sbatch jobs that flow through the queue independently. The Snakemake docs themselves warn that running it inside an active SLURM job leads to unpredictable behavior. Our users want pilot-job semantics: one big `salloc`, many tasks dispatched within it, no per-task queue wait.
+- **`--executor slurm-jobstep` is the right *shape* but the wrong *contract*.** The plugin's repo description states it is "meant for internal use by snakemake-executor-plugin-slurm" — i.e. it's officially a helper invoked by the main slurm plugin's sbatch wrappers, not a user-facing standalone executor. Using it as a standalone pilot-job executor is an off-label code path the maintainers do not commit to keeping working. It also inherits two known footguns we'd then have to defend against in user docs: SLURM 22.05+'s `--cpus-per-task` non-inheritance (`snakemake-executor-plugin-slurm#41`) and the long-standing one-core dispatch issue (`snakemake#2447`).
+- **Dask gives us a stable, vendored substrate we control.** ~155 lines of executor plugin + ~200 lines of cluster bootstrap is a small, bounded amount of code. Workers are persistent within a run (sub-second task dispatch, useful when the DAG fans out to many short tasks); resource accounting is exposed via the Dask dashboard; failure modes are well-understood. The trade we accept is that resource matching is advisory rather than cgroup-enforced — for a workload of minutes-to-hours recipes whose `mem_mb` is declared in `astra.yaml`, this is acceptable, and SLURM's per-allocation memory cgroup is the backstop.
+- **Flux was evaluated and rejected.** Richer hierarchical scheduling and sub-allocation packing, but `module load flux` (or building flux-core from source) on every host is install friction we don't want outside Perlmutter. Dask is `pip install` everywhere with no PMI dependency.
+
+If standalone `slurm-jobstep` becomes a maintained, user-facing executor in the future, this decision is worth revisiting — the win would be cgroup-enforced per-rule resources and zero bespoke code. Until then, owning ~350 LOC of well-scoped Dask plumbing is the better trade.
 
 The entire `engine/clusters/` directory (~1000 LOC of cluster lifecycle, Postgres bootstrap, scheduler management) is **deleted**, not replaced.
 
@@ -323,32 +320,41 @@ The entire `engine/clusters/` directory (~1000 LOC of cluster lifecycle, Postgre
 
 ## Code footprint
 
-| Module | Purpose | Estimated LOC |
+| Module | Purpose | LOC |
 |---|---|---:|
-| `engine/snakefile.py` | Jinja template + generator from `astra.yaml` | 200 |
-| `engine/manifest.py` | `write_manifest()` + read/verify schema | 100 |
-| `engine/container.py` | Deterministic image build + hashing (kept) | 200 |
-| `engine/status.py` | Walk results, compute status from manifests | 80 |
-| `engine/verify.py` | Recompute hashes, validate chain | 100 |
-| `engine/profile.py` | Translate `lc target` → snakemake profile YAML | 100 |
-| `cli/commands.py` | Click commands; mostly subprocess.run + argument plumbing | 350 |
-| **Total** | | **~1130** |
+| `engine/snakefile.py` | Jinja template + generator from `astra.yaml` | 333 |
+| `engine/manifest.py` | `write_manifest()` + read/verify schema | 205 |
+| `engine/container.py` | Deterministic image build, hashing, runtime wrap | 689 |
+| `engine/dask_cluster.py` | `cluster_for_run()` — workstation / SLURM / pre-existing | 197 |
+| `engine/status.py` | Walk results, compute status from manifests | 140 |
+| `engine/verify.py` | Recompute hashes, validate chain | 139 |
+| `engine/validation.py` | Post-materialization output shape checks | 180 |
+| `engine/tree.py` | Sub-analysis tree traversal | 317 |
+| `engine/site_registry.py` | Known HPC site defaults (Perlmutter, etc.) | 106 |
+| `snakemake_executor_plugin_dask/` | Vendored Snakemake executor plugin | 154 |
+| `cli/commands.py` | Click surface; subprocess.run + argument plumbing | 685 |
+| **Total** | | **~3145** |
 
-For comparison, today's `engine/` (Dagster + Dask + Postgres + cluster lifecycle + runner) is roughly **3000–3500 LOC**. The redesign cuts it by roughly two thirds.
+For comparison, the previous `engine/` (Dagster + Dask + Postgres + cluster lifecycle + runner + targets + slurm-info) was roughly **5500+ LOC** before counting tests. The redesign cuts it substantially while delivering more of `design_review.md`.
 
 What gets **deleted**:
 
 - `engine/assets.py` (Dagster asset factory) — gone
 - `engine/io_manager.py` (the misnamed pass-through) — gone, was never a real IO manager
-- `engine/runner.py` (docker/podman/venv/local dispatch) — gone, Snakemake's `container:` directive handles runtime invocation
-- `engine/dask_entrypoint.py` (Dask reconstructable bootstrap) — gone
+- `engine/runner.py` (docker/podman/venv/local dispatch) — gone, runtime invocation is now wrapped into the rule's `shell_command` at generation time
+- `engine/dask_entrypoint.py` (Dagster-Dask reconstructable bootstrap) — gone, replaced by direct Dask client use in the executor plugin
 - `engine/clusters/_pg.py` (Postgres lifecycle) — gone
-- `engine/clusters/_local.py`, `_slurm.py`, `_slurm_info.py` — gone; site config lives in snakemake profiles via `engine/profile.py`
-- The `dagster`, `dagster-dask`, `dagster-postgres`, `dagster-webserver`, `dagster-docker`, `pixeltable-pgserver`, `dask`, `distributed` dependencies — all dropped from `pyproject.toml`
+- `engine/clusters/_local.py`, `_slurm.py`, `_slurm_info.py` — gone; the in-allocation pilot-job pattern is handled by `dask_cluster.py`'s srun-launched workers
+- `engine/targets.py` (the old `lc target` config) — gone
+- The `dagster`, `dagster-dask`, `dagster-postgres`, `dagster-webserver`, `dagster-docker`, `pixeltable-pgserver` dependencies — dropped from `pyproject.toml`
+
+What gets **kept** from the previous engine:
+
+- `dask` and `distributed` — re-purposed: no longer behind Dagster's `dagster-dask` shim, now driven directly by our vendored Snakemake executor plugin and `cluster_for_run()` bootstrap.
 
 What gets **added**:
 
-- `snakemake` (core), `snakemake-executor-plugin-slurm`, optionally `snakemake-executor-plugin-kubernetes` — three deps replacing seven.
+- `snakemake>=9.0` (core), `snakemake-interface-executor-plugins`, `snakemake-interface-common`, `jinja2` — Snakemake itself plus the SDKs we need to ship the Dask executor plugin.
 
 ---
 
@@ -359,7 +365,7 @@ What gets **added**:
 | **§1.1 Verifiable execution** | Manifest is content-addressed; `data_version` = sha256 of output dir; chain links upstream `data_versions`. Agents cannot fake outputs without producing a valid manifest, and a forged manifest fails `lc verify`. |
 | **§1.2 Reproducibility** | `code_version` embedded in rule shell command + Snakemake's `code` rerun-trigger = automatic re-execute on code/container/decision change. External inputs tracked via mtime (default) or sha256 (`--strict-inputs`). |
 | **§1.3 Transparent CLI usability** | `lc run`, `lc status`, `lc verify` keep their semantics. The Snakefile is implementation detail. Users who want it can `cat .lightcone/Snakefile` or run `snakemake --dag` directly. |
-| **§1.4 Frictionless local + HPC + k8s** | `--executor slurm` / `--executor kubernetes` are existing Snakemake plugins. No services to manage. Profile YAML per target replaces ad-hoc `~/.lightcone/targets/`. |
+| **§1.4 Frictionless local + HPC** | One executor plugin (`--executor dask`) and one bootstrap (`cluster_for_run`) cover laptop, workstation, and multi-node `salloc`. No daemons to manage; pilot-job semantics inside an allocation; no per-rule sbatch wait. |
 | **§1.5 `astra.yaml` invariant** | Snakefile is regenerated from `astra.yaml` on every run. There is no parallel state to drift. |
 | **§1.6 Offline auditability** | `lc verify` and `lc status` walk manifests directly; no Snakemake or database needed for either. A frozen archive of `results/` plus the `astra.yaml` is fully auditable. |
 
@@ -391,11 +397,12 @@ This single design choice replaces what would otherwise be a complex bidirection
 | Risk | Mitigation |
 |---|---|
 | **`.snakemake/` on shared HPC filesystems.** Default file-based metadata (one file per output) hits inode pressure; SQLite metadata has lock contention on Lustre. | We don't depend on `.snakemake/metadata/` for anything user-facing. Treat it as a cache, mount on local node scratch via env var, accept that it may need to be rebuilt. |
-| **Container exec semantics in `run:` blocks.** We rely on Snakemake's documented behavior that `shell()` calls inside a `run:` block are containerized when `container:` is set, while the surrounding Python runs on the host. | Verified in the Snakemake docs and used widely in the wild. If it ever regresses, fallback is to invoke `apptainer exec` explicitly inside the `run:` block — same module, ~5 line change. |
-| **Loss of multi-backend fallback.** Today's runner falls back from container → venv → local on failure. Snakemake does not. | This is a feature, not a regression. Silent backend changes destroy reproducibility; we want failures to fail. |
-| **Snakemake locks the workdir during a run.** Two `lc run` invocations from two terminals will block each other. | Acceptable. Today's Dagster doesn't isolate that case meaningfully either, and concurrent project runs are rare. If needed, generate per-invocation Snakefile in a tmp workdir. |
-| **No unified UI.** Lose Dagster's webserver. | `snakemake --report report.html` covers most of what the UI was used for. `lc status` is the daily driver. The webserver was rarely the right tool anyway. |
-| **Slurm plugin polling latency** (40s → 180s backoff). | Acceptable for our workload (recipes are minutes to hours). Tunable per profile. |
+| **Container exec is ours, not Snakemake's.** We pre-wrap each recipe with the explicit container runtime call at generation time and leave Snakemake's `container:` directive unused. | Trade is deliberate: we keep the manifest's `container_image` field as authoritative evidence of what ran, and we get to pick `podman-hpc` on Perlmutter and `podman` elsewhere from one declared image tag. |
+| **Loss of multi-backend fallback.** The previous runner fell back from container → venv → local on failure. The new wrap does not. | This is a feature, not a regression. Silent backend changes destroy reproducibility; we want failures to fail. |
+| **Snakemake locks the workdir during a run.** Two `lc run` invocations from two terminals will block each other. | Acceptable. The previous Dagster engine didn't isolate that case meaningfully either, and concurrent project runs are rare. If needed, generate per-invocation Snakefile in a tmp workdir. |
+| **No unified UI.** Lose Dagster's webserver. | `snakemake --report report.html` plus the Dask dashboard cover most of what the UI was used for. `lc status` is the daily driver. |
+| **Dask resource matching is advisory, not cgroup-enforced.** A rule that exceeds its declared `mem_mb` won't be killed by Dask itself. | SLURM's per-allocation memory cgroup is the backstop on HPC; `mem_mb` declarations in `astra.yaml` are the user's commitment. If a recipe blows past it, the kernel OOM-kills the worker and Snakemake retries. |
+| **Driver-on-worker-node contention.** Inside `salloc`, `lc run` and the in-process scheduler share their node with one worker. | One process worth of CPU on one node out of N; negligible at our recipe granularity. |
 | **Snakemake API instability.** | We shell out to the CLI, not the Python API. CLI is stable. |
 | **Recipes that need Python data (not files) between steps.** | Out of scope by design (and was never supported by current architecture either). Recipes communicate via files. |
 
@@ -406,7 +413,7 @@ This single design choice replaces what would otherwise be a complex bidirection
 - **Per-rule on-success hook.** Snakemake doesn't have one; we don't need one because the `run:` block *is* the rule body — `write_manifest()` runs after `shell()` on the host.
 - **A custom DAG executor.** Snakemake is the executor.
 - **A persistent metadata database.** Manifests on disk are sufficient and survive everything.
-- **A scheduler daemon.** Snakemake's slurm plugin submits sbatch directly; no service to keep alive.
+- **A scheduler daemon.** The Dask scheduler is in-process inside `lc run`; no service to keep alive across runs.
 - **A Snakemake API integration in Python.** We shell out. CLI is stable; Python API is documented as internal.
 - **Universe-as-partition machinery.** Universes are a wildcard dimension in rules. `expand()` over `UNIVERSES` in `rule all` is the entire fan-out logic.
 
@@ -430,8 +437,8 @@ These are real design questions that need a small spike or decision before imple
 
 ## Bottom line
 
-We replace Dagster + Dask + Postgres with Snakemake + a small content-addressed manifest layer. The user-facing surface stays identical. The engine LOC roughly halves. Provenance becomes a real cryptographic property, not a process-boundary policy. The HPC story stops being about bundling services and starts being about generating a profile YAML.
+We replace Dagster + Postgres with Snakemake + a small content-addressed manifest layer + a vendored Dask executor plugin. The user-facing surface stays identical. The engine LOC roughly halves. Provenance becomes a real cryptographic property, not a process-boundary policy. The HPC story stops being about bundling services and starts being about a single in-process scheduler whose lifetime equals the run.
 
-The minimum we have to write ourselves is: a Snakefile generator (~200 lines), a manifest module (~100 lines), a container build/hash module (~200 lines, kept from today), a status walker (~80 lines), a verify routine (~100 lines), and a profile generator (~100 lines). Everything else — orchestration, scheduling, parallelism, cluster submission, container runtime invocation, staleness detection, retries, dry-run, reports — is Snakemake's job, and Snakemake is good at it.
+The minimum we have to write ourselves is: a Snakefile generator, a manifest module, a container build/hash/wrap module, a status walker, a verify routine, a `cluster_for_run` bootstrap, and a Snakemake-to-Dask executor plugin. Everything DAG-shaped — topological execution, parallelism, staleness detection, retries, dry-run, reports — is Snakemake's job. Everything task-dispatch-shaped — submitting work, matching to resources, bin-packing into worker capacity — is Dask's job. We own the seams between them and the integrity layer that hangs off each rule.
 
 The strongest single argument for this design is not the code reduction. It is that the integrity property we care about (the agent cannot fake an output) becomes a *consequence of how the system is built* — manifests are required Snakemake outputs, manifests are content-addressed, content addresses chain — rather than a policy enforced by a process boundary. That is the property `design_review.md` calls out as the headline requirement, and this is the cleanest way I see to deliver it.

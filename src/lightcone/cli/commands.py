@@ -11,7 +11,9 @@ Commands:
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
 - ``lc build``  — build containers from Containerfiles.
-- ``lc setup``  — minimal first-run configuration.
+
+The global config at ``~/.lightcone/config.yaml`` is auto-created with
+defaults on first invocation if missing.
 """
 from __future__ import annotations
 
@@ -46,7 +48,8 @@ PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
             "Edit(//scratch/**)",
             "Edit(//pscratch/**)",
             "Bash(sudo *)",
-            "Bash(rm -rf /*)",
+            "Bash(rm -rf *)",
+            "Bash(rm -fr *)",
             "Bash(git push *)",
             "Bash(git push)",
         ],
@@ -59,20 +62,33 @@ def _config_path() -> Path:
     return Path.home() / ".lightcone" / "config.yaml"
 
 
+def _ensure_global_config() -> None:
+    """Create ``~/.lightcone/config.yaml`` with defaults if missing."""
+    config = _config_path()
+    if config.exists():
+        return
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        yaml.safe_dump(
+            {
+                # Container runtime used by `lc build` and embedded in every
+                # recipe by `lc run`. ``auto`` picks the first of
+                # podman/docker/podman-hpc found on PATH (skipping docker if
+                # its daemon is unreachable); set explicitly to pin. ``none``
+                # disables containerization entirely.
+                "container": {"runtime": "auto"},
+            }
+        )
+    )
+
+
 @click.group()
 @click.version_option(package_name="lightcone-cli")
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """lightcone-cli — ASTRA-compliant agentic layer CLI."""
     ctx.ensure_object(dict)
-    if ctx.invoked_subcommand in ("setup", "init", "eval"):
-        return
-    if not _config_path().exists():
-        console.print(
-            "\n[bold yellow]No global configuration found.[/bold yellow] "
-            "Run [cyan]lc setup[/cyan] first.\n"
-        )
-        sys.exit(1)
+    _ensure_global_config()
 
 
 # =============================================================================
@@ -107,33 +123,82 @@ def _project_root(start: Path | None = None) -> Path:
     default="recommended",
     help="Claude Code permission tier",
 )
-def init(directory: Path, no_git: bool, no_venv: bool, permissions: str) -> None:
+@click.option(
+    "--scratch",
+    "scratch_override",
+    default=None,
+    type=str,
+    help=(
+        "Scratch root for snakemake state, dask spill, and run locks. "
+        "Overrides the site default. Shell expressions like $SCRATCH are "
+        "expanded at run time (kept verbatim in the project config)."
+    ),
+)
+def init(
+    directory: Path,
+    no_git: bool,
+    no_venv: bool,
+    permissions: str,
+    scratch_override: str | None,
+) -> None:
     """Scaffold a new ASTRA project with Claude Code integration.
 
-    Creates ``astra.yaml`` (boilerplate), ``CLAUDE.md``, ``.claude/`` (skills,
-    agents, hooks, settings), ``.gitignore``, and an optional Python venv.
+    Delegates the spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
+    base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
+    lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
+    ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
+    and an optional Python venv.
     """
+    import socket
+
+    from astra.cli import init as astra_init
+
+    from lightcone.engine.site_registry import detect_site, get_site_defaults
+
     directory = directory.resolve()
-    directory.mkdir(parents=True, exist_ok=True)
 
     if (directory / "astra.yaml").exists():
         raise click.ClickException(f"{directory}/astra.yaml already exists.")
 
-    # Boilerplate astra.yaml
-    (directory / "astra.yaml").write_text(_BOILERPLATE_ASTRA)
+    # Spec scaffold: astra.yaml, universes/baseline.yaml, base .gitignore,
+    # src/. We hold off on git init until our own files are in place so
+    # the initial commit captures the full project state.
+    try:
+        astra_init.callback(directory=directory, no_git=True)
+    except SystemExit as e:
+        raise click.ClickException(
+            f"astra init failed (exit code {e.code})."
+        ) from e
 
-    # .gitignore
-    (directory / ".gitignore").write_text(_GITIGNORE)
+    # Point the spec at our project-local Containerfile. The astra
+    # boilerplate ships ``container: python:3.12-slim`` so the scaffold
+    # is runnable as-is, but we want lightcone projects to build their
+    # own image so dependencies can evolve under content-addressed
+    # rebuilds.
+    astra_yaml_path = directory / "astra.yaml"
+    astra_yaml_path.write_text(
+        astra_yaml_path.read_text().replace(
+            "container: python:3.12-slim", "container: Containerfile", 1
+        )
+    )
+    (directory / "Containerfile").write_text(_CONTAINERFILE)
+    (directory / "requirements.txt").write_text(_REQUIREMENTS)
 
-    # .lightcone/ project state dir
+    # Append lightcone-specific entries to the .gitignore astra wrote.
+    gitignore_path = directory / ".gitignore"
+    gitignore_path.write_text(gitignore_path.read_text() + _GITIGNORE_APPEND)
+
+    # .lightcone/ project state dir + lightcone.yaml
     (directory / ".lightcone").mkdir(exist_ok=True)
+    project_cfg: dict[str, object] = {"target": "local"}
+    if scratch_override:
+        project_cfg["scratch_root"] = scratch_override
     (directory / ".lightcone" / "lightcone.yaml").write_text(
-        yaml.safe_dump({"target": "local"})
+        yaml.safe_dump(project_cfg)
     )
 
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
-    (directory / "universes").mkdir(exist_ok=True)
 
     # Claude Code plugin bundle
     plugin_source = get_plugin_source_dir()
@@ -143,7 +208,7 @@ def init(directory: Path, no_git: bool, no_venv: bool, permissions: str) -> None
     # Project CLAUDE.md (a stub)
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
 
-    # git init
+    # git init last so the initial commit captures every scaffolded file.
     if not no_git:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
 
@@ -152,46 +217,56 @@ def init(directory: Path, no_git: bool, no_venv: bool, permissions: str) -> None
         subprocess.run(["python", "-m", "venv", ".venv"], cwd=directory, check=False)
 
     console.print(f"\n[green]Project initialized at[/green] {directory}")
+
+    # Surface the resolved scratch root if a known site was detected — gives
+    # users early visibility into where lc run will keep its operational
+    # state (snakemake metadata, dask spill, cross-node locks). On NERSC
+    # this is critical: $HOME and CFS are mounted via DVS (no flock, slow
+    # small-file I/O), so lightcone keeps everything on $SCRATCH (Lustre).
+    site_key = detect_site(socket.gethostname())
+    if site_key:
+        site = get_site_defaults(site_key) or {}
+        scratch_expr = scratch_override or site.get("scratch_root")
+        if scratch_expr:
+            console.print(
+                f"\n[dim]Detected site:[/dim] {site.get('display_name', site_key)}"
+            )
+            console.print(
+                f"[dim]Scratch root for lc run:[/dim] [cyan]{scratch_expr}[/cyan] "
+                f"[dim](resolved at run time)[/dim]"
+            )
+
     console.print("\nNext steps:")
     console.print("  • Edit [cyan]astra.yaml[/cyan] to declare outputs and recipes")
     console.print("  • [cyan]lc run[/cyan] to materialize outputs")
     console.print("  • [cyan]lc status[/cyan] to check what's done")
 
 
-_BOILERPLATE_ASTRA = '''# astra.yaml — declarative analysis spec
-# See https://docs.lightcone.science for the full schema.
-$schema: "https://astra-spec.org/v1/schema.json"
-version: "1.0"
-name: "My Analysis"
-description: "Replace with a description of what this project does."
+_CONTAINERFILE = """\
+FROM python:3.12-slim
 
-inputs: []
+WORKDIR /app
 
-outputs:
-  - id: example_output
-    type: data
-    description: "An example output. Replace with your own."
-    recipe:
-      command: |
-        echo "Hello from a recipe" > {output[0]}/result.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-decisions: {}
-'''
+COPY . .
+"""
 
 
-_GITIGNORE = """# Python
-__pycache__/
-*.pyc
-.venv/
-*.egg-info/
+_REQUIREMENTS = """\
+numpy
+pandas
+"""
 
-# lightcone state
+
+_GITIGNORE_APPEND = """
+# lightcone-cli
 .lightcone/Snakefile
 .lightcone/snakefile-config.json
 .snakemake/
-
-# Materialized results — track at your discretion
-# results/
+.snakemake.legacy/
+results/
 """
 
 _PROJECT_CLAUDE_MD = """# Project Notes for Claude
@@ -242,41 +317,57 @@ def _install_claude_plugin(
 @main.command()
 @click.argument("outputs", nargs=-1)
 @click.option("--universe", "-u", default=None, help="Universe to materialize")
-@click.option("--cores", "-j", default=None, type=int, help="Parallel jobs")
+@click.option("--jobs", "-j", default=None, type=int, help="Parallel jobs")
 @click.option(
     "--rerun-triggers",
     default="code,input,mtime,params",
     help="Comma-separated rerun-triggers (default: code,input,mtime,params)",
 )
-@click.option("--dry-run", "-n", is_flag=True, help="Show what would run without running")
 @click.option("--force", "-f", is_flag=True, help="Force re-materialization")
 @click.option("--verbose", "-v", is_flag=True, help="Show full executor output")
-@click.option(
-    "--executor",
-    type=click.Choice(["auto", "local", "dask"]),
-    default="auto",
-    help="Execution backend. 'auto' uses Dask (LocalCluster on a workstation, "
-    "srun-launched workers inside an SLURM allocation, or an existing scheduler "
-    "if DASK_SCHEDULER_ADDRESS is set). 'local' bypasses Dask entirely.",
-)
 def run(
     outputs: tuple[str, ...],
     universe: str | None,
-    cores: int | None,
+    jobs: int | None,
     rerun_triggers: str,
-    dry_run: bool,
     force: bool,
     verbose: bool,
-    executor: str,
 ) -> None:
-    """Materialize outputs declared in astra.yaml."""
+    """Materialize outputs declared in astra.yaml.
+
+    Always dispatches through a Dask cluster: a ``LocalCluster`` on a
+    workstation, srun-launched workers inside a SLURM allocation, or an
+    existing scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
+    """
     from lightcone.engine.container import load_runtime
+    from lightcone.engine.dask_cluster import cluster_for_run
+    from lightcone.engine.scratch import (
+        RunLockBusyError,
+        acquire_run_lock,
+        ensure_snakemake_symlink,
+        prepare_run_dirs,
+        resolve_scratch_root,
+    )
     from lightcone.engine.snakefile import discover_universes, generate
 
     project = _project_root()
     universes = [universe] if universe else discover_universes(project)
 
+    # Resolve scratch and prepare per-run directories before anything
+    # else. Snakemake's ``.snakemake/`` is redirected via symlink so its
+    # workflow lock and metadata land on a filesystem that honours
+    # ``flock`` (Lustre on NERSC) rather than DVS-mounted home/CFS where
+    # locks are silent no-ops. Dask spill and our cross-node stdout lock
+    # live alongside it.
+    rundirs = prepare_run_dirs(project)
+    ensure_snakemake_symlink(project, rundirs.snakemake_state)
+    if verbose:
+        console.print(
+            f"[dim]Scratch root:[/dim] {resolve_scratch_root(project)}"
+        )
+
     choice = load_runtime(project_path=project)
+    _ensure_images(project, runtime=choice.runtime)
     snakefile_path, cfg_path = generate(
         project, universes=universes, runtime=choice.runtime
     )
@@ -318,165 +409,139 @@ def run(
                 targets.append(_target_for(project, o, u))
     # If no specific targets, pass nothing → snakemake runs `rule all`.
 
+    n = str(jobs or os.cpu_count() or 1)
+    # Snakemake requires ``--cores`` to bound per-rule CPU; the dask
+    # plugin requires ``--jobs`` to bound parallel dispatch. We surface
+    # one knob and pass it as both.
     cmd = [
         "snakemake",
         "-s", str(snakefile_path),
         "-d", str(project),
-        "--cores", str(cores or os.cpu_count() or 1),
+        "--cores", n,
+        "--jobs", n,
+        "--executor", "dask",
         "--rerun-triggers", *rerun_triggers.split(","),
     ]
-    # Container invocation is wrapped into the recipe at generation time;
-    # we don't use Snakemake's ``container:`` directive or ``--sdm`` at all.
-    if dry_run:
-        cmd.append("-n")
     if force:
-        cmd.append("--forceall")
-    if not verbose:
-        # Suppress the executor's progress/rule/host/reason chatter; rule
-        # bodies still print our own ``▶`` marker via stderr, and errors
-        # from the executor still come through. We do NOT pass ``all``
-        # here because it silences workflow errors too.
-        cmd.extend(["--quiet", "rules", "progress", "host", "reason"])
+        # ``--force`` scopes to explicit targets; ``rule all`` itself
+        # has no recipe, so force-all is the only useful sense when no
+        # targets were named.
+        cmd.append("--force" if outputs else "--forceall")
     cmd.extend(targets)
 
-    # Dry-run dispatches no jobs, so spinning up a Dask cluster (especially
-    # the SLURM-srun path) would be wasted setup. Run snakemake directly.
-    if executor == "local" or dry_run:
-        sys.exit(_invoke_snakemake(cmd, env=None, dry_run=dry_run, verbose=verbose))
+    # Hold a project-level flock for the duration of the run. Acquiring
+    # it also clears any stale snakemake lock left by a previously
+    # crashed invocation — safe because we just proved we're alone on
+    # the project. Concurrent ``lc run`` on the same project bails
+    # cleanly rather than corrupting Snakemake state.
+    try:
+        run_lock_cm = acquire_run_lock(rundirs)
+        run_lock_cm.__enter__()
+    except RunLockBusyError as e:
+        raise click.ClickException(str(e))
 
-    from lightcone.engine.dask_cluster import cluster_for_run
+    with cluster_for_run(
+        verbose=verbose, local_directory=str(rundirs.dask_local)
+    ) as scheduler_addr:
+        env = {
+            **os.environ,
+            "DASK_SCHEDULER_ADDRESS": scheduler_addr,
+            # The dask plugin's worker-side ``_run_shell`` takes this
+            # ``flock`` before forwarding a rule's lightcone output, so
+            # parallel rules' blocks never interleave at the line level
+            # — even across nodes. The lockfile sits under our scratch
+            # root specifically to avoid DVS on NERSC.
+            "LIGHTCONE_OUT_LOCK": str(rundirs.lock_path),
+        }
+        if verbose:
+            console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+            sys.exit(subprocess.run(cmd, env=env).returncode)
+        sys.exit(_run_silent(cmd, env=env, scratch_root=rundirs.root))
 
-    with cluster_for_run(verbose=verbose) as scheduler_addr:
-        cmd = [*cmd, "--executor", "dask"]
-        env = {**os.environ, "DASK_SCHEDULER_ADDRESS": scheduler_addr}
-        sys.exit(_invoke_snakemake(cmd, env=env, dry_run=dry_run, verbose=verbose))
 
-
-def _invoke_snakemake(
-    cmd: list[str], *, env: dict[str, str] | None, dry_run: bool, verbose: bool
+def _run_silent(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    scratch_root: Path,
 ) -> int:
-    if verbose:
-        console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-    if dry_run or verbose:
-        proc = subprocess.run(cmd, env=env)
-        return proc.returncode
-    return _run_filtered(cmd, env=env)
+    """Run snakemake with its own output suppressed.
 
-
-# Lines emitted by the executor that we drop in the default (non-verbose)
-# path. Substring match on the trimmed line — these are stable banner-style
-# messages, not error content. Anything not matched passes through so real
-# diagnostics are never hidden.
-_EXECUTOR_NOISE_PREFIXES = (
-    "Building DAG of jobs",
-    "Using shell:",
-    "Provided cores:",
-    "Provided remote nodes:",
-    "Rules claiming more threads",
-    "Job stats:",
-    "Select jobs to execute",
-    "Execute ",
-    "host:",
-    "Complete log:",
-    "Complete log(s):",
-    "Nothing to be done",
-    "Workflow defines that rule",
-    "Shared connection",
-    "Activating conda",
-    "Assuming unrestricted shared filesystem",
-    "Shutting down,",
-    "Exiting because a job execution failed",
-    "At least one job did not complete",
-    "Trying to restart job",
-    "Finished jobid",
-    "Finished job ",
-    "Workflow finished",
-    "RuleException",
-    "WorkflowError",
-    "CalledProcessError in file",
-)
-
-
-def _run_filtered(cmd: list[str], *, env: dict[str, str] | None = None) -> int:
-    """Run the executor and pass through only meaningful lines.
-
-    Rule bodies print their own ``▶`` progress marker; this filter drops
-    the executor's banner lines and recipe-replay error blocks so the
-    output reads as lightcone's, not the executor's. Genuine error
-    content (recipe stdout/stderr, unfamiliar diagnostic lines) passes
-    through untouched.
+    All user-facing output for the run flows through dask workers
+    (``_run_shell`` in the executor plugin → terminal stdout under
+    ``flock``). The parent snakemake process here only emits its own
+    bootstrap chatter (DAG building, rule selection, "Workflow finished")
+    plus, on failure, a workflow-level diagnostic. We discard stdout
+    wholesale and tail stderr into a bounded ring buffer so a workflow
+    crash leaves a real log behind without that log being visible
+    during a successful run.
     """
+    from collections import deque
+
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
-        env=env,
     )
-    assert proc.stdout is not None
-
-    # When the executor logs a failed shell job it prints a multi-line
-    # block: ``Command 'set -euo pipefail; <recipe>' returned non-zero
-    # exit status N.``. The recipe's own stdout/stderr already came out
-    # earlier, so this replay is pure noise — mute from "Command 'set"
-    # to the closing "returned non-zero exit status" line. Also mute the
-    # single line after "Removing output files of failed job" (which is
-    # just the bare result path).
-    in_command_replay = False
-    swallow_next = 0
-    for raw in proc.stdout:
-        line = raw.rstrip("\n")
-        stripped = line.strip()
-
-        if in_command_replay:
-            if "returned non-zero exit status" in stripped:
-                in_command_replay = False
-            continue
-        if swallow_next > 0:
-            swallow_next -= 1
-            continue
-        if stripped.startswith("Command 'set -euo pipefail"):
-            in_command_replay = "returned non-zero exit status" not in stripped
-            continue
-        if stripped.startswith("Removing output files of failed job"):
-            swallow_next = 1
-            continue
-
-        if not stripped:
-            continue
-        if any(stripped.startswith(p) for p in _EXECUTOR_NOISE_PREFIXES):
-            continue
-        # The job-stats table that follows "Job stats:" — drop the rows
-        # too. They look like "rulename    1" or "total    3" or a
-        # separator line of dashes.
-        if stripped.startswith("---") or stripped == "total":
-            continue
-        sys.stdout.write(line + "\n")
-        sys.stdout.flush()
-    return proc.wait()
+    assert proc.stderr is not None
+    tail: deque[str] = deque(maxlen=400)
+    for line in proc.stderr:
+        tail.append(line)
+    rc = proc.wait()
+    if rc != 0:
+        log = scratch_root / f"snakemake-stderr-{os.getpid()}.log"
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text("".join(tail))
+            console.print(
+                f"\n[red]✗ Workflow failed.[/red] "
+                f"Last snakemake stderr saved to [cyan]{log}[/cyan]."
+            )
+        except OSError:
+            # Last-ditch: dump to stderr if scratch is unwritable.
+            sys.stderr.write("".join(tail))
+    return rc
 
 
 def _target_for(project: Path, output_id: str, universe: str) -> str:
-    """Translate an output id into a Snakemake target path (the manifest)."""
+    """Translate an output id into a Snakemake target path (the manifest).
+
+    Accepts either a bare ``output_id`` (root-level or unique sub-analysis
+    output) or a qualified ``analysis_id.output_id`` to disambiguate when
+    the same id appears in multiple sub-analyses.
+    """
     from astra.helpers import load_yaml, resolve_analysis_tree
 
-    from lightcone.engine.tree import collect_tree_outputs
+    from lightcone.engine.manifest import MANIFEST_FILENAME
+    from lightcone.engine.tree import collect_tree_outputs, resolve_output_path
 
     spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
+    matches = []
     for to in collect_tree_outputs(spec):
-        if to.output_id == output_id and to.output_def.get("recipe") is not None:
-            base = (
-                to.analysis_path.lstrip("./")
-                if to.analysis_path
-                else "results"
-            )
-            if to.analysis_path:
-                return f"{base}/results/{universe}/{output_id}/.lightcone-manifest.json"
-            return f"results/{universe}/{output_id}/.lightcone-manifest.json"
-    raise click.ClickException(
-        f"Output '{output_id}' not found in astra.yaml or has no recipe."
-    )
+        if to.output_def.get("recipe") is None:
+            continue
+        qualified = (
+            f"{to.analysis_id}.{to.output_id}" if to.analysis_id else to.output_id
+        )
+        if qualified == output_id or to.output_id == output_id:
+            matches.append((qualified, to))
+
+    if not matches:
+        raise click.ClickException(
+            f"Output '{output_id}' not found in astra.yaml or has no recipe."
+        )
+    if len(matches) > 1:
+        opts = ", ".join(q for q, _ in matches)
+        raise click.ClickException(
+            f"Output '{output_id}' is ambiguous; qualify it as one of: {opts}"
+        )
+
+    _, to = matches[0]
+    target = resolve_output_path(project, to, universe) / to.output_id / MANIFEST_FILENAME
+    return str(target.relative_to(project))
 
 
 # =============================================================================
@@ -486,13 +551,39 @@ def _target_for(project: Path, output_id: str, universe: str) -> str:
 
 @main.command()
 @click.option("--universe", "-u", default=None)
-def status(universe: str | None) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit machine-readable JSON instead of a styled table.",
+)
+def status(universe: str | None, as_json: bool) -> None:
     """Report materialization status for every declared output."""
     from lightcone.engine.snakefile import discover_universes
     from lightcone.engine.status import get_output_status
 
     project = _project_root()
     universes = [universe] if universe else discover_universes(project)
+
+    if as_json:
+        payload = {
+            "universes": [
+                {
+                    "universe_id": u,
+                    "outputs": [
+                        {
+                            "output_id": s.output_id,
+                            "analysis_id": s.analysis_id,
+                            "status": s.status,
+                        }
+                        for s in get_output_status(project, universe_id=u)
+                    ],
+                }
+                for u in universes
+            ],
+        }
+        click.echo(json.dumps(payload, indent=2))
+        return
 
     for u in universes:
         console.print(f"\n[bold]Universe[/bold] [cyan]{u}[/cyan]")
@@ -569,28 +660,11 @@ def build(force: bool, runtime: str | None) -> None:
     ``ghcr.io/foo/bar:tag``) are skipped — the runtime pulls them at
     ``lc run`` time.
     """
-    from astra.helpers import load_yaml, resolve_analysis_tree
-
-    from lightcone.engine.container import (
-        ContainerBuildError,
-        build_image,
-        compute_image_tag,
-        image_exists_locally,
-        is_containerfile,
-        load_runtime,
-        pull_image,
-    )
-    from lightcone.engine.tree import collect_tree_outputs
+    from lightcone.engine.container import ContainerBuildError, load_runtime
 
     project = _project_root()
-    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
-
     try:
-        if runtime:
-            resolved_runtime = runtime
-        else:
-            choice = load_runtime(project_path=project)
-            resolved_runtime = choice.runtime
+        resolved_runtime = runtime or load_runtime(project_path=project).runtime
     except ContainerBuildError as e:
         raise click.ClickException(str(e))
 
@@ -603,6 +677,35 @@ def build(force: bool, runtime: str | None) -> None:
         )
         return
 
+    _ensure_images(project, runtime=resolved_runtime, force=force)
+    console.print("[green]Done.[/green]")
+
+
+def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
+    """Build/pull every container image referenced in astra.yaml.
+
+    No-op when *runtime* is ``"none"``. Idempotent: skips images already
+    present in the runtime's local image store. Used by ``lc build`` (with
+    ``--force`` exposed) and as a pre-flight by ``lc run`` so the first
+    invocation after editing a Containerfile doesn't fail mid-DAG with a
+    missing image.
+    """
+    if runtime == "none":
+        return
+
+    from astra.helpers import load_yaml, resolve_analysis_tree
+
+    from lightcone.engine.container import (
+        ContainerBuildError,
+        build_image,
+        compute_image_tag,
+        image_exists_locally,
+        is_containerfile,
+        pull_image,
+    )
+    from lightcone.engine.tree import collect_tree_outputs
+
+    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
     project_name = (spec.get("name") or project.name).lower().replace(" ", "-")
 
     seen: set[str] = set()
@@ -619,56 +722,34 @@ def build(force: bool, runtime: str | None) -> None:
         if not is_containerfile(spec_str, project):
             # Registry image — pull so ``lc run`` can use ``--pull=never``
             # without depending on the runtime's registry resolution.
-            if image_exists_locally(spec_str, runtime=resolved_runtime) and not force:
-                console.print(f"[dim]Cached[/dim] {spec_str}")
+            if image_exists_locally(spec_str, runtime=runtime) and not force:
                 continue
             console.print(
-                f"[cyan]Pulling[/cyan] {spec_str} [dim](via {resolved_runtime})[/dim]"
+                f"[cyan]Pulling[/cyan] {spec_str} [dim](via {runtime})[/dim]"
             )
             try:
-                pull_image(spec_str, runtime=resolved_runtime)
+                pull_image(spec_str, runtime=runtime)
             except ContainerBuildError as e:
                 raise click.ClickException(str(e))
             continue
 
         containerfile = project / spec_str
         tag = compute_image_tag(project_name, containerfile, project)
-        if image_exists_locally(tag, runtime=resolved_runtime) and not force:
-            console.print(f"[dim]Cached[/dim] {spec_str} → {tag}")
+        if image_exists_locally(tag, runtime=runtime) and not force:
             continue
         console.print(
-            f"[cyan]Building[/cyan] {spec_str} → {tag} [dim](via {resolved_runtime})[/dim]"
+            f"[cyan]Building[/cyan] {spec_str} → {tag} [dim](via {runtime})[/dim]"
         )
         try:
-            build_image(tag, containerfile, project, runtime=resolved_runtime)
+            build_image(tag, containerfile, project, runtime=runtime)
         except ContainerBuildError as e:
             raise click.ClickException(str(e))
-    console.print("[green]Done.[/green]")
 
 
-# =============================================================================
-# lc setup
-# =============================================================================
+# Register eval subgroup (requires optional 'eval' extra)
+try:
+    from lightcone.eval.cli import eval_group
 
-
-@main.command()
-def setup() -> None:
-    """Minimal global configuration. Creates ``~/.lightcone/config.yaml``."""
-    config = _config_path()
-    config.parent.mkdir(parents=True, exist_ok=True)
-    if config.exists():
-        console.print(f"Config already exists at {config}")
-        return
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "default_target": "local",
-                # Container runtime used by `lc build` and embedded in every
-                # recipe by `lc run`. ``auto`` picks the first of
-                # docker/podman/podman-hpc found on PATH; set explicitly to
-                # pin. ``none`` disables containerization entirely.
-                "container": {"runtime": "auto"},
-            }
-        )
-    )
-    console.print(f"[green]Created[/green] {config}")
+    main.add_command(eval_group, "eval")
+except ImportError:
+    pass

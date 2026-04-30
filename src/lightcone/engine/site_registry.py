@@ -1,9 +1,8 @@
 """Known site defaults.
 
-When ``lc setup`` detects a known site, it pre-populates a target with
-orthogonal ``options`` (qos, constraint, ...) and scheduler-neutral
-guidance drawn from the entries below.  Users override any default
-during the wizard.
+When ``lc init`` runs on a known site, the matching entry below provides
+the scratch root surfaced to the user and any deny rules used to keep
+edits off shared filesystems.
 
 To add a new site, append an entry to :data:`SITE_DEFAULTS`.
 """
@@ -25,6 +24,13 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
             "hostname": "perlmutter.nersc.gov",
         },
         "container_runtime": "podman-hpc",
+        # Where lightcone keeps its operational state (snakemake metadata,
+        # dask spill, cross-node stdout locks). NERSC's $HOME and CFS are
+        # mounted on compute via DVS, which silently swallows ``flock`` and
+        # is slow for small-file I/O — Lustre ($SCRATCH) is the only sane
+        # choice. Stored as a shell expression so it expands to each user's
+        # private scratch path at run time.
+        "scratch_root": "$SCRATCH",
         "suggested_options": {
             "qos": {
                 "default": "debug",

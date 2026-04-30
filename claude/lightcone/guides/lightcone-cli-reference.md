@@ -6,56 +6,33 @@ Reference for lightcone-cli execution: CLI commands, development workflow, statu
 
 ```bash
 lc init [DIR]                            # Scaffold a new ASTRA project
-lc init NAME --sub-analysis              # Scaffold sub-analysis and wire into parent
-lc run [OUTPUT] [--universe NAME]        # Execute recipes via Dagster (auto-builds)
-lc run [--qos V] [--constraint V] [--time-limit V] [--account V] [--partition V]
-                                         # Override target run options per invocation
-lc run --no-build                        # Skip automatic container builds
+lc run [OUTPUT] [--universe NAME]        # Materialize outputs
 lc build [--force] [--runtime docker]    # Build container images from specs
-lc status [--universe NAME]              # Materialization + container status
-lc dev [--port 3000]                     # Dagster webserver UI
-lc target                                # Show current target + available run options
-lc target --show NAME                    # Show a target's run options
-lc target --set NAME                     # Switch project target
-lc target --list                         # List available targets
-lc setup                                 # Interactive setup wizard
+lc status [--universe NAME] [--json]     # Materialization status (text or JSON)
+lc verify [--universe NAME]              # Recompute hashes and walk the provenance chain
 ```
 
-**Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Never invoke schedulers or container runtimes directly — it will bypass reproducibility guarantees.
+The first `lc` invocation auto-creates `~/.lightcone/config.yaml` with defaults; edit it directly to pin a container runtime or set the extraction model.
 
-## Result Paths
-
-`lc run` writes each output to `results/<universe_id>/<output_id>/` (the `{output}` placeholder in a recipe's `command:` resolves to a path under this convention). Typical file extensions per ASTRA output type:
-
-- `metric` -- JSON (`{"value": 0.95}`)
-- `figure` -- PNG
-- `table` -- CSV
-- `data` -- Parquet/HDF5
-- `report` -- Markdown
-
-These are lightcone-cli conventions; the ASTRA spec leaves on-disk layout and file format to the runner.
-
-## Decision Flag Naming
-
-Decision IDs use underscores in `astra.yaml` (e.g. `prior_range`). When a recipe `command:` references one as `{decisions.prior_range}`, lightcone-cli substitutes the **option ID** verbatim. If you pass it as a CLI flag in your recipe (e.g. `--prior_range {decisions.prior_range}`), your script's argparse must match: `parser.add_argument('--prior_range')`, **not** `--prior-range`.
+**Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Treat the underlying execution engine as a black box — never invoke schedulers or container runtimes directly, that will bypass reproducibility guarantees.
 
 ## Creating Sub-Analyses
 
-`lc init NAME --sub-analysis` scaffolds a sub-analysis and wires it into the parent project. It:
+Sub-analyses are scaffolded by hand, since each one is just another `astra.yaml` nested in a directory. To add one:
 
-1. Creates `analyses/<name>/` with its own `astra.yaml`, `CLAUDE.md`, `scripts/`, `universes/baseline.yaml`, and `results/`
-2. Adds a `path:` entry to the parent `astra.yaml` under `analyses:`
-3. Adds a `universe: baseline` entry to all existing parent universe files
+1. Create `analyses/<name>/` with its own `astra.yaml` (and optionally `scripts/`, `universes/baseline.yaml`, `results/`).
+2. Add a `path:` entry to the parent `astra.yaml` under `analyses:` (e.g. `analyses: { my_sub: { path: ./analyses/my_sub } }`).
+3. Add a `<name>: { universe: baseline }` entry to each existing parent universe file.
 
-After scaffolding, populate the sub-analysis's `astra.yaml` with inputs, outputs, and decisions. Use `from:` references to wire inputs and decisions to the parent or siblings — see `astra-reference.md` under "Composition Mechanics."
+Populate the sub-analysis's `astra.yaml` with inputs, outputs, and decisions. Use `from:` references to wire inputs and decisions to the parent or siblings — see `astra-reference.md` under "Composition Mechanics."
 
 ## Development Workflow
 
 Three overlapping phases:
 
 1. **Write & Debug** — Run scripts directly (`python scripts/compute.py`) to iterate. Write them recipe-ready from the start: parameterize decisions, write to convention paths, one script per output.
-2. **Integrate** — Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status` (`no recipe` / `pending` / `ok`). Set `container:` at analysis level or per-recipe — pass an image name (e.g., `python:3.12-slim`) or a path to a Containerfile (e.g., `Containerfile`).
-3. **Materialize** — `lc run` executes via Dagster in the target's environment. Done when `lc status` shows all `ok`.
+2. **Integrate** — Add `recipe:` blocks to outputs in `astra.yaml`. Track with `lc status` (`alias` / `missing` / `stale` / `ok`). Set `container:` at analysis level or per-recipe — pass an image name (e.g., `python:3.12-slim`) or a path to a Containerfile (e.g., `Containerfile`).
+3. **Materialize** — `lc run` executes recipes inside their declared containers and writes a content-addressed manifest next to each output. Done when `lc status` shows all `ok`.
 
 **An output is not done until `lc run` produces it.** Running scripts directly is for debugging only — final results must always come from `lc run` so they are reproducible.
 
@@ -63,43 +40,22 @@ Three overlapping phases:
 
 **`astra.yaml` must always reflect the code and vice versa.** When you change one, update the other immediately:
 - Add a decision to code? Add it to `astra.yaml` and all universe files.
-- Add an output? Add the Output block with its `inputs:`, `decisions:`, and `recipe:` — the Output owns provenance, the recipe is just *how*.
-- Change a script's I/O, decisions, or command? Update the corresponding fields on the Output (`inputs:`/`decisions:`/`recipe:`).
+- Add an output or change a script? Update the `recipe:` block in `astra.yaml`.
 - Remove or rename something? Update both sides and run `astra validate astra.yaml`.
 
 ## Status Interpretation
 
-`lc status` shows outputs vs universes. **Progression:** `no recipe` → `pending` → `ok`
+`lc status` shows each declared output's materialization state per universe. Pass `--json` for machine-readable output.
 
-- `ok` — Recipe exists, results on disk. Done.
-- `pending` — Recipe exists, not materialized. Run `lc run`.
-- `no recipe` — No `recipe:` block yet. Still in Write & Debug phase.
-
-Container status: `prebuilt: image`, `build: Containerfile (built)`, or `(not built)` (needs `lc build`).
+- `ok` — Recipe exists, results on disk, manifest matches the current spec. Done.
+- `stale` — Recipe or decisions changed since the last run. Re-run `lc run`.
+- `missing` — Recipe exists but no manifest (never run, or output deleted). Run `lc run`.
+- `alias` — Output has no recipe of its own; produced as a side effect of an upstream output (or a `from:` reference into a sub-analysis). Not independently materializable.
 
 ## Failure Diagnosis
 
-- **Script arg not recognized** — Use underscores in argparse to match decision IDs
-- **Recipe input not found** — Materialize upstream outputs first
+- **Script arg not recognized** — The recipe's `command` template controls how decisions reach the script. Make sure each `{decisions.<id>}` is paired with a flag the script's argparse defines (e.g. `--<id> {decisions.<id>}` ↔ `parser.add_argument('--<id>')`).
+- **Recipe input not found** — Materialize upstream outputs first.
+- **Undeclared placeholder error** — A `{decisions.<id>}` or `{inputs.<id>}` in the recipe references something not listed in `Output.decisions` / `Output.inputs`. Add it to the Output's declaration, or remove the placeholder.
 
 After failure: fix, then `lc run <output_id> --universe <name>`.
-
-## Choosing run options
-
-Every target exposes a small set of orthogonal **options** (commonly `qos`, `constraint`, `time_limit`, `account`, `partition`). To see what this target offers:
-
-```bash
-lc target
-```
-
-Each option has a default and a set of valid choices with short guidance. Override any of them for a single run:
-
-```bash
-lc run --qos debug --time-limit 30m        # quick iteration
-lc run --qos regular --time-limit 4h       # production run
-lc run --constraint cpu                    # CPU-only hardware
-```
-
-If your recipe's `resources` exceed the limits implied by the selected options, `lc run` will either trim the request to fit (`strategy: fit`, the default) or switch to a different `qos` choice (`strategy: switch`). Pass `--strategy switch` per run to prefer the latter.
-
-Recipe `resources` (`cpus`, `memory`, `gpus`, `time_limit`, `disk`) are portable across targets — they inform how `lc run` dispatches work in the target's environment. Sized fields take string-with-units (`memory: "16Gi"`, `disk: "10Gi"`); `time_limit` takes a duration string (`"2h"`, `"30m"`); `cpus` is a float and `gpus` an integer.

@@ -16,10 +16,12 @@ from typing import Any, Literal
 
 from astra.helpers import load_yaml, resolve_analysis_tree
 
+from lightcone.engine.container import make_image_tag_resolver
 from lightcone.engine.manifest import code_version, read_manifest
 from lightcone.engine.tree import (
     TreeOutput,
     collect_tree_outputs,
+    resolve_container_spec,
     resolve_output_path,
     resolve_universe_decisions,
 )
@@ -37,31 +39,30 @@ class OutputStatus:
     manifest: dict[str, Any] | None
 
 
-def _resolve_recipe_container(tree_output: TreeOutput, root_spec: dict[str, Any]) -> str | None:
-    """Pick the container declaration in priority order:
-    recipe-level > sub-analysis-level > root-level.
-    Returns the raw spec string (e.g. Containerfile path or image tag);
-    we hash the string identity, not the resolved image content.
-    """
-    recipe = tree_output.output_def.get("recipe") or {}
-    if "container" in recipe:
-        return recipe["container"]  # type: ignore[no-any-return]
-    if tree_output.analysis_id is not None:
-        sub = tree_output.analysis_spec.get("container")
-        if sub is not None:
-            return sub  # type: ignore[no-any-return]
-    return root_spec.get("container")  # type: ignore[no-any-return]
-
-
 def _decisions_for(
     tree_output: TreeOutput,
     universe_decisions: dict[str, Any],
 ) -> dict[str, Any]:
     """Return the decisions visible to a given output for code_version
-    computation. We use the full merged universe decision set, so any
-    decision change anywhere in the universe invalidates downstream.
+    computation.
+
+    v0.0.7: ``Output.decisions`` is the explicit provenance contract —
+    the set of decisions whose option choices can change this output.
+    The Snakefile generator hashes only those into ``code_version``;
+    we mirror that scoping here so ``lc status`` stays in sync.
+    Outputs that do not declare decisions hash an empty dict.
     """
-    return universe_decisions
+    declared = tree_output.output_def.get("decisions") or []
+    if not declared:
+        return {}
+    scoped: dict[str, Any] = {}
+    prefix = f"{tree_output.analysis_id}." if tree_output.analysis_id else ""
+    for dec_id in declared:
+        if prefix and (qualified := f"{prefix}{dec_id}") in universe_decisions:
+            scoped[dec_id] = universe_decisions[qualified]
+        elif dec_id in universe_decisions:
+            scoped[dec_id] = universe_decisions[dec_id]
+    return scoped
 
 
 def _load_universe_decisions(
@@ -92,6 +93,8 @@ def get_output_status(
     spec_path = project_path / "astra.yaml"
     spec = resolve_analysis_tree(load_yaml(spec_path), project_path)
     universe_decisions = _load_universe_decisions(project_path, spec, universe_id)
+    project_name = (spec.get("name") or project_path.name).lower().replace(" ", "-")
+    resolve_image = make_image_tag_resolver(project_path, project_name)
 
     for tree_out in collect_tree_outputs(spec):
         out_dir = resolve_output_path(project_path, tree_out, universe_id) / tree_out.output_id
@@ -122,9 +125,13 @@ def get_output_status(
             )
             continue
 
+        # Mirror the snakefile generator's image-tag resolution so the
+        # recomputed code_version matches what was written into the
+        # manifest at run time.
+        image_tag = resolve_image(resolve_container_spec(tree_out, spec))
         current_cv = code_version(
             recipe=recipe.get("command", ""),
-            container_image=_resolve_recipe_container(tree_out, spec),
+            container_image=image_tag,
             decisions=_decisions_for(tree_out, universe_decisions),
         )
         if manifest.get("code_version") != current_cv:

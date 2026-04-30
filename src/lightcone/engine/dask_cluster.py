@@ -62,19 +62,41 @@ def _detect_node_shape() -> _NodeShape:
     return _NodeShape(cpus=cpus, mem_bytes=mem_bytes, gpus=gpus)
 
 
+def _resource_dict(shape: _NodeShape) -> dict[str, float]:
+    """Resource keys advertised by a worker for this node shape.
+
+    Single source of truth for which keys workers expose — both the
+    in-process LocalCluster and the srun-launched ``dask worker``s
+    advertise the same set so the executor's per-task requests resolve
+    on either path.
+    """
+    res: dict[str, float] = {RESOURCE_CPUS: float(shape.cpus)}
+    if shape.mem_bytes:
+        res[RESOURCE_MEMORY] = float(shape.mem_bytes)
+    if shape.gpus:
+        res[RESOURCE_GPUS] = float(shape.gpus)
+    return res
+
+
 def _resources_arg(shape: _NodeShape) -> str:
     """Format `--resources` for `dask worker`."""
-    parts = [f"{RESOURCE_CPUS}={shape.cpus}"]
-    if shape.mem_bytes:
-        parts.append(f"{RESOURCE_MEMORY}={shape.mem_bytes}")
-    if shape.gpus:
-        parts.append(f"{RESOURCE_GPUS}={shape.gpus}")
-    return " ".join(parts)
+    return " ".join(f"{k}={int(v)}" for k, v in _resource_dict(shape).items())
 
 
 @contextmanager
-def cluster_for_run(*, verbose: bool = False) -> Iterator[str]:
-    """Yield a Dask scheduler address valid for the duration of `lc run`."""
+def cluster_for_run(
+    *,
+    verbose: bool = False,
+    local_directory: str | None = None,
+) -> Iterator[str]:
+    """Yield a Dask scheduler address valid for the duration of `lc run`.
+
+    *local_directory*, when given, is where dask workers stage their
+    spilled task data and internal state files. ``lc run`` resolves it
+    to a path under :mod:`lightcone.engine.scratch` so on NERSC the
+    spill lands on Lustre instead of DVS-mounted home/CFS (where small-
+    file I/O is slow and can pressure the gateway nodes).
+    """
     if addr := os.environ.get("DASK_SCHEDULER_ADDRESS"):
         if verbose:
             print(f"→ Using existing Dask scheduler at {addr}")
@@ -82,24 +104,34 @@ def cluster_for_run(*, verbose: bool = False) -> Iterator[str]:
         return
 
     if "SLURM_JOB_ID" in os.environ:
-        with _slurm_backed_cluster(verbose=verbose) as addr:
+        with _slurm_backed_cluster(
+            verbose=verbose, local_directory=local_directory
+        ) as addr:
             yield addr
         return
 
-    with _local_cluster(verbose=verbose) as addr:
+    with _local_cluster(
+        verbose=verbose, local_directory=local_directory
+    ) as addr:
         yield addr
 
 
 @contextmanager
-def _local_cluster(*, verbose: bool) -> Iterator[str]:
+def _local_cluster(
+    *, verbose: bool, local_directory: str | None
+) -> Iterator[str]:
     from dask.distributed import LocalCluster
 
     shape = _detect_node_shape()
+    # Workers must advertise every key the executor may request — Dask
+    # matches by exact key presence — or rules with ``mem_mb`` /
+    # ``gpus_per_task`` would never schedule on a workstation.
     cluster = LocalCluster(
         n_workers=1,
         threads_per_worker=shape.cpus,
-        resources={RESOURCE_CPUS: shape.cpus},
+        resources=_resource_dict(shape),
         dashboard_address=":0",
+        local_directory=local_directory,
     )
     if verbose:
         print(
@@ -113,7 +145,9 @@ def _local_cluster(*, verbose: bool) -> Iterator[str]:
 
 
 @contextmanager
-def _slurm_backed_cluster(*, verbose: bool) -> Iterator[str]:
+def _slurm_backed_cluster(
+    *, verbose: bool, local_directory: str | None
+) -> Iterator[str]:
     from dask.distributed import LocalCluster
 
     if shutil.which("dask") is None:
@@ -135,6 +169,7 @@ def _slurm_backed_cluster(*, verbose: bool) -> Iterator[str]:
         n_workers=0,
         host=scheduler_host,
         dashboard_address=":0",
+        local_directory=local_directory,
     )
     addr = cluster.scheduler_address
 
@@ -160,6 +195,8 @@ def _slurm_backed_cluster(*, verbose: bool) -> Iterator[str]:
         _resources_arg(shape),
         "--no-dashboard",
     ]
+    if local_directory:
+        worker_cmd.extend(["--local-directory", local_directory])
     workers = subprocess.Popen(worker_cmd)
 
     try:

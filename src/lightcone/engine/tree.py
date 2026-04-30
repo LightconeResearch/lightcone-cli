@@ -3,10 +3,27 @@
 After ``resolve_analysis_tree()`` from astra.helpers expands ``path:``
 references, this module provides utilities to:
 
-- Collect all outputs across the tree (with their sub-analysis context)
-- Resolve ``from:`` references on inputs to concrete output paths
-- Resolve ``from:`` references on decisions to parent decision values
-- Build merged decision dicts from composable universe files
+- Collect all outputs across the tree (with their sub-analysis context).
+- Resolve declared ``Output.inputs`` IDs to concrete upstream artifacts
+  (sibling outputs, parent inputs reached via ``from:`` aliases, or
+  external dataset paths).
+- Resolve sub-analysis decisions to merged universe values, honouring
+  the v0.0.7 ``from: ../id`` (and ``../../id``) grammar.
+- Pick the right ``container:`` declaration for an output (recipe →
+  sub-analysis → root).
+
+ASTRA v0.0.7 (`from:` aliasing) reshapes how Inputs/Outputs/Decisions
+reference each other:
+
+* ``Input.from``  uses ``../id`` for an ancestor input,
+                  ``../../id`` for a grandparent,
+                  ``../sibling.out_id`` for a sibling sub's output.
+* ``Output.from`` is a re-export and uses ``child.out_id``
+                  (own child sub) or deeper.
+* ``Decision.from`` is upward only: ``../id``, ``../../id``, …
+
+Aliased nodes carry only ``id`` + ``from`` (+ optional ``when``); the
+content is inherited from the target.
 """
 from __future__ import annotations
 
@@ -35,8 +52,9 @@ def collect_tree_outputs(spec: dict[str, Any]) -> list[TreeOutput]:
     """Walk the resolved tree and collect all outputs with context.
 
     Returns outputs from root level (analysis_id=None) and from each
-    sub-analysis. Root-level outputs with ``from:`` pointing to a
-    sub-analysis output are included but flagged for alias handling.
+    sub-analysis. Outputs declared with ``from:`` (re-exports) are
+    included; consumers that care only about materializable outputs
+    should filter on ``recipe is not None``.
     """
     results: list[TreeOutput] = []
 
@@ -88,6 +106,20 @@ def collect_tree_inputs(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _strip_up_prefix(ref: str) -> tuple[int, str]:
+    """Split a ``from:`` path into (up_levels, remainder).
+
+    ``../foo`` -> (1, "foo")
+    ``../../foo`` -> (2, "foo")
+    ``foo`` -> (0, "foo")
+    """
+    up = 0
+    while ref.startswith("../"):
+        up += 1
+        ref = ref[3:]
+    return up, ref
+
+
 def resolve_universe_decisions(
     project_path: Path,
     spec: dict[str, Any],
@@ -98,10 +130,14 @@ def resolve_universe_decisions(
     Returns a flat dict of all decisions for execution:
     - Root decisions from ``universes/<universe_id>.yaml``
     - Sub-analysis decisions from ``<sub_path>/universes/<sub_universe_id>.yaml``
-    - ``from:`` decisions in sub-analyses are resolved to parent values
+    - ``from:`` decisions in sub-analyses are resolved to ancestor values
 
     The returned dict uses qualified keys for sub-analysis decisions:
     ``{analysis_id}.{decision_id}`` to avoid collisions.
+
+    v0.0.7 ``from:`` grammar: ``../id`` walks one scope up, ``../../id``
+    walks two. We currently model a 2-level tree (root + sub), so any
+    ``../`` count above 1 falls off the top and is logged as a warning.
     """
     # Load root universe
     root_universe_file = project_path / "universes" / f"{universe_id}.yaml"
@@ -138,17 +174,16 @@ def resolve_universe_decisions(
         for decision_id, decision_def in (analysis_node.get("decisions") or {}).items():
             if isinstance(decision_def, dict) and decision_def.get("from"):
                 from_ref = decision_def["from"]
-                # ../parent_decision -> look up in root decisions
-                if from_ref.startswith("../"):
-                    parent_key = from_ref[3:]
-                    if parent_key in root_decisions:
-                        merged[f"{analysis_id}.{decision_id}"] = root_decisions[parent_key]
-                    else:
-                        logger.warning(
-                            "Decision '%s' in '%s' references '%s' which is not in "
-                            "root universe decisions",
-                            decision_id, analysis_id, from_ref,
-                        )
+                up, target = _strip_up_prefix(from_ref)
+                if up == 1 and target in root_decisions:
+                    merged[f"{analysis_id}.{decision_id}"] = root_decisions[target]
+                else:
+                    logger.warning(
+                        "Decision '%s' in '%s' references '%s' which is not "
+                        "resolvable in the universe (only ../<root_id> is "
+                        "currently supported)",
+                        decision_id, analysis_id, from_ref,
+                    )
             elif decision_id in sub_decisions:
                 merged[f"{analysis_id}.{decision_id}"] = sub_decisions[decision_id]
 
@@ -202,44 +237,139 @@ def resolve_output_path(
     return project_path / "results" / universe_id
 
 
-def resolve_input_path(
-    project_path: Path,
-    spec: dict[str, Any],
-    from_ref: str,
-    universe_id: str,
+def resolve_container_spec(
+    tree_output: TreeOutput,
+    root_spec: dict[str, Any],
 ) -> str | None:
-    """Resolve a ``from:`` reference on an input to a concrete filesystem path.
-
-    Handles:
-    - ``../parent_input`` -> root input's source
-    - ``../sibling.output_id`` -> sibling sub-analysis's results path
-    - ``sibling.output_id`` -> sibling sub-analysis's results path (no ../ needed at root)
+    """Pick the container declaration in priority order:
+    recipe-level > sub-analysis-level > root-level.
+    Returns the raw spec string (Containerfile path or registry image
+    tag), or ``None`` when no container is declared at any level.
     """
-    # Strip leading ../ if present
-    ref = from_ref.removeprefix("../")
-    ref = ref.removeprefix("/")
+    recipe = tree_output.output_def.get("recipe") or {}
+    if "container" in recipe:
+        return recipe["container"]  # type: ignore[no-any-return]
+    if tree_output.analysis_id is not None:
+        sub = tree_output.analysis_spec.get("container")
+        if sub is not None:
+            return sub  # type: ignore[no-any-return]
+    return root_spec.get("container")
 
-    # Check if it's a root input reference
-    for inp in get_inputs(spec):
-        if inp.get("id") == ref:
-            source = inp.get("source")
-            if source and isinstance(source, str) and source.startswith("/"):
-                return source
-            return None
 
-    # Check if it's a sibling.output_id reference
-    if "." in ref:
-        analysis_id, output_id = ref.split(".", 1)
-        analyses = spec.get("analyses") or {}
-        if analysis_id in analyses:
-            sub_node = analyses[analysis_id]
-            sub_path = sub_node.get("path")
-            if sub_path:
-                return str(
-                    (project_path / sub_path).resolve()
-                    / "results" / universe_id / output_id
-                )
+def find_upstream_output(
+    consumer: TreeOutput,
+    inp_id: str,
+    all_outputs: list[TreeOutput],
+) -> TreeOutput | None:
+    """Resolve a declared ``Output.inputs`` id to the producing :class:`TreeOutput`.
+
+    Per v0.0.7, ``Output.inputs`` references use plain artifact IDs and
+    resolve through the surrounding analysis scope: a sibling output, a
+    local input, or a local input that is itself a ``from:`` alias of
+    something further up.
+
+    Returns ``None`` for inputs that resolve to external sources (no
+    upstream rule produces them) — :func:`resolve_external_input`
+    handles those.
+    """
+    by_qualified: dict[str, TreeOutput] = {}
+    by_bare: dict[str, TreeOutput] = {}
+    for to in all_outputs:
+        if to.output_def.get("recipe") is None:
+            continue
+        if to.analysis_id is not None:
+            by_qualified[f"{to.analysis_id}.{to.output_id}"] = to
+        else:
+            by_qualified[to.output_id] = to
+        by_bare.setdefault(to.output_id, to)
+
+    if "." in inp_id and inp_id in by_qualified:
+        return by_qualified[inp_id]
+
+    if consumer.analysis_id is not None:
+        qualified = f"{consumer.analysis_id}.{inp_id}"
+        if qualified in by_qualified:
+            return by_qualified[qualified]
+
+    if inp_id in by_qualified:
+        return by_qualified[inp_id]
+
+    # Resolve through ``from:`` aliases on the consumer's analysis-level
+    # inputs. v0.0.7 grammar: ``../id`` (parent input), ``../../id``
+    # (grandparent), ``../sibling.out_id`` (sibling sub-analysis output).
+    analysis_inputs = {i.get("id"): i for i in get_inputs(consumer.analysis_spec)}
+    inp_def = analysis_inputs.get(inp_id)
+    if inp_def and inp_def.get("from"):
+        _, target = _strip_up_prefix(inp_def["from"])
+        if target in by_qualified:
+            return by_qualified[target]
+        if "." not in target and target in by_bare:
+            return by_bare[target]
 
     return None
 
 
+def resolve_external_input(
+    consumer: TreeOutput,
+    inp_id: str,
+    root_spec: dict[str, Any],
+) -> str | None:
+    """Resolve a declared ``Output.inputs`` id to an external source string.
+
+    Used when the input is not produced by another rule (so
+    :func:`find_upstream_output` returned ``None``). Walks the
+    surrounding-scope ``Input`` declarations to find one matching
+    ``inp_id``; if it has a ``source:``, returns that. If it has a
+    ``from:`` alias, walks one hop further to the source.
+
+    Returns ``None`` when the id is unresolvable. Recipes that reference
+    such an id via ``{inputs.<id>}`` will surface a runtime ``KeyError``
+    — that scenario is also caught by ``astra validate``.
+    """
+    # Inputs visible to the consumer: the surrounding analysis's own
+    # inputs, plus root inputs when the consumer is at root.
+    analysis_inputs = {i.get("id"): i for i in get_inputs(consumer.analysis_spec)}
+    inp_def = analysis_inputs.get(inp_id)
+
+    # If the consumer is in a sub-analysis and the bare id isn't a
+    # local Input there, also try the root inputs (a ``../id`` alias
+    # would have already redirected us, but plain id resolution per the
+    # spec walks the scope chain).
+    if inp_def is None and consumer.analysis_id is not None:
+        root_inputs = {i.get("id"): i for i in get_inputs(root_spec)}
+        inp_def = root_inputs.get(inp_id)
+    if inp_def is None:
+        return None
+
+    # Direct source.
+    src = inp_def.get("source")
+    if isinstance(src, str) and src:
+        return src
+
+    # ``from:`` alias to an ancestor input — walk one hop.
+    from_ref = inp_def.get("from")
+    if isinstance(from_ref, str) and from_ref:
+        _, target = _strip_up_prefix(from_ref)
+        # Only resolve to root inputs (parent of a sub). Sibling-output
+        # references would have been handled by find_upstream_output.
+        if "." not in target:
+            root_inputs = {i.get("id"): i for i in get_inputs(root_spec)}
+            target_def = root_inputs.get(target)
+            if target_def is not None:
+                target_src = target_def.get("source")
+                if isinstance(target_src, str) and target_src:
+                    return target_src
+    return None
+
+
+__all__ = [
+    "TreeOutput",
+    "collect_tree_inputs",
+    "collect_tree_outputs",
+    "find_upstream_output",
+    "get_decisions_for_analysis",
+    "resolve_container_spec",
+    "resolve_external_input",
+    "resolve_output_path",
+    "resolve_universe_decisions",
+]

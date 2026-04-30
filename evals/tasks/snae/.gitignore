@@ -1,6 +1,6 @@
 # ASTRA Analysis
 results/
-results/.dagster/
+.lightcone/
 __pycache__/
 *.py[cod]
 .venv/
