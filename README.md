@@ -18,7 +18,7 @@ cd my-analysis
 claude
 ```
 
-Then tell the agent `/lc-new` to scope your research question.
+Then tell the agent `/lc-new` to scope your research question. After the spec exists, just tell the agent to build it — implementation is a normal Claude Code workflow guided by `.claude/guides/`.
 
 ## Skills
 
@@ -34,17 +34,17 @@ Guides you from a research question to a complete `astra.yaml` specification thr
 
 You don't write any code or YAML during this phase — the agent produces the full specification.
 
-### `/lc-build` — Build the analysis
+### `/lc-migrate` — Bring an existing project into ASTRA
 
-Takes the specification from `/lc-new` and iteratively implements it: writing scripts, building containers, running computations, and committing progress. The agent works in a loop, and if it hits something ambiguous it flags it as an open question for you to resolve before continuing.
-
-### `/lc-verify` — Audit a completed analysis
-
-Runs a read-only audit checking that the implementation matches the specification: schema validity, result files present, metrics in expected format, and that decision parameters are actually wired through the code (not hardcoded).
+Scans an existing codebase, drafts an `astra.yaml` that captures its inputs, outputs, and analytical decisions, parameterizes the code so decisions can vary across universes, and runs the analysis through `lc` until every output materializes. Existing logic is left intact — changes are confined to parameter plumbing.
 
 ### `/lc-feedback` — Report a bug
 
 Files a GitHub issue against the right repo (ASTRA or lightcone-cli) with version info and error context auto-collected from your session.
+
+### Building and verifying
+
+There is no `/lc-build` or `/lc-verify` skill — building and verifying are part of the normal Claude Code workflow once `astra.yaml` exists. The agent reads `.claude/guides/lightcone-cli-reference.md` (workflow, commands, status meanings) and `.claude/guides/astra-reference.md` (spec syntax) and drives the build directly: write scripts under `src/`, run `lc run`, watch `lc status` until every output is `ok`, then `astra validate astra.yaml` and `lc verify` to confirm the spec is valid and the provenance chain is intact.
 
 ## CLI Reference
 
@@ -65,7 +65,7 @@ lc init my-analysis --scratch '$SCRATCH/lc'  # override scratch root for snakema
 
 ### Execution and monitoring
 
-The agent runs these during `/lc-build`, but you can also run them directly:
+The agent runs these as it builds out an analysis, but you can also run them directly:
 
 ```bash
 lc run                              # materialize all outputs for all universes
