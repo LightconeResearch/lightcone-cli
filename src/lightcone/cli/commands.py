@@ -200,13 +200,17 @@ def init(
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
 
-    # Claude Code plugin bundle
+    # Claude Code plugin bundle + project root CLAUDE.md from the bundle template.
     plugin_source = get_plugin_source_dir()
     if plugin_source is not None and plugin_source.exists():
         _install_claude_plugin(directory, plugin_source, permissions)
-
-    # Project CLAUDE.md (a stub)
-    (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
+        template = plugin_source / "templates" / "CLAUDE.md"
+        if template.exists():
+            (directory / "CLAUDE.md").write_text(template.read_text())
+    if not (directory / "CLAUDE.md").exists():
+        (directory / "CLAUDE.md").write_text(
+            "# CLAUDE.md\n\nASTRA analysis project, orchestrated by lightcone-cli.\n"
+        )
 
     # git init last so the initial commit captures every scaffolded file.
     if not no_git:
@@ -268,25 +272,6 @@ _GITIGNORE_APPEND = """
 .snakemake.legacy/
 results/
 """
-
-_PROJECT_CLAUDE_MD = """# Project Notes for Claude
-
-This is an ASTRA project orchestrated by `lightcone-cli`.
-
-To materialize outputs declared in `astra.yaml`:
-
-```
-lc run                    # all outputs in the default universe
-lc run output_id          # one specific output
-lc status                 # show what's materialized vs stale vs missing
-lc verify                 # validate the provenance chain
-```
-
-Outputs land in `results/<universe>/<output_id>/` along with a sidecar
-`.lightcone-manifest.json` recording the recipe, container, decisions,
-input hashes, and output hash.
-"""
-
 
 def _install_claude_plugin(
     project_dir: Path,
