@@ -1,0 +1,454 @@
+"""Tests for engine/wrroc.py — Workflow Run RO-Crate exporter."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+from click.testing import CliRunner
+
+from lightcone.cli.commands import main
+from lightcone.engine.manifest import code_version, write_manifest
+from lightcone.engine.wrroc import (
+    PROVENANCE_RUN_CRATE_PROFILE,
+    ExportResult,
+    export_wrroc,
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures: tiny project + materialized outputs
+# ---------------------------------------------------------------------------
+
+
+def _write_spec(project: Path, spec: dict[str, Any]) -> None:
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "astra.yaml").write_text(yaml.safe_dump(spec))
+
+
+def _write_universe(project: Path, universe_id: str, decisions: dict[str, Any]) -> None:
+    udir = project / "universes"
+    udir.mkdir(parents=True, exist_ok=True)
+    (udir / f"{universe_id}.yaml").write_text(
+        yaml.safe_dump({"decisions": decisions})
+    )
+
+
+def _materialize(
+    project: Path,
+    output_id: str,
+    universe_id: str,
+    *,
+    recipe: str,
+    decisions: dict[str, Any] | None = None,
+    container_image: str | None = None,
+    inputs: dict[str, Path] | None = None,
+    body: str = "output bytes",
+) -> Path:
+    out = project / "results" / universe_id / output_id
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "data.txt").write_text(body)
+    cv = code_version(
+        recipe=recipe,
+        container_image=container_image,
+        decisions=decisions or {},
+    )
+    write_manifest(
+        output_dir=out,
+        inputs=inputs or {},
+        cfg={
+            "output_id": output_id,
+            "universe_id": universe_id,
+            "recipe": recipe,
+            "container_image": container_image,
+            "decisions": decisions or {},
+            "code_version": cv,
+            "git_sha": "abc1234",
+            "lc_version": "0.0.1",
+        },
+    )
+    return out
+
+
+@pytest.fixture
+def minimal_project(tmp_path: Path) -> Path:
+    """A project with one universe and one materialized output."""
+    _write_spec(
+        tmp_path,
+        {
+            "name": "minimal",
+            "description": "test",
+            "outputs": [
+                {"id": "foo", "recipe": {"command": "echo foo > data.txt"}},
+            ],
+        },
+    )
+    _write_universe(tmp_path, "baseline", {})
+    _materialize(tmp_path, "foo", "baseline", recipe="echo foo > data.txt")
+    return tmp_path
+
+
+@pytest.fixture
+def chained_project(tmp_path: Path) -> Path:
+    """Two-step DAG: step_b depends on step_a."""
+    _write_spec(
+        tmp_path,
+        {
+            "name": "chained",
+            "decisions": [
+                {"id": "method", "options": [{"value": "A"}, {"value": "B"}]},
+            ],
+            "outputs": [
+                {"id": "step_a", "recipe": {"command": "echo a > data.txt"}},
+                {
+                    "id": "step_b",
+                    "inputs": ["step_a"],
+                    "recipe": {"command": "cat data/step_a/data.txt > data.txt"},
+                },
+            ],
+        },
+    )
+    _write_universe(tmp_path, "baseline", {"method": "A"})
+
+    out_a = _materialize(
+        tmp_path, "step_a", "baseline",
+        recipe="echo a > data.txt",
+        decisions={"method": "A"},
+    )
+    _materialize(
+        tmp_path, "step_b", "baseline",
+        recipe="cat data/step_a/data.txt > data.txt",
+        decisions={"method": "A"},
+        inputs={"step_a": out_a},
+    )
+    return tmp_path
+
+
+# ---------------------------------------------------------------------------
+# Module-level tests
+# ---------------------------------------------------------------------------
+
+
+class TestMinimalExport:
+    def test_returns_export_result(self, minimal_project: Path) -> None:
+        out = minimal_project / "wrroc"
+        result = export_wrroc(minimal_project, out, author="Tester <t@x>")
+        assert isinstance(result, ExportResult)
+        assert result.bundle_path == out
+        assert result.runs_included == 1
+        assert result.universes_included == ["baseline"]
+        assert result.is_zip is False
+
+    def test_bundle_has_metadata_file(self, minimal_project: Path) -> None:
+        out = minimal_project / "wrroc"
+        export_wrroc(minimal_project, out, author="Tester <t@x>")
+        assert (out / "ro-crate-metadata.json").is_file()
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        assert "@context" in meta
+        assert "@graph" in meta
+
+    def test_bundle_includes_astra_yaml(self, minimal_project: Path) -> None:
+        out = minimal_project / "wrroc"
+        export_wrroc(minimal_project, out, author="Tester <t@x>")
+        assert (out / "astra.yaml").is_file()
+
+    def test_root_conforms_to_wrroc_profiles(self, minimal_project: Path) -> None:
+        out = minimal_project / "wrroc"
+        export_wrroc(minimal_project, out, author="Tester <t@x>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        root = next(g for g in meta["@graph"] if g["@id"] == "./")
+        conforms_ids = [c["@id"] for c in root["conformsTo"]]
+        assert PROVENANCE_RUN_CRATE_PROFILE in conforms_ids
+
+
+class TestChainPreserved:
+    def test_step_b_object_references_step_a_dataset(
+        self, chained_project: Path
+    ) -> None:
+        out = chained_project / "wrroc"
+        export_wrroc(chained_project, out, author="Tester <t@x>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+
+        # Find step_b's CreateAction
+        actions = [g for g in meta["@graph"] if g.get("@type") == "CreateAction"]
+        step_b_action = next(a for a in actions if "step_b" in a["@id"])
+
+        # Its `object` list should include step_a's dataset @id
+        object_ids = [o["@id"] for o in step_b_action["object"]]
+        assert "results/baseline/step_a/" in object_ids
+
+    def test_both_steps_have_create_actions(self, chained_project: Path) -> None:
+        out = chained_project / "wrroc"
+        result = export_wrroc(chained_project, out, author="X <x@y>")
+        assert result.runs_included == 2
+
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        actions = [g for g in meta["@graph"] if g.get("@type") == "CreateAction"]
+        ids = {a["@id"] for a in actions}
+        assert any("step_a" in i for i in ids)
+        assert any("step_b" in i for i in ids)
+
+
+class TestDecisionsAttached:
+    def test_decisions_emitted_as_property_values(
+        self, chained_project: Path
+    ) -> None:
+        out = chained_project / "wrroc"
+        export_wrroc(chained_project, out, author="X <x@y>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+
+        pvs = [g for g in meta["@graph"] if g.get("@type") == "PropertyValue"]
+        method_pvs = [p for p in pvs if p.get("name") == "method"]
+        assert len(method_pvs) >= 1
+        assert all(p["value"] == "A" for p in method_pvs)
+
+    def test_complex_decision_value_is_serialized(self, tmp_path: Path) -> None:
+        """Non-primitive decision values must be JSON-serialized for
+        PropertyValue.value compatibility.
+        """
+        _write_spec(
+            tmp_path,
+            {
+                "outputs": [
+                    {"id": "foo", "recipe": {"command": "echo foo"}},
+                ]
+            },
+        )
+        _write_universe(tmp_path, "u1", {"opts": {"a": 1, "b": [2, 3]}})
+        _materialize(
+            tmp_path, "foo", "u1",
+            recipe="echo foo",
+            decisions={"opts": {"a": 1, "b": [2, 3]}},
+        )
+
+        export_wrroc(tmp_path, tmp_path / "wrroc", author="X <x@y>")
+        meta = json.loads((tmp_path / "wrroc" / "ro-crate-metadata.json").read_text())
+        opts_pv = next(
+            g for g in meta["@graph"]
+            if g.get("@type") == "PropertyValue" and g.get("name") == "opts"
+        )
+        # Coerced to a JSON string
+        assert isinstance(opts_pv["value"], str)
+        assert json.loads(opts_pv["value"]) == {"a": 1, "b": [2, 3]}
+
+
+class TestRoundTrip:
+    def test_load_via_rocrate_py(self, chained_project: Path) -> None:
+        """A bundle we wrote must be loadable by rocrate.Crate(path)."""
+        from rocrate.rocrate import ROCrate
+
+        out = chained_project / "wrroc"
+        export_wrroc(chained_project, out, author="X <x@y>")
+
+        crate = ROCrate(out)
+        assert crate.name == "chained"
+        actions = crate.get_by_type("CreateAction")
+        assert len(actions) == 2
+
+    def test_workflow_is_main_entity(self, chained_project: Path) -> None:
+        from rocrate.rocrate import ROCrate
+
+        out = chained_project / "wrroc"
+        export_wrroc(chained_project, out, author="X <x@y>")
+        crate = ROCrate(out)
+        assert crate.mainEntity is not None
+        assert crate.mainEntity.id == "astra.yaml"
+
+
+class TestMetadataOnly:
+    def test_skips_data_files(self, chained_project: Path) -> None:
+        out = chained_project / "wrroc"
+        export_wrroc(
+            chained_project, out, author="X <x@y>", include_data=False,
+        )
+        # data.txt files should NOT be copied
+        assert not (out / "results" / "baseline" / "step_a" / "data.txt").exists()
+        # but manifests SHOULD be
+        assert (
+            out / "results" / "baseline" / "step_a" / ".lightcone-manifest.json"
+        ).is_file()
+
+    def test_chain_still_valid_in_metadata(self, chained_project: Path) -> None:
+        """Even without data files, the @id chain must still link upstream."""
+        out = chained_project / "wrroc"
+        export_wrroc(
+            chained_project, out, author="X <x@y>", include_data=False,
+        )
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        actions = [g for g in meta["@graph"] if g.get("@type") == "CreateAction"]
+        step_b = next(a for a in actions if "step_b" in a["@id"])
+        ids = [o["@id"] for o in step_b["object"]]
+        assert "results/baseline/step_a/" in ids
+
+
+class TestZipBundle:
+    def test_produces_zip(self, minimal_project: Path) -> None:
+        zip_path = minimal_project / "bundle.zip"
+        result = export_wrroc(
+            minimal_project, zip_path, author="X <x@y>", zip_bundle=True,
+        )
+        assert result.is_zip is True
+        assert zip_path.is_file()
+        # Contains ro-crate-metadata.json
+        import zipfile
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            assert any("ro-crate-metadata.json" in n for n in names)
+
+
+class TestAuthor:
+    def test_explicit_author_overrides(self, minimal_project: Path) -> None:
+        out = minimal_project / "wrroc"
+        export_wrroc(minimal_project, out, author="Alice <a@b.c>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        persons = [g for g in meta["@graph"] if g.get("@type") == "Person"]
+        assert len(persons) == 1
+        assert persons[0]["name"] == "Alice"
+        assert persons[0]["email"] == "a@b.c"
+
+    def test_author_used_as_action_agent(self, minimal_project: Path) -> None:
+        out = minimal_project / "wrroc"
+        export_wrroc(minimal_project, out, author="Alice <a@b.c>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        action = next(g for g in meta["@graph"] if g.get("@type") == "CreateAction")
+        assert action["agent"]["@id"] == "#author-a_at_b.c"
+
+
+class TestUniverseFilter:
+    def test_restricts_to_listed_universes(self, tmp_path: Path) -> None:
+        _write_spec(
+            tmp_path,
+            {
+                "outputs": [
+                    {"id": "foo", "recipe": {"command": "echo foo"}},
+                ]
+            },
+        )
+        _write_universe(tmp_path, "u1", {})
+        _write_universe(tmp_path, "u2", {})
+        _materialize(tmp_path, "foo", "u1", recipe="echo foo")
+        _materialize(tmp_path, "foo", "u2", recipe="echo foo")
+
+        result = export_wrroc(
+            tmp_path, tmp_path / "wrroc",
+            universes=["u1"], author="X <x@y>",
+        )
+        assert result.universes_included == ["u1"]
+        assert result.runs_included == 1
+
+
+class TestEmptyProject:
+    def test_no_materializations_warns_but_succeeds(
+        self, tmp_path: Path,
+    ) -> None:
+        _write_spec(
+            tmp_path,
+            {
+                "outputs": [
+                    {"id": "foo", "recipe": {"command": "echo foo"}},
+                ]
+            },
+        )
+        _write_universe(tmp_path, "u1", {})
+        # No materialization
+
+        result = export_wrroc(tmp_path, tmp_path / "wrroc", author="X <x@y>")
+        assert result.runs_included == 0
+        # Bundle still has the workflow definition
+        assert (tmp_path / "wrroc" / "astra.yaml").is_file()
+
+
+class TestRefuseClobber:
+    def test_non_empty_target_dir_errors(self, minimal_project: Path) -> None:
+        out = minimal_project / "wrroc"
+        out.mkdir()
+        (out / "existing.txt").write_text("hi")
+        with pytest.raises(FileExistsError):
+            export_wrroc(minimal_project, out, author="X <x@y>")
+
+
+# ---------------------------------------------------------------------------
+# CLI tests
+# ---------------------------------------------------------------------------
+
+
+class TestCli:
+    def test_export_wrroc_help(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["export", "wrroc", "--help"])
+        assert result.exit_code == 0
+        assert "WRROC" in result.output
+        assert "--zip" in result.output
+        assert "--metadata-only" in result.output
+
+    def test_export_wrroc_runs(
+        self, minimal_project: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(minimal_project)
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "export", "wrroc",
+                "-o", "out-dir",
+                "--author", "Tester <t@x>",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert (minimal_project / "out-dir" / "ro-crate-metadata.json").is_file()
+        assert "Wrote WRROC" in result.output
+
+    def test_export_wrroc_zip(
+        self, minimal_project: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(minimal_project)
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "export", "wrroc",
+                "-o", "bundle.zip",
+                "--zip",
+                "--author", "Tester <t@x>",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert (minimal_project / "bundle.zip").is_file()
+
+    def test_export_wrroc_metadata_only(
+        self, minimal_project: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(minimal_project)
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "export", "wrroc",
+                "-o", "meta",
+                "--metadata-only",
+                "--author", "Tester <t@x>",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # Manifest yes, data no
+        out_dir = minimal_project / "meta" / "results" / "baseline" / "foo"
+        assert (out_dir / ".lightcone-manifest.json").is_file()
+        assert not (out_dir / "data.txt").exists()
+
+    def test_export_wrroc_no_runs_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _write_spec(
+            tmp_path,
+            {"outputs": [{"id": "foo", "recipe": {"command": "echo foo"}}]},
+        )
+        _write_universe(tmp_path, "u1", {})
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["export", "wrroc", "-o", "out", "--author", "X <x@y>"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "no materialized outputs" in result.output.lower()

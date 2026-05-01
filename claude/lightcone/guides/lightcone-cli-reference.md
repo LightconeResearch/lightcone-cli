@@ -10,6 +10,7 @@ lc run [OUTPUTS...] [--universe NAME] [--force] [--verbose] [--rerun-triggers TR
 lc build [--force] [--runtime docker]                             # Build container images from specs
 lc status [--universe NAME] [--json]                              # Materialization status (text or JSON)
 lc verify [--universe NAME]                                       # Recompute hashes and walk the provenance chain
+lc export wrroc [--output PATH] [--universe NAME] [--zip] [--metadata-only] [--author "NAME <EMAIL>"]  # Export Workflow Run RO-Crate bundle
 lc eval {run,report,compare}                                      # Run/inspect eval suites (requires the 'eval' extra)
 ```
 
@@ -72,3 +73,17 @@ Outputs land at `results/<universe>/<output_id>/`, with the per-output manifest 
 - **`lc verify` failure** — `missing_manifest` (output dir exists with no `.lightcone-manifest.json`), `tampered_data` (bytes on disk no longer hash to the recorded `data_version`), or `broken_chain` (an upstream's `data_version` drifted from what this output's manifest recorded). Re-run the affected output with `lc run` to repair.
 
 After failure: fix, then `lc run <output_id> --universe <name>`.
+
+## Publishing Analyses
+
+`lc export wrroc` bundles the project's manifests, workflow definition, decisions, and (optionally) data files into a [Workflow Run RO-Crate](https://www.researchobject.org/workflow-run-crate/) — a JSON-LD package readable by RO-Crate-aware archives (WorkflowHub, Zenodo's RO-Crate plugin, etc.). The lightcone manifest format on disk is unchanged; the bundle is generated on demand.
+
+```bash
+lc export wrroc                                # ./wrroc/ directory
+lc export wrroc -o run.zip --zip               # zip bundle
+lc export wrroc --metadata-only                # provenance graph + manifests only (no data files)
+lc export wrroc -u baseline -u alt_method      # restrict to specific universes
+lc export wrroc --author "Name <email@host>"   # override git config
+```
+
+The bundle's `@graph` contains a `ComputationalWorkflow` (the astra.yaml), one `CreateAction` per materialized output (with `object` referencing upstream datasets and external inputs, `result` referencing the produced dataset, and `instrument` referencing the recipe `SoftwareApplication`), `PropertyValue` entries for decisions and provenance metadata (`code_version`, `data_version`), and a `Person` for the author.
