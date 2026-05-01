@@ -362,7 +362,18 @@ class WRROCBuilder:
                 resolve_output_path(self.project_path, tree_out, universe_id)
                 / tree_out.output_id
             )
-            manifest = read_manifest(out_dir)
+            # Best-effort manifest read: skip outputs whose directory
+            # is unreadable (permission-denied scratch entries, broken
+            # symlinks, mid-rsync states). For `lc export`, partial
+            # bundles are more useful than a total abort.
+            try:
+                manifest = read_manifest(out_dir)
+            except OSError as exc:
+                logger.warning(
+                    "Skipping %s/%s: cannot read manifest (%s)",
+                    universe_id, tree_out.output_id, exc,
+                )
+                continue
             if manifest is None:
                 continue  # not yet materialized in this universe
 
@@ -686,13 +697,13 @@ def _safe_load_universe_decisions(
     spec: dict[str, Any],
     universe_id: str,
 ) -> dict[str, Any]:
-    """Like resolve_universe_decisions but tolerant of missing files."""
+    """Like resolve_universe_decisions but tolerant of missing/unreadable files."""
     universe_yaml = project_path / "universes" / f"{universe_id}.yaml"
-    if not universe_yaml.exists():
-        return {}
     try:
+        if not universe_yaml.exists():
+            return {}
         return resolve_universe_decisions(project_path, spec, universe_id)
-    except (FileNotFoundError, KeyError):
+    except (FileNotFoundError, KeyError, OSError):
         return {}
 
 

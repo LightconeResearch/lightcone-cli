@@ -910,7 +910,11 @@ def export_wrroc_cmd(
     if result.runs_included == 0:
         console.print(
             "[yellow]Warning:[/yellow] no materialized outputs were found — "
-            "the bundle contains only the workflow definition."
+            "the bundle contains only the workflow definition.\n"
+            "  This usually means recipes haven't been run yet (try [cyan]lc run[/cyan]) "
+            "or the [cyan].lightcone-manifest.json[/cyan] sidecars are missing.\n"
+            "  Workflow-only bundles will not pass strict Provenance Run Crate "
+            "validation; that profile requires at least one materialized run."
         )
     else:
         u_list = ", ".join(result.universes_included)

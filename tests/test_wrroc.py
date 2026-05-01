@@ -378,6 +378,136 @@ class TestRefuseClobber:
             export_wrroc(minimal_project, out, author="X <x@y>")
 
 
+class TestSubAnalyses:
+    """Sub-analysis outputs must be captured with the correct path-rooted
+    `@id`s and the chain back to root outputs preserved.
+    """
+
+    @pytest.fixture
+    def subanalysis_project(self, tmp_path: Path) -> Path:
+        # Root project declares a sub-analysis at analyses/sub/
+        _write_spec(
+            tmp_path,
+            {
+                "name": "with-subs",
+                "description": "Project with one sub-analysis.",
+                "outputs": [
+                    {"id": "root_out", "recipe": {"command": "echo r"}},
+                ],
+                "analyses": {
+                    "sub": {"path": "./analyses/sub"},
+                },
+            },
+        )
+        # Sub-analysis has its own astra.yaml.
+        sub_dir = tmp_path / "analyses" / "sub"
+        sub_dir.mkdir(parents=True)
+        (sub_dir / "astra.yaml").write_text(yaml.safe_dump({
+            "name": "sub",
+            "description": "Sub-analysis.",
+            "outputs": [
+                {"id": "sub_out", "recipe": {"command": "echo s"}},
+            ],
+        }))
+        _write_universe(tmp_path, "baseline", {})
+
+        # Materialize root output at <root>/results/baseline/root_out/
+        _materialize(tmp_path, "root_out", "baseline", recipe="echo r")
+
+        # Materialize sub-analysis output at <sub>/results/baseline/sub_out/
+        sub_out_dir = sub_dir / "results" / "baseline" / "sub_out"
+        sub_out_dir.mkdir(parents=True)
+        (sub_out_dir / "data.txt").write_text("sub bytes")
+        cv = code_version(recipe="echo s", container_image=None, decisions={})
+        write_manifest(
+            output_dir=sub_out_dir,
+            inputs={},
+            cfg={"output_id": "sub_out", "universe_id": "baseline",
+                 "recipe": "echo s", "container_image": None,
+                 "decisions": {}, "code_version": cv,
+                 "git_sha": "abc", "lc_version": "0.0.1"},
+        )
+        return tmp_path
+
+    def test_both_root_and_sub_outputs_captured(
+        self, subanalysis_project: Path,
+    ) -> None:
+        out = subanalysis_project / "wrroc"
+        result = export_wrroc(subanalysis_project, out, author="X <x@y>")
+        assert result.runs_included == 2
+
+    def test_sub_dataset_id_includes_sub_path(
+        self, subanalysis_project: Path,
+    ) -> None:
+        out = subanalysis_project / "wrroc"
+        export_wrroc(subanalysis_project, out, author="X <x@y>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        ids = {g["@id"] for g in meta["@graph"]}
+        # Root dataset uses results/<u>/<out>/
+        assert "results/baseline/root_out/" in ids
+        # Sub-analysis dataset uses <sub_path>/results/<u>/<out>/
+        assert "analyses/sub/results/baseline/sub_out/" in ids
+
+    def test_sub_create_action_id_qualified(
+        self, subanalysis_project: Path,
+    ) -> None:
+        """CreateAction @ids include the analysis_id qualifier so sub
+        and root outputs with the same id never collide.
+        """
+        out = subanalysis_project / "wrroc"
+        export_wrroc(subanalysis_project, out, author="X <x@y>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        action_ids = {
+            g["@id"] for g in meta["@graph"]
+            if g.get("@type") == "CreateAction"
+        }
+        assert "#run-baseline-root_out" in action_ids
+        assert "#run-baseline-sub.sub_out" in action_ids
+
+    def test_sub_data_files_bundled(
+        self, subanalysis_project: Path,
+    ) -> None:
+        out = subanalysis_project / "wrroc"
+        export_wrroc(subanalysis_project, out, author="X <x@y>")
+        # Sub-analysis data file should be copied at the corresponding
+        # path inside the bundle.
+        assert (
+            out / "analyses" / "sub" / "results" / "baseline"
+            / "sub_out" / "data.txt"
+        ).is_file()
+
+
+class TestUnreadableManifest:
+    def test_skips_permission_denied(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If a manifest read raises OSError (permission, broken symlink),
+        the exporter must warn and skip rather than abort the whole run.
+        Mirrors what happens with cross-user symlinked results dirs.
+        """
+        from lightcone.engine import wrroc as wrroc_mod
+
+        _write_spec(
+            tmp_path,
+            {"outputs": [{"id": "foo", "recipe": {"command": "echo foo"}}]},
+        )
+        _write_universe(tmp_path, "u1", {})
+        # No manifest exists, but inject one that raises PermissionError.
+        from lightcone.engine import manifest as manifest_mod
+        original = manifest_mod.read_manifest
+
+        def boom(out_dir: Path) -> dict[str, Any] | None:
+            raise PermissionError(f"denied: {out_dir}")
+
+        monkeypatch.setattr(manifest_mod, "read_manifest", boom)
+        # wrroc.py imports read_manifest by name, so patch there too.
+        monkeypatch.setattr(wrroc_mod, "read_manifest", boom)
+
+        # Should not raise; should warn and produce a (mostly empty) bundle.
+        result = export_wrroc(tmp_path, tmp_path / "wrroc", author="X <x@y>")
+        assert result.runs_included == 0
+
+
 class TestProfileConformance:
     """The bundle's @graph must declare profile CreativeWork entities,
     set a license, and include FormalParameter additionalType — the
