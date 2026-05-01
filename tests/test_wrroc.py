@@ -494,7 +494,6 @@ class TestUnreadableManifest:
         _write_universe(tmp_path, "u1", {})
         # No manifest exists, but inject one that raises PermissionError.
         from lightcone.engine import manifest as manifest_mod
-        original = manifest_mod.read_manifest
 
         def boom(out_dir: Path) -> dict[str, Any] | None:
             raise PermissionError(f"denied: {out_dir}")

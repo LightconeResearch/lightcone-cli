@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -219,14 +218,9 @@ def export_wrroc(
     output_path = Path(output_path).resolve()
 
     if zip_bundle:
-        bundle_dir = output_path.with_suffix(".d_tmp")
-        if bundle_dir.exists():
-            shutil.rmtree(bundle_dir)
-        crate.write(bundle_dir)
         if output_path.exists():
             output_path.unlink()
         crate.write_zip(output_path)
-        shutil.rmtree(bundle_dir, ignore_errors=True)
         result_path = output_path
     else:
         if output_path.exists() and any(output_path.iterdir()):
