@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from astra.helpers import load_yaml, resolve_analysis_tree
+from astra.helpers import get_decisions, load_yaml, resolve_analysis_tree
 
 from lightcone.engine.manifest import MANIFEST_FILENAME, read_manifest
 from lightcone.engine.tree import (
@@ -145,8 +145,12 @@ def export_wrroc(
 
     crate = ROCrate()
     crate.name = spec.get("name") or project_name
-    if "description" in spec:
-        crate.description = spec["description"]
+    # RO-Crate REQUIRES a description on the root. Fall back to a
+    # generated one when astra.yaml doesn't define one.
+    crate.description = spec.get("description") or (
+        f"WRROC bundle exported from {crate.name} on "
+        f"{_format_finished_at(_now())}."
+    )
     crate.creativeWorkStatus = "Published"
 
     # License — required by Workflow RO-Crate. Caller supplies it
@@ -298,25 +302,29 @@ class WRROCBuilder:
         if "description" in self.spec:
             wf["description"] = self.spec["description"]
 
-        # Decisions: declare each top-level decision as a FormalParameter
-        # of the workflow. Per-universe values get attached as
-        # PropertyValue on the CreateAction (see add_universe_runs).
-        for decision in self.spec.get("decisions") or []:
-            param_id = f"#param-{decision['id']}"
+        # Decisions: declare each decision (root + sub-analysis) as a
+        # FormalParameter of the workflow. Per-universe values get
+        # attached as PropertyValue on the CreateAction (see
+        # add_universe_runs). ASTRA's decisions are a dict keyed by id;
+        # use get_decisions() so sub-analysis decisions are merged in.
+        for decision_id, decision in get_decisions(self.spec).items():
+            param_id = f"#param-{decision_id}"
             # additionalType is REQUIRED by the WRROC FormalParameter
-            # shape. Use schema.org's primitive types — we infer from the
-            # first option's value when available, else default to Text.
-            opts = decision.get("options") or []
-            sample_val = opts[0].get("value") if opts else None
-            additional_type = _infer_additional_type(sample_val)
+            # shape. Infer from the default value (or first option) so
+            # we report the right schema.org primitive.
+            sample_val = _decision_sample_value(decision)
             param = ContextEntity(
                 self.crate,
                 param_id,
                 properties={
                     "@type": "FormalParameter",
-                    "name": decision["id"],
-                    "description": decision.get("description", ""),
-                    "additionalType": additional_type,
+                    "name": decision_id,
+                    "description": (
+                        decision.get("rationale")
+                        or decision.get("label")
+                        or decision.get("description", "")
+                    ),
+                    "additionalType": _infer_additional_type(sample_val),
                 },
             )
             self.crate.add(param)
@@ -688,6 +696,30 @@ def _safe_load_universe_decisions(
         return {}
 
 
+def _decision_sample_value(decision: dict[str, Any]) -> Any:
+    """Pick a representative value for a decision to infer its type.
+
+    ASTRA's decisions schema uses a dict of options keyed by option id
+    (e.g. ``options: {bins_8: {label: '8 bins'}, ...}``). The default is
+    typically one of those keys. For type inference, prefer:
+
+    1. The `default` value if set (always a primitive).
+    2. The first option key if options is a dict.
+    3. The first option's `value` field if options is a list.
+    """
+    if "default" in decision:
+        return decision["default"]
+    opts = decision.get("options")
+    if isinstance(opts, dict) and opts:
+        return next(iter(opts))
+    if isinstance(opts, list) and opts:
+        first = opts[0]
+        if isinstance(first, dict):
+            return first.get("value")
+        return first
+    return None
+
+
 def _infer_additional_type(value: Any) -> dict[str, str]:
     """Map a sample decision value to a schema.org primitive type @id.
 
@@ -721,6 +753,11 @@ def _format_finished_at(ts: float | None) -> str | None:
         return None
     from datetime import UTC, datetime
     return datetime.fromtimestamp(ts, tz=UTC).isoformat()
+
+
+def _now() -> float:
+    import time
+    return time.time()
 
 
 def _parse_author(s: str) -> tuple[str, str | None]:

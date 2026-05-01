@@ -96,9 +96,19 @@ def chained_project(tmp_path: Path) -> Path:
         tmp_path,
         {
             "name": "chained",
-            "decisions": [
-                {"id": "method", "options": [{"value": "A"}, {"value": "B"}]},
-            ],
+            "description": "Two-step chained DAG for WRROC tests.",
+            # ASTRA's decisions schema: dict keyed by decision id, with
+            # options also a dict keyed by option id.
+            "decisions": {
+                "method": {
+                    "label": "Method",
+                    "default": "A",
+                    "options": {
+                        "A": {"label": "Option A"},
+                        "B": {"label": "Option B"},
+                    },
+                },
+            },
             "outputs": [
                 {"id": "step_a", "recipe": {"command": "echo a > data.txt"}},
                 {
