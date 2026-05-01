@@ -368,6 +368,69 @@ class TestRefuseClobber:
             export_wrroc(minimal_project, out, author="X <x@y>")
 
 
+class TestProfileConformance:
+    """The bundle's @graph must declare profile CreativeWork entities,
+    set a license, and include FormalParameter additionalType — the
+    Provenance Run Crate 0.5 validator's REQUIRED checks all hinge on
+    these.
+    """
+
+    def test_root_has_license(self, minimal_project: Path) -> None:
+        out = minimal_project / "wrroc"
+        export_wrroc(minimal_project, out, author="X <x@y>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        root = next(g for g in meta["@graph"] if g["@id"] == "./")
+        assert "license" in root
+        assert root["license"]["@id"].startswith("http")
+
+    def test_explicit_license_passed_through(self, minimal_project: Path) -> None:
+        out = minimal_project / "wrroc"
+        export_wrroc(
+            minimal_project, out, author="X <x@y>",
+            license="https://opensource.org/licenses/MIT",
+        )
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        root = next(g for g in meta["@graph"] if g["@id"] == "./")
+        assert root["license"]["@id"] == "https://opensource.org/licenses/MIT"
+
+    def test_profile_creativework_entities_declared(
+        self, minimal_project: Path,
+    ) -> None:
+        """conformsTo profile URLs must each have a CreativeWork entity."""
+        out = minimal_project / "wrroc"
+        export_wrroc(minimal_project, out, author="X <x@y>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        ids = {g["@id"] for g in meta["@graph"]}
+        assert PROVENANCE_RUN_CRATE_PROFILE in ids
+
+    def test_formal_parameters_have_additional_type(
+        self, chained_project: Path,
+    ) -> None:
+        out = chained_project / "wrroc"
+        export_wrroc(chained_project, out, author="X <x@y>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        params = [g for g in meta["@graph"] if g.get("@type") == "FormalParameter"]
+        assert len(params) >= 1
+        for p in params:
+            assert "additionalType" in p
+            assert p["additionalType"]["@id"].startswith("http://schema.org/")
+
+    def test_workflow_haspart_recipes(self, chained_project: Path) -> None:
+        """ComputationalWorkflow MUST link recipes via hasPart."""
+        out = chained_project / "wrroc"
+        export_wrroc(chained_project, out, author="X <x@y>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        wf = next(
+            g for g in meta["@graph"]
+            if "ComputationalWorkflow" in (
+                g["@type"] if isinstance(g["@type"], list) else [g["@type"]]
+            )
+        )
+        has_part = wf.get("hasPart") or []
+        recipe_refs = [hp["@id"] for hp in has_part if hp["@id"].startswith("#recipe-")]
+        assert len(recipe_refs) >= 2  # both step_a and step_b recipes
+
+
 # ---------------------------------------------------------------------------
 # CLI tests
 # ---------------------------------------------------------------------------

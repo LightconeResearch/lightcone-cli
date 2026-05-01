@@ -848,6 +848,12 @@ def export() -> None:
     help="Author override, e.g. \"Name <email@host>\". Default: git config.",
 )
 @click.option(
+    "--license",
+    "license_url",
+    default=None,
+    help="License URL or SPDX identifier. Default: CC-BY-4.0.",
+)
+@click.option(
     "--zip/--no-zip",
     "zip_bundle",
     default=False,
@@ -862,6 +868,7 @@ def export_wrroc_cmd(
     output: Path,
     universe: tuple[str, ...],
     author: str | None,
+    license_url: str | None,
     zip_bundle: bool,
     metadata_only: bool,
 ) -> None:
@@ -889,6 +896,7 @@ def export_wrroc_cmd(
             output_path=output,
             universes=list(universe) or None,
             author=author,
+            license=license_url,
             zip_bundle=zip_bundle,
             include_data=not metadata_only,
         )

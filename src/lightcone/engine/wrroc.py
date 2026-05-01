@@ -81,12 +81,20 @@ class ExportResult:
 # ---------------------------------------------------------------------------
 
 
+#: Default license URL when none is supplied. CC-BY-4.0 is widely accepted
+#: by Zenodo and WorkflowHub for research outputs and is permissive enough
+#: not to surprise users who didn't think about licensing. Can be
+#: overridden via the ``license`` argument or ``--license`` CLI flag.
+DEFAULT_LICENSE = "https://creativecommons.org/licenses/by/4.0/"
+
+
 def export_wrroc(
     project_path: Path,
     output_path: Path,
     *,
     universes: list[str] | None = None,
     author: str | None = None,
+    license: str | None = None,
     zip_bundle: bool = False,
     include_data: bool = True,
 ) -> ExportResult:
@@ -105,6 +113,10 @@ def export_wrroc(
     author:
         Override the author. If ``None``, falls back to ``git config
         user.name``/``user.email`` then to ``LIGHTCONE_AUTHOR`` env var.
+    license:
+        License URL or SPDX-style identifier for the bundle. Required by
+        the Workflow RO-Crate profile; defaults to :data:`DEFAULT_LICENSE`
+        (CC-BY-4.0) when ``None``.
     zip_bundle:
         Package as a single zip after building. The zip contains the
         bundle directory at its root.
@@ -137,11 +149,37 @@ def export_wrroc(
         crate.description = spec["description"]
     crate.creativeWorkStatus = "Published"
 
+    # License — required by Workflow RO-Crate. Caller supplies it
+    # explicitly or we fall back to a permissive default.
+    license_url = license or spec.get("license") or DEFAULT_LICENSE
+    crate.root_dataset["license"] = {"@id": license_url}
+
     # Mark the root as a workflow run crate.
     crate.root_dataset["conformsTo"] = [
         {"@id": PROCESS_RUN_CRATE_PROFILE},
         {"@id": WORKFLOW_RUN_CRATE_PROFILE},
         {"@id": PROVENANCE_RUN_CRATE_PROFILE},
+    ]
+    # The validator expects each profile URL referenced by conformsTo to
+    # also exist as a CreativeWork entity in the @graph — declare them.
+    from rocrate.model import ContextEntity
+    for profile_url, profile_name in [
+        (PROCESS_RUN_CRATE_PROFILE, "Process Run Crate"),
+        (WORKFLOW_RUN_CRATE_PROFILE, "Workflow Run Crate"),
+        (PROVENANCE_RUN_CRATE_PROFILE, "Provenance Run Crate"),
+    ]:
+        crate.add(ContextEntity(crate, profile_url, properties={
+            "@type": "CreativeWork",
+            "name": f"{profile_name} 0.5",
+            "version": "0.5",
+        }))
+    # The metadata file descriptor itself must conformsTo a specific
+    # RO-Crate spec version. rocrate-py 0.15 emits a 1.2 @context but
+    # the validator looks for a conformsTo on the descriptor — set both
+    # 1.1 (for backward-compat validators) and 1.2 explicitly.
+    crate.metadata["conformsTo"] = [
+        {"@id": "https://w3id.org/ro/crate/1.1"},
+        {"@id": "https://w3id.org/ro/crate/1.2"},
     ]
 
     builder = WRROCBuilder(
@@ -265,6 +303,12 @@ class WRROCBuilder:
         # PropertyValue on the CreateAction (see add_universe_runs).
         for decision in self.spec.get("decisions") or []:
             param_id = f"#param-{decision['id']}"
+            # additionalType is REQUIRED by the WRROC FormalParameter
+            # shape. Use schema.org's primitive types — we infer from the
+            # first option's value when available, else default to Text.
+            opts = decision.get("options") or []
+            sample_val = opts[0].get("value") if opts else None
+            additional_type = _infer_additional_type(sample_val)
             param = ContextEntity(
                 self.crate,
                 param_id,
@@ -272,6 +316,7 @@ class WRROCBuilder:
                     "@type": "FormalParameter",
                     "name": decision["id"],
                     "description": decision.get("description", ""),
+                    "additionalType": additional_type,
                 },
             )
             self.crate.add(param)
@@ -363,9 +408,11 @@ class WRROCBuilder:
 
         ds = self.crate.dereference(dataset_id)
         ds["name"] = f"{tree_out.output_id} (universe={universe_id})"
-        ds["dataVersion"] = manifest.get("data_version")
-        if tree_out.analysis_id:
-            ds["analysisId"] = tree_out.analysis_id
+        # schema.org's `version` is the standard place for a content hash
+        # / version identifier on a Dataset. dataVersion (lightcone term)
+        # is not in the RO-Crate context so the validator rejects it.
+        if data_version := manifest.get("data_version"):
+            ds["version"] = data_version
 
         self._dataset_ids[cache_key] = dataset_id
         return dataset_id
@@ -455,11 +502,6 @@ class WRROCBuilder:
             ),
         )
 
-        # Workflow node owns the action via mainEntity reverse — the
-        # WRROC profile expects the action to point back at the workflow.
-        if self._workflow_id is not None:
-            action["instrumentWorkflow"] = {"@id": self._workflow_id}
-
         return action_id
 
     # ----- Resolved references -----
@@ -546,6 +588,13 @@ class WRROCBuilder:
             }
         sw = ContextEntity(self.crate, sw_id, properties=props)
         self.crate.add(sw)
+
+        # WRROC: ComputationalWorkflow MUST refer to its orchestrated
+        # tools via hasPart. Link each recipe back to the workflow.
+        if self._workflow_id is not None:
+            wf = self.crate.dereference(self._workflow_id)
+            if wf is not None:
+                wf.append_to("hasPart", sw)
 
         self._software_ids[key] = sw_id
         return sw_id
@@ -637,6 +686,21 @@ def _safe_load_universe_decisions(
         return resolve_universe_decisions(project_path, spec, universe_id)
     except (FileNotFoundError, KeyError):
         return {}
+
+
+def _infer_additional_type(value: Any) -> dict[str, str]:
+    """Map a sample decision value to a schema.org primitive type @id.
+
+    WRROC's FormalParameter shape requires ``additionalType`` to indicate
+    the parameter's expected value type — Text/Integer/Float/Boolean.
+    """
+    if isinstance(value, bool):
+        return {"@id": "http://schema.org/Boolean"}
+    if isinstance(value, int):
+        return {"@id": "http://schema.org/Integer"}
+    if isinstance(value, float):
+        return {"@id": "http://schema.org/Float"}
+    return {"@id": "http://schema.org/Text"}
 
 
 def _coerce_value(value: Any) -> Any:
