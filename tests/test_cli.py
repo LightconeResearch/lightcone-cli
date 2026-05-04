@@ -15,6 +15,7 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture(autouse=True)
+
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect ``~/.lightcone/`` to a temp dir so tests don't pollute the user's
     real config. The global config is auto-created on first ``lc`` invocation."""
@@ -30,7 +31,8 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_help_lists_core_commands(runner: CliRunner) -> None:
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("init", "run", "status", "verify", "build"):
+
+    for cmd in ("init", "launch", "run", "status", "verify", "build"):
         assert cmd in result.output
 
 
@@ -38,6 +40,7 @@ def test_help_does_not_advertise_removed_commands(runner: CliRunner) -> None:
     result = runner.invoke(main, ["--help"])
     assert "  dev " not in result.output
     assert "  cluster " not in result.output
+
     assert "  setup " not in result.output
 
 
@@ -99,6 +102,7 @@ def test_verify_clean_project_returns_zero(
     monkeypatch.chdir(project)
     result = runner.invoke(main, ["verify"])
     assert result.exit_code == 0
+
 
 
 # ---- lc run command building ------------------------------------------------

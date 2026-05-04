@@ -51,7 +51,10 @@ logger = logging.getLogger(__name__)
 #: podman would build images compute nodes can't read; then podman
 #: (rootless, no daemon); docker last, gated behind a ``docker info``
 #: probe so a down daemon doesn't silently win over a healthy podman.
-RUNTIMES: tuple[str, ...] = ("podman-hpc", "podman", "docker")
+RUNTIMES: tuple[str, ...] = ("podman-hpc", "podman", "docker", "apptainer", "singularity")
+
+#: Runtimes that don't have a daemon and use buildah for builds + OCI tarballs for storage.
+_DAEMONLESS_RUNTIMES: frozenset[str] = frozenset({"apptainer", "singularity"})
 
 #: Files whose contents contribute to the image tag hash.
 DEPENDENCY_FILES = (
@@ -160,6 +163,9 @@ def detect_runtime() -> str | None:
         if shutil.which(runtime) is None:
             continue
         if runtime == "docker" and not _docker_daemon_up():
+            continue
+        # Daemonless runtimes need buildah for image builds.
+        if runtime in _DAEMONLESS_RUNTIMES and shutil.which("buildah") is None:
             continue
         return runtime
     return None
@@ -474,8 +480,24 @@ def is_containerfile(spec: str, project_path: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def image_exists_locally(tag: str, *, runtime: str) -> bool:
-    """Check whether *tag* exists in the runtime's local image store."""
+def image_exists_locally(
+    tag: str,
+    *,
+    runtime: str,
+    project_path: Path | None = None,
+) -> bool:
+    """Check whether *tag* exists locally.
+
+    For docker/podman/podman-hpc: queries the runtime's image store.
+    For apptainer/singularity: checks whether the OCI tarball exists at
+    ``tarball_path_for_tag(tag, project_path)``. Returns ``False`` when
+    *project_path* is not provided (conservative — callers that know the
+    path should pass it).
+    """
+    if runtime in _DAEMONLESS_RUNTIMES:
+        if project_path is None:
+            return False
+        return tarball_path_for_tag(tag, project_path).exists()
     if runtime == "podman-hpc":
         return image_exists_podman_hpc(tag)
     try:
@@ -550,12 +572,15 @@ def build_image(
     *,
     runtime: str,
     build_args: dict[str, str] | None = None,
+    tarball_path: Path | None = None,
 ) -> ContainerBuildResult:
     """Build a container image with the given *runtime*.
 
     The build context is staged into a fresh tempdir before invocation
     (see :func:`_populate_build_context`). For ``podman-hpc``, the image
     is automatically migrated after build so compute nodes can access it.
+    For ``apptainer``/``singularity``, uses ``buildah`` to build and push
+    an OCI tarball to *tarball_path*.
 
     Raises :class:`ContainerBuildError` on failure.
     """
@@ -563,6 +588,46 @@ def build_image(
         raise ContainerBuildError(
             f"Unsupported build runtime {runtime!r}; expected one of {RUNTIMES}."
         )
+
+    if runtime in _DAEMONLESS_RUNTIMES:
+        if tarball_path is None:
+            raise ContainerBuildError(
+                f"tarball_path is required when building with the {runtime!r} runtime. "
+                "Pass the desired .tar output path."
+            )
+        tarball_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            build_proc = subprocess.run(
+                [
+                    "buildah", "build",
+                    "--format=oci",
+                    f"--tag={tag}",
+                    str(context),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            raise ContainerBuildError(
+                "buildah is not installed or not on PATH. "
+                f"Install buildah to build container images with {runtime!r}."
+            )
+        if build_proc.returncode != 0:
+            raise ContainerBuildError(
+                f"buildah build failed (exit {build_proc.returncode}):\n{build_proc.stderr}"
+            )
+        push_proc = subprocess.run(
+            ["buildah", "push", tag, f"oci-archive:{tarball_path}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if push_proc.returncode != 0:
+            raise ContainerBuildError(
+                f"buildah push failed (exit {push_proc.returncode}):\n{push_proc.stderr}"
+            )
+        return ContainerBuildResult(tag=tag, already_existed=False)
 
     with tempfile.TemporaryDirectory(prefix="lc-build-") as staged_str:
         staged = Path(staged_str)
@@ -582,8 +647,11 @@ def build_image(
             )
 
         if proc.returncode != 0:
+            # Include stdout too: build-step failures (e.g. pip errors) are
+            # written to the build log (stdout), not just stderr.
+            detail = "\n".join(filter(None, [proc.stdout.strip(), proc.stderr.strip()]))
             raise ContainerBuildError(
-                f"{runtime} build failed (exit code {proc.returncode}):\n{proc.stderr}"
+                f"{runtime} build failed (exit code {proc.returncode}):\n{detail}"
             )
 
         if runtime == "podman-hpc":
@@ -608,6 +676,11 @@ def pull_image(image: str, *, runtime: str) -> None:
     Raises :class:`ContainerBuildError` on failure or if *runtime* isn't
     on PATH.
     """
+    if runtime in _DAEMONLESS_RUNTIMES:
+        raise ContainerBuildError(
+            f"pull_image is not supported for the {runtime!r} runtime. "
+            "Use a Containerfile instead of a registry image reference."
+        )
     if runtime not in RUNTIMES:
         raise ContainerBuildError(
             f"Unsupported runtime {runtime!r}; expected one of {RUNTIMES}."
@@ -648,6 +721,60 @@ def _podman_hpc_migrate(tag: str) -> None:
             f"podman-hpc migrate failed (exit code {proc.returncode}):\n{proc.stderr}"
         )
     logger.info("podman-hpc migrate %s succeeded.", tag)
+
+
+# ---------------------------------------------------------------------------
+# OCI tarball helpers
+# ---------------------------------------------------------------------------
+
+
+def tarball_path_for_tag(tag: str, project_path: Path) -> Path:
+    """Return the canonical OCI tarball path for *tag* in *project_path*."""
+    return project_path / ".lightcone" / "images" / f"{tag}.tar"
+
+
+def save_image_as_tarball(tag: str, tarball_path: Path, *, runtime: str) -> None:
+    """Export *tag* from the runtime's image store to an OCI tarball.
+
+    Creates parent directories as needed. Raises :class:`ContainerBuildError`
+    on failure. The tarball is deleted on error to avoid leaving a partial file.
+    """
+    tarball_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with tarball_path.open("wb") as fout:
+            result = subprocess.run(
+                [runtime, "save", tag],
+                stdout=fout,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+    except Exception as exc:
+        tarball_path.unlink(missing_ok=True)
+        raise ContainerBuildError(f"{runtime} save {tag} failed: {exc}") from exc
+    if result.returncode != 0:
+        tarball_path.unlink(missing_ok=True)
+        raise ContainerBuildError(
+            f"{runtime} save {tag} failed (exit {result.returncode}): "
+            f"{result.stderr.decode(errors='replace')}"
+        )
+
+
+def load_image_from_tarball(tarball_path: Path, *, runtime: str) -> None:
+    """Load an OCI tarball into the runtime's local image store.
+
+    Raises :class:`ContainerBuildError` on failure.
+    """
+    result = subprocess.run(
+        [runtime, "load", "-qi", str(tarball_path)],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ContainerBuildError(
+            f"{runtime} load from {tarball_path} failed "
+            f"(exit {result.returncode}): "
+            f"{result.stderr.decode(errors='replace')}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +854,10 @@ def wrap_recipe(
     """
     if image is None or runtime == "none":
         return recipe
+    if runtime in _DAEMONLESS_RUNTIMES:
+        tarball = f".lightcone/images/{image}.tar"
+        inner = shlex.quote(recipe)
+        return f"{runtime} exec oci-archive:{tarball} bash -c {inner}"
     if runtime not in RUNTIMES:
         raise ContainerBuildError(
             f"Unsupported run runtime {runtime!r}; expected one of {RUNTIMES} or 'none'."

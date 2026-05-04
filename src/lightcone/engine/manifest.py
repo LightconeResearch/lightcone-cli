@@ -43,10 +43,21 @@ __all__ = [
     "SCHEMA_VERSION",
     "code_version",
     "fingerprint_external",
+    "lc_version",
     "read_manifest",
     "sha256_dir",
     "write_manifest",
 ]
+
+
+def lc_version() -> str:
+    """Return the installed lightcone-cli version string, or ``'dev'`` if unavailable."""
+    try:
+        from importlib.metadata import version
+
+        return version("lightcone-cli")
+    except Exception:
+        return "dev"
 
 
 def _hash_file(path: Path, h: hashlib._Hash) -> None:

@@ -100,7 +100,10 @@ Whatever approach you use:
 
 ## Phase 3: Run & Debug
 
+Enter the container if not already inside it, then materialize:
+
 ```bash
+lc launch claude          # skip if already inside the container
 lc run --universe baseline
 ```
 

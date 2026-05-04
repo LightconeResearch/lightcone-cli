@@ -49,7 +49,8 @@ astra.yaml ── snakefile generator ──> .lightcone/Snakefile
 src/lightcone/              # namespace — NO __init__.py
 ├── cli/                    # Click surface
 │   ├── __init__.py         # exposes main()
-│   ├── commands.py         # init, run, status, verify, build
+
+│   ├── commands.py         # init, run, status, verify, build, launch, setup
 │   ├── plugin.py           # get_plugin_source_dir
 │   └── claude/             # force-included Claude plugin bundle (in installed wheel only)
 ├── engine/                 # execution substrate — Snakemake-based
@@ -137,6 +138,7 @@ astra.yaml ── snakefile.generate() ──> .lightcone/Snakefile + .lightcone
 - `lc status` — manifest-driven status report
 - `lc verify` — chain integrity check
 - `lc build` — pre-build container images from Containerfiles
+
 
 Global config (`~/.lightcone/config.yaml`) is auto-created with defaults on first invocation.
 
