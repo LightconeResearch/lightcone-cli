@@ -596,37 +596,42 @@ def build_image(
                 "Pass the desired .tar output path."
             )
         tarball_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            build_proc = subprocess.run(
-                [
-                    "buildah", "build",
-                    "--format=oci",
-                    f"--tag={tag}",
-                    str(context),
-                ],
+        with tempfile.TemporaryDirectory(prefix="lc-build-") as staged_str:
+            staged = Path(staged_str)
+            _populate_build_context(staged, containerfile, context)
+            staged_cf = staged / containerfile.name
+            try:
+                build_proc = subprocess.run(
+                    [
+                        "buildah", "build",
+                        "--format=oci",
+                        f"--tag={tag}",
+                        "-f", str(staged_cf),
+                        str(staged),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except FileNotFoundError:
+                raise ContainerBuildError(
+                    "buildah is not installed or not on PATH. "
+                    f"Install buildah to build container images with {runtime!r}."
+                )
+            if build_proc.returncode != 0:
+                raise ContainerBuildError(
+                    f"buildah build failed (exit {build_proc.returncode}):\n{build_proc.stderr}"
+                )
+            push_proc = subprocess.run(
+                ["buildah", "push", tag, f"oci-archive:{tarball_path}"],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-        except FileNotFoundError:
-            raise ContainerBuildError(
-                "buildah is not installed or not on PATH. "
-                f"Install buildah to build container images with {runtime!r}."
-            )
-        if build_proc.returncode != 0:
-            raise ContainerBuildError(
-                f"buildah build failed (exit {build_proc.returncode}):\n{build_proc.stderr}"
-            )
-        push_proc = subprocess.run(
-            ["buildah", "push", tag, f"oci-archive:{tarball_path}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if push_proc.returncode != 0:
-            raise ContainerBuildError(
-                f"buildah push failed (exit {push_proc.returncode}):\n{push_proc.stderr}"
-            )
+            if push_proc.returncode != 0:
+                raise ContainerBuildError(
+                    f"buildah push failed (exit {push_proc.returncode}):\n{push_proc.stderr}"
+                )
         return ContainerBuildResult(tag=tag, already_existed=False)
 
     with tempfile.TemporaryDirectory(prefix="lc-build-") as staged_str:

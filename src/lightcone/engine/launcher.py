@@ -86,10 +86,18 @@ class LaunchTarget:
     run_as_host_user: bool = False
 
 
+#: Set when _make_builtin_targets() catches a ContainerBuildError so
+#: resolve_launch_target can surface a helpful installation error instead of
+#: the misleading "Available: (none)" message.
+_builtin_targets_error: str | None = None
+
+
 def _make_builtin_targets() -> dict[str, LaunchTarget]:
+    global _builtin_targets_error
     try:
         containers_dir = _package_containers_dir()
-    except ContainerBuildError:
+    except ContainerBuildError as e:
+        _builtin_targets_error = str(e)
         return {}
     return {
         "claude": LaunchTarget(
@@ -136,6 +144,11 @@ def resolve_launch_target(name: str, project_root: Path | None = None) -> Launch
     """
     if name in BUILTIN_TARGETS:
         return BUILTIN_TARGETS[name]
+    if not BUILTIN_TARGETS and _builtin_targets_error:
+        raise ContainerBuildError(
+            f"Unknown launch target {name!r}: built-in targets are unavailable. "
+            f"{_builtin_targets_error}"
+        )
     raise ContainerBuildError(
         f"Unknown launch target {name!r}. "
         f"Available: {', '.join(BUILTIN_TARGETS) or '(none)'}"
@@ -148,6 +161,10 @@ _ARG_VERSION_RE = re.compile(r"^ARG LIGHTCONE_VERSION(=[^\n]*)?\n", re.MULTILINE
 
 # Matches the comment + RUN block that handles lightcone-cli installation.
 # Present only in Containerfiles that use the dev-wheel fallback pattern.
+# Intentionally coupled to claude-env.Containerfile's specific install block
+# shape: the pattern ends at the first `esac\n`, so inserting a second case
+# statement before this block would truncate the match — update the anchor if
+# the Containerfile layout changes.
 _LIGHTCONE_INSTALL_RE = re.compile(r"# Dev/local builds.*?esac\n", re.DOTALL)
 
 
@@ -359,9 +376,11 @@ def _exec_interactive(
     cmd += ["-v", f"{project_abs}:{project_abs}", "-w", project_abs]
 
     for var in target.env_passthrough:
-        val = os.environ.get(var)
-        if val is not None:
-            cmd += ["-e", f"{var}={val}"]
+        if var in os.environ:
+            # Pass only the name so docker/podman inherit the value from the
+            # current process environment — avoids embedding secrets in the
+            # argv list where /proc/<pid>/cmdline is world-readable.
+            cmd += ["-e", var]
 
     home = os.environ.get("HOME")
     if home:

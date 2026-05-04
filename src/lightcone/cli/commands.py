@@ -869,7 +869,7 @@ def launch(target: str) -> None:
       lc launch claude     # first run builds the container (~5 min), then drops into Claude Code
     """
     from lightcone.engine import launcher
-    from lightcone.engine.container import ContainerBuildError, load_runtime
+    from lightcone.engine.container import ContainerBuildError, _DAEMONLESS_RUNTIMES, load_runtime
 
     project = _project_root()
 
@@ -881,10 +881,19 @@ def launch(target: str) -> None:
     if choice.runtime == "none":
         raise click.ClickException(
             "lc launch requires a host container runtime "
-            "(docker, podman, podman-hpc, or apptainer/singularity with buildah); "
+            "(docker, podman, or podman-hpc); "
             f"got {choice.runtime!r}. "
             "Install docker or podman, or set container.runtime in "
             "~/.lightcone/config.yaml."
+        )
+
+    if choice.runtime in _DAEMONLESS_RUNTIMES:
+        raise click.ClickException(
+            f"lc launch does not support the {choice.runtime!r} runtime. "
+            "Daemonless runtimes (apptainer, singularity) are used for recipe "
+            "execution inside the container, not for interactive launch sessions. "
+            "Install docker or podman, or set container.runtime to docker or podman "
+            "in ~/.lightcone/config.yaml."
         )
 
     try:

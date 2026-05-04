@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -14,6 +14,7 @@ from lightcone.engine.launcher import (
     _is_dev_version,
     _lc_version,
     _render_containerfile,
+    _try_pull_and_cache,
     resolve_launch_target,
 )
 
@@ -368,7 +369,9 @@ class TestLaunchTarget:
         cmd = mock_exec.call_args[0][1]
         assert "-e" in cmd
         idx = cmd.index("-e")
-        assert "HOME=/home/testuser" in cmd[idx + 1]
+        # Only the variable name is passed (no embedded value) to avoid
+        # secrets appearing in /proc/<pid>/cmdline.
+        assert cmd[idx + 1] == "HOME"
 
     @patch("lightcone.engine.launcher.build_image")
     @patch("lightcone.engine.launcher.save_image_as_tarball")
@@ -396,6 +399,42 @@ class TestLaunchTarget:
 
         mock_build.assert_called_once()
         mock_save.assert_called_once()
+
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.tarball_path_for_tag")
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-fake-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_env_passthrough_name_only(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_tarball_path: MagicMock,
+        mock_exists: MagicMock,
+        mock_exec: MagicMock,
+        fake_target: LaunchTarget,
+        project: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """env vars are passed as -e VAR (no value) to avoid cmdline leaks."""
+        from lightcone.engine.launcher import launch_target
+
+        mock_resolve.return_value = fake_target
+        tarball = tmp_path / "lc-fake-abc123.tar"
+        tarball.write_bytes(b"fake")
+        mock_tarball_path.return_value = tarball
+        monkeypatch.setenv("HOME", "/home/secureuser")
+
+        choice = RuntimeChoice(runtime="docker", explicit=True)
+        launch_target(fake_target.name, choice=choice, project_root=project)
+
+        cmd = mock_exec.call_args[0][1]
+        # Must not embed the value in argv.
+        assert "HOME=/home/secureuser" not in " ".join(cmd)
+        assert "-e" in cmd
+        idx = cmd.index("-e")
+        assert cmd[idx + 1] == "HOME"
 
     @patch("lightcone.engine.launcher.os.execvp")
     @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
@@ -439,3 +478,193 @@ class TestLaunchTarget:
         cmd = mock_exec.call_args[0][1]
         expected = str(claude_dir)
         assert f"{expected}:{expected}" in " ".join(cmd)
+
+
+class TestTryPullAndCache:
+    """Tests for the GHCR pull-first behaviour in _try_pull_and_cache."""
+
+    def test_daemonless_returns_false_immediately(self, tmp_path: Path) -> None:
+        tarball = tmp_path / "lc-fake-abc123.tar"
+        with patch("lightcone.engine.launcher.pull_image") as mock_pull:
+            result = _try_pull_and_cache(
+                "lc-fake-abc123",
+                "ghcr.io/lightconeresearch/claude:1.0.0",
+                tarball,
+                runtime="apptainer",
+            )
+        assert result is False
+        mock_pull.assert_not_called()
+
+    def test_daemonless_singularity_returns_false(self, tmp_path: Path) -> None:
+        tarball = tmp_path / "lc-fake-abc123.tar"
+        with patch("lightcone.engine.launcher.pull_image") as mock_pull:
+            result = _try_pull_and_cache(
+                "lc-fake-abc123",
+                "ghcr.io/lightconeresearch/claude:1.0.0",
+                tarball,
+                runtime="singularity",
+            )
+        assert result is False
+        mock_pull.assert_not_called()
+
+    @patch("lightcone.engine.launcher.save_image_as_tarball")
+    @patch("lightcone.engine.launcher.subprocess.run")
+    @patch("lightcone.engine.launcher.pull_image")
+    def test_successful_pull_saves_tarball(
+        self,
+        mock_pull: MagicMock,
+        mock_subprocess: MagicMock,
+        mock_save: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        mock_subprocess.return_value = MagicMock(returncode=0)
+        tarball = tmp_path / "lc-fake-abc123.tar"
+        registry_ref = "ghcr.io/lightconeresearch/claude:1.0.0"
+
+        result = _try_pull_and_cache(
+            "lc-fake-abc123",
+            registry_ref,
+            tarball,
+            runtime="docker",
+        )
+
+        assert result is True
+        mock_pull.assert_called_once_with(registry_ref, runtime="docker")
+        mock_subprocess.assert_called_once_with(
+            ["docker", "tag", registry_ref, "lc-fake-abc123"],
+            check=True,
+            capture_output=True,
+        )
+        mock_save.assert_called_once_with("lc-fake-abc123", tarball, runtime="docker")
+
+    @patch("lightcone.engine.launcher.pull_image")
+    def test_pull_failure_returns_false(
+        self,
+        mock_pull: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        mock_pull.side_effect = ContainerBuildError("registry unreachable")
+        tarball = tmp_path / "lc-fake-abc123.tar"
+
+        result = _try_pull_and_cache(
+            "lc-fake-abc123",
+            "ghcr.io/lightconeresearch/claude:1.0.0",
+            tarball,
+            runtime="docker",
+        )
+
+        assert result is False
+
+    @patch("lightcone.engine.launcher.subprocess.run")
+    @patch("lightcone.engine.launcher.pull_image")
+    def test_tag_failure_returns_false(
+        self,
+        mock_pull: MagicMock,
+        mock_subprocess: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        import subprocess
+
+        mock_subprocess.side_effect = subprocess.CalledProcessError(1, "docker tag")
+        tarball = tmp_path / "lc-fake-abc123.tar"
+
+        result = _try_pull_and_cache(
+            "lc-fake-abc123",
+            "ghcr.io/lightconeresearch/claude:1.0.0",
+            tarball,
+            runtime="docker",
+        )
+
+        assert result is False
+
+
+class TestLaunchTargetGhcrPull:
+    """Tests for the GHCR pull-first path in launch_target."""
+
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.save_image_as_tarball")
+    @patch("lightcone.engine.launcher.build_image")
+    @patch("lightcone.engine.launcher._try_pull_and_cache", return_value=True)
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-fake-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_release_version_tries_pull_before_build(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_pull: MagicMock,
+        mock_build: MagicMock,
+        mock_save: MagicMock,
+        mock_exists: MagicMock,
+        mock_exec: MagicMock,
+        fake_target: LaunchTarget,
+        project: Path,
+    ) -> None:
+        from lightcone.engine.launcher import launch_target
+
+        mock_resolve.return_value = fake_target
+        # No tarball on disk — should attempt pull, succeed, skip build.
+        with patch("lightcone.engine.launcher._lc_version", return_value="1.2.3"):
+            choice = RuntimeChoice(runtime="docker", explicit=True)
+            launch_target(fake_target.name, choice=choice, project_root=project)
+
+        mock_pull.assert_called_once()
+        mock_build.assert_not_called()
+
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.save_image_as_tarball")
+    @patch("lightcone.engine.launcher.build_image")
+    @patch("lightcone.engine.launcher._try_pull_and_cache", return_value=False)
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-fake-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_pull_failure_falls_back_to_local_build(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_pull: MagicMock,
+        mock_build: MagicMock,
+        mock_save: MagicMock,
+        mock_exists: MagicMock,
+        mock_exec: MagicMock,
+        fake_target: LaunchTarget,
+        project: Path,
+    ) -> None:
+        from lightcone.engine.launcher import launch_target
+
+        mock_resolve.return_value = fake_target
+        with patch("lightcone.engine.launcher._lc_version", return_value="1.2.3"):
+            choice = RuntimeChoice(runtime="docker", explicit=True)
+            launch_target(fake_target.name, choice=choice, project_root=project)
+
+        mock_pull.assert_called_once()
+        mock_build.assert_called_once()
+
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.save_image_as_tarball")
+    @patch("lightcone.engine.launcher.build_image")
+    @patch("lightcone.engine.launcher._try_pull_and_cache")
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-fake-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_dev_version_skips_pull(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_pull: MagicMock,
+        mock_build: MagicMock,
+        mock_save: MagicMock,
+        mock_exists: MagicMock,
+        mock_exec: MagicMock,
+        fake_target: LaunchTarget,
+        project: Path,
+    ) -> None:
+        from lightcone.engine.launcher import launch_target
+
+        mock_resolve.return_value = fake_target
+        with patch("lightcone.engine.launcher._lc_version", return_value="0.3.5.dev0+gabc"):
+            choice = RuntimeChoice(runtime="docker", explicit=True)
+            launch_target(fake_target.name, choice=choice, project_root=project)
+
+        mock_pull.assert_not_called()
+        mock_build.assert_called_once()
