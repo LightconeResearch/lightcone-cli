@@ -23,6 +23,14 @@ One field: `narrative:` on an analysis or sub-analysis, or `rationale:` on a dec
 Per-element prose (what each `Input`, `Output`, `Decision`, `Option`, or `Insight` is and why it matters) lives on those elements' own `description` / `rationale` / `notes` fields.
 `narrative` is the analysis-level story that weaves the pieces together.
 
+This skill is also part of the lightcone-cli paper-reproduction bundle: the
+`/paper2astra` orchestrator invokes it during the SPECIFY phase to author the
+narrative for the spec it has just crafted. Sibling skills in the bundle —
+`constitution`, `ralph-loops`, `managing-bibliography`,
+`check-sentence-by-sentence`, `figure-comparison` — solve adjacent pieces of
+the reproduction story; this skill stands alone and does not need to know
+about them.
+
 ## What a narrative is
 
 Science, from a single decision to a review paper, is a practice of
@@ -158,8 +166,40 @@ Applied to the five keys:
 - `findings` **synthesizes** — each finding cited by anchor as part of
   the argument, not an enumeration.
 - `inputs` **names provenance**.
-- `outputs` **names what was promoted and why**, citing each by anchor.
+- `outputs` **names what was promoted and why**, citing each by anchor —
+  **and names its downstream consumers** when they exist (see "Data flow" below).
 - Decision `rationale:` **names why the default won**.
+
+---
+
+## Data flow — name where each output goes
+
+Recipe `inputs:` wires the DAG; the narrative makes the wiring legible. The
+schema already encodes who consumes what — readers should not have to grep
+49 `inputs:` lists to learn what an intermediate output is *for*.
+
+Two rules — both load-bearing for projects with sub-analyses:
+
+1. **`narrative.outputs` names downstream consumers.** When authoring
+   `outputs` prose on a sub-analysis or the root, name where each output
+   gets consumed using the `<analysis>.<output>` form that recipe `inputs:`
+   already uses. *"`xi_post_recon_lrg1` feeds
+   [`bao_fit_post_iso_ap_lrg1`](#analyses.bao_fit.outputs.bao_fit_post_iso_ap_lrg1)
+   and [`bao_detection_chi2_lrg1`](#findings.bao_detection_chi2_lrg1)."*
+   Anchor where you can; bare `<analysis>.<output>` text is acceptable when
+   no anchor is reachable from the current scope.
+
+2. **Root narrative includes a top-down data-flow paragraph.** When the
+   project has sub-analyses, the root analysis's `methods` (or `summary`)
+   must include one paragraph that traces the pipeline end-to-end:
+   *"raw catalogs → [reconstruction.post_recon_catalog_*](#analyses.reconstruction)
+   → [clustering.xi_*_recon_*](#analyses.clustering) → root [bao_fit_*](#outputs.bao_fit_post_iso_ap_lrg1)."*
+   This is the one place a reader can land cold and get the shape of the
+   pipeline without reading every recipe declaration.
+
+Closes [lightcone-cli#108](https://github.com/LightconeResearch/lightcone-cli/issues/108).
+The validator does not (yet) enforce this; treat both rules as authorial
+discipline. The information is already in the spec — surface it.
 
 ---
 
