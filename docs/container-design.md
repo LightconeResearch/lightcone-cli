@@ -90,7 +90,7 @@ host
 ## New file: `claude/lightcone/containers/claude-env.Containerfile`
 
 ```dockerfile
-FROM ubuntu:24.04
+FROM python:3.12-slim
 
 # FUSE support — required by both Apptainer and buildah overlay storage
 RUN apt-get update && apt-get install -y --no-install-recommends \

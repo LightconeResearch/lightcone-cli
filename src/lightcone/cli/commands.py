@@ -732,7 +732,7 @@ def verify(universe: str | None) -> None:
     "--runtime",
     default=None,
     help=(
-        "docker | podman | podman-hpc | apptainer | singularity "
+        "docker | podman | podman-hpc | apptainer | singularity"
         "(overrides ~/.lightcone/config.yaml)"
     ),
 )

@@ -30,7 +30,7 @@ def project(tmp_path: Path) -> Path:
 def fake_target(tmp_path: Path) -> LaunchTarget:
     cf = tmp_path / "fake.Containerfile"
     cf.write_text(
-        "FROM ubuntu:24.04\n"
+        "FROM python:3.12-slim\n"
         "ARG LIGHTCONE_VERSION\n"
         "RUN echo ${LIGHTCONE_VERSION}\n"
     )
@@ -96,7 +96,7 @@ class TestRenderContainerfile:
     ) -> None:
         cf = tmp_path / "with_default.Containerfile"
         cf.write_text(
-            "FROM ubuntu:24.04\nARG LIGHTCONE_VERSION=0.0.0\nRUN echo ${LIGHTCONE_VERSION}\n"
+            "FROM python:3.12-slim\nARG LIGHTCONE_VERSION=0.0.0\nRUN echo ${LIGHTCONE_VERSION}\n"
         )
         target = LaunchTarget(name="with_default", containerfile=cf, entrypoint=["bash"])
         rendered = _render_containerfile(target, project)
@@ -121,7 +121,7 @@ def install_target(tmp_path: Path) -> LaunchTarget:
     """Target whose Containerfile includes the lightcone install block."""
     cf = tmp_path / "install.Containerfile"
     cf.write_text(
-        "FROM ubuntu:24.04\n"
+        "FROM python:3.12-slim\n"
         "ARG LIGHTCONE_VERSION\n"
         + _INSTALL_BLOCK
     )
@@ -323,7 +323,7 @@ class TestLaunchTarget:
             run_as_host_user=True,
         )
         (tmp_path / "fake.Containerfile").write_text(
-            "FROM ubuntu:24.04\nARG LIGHTCONE_VERSION\n"
+            "FROM python:3.12-slim\nARG LIGHTCONE_VERSION\n"
         )
         mock_resolve.return_value = target
         tarball = tmp_path / "lc-fake-abc123.tar"
@@ -459,7 +459,7 @@ class TestLaunchTarget:
         claude_dir = home_dir / ".claude"
         claude_dir.mkdir(parents=True)
         cf = tmp_path / "fake.Containerfile"
-        cf.write_text("FROM ubuntu:24.04\nARG LIGHTCONE_VERSION\n")
+        cf.write_text("FROM python:3.12-slim\nARG LIGHTCONE_VERSION\n")
         target = LaunchTarget(
             name="fake",
             containerfile=cf,

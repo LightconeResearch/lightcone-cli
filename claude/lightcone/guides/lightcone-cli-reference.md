@@ -20,7 +20,7 @@ The first `lc` invocation auto-creates `~/.lightcone/config.yaml`:
 
 ```yaml
 container:
-  runtime: auto    # or: docker | podman | podman-hpc | none
+  runtime: auto    # or: docker | podman | podman-hpc | apptainer | singularity | none
 ```
 
 **Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Treat the underlying execution engine as a black box — never invoke schedulers or container runtimes directly, that will bypass reproducibility guarantees.
