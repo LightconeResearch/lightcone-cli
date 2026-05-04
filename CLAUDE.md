@@ -138,6 +138,7 @@ astra.yaml ── snakefile.generate() ──> .lightcone/Snakefile + .lightcone
 - `lc status` — manifest-driven status report
 - `lc verify` — chain integrity check
 - `lc build` — pre-build container images from Containerfiles
+- `lc launch claude` – start Claude Code in a sandbox container for increased safety
 
 
 Global config (`~/.lightcone/config.yaml`) is auto-created with defaults on first invocation.
