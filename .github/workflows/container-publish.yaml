@@ -1,0 +1,49 @@
+name: Publish Claude container
+
+# Builds and pushes claude-env to ghcr.io on every version tag.
+# lc launch claude will pull this image instead of building locally.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  push:
+    name: Build and push claude-env
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract version from tag
+        id: version
+        # Strip the leading 'v' so LIGHTCONE_VERSION matches the PyPI version string.
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: claude/lightcone/containers
+          file: claude/lightcone/containers/claude-env.Containerfile
+          build-args: |
+            LIGHTCONE_VERSION=${{ steps.version.outputs.version }}
+          push: true
+          tags: |
+            ghcr.io/lightconeresearch/claude-env:${{ steps.version.outputs.version }}
+            ghcr.io/lightconeresearch/claude-env:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -19,16 +19,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lightcone.engine.container import (
+    _DAEMONLESS_RUNTIMES,
     ContainerBuildError,
     RuntimeChoice,
     build_image,
     compute_image_tag,
     image_exists_locally,
     load_image_from_tarball,
+    pull_image,
     save_image_as_tarball,
     tarball_path_for_tag,
 )
 from lightcone.engine.manifest import lc_version as _lc_version
+
+# Registry where pre-built release images are published.
+_GHCR_PREFIX = "ghcr.io/lightconeresearch"
 
 
 def _package_containers_dir() -> Path:
@@ -262,6 +267,50 @@ def _render_containerfile(target: LaunchTarget, project_root: Path) -> Path:
     return dest
 
 
+def _registry_image_ref(target_name: str, version: str) -> str:
+    """Return the GHCR image reference for a published release of *target_name*.
+
+    Pattern: ``ghcr.io/lightconeresearch/<target_name>:<version>``
+    """
+    return f"{_GHCR_PREFIX}/{target_name}:{version}"
+
+
+def _try_pull_and_cache(
+    tag: str,
+    registry_ref: str,
+    tarball: Path,
+    *,
+    runtime: str,
+) -> bool:
+    """Attempt to pull *registry_ref* from GHCR and cache it locally.
+
+    On success the pulled image is retagged to the content-addressed *tag*,
+    saved as *tarball*, and ``True`` is returned.  Any failure (network
+    unavailable, image not published, unsupported runtime) silently returns
+    ``False`` so the caller can fall back to a local build.
+
+    Daemonless runtimes (apptainer, singularity) cannot pull registry images
+    directly; this function returns ``False`` immediately for them.
+    """
+    if runtime in _DAEMONLESS_RUNTIMES:
+        return False
+    try:
+        _print(f"Pulling {registry_ref} from registry…")
+        pull_image(registry_ref, runtime=runtime)
+        # Retag to the content-addressed local tag so the rest of the launch
+        # pipeline (image_exists_locally, _exec_interactive) works unchanged.
+        subprocess.run(
+            [runtime, "tag", registry_ref, tag],
+            check=True,
+            capture_output=True,
+        )
+        save_image_as_tarball(tag, tarball, runtime=runtime)
+        return True
+    except (ContainerBuildError, subprocess.CalledProcessError, OSError):
+        _print("Registry pull failed — falling back to local build.")
+        return False
+
+
 def launch_target(
     name: str,
     *,
@@ -270,8 +319,9 @@ def launch_target(
 ) -> None:
     """Build (if needed) and exec the named launch target interactively.
 
-    Replaces the current process via ``os.execvp`` — this function does not
-    return on success.
+    For non-dev versions, tries to pull the pre-built image from GHCR before
+    falling back to a local build.  Replaces the current process via
+    ``os.execvp`` — this function does not return on success.
     """
     target = resolve_launch_target(name, project_root)
 
@@ -280,9 +330,15 @@ def launch_target(
     tarball = tarball_path_for_tag(tag, project_root)
 
     if not tarball.exists():
-        _print(f"Building {name} container (first run — this may take a few minutes)…")
-        build_image(tag, rendered_cf, rendered_cf.parent, runtime=choice.runtime)
-        save_image_as_tarball(tag, tarball, runtime=choice.runtime)
+        version = _lc_version()
+        pulled = False
+        if not _is_dev_version(version):
+            registry_ref = _registry_image_ref(target.name, version)
+            pulled = _try_pull_and_cache(tag, registry_ref, tarball, runtime=choice.runtime)
+        if not pulled:
+            _print(f"Building {name} container (first run — this may take a few minutes)…")
+            build_image(tag, rendered_cf, rendered_cf.parent, runtime=choice.runtime)
+            save_image_as_tarball(tag, tarball, runtime=choice.runtime)
 
     if not image_exists_locally(tag, runtime=choice.runtime):
         load_image_from_tarball(tarball, runtime=choice.runtime)

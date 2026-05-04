@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM python:3.12-slim
 
 # FUSE support — required by both Apptainer overlay and buildah overlay storage.
 # squashfuse enables SquashFS mounts used by Apptainer for OCI images.
@@ -8,18 +8,20 @@ FROM ubuntu:24.04
 # .deb install and /var/log/apt/eipp.log.xz is not left stale between layers
 # (dpkg opens it with O_CREAT|O_EXCL; a pre-existing file from a prior layer
 # causes exit code 2 on NERSC / podman rootless builds).
+# python:3.12-slim is Debian Bookworm-based and ships Python pre-installed, so
+# python3/python3-dev are omitted from the apt block.  build-essential is kept
+# as a safety net for any C-extension deps that lack pre-built wheels.
+# Note: Debian uses libfuse2 (not libfuse2t64 which is Ubuntu-specific).
 ARG APPTAINER_VERSION=1.4.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fuse3 \
-    libfuse2t64 \
+    libfuse2 \
     squashfuse \
     buildah \
     fakeroot \
     git \
     curl \
     ca-certificates \
-    python3 \
-    python3-dev \
     build-essential \
     && ARCH="$(dpkg --print-architecture)" \
     && if [ "$ARCH" = "amd64" ]; then \
@@ -31,16 +33,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fi \
     && rm -rf /var/lib/apt/lists/*
 
-# Python + uv + lightcone-cli.
+# uv + lightcone-cli.
 # LIGHTCONE_VERSION is substituted at render time (lc launch writes a rendered
 # copy to .lightcone/containers/claude.Containerfile with the value filled in).
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 ARG LIGHTCONE_VERSION
-# python3 (installed above) is the system Python that uv --system targets.
-# ubuntu:24.04 base does not include Python by default; adding it via apt
-# ensures uv finds a system interpreter and can use pre-built manylinux wheels
-# (avoiding source-build failures for C-extension deps like immutables).
+# python:3.12-slim ships /usr/local/bin/python3.12 which uv --system targets.
+# pre-built manylinux_2_17 wheels are accepted on Debian Bookworm (glibc 2.36),
+# avoiding source-build failures for C-extension deps like immutables.
 # Dev/local builds are not published to PyPI; the ARG is still baked in for
 # content-addressed tag computation so the image rebuilds when lc is upgraded.
 # For non-release strings we install the latest stable release from PyPI.
