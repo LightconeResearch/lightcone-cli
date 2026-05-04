@@ -5,12 +5,13 @@ description: >
   about the paper and the intended scope, draft a per-paper reproduction
   constitution, then launch a ralph loop that drives the multi-session
   reproduction work. Composes sibling skills for each phase: managing-
-  bibliography for ACQUIRE, narrative for SPECIFY, check-sentence-by-
-  sentence + figure-comparison for COMPARE. Use when the user wants to
-  reproduce a paper, has a DOI or arXiv ID and wants to start a
-  reproduction project, or asks to "reproduce <paper>", "set up
-  reproduction", "paper2astra", "/paper2astra <doi>", or hands you a
-  published paper as a starting point for ASTRA work.
+  bibliography for ACQUIRE and narrative for SPECIFY. COMPARE follows the
+  original Paper2ASTRA target-ledger structure directly rather than requiring
+  sibling comparison skills. Use when the user wants to reproduce a paper,
+  has a DOI or arXiv ID and wants to start a reproduction project, or asks
+  to "reproduce <paper>", "set up reproduction", "paper2astra",
+  "/paper2astra <doi>", or hands you a published paper as a starting point
+  for ASTRA work.
 ---
 
 # paper2astra
@@ -36,10 +37,14 @@ paper2astra composes the rest of the lightcone-cli paper-reproduction bundle. Al
 | [`/constitution`](../constitution/SKILL.md) | INTERVIEW — drafting the per-paper reproduction constitution |
 | [`/ralph-loops`](../ralph-loops/SKILL.md) | After interview — launches the loop that drives all subsequent phases |
 | [`/narrative`](../narrative/SKILL.md) | SPECIFY — authoring the `narrative:` and `rationale:` prose in `astra.yaml` |
-| [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) | COMPARE — paper-vs-code TeX audit (Nolan's skill) |
-| [`/figure-comparison`](../figure-comparison/SKILL.md) | COMPARE — HTML side-by-side reference vs reproduced figures (Nolan's skill) |
 
 paper2astra does not re-implement what these skills already do — it tells the agent at each phase to invoke them.
+
+After paper2astra completes, recommend adjacent follow-up skills when useful:
+[`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) audits
+paper claims against code locations, and
+[`/figure-comparison`](../figure-comparison/SKILL.md) builds a portable
+side-by-side HTML report for paper artifacts versus reproduced results.
 
 ## Workflow
 
@@ -145,7 +150,6 @@ Workdir signals (file existence implies the phase has been done):
 - [`/ralph-loops`](../ralph-loops/SKILL.md) — for the loop that drives phases
 - [`/managing-bibliography`](../managing-bibliography/SKILL.md) — for ACQUIRE
 - [`/narrative`](../narrative/SKILL.md) — for SPECIFY
-- `/check-sentence-by-sentence`, `/figure-comparison` — for COMPARE (Nolan's skills; see Provenance)
 
 ## Discipline
 
@@ -165,4 +169,4 @@ Workdir signals (file existence implies the phase has been done):
 
 `paper2astra` is a fresh skill, but the phase prose ports 1:1 from the prompts in [`LightconeResearch/Paper2ASTRA/src/paper2astra/prompts/`](https://github.com/LightconeResearch/Paper2ASTRA/tree/main/src/paper2astra/prompts) (commit b3b54b5 and onward on `feat/skill-form-redesign`). The Paper2ASTRA Python package retires once this skill is in regular use; the repo persists as a reference for the original prompts and pipeline structure.
 
-The two compare-phase sibling skills (`check-sentence-by-sentence` and `figure-comparison`) originate from Nolan Koblischke's work on the [Reproductions](https://github.com/LightconeResearch/Reproductions) repo. They are credited in their own SKILL.md bodies; tag him post-publish so he can PR the canonical versions wherever they should ultimately live.
+The complementary skills (`check-sentence-by-sentence` and `figure-comparison`) originate from Nolan Koblischke.

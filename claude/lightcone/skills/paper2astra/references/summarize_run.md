@@ -28,6 +28,10 @@ A single markdown file at the project root, ~1–2 pages. Sections:
 4. **Outputs** — pointers to the figures / tables / metrics produced. One bullet per primary target, with the path to the reproduced result.
 5. **What was learned** — anything the reproduction surfaced that wasn't visible from the paper alone (a parameter the code uses but the paper doesn't mention, a data cut that's stricter than stated, etc.). This is where the reproduction's value to the broader literature gets recorded.
 6. **Re-running** — one paragraph: how to re-run from this workdir (`lc run --universe baseline`, the constitution path, the relevant `astra.yaml`).
+7. **Optional follow-ups** — recommend adjacent audit/reporting skills when
+   useful: `/check-sentence-by-sentence` for auditing paper claims against
+   code locations, and `/figure-comparison` for a portable side-by-side HTML
+   report comparing paper artifacts with reproduced results.
 
 Brief, not exhaustive. The depth lives in `astra.yaml` and the workdir's notes; the summary is the door into them.
 

@@ -109,7 +109,6 @@ because compute too large for available targets>.
 - `/paper2astra` — this skill (the orchestrator)
 - `/managing-bibliography` — ACQUIRE
 - `/narrative` — SPECIFY
-- `/check-sentence-by-sentence`, `/figure-comparison` — COMPARE
 
 ## Evidence
 

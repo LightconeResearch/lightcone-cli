@@ -23,8 +23,8 @@ A self-contained toolkit for reproducing published papers in ASTRA. The bundle i
 | [`constitution`](constitution/SKILL.md) | Draft a constitution — a markdown spec for an iteration runner. Invoked by paper2astra during the interview. | Merged from [`cailmdaley/skills/skills/constitution`](https://github.com/cailmdaley/skills/tree/main/skills/constitution) (procedural backbone) + Cail's personal felt references (taste — two diamonds, six stances, funnel ledger, qualitative self-check), with felt-optional framing. |
 | [`ralph-loops`](ralph-loops/SKILL.md) | Drive an autonomous iteration loop. Includes `scripts/ralph` runner. Launched by paper2astra after the interview. | Direct copy from [`cailmdaley/skills/skills/ralph-loops`](https://github.com/cailmdaley/skills/tree/main/skills/ralph-loops). |
 | [`managing-bibliography`](managing-bibliography/SKILL.md) | Read arXiv LaTeX source; manage BibTeX via ADS API. Primary acquisition path for paper2astra's ACQUIRE phase. | Direct copy of Cail's personal `~/.claude/skills/managing-bibliography` (newer than the public version). |
-| `check-sentence-by-sentence` | Paper-vs-code TeX audit via sub-agents; locates `file:line` or `NOT FOUND`. Invoked by paper2astra during COMPARE. | Nolan Koblischke's, on his Reproductions-branch. **Not yet pushed publicly** — see "Pending bundle additions" below. |
-| `figure-comparison` | HTML side-by-side: original figures/tables/numerics vs replicated. Invoked by paper2astra during COMPARE. | Same — Nolan's, pending. |
+| [`check-sentence-by-sentence`](check-sentence-by-sentence/SKILL.md) | Complementary paper-vs-code source audit via sub-agents; locates `file:line` or `NOT FOUND`. | Copy of Nolan's. |
+| [`figure-comparison`](figure-comparison/SKILL.md) | Generates a HTML side-by-side report: original figures/tables/numerics vs replicated. Useful for manual review. | Copy of Nolan's. |
 
 The full reproduction story spans these seven skills. paper2astra's `SKILL.md` names each by role and tells the agent when to invoke them; the siblings stand alone and don't know about paper2astra.
 
@@ -34,9 +34,3 @@ The full reproduction story spans these seven skills. paper2astra's `SKILL.md` n
 - **Single install path.** `lc init` is the install path for lightcone-cli skills. Adding a separate "also install Cail's public skills via plugin marketplace" step is friction we don't need.
 - **Copy-with-credit costs nothing.** The copied skills retain attribution to their original authors in the SKILL body; if those skills update upstream, we re-sync.
 - **Future consolidation is open.** Per Francois's "next week we improve" framing, the long-run shape might be `astra` ships skills in `astra`, `lc` ships skills in `lightcone-cli`, plus a centralized external-skills list. Today: bundle it all.
-
-### Pending bundle additions
-
-- **`check-sentence-by-sentence`** and **`figure-comparison`** — Nolan Koblischke's two skills. Per the bundle constitution ([`lightcone/.felt/lightcone/paper2astra-as-skill/skill-bundle`](https://github.com/LightconeResearch/lightcone/blob/main/.felt/lightcone/paper2astra-as-skill/skill-bundle.md)), these are part of the bundle, but at first cut they were not yet pushed to any public branch (only living on Nolan's local working tree on his Reproductions checkout). When Nolan pushes them, copy with attribution into this directory; paper2astra's SKILL.md and COMPARE reference already name them as expected siblings, so the integration is wire-compatible the moment they land.
-
-  Until then, COMPARE falls back to direct image-diff judgment without `/figure-comparison`'s structured per-panel rendering, and SPECIFY's evidence-quote re-verification (when COMPARE flags `partial`) falls back to manual Grep against `work/reference/document.md` without `/check-sentence-by-sentence`'s sub-agent audit. Both fallbacks are workable but lossier than the intended path.
