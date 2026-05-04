@@ -46,8 +46,6 @@ def project_with_deps(project: Path) -> Path:
 
 
 # ---- find_dependency_files / compute_image_tag ----------------------------
-
-
 class TestFindDependencyFiles:
     def test_finds_requirements_txt(self, project: Path) -> None:
         (project / "requirements.txt").write_text("numpy\n")
@@ -177,8 +175,6 @@ class TestComputeImageTag:
 
 
 # ---- image_exists_locally / image_exists_podman_hpc -----------------------
-
-
 class TestImageExistsLocally:
     @patch("lightcone.engine.container.subprocess.run")
     def test_docker_exists(self, mock_run: MagicMock) -> None:
@@ -219,8 +215,6 @@ class TestImageExistsPodmanHpc:
 
 
 # ---- build_image ----------------------------------------------------------
-
-
 class TestBuildImage:
     @patch("lightcone.engine.container.subprocess.run")
     def test_docker_success(self, mock_run: MagicMock, project: Path) -> None:
@@ -358,8 +352,6 @@ class TestBuildImage:
 
 
 # ---- pull_image -----------------------------------------------------------
-
-
 class TestPullImage:
     @patch("lightcone.engine.container.subprocess.run")
     def test_pull_success_docker(self, mock_run: MagicMock) -> None:
@@ -398,9 +390,6 @@ class TestPullImage:
 
 
 # ---- detect_runtime / load_runtime ---------------------------------------
-
-
-
 class TestDetectRuntime:
     @pytest.fixture(autouse=True)
     def _generic_hostname(self) -> Iterator[None]:
@@ -572,8 +561,6 @@ class TestLoadRuntime:
 
 
 # ---- resolve_image_for_run -----------------------------------------------
-
-
 class TestResolveImageForRun:
     def test_none_returns_none(self, project: Path) -> None:
         assert resolve_image_for_run(
@@ -599,8 +586,6 @@ class TestResolveImageForRun:
 
 
 # ---- wrap_recipe ----------------------------------------------------------
-
-
 class TestWrapRecipe:
     def test_no_image_passthrough(self) -> None:
         assert wrap_recipe("echo hi", image=None, runtime="podman") == "echo hi"
@@ -667,8 +652,6 @@ class TestWrapRecipe:
 
 
 # ---- get_container_status -------------------------------------------------
-
-
 class TestGetContainerStatus:
     def test_none(self, project: Path) -> None:
         s = get_container_status(None, project, "test", runtime="docker")
@@ -702,10 +685,7 @@ class TestGetContainerStatus:
         assert s.exists is None
 
 
-
 # ---- is_containerfile -----------------------------------------------------
-
-
 class TestIsContainerfile:
     def test_existing_file(self, project: Path) -> None:
         assert is_containerfile("Containerfile", project) is True
@@ -713,9 +693,8 @@ class TestIsContainerfile:
     def test_missing_file(self, project: Path) -> None:
         assert is_containerfile("python:3.12-slim", project) is False
 
+
 # ---- tarball helpers -------------------------------------------------------
-
-
 class TestTarballPathForTag:
     def test_canonical_path(self, tmp_path: Path) -> None:
         from lightcone.engine.container import tarball_path_for_tag
@@ -788,8 +767,6 @@ class TestLoadImageFromTarball:
 
 
 # ---- apptainer runtime support ---------------------------------------------
-
-
 class TestApptainerRuntime:
     def test_image_exists_locally_checks_tarball(self, tmp_path: Path) -> None:
         from lightcone.engine.container import image_exists_locally, tarball_path_for_tag
