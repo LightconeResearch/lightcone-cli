@@ -12,11 +12,11 @@ from lightcone.engine.launcher import (
     LaunchTarget,
     _build_dev_wheel,
     _is_dev_version,
-    _lc_version,
     _render_containerfile,
     _try_pull_and_cache,
     resolve_launch_target,
 )
+from lightcone.engine.manifest import lc_version as _lc_version
 
 
 @pytest.fixture
