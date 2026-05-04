@@ -147,13 +147,7 @@ Show summary table:
 | sub_analysis  | ...       | ...     | ...      |
 ```
 
-Then show a Next Up block (see ui-brand.md) with:
-
-- Run `/clear` to free context, then `lc launch claude` to enter the sandboxed container
-- Inside the container: `/lc-build` to start building (or `/lc-build [description]` to guide focus)
-- Also available inside the container: `/lc-verify`
-
-Prompt the user to `/clear` before starting implementation. The scoping conversation consumes significant context. Everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
+Then tell the user the spec is ready and they can begin implementation. Recommend running `/clear` first — the scoping conversation consumes significant context, and everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
 
 ---
 
