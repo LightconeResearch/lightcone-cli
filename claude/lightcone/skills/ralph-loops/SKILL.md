@@ -3,8 +3,10 @@ name: ralph-loops
 description: >
   Autonomous loop iteration toward a desired state. You are inside a ralph
   loop — your spec is in the system prompt. Survey, contribute, update state
-  discoverably, exit. Activated automatically inside ralph loops.
-  Triggers: "ralph-loops", "ralph", "ralph loop", "iterate", "autonomous loop".
+  discoverably, exit. Activated automatically inside ralph loops, or when
+  launching one against an existing spec via scripts/ralph; for drafting
+  the spec itself, use /constitution.
+  Triggers: "ralph-loops", "launch ralph", "run ralph", "ralph loop on <spec>".
 ---
 
 # Ralph Loops
