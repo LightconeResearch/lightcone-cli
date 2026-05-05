@@ -320,6 +320,7 @@ class TestLaunchTarget:
         project: Path,
         tmp_path: Path,
     ) -> None:
+        """Docker (rootful) gets --user $UID:$GID directly."""
         import os
 
         from lightcone.engine.launcher import launch_target
@@ -345,6 +346,52 @@ class TestLaunchTarget:
         assert "--user" in cmd
         idx = cmd.index("--user")
         assert cmd[idx + 1] == f"{os.getuid()}:{os.getgid()}"
+        assert "--userns=keep-id" not in cmd
+
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.tarball_path_for_tag")
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-fake-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_run_as_host_user_uses_userns_keepid_for_podman(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_tarball_path: MagicMock,
+        mock_exists: MagicMock,
+        mock_exec: MagicMock,
+        project: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Podman/podman-hpc are rootless: --user $UID:$GID would fail with
+        ``crun: setgroups: Invalid argument`` because the user namespace
+        has no subuid/subgid mapping. --userns=keep-id is the rootless
+        equivalent that maps the host UID into the container.
+        """
+        from lightcone.engine.launcher import launch_target
+
+        target = LaunchTarget(
+            name="fake",
+            containerfile=tmp_path / "fake.Containerfile",
+            entrypoint=["--dangerously-skip-permissions"],
+            run_as_host_user=True,
+        )
+        (tmp_path / "fake.Containerfile").write_text(
+            "FROM python:3.12-slim\nARG LIGHTCONE_VERSION\n"
+        )
+        mock_resolve.return_value = target
+        tarball = tmp_path / "lc-fake-abc123.tar"
+        tarball.write_bytes(b"fake")
+        mock_tarball_path.return_value = tarball
+
+        for runtime in ("podman", "podman-hpc"):
+            mock_exec.reset_mock()
+            choice = RuntimeChoice(runtime=runtime, explicit=True)
+            launch_target(target.name, choice=choice, project_root=project)
+
+            cmd = mock_exec.call_args[0][1]
+            assert "--userns=keep-id" in cmd, f"missing for {runtime}"
+            assert "--user" not in cmd, f"--user should not be set for {runtime}"
 
     @patch("lightcone.engine.launcher.os.execvp")
     @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)

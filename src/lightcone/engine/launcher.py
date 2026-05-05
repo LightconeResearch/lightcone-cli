@@ -394,7 +394,21 @@ def _exec_interactive(
             cmd += ["--device", device]
 
     if target.run_as_host_user:
-        cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
+        # Map the container process to the host UID/GID so files written to
+        # the bind-mounted project belong to the user (not to a remapped
+        # subuid) and so Claude Code doesn't see itself running as root.
+        #
+        # docker (rootful, the common case) accepts --user directly.
+        # podman / podman-hpc are rootless on every system that ships them
+        # by default, where --user $UID:$GID fails with
+        #   "crun: setgroups: Invalid argument"
+        # because the user namespace doesn't have the subuid/subgid range
+        # mapped. --userns=keep-id is the rootless-native equivalent: it
+        # builds an idmap that preserves the host UID inside the container.
+        if choice.runtime in ("podman", "podman-hpc"):
+            cmd += ["--userns=keep-id"]
+        else:
+            cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
 
     cmd.append(tag)
     cmd.extend(target.entrypoint)
