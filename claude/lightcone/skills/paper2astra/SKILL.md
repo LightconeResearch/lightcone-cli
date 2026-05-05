@@ -15,9 +15,11 @@ description: >
 
 # paper2astra
 
-Reproduce a published paper in ASTRA. The skill is **interview-first**: a short interactive crafting phase up front that produces a per-paper reproduction constitution. After the interview, paper2astra hands the constitution to a ralph loop that drives multi-session reproduction. Successive iterations of the loop survey the workdir, execute one or two phases, exit cleanly, and re-spawn with fresh context until the constitution is realized.
+Reproduce a published paper in ASTRA. The skill is **interview-first**: a short interactive crafting phase up front that produces both a **per-paper reproduction constitution** and a **per-paper `CLAUDE.md`**. After the interview, paper2astra hands the constitution to a multi-session loop that drives the reproduction. Successive iterations survey the workdir, execute one or two phases, exit cleanly, and re-spawn with fresh context until the constitution is realized.
 
 This is a Claude-Code-native skill. There is no Python orchestrator, no state machine, no resume mechanic — the workdir on disk + git history are the substrate.
+
+A reproduction does not fit in one context window. The loop is, in its simplest form, a way to split one goal across many context windows so each iteration starts uncluttered. That's the substrate, not an aesthetic.
 
 ## When to use this skill
 
@@ -34,12 +36,12 @@ paper2astra composes the rest of the lightcone-cli paper-reproduction bundle. Al
 |---|---|
 | [`/managing-bibliography`](../managing-bibliography/SKILL.md) | ACQUIRE — arXiv LaTeX source download (primary) and BibTeX caching |
 | [`/constitution`](../constitution/SKILL.md) | INTERVIEW — drafting the per-paper reproduction constitution |
-| [`/ralph-loops`](../ralph-loops/SKILL.md) | After interview — launches the loop that drives all subsequent phases |
+| [`/ralph-loops`](../ralph-loops/SKILL.md) | After interview — launches the loop that drives all subsequent phases (when the chosen runtime mode is one of the loop modes) |
 | [`/narrative`](../narrative/SKILL.md) | SPECIFY — authoring the `narrative:` and `rationale:` prose in `astra.yaml` |
-| [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) | COMPARE — paper-vs-code TeX audit (Nolan's skill) |
-| [`/figure-comparison`](../figure-comparison/SKILL.md) | COMPARE — HTML side-by-side reference vs reproduced figures (Nolan's skill) |
+| [`/figure-comparison`](../figure-comparison/SKILL.md) | SUMMARIZE_RUN — auto-invoked as a sub-agent at the end so the HTML side-by-side is ready for the user when the loop completes (Nolan's skill) |
+| [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) | After SUMMARIZE_RUN — opt-in suggestion to the user; token-expensive, so never auto-invoked (Nolan's skill) |
 
-paper2astra does not re-implement what these skills already do — it tells the agent at each phase to invoke them.
+paper2astra does not re-implement what these skills already do — it tells the agent at each phase to invoke them. The siblings stand alone; they don't know about paper2astra.
 
 ## Workflow
 
@@ -47,20 +49,41 @@ paper2astra does not re-implement what these skills already do — it tells the 
 
 The interview is the only phase paper2astra runs interactively. Read [`references/interview.md`](references/interview.md) in full before starting.
 
-The interview has four jobs:
+The interview has six jobs:
 
 1. **Identify the paper** — DOI / arXiv ID / title; whether code is available; whether the user has prior experience with this paper.
 2. **Scope the reproduction** — full reproduction vs targeted (e.g. only the BAO fit), which figures/tables/numbers are the targets.
-3. **Choose interactive vs sub-agent per phase** — see "Per-phase mode" below. The defaults are reasonable; the user gets to flip any of them.
-4. **Draft the per-paper constitution** — invoke `/constitution`. The constitution lives at the project root (or wherever the user prefers). It captures the paper, the scope, the per-phase mode choices, and the evidence checks.
+3. **Pick a runtime mode** — interactive / bash-loop / tmux-orchestrated. See "Runtime modes" below.
+4. **Pick a termination criterion** — frugality (weak) vs rigor (strong). See "Frugality vs rigor" below.
+5. **Choose interactive vs sub-agent per phase** — see "Per-phase mode" below. The defaults are reasonable; the user gets to flip any of them.
+6. **Draft the per-paper constitution and CLAUDE.md** — invoke `/constitution` to draft the constitution. Author the per-paper `CLAUDE.md` from the same conversation: paper identity, user intent, what's known about the original codebase, runtime-mode choice, frugality-vs-rigor choice, the canonical-resolution rule (see "Code-as-canonical" below), conventions and warnings. The CLAUDE.md is the durable project memory every iteration's Claude session walks up to; the constitution is the runner's spec.
 
-After the constitution is approved, the interview ends. Launch the ralph loop:
+Both files live inside the reproduction's directory. After they are approved the interview ends, and paper2astra launches whichever runtime the user chose.
 
-```bash
-../ralph-loops/scripts/ralph paper2astra-constitution.md
-```
+### Runtime modes
 
-Tell the user: *"Constitution drafted. Launching ralph loop in tmux session `ralph-paper2astra-constitution`. Each iteration will run one or two phases and exit; the next iteration picks up where it left off. Attach with `tmux attach -t ralph-paper2astra-constitution`."*
+The interview asks the user to pick *how* the loop runs. Three modes, picked from environment + preference:
+
+| Mode | What runs | Right when |
+|---|---|---|
+| **(1) Interactive** | No autonomous loop. The user prompts through phases by hand from the same Claude session, one or two phases at a time. | Tight control, small paper, or token budget is tight. No new substrate beyond Claude itself. |
+| **(2) Bash-loop** | A plain shell loop the user pastes into a terminal (`while …; do claude --dangerously-skip-permissions … ; done`-shaped). No tmux dependency. | Tmux isn't available locally and the connection is stable. Fragile across SSH disconnects unless wrapped in `nohup` — and `nohup` blocks interaction, so for unstable connections this isn't really a fix; mode (3) is. |
+| **(3) Tmux-orchestrated** | A loop inside a tmux session paper2astra drives directly via `../ralph-loops/scripts/ralph`. Survives SSH disconnects; the skill sends keystrokes to the tmux pane, monitors, intervenes. | The smoothest path whenever tmux is available. Becomes the de-facto default once `lc launch claude` ships its registry-shipped python-slim agent container with tmux pre-installed. |
+
+The interview probes for tmux availability with `command -v tmux` and only offers mode (3) when present. Mode (3) is preferred when it's available; it isn't required.
+
+### Frugality vs rigor
+
+Independent of mode, the interview asks the user to pick the loop's termination criterion:
+
+- **Weak (frugal):** "run until the checklist of tasks has been completed." Cheaper. Susceptible to one-shot oversights.
+- **Strong (rigorous):** "run until you can't find any further contributions, fixes, or improvements that align with the goal." Almost always catches mistakes the one-shot left behind, but burns more tokens.
+
+Strong is the default for fidelity-critical reproductions; weak is the default when the user explicitly wants to cap token spend. The choice goes into the per-paper CLAUDE.md and is honored by every iteration.
+
+### Where this is going
+
+Codex's `/goal` ([Simon Willison, 2026-04-30](https://simonwillison.net/2026/Apr/30/codex-goals/)) is the closest existing primitive — same shape, with a configurable token budget, made smooth by Codex's invisible compaction. When Anthropic ships an equivalent, modes (2) and (3) collapse into it. Until then, ralph is the substrate.
 
 ### Phases (driven by ralph iterations after the interview)
 
@@ -90,8 +113,8 @@ Defaults the constitution starts with:
 
 | Phase | Default | Why |
 |---|---|---|
-| ACQUIRE | sub-agent | Mostly mechanical; surfacing happens only on download failures. |
-| PARSE | sub-agent | Deterministic Docling / arXiv extraction. |
+| ACQUIRE | user choice | Mostly mechanical; surfacing happens only on download failures. |
+| PARSE | user choice | Deterministic Docling / arXiv extraction. |
 | SUMMARIZE | sub-agent | Parallel paper + code reading benefits from fresh context per task. |
 | EXTRACT_TARGETS | user choice | The selection of replication targets is sometimes obvious, sometimes wants user input. |
 | LITERATURE | sub-agent | One sub-agent per cited paper — pure parallel grunt-work. |
@@ -100,17 +123,34 @@ Defaults the constitution starts with:
 | IMPLEMENT | user choice | Mostly mechanical, but algorithm choices may want ratification. |
 | RUN | user choice | Mechanical, but failures need diagnosis. |
 | COMPARE | **interactive** | Verdict (was the reproduction close enough?) is the second mandatory user-ratification seam. |
-| SUMMARIZE_RUN | sub-agent | Final report; no decisions remain. |
+| SUMMARIZE_RUN | sub-agent | Final report; no decisions remain. `/figure-comparison` runs as a sub-agent inside this phase. |
 
-The constitution records the choice; ralph iterations honor it. Sub-agent phases are spawned via the `Task` tool from inside the main loop session — that gives them fresh context but no user-reach. Interactive phases run inline in the loop session and may pause with `AskUserQuestion` at material seams.
+The constitution records the choice; iterations honor it. Sub-agent phases are spawned via the `Task` tool from inside the main loop session — that gives them fresh context but no user-reach. Interactive phases run inline in the loop session and may pause with `AskUserQuestion` at material seams.
+
+### Code-as-canonical
+
+When the original codebase is available at `work/reference/code/`, **the agent reads relevant code on every iteration when implementing**. Where paper and code disagree, the **code is canonical** for numerics, plotting, and method; the agent continues with the code's behavior and either ratifies (interactive phases) or logs (sub-agent / loop phases) the disagreement so the user resolves at the next interactive seam.
+
+This is the load-bearing fidelity discipline. Without it, iterations drift to "looks right" rather than "matches" — the failure mode the first-paper test surfaced (plot styles off, numerical results off). The per-paper CLAUDE.md restates the rule so every iteration's Claude session walks up to it.
+
+### Interactive seams vs the loop's running report
+
+Interview phases use `AskUserQuestion` directly — the user is at the wheel. Once the loop launches, the human is no longer present per-iteration, so the agent's discipline shifts:
+
+- **Interactive phase** (per the per-phase mode table): ratify decisions with the user via `AskUserQuestion`.
+- **Loop / sub-agent phase**: when a question would normally surface to the user (paper-vs-code conflicts, figures whose intent isn't obvious, ambiguities the constitution doesn't resolve), **append it to `<paper-slug>/open-questions.md`** and continue with the best-judgment default. The user reads the report at session boundaries (between iterations, or when checking on the loop) and answers in-place.
+
+This matches what the user actually does: stays in the conversation while the seams are still soft, walks away while the loop grinds, comes back to a list of "things you'd want to know" rather than a paused agent waiting on input. The CLAUDE.md captures that the loop should always pour seams into `open-questions.md` rather than blocking.
 
 ### Material conflicts (the SPECIFY seam)
 
-Inside SPECIFY, when paper and code disagree on something material, do not silently pick one. Use `AskUserQuestion` to surface the conflict:
+Inside SPECIFY, when paper and code disagree on something material:
 
 - **Material** = a different choice would plausibly change a numeric result the paper reports.
 - **Stylistic / cosmetic / pure-tooling differences** are not material — record them in `implementation-notes.md` and move on.
-- **Default on user silence is paper.** If the user does not respond, take the paper's stated method as canonical and record the override (with reason) in a finding or insight.
+- **Code is canonical** for numerics and method per "Code-as-canonical" above.
+- **Interactive SPECIFY**: surface the conflict with `AskUserQuestion`. The user picks which option `universes/baseline.yaml` selects.
+- **Sub-agent SPECIFY** (rare; default is interactive): take code as canonical, record the conflict in `open-questions.md`, and preserve both options in `astra.yaml` so the user can flip baseline at the next interactive seam.
 
 Both choices land in `astra.yaml` as decision options. Whichever the user picks becomes the option selected by `universes/baseline.yaml`; the alternative is preserved as a sibling option for future universe runs. See `references/specify.md` for the full SPECIFY discipline.
 
@@ -142,21 +182,29 @@ Workdir signals (file existence implies the phase has been done):
 ## Skills (activate before working)
 
 - [`/constitution`](../constitution/SKILL.md) — for the interview's drafting phase
-- [`/ralph-loops`](../ralph-loops/SKILL.md) — for the loop that drives phases
+- [`/ralph-loops`](../ralph-loops/SKILL.md) — for the bash-loop and tmux-orchestrated runtime modes
 - [`/managing-bibliography`](../managing-bibliography/SKILL.md) — for ACQUIRE
 - [`/narrative`](../narrative/SKILL.md) — for SPECIFY
-- `/check-sentence-by-sentence`, `/figure-comparison` — for COMPARE
+- `/figure-comparison` — auto-invoked at end of SUMMARIZE_RUN (sub-agent)
+- `/check-sentence-by-sentence` — opt-in suggestion after SUMMARIZE_RUN
 
 ## Discipline
 
 - **paper2astra is the workflow story; phase references are the depth.** SKILL.md tells you when to read which reference; the references carry the prompt prose ported from the legacy Paper2ASTRA Python package.
+- **Workdir is the state.** No state machine, no resume mechanic — file existence + `git log` + `astra validate` answer "what phase am I on" deterministically. Each iteration's first move is *survey*.
+- **Deterministic checks live in scripts.** When the answer is yes/no, call the script — `astra validate`, `git log`, `yq`, `ls`. Don't ask the agent to introspect what a deterministic check would tell you.
 - **Use the up-to-date CLI surfaces, not skill-specific wrappers.** When `astra validate` already does the job, call it directly. Specifically: `astra validate <file>`, `astra validate --verify-evidence`, `astra paper add`. Use whatever the current `astra --help` surfaces.
+- **arxiv-LaTeX-first acquisition.** When the paper is on arxiv, the source tarball is the substrate; equations, ligatures, captions, tables come through clean. PDF + Docling is a fallback for non-arxiv where there's no better source.
+- **The original code goes into `work/reference/code/`** during ACQUIRE when available, and stays there as the canonical reference for every subsequent iteration (see "Code-as-canonical" above).
+- **`/figure-comparison` auto-runs at SUMMARIZE_RUN; `/check-sentence-by-sentence` stays opt-in** — the latter is token-expensive (large fan-out of sub-agents).
 - **No synthetic data.** Unless the paper itself uses synthetic data as its input, every input dataset must be real (downloaded, queried, or fetched from a real archive). The implement phase reference repeats this; treat it as load-bearing.
+- **Tmux preferred-when-available, never required.** Modes (1) and (2) work without it.
+- **The siblings don't know about paper2astra.** Each SKILL stands on its own.
 - **Workdir conventions stay.** The phase references preserve Paper2ASTRA's workdir layout (`work/reference/`, `work/notes/`, `targets/`, `astra.yaml`, `universes/`, `results/`) so workdirs from the legacy Paper2ASTRA package are interoperable with workdirs driven by this skill.
 
 ## Anti-patterns
 
-- **Asking the user mid-sub-agent.** Sub-agent phases cannot reach the user. If the constitution puts SPECIFY in sub-agent mode and a material conflict surfaces, the sub-agent must record the conflict in a `decisions:` block (with both options preserved) and let the next interactive phase ratify it. Never make the sub-agent pick silently.
+- **Asking the user mid-sub-agent.** Sub-agent phases cannot reach the user. If a material conflict surfaces in a sub-agent phase, take the code's behavior (or paper's, if no code) as canonical, record the conflict in `open-questions.md` and as a `decisions:` block with both options preserved in `astra.yaml`, and let the next interactive phase ratify. Never make the sub-agent pick silently and discard the alternative.
 - **Re-implementing what astra already does.** If `astra validate` returns clean, do not write a separate validator. If `astra paper add` caches the PDF, do not write a separate cache.
 - **Treating Paper2ASTRA workdir as legacy.** It is not legacy — it is the substrate. The phase references inherit its conventions intentionally.
-- **Bundling everything into one ralph iteration.** Each iteration runs one or two phases, then exits. The constitution is realized across many iterations.
+- **Bundling everything into one iteration.** Each iteration runs one or two phases, then exits. The constitution is realized across many iterations.

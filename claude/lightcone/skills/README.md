@@ -18,13 +18,13 @@ A self-contained toolkit for reproducing published papers in ASTRA. The bundle i
 
 | Skill | Role |
 |---|---|
-| [`paper2astra`](paper2astra/SKILL.md) | **Orchestrator.** Interview-first; drafts a per-paper reproduction constitution and launches a ralph loop against it. |
+| [`paper2astra`](paper2astra/SKILL.md) | **Orchestrator.** Interview-first; drafts a per-paper reproduction constitution and per-paper `CLAUDE.md`, then launches one of three runtime modes (interactive, bash-loop, tmux-orchestrated) against the constitution. |
 | [`narrative`](narrative/SKILL.md) | Author the `narrative:` prose and decision `rationale:` in `astra.yaml`. Invoked by paper2astra during SPECIFY. |
 | [`constitution`](constitution/SKILL.md) | Draft a constitution — a markdown spec for an iteration runner. Invoked by paper2astra during the interview. |
-| [`ralph-loops`](ralph-loops/SKILL.md) | Drive an autonomous iteration loop. Includes `scripts/ralph` runner. Launched by paper2astra after the interview. |
+| [`ralph-loops`](ralph-loops/SKILL.md) | Drive an autonomous iteration loop. Includes `scripts/ralph` runner. Used by paper2astra's bash-loop and tmux-orchestrated runtime modes. |
 | [`managing-bibliography`](managing-bibliography/SKILL.md) | Read arXiv LaTeX source; manage BibTeX via ADS API. Primary acquisition path for paper2astra's ACQUIRE phase. |
-| `check-sentence-by-sentence` | Paper-vs-code TeX audit via sub-agents; locates `file:line` or `NOT FOUND`. Invoked by paper2astra after SUMMARIZE_RUN as an opt-in audit. *(pending bundle integration)* |
-| `figure-comparison` | HTML side-by-side: original figures/tables/numerics vs replicated. Auto-invoked by paper2astra at SUMMARIZE_RUN. *(pending bundle integration)* |
+| `figure-comparison` | HTML side-by-side: original figures/tables/numerics vs replicated. **Auto-invoked** by paper2astra as a sub-agent at the end of SUMMARIZE_RUN. *(pending bundle integration)* |
+| `check-sentence-by-sentence` | Paper-vs-code TeX audit via sub-agents; locates `file:line` or `NOT FOUND`. **Opt-in** suggestion to the user after SUMMARIZE_RUN — token-expensive, never auto-invoked. *(pending bundle integration)* |
 
 The full reproduction story spans these seven skills. paper2astra's `SKILL.md` names each by role and tells the agent when to invoke them; the siblings stand alone and don't know about paper2astra.
 
