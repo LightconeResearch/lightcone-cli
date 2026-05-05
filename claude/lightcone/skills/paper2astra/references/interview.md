@@ -8,12 +8,12 @@ Use the [`/constitution`](../../constitution/SKILL.md) skill to draft the consti
 
 ## What the interview produces
 
-The interview produces a **directory for the reproduction** containing two markdown files:
+The interview produces a **directory for the reproduction** containing two markdown files. They have separate jobs and don't overlap:
 
-- **`<paper-slug>/CLAUDE.md`** — the per-reproduction project memory. Captures everything that's useful across phases: the paper's identity (DOI / arxiv id / authors / one-line subject), the user's stated intent and constraints, what's known about the original codebase, runtime-mode choice, frugality-vs-rigor choice, the canonical-resolution rule (code-as-canonical when `work/reference/code/` exists), any user-supplied conventions or warnings. Every Claude session in this directory finds it on walk-up; iterations don't re-derive context.
-- **`<paper-slug>/<constitution>.md`** — the per-paper constitution. Pointers (not snapshots) for the runner: desired state, evidence checks, scope fence, per-phase mode table. The runner re-reads it each iteration.
+- **`<paper-slug>/CLAUDE.md`** — *info and rules.* Paper identity (DOI / arxiv id / authors / one-line subject), where the original code lives (`work/reference/code/`), the canonical-resolution rule (code-as-canonical when `work/reference/code/` exists), the never-block-on-`AskUserQuestion`-mid-sub-agent rule, any paper-specific conventions or warnings, pointers to the constitution and `open-questions.md`. Auto-loaded by Claude Code on every walk-up to this directory. **Evolves over time** — iterations that learn new conventions or surface paper-specific gotchas can add lines so future sessions don't re-derive the same context.
+- **`<paper-slug>/<constitution>.md`** — *desired state.* Pointers (not snapshots) for the runner: what "done" looks like, evidence checks, scope fence, the runtime mode the user chose, the termination criterion (weak/strong), the per-phase mode table, and the open-questions section iterations resolve. Read by the runner each iteration as the explicit task.
 
-Both are written at the end of the interview from the same conversation; the CLAUDE.md is the durable context, the constitution is the runner's spec. After they are approved, paper2astra launches whichever runtime the user chose:
+Both are written at the end of the interview from the same conversation. CLAUDE.md tells you *what kind of place this is*; the constitution tells you *what we're doing here and when we're done*. After they are approved, paper2astra launches whichever runtime the user chose:
 
 | Runtime | Launch |
 |---|---|
@@ -62,7 +62,7 @@ Offer the modes the environment supports:
 - **(2) Bash-loop** — a plain shell loop the user pastes into a terminal. No tmux dependency. Right when tmux isn't available *and* the connection is stable. Fragile across SSH disconnects unless wrapped in `nohup`, and `nohup` blocks interaction — so for unstable connections, mode (3) is the answer, not this.
 - **(3) Tmux-orchestrated** — paper2astra drives a tmux session directly via `../ralph-loops/scripts/ralph`. Survives SSH disconnects; the skill sends keystrokes to the pane, monitors, intervenes. Preferred when tmux is available.
 
-If tmux isn't installed, only (1) and (2) appear in the question. The chosen mode goes into the per-paper CLAUDE.md.
+If tmux isn't installed, only (1) and (2) appear in the question. The chosen mode goes into the per-paper constitution.
 
 ### 4. Pick a termination criterion (frugality vs rigor)
 
@@ -71,7 +71,7 @@ Ask:
 - **Weak (frugal):** "run until the checklist of tasks has been completed." Cheaper. Susceptible to one-shot oversights.
 - **Strong (rigorous):** "run until you can't find any further contributions, fixes, or improvements that align with the goal." Almost always catches mistakes the one-shot left behind, but burns more tokens.
 
-Default to strong for fidelity-critical reproductions; weak when the user wants to cap token spend. The choice goes into the per-paper CLAUDE.md.
+Default to strong for fidelity-critical reproductions; weak when the user wants to cap token spend. The choice goes into the per-paper constitution.
 
 ### 5. Choose interactive vs sub-agent per phase
 
@@ -103,55 +103,41 @@ status: open
 
 ## Desired State
 
-A complete `astra.yaml` for <paper> at this workdir, with recipes that
-produce reproduced versions of <list of targets>, validated by
-`astra validate astra.yaml --verify-evidence`, with `comparison-report.yaml`
-verdict `pass` against the targets in `targets/targets.md`.
+A complete `astra.yaml` for <paper> at this workdir, with recipes that produce reproduced versions of <list of targets>, validated by `astra validate astra.yaml --verify-evidence`, with `comparison-report.yaml` verdict `pass` against the targets in `targets/targets.md`.
 
-Non-goals: <e.g., reproducing Figure 12's MCMC stack — out of scope
-because compute too large for available targets>.
+Non-goals: <e.g., reproducing Figure 12's MCMC stack — out of scope because compute too large for available targets>.
 
-## Context
+## Scope
 
-- Paper DOI: <doi>
-- arXiv ID: <id>; LaTeX source acquisition path is the primary
-- Code repo: <url> (or "to be searched in ACQUIRE")
-- Runtime mode: <(1) interactive | (2) bash-loop | (3) tmux-orchestrated>
-- Termination: <weak | strong>
-- Workdir layout: standard Paper2ASTRA conventions —
-  `work/reference/`, `work/notes/`, `targets/`, `astra.yaml`,
-  `universes/`, `results/`
-- Per-phase mode (the canonical version lives in CLAUDE.md):
-  | Phase | Mode |
-  |---|---|
-  | ACQUIRE | <per user> |
-  | PARSE | <per user> |
-  | SUMMARIZE | sub-agent |
-  | EXTRACT_TARGETS | <per user> |
-  | LITERATURE | sub-agent |
-  | SPECIFY | interactive |
-  | REVIEW | <per user> |
-  | IMPLEMENT | <per user> |
-  | RUN | <per user> |
-  | COMPARE | interactive |
-  | SUMMARIZE_RUN | sub-agent |
+In: <list — the targeted figures / tables / numbers, the methodological span being reproduced>.
+Out: <list — explicit exclusions, fenced from drift>.
 
-## Skills
+## Runtime mode
 
-- `/paper2astra` — this skill (the orchestrator)
-- `/managing-bibliography` — ACQUIRE
-- `/narrative` — SPECIFY
+<(1) interactive | (2) bash-loop | (3) tmux-orchestrated>
 
-(`/figure-comparison` and `/check-sentence-by-sentence` are user-invokable post-completion follow-ups recommended by SUMMARIZE_RUN; they're not part of the per-phase workflow.)
+## Termination criterion
 
-## Code-as-canonical
+<weak | strong>
 
-When `work/reference/code/` exists, the agent reads relevant
-code on every implementing iteration. Where paper and code
-disagree, **code is canonical** for numerics, plotting, and
-method. Disagreements are logged in
-`<paper-slug>/open-questions.md` (sub-agent / loop phases) or
-ratified with the user via AskUserQuestion (interactive phases).
+The COMPARE → IMPLEMENT loop iterates until verdict is `pass` or the attempt budget (default 5) is exhausted, with the chosen termination shaping how aggressively iterations self-check.
+
+## Per-phase mode
+
+| Phase | Mode |
+|---|---|
+| ACQUIRE | <per user> |
+| PARSE | <per user> |
+| SUMMARIZE | sub-agent |
+| EXTRACT_TARGETS | <per user> |
+| LITERATURE | sub-agent |
+| SPECIFY | interactive |
+| REVIEW | <per user> |
+| IMPLEMENT | <per user> |
+| RUN | <per user> |
+| COMPARE | interactive |
+| SUMMARIZE_RUN | sub-agent |
+| FINAL_REVIEW | interactive |
 
 ## Evidence
 
@@ -162,66 +148,42 @@ ratified with the user via AskUserQuestion (interactive phases).
 - `ls astra.yaml && astra validate astra.yaml` — SPECIFY done and valid
 - `astra validate astra.yaml --verify-evidence` — evidence quotes match source PDFs
 - `ls comparison-report.yaml && yq '.verdict' comparison-report.yaml` — most-recent COMPARE verdict
-- `ls figure-comparison.html` — auto-rendered side-by-side at SUMMARIZE_RUN
 - `git log --oneline` — chronological view of phase commits
-
-The COMPARE → IMPLEMENT loop iterates until verdict is `pass` or
-attempt budget (default 5) is exhausted.
 
 ## Open Questions
 
-(empty — populated as the loop runs; questions accrete in
-`<paper-slug>/open-questions.md`, the running report the user
-reads at session boundaries.)
+(empty — populated as the loop runs; questions accrete in `<paper-slug>/open-questions.md`, the running report the user reads at session boundaries and ratifies in FINAL_REVIEW.)
 ```
 
-Then author the per-paper `<paper-slug>/CLAUDE.md` from the same conversation. Approximate shape:
+Then author the per-paper `<paper-slug>/CLAUDE.md` from the same conversation. The CLAUDE.md is *info and rules*, not desired state — paper identity, where things live, disciplines that always apply. Approximate shape:
 
 ```markdown
-# <paper-slug> reproduction
+# <paper-slug>
 
-Reproduce <paper title> (<arXiv ID>). DOI: <doi>.
+Reproduction of <paper title> (<arXiv ID>). DOI: <doi>.
 
-## Identity
+## Paper
 
 - Authors: <list>
 - One-line subject: <e.g. "BAO scale measurement from DESI DR1">
 - Code repo: <url> (cloned to `work/reference/code/` during ACQUIRE)
 
-## User intent and constraints
+## Where things live
 
-<paste the scope summary the user gave during the interview>
+- Workdir layout follows Paper2ASTRA conventions: `work/reference/`, `work/notes/`, `targets/`, `astra.yaml`, `universes/`, `results/`.
+- The constitution (desired state, runtime mode, scope, evidence, per-phase mode) lives at `<constitution>.md` in this directory.
+- The during-loop questions log lives at `open-questions.md`. The user reviews it in FINAL_REVIEW.
 
-## Runtime mode: <1 / 2 / 3>
+## Rules
 
-<one paragraph on what that means for this project>
-
-## Termination criterion: <weak / strong>
-
-<one paragraph on what that means for this project>
-
-## Canonical-resolution rule
-
-When `work/reference/code/` exists, code is canonical for numerics + method.
-Every implementing iteration reads relevant code; disagreements between paper
-and code go into `open-questions.md` (loop / sub-agent phases) or surface via
-AskUserQuestion (interactive phases). The user resolves at the next interactive
-seam.
-
-## Per-phase mode
-
-(reproduce the per-phase mode table from the constitution)
+- **Code-as-canonical when `work/reference/code/` exists.** Every implementing iteration reads relevant code. Where paper and code disagree, code is canonical for numerics, plotting, and method.
+- **Never block on `AskUserQuestion` mid-sub-agent.** When a sub-agent or loop phase would surface a question to the user, append it to `open-questions.md` and continue with the best-judgment default. The user resolves in FINAL_REVIEW.
+- **arxiv-LaTeX-first acquisition.** PDF + Docling is a fallback for non-arxiv only.
+- **`astra validate --verify-evidence`** is the fidelity gate; evidence quotes must match source PDFs.
 
 ## Conventions and warnings
 
-- Workdir layout follows Paper2ASTRA conventions: `work/reference/`,
-  `work/notes/`, `targets/`, `astra.yaml`, `universes/`, `results/`.
-- `arxiv-LaTeX-first` acquisition; PDF + Docling fallback only when
-  the paper isn't on arxiv.
-- `astra validate --verify-evidence` is the fidelity gate.
-- Open questions accumulate in `open-questions.md`; the user reads
-  it between iterations.
-- <any user-supplied warnings>
+- <any paper-specific notes the user surfaced during the interview>
 ```
 
 Show both drafts, take corrections, refine. When the user is happy:

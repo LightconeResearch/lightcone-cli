@@ -73,7 +73,7 @@ Also write `comparison-report.md` with a human-readable summary. For figure / ta
 
 After writing the report, surface the verdict to the user via `AskUserQuestion`:
 
-- **If `pass`**: confirm with the user before exiting the COMPARE → IMPLEMENT loop. *"All high-priority targets match. Mark reproduction complete?"* The user accepts → SUMMARIZE_RUN runs; the user rejects → name what's still off and re-enter the loop.
+- **If `pass`**: confirm with the user before exiting the COMPARE → IMPLEMENT loop. *"All high-priority targets match. Mark reproduction complete?"* The user accepts → SUMMARIZE_RUN runs (sub-agent, writes the summary), then FINAL_REVIEW runs (interactive, walks `/figure-comparison` and the open-questions ledger); the user rejects → name what's still off and re-enter the loop.
 - **If `partial`**: show the user the failing targets and the diagnosis. *"Partial match. <N> outputs failing: <list>. Continue retrying or accept partial?"* If the attempt budget (from the constitution) is reached, this surfacing is mandatory.
 - **If `fail`**: same shape, but the loop's continuation should be questioned more sharply. A fundamental methodological issue may need a constitution amendment, not another implement retry.
 
@@ -83,7 +83,7 @@ The verdict is the agent's judgment; the **decision to keep iterating** is the u
 
 - All outputs in `lc status --universe baseline` are `ok` ⇒ ready to compare
 - `comparison-report.yaml` exists with current `attempt` ⇒ COMPARE done for this attempt
-- `comparison-report.yaml` verdict is `pass` ⇒ COMPARE → IMPLEMENT loop terminated; proceed to SUMMARIZE_RUN
+- `comparison-report.yaml` verdict is `pass` ⇒ COMPARE → IMPLEMENT loop terminated; proceed to SUMMARIZE_RUN, then FINAL_REVIEW
 
 ## Notes
 

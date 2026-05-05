@@ -42,7 +42,7 @@ paper2astra composes the rest of the lightcone-cli paper-reproduction bundle. Al
 
 paper2astra does not re-implement what these skills already do — it tells the agent at each phase to invoke them. The siblings stand alone; they don't know about paper2astra.
 
-After paper2astra completes, the SUMMARIZE_RUN summary recommends two adjacent follow-up skills for the user to invoke directly: [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) audits paper claims against code locations, and [`/figure-comparison`](../figure-comparison/SKILL.md) builds a portable side-by-side HTML report for paper artifacts versus reproduced results. Both are user-invokable rather than orchestrator-spawned — they use `AskUserQuestion` for missing-data prompts and don't run cleanly as silent sub-agents.
+Two further siblings are invoked from the **FINAL_REVIEW** phase, after the loop terminates and SUMMARIZE_RUN has written the report: [`/figure-comparison`](../figure-comparison/SKILL.md) builds a portable side-by-side HTML report (paper artifacts vs reproduced), and [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) (optional) audits paper claims against code locations. Both have `AskUserQuestion` in their `allowed-tools`, so FINAL_REVIEW runs interactively in the main loop session — spawning them under the `Task` tool would fire prompts into nothing.
 
 ## Workflow
 
@@ -57,7 +57,12 @@ The interview has six jobs:
 3. **Pick a runtime mode** — interactive / bash-loop / tmux-orchestrated. See "Runtime modes" below.
 4. **Pick a termination criterion** — frugality (weak) vs rigor (strong). See "Frugality vs rigor" below.
 5. **Choose interactive vs sub-agent per phase** — see "Per-phase mode" below. The defaults are reasonable; the user gets to flip any of them.
-6. **Draft the per-paper constitution and CLAUDE.md** — invoke `/constitution` to draft the constitution. Author the per-paper `CLAUDE.md` from the same conversation: paper identity, user intent, what's known about the original codebase, runtime-mode choice, frugality-vs-rigor choice, the canonical-resolution rule (see "Code-as-canonical" below), conventions and warnings. The CLAUDE.md is the durable project memory every iteration's Claude session walks up to; the constitution is the runner's spec.
+6. **Draft the per-paper constitution and CLAUDE.md** — invoke `/constitution` to draft the constitution. Author the per-paper `CLAUDE.md` from the same conversation. The two files have separate jobs and don't overlap:
+
+   - **`CLAUDE.md`** is *info and rules* — paper identity (DOI / arXiv ID / title / authors), where the original code lives (`work/reference/code/`), the code-as-canonical rule, the never-block-on-`AskUserQuestion`-mid-sub-agent rule, any paper-specific conventions or warnings, pointers to the constitution and `open-questions.md`. Auto-loaded by Claude Code on every walk-up to this directory. **Evolves over time** — iterations that learn new conventions or surface paper-specific gotchas can add lines so future sessions don't re-derive the same context.
+   - **The constitution** is *desired state* — what "done" looks like, evidence checks, scope fence, the runtime mode the user chose, the termination criterion (weak/strong), per-phase routing (interactive vs sub-agent), and the open-questions section iterations resolve. Read by the runner each iteration as the explicit task.
+
+   CLAUDE.md tells you *what kind of place this is*; the constitution tells you *what we're doing here and when we're done*.
 
 Both files live inside the reproduction's directory. After they are approved the interview ends, and paper2astra launches whichever runtime the user chose.
 
@@ -80,11 +85,7 @@ Independent of mode, the interview asks the user to pick the loop's termination 
 - **Weak (frugal):** "run until the checklist of tasks has been completed." Cheaper. Susceptible to one-shot oversights.
 - **Strong (rigorous):** "run until you can't find any further contributions, fixes, or improvements that align with the goal." Almost always catches mistakes the one-shot left behind, but burns more tokens.
 
-Strong is the default for fidelity-critical reproductions; weak is the default when the user explicitly wants to cap token spend. The choice goes into the per-paper CLAUDE.md and is honored by every iteration.
-
-### Where this is going
-
-Codex's `/goal` ([Simon Willison, 2026-04-30](https://simonwillison.net/2026/Apr/30/codex-goals/)) is the closest existing primitive — same shape, with a configurable token budget, made smooth by Codex's invisible compaction. When Anthropic ships an equivalent, modes (2) and (3) collapse into it. Until then, ralph is the substrate.
+Strong is the default for fidelity-critical reproductions; weak is the default when the user explicitly wants to cap token spend. The choice goes into the per-paper constitution (alongside the runtime-mode choice) and is honored by every iteration.
 
 ### Phases (driven by ralph iterations after the interview)
 
@@ -102,9 +103,10 @@ Inside each ralph iteration, the agent reads the per-paper constitution, surveys
 | IMPLEMENT | [`references/implement.md`](references/implement.md) | `scripts/`, `requirements.txt`, recipes in `astra.yaml` |
 | RUN | [`references/run.md`](references/run.md) | `results/<universe>/<output>/` |
 | COMPARE | [`references/compare.md`](references/compare.md) | `comparison-report.{yaml,md}` |
-| SUMMARIZE_RUN | [`references/summarize_run.md`](references/summarize_run.md) | Final write-up; constitution outcome update |
+| SUMMARIZE_RUN | [`references/summarize_run.md`](references/summarize_run.md) | Final write-up to disk |
+| FINAL_REVIEW | [`references/final_review.md`](references/final_review.md) | `/figure-comparison` HTML + (opt) sentence audit; resolved `open-questions.md`; constitution outcome update |
 
-The COMPARE → IMPLEMENT loop iterates until the verdict is `pass` or attempts are exhausted. The constitution carries the attempt budget; the ralph iterations consult it.
+The COMPARE → IMPLEMENT loop iterates until the verdict is `pass` or attempts are exhausted. The constitution carries the attempt budget; the ralph iterations consult it. After SUMMARIZE_RUN writes the final summary, control returns to the user and FINAL_REVIEW runs interactively — not from inside the loop.
 
 ### Per-phase mode (interactive vs sub-agent)
 
@@ -124,7 +126,8 @@ Defaults the constitution starts with:
 | IMPLEMENT | user choice | Mostly mechanical, but algorithm choices may want ratification. |
 | RUN | user choice | Mechanical, but failures need diagnosis. |
 | COMPARE | **interactive** | Verdict (was the reproduction close enough?) is the second mandatory user-ratification seam. |
-| SUMMARIZE_RUN | sub-agent | Final report; no decisions remain. The summary recommends `/figure-comparison` and `/check-sentence-by-sentence` as user-invokable follow-ups. |
+| SUMMARIZE_RUN | sub-agent | Final write-up to disk; no decisions remain. |
+| FINAL_REVIEW | **interactive** | Post-loop interactive return — runs `/figure-comparison` and (optionally) `/check-sentence-by-sentence`, then walks the user through `open-questions.md` with `AskUserQuestion` to ratify accumulated seams. |
 
 The constitution records the choice; iterations honor it. Sub-agent phases are spawned via the `Task` tool from inside the main loop session — that gives them fresh context but no user-reach. Interactive phases run inline in the loop session and may pause with `AskUserQuestion` at material seams.
 
@@ -134,14 +137,15 @@ When the original codebase is available at `work/reference/code/`, **the agent r
 
 This is the load-bearing fidelity discipline. Without it, iterations drift to "looks right" rather than "matches" — the failure mode the first-paper test surfaced (plot styles off, numerical results off). The per-paper CLAUDE.md restates the rule so every iteration's Claude session walks up to it.
 
-### Interactive seams vs the loop's running report
+### Two surfaces for user attention: open-questions and FINAL_REVIEW
 
-Interview phases use `AskUserQuestion` directly — the user is at the wheel. Once the loop launches, the human is no longer present per-iteration, so the agent's discipline shifts:
+The reproduction has two periods of human reach: the interview at the start, and FINAL_REVIEW at the end. In between, the loop runs without a human in the conversation. The discipline has two surfaces to match:
 
-- **Interactive phase** (per the per-phase mode table): ratify decisions with the user via `AskUserQuestion`.
-- **Loop / sub-agent phase**: when a question would normally surface to the user (paper-vs-code conflicts, figures whose intent isn't obvious, ambiguities the constitution doesn't resolve), **append it to `<paper-slug>/open-questions.md`** and continue with the best-judgment default. The user reads the report at session boundaries (between iterations, or when checking on the loop) and answers in-place.
+- **`<paper-slug>/open-questions.md` — the during-loop accumulator.** When a sub-agent or loop iteration would normally surface a question to the user (paper-vs-code conflicts, figures whose intent isn't obvious, ambiguities the constitution doesn't resolve), it appends the question to `open-questions.md` and continues with the best-judgment default. Never block on `AskUserQuestion` from inside a sub-agent — the prompt fires into nothing.
 
-This matches what the user actually does: stays in the conversation while the seams are still soft, walks away while the loop grinds, comes back to a list of "things you'd want to know" rather than a paused agent waiting on input. The CLAUDE.md captures that the loop should always pour seams into `open-questions.md` rather than blocking.
+- **FINAL_REVIEW — the post-loop interactive return.** When the COMPARE→IMPLEMENT loop terminates (verdict=pass or budget exhausted) and SUMMARIZE_RUN has written the final summary, control returns to the user. FINAL_REVIEW invokes `/figure-comparison` and (optionally) `/check-sentence-by-sentence` interactively — these skills can use `AskUserQuestion` because the human is back. Then it walks the user through `open-questions.md` with `AskUserQuestion`, lands resolutions, updates `astra.yaml` or `implementation-notes.md` accordingly, and closes out the constitution outcome.
+
+Stays in the conversation while the seams are still soft, walks away while the loop grinds, comes back to a rich review surface plus a list of "things you'd want to know."
 
 ### Material conflicts (the SPECIFY seam)
 
@@ -186,8 +190,8 @@ Workdir signals (file existence implies the phase has been done):
 - [`/ralph-loops`](../ralph-loops/SKILL.md) — for the bash-loop and tmux-orchestrated runtime modes
 - [`/managing-bibliography`](../managing-bibliography/SKILL.md) — for ACQUIRE
 - [`/narrative`](../narrative/SKILL.md) — for SPECIFY
-
-(`/figure-comparison` and `/check-sentence-by-sentence` are recommended in the SUMMARIZE_RUN summary as user-invokable post-completion follow-ups; they are not co-active with the paper2astra workflow.)
+- [`/figure-comparison`](../figure-comparison/SKILL.md) — for FINAL_REVIEW (mandatory)
+- [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) — for FINAL_REVIEW (opt-in)
 
 ## Discipline
 
@@ -197,7 +201,7 @@ Workdir signals (file existence implies the phase has been done):
 - **Use the up-to-date CLI surfaces, not skill-specific wrappers.** When `astra validate` already does the job, call it directly. Specifically: `astra validate <file>`, `astra validate --verify-evidence`, `astra paper add`. Use whatever the current `astra --help` surfaces.
 - **arxiv-LaTeX-first acquisition.** When the paper is on arxiv, the source tarball is the substrate; equations, ligatures, captions, tables come through clean. PDF + Docling is a fallback for non-arxiv where there's no better source.
 - **The original code goes into `work/reference/code/`** during ACQUIRE when available, and stays there as the canonical reference for every subsequent iteration (see "Code-as-canonical" above).
-- **`/figure-comparison` and `/check-sentence-by-sentence` are user-invokable follow-ups, not auto-invoked from inside paper2astra.** Both use `AskUserQuestion` for missing-data prompts and don't run cleanly as silent sub-agents. The SUMMARIZE_RUN summary names them so the user can choose to invoke either after the run completes.
+- **`/figure-comparison` and `/check-sentence-by-sentence` run inside FINAL_REVIEW, not inside the loop.** Both have `AskUserQuestion` in their `allowed-tools`; FINAL_REVIEW is the post-loop interactive phase that runs them in the main session so the prompts land. Don't try to spawn either under the `Task` tool from inside the loop.
 - **No synthetic data.** Unless the paper itself uses synthetic data as its input, every input dataset must be real (downloaded, queried, or fetched from a real archive). The implement phase reference repeats this; treat it as load-bearing.
 - **Tmux preferred-when-available, never required.** Modes (1) and (2) work without it.
 - **The siblings don't know about paper2astra.** Each SKILL stands on its own.
