@@ -16,10 +16,11 @@ The constitution's per-phase mode is **always interactive** for this phase. Paus
 - `comparison-report.yaml` — structured verdict
 - `comparison-report.md` — human-readable summary
 
-## Sibling skills to invoke
+## Sibling skills
 
-- **`/figure-comparison`** — HTML side-by-side reference vs reproduced figures, with structured judgment per panel. Invoke per figure target. (Nolan's skill; see `../figure-comparison/SKILL.md`.)
-- **`/check-sentence-by-sentence`** — paper-vs-code TeX audit. Use when SPECIFY's evidence quotes need re-verification against the source paper, particularly when COMPARE flags a result as `partial` and the cause may be a misinterpretation of paper text. (Nolan's skill; see `../check-sentence-by-sentence/SKILL.md`.)
+COMPARE itself does **not** invoke `/figure-comparison` or `/check-sentence-by-sentence`. Those run at SUMMARIZE_RUN (auto-invoked sub-agent) and post-SUMMARIZE_RUN (opt-in suggestion to the user) respectively. COMPARE produces the structured verdict; the rich side-by-side artifacts are downstream.
+
+If you find yourself wanting a fast visual sanity check of a single figure mid-COMPARE — to decide whether to retry IMPLEMENT — read the reference image and the reproduced image directly. The full HTML side-by-side waits for SUMMARIZE_RUN.
 
 ## Result path convention
 
@@ -40,7 +41,7 @@ For an output with `id: X`, the reproduced result lives at `results/<universe_id
 
 **Metrics.** Judge whether the reproduced value is scientifically equivalent to the expected value from `targets/targets.md`. Numerical tolerance comes from the target's stated precision; bare match is not the bar.
 
-**Figures.** Read the reference figure from `targets/` and compare to the reproduced image. Focus on shape / trend, axis ranges, key features (peaks, inflections, curve ordering), and magnitudes. **Do NOT require pixel-perfect matches** — stochastic methods produce variation. Judge whether the same scientific conclusion follows from both figures. **Use `/figure-comparison`** for HTML side-by-side rendering and structured per-panel judgment.
+**Figures.** Read the reference figure from `targets/` and compare to the reproduced image. Focus on shape / trend, axis ranges, key features (peaks, inflections, curve ordering), and magnitudes. **Do NOT require pixel-perfect matches** — stochastic methods produce variation. Judge whether the same scientific conclusion follows from both figures. (HTML side-by-side rendering of every figure happens at SUMMARIZE_RUN; here you're judging match status, not authoring the comparison artifact.)
 
 **Tables.** Compare key values noted in `targets/targets.md` first, then remaining values. Reference tables are in `targets/`.
 
@@ -94,4 +95,4 @@ The verdict is the agent's judgment; the **decision to keep iterating** is the u
 
 - **One COMPARE per IMPLEMENT.** Each IMPLEMENT retry produces a fresh COMPARE; the report's `attempt` field increments. Do not overwrite prior reports — keep them at `comparison-report-attempt-<N>.yaml` if useful, or commit each between iterations so git carries the history.
 - **The verdict is the agent's; the keep-iterating decision is the user's.** Treat them as separate.
-- **`/figure-comparison` is the trustworthy figure-judgment surface.** Direct image diffing without it tends to either over-fail (any pixel-level variation triggers a no-match) or over-pass (it sees that there are *some* shared features and rubber-stamps). The skill's structured prompt is the discipline.
+- **`/figure-comparison` belongs at SUMMARIZE_RUN.** It's the trustworthy figure-judgment surface — direct image diffing without it tends to either over-fail (any pixel-level variation triggers a no-match) or over-pass (it sees that there are *some* shared features and rubber-stamps). But its rich HTML output is for the user reviewing the *finished* reproduction, not for COMPARE-loop verdicts. Producing it once per COMPARE iteration is wasteful and clutters the workdir; producing it once at SUMMARIZE_RUN gives the user one canonical artifact to inspect.

@@ -9,7 +9,7 @@ The constitution's per-phase mode is **user choice** for this phase — defaults
 - `astra.yaml` — the structural spec
 - `implementation-notes.md` — tricky algorithms, numerical gotchas, data-format quirks
 - `work/notes/methodology.md` — for context when the spec compresses
-- `work/reference/code/` (if present) — reference code; **read for ambiguity resolution, do not copy verbatim**
+- `work/reference/code/` (if present) — **canonical reference. Read on every iteration when implementing.** Where paper and code disagree, code wins for numerics, plotting, and method.
 
 ## Outputs
 
@@ -21,7 +21,12 @@ The constitution's per-phase mode is **user choice** for this phase — defaults
 
 Read `astra.yaml` and `implementation-notes.md`. Write scripts in `scripts/` that produce each output, then add recipes to `astra.yaml`.
 
-If `work/reference/code/` exists, **use it as a reference to resolve ambiguities** — but write clean scripts following ASTRA conventions, not verbatim copies of the reference code.
+If `work/reference/code/` exists, **read the relevant code on every iteration** — not just to resolve ambiguities but as the canonical source of truth for numerics + method. Write clean scripts following ASTRA conventions (not verbatim copies), but treat the code's behavior as authoritative when it disagrees with the paper. When you encounter a paper-vs-code disagreement that the running spec hasn't resolved:
+
+- **Interactive IMPLEMENT** (rare; usually sub-agent): surface via `AskUserQuestion`.
+- **Sub-agent IMPLEMENT** (default): continue with the code's behavior, append the disagreement to `<paper-slug>/open-questions.md`, and note it in `implementation-notes.md` so the next interactive seam can ratify or override.
+
+Without this discipline, iterations drift to "looks right" rather than "matches" — the failure mode the first-paper test surfaced.
 
 ## Data: REAL DATA ONLY
 

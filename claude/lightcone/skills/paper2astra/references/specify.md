@@ -56,17 +56,22 @@ When `methodology.md` or `code-analysis.md` mentions a paper-vs-code disagreemen
 - **Material**: a different choice would plausibly change a numeric result the paper reports.
 - **Stylistic / cosmetic / pure-tooling**: not material — record in `implementation-notes.md` and move on.
 
-For **material** conflicts, the SPECIFY phase pauses and surfaces the conflict to the user via `AskUserQuestion`. Present:
+For **material** conflicts, behaviour depends on whether SPECIFY is running interactively:
 
-- The paper's stated method (with quote / section reference)
-- The code's actual method (with file / line reference)
-- The plausible impact ("changes the BAO peak amplitude by ~5%")
-- Three options: paper, code, *something else* (custom, with the user's choice spelled out)
+- **Interactive SPECIFY** (default): pause and surface via `AskUserQuestion`. Present:
+  - The paper's stated method (with quote / section reference)
+  - The code's actual method (with file / line reference)
+  - The plausible impact ("changes the BAO peak amplitude by ~5%")
+  - Three options: paper, code, *something else* (custom, with the user's choice spelled out)
 
-**Default on user silence is paper.** If the AskUserQuestion times out or the user declines to choose, the universe selects the paper's method. The override (paper-vs-code conflict, what was selected, why) is preserved in `astra.yaml` as:
+- **Sub-agent SPECIFY** (rare; the constitution lists this only when the user explicitly chose it): take **code as canonical** per the canonical-resolution rule, append the conflict to `<paper-slug>/open-questions.md` so the user sees it at the next session boundary, and let `universes/baseline.yaml` select the code's method. The user can flip the baseline at the next interactive seam.
+
+**Default on user silence in interactive SPECIFY is code when `work/reference/code/` exists, otherwise paper.** This is the canonical-resolution rule: where paper and code disagree, code wins for numerics + method. (Older versions of this skill defaulted to paper; the new default reflects what the first-paper test surfaced — the code is what produced the published numbers.)
+
+Either way, the override is preserved in `astra.yaml` as:
 
 - A `decisions:` entry with both options preserved
-- The `universes/baseline.yaml` selecting whichever option the user chose
+- The `universes/baseline.yaml` selecting whichever option won (chosen by the user, or canonical default on silence)
 - A finding (or an insight if the conflict matters for replication discipline broadly) that records the conflict with quote / line evidence
 
 This makes the override surface in any later review of the spec — *"the paper says X, the code does Y, the user chose Z, here's why."* The fidelity-of-prose side of this (voice seams, hedge preservation, evidence-quote verification) is the `/narrative` skill's job.
@@ -101,5 +106,5 @@ When sub-analyses exist, the root narrative MUST include a top-down end-to-end d
 
 ## Notes
 
-- **Material conflicts that the user explicitly defers** become `Open Questions` in the constitution. The next iteration sees them and either re-surfaces them or notes their continued deferral.
+- **Material conflicts that the user explicitly defers** are appended to `<paper-slug>/open-questions.md` (the running report read at session boundaries). The next iteration sees them and either re-surfaces them or notes their continued deferral.
 - **The narrative skill is the prose author, not the structure author.** SPECIFY's job is structural correctness; `/narrative` invocation comes after the structural skeleton exists.

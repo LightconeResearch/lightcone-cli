@@ -1,6 +1,6 @@
-# SUMMARIZE_RUN — final report and constitution outcome
+# SUMMARIZE_RUN — final report, figure-comparison HTML, and constitution outcome
 
-The reproduction has converged (verdict `pass` or user-accepted `partial`). Write the final summary, update the constitution's outcome, and prepare the workdir for handoff.
+The reproduction has converged (verdict `pass` or user-accepted `partial`). Write the final summary, auto-render the figure-comparison HTML so the user sees side-by-sides on arrival, update the constitution's outcome, and prepare the workdir for handoff.
 
 The constitution's per-phase mode is **always sub-agent**. There are no decisions left; this is reportage.
 
@@ -15,8 +15,17 @@ The constitution's per-phase mode is **always sub-agent**. There are no decision
 ## Outputs
 
 - `REPRODUCTION-SUMMARY.md` (or whatever name fits the project) — final report; concise.
+- `figure-comparison.html` (or whatever name `/figure-comparison` produces) — auto-rendered side-by-side: original vs reproduced figures, tables, numerics. Spawned as a sub-agent so SUMMARIZE_RUN itself stays small.
 - Updated `outcome:` on the constitution.
 - A final commit on the reproduction branch with a clear message.
+
+## Sub-agent invocations
+
+This phase orchestrates two sub-agents — both auto-invoked via the `Task` tool, both fresh-context:
+
+1. **`/figure-comparison`** — produces the HTML side-by-side. Always run; the user expects it on arrival. Read its SKILL.md (Nolan's skill) for what to pass it; at minimum, the path to the reproduction workdir so it can find originals (`work/reference/figures/`, `work/reference/tables/`) and reproduced outputs (`results/<universe>/`).
+
+2. **`/check-sentence-by-sentence`** is **opt-in** — never auto-invoked here. After the report is written, the iteration's exit message surfaces it as a suggestion to the user: *"Want a paper-vs-code TeX audit? `/check-sentence-by-sentence` will fan out a sub-agent per claim and locate `file:line` or `NOT FOUND`. Token-expensive (~N sub-agents)."* The user decides whether to spend the budget.
 
 ## What the final report covers
 
@@ -50,7 +59,7 @@ reproduction: <paper-short-name> verdict <verdict>, summary at REPRODUCTION-SUMM
 ## Survey signals (entry into SUMMARIZE_RUN)
 
 - `comparison-report.yaml` verdict is `pass` (or user has accepted `partial`) ⇒ ready
-- `REPRODUCTION-SUMMARY.md` exists; constitution outcome is rewritten ⇒ done
+- `REPRODUCTION-SUMMARY.md` exists; `figure-comparison.html` exists; constitution outcome is rewritten ⇒ done
 
 ## Notes
 
