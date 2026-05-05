@@ -54,19 +54,3 @@ If you **cannot find any remaining work**, update the spec's YAML frontmatter to
 ---
 
 Pattern adapted from [Ralph Wiggum](https://ghuntley.com/ralph/).
-
----
-
-## Provenance
-
-Originally from [`cailmdaley/skills`](https://github.com/cailmdaley/skills/tree/main/skills/ralph-loops).
-Copied into the lightcone-cli paper-reproduction bundle so it can compose
-with `paper2astra`, `constitution`, and the rest of the bundle without a
-separate plugin install. The canonical version may be ahead; re-sync as
-needed.
-
-In the bundle, `/paper2astra` invokes `/constitution` to draft a per-paper
-reproduction constitution and then launches a ralph loop against it via
-`scripts/ralph`. Successive iterations of the loop survey the workdir and
-git history, execute the next phase, and exit cleanly — see the bundle
-README at `../README.md`.

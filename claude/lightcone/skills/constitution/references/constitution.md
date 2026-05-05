@@ -1,4 +1,4 @@
-# Constitute — depth reference
+# Constitution — depth reference
 
 Drafting a constitution. The SKILL body covers the procedural backbone (Study → Draft → Refine → Launch). This reference goes deeper on voice, sections, and the discipline that keeps a constitution from sliding into a plan.
 
@@ -20,14 +20,14 @@ Constitutions do not prescribe steps. They describe what the system looks like w
 
 ---
 
-## When to constitute
+## When to write a constitution
 
 - Work where adaptation matters more than a fixed plan: scientific investigation, exploratory refactoring, creative writing
 - The desired state is clear (or can be made clear) but the path is not
 - Iterations need to re-read with fresh context and make judgment calls
 - A checklist would either be wrong after one step or race through without judgment
 
-Do not constitute for: clearly-scoped atomic tasks, work that could be a snakemake rule, anything where a plan actually is the right shape.
+Don't write a constitution for: clearly-scoped atomic tasks, anything where a checklist or a plan is genuinely the right shape.
 
 ---
 
@@ -85,7 +85,7 @@ File paths, existing patterns, architectural constraints. Things iterations
 need to *find* but not *achieve*.
 
 ## Skills
-Which skills to activate before working (e.g., /snakemake, /narrative).
+Which skills to activate before working.
 
 ## Evidence
 How to check progress — commands, test suites, grep patterns. Pointers to
@@ -101,6 +101,8 @@ resolves between loops.
 ## Principles (deeper)
 
 **Pointers, not snapshots.** `check "grep -r 'old_pattern'"` not "50 files remain." Snapshots go stale; pointers stay valid across iterations. This is the constitutional principle: write what remains true until the work is done.
+
+**Reshape, don't accrete.** When the desired state evolves — testing surfaces a gap, a meeting changes the priority, a sibling decision lands — rewrite the affected sections so the body still reads as today's desired state. Don't tack on a "Round 2" section; don't add an "Amendments" appendix; don't keep the old framing alongside the new one as a sediment. A green-field constitution will change a lot as it matures, and a mature one will keep changing as reality does. The chronology lives in the runner's history surface (commits, `felt history` if felt is in use); the body lives in *now*.
 
 **Prefer existing systems.** Before designing anything new: can what is there handle this?
 
@@ -128,6 +130,7 @@ Some constitutions do not build code — they shape artifacts like documentation
 - **Immutable seed.** Not our shape. The constitution is meant to be edited between iterations; do not treat it as frozen.
 - **Numerical convergence.** "Iteration stops when similarity ≥ 0.95" — wrong shape for science. Stop when the Evidence section says the desired state has been reached.
 - **Decision logs in the body.** "Resolved choices" / "Decisions made" / "Process notes" sections turn the constitution into a process journal. When a question gets answered (in conversation, via `AskUserQuestion`, in a review), fold the answer into the narrative where it is contextually relevant — into Invariants, Desired State, Context — and let the runner's chronological surface (commits, `felt history` if felt is in use) carry the chronology. The constitution describes *what is*, not *how we got here*; an "Open Questions" section that has been fully resolved should be deleted, not left as a victory log.
+- **Amendment scaffolding.** "Round 2", "v2 deltas", "Updates 2026-05-04 →", "Second round amendments". The same failure as a decision log, played out across edits: the body becomes a sediment of layered framings instead of the current desired state. When the desired state shifts, *reshape* the affected sections — rewrite headings, update prose, drop what no longer applies — so the document still reads as one coherent description of now. The story of how it got here is what `felt history append` (or commit messages, when felt isn't in use) and the outcome blurb are for.
 
 ---
 

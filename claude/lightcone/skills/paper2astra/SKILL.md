@@ -145,7 +145,7 @@ Workdir signals (file existence implies the phase has been done):
 - [`/ralph-loops`](../ralph-loops/SKILL.md) — for the loop that drives phases
 - [`/managing-bibliography`](../managing-bibliography/SKILL.md) — for ACQUIRE
 - [`/narrative`](../narrative/SKILL.md) — for SPECIFY
-- `/check-sentence-by-sentence`, `/figure-comparison` — for COMPARE (Nolan's skills; see Provenance)
+- `/check-sentence-by-sentence`, `/figure-comparison` — for COMPARE
 
 ## Discipline
 
@@ -160,9 +160,3 @@ Workdir signals (file existence implies the phase has been done):
 - **Re-implementing what astra already does.** If `astra validate` returns clean, do not write a separate validator. If `astra paper add` caches the PDF, do not write a separate cache.
 - **Treating Paper2ASTRA workdir as legacy.** It is not legacy — it is the substrate. The phase references inherit its conventions intentionally.
 - **Bundling everything into one ralph iteration.** Each iteration runs one or two phases, then exits. The constitution is realized across many iterations.
-
-## Provenance
-
-`paper2astra` is a fresh skill, but the phase prose ports 1:1 from the prompts in [`LightconeResearch/Paper2ASTRA/src/paper2astra/prompts/`](https://github.com/LightconeResearch/Paper2ASTRA/tree/main/src/paper2astra/prompts) (commit b3b54b5 and onward on `feat/skill-form-redesign`). The Paper2ASTRA Python package retires once this skill is in regular use; the repo persists as a reference for the original prompts and pipeline structure.
-
-The two compare-phase sibling skills (`check-sentence-by-sentence` and `figure-comparison`) originate from Nolan Koblischke's work on the [Reproductions](https://github.com/LightconeResearch/Reproductions) repo. They are credited in their own SKILL.md bodies; tag him post-publish so he can PR the canonical versions wherever they should ultimately live.

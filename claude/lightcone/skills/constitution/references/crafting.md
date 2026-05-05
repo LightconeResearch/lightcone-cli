@@ -176,7 +176,7 @@ What comes out of the diamonds maps onto wherever you keep structured commitment
 | Sub-analysis scope | New sub-analysis in `astra.yaml`, or a new fiber with `inputs`/`outputs` |
 | Process-level lesson that generalizes | Edit to root CLAUDE.md / root fiber |
 
-If felt is installed, the [`felt:felt`](https://github.com/cailmdaley/felt) skill carries the tier ladder (Annotated → Formalized → Tempered) and the common frontmatter shapes. Without felt, the same shapes apply directly inline in `astra.yaml` or the constitution itself.
+The same shapes apply directly inline in `astra.yaml` or the constitution itself; no separate substrate is required.
 
 ---
 
