@@ -56,6 +56,8 @@ Skip Step 1 if `work/reference/paper.pdf` already exists and is a valid PDF.
 
 ## Step 2: Search for the code repository
 
+This step matters more than its size suggests. When `work/reference/code/` exists, every implementing iteration treats it as canonical for numerics + method (the canonical-resolution rule, recorded in CLAUDE.md). Without it, iterations have only the paper to anchor to and drift toward "looks right" rather than "matches."
+
 1. Search the paper text for repository URLs — abstract, intro, conclusion, footnotes, "Code Availability" or "Data Availability" sections.
 2. If none found, web search: paper title + "github", Papers With Code, or the first author's GitHub profile.
 3. Clone if found:
@@ -70,7 +72,7 @@ Skip Step 1 if `work/reference/paper.pdf` already exists and is a valid PDF.
    notes: "..."
    ```
 
-Spend no more than a few searches before recording failure and moving on. **Do NOT modify cloned code.**
+Spend no more than a few searches before recording failure and moving on. **Do NOT modify cloned code** — it's the reference, not the workdir.
 
 Skip Step 2 if `work/reference/code/` already exists.
 
