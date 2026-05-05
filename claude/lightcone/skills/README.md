@@ -23,8 +23,8 @@ A self-contained toolkit for reproducing published papers in ASTRA. The bundle i
 | [`constitution`](constitution/SKILL.md) | Draft a constitution — a markdown spec for an iteration runner. Invoked by paper2astra during the interview. |
 | [`ralph-loops`](ralph-loops/SKILL.md) | Drive an autonomous iteration loop. Includes `scripts/ralph` runner. Used by paper2astra's bash-loop and tmux-orchestrated runtime modes. |
 | [`managing-bibliography`](managing-bibliography/SKILL.md) | Read arXiv LaTeX source; manage BibTeX via ADS API. Primary acquisition path for paper2astra's ACQUIRE phase. |
-| `figure-comparison` | HTML side-by-side: original figures/tables/numerics vs replicated. **Auto-invoked** by paper2astra as a sub-agent at the end of SUMMARIZE_RUN. *(pending bundle integration)* |
-| `check-sentence-by-sentence` | Paper-vs-code TeX audit via sub-agents; locates `file:line` or `NOT FOUND`. **Opt-in** suggestion to the user after SUMMARIZE_RUN — token-expensive, never auto-invoked. *(pending bundle integration)* |
+| [`check-sentence-by-sentence`](check-sentence-by-sentence/SKILL.md) | Audit paper claims against code locations (`file:line` or `NOT FOUND`). User-invokable post-completion follow-up; the SUMMARIZE_RUN summary recommends it. |
+| [`figure-comparison`](figure-comparison/SKILL.md) | Build a self-contained HTML side-by-side: original figures/tables/numerics vs replicated. User-invokable post-completion follow-up; the SUMMARIZE_RUN summary recommends it. |
 
 The full reproduction story spans these seven skills. paper2astra's `SKILL.md` names each by role and tells the agent when to invoke them; the siblings stand alone and don't know about paper2astra.
 

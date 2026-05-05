@@ -5,12 +5,13 @@ description: >
   about the paper and the intended scope, draft a per-paper reproduction
   constitution, then launch a ralph loop that drives the multi-session
   reproduction work. Composes sibling skills for each phase: managing-
-  bibliography for ACQUIRE, narrative for SPECIFY, check-sentence-by-
-  sentence + figure-comparison for COMPARE. Use when the user wants to
-  reproduce a paper, has a DOI or arXiv ID and wants to start a
-  reproduction project, or asks to "reproduce <paper>", "set up
-  reproduction", "paper2astra", "/paper2astra <doi>", or hands you a
-  published paper as a starting point for ASTRA work.
+  bibliography for ACQUIRE and narrative for SPECIFY. COMPARE follows the
+  original Paper2ASTRA target-ledger structure directly rather than requiring
+  sibling comparison skills. Use when the user wants to reproduce a paper,
+  has a DOI or arXiv ID and wants to start a reproduction project, or asks
+  to "reproduce <paper>", "set up reproduction", "paper2astra",
+  "/paper2astra <doi>", or hands you a published paper as a starting point
+  for ASTRA work.
 ---
 
 # paper2astra
@@ -38,10 +39,10 @@ paper2astra composes the rest of the lightcone-cli paper-reproduction bundle. Al
 | [`/constitution`](../constitution/SKILL.md) | INTERVIEW — drafting the per-paper reproduction constitution |
 | [`/ralph-loops`](../ralph-loops/SKILL.md) | After interview — launches the loop that drives all subsequent phases (when the chosen runtime mode is one of the loop modes) |
 | [`/narrative`](../narrative/SKILL.md) | SPECIFY — authoring the `narrative:` and `rationale:` prose in `astra.yaml` |
-| [`/figure-comparison`](../figure-comparison/SKILL.md) | SUMMARIZE_RUN — auto-invoked as a sub-agent at the end so the HTML side-by-side is ready for the user when the loop completes (Nolan's skill) |
-| [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) | After SUMMARIZE_RUN — opt-in suggestion to the user; token-expensive, so never auto-invoked (Nolan's skill) |
 
 paper2astra does not re-implement what these skills already do — it tells the agent at each phase to invoke them. The siblings stand alone; they don't know about paper2astra.
+
+After paper2astra completes, the SUMMARIZE_RUN summary recommends two adjacent follow-up skills for the user to invoke directly: [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) audits paper claims against code locations, and [`/figure-comparison`](../figure-comparison/SKILL.md) builds a portable side-by-side HTML report for paper artifacts versus reproduced results. Both are user-invokable rather than orchestrator-spawned — they use `AskUserQuestion` for missing-data prompts and don't run cleanly as silent sub-agents.
 
 ## Workflow
 
@@ -123,7 +124,7 @@ Defaults the constitution starts with:
 | IMPLEMENT | user choice | Mostly mechanical, but algorithm choices may want ratification. |
 | RUN | user choice | Mechanical, but failures need diagnosis. |
 | COMPARE | **interactive** | Verdict (was the reproduction close enough?) is the second mandatory user-ratification seam. |
-| SUMMARIZE_RUN | sub-agent | Final report; no decisions remain. `/figure-comparison` runs as a sub-agent inside this phase. |
+| SUMMARIZE_RUN | sub-agent | Final report; no decisions remain. The summary recommends `/figure-comparison` and `/check-sentence-by-sentence` as user-invokable follow-ups. |
 
 The constitution records the choice; iterations honor it. Sub-agent phases are spawned via the `Task` tool from inside the main loop session — that gives them fresh context but no user-reach. Interactive phases run inline in the loop session and may pause with `AskUserQuestion` at material seams.
 
@@ -185,8 +186,8 @@ Workdir signals (file existence implies the phase has been done):
 - [`/ralph-loops`](../ralph-loops/SKILL.md) — for the bash-loop and tmux-orchestrated runtime modes
 - [`/managing-bibliography`](../managing-bibliography/SKILL.md) — for ACQUIRE
 - [`/narrative`](../narrative/SKILL.md) — for SPECIFY
-- `/figure-comparison` — auto-invoked at end of SUMMARIZE_RUN (sub-agent)
-- `/check-sentence-by-sentence` — opt-in suggestion after SUMMARIZE_RUN
+
+(`/figure-comparison` and `/check-sentence-by-sentence` are recommended in the SUMMARIZE_RUN summary as user-invokable post-completion follow-ups; they are not co-active with the paper2astra workflow.)
 
 ## Discipline
 
@@ -196,7 +197,7 @@ Workdir signals (file existence implies the phase has been done):
 - **Use the up-to-date CLI surfaces, not skill-specific wrappers.** When `astra validate` already does the job, call it directly. Specifically: `astra validate <file>`, `astra validate --verify-evidence`, `astra paper add`. Use whatever the current `astra --help` surfaces.
 - **arxiv-LaTeX-first acquisition.** When the paper is on arxiv, the source tarball is the substrate; equations, ligatures, captions, tables come through clean. PDF + Docling is a fallback for non-arxiv where there's no better source.
 - **The original code goes into `work/reference/code/`** during ACQUIRE when available, and stays there as the canonical reference for every subsequent iteration (see "Code-as-canonical" above).
-- **`/figure-comparison` auto-runs at SUMMARIZE_RUN; `/check-sentence-by-sentence` stays opt-in** — the latter is token-expensive (large fan-out of sub-agents).
+- **`/figure-comparison` and `/check-sentence-by-sentence` are user-invokable follow-ups, not auto-invoked from inside paper2astra.** Both use `AskUserQuestion` for missing-data prompts and don't run cleanly as silent sub-agents. The SUMMARIZE_RUN summary names them so the user can choose to invoke either after the run completes.
 - **No synthetic data.** Unless the paper itself uses synthetic data as its input, every input dataset must be real (downloaded, queried, or fetched from a real archive). The implement phase reference repeats this; treat it as load-bearing.
 - **Tmux preferred-when-available, never required.** Modes (1) and (2) work without it.
 - **The siblings don't know about paper2astra.** Each SKILL stands on its own.

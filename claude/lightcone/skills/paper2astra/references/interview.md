@@ -141,8 +141,8 @@ because compute too large for available targets>.
 - `/paper2astra` — this skill (the orchestrator)
 - `/managing-bibliography` — ACQUIRE
 - `/narrative` — SPECIFY
-- `/figure-comparison` — auto-invoked at end of SUMMARIZE_RUN
-- `/check-sentence-by-sentence` — opt-in suggestion after SUMMARIZE_RUN
+
+(`/figure-comparison` and `/check-sentence-by-sentence` are user-invokable post-completion follow-ups recommended by SUMMARIZE_RUN; they're not part of the per-phase workflow.)
 
 ## Code-as-canonical
 

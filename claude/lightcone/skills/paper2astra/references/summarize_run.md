@@ -1,6 +1,6 @@
-# SUMMARIZE_RUN — final report, figure-comparison HTML, and constitution outcome
+# SUMMARIZE_RUN — final report and constitution outcome
 
-The reproduction has converged (verdict `pass` or user-accepted `partial`). Write the final summary, auto-render the figure-comparison HTML so the user sees side-by-sides on arrival, update the constitution's outcome, and prepare the workdir for handoff.
+The reproduction has converged (verdict `pass` or user-accepted `partial`). Write the final summary, update the constitution's outcome, and prepare the workdir for handoff. The summary recommends two adjacent follow-up skills the user can invoke directly: `/figure-comparison` (HTML side-by-side of original vs reproduced figures, tables, numerics) and `/check-sentence-by-sentence` (paper-vs-code claim audit). Both are user-invokable rather than orchestrator-spawned because they use `AskUserQuestion` for missing-data prompts.
 
 The constitution's per-phase mode is **always sub-agent**. There are no decisions left; this is reportage.
 
@@ -15,17 +15,8 @@ The constitution's per-phase mode is **always sub-agent**. There are no decision
 ## Outputs
 
 - `REPRODUCTION-SUMMARY.md` (or whatever name fits the project) — final report; concise.
-- `figure-comparison.html` (or whatever name `/figure-comparison` produces) — auto-rendered side-by-side: original vs reproduced figures, tables, numerics. Spawned as a sub-agent so SUMMARIZE_RUN itself stays small.
 - Updated `outcome:` on the constitution.
 - A final commit on the reproduction branch with a clear message.
-
-## Sub-agent invocations
-
-This phase orchestrates two sub-agents — both auto-invoked via the `Task` tool, both fresh-context:
-
-1. **`/figure-comparison`** — produces the HTML side-by-side. Always run; the user expects it on arrival. Read its SKILL.md (Nolan's skill) for what to pass it; at minimum, the path to the reproduction workdir so it can find originals (`work/reference/figures/`, `work/reference/tables/`) and reproduced outputs (`results/<universe>/`).
-
-2. **`/check-sentence-by-sentence`** is **opt-in** — never auto-invoked here. After the report is written, the iteration's exit message surfaces it as a suggestion to the user: *"Want a paper-vs-code TeX audit? `/check-sentence-by-sentence` will fan out a sub-agent per claim and locate `file:line` or `NOT FOUND`. Token-expensive (~N sub-agents)."* The user decides whether to spend the budget.
 
 ## What the final report covers
 
@@ -37,6 +28,10 @@ A single markdown file at the project root, ~1–2 pages. Sections:
 4. **Outputs** — pointers to the figures / tables / metrics produced. One bullet per primary target, with the path to the reproduced result.
 5. **What was learned** — anything the reproduction surfaced that wasn't visible from the paper alone (a parameter the code uses but the paper doesn't mention, a data cut that's stricter than stated, etc.). This is where the reproduction's value to the broader literature gets recorded.
 6. **Re-running** — one paragraph: how to re-run from this workdir (`lc run --universe baseline`, the constitution path, the relevant `astra.yaml`).
+7. **Optional follow-ups** — recommend adjacent audit/reporting skills when
+   useful: `/check-sentence-by-sentence` for auditing paper claims against
+   code locations, and `/figure-comparison` for a portable side-by-side HTML
+   report comparing paper artifacts with reproduced results.
 
 Brief, not exhaustive. The depth lives in `astra.yaml` and the workdir's notes; the summary is the door into them.
 
