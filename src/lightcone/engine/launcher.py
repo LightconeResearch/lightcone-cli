@@ -396,9 +396,6 @@ def _exec_interactive(
     if target.run_as_host_user:
         cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
 
-    if choice.runtime == "podman-hpc":
-        cmd.append("--no-setns")
-
     cmd.append(tag)
     cmd.extend(target.entrypoint)
 

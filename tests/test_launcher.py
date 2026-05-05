@@ -273,7 +273,7 @@ class TestLaunchTarget:
     @patch("lightcone.engine.launcher.tarball_path_for_tag")
     @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-fake-abc123")
     @patch("lightcone.engine.launcher.resolve_launch_target")
-    def test_podman_hpc_adds_no_setns(
+    def test_podman_hpc_no_extra_flags(
         self,
         mock_resolve: MagicMock,
         mock_tag: MagicMock,
@@ -284,6 +284,12 @@ class TestLaunchTarget:
         project: Path,
         tmp_path: Path,
     ) -> None:
+        """podman-hpc takes the same plain ``run`` options as podman.
+
+        Earlier versions of the launcher added ``--no-setns`` here, but
+        modern podman-hpc (5.x+) rejects that flag. We rely on the
+        wrapper's defaults instead.
+        """
         from lightcone.engine.launcher import launch_target
 
         mock_resolve.return_value = fake_target
@@ -295,7 +301,9 @@ class TestLaunchTarget:
         launch_target(fake_target.name, choice=choice, project_root=project)
 
         cmd = mock_exec.call_args[0][1]
-        assert "--no-setns" in cmd
+        assert "--no-setns" not in cmd
+        assert cmd[0] == "podman-hpc"
+        assert "run" in cmd
 
     @patch("lightcone.engine.launcher.os.execvp")
     @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
