@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
 # FUSE support — required by both Apptainer overlay and buildah overlay storage.
 # squashfuse enables SquashFS mounts used by Apptainer for OCI images.
@@ -8,10 +8,12 @@ FROM python:3.12-slim
 # .deb install and /var/log/apt/eipp.log.xz is not left stale between layers
 # (dpkg opens it with O_CREAT|O_EXCL; a pre-existing file from a prior layer
 # causes exit code 2 on NERSC / podman rootless builds).
-# python:3.12-slim is Debian Bookworm-based and ships Python pre-installed, so
-# python3/python3-dev are omitted from the apt block.  build-essential is kept
-# as a safety net for any C-extension deps that lack pre-built wheels.
-# Note: Debian uses libfuse2 (not libfuse2t64 which is Ubuntu-specific).
+# python:3.12-slim-bookworm ships Python pre-installed, so python3/python3-dev
+# are omitted from the apt block.  build-essential is kept as a safety net for
+# any C-extension deps that lack pre-built wheels.
+# Note: we pin -bookworm explicitly because plain `python:3.12-slim` flipped to
+# Debian 13 (Trixie) where libfuse2 was renamed to libfuse2t64 and would break
+# this apt block.  Bookworm + libfuse2 is what apptainer 1.4 expects.
 ARG APPTAINER_VERSION=1.4.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fuse3 \
