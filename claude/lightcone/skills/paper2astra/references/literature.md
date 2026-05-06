@@ -6,9 +6,9 @@ The constitution's per-phase mode is **always sub-agent** for this phase. Spawn 
 
 ## Inputs
 
-- `work/notes/cited_papers.yaml` — the list of papers to mine, from SUMMARIZE
+- `work/notes/cited_papers.yaml` — the list of papers to mine, from STUDY
 - `work/notes/methodology.md` — has the decision map; each per-paper sub-agent gets it as context
-- `work/reference/document.md` — the target paper (for reference)
+- `work/reference/source/` (Path A — arXiv LaTeX) or `work/reference/document.md` (Path B — Docling) — the target paper (for reference)
 
 ## Outputs
 

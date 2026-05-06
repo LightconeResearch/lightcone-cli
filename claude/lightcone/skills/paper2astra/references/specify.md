@@ -110,7 +110,7 @@ When sub-analyses exist, the root narrative MUST include a top-down end-to-end d
 - **Equation and section numbers must match the rendered paper / PDF**, not a naïve count of TeX blocks or markdown headings. When citing "eq. N" or "§N", find the equation or heading by content in the rendered paper and use the printed number.
 - **When adding finding evidence**, verify the quoted text against the paper source by Grep or PDF search. `astra validate --verify-evidence` currently verifies `prior_insights` evidence; artifact-anchored `findings` evidence still needs a manual quote check.
 - **Validate** with `astra validate astra.yaml` and fix until it passes.
-- **Work primarily from `work/notes/`** — SUMMARIZE has already distilled the paper. Use `work/reference/document.md` only to look up specific details (Grep for terms, or read targeted sections with offset/limit). Do not read the entire markdown at once.
+- **Work primarily from `work/notes/`** — STUDY has already distilled the paper section by section. Use `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) only to look up specific details (Grep for terms, or read targeted sections with offset/limit). Do not re-read the whole paper.
 
 ## Survey signals (entry into SPECIFY)
 
