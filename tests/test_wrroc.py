@@ -477,6 +477,129 @@ class TestSubAnalyses:
         ).is_file()
 
 
+class TestToolName:
+    """SoftwareApplication.name resolution: tool_name > heuristic > output_id."""
+
+    def _project_with_recipe(
+        self,
+        tmp_path: Path,
+        *,
+        recipe_command: str,
+        tool_name: str | None = None,
+    ) -> Path:
+        recipe: dict[str, Any] = {"command": recipe_command}
+        if tool_name:
+            recipe["tool_name"] = tool_name
+        _write_spec(
+            tmp_path,
+            {
+                "outputs": [{"id": "foo", "recipe": recipe}],
+            },
+        )
+        _write_universe(tmp_path, "u1", {})
+        _materialize(tmp_path, "foo", "u1", recipe=recipe_command)
+        return tmp_path
+
+    def _software_app(self, bundle: Path) -> dict[str, Any]:
+        meta = json.loads((bundle / "ro-crate-metadata.json").read_text())
+        return next(
+            g for g in meta["@graph"]
+            if g.get("@type") == "SoftwareApplication"
+            and g["@id"].startswith("#recipe")
+        )
+
+    def test_explicit_tool_name_wins(self, tmp_path: Path) -> None:
+        project = self._project_with_recipe(
+            tmp_path,
+            recipe_command="python scripts/analyze.py --x 1",
+            tool_name="analyze (chi-squared)",
+        )
+        out = project / "wrroc"
+        export_wrroc(project, out, author="X <x@y>")
+        sw = self._software_app(out)
+        assert sw["name"] == "analyze (chi-squared)"
+        assert sw["description"] == "python scripts/analyze.py --x 1"
+
+    def test_heuristic_extracts_script_path(self, tmp_path: Path) -> None:
+        project = self._project_with_recipe(
+            tmp_path,
+            recipe_command="python scripts/analyze.py --x 1",
+        )
+        out = project / "wrroc"
+        export_wrroc(project, out, author="X <x@y>")
+        sw = self._software_app(out)
+        assert sw["name"] == "scripts/analyze.py"
+
+    def test_falls_back_to_output_id(self, tmp_path: Path) -> None:
+        # Recipe with no script-like token in it
+        project = self._project_with_recipe(
+            tmp_path,
+            recipe_command="echo hello",
+        )
+        out = project / "wrroc"
+        export_wrroc(project, out, author="X <x@y>")
+        sw = self._software_app(out)
+        assert sw["name"] == "foo"  # the output id
+
+
+class TestGitRemote:
+    def test_emits_code_repository_entity(self, tmp_path: Path) -> None:
+        """When manifests carry git_remote, the bundle gets a CodeRepository."""
+        _write_spec(
+            tmp_path,
+            {"outputs": [{"id": "foo", "recipe": {"command": "echo foo"}}]},
+        )
+        _write_universe(tmp_path, "u1", {})
+        out = tmp_path / "results" / "u1" / "foo"
+        out.mkdir(parents=True)
+        (out / "data.txt").write_text("bytes")
+        cv = code_version(recipe="echo foo", container_image=None, decisions={})
+        write_manifest(
+            output_dir=out, inputs={},
+            cfg={
+                "output_id": "foo", "universe_id": "u1",
+                "recipe": "echo foo", "container_image": None,
+                "decisions": {}, "code_version": cv,
+                "git_sha": "abc",
+                "git_remote": "https://github.com/dkn16/test-repo",
+                "lc_version": "0.0.1",
+            },
+        )
+
+        bundle = tmp_path / "wrroc"
+        export_wrroc(tmp_path, bundle, author="X <x@y>")
+        meta = json.loads((bundle / "ro-crate-metadata.json").read_text())
+
+        repos = [
+            g for g in meta["@graph"]
+            if "CodeRepository" in (
+                g["@type"] if isinstance(g["@type"], list) else [g["@type"]]
+            )
+        ]
+        assert len(repos) == 1
+        assert repos[0]["@id"] == "https://github.com/dkn16/test-repo"
+        assert repos[0]["url"] == "https://github.com/dkn16/test-repo"
+
+        wf = next(
+            g for g in meta["@graph"]
+            if "ComputationalWorkflow" in (
+                g["@type"] if isinstance(g["@type"], list) else [g["@type"]]
+            )
+        )
+        assert wf.get("codeRepository", {}).get("@id") == \
+            "https://github.com/dkn16/test-repo"
+
+    def test_no_git_remote_no_repo_entity(self, minimal_project: Path) -> None:
+        """Without git_remote in manifests, no CodeRepository is emitted."""
+        out = minimal_project / "wrroc"
+        export_wrroc(minimal_project, out, author="X <x@y>")
+        meta = json.loads((out / "ro-crate-metadata.json").read_text())
+        for g in meta["@graph"]:
+            t = g.get("@type")
+            tlist = t if isinstance(t, list) else [t]
+            assert "CodeRepository" not in tlist
+
+
 class TestUnreadableManifest:
     def test_skips_permission_denied(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

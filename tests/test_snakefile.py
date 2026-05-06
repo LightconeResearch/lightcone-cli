@@ -509,3 +509,55 @@ def test_external_input_flows_to_manifest(tmp_path: Path) -> None:
     assert '"union21_table": Path(input.union21_table)' in text
 
 
+
+
+# ---------------------------------------------------------------------------
+# _git_remote() URL normalisation
+# ---------------------------------------------------------------------------
+
+
+class TestGitRemote:
+    """Probe ``_git_remote`` indirectly via subprocess monkeypatching.
+
+    The function shells out to ``git config --get remote.origin.url``;
+    we capture the stdout it sees and check the normalisation.
+    """
+
+    @pytest.fixture
+    def git_remote(self, monkeypatch: pytest.MonkeyPatch):
+        import subprocess as sp
+
+        from lightcone.engine import snakefile as sf
+
+        def factory(stdout: str, returncode: int = 0):
+            class _R:
+                pass
+            r = _R()
+            r.stdout = stdout
+            r.returncode = returncode
+            r.stderr = ""
+
+            def fake_run(*args: Any, **kwargs: Any):
+                return r
+            monkeypatch.setattr(sp, "run", fake_run)
+            return sf._git_remote(Path("."))
+
+        return factory
+
+    def test_https_url_preserved(self, git_remote) -> None:
+        assert git_remote("https://github.com/dkn16/test\n") \
+            == "https://github.com/dkn16/test"
+
+    def test_ssh_url_normalised(self, git_remote) -> None:
+        assert git_remote("git@github.com:dkn16/test.git\n") \
+            == "https://github.com/dkn16/test"
+
+    def test_strips_dot_git_suffix(self, git_remote) -> None:
+        assert git_remote("https://gitlab.com/team/proj.git\n") \
+            == "https://gitlab.com/team/proj"
+
+    def test_returns_none_when_no_remote(self, git_remote) -> None:
+        assert git_remote("", returncode=1) is None
+
+    def test_returns_none_when_empty_url(self, git_remote) -> None:
+        assert git_remote("\n") is None

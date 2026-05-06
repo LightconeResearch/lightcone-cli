@@ -270,6 +270,7 @@ class WRROCBuilder:
         self._software_ids: dict[str, str] = {}  # recipe text → @id
         self._container_ids: dict[str, str] = {}  # image tag → @id
         self._person_id: str | None = None
+        self._code_repo_id: str | None = None  # set lazily from manifest's git_remote
 
         if author_str:
             self._person_id = self._add_person(author_str)
@@ -447,8 +448,15 @@ class WRROCBuilder:
         recipe_cmd = (tree_out.output_def.get("recipe") or {}).get("command", "")
 
         instrument_id = self._add_recipe_software(
-            recipe_cmd, manifest.get("container_image")
+            recipe_cmd,
+            manifest.get("container_image"),
+            tool_name=(tree_out.output_def.get("recipe") or {}).get("tool_name"),
+            output_id=tree_out.output_id,
         )
+
+        # If the manifest carries a git_remote URL, surface it as a
+        # CodeRepository entity once (de-duplicated across all actions).
+        self._link_code_repository(manifest.get("git_remote"))
 
         # Resolve `object` (inputs to the action). Each upstream input
         # references the producing dataset's @id (Provenance chain).
@@ -577,12 +585,49 @@ class WRROCBuilder:
             self.crate.add(ext)
         return {"@id": external_id}
 
+    def _link_code_repository(self, git_remote: str | None) -> None:
+        """Idempotently add a CodeRepository entity for the project repo.
+
+        Called once per manifest read; later calls with the same URL are
+        no-ops. The repository entity is also linked from the workflow
+        via ``codeRepository`` so consumers can discover the source.
+        """
+        if not git_remote:
+            return
+        if self._code_repo_id is not None:
+            return  # already added
+        from rocrate.model import ContextEntity
+
+        repo = ContextEntity(self.crate, git_remote, properties={
+            "@type": ["CodeRepository", "SoftwareSourceCode"],
+            "name": git_remote.rsplit("/", 1)[-1] or git_remote,
+            "url": git_remote,
+        })
+        self.crate.add(repo)
+        if self._workflow_id is not None:
+            wf = self.crate.dereference(self._workflow_id)
+            if wf is not None:
+                wf["codeRepository"] = {"@id": git_remote}
+        self._code_repo_id = git_remote
+
     def _add_recipe_software(
         self,
         recipe_cmd: str,
         container_image: str | None,
+        *,
+        tool_name: str | None = None,
+        output_id: str | None = None,
     ) -> str:
-        """De-duplicate recipes — return the @id of the SoftwareApplication."""
+        """De-duplicate recipes — return the @id of the SoftwareApplication.
+
+        ``SoftwareApplication.name`` resolution order:
+
+        1. Explicit ``recipe.tool_name`` from astra.yaml (best — author-chosen).
+        2. Heuristic from the command (e.g. ``scripts/analyze.py``).
+        3. The output id (always available, always meaningful).
+
+        The full command is always preserved as ``description``.
+        """
         from rocrate.model import ContextEntity
 
         key = recipe_cmd or "<empty>"
@@ -590,9 +635,15 @@ class WRROCBuilder:
             return self._software_ids[key]
 
         sw_id = f"#recipe-{len(self._software_ids)}"
+        name = (
+            tool_name
+            or _heuristic_tool_name(recipe_cmd)
+            or output_id
+            or "(empty recipe)"
+        )
         props: dict[str, Any] = {
             "@type": "SoftwareApplication",
-            "name": (recipe_cmd or "(empty recipe)")[:60],
+            "name": name,
             "description": recipe_cmd,
         }
         if container_image:
@@ -722,6 +773,31 @@ def _decision_sample_value(decision: dict[str, Any]) -> Any:
         if isinstance(first, dict):
             return first.get("value")
         return first
+    return None
+
+
+def _heuristic_tool_name(recipe_cmd: str) -> str | None:
+    """Best-effort SoftwareApplication.name from a bash command.
+
+    Looks for the first script-like token (``foo.py``, ``./bin/foo``,
+    ``foo.sh``) and returns just that. Returns None if no obvious tool
+    can be extracted, falling through to the output_id fallback.
+    """
+    if not recipe_cmd:
+        return None
+    for token in recipe_cmd.split():
+        # Skip env assignments, redirects, shell builtins
+        if "=" in token and not token.startswith("-"):
+            continue
+        if token in {"python", "python3", "bash", "sh", "uv", "run"}:
+            continue
+        # Must look like a path with an extension or a leading ./
+        if "/" in token or token.startswith("./"):
+            return token
+        if "." in token and not token.startswith("-"):
+            ext = token.rsplit(".", 1)[-1]
+            if ext in {"py", "sh", "R", "jl", "rb", "pl"}:
+                return token
     return None
 
 
