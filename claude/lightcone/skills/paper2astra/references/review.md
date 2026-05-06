@@ -1,149 +1,109 @@
-# REVIEW — rigor-dialed fresh-context spec audit
+# REVIEW — interactive close-out
 
-A fresh-context sub-agent reads `astra.yaml` against the paper and the code and asks "is this consistent?" The reviewer never sees what was just implemented or fixed last round — its only job is first-principles cross-reference. SPECIFY incorporates fixes; a *fresh* reviewer re-runs; iterate until two consecutive rounds find nothing or a configured cap is hit.
+The reproduction has converged (verdict `pass` or user-accepted `partial`). Control returns to the user. REVIEW is the second always-interactive bookend (INTERVIEW being the first); it runs in the main loop session, not as a sub-agent, so it can use `AskUserQuestion` and invoke sibling skills that need user reach. Its job is to render the validation surfaces, walk the user through the accumulated open questions, land the resolutions, draft the final report, and finalize the constitution outcome — in one interactive arc.
 
-REVIEW's depth is set by the constitution's **frugality / rigor** dial (see "Rigor vs frugality" in `../SKILL.md`):
+The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding into ARCHITECT, SPECIFY, and IMPLEMENT as their rigor-dialed self-review passes. This close-out is what the previous shape called SUMMARIZE_RUN.
 
-- **Frugal:** skip REVIEW entirely, or run a single fresh sub-agent pass and incorporate its fixes once.
-- **Rigor:** N rounds — each round runs a fresh reviewer; SPECIFY incorporates fixes; the next round runs *another* fresh reviewer that has not seen the fixes. Iterate until two consecutive rounds find no fixes (the strong termination criterion the loop already uses), or a system cap of 5 rounds, whichever is sooner.
-
-The constitution's per-phase mode defaults this to **sub-agent**; interactive REVIEW is rare (a paper that hits the SPECIFY conflict-surfacing path heavily may want a human in the loop).
-
-## Why fresh-context sub-agents
-
-A reviewer that has just helped fix `astra.yaml` will pattern-match on its own fixes rather than re-reading the paper. Catching the *next* class of inconsistency requires a fresh context that doesn't carry the prior round's framing. The sub-agent's prompt must therefore say "check `astra.yaml` is consistent with the paper and the code" — never "here's what was just fixed; check it." The reviewer's only inputs are the paper, the code, and the spec.
-
-This also bounds the work: each round is one fresh sub-agent over a bounded artifact. Rigor doesn't mean "longer review" — it means "more independent reviewers."
+The constitution's per-phase mode is **always interactive** for this phase. It does not run as a sub-agent. There is no "silent close-out" path; the close-out is the human's review.
 
 ## Inputs
 
-- `astra.yaml` — the spec from SPECIFY (the artifact under review)
-- `universes/baseline.yaml` — the universe selection
-- `implementation-notes.md` — practical guidance for IMPLEMENT
-- `targets/targets.md` — coverage obligations
-- `work/notes/methodology.md` — consolidated decision map / results inventory / data sources (Grep into for cross-reference; do not re-read whole)
-- `work/notes/study/` — per-section paper-vs-code agreement-check files (Grep into for verbatim claims and code locations)
-- `work/notes/literature.yaml` (if present) — for evidence verification
-- `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep into; do not re-read whole)
-- `work/reference/code/` (if present) — original code, canonical reference for numerics + method
+- `astra.yaml` — final spec (validates with `--verify-evidence` if literature.yaml exists)
+- `comparison-report.yaml`, `comparison-report.md` — final verdict
+- `targets/targets.md` — what was being matched against; reference figures / tables in `targets/`
+- `results/<universe>/<output_id>/` — reproduced figures / tables / metrics
+- `<paper-slug>/open-questions.md` — running report from sub-agent phases (paper-vs-code conflicts, ambiguities, anything sub-agents flagged for user resolution)
+- `work/notes/architect/paper-index.md` and `work/notes/architect/code-index.md` — for context
+- The constitution at the project root — its `outcome:` field needs the final write
+- `<paper-slug>/CLAUDE.md` — paper identity, code location
 
 ## Outputs
 
-- In-place edits to `astra.yaml`, `universes/baseline.yaml`, `implementation-notes.md` driven by reviewer findings — written by SPECIFY in response, **not** by the reviewer itself
-- `work/notes/review/round-<N>.md` — each round's reviewer findings (one file per round; the orchestrator passes round-N's findings to SPECIFY for fixing, then spawns round-(N+1) as a fresh sub-agent that does not see round-N's findings)
+- `.lightcone/comparison.html` — `/figure-comparison`'s portable side-by-side report (paper artifacts vs reproduced)
+- (Optional) `.lightcone/check-sentence-by-sentence.md` — `/check-sentence-by-sentence`'s claim audit (file:line or NOT FOUND per sentence)
+- `<paper-slug>/open-questions.md` — same file, but with `## Resolutions` section appended capturing what the user said for each entry
+- Edits to `astra.yaml` / `implementation-notes.md` / `universes/baseline.yaml` if any open-question resolution warrants a spec change
+- `REPRODUCTION-SUMMARY.md` — final report; concise (~1–2 pages)
+- Constitution `outcome:` rewritten to its final form
+- A commit closing out the reproduction
 
-## Step 1: orchestrator decides round count from the constitution's rigor dial
+## Step 1: render the validation surfaces
 
-Read the constitution's termination-criterion field:
+### `/figure-comparison` (mandatory)
 
-- `weak` (frugal) → at most one round; if no fixes found, REVIEW is done. If skipping is preferred (the user said "skip review"), the orchestrator records "REVIEW skipped per constitution" in the workdir and proceeds to IMPLEMENT.
-- `strong` (rigor) → iterate. Stop when **two consecutive rounds find no fixes**, or after 5 rounds (system cap), whichever comes first.
+Invoke the `/figure-comparison` skill from this session. It builds a portable HTML side-by-side comparing paper artifacts (from `targets/`) to reproduced artifacts (from `results/<universe>/`). The skill uses `AskUserQuestion` for any inputs it can't infer from the workdir; that works because REVIEW is interactive — the prompts land in this session.
 
-## Step 2: per-round fresh sub-agent — system prompt
+Output lands at `.lightcone/comparison.html`. Show the user the path and offer to open it (`open` on macOS, `xdg-open` on Linux, or just print the path so they click in their terminal).
 
-Spawn one Task-tool sub-agent per round. Each round's sub-agent gets only the inputs above — never the prior round's findings, never a description of what was just fixed.
+**Do not spawn `/figure-comparison` under the `Task` tool.** It has `AskUserQuestion` in its `allowed-tools`; a Task-tool sub-agent has no user-reach, so the prompt fires into nothing.
 
-> You are an ASTRA-spec reviewer. Read `astra.yaml`, the paper, and the code (when present), and report any inconsistencies you find. You will be one of several independent reviewers; do not assume anything has already been fixed.
->
-> ### Inputs
->
-> - `astra.yaml` — the spec under review
-> - `universes/baseline.yaml`
-> - `implementation-notes.md`
-> - `targets/targets.md`
-> - `work/notes/methodology.md` — consolidated paper-derived decision map (Grep into; do not re-read whole)
-> - `work/notes/study/` — per-section paper-vs-code agreement-check files (Grep into for verbatim claims and code locations)
-> - `work/notes/literature.yaml` (if present)
-> - `work/reference/source/` (arXiv LaTeX; preferred) or `work/reference/document.md` (Docling fallback) — paper text (Grep into; do not re-read whole)
-> - `work/reference/code/` (when present) — canonical reference for numerics + method
->
-> ### What to check
->
-> 1. **Target coverage.** Every entry in `targets/targets.md` must appear in `astra.yaml` as an output, finding, input, decision, or universe default. Any missing target either earns a spec home or an explicit out-of-scope reason in `targets.md`.
-> 2. **Output definitions.** Each output has a clear `type` and sufficient description.
-> 3. **Methodology coverage.** Cross-check `work/notes/methodology.md` against the spec for gaps: missing hyperparameters, underspecified algorithms, vague data-processing steps. Grep targeted sections of the paper to confirm.
-> 4. **Decisions.** Decisions cover what affects reproducibility. Cosmetic / pure-tooling choices should not be decisions; anything material that is missing should be added. `universes/baseline.yaml` must be consistent with the paper's reported choices (or with the code's, when paper-vs-code resolution applied per the canonical-resolution rule).
-> 5. **Data acquisition.** Every input has a concrete acquisition path — a download URL, database query, API call, or package name. Vague references ("available upon request", no source named) are flagged.
-> 6. **Implementation-notes completeness.** Does `implementation-notes.md` flag the tricky parts the IMPLEMENT phase will hit? Cross-check against `work/notes/study/<NN>-<slug>.md` material-disagreement entries — every paper-vs-code material disagreement that landed in the spec should also appear in implementation-notes for IMPLEMENT.
-> 7. **Evidence verification.** If `work/notes/literature.yaml` exists, run `astra validate astra.yaml --verify-evidence`. Flag any misquotes or unsupported claims; these typically arise when a quote was paraphrased or when prefix/suffix carry editorial commentary instead of real surrounding text.
-> 8. **Code-as-canonical applied.** Where paper and code disagree on a material choice (per `work/notes/study/`'s material-disagreement rows), check that `universes/baseline.yaml` selects the code's choice, OR that an interactive seam recorded a different user choice. Flag any material disagreement where the spec silently picked the paper without recording an explicit override.
-> 9. **No synthetic data.** Unless the paper itself uses synthetic data, every input has a real acquisition source — no mock / synthetic substitutes anywhere in the spec, recipes, or implementation-notes.
->
-> ### What NOT to do
->
-> - **Do not edit `astra.yaml`** or any other file. Your output is a findings file; SPECIFY responds to the findings. Editing here defeats the multi-round-fresh-context discipline.
-> - **Do not re-read the entire paper.** Use Grep to look up specific claims you want to verify. Work primarily from `work/notes/methodology.md` and `work/notes/study/`.
-> - **Do not invent problems.** If the spec is consistent with paper + code, say so briefly.
-> - **Do not assume a prior reviewer has been here.** You are fresh. Treat this as a first-principles read.
->
-> ### Output format — `work/notes/review/round-<N>.md`
->
-> ```markdown
-> # Review round <N>
->
-> Reviewer ran fresh against `astra.yaml`, paper, and code.
->
-> ## Findings
->
-> ### <category — e.g. "Target coverage" / "Decisions" / "Data acquisition" / "Evidence">
->
-> - **<one-line finding>**
->   - **What's wrong**: <quote or location of the spec problem>
->   - **Where to fix**: <`astra.yaml#path/to/key` or `implementation-notes.md`>
->   - **Suggested fix**: <one-line concrete change>
->   - **Source**: <paper §X.Y "quote" + `work/notes/study/<id>` row, or code `path:line`>
->
-> ## No-fix sections
->
-> Brief one-liners for sections that look clean (so the orchestrator knows you actually checked).
->
-> ## Verdict
->
-> - **fixes_needed**: <count>
-> - **clean** | **needs-fixes**
-> ```
->
-> Be concise. The orchestrator reads this file to decide whether to spawn another round and what SPECIFY needs to fix.
+### `/check-sentence-by-sentence` (opt-in)
 
-## Step 3: SPECIFY incorporates findings
+Ask the user via `AskUserQuestion` whether they want the claim audit. It's optional because for many reproductions the figure-comparison already settles "did it match?"; the sentence-by-sentence audit earns its keep when the paper makes many specific quantitative claims and the user wants each one anchored to a code location.
 
-After the round's findings file lands, SPECIFY (or the orchestrator playing SPECIFY for trivial mechanical fixes) edits `astra.yaml`, `universes/baseline.yaml`, `implementation-notes.md` per the suggested fixes. After any change to `astra.yaml`, run:
+If yes, invoke `/check-sentence-by-sentence`. Same discipline as `/figure-comparison` — it can prompt the user; do not spawn under `Task`.
 
-```bash
-astra validate astra.yaml
+Output lands at `.lightcone/check-sentence-by-sentence.md` (or wherever the skill writes it). Show the user the path.
+
+## Step 2: walk `<paper-slug>/open-questions.md` with the user
+
+Read `<paper-slug>/open-questions.md`. For each unresolved entry, surface it via `AskUserQuestion` with:
+
+- **The question** (verbatim from the file)
+- **Origin** — which phase / sub-agent flagged it
+- **The default the loop applied** (if any — e.g. "code as canonical")
+- **Three options**: ratify the default, override (user spells out their choice), or defer (leave as a known limitation in the final report)
+
+Append a `## Resolutions` section to `<paper-slug>/open-questions.md` capturing what the user said for each entry. This makes the resolution durable — re-runs and future sessions see it.
+
+If a resolution warrants a spec change (the user picks an override), edit `astra.yaml` / `implementation-notes.md` / `universes/baseline.yaml` accordingly and re-run `astra validate astra.yaml`. If the change would invalidate the comparison report (e.g. flips the canonical method for a primary output), surface that to the user — in most cases the reproduction is "done" and the override is a known limitation, but the user may choose to re-enter the loop.
+
+## Step 3: write `REPRODUCTION-SUMMARY.md`
+
+A single markdown file at the project root, ~1–2 pages. Sections:
+
+1. **What was reproduced** — the paper, the scope, the targets.
+2. **Verdict** — pass / partial. If partial, what failed and why we accepted it.
+3. **Material decisions** — the paper-vs-code conflicts SPECIFY's code pass surfaced, what the user chose (interactively or by canonical-resolution default), and why.
+4. **Outputs** — pointers to the figures / tables / metrics produced. One bullet per primary target with the path to the reproduced result and a one-line match note from the comparison report.
+5. **What was learned** — anything the reproduction surfaced that wasn't visible from the paper alone (a parameter the code uses but the paper doesn't mention, a data cut stricter than stated, etc.). This is where the reproduction's value to the broader literature gets recorded.
+6. **Resolved open questions** — pull from `<paper-slug>/open-questions.md`'s `## Resolutions` section. One bullet per question + its resolution.
+7. **Re-running** — one paragraph: how to re-run from this workdir (`lc run --universe baseline`, the constitution path, the relevant `astra.yaml`).
+
+Brief, not exhaustive. The depth lives in `astra.yaml` and the workdir's notes; the summary is the door into them.
+
+## Step 4: finalize the constitution outcome
+
+Rewrite the constitution's `outcome:` field to its final form. Now the user has walked the validation surfaces, ratified the open questions, and accepted (or explicitly partially-accepted) the reproduction. Write the outcome that teaches:
+
+> Reproduced <paper> against the targets in `targets/targets.md` with verdict `pass` (attempt 4). All 7 primary targets match within stated tolerance; 2 of 5 secondary targets show <5% offset attributable to <reason>. Material conflicts surfaced and resolved: <list>. Open questions resolved: <count> (full chain in `open-questions.md`). Spec at `astra.yaml` (validates with `--verify-evidence`); side-by-side at `.lightcone/comparison.html`; full report at `REPRODUCTION-SUMMARY.md`.
+
+The outcome should stand on its own — someone reading just `felt show <reproduction-fiber>` (or the kanban card) should learn the verdict, the material decisions that landed, and where the artifacts live. No "see the body for details."
+
+## Step 5: commit
+
+Stage `REPRODUCTION-SUMMARY.md`, `<paper-slug>/open-questions.md` (with resolutions), the constitution with the final outcome, the final `astra.yaml`, the comparison artifacts, and any housekeeping changes. Commit with a message that names the verdict and the close-out:
+
+```
+review: <paper-short-name> verdict <verdict>, summary at REPRODUCTION-SUMMARY.md
 ```
 
-If literature.yaml is present:
-
-```bash
-astra validate astra.yaml --verify-evidence
-```
-
-The orchestrator records what was fixed in a small commit per round so `git log` shows the chain.
-
-## Step 4: termination check
-
-After SPECIFY incorporates the round's fixes, the orchestrator decides whether to spawn another round:
-
-- `weak` (frugal): one pass is enough. Done.
-- `strong` (rigor):
-  - If round N's `fixes_needed` was 0 AND round (N-1)'s was also 0 → done (two consecutive clean rounds = strong termination criterion).
-  - If round N is the first round (N=1), spawn round 2 unconditionally so we can compare.
-  - If round N produced fixes, spawn round (N+1) as a fresh sub-agent that does not see round N's findings or the fixes.
-  - If N hits the system cap of 5 rounds without two consecutive clean rounds, surface to the user: "REVIEW reached round cap with N fixes still landing; continue, accept the current spec, or revise the constitution?" via `AskUserQuestion`. Default on user silence: accept the current spec, log the unfinished tail in `<paper-slug>/open-questions.md`, and proceed.
+After the commit, optionally flip the constitution's status to `closed` (or whatever the per-paper conventions name) so future surveys recognize the reproduction is done.
 
 ## Survey signals (entry into REVIEW)
 
-- `astra.yaml` exists and `astra validate astra.yaml` returns clean ⇒ ready to review
-- `work/notes/review/round-1.md` exists ⇒ first round done
-- For frugal: `round-1.md` exists with verdict `clean` (or no fixes were incorporated) ⇒ REVIEW done
-- For rigor: two consecutive `round-<N>.md` and `round-<N-1>.md` files both have verdict `clean` ⇒ REVIEW done; proceed to IMPLEMENT
-- `astra validate astra.yaml --verify-evidence` returns clean (when literature.yaml exists) ⇒ evidence side validated
+- `comparison-report.yaml` verdict is `pass` (or user has accepted `partial`) ⇒ ready to close out
+- `.lightcone/comparison.html` exists ⇒ `/figure-comparison` rendered
+- `<paper-slug>/open-questions.md` has a `## Resolutions` section covering every entry ⇒ open-questions walkthrough done
+- `REPRODUCTION-SUMMARY.md` exists ⇒ final report written
+- Constitution `outcome:` reflects the final state ⇒ REVIEW done; reproduction complete
 
 ## Notes
 
-- **REVIEW does not write code.** Its outputs are findings; SPECIFY's edits to the spec / notes implement them.
-- **The fresh-context discipline is load-bearing.** A reviewer that sees the prior round's findings or fixes pattern-matches on them and stops finding the next class of inconsistency. Each round must spawn a brand-new sub-agent with only paper + code + spec as inputs.
-- **Minimize churn in fixes.** SPECIFY's edits should target the specific finding, not restructure surrounding spec. Big restructures defeat the round-over-round comparison the orchestrator uses to decide termination.
-- **A clean REVIEW reduces IMPLEMENT thrash.** It is worth running even when SPECIFY's output looked fine — fresh-context cross-checks catch "looks fine in isolation, breaks under full coverage" gaps.
-- **For frugal runs, REVIEW can be skipped when SPECIFY ran interactively** and the user already ratified material conflicts. The constitution records the skip; iterations honor it.
+- **This phase runs interactively in the main loop session.** Do not spawn it under `Task`. The whole point of REVIEW (close-out) is that the user is reachable — every step uses `AskUserQuestion` (directly, or via the sibling skills it invokes).
+- **`/figure-comparison` and `/check-sentence-by-sentence` use `AskUserQuestion`.** That's why REVIEW is the always-interactive close-out and they live here, not in the loop. Spawning either under `Task` from inside the loop fires prompts into nothing.
+- **The user owns the verdict-acceptance decision.** REVIEW's purpose is to let the user see what the loop did and decide whether they accept it. The skill renders surfaces and asks; it does not unilaterally close.
+- **Don't confuse with the rigor-dialed self-reviews.** ARCHITECT, SPECIFY, and IMPLEMENT each run their own internal fresh-context self-review passes during the loop. Those are unrelated to this close-out — same word, different jobs. The phase boundary makes them unambiguous: rigor-dial reviews live inside their host phase's reference; this one is the always-interactive close-out.
+- **Open-question resolutions are durable.** Append to `<paper-slug>/open-questions.md`'s `## Resolutions` section so the next re-run / future session sees what was decided. Do not delete the original questions.
+- **Keep the report short.** Long reports get skimmed; short reports get read. Two pages is generous.
+- **Do not invent further work.** If the constitution's evidence checks all pass, the reproduction is done. The next session, the human, or a future revisit can decide whether the reproduction's place still serves them.

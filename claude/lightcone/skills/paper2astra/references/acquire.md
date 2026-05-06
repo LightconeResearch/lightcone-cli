@@ -43,7 +43,7 @@ mkdir -p work/reference/source && cd work/reference/source && tar -xzf /tmp/<arx
 ls *.tex
 ```
 
-The LaTeX source gives clean equations, captions, tables, and bibliography — none of the math collapse, ligature artifacts, or caption flattening that plagues PDF extraction. **No conversion to markdown is needed.** Downstream phases (STUDY's section sub-agents, SPECIFY's evidence quotes) read `.tex` directly — Claude reads LaTeX fine, and rendering it to markdown only loses information. The tarball stays as `work/reference/source/`.
+The LaTeX source gives clean equations, captions, tables, and bibliography — none of the math collapse, ligature artifacts, or caption flattening that plagues PDF extraction. **No conversion to markdown is needed.** Downstream phases (ARCHITECT's paper-side Explore sub-agent, SPECIFY's evidence quotes) read `.tex` directly — Claude reads LaTeX fine, and rendering it to markdown only loses information. The tarball stays as `work/reference/source/`.
 
 If you want to identify the main `.tex` file for downstream tools:
 
@@ -60,7 +60,7 @@ cp "$(astra paper path 10.48550/arXiv.<arxiv-id>)" work/reference/paper.pdf
 
 `astra paper add` for arXiv DOIs fetches the PDF directly. The PDF stays as a backup for `astra validate --verify-evidence`, even though the LaTeX source is the primary text.
 
-There is no PARSE step on Path A. Equation numbers, section numbers, figure references — all preserved in the source. STUDY's sub-agents resolve `\ref{}` against `\label{}` directly in the source tree.
+There is no PARSE step on Path A. Equation numbers, section numbers, figure references — all preserved in the source. ARCHITECT's paper-side Explore sub-agent (and SPECIFY's evidence-quote pass) resolves `\ref{}` against `\label{}` directly in the source tree.
 
 ### Path B — non-arXiv paper (PDF + Docling fallback)
 
@@ -125,7 +125,7 @@ Skip Step 2 if `work/reference/code/` already exists.
 
 Run `ls work/reference/` first.
 
-- If `paper.pdf` is present and either `source/` (Path A) or `document.md` (Path B) is also present, ACQUIRE is done — proceed to STUDY.
+- If `paper.pdf` is present and either `source/` (Path A) or `document.md` (Path B) is also present, ACQUIRE is done — proceed to ARCHITECT.
 - If `paper.pdf` is present but neither structure exists, run the structuring step for the appropriate path.
 - If nothing is there, run the full ACQUIRE.
 
@@ -135,4 +135,4 @@ Run `ls work/reference/` first.
 - **Journal DOIs that 403 on Unpaywall** can be aliased to a locally-downloaded arXiv preprint via `astra paper add <JOURNAL_DOI> --pdf <path-to-arxiv-pdf>`.
 - **Path A is preferred whenever arXiv source is acquirable.** Math, ligatures, and caption fidelity all come through clean from the LaTeX source; PDF + Docling is the fallback for non-arXiv where there's no better source. The acquisition layer's ASTRA-side counterpart — `astra paper add` preferring LaTeX over PDF for the verification cache, and applying the same logic to bibliography references — is filed as a separate ASTRA issue; paper2astra inherits the improvement once it lands.
 - **Equation numbers and section numbers must match the rendered paper.** On Path A, the printed numbers come from the rendered tarball (look at the PDF if uncertain). On Path B, Docling preserves printed numbers in its markdown output. When citing "eq. N" or "§N" in any downstream phase, find the equation or heading by content, not by a naïve count of TeX blocks or markdown headings.
-- This phase's job is acquisition + structuring, not understanding. Do not start summarizing or comparing the paper here — that's STUDY.
+- This phase's job is acquisition + structuring, not understanding. Do not start indexing or comparing the paper here — that's ARCHITECT.

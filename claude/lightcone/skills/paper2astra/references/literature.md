@@ -6,8 +6,9 @@ The constitution's per-phase mode is **always sub-agent** for this phase. Spawn 
 
 ## Inputs
 
-- `work/notes/cited_papers.yaml` — the list of papers to mine, from STUDY
-- `work/notes/methodology.md` — has the decision map; each per-paper sub-agent gets it as context
+- `work/notes/cited_papers.yaml` — the list of papers to mine, from ARCHITECT (paper-side Explore output, merged by the synthesis sub-agent)
+- `work/notes/architect/paper-index.md` — has the decision clusters per sub-analysis; each per-paper sub-agent gets it as context
+- `astra.yaml` — the stub from ARCHITECT (sub-analyses + outputs declared; `decisions:` empty); per-paper sub-agents read the structure to know what they're searching for evidence about
 - `work/reference/source/` (Path A — arXiv LaTeX) or `work/reference/document.md` (Path B — Docling) — the target paper (for reference)
 
 ## Outputs
@@ -22,11 +23,11 @@ The constitution's per-phase mode is **always sub-agent** for this phase. Spawn 
 > ### Instructions
 >
 > 1. Read the PDF at the path provided below using the Read tool.
-> 2. Review the decision map provided below — these are the specific decisions you are looking for evidence about.
-> 3. Scan the cited paper for findings that support, contradict, or compare the options listed in those decisions. Focus on:
->    - Empirical comparisons between approaches listed as decision options
->    - Performance benchmarks or validation results relevant to the choices
->    - Recommendations or caveats about specific methods/parameters
+> 2. Review the **decision clusters** provided below (from `work/notes/architect/paper-index.md`) — these are the *areas* where the target paper makes choices that bear on numerical results. Concrete decision options haven't been authored yet (SPECIFY does that after LITERATURE) — your job is to find evidence about the cluster, and SPECIFY links it to specific options once they exist.
+> 3. Scan the cited paper for findings that support, contradict, or compare approaches within those clusters. Focus on:
+>    - Empirical comparisons between approaches that are candidates within a cluster
+>    - Performance benchmarks or validation results relevant to the choices the cluster represents
+>    - Recommendations or caveats about specific methods / parameters in the cluster's scope
 > 4. For each relevant finding, extract:
 >    - A clear claim (1–2 sentences stating what we learned)
 >    - An exact quote from the paper (verbatim, 1–3 sentences)
@@ -89,8 +90,8 @@ The constitution's per-phase mode is **always sub-agent** for this phase. Spawn 
 >     scope: "<when this applies -- optional>"
 >
 > decision_links:
->   <decision_id>:
->     <option_id>:
+>   <decision_cluster_or_id>:
+>     <provisional_option_label>:
 >       - <insight_id>
 > ```
 >
@@ -100,7 +101,8 @@ The constitution's per-phase mode is **always sub-agent** for this phase. Spawn 
 > - Quotes must be EXACT — copy verbatim from the PDF, no paraphrasing or whitespace normalization.
 > - Prefix and suffix must be real surrounding page text, not editorial parentheticals.
 > - One claim per insight — do not combine multiple findings.
-> - Only extract insights relevant to the target decisions listed below.
+> - Only extract insights relevant to the target decision clusters listed below.
+> - `decision_links` keys reference clusters by the names ARCHITECT used in `work/notes/architect/paper-index.md`. SPECIFY rewires these to concrete `decision_id:option_id` keys when it authors the actual decisions.
 > - If no relevant insights found, write `insights: {}` and `decision_links: {}`.
 > - prefix and suffix are REQUIRED for every TextQuoteSelector.
 

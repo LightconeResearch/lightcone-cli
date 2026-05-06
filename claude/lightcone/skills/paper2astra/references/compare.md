@@ -2,7 +2,7 @@
 
 Compare reproduced results against the paper's replication targets. Produce a structured verdict the IMPLEMENT-retry loop consumes.
 
-The constitution's per-phase mode is **user choice** for this phase — defaults to interactive for verdict ratification (was the reproduction close enough?), but a user who set the loop up to drive itself to terminal verdict can flip it to sub-agent. When sub-agent, COMPARE writes the report and the loop continues per the report's verdict; SUMMARIZE_RUN ratifies the final verdict at close-out.
+The constitution's per-phase mode is **user choice** for this phase — defaults to interactive for verdict ratification (was the reproduction close enough?), but a user who set the loop up to drive itself to terminal verdict can flip it to sub-agent. When sub-agent, COMPARE writes the report and the loop continues per the report's verdict; REVIEW (close-out) ratifies the final verdict at close-out.
 
 ## Inputs
 
@@ -73,19 +73,19 @@ Also write `comparison-report.md` with a human-readable summary. For figure / ta
 
 When COMPARE runs interactively, surface the verdict to the user via `AskUserQuestion` after writing the report:
 
-- **If `pass`**: confirm before exiting the COMPARE → IMPLEMENT loop. *"All high-priority targets match. Proceed to close-out?"* The user accepts → SUMMARIZE_RUN runs interactively (renders `/figure-comparison`, walks the open-questions ledger, lands resolutions, finalizes the constitution outcome); the user rejects → name what's still off and re-enter the loop.
+- **If `pass`**: confirm before exiting the COMPARE → IMPLEMENT loop. *"All high-priority targets match. Proceed to close-out?"* The user accepts → REVIEW (close-out) runs interactively (renders `/figure-comparison`, walks the open-questions ledger, lands resolutions, finalizes the constitution outcome); the user rejects → name what's still off and re-enter the loop.
 - **If `partial`**: show the user the failing targets and the diagnosis. *"Partial match. <N> outputs failing: <list>. Continue retrying or accept partial?"* If the attempt budget (from the constitution) is reached, this surfacing is mandatory.
 - **If `fail`**: same shape, but the loop's continuation should be questioned more sharply. A fundamental methodological issue may need a constitution amendment, not another implement retry.
 
-When COMPARE runs as a sub-agent, no `AskUserQuestion` — the report is the output. The loop reads the verdict and either retries (if budget remains and verdict is partial/fail) or proceeds to SUMMARIZE_RUN, where the user ratifies the final verdict during close-out.
+When COMPARE runs as a sub-agent, no `AskUserQuestion` — the report is the output. The loop reads the verdict and either retries (if budget remains and verdict is partial/fail) or proceeds to REVIEW (close-out), where the user ratifies the final verdict during close-out.
 
-The verdict is the agent's judgment; the **decision to keep iterating** is the user's, surfaced either at this seam (interactive COMPARE) or at SUMMARIZE_RUN's close-out (sub-agent COMPARE). Default on user silence: continue the loop until the attempt budget is exhausted, then mandatory user surfacing.
+The verdict is the agent's judgment; the **decision to keep iterating** is the user's, surfaced either at this seam (interactive COMPARE) or at REVIEW (close-out)'s close-out (sub-agent COMPARE). Default on user silence: continue the loop until the attempt budget is exhausted, then mandatory user surfacing.
 
 ## Survey signals (entry into COMPARE)
 
 - All outputs in `lc status --universe baseline` are `ok` ⇒ ready to compare
 - `comparison-report.yaml` exists with current `attempt` ⇒ COMPARE done for this attempt
-- `comparison-report.yaml` verdict is `pass` ⇒ COMPARE → IMPLEMENT loop terminated; proceed to SUMMARIZE_RUN (interactive close-out)
+- `comparison-report.yaml` verdict is `pass` ⇒ COMPARE → IMPLEMENT loop terminated; proceed to REVIEW (close-out) (interactive close-out)
 
 ## Notes
 
