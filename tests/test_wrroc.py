@@ -306,6 +306,12 @@ class TestZipBundle:
             names = zf.namelist()
             assert any("ro-crate-metadata.json" in n for n in names)
 
+    def test_zip_raises_on_existing_directory(self, minimal_project: Path) -> None:
+        dir_path = minimal_project / "existing_dir"
+        dir_path.mkdir()
+        with pytest.raises(FileExistsError, match="existing directory"):
+            export_wrroc(minimal_project, dir_path, author="X <x@y>", zip_bundle=True)
+
 
 class TestAuthor:
     def test_explicit_author_overrides(self, minimal_project: Path) -> None:

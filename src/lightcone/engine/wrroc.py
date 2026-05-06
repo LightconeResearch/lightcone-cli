@@ -219,6 +219,11 @@ def export_wrroc(
 
     if zip_bundle:
         if output_path.exists():
+            if output_path.is_dir():
+                raise FileExistsError(
+                    f"{output_path} is an existing directory; cannot overwrite with a zip. "
+                    "Pass a file path (e.g. bundle.zip) or remove the existing directory."
+                )
             output_path.unlink()
         crate.write_zip(output_path)
         result_path = output_path
