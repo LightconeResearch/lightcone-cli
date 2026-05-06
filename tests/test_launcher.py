@@ -57,6 +57,8 @@ class TestBuiltinTargets:
         assert ".claude.json" in t.home_mounts
         assert ".claude" in t.home_mounts
         assert t.run_as_host_user is True
+        # registry_name must match the CI-published image name, not the target name
+        assert t.registry_name == "claude-env"
 
 
 class TestResolveTarget:
@@ -682,6 +684,34 @@ class TestTryPullAndCache:
 
 class TestLaunchTargetGhcrPull:
     """Tests for the GHCR pull-first path in launch_target."""
+
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.save_image_as_tarball")
+    @patch("lightcone.engine.launcher.build_image")
+    @patch("lightcone.engine.launcher._try_pull_and_cache", return_value=True)
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-claude-abc123")
+    def test_registry_name_overrides_target_name(
+        self,
+        mock_tag: MagicMock,
+        mock_pull: MagicMock,
+        mock_build: MagicMock,
+        mock_save: MagicMock,
+        mock_exists: MagicMock,
+        mock_exec: MagicMock,
+        project: Path,
+    ) -> None:
+        """claude target uses registry_name='claude-env', not 'claude', for GHCR ref."""
+        from lightcone.engine.launcher import launch_target
+
+        # No tarball — forces pull path
+        with patch("lightcone.engine.launcher._lc_version", return_value="1.2.3"):
+            choice = RuntimeChoice(runtime="docker", explicit=True)
+            launch_target("claude", choice=choice, project_root=project)
+
+        # _try_pull_and_cache(tag, registry_ref, tarball, runtime=...)
+        registry_ref = mock_pull.call_args[0][1]
+        assert registry_ref == "ghcr.io/lightconeresearch/claude-env:1.2.3"
 
     @patch("lightcone.engine.launcher.os.execvp")
     @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)

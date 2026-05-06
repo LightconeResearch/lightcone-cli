@@ -42,7 +42,7 @@ _CONTAINER_WARNING = (
 
 def _warn_if_not_containerized() -> None:
     """Print a warning when lc build/run are invoked outside the Claude container."""
-    if not os.environ.get("LIGHTCONE_CONTAINER"):
+    if not os.environ.get("LIGHTCONE_CONTAINER") and not os.environ.get("LC_NO_CONTAINER_WARN"):
         console.print(_CONTAINER_WARNING)
 
 
@@ -732,7 +732,7 @@ def verify(universe: str | None) -> None:
     "--runtime",
     default=None,
     help=(
-        "docker | podman | podman-hpc | apptainer | singularity"
+        "docker | podman | podman-hpc | apptainer | singularity "
         "(overrides ~/.lightcone/config.yaml)"
     ),
 )

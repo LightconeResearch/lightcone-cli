@@ -84,6 +84,10 @@ class LaunchTarget:
     #: the calling user rather than root.  Required for tools (e.g. Claude Code)
     #: that refuse ``--dangerously-skip-permissions`` under root.
     run_as_host_user: bool = False
+    #: Override the GHCR image name used for pull-first.  Defaults to ``name``
+    #: when None.  Needed when the published image name differs from the target
+    #: name (e.g. target "claude" is published as "claude-env").
+    registry_name: str | None = None
 
 
 #: Set when _make_builtin_targets() catches a ContainerBuildError so
@@ -126,6 +130,9 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
             # running as the host UID/GID also ensures correct ownership on
             # the mounted project directory.
             run_as_host_user=True,
+            # CI publishes as "claude-env"; the target name stays "claude" for
+            # the CLI surface (`lc launch claude`).
+            registry_name="claude-env",
         ),
     }
 
@@ -350,14 +357,14 @@ def launch_target(
         version = _lc_version()
         pulled = False
         if not _is_dev_version(version):
-            registry_ref = _registry_image_ref(target.name, version)
+            registry_ref = _registry_image_ref(target.registry_name or target.name, version)
             pulled = _try_pull_and_cache(tag, registry_ref, tarball, runtime=choice.runtime)
         if not pulled:
             _print(f"Building {name} container (first run — this may take a few minutes)…")
             build_image(tag, rendered_cf, rendered_cf.parent, runtime=choice.runtime)
             save_image_as_tarball(tag, tarball, runtime=choice.runtime)
 
-    if not image_exists_locally(tag, runtime=choice.runtime):
+    if not image_exists_locally(tag, runtime=choice.runtime, project_path=project_root):
         load_image_from_tarball(tarball, runtime=choice.runtime)
 
     _exec_interactive(target, tag, choice, project_root)
