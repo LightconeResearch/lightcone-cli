@@ -1,25 +1,26 @@
-# SPECIFY — author the ASTRA spec
+# SPECIFY — author the ASTRA spec (and formalize the targets)
 
-Read the paper and accumulated notes; produce the structured ASTRA spec, the baseline universe, and the implementation notes. SPECIFY is the **first mandatory user-ratification seam** — material paper-vs-code conflicts surface here and require user input.
+Read the paper and accumulated notes; produce the structured ASTRA spec, the baseline universe, the implementation notes, and the small target ledger COMPARE consumes. SPECIFY is the **first user-ratification seam** — material paper-vs-code conflicts surface here, target-formalization happens here, and the default mode is interactive so the user can ratify.
 
-The constitution's per-phase mode is **always interactive** for this phase. The user must be reachable.
+The constitution's per-phase mode defaults to **interactive** for this phase, but the user can flip it. When SPECIFY runs as a sub-agent, it falls back to the canonical-resolution rule (code wins where paper and code disagree) and surfaces unresolved conflicts to `<paper-slug>/open-questions.md`.
 
 ## Inputs
 
-- `work/notes/methodology.md` — decision map, results inventory, data sources
-- `work/notes/code-analysis.md` (if present) — code structure, parameter values
-- `work/notes/literature.yaml` (if present) — prior insights with evidence quotes and decision links
-- `work/reference/document.md` — paper text (Grep into; do not re-read whole)
-- `work/reference/figures/`, `work/reference/tables/` — extracted artifacts
-- `work/reference/metadata.json` — figure / table index
-- `targets/targets.md` — selected replication targets
+- `work/notes/methodology.md` — consolidated decision map, results inventory, data sources (from STUDY)
+- `work/notes/study/<NN>-<slug>.md` — per-section paper-vs-code agreement-check files (the source of truth for evidence quotes and code locations; methodology.md points back to these)
+- `work/notes/literature.yaml` (if present) — prior insights with evidence quotes and decision links (from LITERATURE)
+- `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep into; do not re-read whole)
+- `work/reference/figures/`, `work/reference/tables/`, `work/reference/metadata.json` — extracted artifacts (Path B only; Path A keeps figures inside the source tarball)
+- `work/reference/code/` (if present) — original code, canonical reference for numerics + method
+- The per-paper constitution — names the user's intended replication targets (figures, tables, numbers) in its **Desired State**; SPECIFY formalizes them
 - `work/notes/notes.md` — user-supplied context (read by every phase if present)
 
 ## Outputs
 
-1. **`astra.yaml`** — the full ASTRA specification
+1. **`astra.yaml`** — the full ASTRA specification, with every replication target placed into its appropriate ASTRA home (see "Target formalization" below)
 2. **`universes/baseline.yaml`** — exactly the paper's choices (where paper and code disagree, see "Material conflicts" below)
 3. **`implementation-notes.md`** — concise practical guidance for the IMPLEMENT phase: tricky algorithms, numerical gotchas, data-format quirks, things the spec can't capture. Bullets, not essays.
+4. **`targets/targets.md`** — small target ledger COMPARE consumes; for each target a brief entry with type, priority, paper value, expected match criteria, and the path to the reference figure/table/metric (when applicable, copy the reference file into `targets/` so the directory is self-contained)
 
 ## Substrate skills to invoke
 
@@ -37,13 +38,27 @@ Read `.claude/guides/decision-guide.md` (in lightcone-cli's plugin bundle) for t
 
 If `work/notes/literature.yaml` exists, incorporate its `prior_insights` into `astra.yaml`. Use the `decision_links` mapping to attach each insight to the relevant decision options, so the multiverse captures evidence-backed alternative choices from the literature.
 
-## Target coverage
+## Target formalization
 
-Targets are coverage obligations, not necessarily outputs. Map each target to the right ASTRA home:
+There is no separate target-extraction phase — the targets the user named in INTERVIEW (recorded in the constitution's **Desired State**) get formalized into `astra.yaml`'s structure here. The work has two layers:
+
+**Layer 1 — place each target into its ASTRA home.** Targets are coverage obligations, not necessarily outputs. Map each target to the right ASTRA home:
 
 - **Figures, tables, equations-as-artifacts, generated data products** → `outputs`
 - **Paper-level claims and quantitative results** → `findings` with source-anchored evidence
 - **Constants and configuration values** → `inputs`, `decisions`, `universes/baseline.yaml`
+
+The methodology.md "Results inventory" already split primary vs secondary; use that split to set priorities. For each result in the inventory, find the corresponding figure / table / in-text metric (Path A: `\label{}` in the source; Path B: `metadata.json` index) and place it. Read the per-section files in `work/notes/study/` for the verbatim claim quotes — those become the `findings` evidence.
+
+**Layer 2 — write `targets/targets.md` as a small ledger for COMPARE.** Only an index, not a derivation of the spec; the depth lives in `astra.yaml`. For each target, a brief entry:
+
+- What it is (one line); the reference file's path (relative to `targets/` when the file is copied into `targets/`, or pointing at `work/reference/figures/...` when not)
+- Type: `metric` | `figure` | `table`
+- Priority: `primary` | `secondary` (from the methodology.md split)
+- Expected value / trend (paper-side); how to judge a match (numerical tolerance for metrics; shape / axis ranges / key features for figures; specific values for tables)
+- Spec home: which `outputs:` entry in `astra.yaml` this target maps to, so COMPARE can find the reproduced result at `results/<universe>/<output_id>/`
+
+Copy reference figure / table files from `work/reference/` into `targets/` so COMPARE has a self-contained reference set. For Path A, files are in `work/reference/source/` (extract by `\includegraphics{}` filename); for Path B, in `work/reference/figures/` / `work/reference/tables/`.
 
 Out-of-scope targets stay in `targets/targets.md` with an explicit reason and should not be forced into the spec. Keep the target ledger's "spec home" pointers specific enough that a later reviewer can tell which claim was discharged where.
 
@@ -99,12 +114,14 @@ When sub-analyses exist, the root narrative MUST include a top-down end-to-end d
 
 ## Survey signals (entry into SPECIFY)
 
-- `work/notes/methodology.md` exists; `targets/targets.md` exists ⇒ ready to specify
+- `work/notes/methodology.md` exists ⇒ ready to specify
 - `astra.yaml` exists; `astra validate astra.yaml` returns clean ⇒ structural SPECIFY done
+- `targets/targets.md` exists with each entry mapped to a spec home ⇒ target-formalization done
 - `implementation-notes.md` exists ⇒ practical-guidance side done
-- Both ⇒ SPECIFY complete; proceed to REVIEW
+- All four ⇒ SPECIFY complete; proceed to REVIEW
 
 ## Notes
 
-- **Material conflicts that the user explicitly defers** are appended to `<paper-slug>/open-questions.md` (the running report read at session boundaries). The next iteration sees them and either re-surfaces them or notes their continued deferral.
+- **Material conflicts that the user explicitly defers** are appended to `<paper-slug>/open-questions.md` (the running report read at session boundaries). The next iteration sees them and either re-surfaces them or notes their continued deferral; the user resolves at SUMMARIZE_RUN.
 - **The narrative skill is the prose author, not the structure author.** SPECIFY's job is structural correctness; `/narrative` invocation comes after the structural skeleton exists.
+- **The target ledger is a derivation, not a separate phase's output.** Treat `targets/targets.md` as a small index produced alongside `astra.yaml`, not a heavyweight artifact. The depth lives in `astra.yaml`'s `outputs:` / `findings:` / `decisions:` and in the per-section study files.

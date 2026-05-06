@@ -33,8 +33,8 @@ Use `AskUserQuestion` if the user did not supply enough on `/paper2astra` invoca
 
 - **DOI or arXiv ID.** arXiv ID preferred when available — it unlocks the LaTeX-source acquisition path (see ACQUIRE).
 - **Code repo URL** if the user knows it. (If not, ACQUIRE will search.) **If code is available, every implementing iteration will read from `work/reference/code/`** and treat code as canonical for numerics + method (the canonical-resolution rule, recorded in CLAUDE.md).
-- **User's prior familiarity.** Has the user reproduced this paper before? Read the paper recently? Worked with the original authors? This affects how much of the SUMMARIZE / EXTRACT_TARGETS work needs human ratification.
-- **Notes file.** If the user has any prior notes (their own writeup, a sketch of which figures matter), capture the path; SUMMARIZE will read it.
+- **User's prior familiarity.** Has the user reproduced this paper before? Read the paper recently? Worked with the original authors? This affects how much of the STUDY / SPECIFY work needs human ratification.
+- **Notes file.** If the user has any prior notes (their own writeup, a sketch of which figures matter), capture the path; STUDY will read it.
 
 ### 2. Scope the reproduction
 
@@ -46,7 +46,7 @@ Ask:
 - **Specific decisions of interest.** A paper makes many choices. The user may care most about a few — e.g. "I want the BAO fit to use a different damping prior than the paper." These become first-class decisions in the spec, with the alternative preserved as a sibling option.
 - **Sub-analysis structure.** Does the paper have genuinely independent stages (e.g. reconstruction → clustering → BAO fit)? If so, the spec wants sub-analyses; SPECIFY will mirror the structure. If the paper is monolithic, one analysis suffices.
 
-These answers live in the constitution's **Desired State** section.
+These answers live in the constitution's **Desired State** section. There is no separate target-extraction phase — the targets the user names here become explicit `outputs:`, `findings:`, `inputs:`, and `decisions:` in `astra.yaml` during SPECIFY.
 
 ### 3. Pick a runtime mode
 
@@ -68,20 +68,21 @@ If tmux isn't installed, only (1) and (2) appear in the question. The chosen mod
 
 Ask:
 
-- **Weak (frugal):** "run until the checklist of tasks has been completed." Cheaper. Susceptible to one-shot oversights.
-- **Strong (rigorous):** "run until you can't find any further contributions, fixes, or improvements that align with the goal." Almost always catches mistakes the one-shot left behind, but burns more tokens.
+- **Weak (frugal):** "run until the checklist of tasks has been completed." Cheaper. Susceptible to one-shot oversights. REVIEW skips or runs once; IMPLEMENT does no extra review iterations.
+- **Strong (rigorous):** "run until you can't find any further contributions, fixes, or improvements that align with the goal." Almost always catches mistakes the one-shot left behind, but burns more tokens. REVIEW runs N rounds — each round a fresh sub-agent reads `astra.yaml` against paper + code, fixes are incorporated, then a *fresh* sub-agent re-reviews; iterate until two consecutive rounds find no fixes. IMPLEMENT does the same shape after writing recipes.
 
-Default to strong for fidelity-critical reproductions; weak when the user wants to cap token spend. The choice goes into the per-paper constitution.
+Default to strong for fidelity-critical reproductions; weak when the user wants to cap token spend. The choice goes into the per-paper constitution and is read by both REVIEW and IMPLEMENT.
 
 ### 5. Choose interactive vs sub-agent per phase
 
 Read the "Per-phase mode" table in `../SKILL.md`. The defaults are reasonable. Walk the user through it briefly:
 
-- **Phases that are always interactive (defaults you should not flip):** SPECIFY, COMPARE. These are the ratification seams; the user has to be reachable.
-- **Phases that are always sub-agent (defaults you should not flip):** SUMMARIZE, LITERATURE, SUMMARIZE_RUN. These benefit from parallel fresh-context runs and have no decisions left.
-- **Phases the user chooses:** ACQUIRE, PARSE, EXTRACT_TARGETS, REVIEW, IMPLEMENT, RUN. These may want user attention if the paper is unfamiliar or the user has strong opinions about implementation.
+- **The two bookends are always interactive:** INTERVIEW (now) and SUMMARIZE_RUN (the close-out). These are the only mandatory user-reach phases — every other phase is the user's call.
+- **Phases whose defaults are sub-agent (parallel fresh context fits the work):** STUDY (parallelized by paper-section + matching code), LITERATURE (one sub-agent per cited paper), REVIEW (rigor-dialed; fresh-context reviewers per round), IMPLEMENT (recipe-writing parallelized by output where feasible, with rigor-dialed review iterations after).
+- **Phases whose default is interactive:** SPECIFY (material paper-vs-code conflicts and target-formalization want ratification).
+- **Phases the user genuinely chooses:** ACQUIRE, RUN, COMPARE. These can run either way without losing the surface that matters most.
 
-If the user has no opinion, take the defaults. The choice goes into the constitution's **Context** section as a per-phase mode table. Phases marked sub-agent that hit a question they'd normally surface to the user **append the question to `<paper-slug>/open-questions.md`** rather than blocking; the user reads the running report at session boundaries.
+If the user has no opinion, take the defaults. The choice goes into the constitution's **Context** section as a per-phase mode table. Phases marked sub-agent that hit a question they'd normally surface to the user **append the question to `<paper-slug>/open-questions.md`** rather than blocking; the user resolves them in SUMMARIZE_RUN.
 
 ### 6. Draft the constitution and CLAUDE.md
 
@@ -124,35 +125,34 @@ The COMPARE → IMPLEMENT loop iterates until verdict is `pass` or the attempt b
 
 ## Per-phase mode
 
-| Phase | Mode |
-|---|---|
-| ACQUIRE | <per user> |
-| PARSE | <per user> |
-| SUMMARIZE | sub-agent |
-| EXTRACT_TARGETS | <per user> |
-| LITERATURE | sub-agent |
-| SPECIFY | interactive |
-| REVIEW | <per user> |
-| IMPLEMENT | <per user> |
-| RUN | <per user> |
-| COMPARE | interactive |
-| SUMMARIZE_RUN | sub-agent |
-| FINAL_REVIEW | interactive |
+| # | Phase | Mode |
+|---|---|---|
+| 0 | INTERVIEW | interactive (always) |
+| 1 | ACQUIRE | <per user> |
+| 2 | STUDY | sub-agent (parallel by paper-section) |
+| 3 | LITERATURE | sub-agent |
+| 4 | SPECIFY | interactive |
+| 5 | REVIEW | sub-agent (rigor-dialed) |
+| 6 | IMPLEMENT | sub-agent (rigor-dialed review iterations) |
+| 7 | RUN | <per user> |
+| 8 | COMPARE | <per user> |
+| 9 | SUMMARIZE_RUN | interactive (always) |
 
 ## Evidence
 
-- `ls work/reference/document.md` — ACQUIRE + PARSE done
+- `ls work/reference/source/ || ls work/reference/document.md` — ACQUIRE done (arxiv-LaTeX tarball or Docling fallback)
 - `ls work/reference/code/` — original code present (canonical reference)
-- `ls work/notes/methodology.md` — SUMMARIZE done
-- `ls targets/targets.md` — EXTRACT_TARGETS done
-- `ls astra.yaml && astra validate astra.yaml` — SPECIFY done and valid
+- `ls work/notes/study/*.md && ls work/notes/methodology.md` — STUDY done (per-section paper-vs-code agreement-check + consolidated methodology)
+- `ls work/notes/literature.yaml` — LITERATURE done
+- `ls astra.yaml && astra validate astra.yaml && ls targets/targets.md && ls implementation-notes.md` — SPECIFY done (target-formalization included)
 - `astra validate astra.yaml --verify-evidence` — evidence quotes match source PDFs
 - `ls comparison-report.yaml && yq '.verdict' comparison-report.yaml` — most-recent COMPARE verdict
+- `ls REPRODUCTION-SUMMARY.md && ls .lightcone/comparison.html` — SUMMARIZE_RUN done
 - `git log --oneline` — chronological view of phase commits
 
 ## Open Questions
 
-(empty — populated as the loop runs; questions accrete in `<paper-slug>/open-questions.md`, the running report the user reads at session boundaries and ratifies in FINAL_REVIEW.)
+(empty — populated as the loop runs; questions accrete in `<paper-slug>/open-questions.md`, the running report the user resolves in SUMMARIZE_RUN before the constitution closes.)
 ```
 
 Then author the per-paper `<paper-slug>/CLAUDE.md` from the same conversation. The CLAUDE.md is *info and rules*, not desired state — paper identity, where things live, disciplines that always apply. Approximate shape:
@@ -172,12 +172,12 @@ Reproduction of <paper title> (<arXiv ID>). DOI: <doi>.
 
 - Workdir layout follows Paper2ASTRA conventions: `work/reference/`, `work/notes/`, `targets/`, `astra.yaml`, `universes/`, `results/`.
 - The constitution (desired state, runtime mode, scope, evidence, per-phase mode) lives at `<constitution>.md` in this directory.
-- The during-loop questions log lives at `open-questions.md`. The user reviews it in FINAL_REVIEW.
+- The during-loop questions log lives at `open-questions.md`. The user reviews it in SUMMARIZE_RUN.
 
 ## Rules
 
 - **Code-as-canonical when `work/reference/code/` exists.** Every implementing iteration reads relevant code. Where paper and code disagree, code is canonical for numerics, plotting, and method.
-- **Never block on `AskUserQuestion` mid-sub-agent.** When a sub-agent or loop phase would surface a question to the user, append it to `open-questions.md` and continue with the best-judgment default. The user resolves in FINAL_REVIEW.
+- **Never block on `AskUserQuestion` mid-sub-agent.** When a sub-agent or loop phase would surface a question to the user, append it to `open-questions.md` and continue with the best-judgment default. The user resolves in SUMMARIZE_RUN.
 - **arxiv-LaTeX-first acquisition.** PDF + Docling is a fallback for non-arxiv only.
 - **`astra validate --verify-evidence`** is the fidelity gate; evidence quotes must match source PDFs.
 

@@ -42,21 +42,21 @@ paper2astra composes the rest of the lightcone-cli paper-reproduction bundle. Al
 
 paper2astra does not re-implement what these skills already do — it tells the agent at each phase to invoke them. The siblings stand alone; they don't know about paper2astra.
 
-Two further siblings are invoked from the **FINAL_REVIEW** phase, after the loop terminates and SUMMARIZE_RUN has written the report: [`/figure-comparison`](../figure-comparison/SKILL.md) builds a portable side-by-side HTML report (paper artifacts vs reproduced), and [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) (optional) audits paper claims against code locations. Both have `AskUserQuestion` in their `allowed-tools`, so FINAL_REVIEW runs interactively in the main loop session — spawning them under the `Task` tool would fire prompts into nothing.
+Two further siblings are invoked from **SUMMARIZE_RUN**, the always-interactive close-out phase that runs after the COMPARE → IMPLEMENT loop terminates: [`/figure-comparison`](../figure-comparison/SKILL.md) builds a portable side-by-side HTML report (paper artifacts vs reproduced), and [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) (optional) audits paper claims against code locations. Both have `AskUserQuestion` in their `allowed-tools`, so SUMMARIZE_RUN runs interactively in the main loop session — spawning them under the `Task` tool would fire prompts into nothing.
 
 ## Workflow
 
 ### Interview (interactive — once per project)
 
-The interview is the only phase paper2astra runs interactively. Read [`references/interview.md`](references/interview.md) in full before starting.
+The interview is the first of two always-interactive bookends — INTERVIEW at the start, SUMMARIZE_RUN at the end. Every phase between them is configurable per the user's per-phase mode choice. Read [`references/interview.md`](references/interview.md) in full before starting.
 
 The interview has six jobs:
 
 1. **Identify the paper** — DOI / arXiv ID / title; whether code is available; whether the user has prior experience with this paper.
-2. **Scope the reproduction** — full reproduction vs targeted (e.g. only the BAO fit), which figures/tables/numbers are the targets.
+2. **Scope the reproduction** — full reproduction vs targeted (e.g. only the BAO fit), which figures/tables/numbers are the targets. The user's named targets get formalized into `astra.yaml`'s `outputs:`, `findings:`, `inputs:`, and `decisions:` structure during SPECIFY — there is no separate target-extraction phase.
 3. **Pick a runtime mode** — interactive / bash-loop / tmux-orchestrated. See "Runtime modes" below.
-4. **Pick a termination criterion** — frugality (weak) vs rigor (strong). See "Frugality vs rigor" below.
-5. **Choose interactive vs sub-agent per phase** — see "Per-phase mode" below. The defaults are reasonable; the user gets to flip any of them.
+4. **Pick a termination criterion** — frugality (weak) vs rigor (strong). The dial threads through REVIEW and IMPLEMENT, scaling iteration depth. See "Frugality vs rigor" below.
+5. **Choose interactive vs sub-agent per phase** — see "Per-phase mode" below. Only INTERVIEW and SUMMARIZE_RUN are mandatory-interactive; every other phase is the user's call.
 6. **Draft the per-paper constitution and CLAUDE.md** — invoke `/constitution` to draft the constitution. Author the per-paper `CLAUDE.md` from the same conversation. The two files have separate jobs and don't overlap:
 
    - **`CLAUDE.md`** is *info and rules* — paper identity (DOI / arXiv ID / title / authors), where the original code lives (`work/reference/code/`), the code-as-canonical rule, the never-block-on-`AskUserQuestion`-mid-sub-agent rule, any paper-specific conventions or warnings, pointers to the constitution and `open-questions.md`. Auto-loaded by Claude Code on every walk-up to this directory. **Evolves over time** — iterations that learn new conventions or surface paper-specific gotchas can add lines so future sessions don't re-derive the same context.
@@ -91,45 +91,51 @@ Strong is the default for fidelity-critical reproductions; weak is the default w
 
 Inside each ralph iteration, the agent reads the per-paper constitution, surveys the workdir to determine which phase is current (file existence + git log), and runs that phase's reference. Each phase reference is self-contained — read the matching one in full before working:
 
-| Phase | Reference | Outputs |
-|---|---|---|
-| ACQUIRE | [`references/acquire.md`](references/acquire.md) | `work/reference/{document.md, paper.pdf, code/, code-status.yaml}` |
-| PARSE | [`references/parse.md`](references/parse.md) | `work/reference/{figures/, tables/, metadata.json}` |
-| SUMMARIZE | [`references/summarize.md`](references/summarize.md) | `work/notes/{methodology.md, cited_papers.yaml, code-analysis.md}` |
-| EXTRACT_TARGETS | [`references/extract_targets.md`](references/extract_targets.md) | `targets/targets.md` + reference files |
-| LITERATURE | [`references/literature.md`](references/literature.md) | `work/notes/literature.yaml` + per-paper YAMLs |
-| SPECIFY | [`references/specify.md`](references/specify.md) | `astra.yaml`, `universes/baseline.yaml`, `implementation-notes.md` |
-| REVIEW | [`references/review.md`](references/review.md) | (in-place edits to spec + notes) |
-| IMPLEMENT | [`references/implement.md`](references/implement.md) | `scripts/`, `requirements.txt`, recipes in `astra.yaml` |
-| RUN | [`references/run.md`](references/run.md) | `results/<universe>/<output>/` |
-| COMPARE | [`references/compare.md`](references/compare.md) | `comparison-report.{yaml,md}` |
-| SUMMARIZE_RUN | [`references/summarize_run.md`](references/summarize_run.md) | Final write-up to disk |
-| FINAL_REVIEW | [`references/final_review.md`](references/final_review.md) | `/figure-comparison` HTML + (opt) sentence audit; resolved `open-questions.md`; constitution outcome update |
+| # | Phase | Reference | Outputs |
+|---|---|---|---|
+| 1 | ACQUIRE | [`references/acquire.md`](references/acquire.md) | `work/reference/{source/ \| document.md, paper.pdf, figures/, tables/, metadata.json, code/, code-status.yaml}` |
+| 2 | STUDY | [`references/study.md`](references/study.md) | `work/notes/study/<NN>-<section>.md` (one per paper section, paper-vs-code agreement-check) + `work/notes/methodology.md` + `work/notes/cited_papers.yaml` |
+| 3 | LITERATURE | [`references/literature.md`](references/literature.md) | `work/notes/literature.yaml` + per-paper YAMLs |
+| 4 | SPECIFY | [`references/specify.md`](references/specify.md) | `astra.yaml`, `universes/baseline.yaml`, `implementation-notes.md`, `targets/targets.md` |
+| 5 | REVIEW | [`references/review.md`](references/review.md) | (in-place edits to spec + notes; rigor-dialed iterations) |
+| 6 | IMPLEMENT | [`references/implement.md`](references/implement.md) | `scripts/`, `requirements.txt`, recipes in `astra.yaml`; rigor-dialed paper-vs-implementation review iterations |
+| 7 | RUN | [`references/run.md`](references/run.md) | `results/<universe>/<output>/` |
+| 8 | COMPARE | [`references/compare.md`](references/compare.md) | `comparison-report.{yaml,md}` |
+| 9 | SUMMARIZE_RUN | [`references/summarize_run.md`](references/summarize_run.md) | `REPRODUCTION-SUMMARY.md`, `/figure-comparison` HTML, (optional) sentence audit, resolved `open-questions.md`, finalized constitution outcome |
 
-The COMPARE → IMPLEMENT loop iterates until the verdict is `pass` or attempts are exhausted. The constitution carries the attempt budget; the ralph iterations consult it. After SUMMARIZE_RUN writes the final summary, control returns to the user and FINAL_REVIEW runs interactively — not from inside the loop.
+The COMPARE → IMPLEMENT loop iterates until the verdict is `pass` or attempts are exhausted. The constitution carries the attempt budget; the ralph iterations consult it. On pass (or user-accepted partial), control returns to the user and SUMMARIZE_RUN runs interactively in the main session — drafting the report, invoking `/figure-comparison`, optionally `/check-sentence-by-sentence`, walking accumulated questions, and finalizing the constitution outcome.
+
+ACQUIRE folds in what was previously a separate PARSE phase: arxiv-LaTeX papers come pre-structured in their tarball (no Docling needed), and PDF-fallback papers run Docling inside ACQUIRE itself to produce `document.md` + extracted figures/tables. SPECIFY folds in target-formalization (what was a separate EXTRACT_TARGETS phase): the targets the user named in INTERVIEW become explicit `outputs:`, `findings:`, `inputs:`, and `decisions:` in `astra.yaml`, plus a small `targets/targets.md` ledger as a derivation for COMPARE.
 
 ### Per-phase mode (interactive vs sub-agent)
 
-A reproduction's most consequential decisions show up at known seams. The interview decides — for this paper — which phases run interactively (in the main loop session, the user can be reached via `AskUserQuestion`) and which delegate to a sub-agent (Task tool with fresh context, no user reach).
+A reproduction's most consequential decisions show up at known seams. Only the bookends are mandatory-interactive — INTERVIEW at the start, SUMMARIZE_RUN at the end. Every phase between them is configurable: the interview decides which run interactively (in the main loop session, the user reachable via `AskUserQuestion`) and which delegate to a sub-agent (Task tool with fresh context, no user reach).
 
 Defaults the constitution starts with:
 
-| Phase | Default | Why |
-|---|---|---|
-| ACQUIRE | user choice | Mostly mechanical; surfacing happens only on download failures. |
-| PARSE | user choice | Deterministic Docling / arXiv extraction. |
-| SUMMARIZE | sub-agent | Parallel paper + code reading benefits from fresh context per task. |
-| EXTRACT_TARGETS | user choice | The selection of replication targets is sometimes obvious, sometimes wants user input. |
-| LITERATURE | sub-agent | One sub-agent per cited paper — pure parallel grunt-work. |
-| SPECIFY | **interactive** | Material paper-vs-code conflicts surface here; the user must ratify. |
-| REVIEW | user choice | Pre-implement sanity check; can be either. |
-| IMPLEMENT | user choice | Mostly mechanical, but algorithm choices may want ratification. |
-| RUN | user choice | Mechanical, but failures need diagnosis. |
-| COMPARE | **interactive** | Verdict (was the reproduction close enough?) is the second mandatory user-ratification seam. |
-| SUMMARIZE_RUN | sub-agent | Final write-up to disk; no decisions remain. |
-| FINAL_REVIEW | **interactive** | Post-loop interactive return — runs `/figure-comparison` and (optionally) `/check-sentence-by-sentence`, then walks the user through `open-questions.md` with `AskUserQuestion` to ratify accumulated seams. |
+| # | Phase | Default | Why |
+|---|---|---|---|
+| 0 | INTERVIEW | **interactive — *always*** | The first bookend. Scope, runtime, rigor, per-phase mode all decided here. |
+| 1 | ACQUIRE | user choice | Mostly mechanical (LaTeX-tarball download / Docling fallback / code clone); surfacing happens only on download failures. |
+| 2 | STUDY | sub-agent (parallel by paper-section) | One sub-agent per paper section, each reading the section *together with* its matching code. The value is the section-level paper-vs-code agreement check; parallel fresh context fits naturally. |
+| 3 | LITERATURE | sub-agent | One sub-agent per cited paper — pure parallel grunt-work. Core, not opt-in: verifiability against citations is what `prior_insights` evidence depends on. |
+| 4 | SPECIFY | user choice (default interactive) | Material paper-vs-code conflicts and target-formalization happen here; the user usually wants to ratify. |
+| 5 | REVIEW | sub-agent (rigor-dialed) | Fresh-context sub-agent reads `astra.yaml` against paper + code and asks "is this consistent?" — frugal: skip or one pass; rigor: N rounds, each with a fresh reviewer + SPECIFY incorporating fixes. |
+| 6 | IMPLEMENT | sub-agent (rigor-dialed review iterations) | Writes recipes + scripts (parallelized by output where feasible). Frugal: minimal review pass after. Rigor: N rounds of "is the implementation consistent with the paper?" sub-agent review + fix iterations. |
+| 7 | RUN | user choice | Mechanical, but failures need diagnosis. |
+| 8 | COMPARE | user choice | Verdict (was the reproduction close enough?) is the user's call when interactive; sub-agent COMPARE writes the verdict and lets SUMMARIZE_RUN ratify. |
+| 9 | SUMMARIZE_RUN | **interactive — *always*** | The closing bookend. Drafts the report, runs `/figure-comparison` (mandatory) and `/check-sentence-by-sentence` (opt-in), walks `open-questions.md` with `AskUserQuestion`, finalizes the constitution outcome. |
 
 The constitution records the choice; iterations honor it. Sub-agent phases are spawned via the `Task` tool from inside the main loop session — that gives them fresh context but no user-reach. Interactive phases run inline in the loop session and may pause with `AskUserQuestion` at material seams.
+
+### Rigor vs frugality threads through REVIEW and IMPLEMENT
+
+The frugality/rigor dial picked in INTERVIEW is not just a termination criterion for the COMPARE → IMPLEMENT loop. It also tunes how aggressively REVIEW and IMPLEMENT self-check:
+
+- **Frugal**: REVIEW runs once or is skipped; IMPLEMENT does no extra review iterations after writing.
+- **Rigor**: REVIEW iterates — fresh-context sub-agent reads `astra.yaml` against paper + code; SPECIFY incorporates fixes; a *fresh* sub-agent re-reviews; repeat until two consecutive rounds find no fixes (or a configured cap is hit). IMPLEMENT does the same shape after writing recipes — sub-agent reads the implementation against the paper + code, fixes are incorporated, fresh sub-agent re-reviews.
+
+The discipline is **never bias the reviewing sub-agent**: each round runs from fresh context with the prompt "check the spec/implementation is consistent with the paper and the code" — not "here's what was just fixed; check it." Otherwise the reviewer pattern-matches on prior fixes rather than thinking from first principles.
 
 ### Code-as-canonical
 
@@ -137,13 +143,13 @@ When the original codebase is available at `work/reference/code/`, **the agent r
 
 This is the load-bearing fidelity discipline. Without it, iterations drift to "looks right" rather than "matches" — the failure mode the first-paper test surfaced (plot styles off, numerical results off). The per-paper CLAUDE.md restates the rule so every iteration's Claude session walks up to it.
 
-### Two surfaces for user attention: open-questions and FINAL_REVIEW
+### Two surfaces for user attention: open-questions and SUMMARIZE_RUN
 
-The reproduction has two periods of human reach: the interview at the start, and FINAL_REVIEW at the end. In between, the loop runs without a human in the conversation. The discipline has two surfaces to match:
+The reproduction has two periods of human reach — the bookends. INTERVIEW at the start, SUMMARIZE_RUN at the end. In between, the loop runs without a human in the conversation. The discipline has two surfaces to match:
 
 - **`<paper-slug>/open-questions.md` — the during-loop accumulator.** When a sub-agent or loop iteration would normally surface a question to the user (paper-vs-code conflicts, figures whose intent isn't obvious, ambiguities the constitution doesn't resolve), it appends the question to `open-questions.md` and continues with the best-judgment default. Never block on `AskUserQuestion` from inside a sub-agent — the prompt fires into nothing.
 
-- **FINAL_REVIEW — the post-loop interactive return.** When the COMPARE→IMPLEMENT loop terminates (verdict=pass or budget exhausted) and SUMMARIZE_RUN has written the final summary, control returns to the user. FINAL_REVIEW invokes `/figure-comparison` and (optionally) `/check-sentence-by-sentence` interactively — these skills can use `AskUserQuestion` because the human is back. Then it walks the user through `open-questions.md` with `AskUserQuestion`, lands resolutions, updates `astra.yaml` or `implementation-notes.md` accordingly, and closes out the constitution outcome.
+- **SUMMARIZE_RUN — the post-loop interactive close-out.** When the COMPARE→IMPLEMENT loop terminates (verdict=pass or budget exhausted), control returns to the user. SUMMARIZE_RUN invokes `/figure-comparison` and (optionally) `/check-sentence-by-sentence` interactively — these skills can use `AskUserQuestion` because the human is back. Then it walks the user through `open-questions.md` with `AskUserQuestion`, lands resolutions, updates `astra.yaml` or `implementation-notes.md` accordingly, drafts `REPRODUCTION-SUMMARY.md`, and finalizes the constitution outcome.
 
 Stays in the conversation while the seams are still soft, walks away while the loop grinds, comes back to a rich review surface plus a list of "things you'd want to know."
 
@@ -161,7 +167,7 @@ Both choices land in `astra.yaml` as decision options. Whichever the user picks 
 
 ### Resuming an in-flight reproduction
 
-If the workdir already exists (`work/reference/document.md` is present, `astra.yaml` exists, etc.):
+If the workdir already exists (`work/reference/source/` or `work/reference/document.md` is present, `astra.yaml` exists, etc.):
 
 1. **Skip the interview** unless the user explicitly wants to revise scope.
 2. Read the per-paper constitution if it exists; if it does not, draft a minimal one from the current workdir state.
@@ -171,16 +177,16 @@ Workdir signals (file existence implies the phase has been done):
 
 | Signal | Phase done |
 |---|---|
-| `work/reference/document.md` | ACQUIRE + PARSE |
-| `work/notes/methodology.md` | SUMMARIZE (paper) |
-| `work/notes/code-analysis.md` | SUMMARIZE (code) |
-| `targets/targets.md` | EXTRACT_TARGETS |
+| `work/reference/source/` (arxiv tarball) **or** `work/reference/document.md` (Docling fallback) | ACQUIRE |
+| `work/reference/code/` | ACQUIRE (code clone) |
+| `work/notes/study/<NN>-<section>.md` files | STUDY (per-section paper-vs-code agreement-check) |
+| `work/notes/methodology.md` | STUDY (consolidated decision map + results inventory) |
 | `work/notes/literature.yaml` | LITERATURE |
-| `astra.yaml` valid (`astra validate astra.yaml`) | SPECIFY |
-| `implementation-notes.md` | SPECIFY |
+| `astra.yaml` valid (`astra validate astra.yaml`) + `targets/targets.md` + `implementation-notes.md` | SPECIFY |
 | recipes present in `astra.yaml` | IMPLEMENT |
 | `results/<universe>/<output>/` | RUN |
 | `comparison-report.yaml` | COMPARE |
+| `REPRODUCTION-SUMMARY.md` + `.lightcone/comparison.html` + resolved `open-questions.md` | SUMMARIZE_RUN |
 
 `git log --oneline` complements this — phase commits are the chronological view.
 
@@ -190,8 +196,8 @@ Workdir signals (file existence implies the phase has been done):
 - [`/ralph-loops`](../ralph-loops/SKILL.md) — for the bash-loop and tmux-orchestrated runtime modes
 - [`/managing-bibliography`](../managing-bibliography/SKILL.md) — for ACQUIRE
 - [`/narrative`](../narrative/SKILL.md) — for SPECIFY
-- [`/figure-comparison`](../figure-comparison/SKILL.md) — for FINAL_REVIEW (mandatory)
-- [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) — for FINAL_REVIEW (opt-in)
+- [`/figure-comparison`](../figure-comparison/SKILL.md) — for SUMMARIZE_RUN (mandatory)
+- [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) — for SUMMARIZE_RUN (opt-in)
 
 ## Discipline
 
@@ -201,7 +207,10 @@ Workdir signals (file existence implies the phase has been done):
 - **Use the up-to-date CLI surfaces, not skill-specific wrappers.** When `astra validate` already does the job, call it directly. Specifically: `astra validate <file>`, `astra validate --verify-evidence`, `astra paper add`. Use whatever the current `astra --help` surfaces.
 - **arxiv-LaTeX-first acquisition.** When the paper is on arxiv, the source tarball is the substrate; equations, ligatures, captions, tables come through clean. PDF + Docling is a fallback for non-arxiv where there's no better source.
 - **The original code goes into `work/reference/code/`** during ACQUIRE when available, and stays there as the canonical reference for every subsequent iteration (see "Code-as-canonical" above).
-- **`/figure-comparison` and `/check-sentence-by-sentence` run inside FINAL_REVIEW, not inside the loop.** Both have `AskUserQuestion` in their `allowed-tools`; FINAL_REVIEW is the post-loop interactive phase that runs them in the main session so the prompts land. Don't try to spawn either under the `Task` tool from inside the loop.
+- **`/figure-comparison` and `/check-sentence-by-sentence` run inside SUMMARIZE_RUN, not inside the loop.** Both have `AskUserQuestion` in their `allowed-tools`; SUMMARIZE_RUN is the always-interactive close-out bookend that runs them in the main session so the prompts land. Don't try to spawn either under the `Task` tool from inside the loop.
+- **Only the bookends are mandatory-interactive.** INTERVIEW (start) and SUMMARIZE_RUN (close). Every other phase is configurable per the interview's per-phase mode choice — no "always interactive" flag on anything in between. The dial that does the heavy lifting on quality is rigor/frugality, threaded through REVIEW and IMPLEMENT.
+- **Don't bias review sub-agents.** REVIEW and IMPLEMENT's review iterations spawn fresh sub-agents whose prompt is "check `astra.yaml` (or the implementation) is consistent with the paper and the code" — never "here's what was just implemented or fixed last round." Each round runs from a fresh reviewing context. Otherwise the reviewer pattern-matches on prior fixes rather than thinking from first principles.
+- **STUDY parallelizes by paper-section, not by source.** A single sub-agent that reads "the whole paper" can't compare with "the whole code" — too much context. A sub-agent that reads paper-section A *plus* the matching code (located via the bibliography or the code's own structure) is the right unit. Sub-agents fan out across the paper's sections; each one carries enough context to surface paper-vs-code disagreements at its own level.
 - **No synthetic data.** Unless the paper itself uses synthetic data as its input, every input dataset must be real (downloaded, queried, or fetched from a real archive). The implement phase reference repeats this; treat it as load-bearing.
 - **Tmux preferred-when-available, never required.** Modes (1) and (2) work without it.
 - **The siblings don't know about paper2astra.** Each SKILL stands on its own.
