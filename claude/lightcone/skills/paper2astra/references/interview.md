@@ -130,8 +130,8 @@ The COMPARE → IMPLEMENT loop iterates until verdict is `pass` or the attempt b
 | 0 | INTERVIEW | interactive (always) |
 | 1 | ACQUIRE | <per user> |
 | 2 | ARCHITECT | sub-agent (two parallel Explore + synthesis; rigor-dialed self-review) |
-| 3 | LITERATURE | sub-agent |
-| 4 | SPECIFY | interactive (two-pass per sub-analysis: paper, code, rigor-dialed self-review) |
+| 3 | SPECIFY | interactive (two-pass per sub-analysis: paper, code, rigor-dialed self-review) |
+| 4 | LITERATURE | sub-agent (rigor-dialed self-review) |
 | 5 | IMPLEMENT | sub-agent (rigor-dialed review iterations) |
 | 6 | RUN | <per user> |
 | 7 | COMPARE | <per user> |
@@ -143,10 +143,10 @@ The COMPARE → IMPLEMENT loop iterates until verdict is `pass` or the attempt b
 - `ls work/reference/code/` — original code present (canonical reference)
 - `ls work/notes/architect/paper-index.md && ls work/notes/architect/code-index.md` — ARCHITECT Explore pass done
 - `ls astra.yaml && astra validate astra.yaml` (with empty `decisions:`/`prior_insights:`/`findings:` blocks) — ARCHITECT stub written
-- `ls work/notes/cited_papers.yaml` — ARCHITECT citation list ready for LITERATURE
-- `ls work/notes/literature.yaml` — LITERATURE done
-- `astra validate astra.yaml` (with non-empty `decisions:` per sub-analysis) `&& ls targets/targets.md && ls implementation-notes.md` — SPECIFY done
-- `astra validate astra.yaml --verify-evidence` — evidence quotes match source PDFs
+- `ls work/notes/cited_papers.yaml` — ARCHITECT citation list (used by SPECIFY for marker→DOI mapping; consumed by LITERATURE for placeholder resolution)
+- `astra validate astra.yaml` (with non-empty `decisions:` and `findings:` per sub-analysis + `prior_insights:` populated as citation-only placeholders) `&& ls targets/targets.md && ls implementation-notes.md` — SPECIFY done
+- `ls work/notes/literature/` (one `<doi-slug>.yaml` per cited DOI) and `astra.yaml`'s `prior_insights:` entries each have a resolved `evidence:` selector — LITERATURE done
+- `astra validate astra.yaml --verify-evidence` — evidence quotes match source PDFs (runs after LITERATURE)
 - `ls comparison-report.yaml && yq '.verdict' comparison-report.yaml` — most-recent COMPARE verdict
 - `ls REPRODUCTION-SUMMARY.md && ls .lightcone/comparison.html` — REVIEW (close-out) done
 - `git log --oneline` — chronological view of phase commits

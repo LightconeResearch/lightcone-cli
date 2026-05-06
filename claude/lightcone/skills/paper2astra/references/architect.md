@@ -146,7 +146,7 @@ Spawn one synthesis sub-agent that reads both index files and writes the stub. T
 >        citation: "Smith et al. (2020)"
 >        relevance: "One-line description of why this paper matters for replication"
 >    ```
->    This is what LITERATURE mines.
+>    This is the marker→DOI map SPECIFY uses to write each `prior_insights:` placeholder's `doi:` field, and LITERATURE consumes when fetching the cited papers to resolve those placeholders.
 > 6. **Validate** with `astra validate astra.yaml`. The stub MUST validate as written — even with empty `decisions:` / `prior_insights:` / `findings:` blocks, the structural fields and the narrative prose must pass schema checks.
 >
 > ### Stub shape — what `astra.yaml` looks like after ARCHITECT
@@ -178,7 +178,7 @@ Spawn one synthesis sub-agent that reads both index files and writes the stub. T
 >         description: |
 >           <one-line on what this output is>
 >     decisions: {}      # SPECIFY fills
->     prior_insights: {} # LITERATURE → SPECIFY fills
+>     prior_insights: {} # SPECIFY records placeholders (citation only), LITERATURE resolves evidence
 >     findings: {}       # SPECIFY fills
 >
 >   <sub-analysis-id-2>:

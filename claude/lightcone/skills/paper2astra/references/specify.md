@@ -13,7 +13,7 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 - `astra.yaml` — the stub from ARCHITECT (sub-analyses, inputs, outputs, narrative; empty `decisions:` / `prior_insights:` / `findings:` blocks)
 - `work/notes/architect/paper-index.md` — paper-side decision clusters, result loci, citations
 - `work/notes/architect/code-index.md` (when code present) — module map, natural decomposition, entry-points, gotchas
-- `work/notes/literature.yaml` (if present) — prior insights with evidence quotes and decision links (from LITERATURE)
+- `work/notes/cited_papers.yaml` — citation marker → DOI mapping (from ARCHITECT); SPECIFY uses it to write each `prior_insights:` placeholder's `doi:` so LITERATURE knows which paper to fetch
 - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep into; do not re-read whole)
 - `work/reference/figures/`, `work/reference/tables/`, `work/reference/metadata.json` — extracted artifacts (Path B only)
 - `work/reference/code/` (if present) — original code, canonical reference for numerics + method
@@ -22,7 +22,7 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 
 ## Outputs
 
-- `astra.yaml` — **filled form**: each sub-analysis's `decisions:`, `prior_insights:`, `findings:` populated with `evidence:` selectors; `narrative:` keys updated to weave `astra-anchor:` references into prose as entries land; validates with `astra validate astra.yaml --verify-evidence` when literature.yaml is present
+- `astra.yaml` — **filled form**: each sub-analysis's `decisions:` and `findings:` populated with paper-anchored `evidence:` selectors; `prior_insights:` populated as citation-only **placeholders** (id, claim, decision_links, `doi:` lookup from `cited_papers.yaml` — but no `evidence:` selector yet, LITERATURE fills those next); `narrative:` keys updated to weave `astra-anchor:` references into prose as entries land. `astra validate astra.yaml` returns clean; `astra validate astra.yaml --verify-evidence` runs after LITERATURE has resolved the placeholders.
 - `universes/baseline.yaml` — selects the paper's choices (where paper and code disagree per the canonical-resolution rule, see "Material conflicts" below)
 - `implementation-notes.md` — concise practical guidance for the IMPLEMENT phase: tricky algorithms, numerical gotchas, data-format quirks, things the spec can't capture. Bullets, not essays.
 - `targets/targets.md` — small target ledger COMPARE consumes: per output (already declared by ARCHITECT), a brief entry with type, priority, paper value, expected match criteria, and the path to the reference figure / table / metric (when applicable, copy the reference file into `targets/` so the directory is self-contained)
@@ -51,13 +51,26 @@ Read the paper's section(s) covering this sub-analysis. Author:
 
    Read `.claude/guides/decision-guide.md` (in lightcone-cli's plugin bundle) for the full definition of what counts. **Only exclude pure tooling choices** (language, library, file format) and fixed constraints. A typical sub-analysis has 2–6 decisions; if a sub-analysis has fewer than 2, revisit `work/notes/architect/paper-index.md` and reconsider.
 
-2. **`prior_insights:`** — incorporate insights from `work/notes/literature.yaml` (when present) that bear on this sub-analysis's decisions. Use the `decision_links` mapping to attach each insight to the relevant decision options, so the multiverse captures evidence-backed alternative choices from the literature.
+2. **`prior_insights:`** — for every citation marker the paper invokes that bears on a decision in this sub-analysis (`[12]`, `Smith+24`, `(Doe & Lee 2023)`), record a **placeholder**: an `id:`, a `claim:` describing what the cited paper supports about the decision (the target paper's framing of why it cites that paper here), a `doi:` looked up from `work/notes/cited_papers.yaml`, and `decision_links:` mapping the placeholder to the relevant decision option(s). **Do not author the `evidence:` selector** — that's LITERATURE's job. Leave `evidence:` absent or empty; LITERATURE fetches the cited paper, finds the supporting quote, and authors the resolved selector back into this placeholder. The placeholder shape:
+
+   ```yaml
+   prior_insights:
+     <insight_id>:
+       id: <insight_id>
+       claim: "<what the cited paper supports about the decision>"
+       doi: "<DOI from cited_papers.yaml>"
+       # evidence: omitted — LITERATURE fills this in
+       decision_links:
+         <decision_id>: [<option_id>, ...]
+   ```
+
+   Don't pre-emptively fetch the cited paper or guess its content; LITERATURE does that with fresh context per paper.
 
 3. **`findings:`** — paper-level claims and quantitative results scoped to this sub-analysis, each with source-anchored `evidence:` (verbatim quote against the paper). Pull the verbatim claims for each output's expected value from the paper text + the result loci in `paper-index.md`.
 
 4. **Weave `astra-anchor:` references into the existing narrative.** ARCHITECT wrote `narrative:` prose without anchors because the entries didn't exist. Now they do — extend the narrative to point at the new `decisions:` / `prior_insights:` / `findings:` entries via the tree-path anchor grammar. Use `/narrative` for this pass; it carries the discipline.
 
-5. **Verify evidence quotes against the paper source by Grep** — `astra validate --verify-evidence` currently verifies `prior_insights` evidence; artifact-anchored `findings` evidence still needs a manual quote check before the code pass.
+5. **Verify evidence quotes against the paper source by Grep** — `astra validate --verify-evidence` will verify `prior_insights` evidence after LITERATURE resolves the placeholders; for now, manually Grep the paper source to confirm each `decisions:` and `findings:` `evidence:` quote is verbatim. Artifact-anchored `findings` evidence still needs a manual quote check before the code pass.
 
 ### Pass B — code pass (when `work/reference/code/` exists)
 
@@ -101,13 +114,13 @@ Self-review depth follows the constitution's frugality / rigor dial — same sha
 > - `work/notes/architect/code-index.md` (when code present)
 > - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep into; do not re-read whole)
 > - `work/reference/code/` (when present) — canonical reference for numerics + method
-> - `work/notes/literature.yaml` (if present) — for evidence verification
+> - `work/notes/cited_papers.yaml` — citation marker → DOI mapping (use to confirm each `prior_insights:` placeholder's `doi:` matches what the paper cites)
 >
 > ### What to check
 >
 > 1. **Decision coverage.** Does this sub-analysis's `decisions:` block cover every choice in the paper-side index's decision clusters? Cosmetic / pure-tooling choices should NOT be decisions; anything material that's missing should be added.
 > 2. **Decision options.** Each decision has the chosen option plus any sibling alternatives the paper discusses or the code reveals. The chosen option's `rationale:` is grounded in the paper's stated reasoning (or the code's, where canonical-resolution applied).
-> 3. **Evidence verification.** Every `evidence:` block uses `TextQuoteSelector` with a verbatim `exact:` quote, real surrounding-text `prefix:` / `suffix:`, and a real page or section anchor. Quotes that are paraphrased or whose prefix / suffix are editorial parentheticals will fail `--verify-evidence`. Run `astra validate astra.yaml --verify-evidence` when literature.yaml is present.
+> 3. **Evidence verification.** Every `evidence:` block uses `TextQuoteSelector` with a verbatim `exact:` quote, real surrounding-text `prefix:` / `suffix:`, and a real page or section anchor. Quotes that are paraphrased or whose prefix / suffix are editorial parentheticals will fail `--verify-evidence`. Note `prior_insights:` placeholders intentionally have no `evidence:` block at this stage — LITERATURE authors them — so do not flag missing `evidence:` on placeholder entries. After LITERATURE resolves the placeholders, run `astra validate astra.yaml --verify-evidence`.
 > 4. **Findings traceability.** Each `findings:` entry's `evidence:` resolves to a real paper claim (verbatim quote + source anchor) or a real code location (`path:line`).
 > 5. **Material-disagreement surfacing.** Where paper and code disagree on a material choice, the spec records both options under the relevant `decisions:` entry. `universes/baseline.yaml` selects the code's option (canonical-resolution default), unless an interactive seam recorded a different user choice. Flag any material disagreement that got silently dropped or where the spec picked the paper without an explicit user override.
 > 6. **Narrative anchors.** The sub-analysis's `narrative:` weaves `astra-anchor:` references to the new `decisions:` / `prior_insights:` / `findings:` entries — the tree-path grammar must be valid, and entries actually exist at the referenced paths.
@@ -151,7 +164,7 @@ After each round's findings file lands, a SPECIFY-fix pass (or the orchestrator 
 
 ```bash
 astra validate astra.yaml
-astra validate astra.yaml --verify-evidence  # when literature.yaml exists
+astra validate astra.yaml --verify-evidence  # after LITERATURE has resolved the prior_insights placeholders
 ```
 
 #### Termination
@@ -192,11 +205,11 @@ Out-of-scope targets stay in `targets/targets.md` with an explicit reason and sh
 ## Survey signals (entry into SPECIFY)
 
 - `astra.yaml` exists with stub form (sub-analyses + inputs + outputs + narrative; empty decisions / prior_insights / findings) ⇒ ready to specify
-- For each sub-analysis: `decisions:` / `findings:` populated AND, if literature.yaml exists, `prior_insights:` populated ⇒ paper pass done
+- For each sub-analysis: `decisions:` and `findings:` populated with paper-anchored `evidence:` selectors AND `prior_insights:` populated as citation-only placeholders (id, claim, doi, decision_links — no `evidence:` selector yet, LITERATURE fills those next) ⇒ paper pass done
 - For each sub-analysis: when `work/reference/code/` exists, code-pass material-disagreement entries land in `decisions:` (with both options) and `universes/baseline.yaml` selects the canonical-resolution choice; `implementation-notes.md` carries non-material gotchas ⇒ code pass done
 - For frugal: each sub-analysis has at least a `work/notes/specify-review/<sub>-round-1.md` with verdict `clean` (or no fixes were incorporated) ⇒ SPECIFY review done
 - For rigor: each sub-analysis has two consecutive `<sub>-round-<N>.md` files with verdict `clean` ⇒ SPECIFY review done
-- `astra validate astra.yaml --verify-evidence` returns clean (when literature.yaml exists) ⇒ evidence side validated
+- `astra validate astra.yaml` returns clean (placeholders without `evidence:` are valid at this stage) ⇒ structural side validated; `--verify-evidence` waits until LITERATURE has authored the resolved `evidence:` selectors
 - `targets/targets.md` exists with each entry mapped to a spec home ⇒ target-ledger done
 - `implementation-notes.md` exists ⇒ practical-guidance side done
 - All of the above ⇒ SPECIFY complete; proceed to IMPLEMENT

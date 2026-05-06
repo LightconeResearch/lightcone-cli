@@ -8,7 +8,7 @@ The constitution's per-phase mode is **always interactive** for this phase. It d
 
 ## Inputs
 
-- `astra.yaml` — final spec (validates with `--verify-evidence` if literature.yaml exists)
+- `astra.yaml` — final spec (validates with `--verify-evidence` once LITERATURE has resolved every `prior_insights:` placeholder's `evidence:` selector)
 - `comparison-report.yaml`, `comparison-report.md` — final verdict
 - `targets/targets.md` — what was being matched against; reference figures / tables in `targets/`
 - `results/<universe>/<output_id>/` — reproduced figures / tables / metrics

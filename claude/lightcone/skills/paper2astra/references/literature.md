@@ -1,44 +1,61 @@
-# LITERATURE — extract prior insights from cited papers
+# LITERATURE — resolve `prior_insights:` placeholders against the cited papers
 
-For each cited paper that informed a methodological decision, extract evidence-quote-backed insights and link them to the relevant decisions and options. Synthesize across papers into `work/notes/literature.yaml`, which SPECIFY consumes when authoring `astra.yaml`'s `prior_insights` block.
+After SPECIFY's paper pass records each citation marker as a `prior_insights:` *placeholder* (id, claim, doi, decision_links — no `evidence:` selector), LITERATURE fetches each cited paper, finds the verbatim quote that justifies the placeholder's claim, and authors the resolved `evidence:` selector back into `astra.yaml`'s `prior_insights[<id>].evidence[]`. After LITERATURE, every `prior_insights:` entry is a verified citation; `astra validate astra.yaml --verify-evidence` should pass.
 
-The constitution's per-phase mode is **always sub-agent** for this phase. Spawn one Task-tool sub-agent per cited paper for parallel extraction; spawn a final sub-agent for synthesis. This is pure parallel grunt-work.
+LITERATURE runs **after SPECIFY**, not before — relevant `prior_insights:` are defined by the decisions and findings they justify. Fetching cited papers speculatively before SPECIFY would do work for citations that may never end up needed.
+
+The constitution's per-phase mode is **always sub-agent** for this phase. Spawn one Task-tool sub-agent per cited paper for parallel resolution — they edit disjoint subsets of `astra.yaml`'s `prior_insights:` entries (only the placeholders whose `doi:` matches the sub-agent's paper). A merge step (orchestrator-inline) writes the per-paper resolutions back into `astra.yaml` after all sub-agents complete; a final fresh-context sub-agent runs the rigor-dialed self-review.
 
 ## Inputs
 
-- `work/notes/cited_papers.yaml` — the list of papers to mine, from ARCHITECT (paper-side Explore output, merged by the synthesis sub-agent)
-- `work/notes/architect/paper-index.md` — has the decision clusters per sub-analysis; each per-paper sub-agent gets it as context
-- `astra.yaml` — the stub from ARCHITECT (sub-analyses + outputs declared; `decisions:` empty); per-paper sub-agents read the structure to know what they're searching for evidence about
-- `work/reference/source/` (Path A — arXiv LaTeX) or `work/reference/document.md` (Path B — Docling) — the target paper (for reference)
+- `astra.yaml` — filled by SPECIFY's paper (and code) passes; each sub-analysis has `prior_insights:` entries with `claim:` + `doi:` + `decision_links:` but no `evidence:` selector. These are the placeholders LITERATURE resolves.
+- `work/notes/cited_papers.yaml` — citation marker → DOI mapping from ARCHITECT (used to discover which DOIs need fetching, complementing the per-placeholder `doi:` lookup).
+- `work/notes/architect/paper-index.md` — has the decision clusters per sub-analysis; per-paper sub-agents get it as context.
+- `work/reference/source/` (Path A — arXiv LaTeX) or `work/reference/document.md` (Path B — Docling) — the target paper (for context on how the cited paper is invoked).
 
 ## Outputs
 
-- `work/notes/literature/<doi-slug>.yaml` — one file per cited paper (per-paper extraction)
-- `work/notes/literature.yaml` — synthesized merged view (final output)
+- `astra.yaml` — `prior_insights:` placeholders **resolved**: each placeholder now has at least one `evidence:` entry with `TextQuoteSelector` (`exact:`, `prefix:`, `suffix:`) plus `FragmentSelector` (`page:`) pointing at the cited paper. `astra validate astra.yaml --verify-evidence` returns clean.
+- `work/notes/literature/<doi-slug>.yaml` — one file per cited paper carrying that paper's per-placeholder evidence resolutions (intermediate artifact; resume-by-existence — re-running LITERATURE skips a paper whose YAML already exists).
+- Cached PDFs registered with `astra paper add` so `astra validate --verify-evidence` and downstream auditors can find them.
 
-## Per-paper extraction sub-agent — system prompt
+## How it runs
 
-> You are an ASTRA insight extraction agent with self-validation capability. Your task is to extract scientific insights from a single cited paper that bear on specific methodological decisions already identified in the target paper.
+1. **Discovery.** Read `astra.yaml` and collect every `prior_insights:` entry whose `evidence:` is missing or empty. Group by `doi:`. Each group becomes a per-paper sub-agent invocation.
+2. **Per-paper resolution (parallel).** Spawn one Task-tool sub-agent per DOI group. Each sub-agent: caches the PDF via `astra paper add`, reads the cited paper, finds verbatim quote(s) supporting each placeholder claim in its group, and writes the per-placeholder `evidence:` resolutions to `work/notes/literature/<doi-slug>.yaml`. Sub-agents do not edit `astra.yaml` directly — they write their per-paper YAML and exit.
+3. **Merge.** A short orchestrator pass (or a single merge sub-agent) reads each `work/notes/literature/<doi-slug>.yaml` and writes the resolved `evidence:` entries back into `astra.yaml`'s `prior_insights[<insight_id>].evidence[]`. Single writer, no merge conflicts.
+4. **Rigor-dialed self-review.** A fresh-context sub-agent reads each `prior_insights:` entry against its cited paper and asks "does this evidence actually justify the claim it's attached to?" Iterate per the rigor dial — frugal: one pass; rigor: N rounds until two consecutive rounds find no fixes (or a 5-round system cap).
+
+## Per-paper resolution sub-agent — system prompt
+
+> You are an ASTRA evidence-resolution agent. Your task is to find the verbatim quotes in a single cited paper that justify a set of `prior_insights:` placeholders authored by SPECIFY.
+>
+> ### Inputs
+>
+> You are given:
+>
+> - The path to the cited paper's PDF (cached via `astra paper add`).
+> - A list of placeholder claims to resolve, each carrying:
+>   - `id:` — the placeholder's unique id within `astra.yaml`.
+>   - `claim:` — what the cited paper supports about a decision in the target paper (the target paper's framing, written by SPECIFY).
+>   - `decision_links:` — which decision option(s) in `astra.yaml` this placeholder backs (for context — helps you find the right passage).
+> - The path to the target paper (`work/reference/source/` or `work/reference/document.md`) for context on how the cited paper is invoked.
+> - `work/notes/architect/paper-index.md` — the decision clusters from ARCHITECT.
 >
 > ### Instructions
 >
-> 1. Read the PDF at the path provided below using the Read tool.
-> 2. Review the **decision clusters** provided below (from `work/notes/architect/paper-index.md`) — these are the *areas* where the target paper makes choices that bear on numerical results. Concrete decision options haven't been authored yet (SPECIFY does that after LITERATURE) — your job is to find evidence about the cluster, and SPECIFY links it to specific options once they exist.
-> 3. Scan the cited paper for findings that support, contradict, or compare approaches within those clusters. Focus on:
->    - Empirical comparisons between approaches that are candidates within a cluster
->    - Performance benchmarks or validation results relevant to the choices the cluster represents
->    - Recommendations or caveats about specific methods / parameters in the cluster's scope
-> 4. For each relevant finding, extract:
->    - A clear claim (1–2 sentences stating what we learned)
->    - An exact quote from the paper (verbatim, 1–3 sentences)
->    - The page number where the quote appears
->    - Prefix and suffix context — REAL surrounding text from the page (~20–100 chars each), used to disambiguate the quote among similar passages. This follows the W3C TextQuoteSelector convention: prefix and suffix are literal substrings of the source page, NOT editorial parentheticals. Wording like "(Section 3.1 of Foo+19)" or "(see Figure 4)" will fail verification because the validator concatenates `prefix + quote + suffix` and matches against actual page text.
-> 5. Cache the paper so spec-level verification can find it (see below).
-> 6. Write the extracted insights as YAML to the specified output file.
+> 1. Read the cited PDF using the Read tool.
+> 2. For each placeholder claim, locate verbatim passage(s) in the cited paper that support it. Focus on:
+>    - Empirical comparisons between approaches the placeholder's `decision_links` reference.
+>    - Performance benchmarks or validation results relevant to the choices.
+>    - Recommendations or caveats about specific methods / parameters.
+> 3. For each supporting passage, build a `TextQuoteSelector` (`exact:` + `prefix:` + `suffix:`) and `FragmentSelector` (`page:`).
+> 4. If a placeholder's claim has no supporting evidence in the paper (the citation was loose or the claim was paraphrased beyond what the paper actually says), record it under `unresolved:` with a brief note rather than fabricating evidence. The self-review pass surfaces these to the user via `<paper-slug>/open-questions.md`.
+> 5. Write the per-placeholder resolutions to the specified output file.
 >
 > ### Caching the source PDF
 >
-> Before extraction completes, register each paper with the validator's PDF cache so downstream evidence verification can find it:
+> Before resolution, register the paper with the validator's PDF cache:
 >
 > ```bash
 > astra paper add "<DOI>"
@@ -52,30 +69,28 @@ The constitution's per-phase mode is **always sub-agent** for this phase. Spawn 
 >
 > ### Quote fidelity rules
 >
-> Quotes are NOT verified during this per-paper extraction phase — verification is spec-level (`astra validate astra.yaml --verify-evidence`) and runs once SPECIFY has authored `astra.yaml` referencing each paper. Your job here is to extract quotes that will pass that verification cleanly. The checks are:
+> Quotes are verified at the spec level (`astra validate astra.yaml --verify-evidence`). Your job here is to extract quotes that pass that verification cleanly. The checks are:
 >
 > - Each `exact` quote must be present on the cited page, fuzzy-matched at RapidFuzz `partial_ratio` ≥ 70. Copy verbatim from the PDF; do not paraphrase, normalize whitespace, or strip mathematical typesetting.
-> - The validator concatenates `prefix + quote + suffix` and matches that against the page text at a context score ≥ 80. Choose prefix/suffix as REAL surrounding page text (W3C TextQuoteSelector convention), not editorial commentary. Wording like "(Section 3.1 of Foo+19)" or "(see Figure 4)" silently lowers the context score below threshold even when the quote itself is in the PDF.
+> - The validator concatenates `prefix + quote + suffix` and matches that against the page text at a context score ≥ 80. Choose `prefix` / `suffix` as REAL surrounding page text (W3C TextQuoteSelector convention), not editorial commentary. Wording like "(Section 3.1 of Foo+19)" or "(see Figure 4)" silently lowers the context score below threshold even when the quote itself is in the PDF.
 > - Avoid YAML `|` block-literal style for `exact`, `prefix`, and `suffix` values: embedded newlines from block-literal folding can mishandle the context-score concatenation. Single-line strings or `>` folded-block style are safer.
-> - Math-formula quotes (with superscripts, subscripts, inline footnote markers) are likely to fail because the PDF text extractor collapses these. Quote the surrounding English narrative instead, or skip that piece of evidence if a sibling quote already establishes the finding.
+> - Math-formula quotes (with superscripts, subscripts, inline footnote markers) are likely to fail because the PDF text extractor collapses these. Quote the surrounding English narrative instead, or skip that piece of evidence if a sibling quote already establishes the claim.
 >
 > The verification cache is keyed by `(doi, version, sha256(quote_text))` plus `pdf_sha256`, so any edit to a quote in the eventual YAML automatically invalidates that entry — there is no need to delete the cache between runs.
 >
-> ### Quote granularity and finding attribution
+> ### Quote granularity rules
 >
-> - **Quotes carry the claim on their own.** A four-word fragment ("two widely used fitting codes", "the actual quantity being fit") satisfies fuzzy-match but fails the reader: lift the quote out of context and the claim it supports must still stand. The validator is happy with any string that fuzzy-matches; a downstream agent or human reader following the evidence pointer needs to learn what the paper actually said. Default to full sentences with TeX-anchored prefix/suffix; split a long passage into two evidence rows rather than truncate a quote into a fragment that depends on context. Fragments creep in at exactly the spots where inline math forces shrinking, which is also where claims hide.
-> - **Cross-section methodology gets separate insights.** When a paper's relevant methodology is split across multiple sections — a methods chapter defining a tool, a results chapter setting a threshold, an application chapter running it — file one insight per piece, each citing the section where that piece is *defined*. Do not collapse all the borrowed pieces into the application section's number. The application section gets all the credit and the methodology section disappears, which is a real fidelity-sweep failure mode.
+> - **Quotes carry the claim on their own.** A four-word fragment satisfies fuzzy-match but fails the reader: lift the quote out of context and the claim it supports must still stand. Default to full sentences with TeX-anchored prefix/suffix; split a long passage into two evidence rows rather than truncate a quote into a fragment that depends on context. Fragments creep in at exactly the spots where inline math forces shrinking, which is also where claims hide.
+> - **Cross-section methodology gets separate evidence rows.** When a paper's relevant methodology is split across multiple sections — a methods chapter defining a tool, a results chapter setting a threshold, an application chapter running it — file one evidence row per piece, each citing the section where that piece is *defined*. Do not collapse all the borrowed pieces into the application section's number.
 >
 > ### Output format
 >
 > Write ONLY this YAML structure to the output file. No other text.
 >
 > ```yaml
-> insights:
+> resolutions:
 >   <insight_id>:
 >     id: <insight_id>
->     claim: "<What we learned from this finding>"
->     created_at: "<ISO 8601 timestamp>"
 >     evidence:
 >       - id: ev1
 >         doi: "<DOI>"
@@ -87,79 +102,113 @@ The constitution's per-phase mode is **always sub-agent** for this phase. Spawn 
 >         location:
 >           type: FragmentSelector
 >           page: <page number>
->     scope: "<when this applies -- optional>"
 >
-> decision_links:
->   <decision_cluster_or_id>:
->     <provisional_option_label>:
->       - <insight_id>
+> unresolved:
+>   <insight_id>:
+>     reason: "<one-line: why no supporting evidence was found>"
 > ```
 >
 > ### Rules
 >
-> - Use `lowercase_with_underscores` for insight IDs.
+> - The keys under `resolutions:` and `unresolved:` are the placeholder `id:` values from `astra.yaml`'s `prior_insights:` — preserve them exactly. The merge step uses these as the join key.
+> - One placeholder lands in either `resolutions:` or `unresolved:`, never both. If two passages support the same claim, list both as siblings under one placeholder's `evidence:`.
 > - Quotes must be EXACT — copy verbatim from the PDF, no paraphrasing or whitespace normalization.
 > - Prefix and suffix must be real surrounding page text, not editorial parentheticals.
-> - One claim per insight — do not combine multiple findings.
-> - Only extract insights relevant to the target decision clusters listed below.
-> - `decision_links` keys reference clusters by the names ARCHITECT used in `work/notes/architect/paper-index.md`. SPECIFY rewires these to concrete `decision_id:option_id` keys when it authors the actual decisions.
-> - If no relevant insights found, write `insights: {}` and `decision_links: {}`.
-> - prefix and suffix are REQUIRED for every TextQuoteSelector.
+> - `prefix:` and `suffix:` are REQUIRED for every `TextQuoteSelector`.
+> - Do NOT edit `astra.yaml`. The merge step does that.
 
-## Synthesis sub-agent — system prompt
+## Merge step
 
-> You are a literature synthesis agent. Read all per-paper extraction YAML files in `work/notes/literature/` and merge them into a single `work/notes/literature.yaml` that consolidates insights from all cited papers.
+After all per-paper sub-agents complete, the orchestrator (or a single merge sub-agent) reads each `work/notes/literature/<doi-slug>.yaml` and writes the resolutions back into `astra.yaml`:
+
+- For each entry in `resolutions:`, locate `prior_insights[<insight_id>]` in `astra.yaml` (sub-analysis ownership is implicit in the id; the placeholder already lives there) and set its `evidence:` field to the resolved selectors.
+- For each entry in `unresolved:`, append a line to `<paper-slug>/open-questions.md` describing the unresolved placeholder and the reason — the user resolves at REVIEW (close-out) by either supplying a different citation, weakening the placeholder's `claim:`, or removing the placeholder entirely.
+- Re-run `astra validate astra.yaml` after each per-paper merge to catch any structural breakage early.
+
+A single writer (the merge step) avoids YAML round-trip conflicts that parallel writes would produce.
+
+## Rigor-dialed self-review
+
+After the merge lands, a fresh-context sub-agent cross-checks each resolved `prior_insights:` entry against its cited paper:
+
+- Does the `evidence:` quote belong to the cited paper at the cited page? (`astra validate --verify-evidence` does the deterministic check; the sub-agent does the semantic check.)
+- Does the quote actually justify the placeholder's `claim:`? Or is the quote technically present but tangential?
+- Does the placeholder's `claim:` actually support the decision option it's linked to via `decision_links:`?
+
+The depth of self-review is set by the constitution's frugality / rigor dial:
+
+- **Frugal:** skip review entirely, or run a single fresh-context sub-agent pass and incorporate its fixes once.
+- **Rigor:** N rounds — each round runs a fresh reviewer against the resolved `prior_insights:` + the cited papers + the target paper; LITERATURE incorporates fixes (re-spawn the per-paper sub-agent for entries that need a different quote, or adjust unresolved entries); the next round runs another fresh reviewer that has not seen the fixes. Iterate until two consecutive rounds find no fixes (the strong-termination criterion the loop already uses), or a 5-round system cap.
+
+The discipline matches ARCHITECT's and SPECIFY's self-review shape: each round runs a brand-new sub-agent that does NOT see prior rounds' findings or fixes — pattern-matching on prior fixes defeats the cross-check. Reviewers output findings only; a separate fix pass (the orchestrator inline for trivial fixes, or another LITERATURE iteration for substantive changes) edits `astra.yaml`.
+
+### Per-round fresh sub-agent — system prompt
+
+> You are a LITERATURE reviewer. Read `astra.yaml`'s `prior_insights:` entries, the cited papers (cached via `astra paper add`), and the target paper, and report any inconsistencies you find. You will be one of several independent reviewers; do not assume anything has already been fixed.
 >
-> ### Task
+> ### Inputs
 >
-> 1. Read all per-paper YAML files in `work/notes/literature/`.
-> 2. Merge insights, de-duplicating where multiple papers support the same claim.
-> 3. Merge decision links across all papers.
-> 4. Write the consolidated output to `work/notes/literature.yaml`.
+> - `astra.yaml` — focus on every `analyses.<sub-analysis-id>.prior_insights:` entry. Each should have a resolved `evidence:` block.
+> - The cited papers (cached PDFs).
+> - `work/notes/cited_papers.yaml` — DOI lookups.
+> - `<paper-slug>/open-questions.md` — to see which placeholders the resolution sub-agents flagged unresolved.
+> - `work/reference/source/` (or `document.md`) — the target paper, for context on how the cited paper is invoked.
 >
-> ### Output format
+> ### What to check
 >
-> ```yaml
-> prior_insights:
->   <insight_id>:
->     id: <insight_id>
->     claim: "<What the literature says>"
->     evidence:
->       - id: e1
->         doi: "<DOI of source paper>"
->         quote:
->           type: TextQuoteSelector
->           exact: "<Exact quote from paper>"
->           prefix: "<~20-100 chars before>"
->           suffix: "<~20-100 chars after>"
->         location:
->           type: FragmentSelector
->           page: <page number>
->     scope: "<When this applies -- optional>"
+> 1. **Evidence integrity.** `astra validate astra.yaml --verify-evidence` returns clean. (Do not run it yourself — your job is the semantic check beyond what `--verify-evidence` does.)
+> 2. **Evidence justifies claim.** For each `prior_insights:` entry, does the quote actually support the `claim:`? Or is it tangential / weaker than the claim asserts?
+> 3. **Claim supports the decision.** For each placeholder's `decision_links:`, does the placeholder's claim actually justify the linked decision option(s)? Or is the link a leap?
+> 4. **Cited paper is the right paper.** Does the target paper actually invoke this DOI for this claim? (Sometimes a citation marker is misread; the wrong paper gets cached.)
+> 5. **Unresolved entries are honest.** For entries in `<paper-slug>/open-questions.md` flagged unresolved, does a closer read of the cited paper actually find supporting evidence? (If yes, the resolution sub-agent missed it; flag for re-resolution.)
 >
-> decision_links:
->   <decision_id>:
->     <option_id>: [insight_id1, insight_id2]
+> ### Output
+>
+> Write your findings to `work/notes/literature-review/round-<N>.md`:
+>
+> ```markdown
+> # LITERATURE review — round <N>
+>
+> ## verdict: clean | <count> fixes
+>
+> ## findings (one per fix needed)
+>
+> ### F-1 — <one-line summary>
+>
+> - placeholder: `prior_insights.<id>` (sub-analysis: `<sub-analysis-id>`)
+> - issue: <evidence integrity | evidence-claim mismatch | claim-decision mismatch | wrong paper | unresolved-but-resolvable>
+> - paper: `<DOI>` (page <N>)
+> - what's wrong: <2–3 sentences>
+> - suggested fix: <re-resolve with a different quote | adjust the claim | re-link decision | flag for human review>
 > ```
 >
 > ### Rules
 >
-> - Preserve all verified evidence exactly as-is (do not rewrite quotes).
-> - When two papers support the same claim, merge their evidence lists under a single insight entry.
-> - When papers support different but related claims, keep them as separate insights.
-> - `decision_links` should map decision IDs to option IDs to lists of insight IDs. Merge across all papers so each decision collects all relevant insights.
-> - Use consistent insight IDs (`lowercase_with_underscores`).
-> - Drop any insights that had zero verified quotes.
-> - If no papers produced insights, write `prior_insights: {}` and `decision_links: {}`.
+> - **Output findings only — do not edit `astra.yaml`.** A separate fix pass responds to your findings. Editing here defeats the multi-round-fresh-context discipline.
+> - **Verdict is `clean` or a count.** "clean" means no fixes; otherwise enumerate.
+> - **One fix per `F-N`.** Do not bundle.
+> - **Cite specifically.** Always reference the placeholder by id, the cited paper by DOI + page, and the target paper's invocation site by section / page.
+
+### LITERATURE-fix pass between rounds
+
+After each round's findings file lands, a LITERATURE-fix pass (or the orchestrator inline for trivial mechanical fixes) responds to the findings — re-resolving placeholders with different quotes, adjusting claims, re-linking decisions, or surfacing unresolvable entries to `<paper-slug>/open-questions.md`. After any change to `astra.yaml`, re-run `astra validate astra.yaml --verify-evidence` to confirm the structural and quote-fidelity checks still pass.
+
+If N hits the system cap of 5 rounds without two consecutive clean rounds, surface to the user via `AskUserQuestion`: "LITERATURE review reached round cap with N fixes still landing; continue, accept the current resolutions, or revise the constitution?" Default on user silence: accept current state, log the unfinished tail in `<paper-slug>/open-questions.md`, and proceed to IMPLEMENT.
 
 ## Survey signals (entry into LITERATURE)
 
-- `work/notes/cited_papers.yaml` exists ⇒ ready to extract
-- `work/notes/literature/` directory has one YAML per paper in `cited_papers.yaml` ⇒ extraction done
-- `work/notes/literature.yaml` exists ⇒ synthesis done; LITERATURE complete
+- `astra.yaml` has `prior_insights:` placeholders — entries with `claim:` + `doi:` but no `evidence:` ⇒ ready to resolve
+- `work/notes/literature/<doi-slug>.yaml` files exist (one per cited DOI) ⇒ per-paper resolution done
+- `astra.yaml`'s `prior_insights:` entries each have a resolved `evidence:` selector ⇒ merge done
+- `astra validate astra.yaml --verify-evidence` returns clean ⇒ structural validation done
+- For frugal: at least a `work/notes/literature-review/round-1.md` with verdict `clean` (or no fixes were incorporated) ⇒ LITERATURE review done
+- For rigor: two consecutive `round-<N>.md` files with verdict `clean` ⇒ LITERATURE review done
+
+When all of the above hold ⇒ LITERATURE complete; proceed to IMPLEMENT.
 
 ## Notes
 
-- **Run per-paper extractions in parallel.** One sub-agent per entry in `cited_papers.yaml`. They are fully independent.
-- **Synthesis is a single sub-agent.** It reads everything in `work/notes/literature/` and writes one merged `literature.yaml`.
-- **Resume is automatic.** If `work/notes/literature/<doi-slug>.yaml` already exists, skip the per-paper extraction for that paper. The synthesis re-runs whenever new per-paper files appear.
+- **Run per-paper resolutions in parallel.** One sub-agent per cited DOI; they edit disjoint subsets of `prior_insights:` so write conflicts don't arise — but the merge step still serializes the writes back to `astra.yaml` to keep YAML round-trip safe.
+- **Resume is automatic.** If `work/notes/literature/<doi-slug>.yaml` already exists, skip the per-paper resolution for that DOI. The merge re-runs whenever new per-paper files appear.
+- **Unresolved is not failure.** A placeholder that no quote in the cited paper supports is a real signal — the target paper cited loosely, or paraphrased beyond what the source actually says. Surface to `<paper-slug>/open-questions.md`; don't fabricate evidence to make it green.
+- **`astra validate --verify-evidence` runs after the merge, not after each per-paper sub-agent.** Sub-agents write to per-paper YAMLs; the deterministic check happens once `astra.yaml` is updated.
