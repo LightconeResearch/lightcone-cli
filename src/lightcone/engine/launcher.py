@@ -399,19 +399,38 @@ def _exec_interactive(
         # subuid) and so Claude Code doesn't see itself running as root.
         #
         # docker (rootful, the common case) accepts --user directly.
-        # podman / podman-hpc are rootless on every system that ships them
-        # by default, where --user $UID:$GID fails with
-        #   "crun: setgroups: Invalid argument"
-        # because the user namespace doesn't have the subuid/subgid range
-        # mapped. --userns=keep-id is the rootless-native equivalent: it
-        # builds an idmap that preserves the host UID inside the container.
-        if choice.runtime in ("podman", "podman-hpc"):
+        # podman (rootless) needs --userns=keep-id, the rootless equivalent
+        # that builds an idmap preserving the host UID inside the container.
+        # podman-hpc (NERSC) cannot use --userns=keep-id with a real TTY:
+        # the combination triggers
+        #   crun: open .../merged: Permission denied
+        # during rootfs setup (TTY device creation in the fuse-overlayfs
+        # remapped merged dir fails). podman-hpc is rootless and already
+        # runs as the host UID externally, so for our purposes we leave the
+        # container's internal UID at 0 and rely on rootless mapping for
+        # bind-mount ownership.
+        if choice.runtime == "podman":
             cmd += ["--userns=keep-id"]
+        elif choice.runtime == "podman-hpc":
+            pass  # see comment above
         else:
             cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
 
     cmd.append(tag)
-    cmd.extend(target.entrypoint)
+    # On podman-hpc we cannot use --userns=keep-id (see above), so the
+    # container runs as UID 0. Claude Code rejects
+    # --dangerously-skip-permissions when invoked as root, so drop the
+    # flag — the user will see the folder-trust prompt once and accept
+    # it manually.
+    entrypoint_args = target.entrypoint
+    if choice.runtime == "podman-hpc":
+        entrypoint_args = [
+            a for a in entrypoint_args if a != "--dangerously-skip-permissions"
+        ]
+    cmd.extend(entrypoint_args)
+
+    if os.environ.get("LIGHTCONE_LAUNCH_DEBUG"):
+        _print(f"[lc launch debug] {' '.join(cmd)}")
 
     os.execvp(cmd[0], cmd)
 
