@@ -10,9 +10,11 @@ from lightcone.engine.container import ContainerBuildError, RuntimeChoice
 from lightcone.engine.launcher import (
     BUILTIN_TARGETS,
     LaunchTarget,
+    _apply_tracking_tag,
     _build_dev_wheel,
     _is_dev_version,
     _render_containerfile,
+    _tracking_image_ref,
     _try_pull_and_cache,
     resolve_launch_target,
 )
@@ -800,3 +802,75 @@ class TestLaunchTargetGhcrPull:
 
         mock_pull.assert_not_called()
         mock_build.assert_called_once()
+
+    @patch("lightcone.engine.launcher._apply_tracking_tag")
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.tarball_path_for_tag")
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-fake-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_tracking_tag_applied_before_exec(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_tarball_path: MagicMock,
+        mock_exists: MagicMock,
+        mock_exec: MagicMock,
+        mock_tracking: MagicMock,
+        fake_target: LaunchTarget,
+        project: Path,
+        tmp_path: Path,
+    ) -> None:
+        from lightcone.engine.launcher import launch_target
+        from lightcone.engine.manifest import lc_version as _lc_version
+
+        mock_resolve.return_value = fake_target
+        tarball = tmp_path / "lc-fake-abc123.tar"
+        tarball.write_bytes(b"fake")
+        mock_tarball_path.return_value = tarball
+
+        choice = RuntimeChoice(runtime="docker", explicit=True)
+        launch_target(fake_target.name, choice=choice, project_root=project)
+
+        version = _lc_version()
+        mock_tracking.assert_called_once_with(
+            "lc-fake-abc123",
+            f"lightcone-{project.name}:{version}",
+            "docker",
+        )
+
+
+class TestTrackingTag:
+    def test_tracking_image_ref_uses_project_dir_name(self, tmp_path: Path) -> None:
+        project = tmp_path / "my-analysis"
+        project.mkdir()
+        ref = _tracking_image_ref(project, "1.2.3")
+        assert ref == "lightcone-my-analysis:1.2.3"
+
+    def test_tracking_image_ref_dev_version(self, tmp_path: Path) -> None:
+        project = tmp_path / "my-analysis"
+        project.mkdir()
+        ref = _tracking_image_ref(project, "dev")
+        assert ref == "lightcone-my-analysis:dev"
+
+    def test_apply_tracking_tag_calls_runtime_tag(self, tmp_path: Path) -> None:
+        with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            _apply_tracking_tag("lc-fake-abc123", "lightcone-proj:1.0.0", "docker")
+        mock_run.assert_called_once_with(
+            ["docker", "tag", "lc-fake-abc123", "lightcone-proj:1.0.0"],
+            check=True,
+            capture_output=True,
+        )
+
+    def test_apply_tracking_tag_swallows_errors(self, tmp_path: Path) -> None:
+        import subprocess as _sp
+
+        with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
+            mock_run.side_effect = _sp.CalledProcessError(1, "docker tag")
+            _apply_tracking_tag("lc-fake-abc123", "lightcone-proj:1.0.0", "docker")
+
+    def test_apply_tracking_tag_swallows_oserror(self, tmp_path: Path) -> None:
+        with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
+            mock_run.side_effect = OSError("no such file")
+            _apply_tracking_tag("lc-fake-abc123", "lightcone-proj:1.0.0", "docker")

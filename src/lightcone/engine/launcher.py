@@ -299,6 +299,30 @@ def _registry_image_ref(target_name: str, version: str) -> str:
     return f"{_GHCR_PREFIX}/{target_name}:{version}"
 
 
+def _tracking_image_ref(project_root: Path, version: str) -> str:
+    """Return the human-readable image ref for ``docker/podman images`` visibility.
+
+    Format: ``lightcone-<project_dir_name>:<lc_version>``
+    """
+    return f"lightcone-{project_root.name}:{version}"
+
+
+def _apply_tracking_tag(content_tag: str, tracking_ref: str, runtime: str) -> None:
+    """Tag *content_tag* with *tracking_ref* for human-readable image listings.
+
+    Failure is silently swallowed — the tracking tag is cosmetic and must not
+    block the launch.
+    """
+    try:
+        subprocess.run(
+            [runtime, "tag", content_tag, tracking_ref],
+            check=True,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        pass
+
+
 def _try_pull_and_cache(
     tag: str,
     registry_ref: str,
@@ -366,6 +390,8 @@ def launch_target(
 
     if not image_exists_locally(tag, runtime=choice.runtime, project_path=project_root):
         load_image_from_tarball(tarball, runtime=choice.runtime)
+
+    _apply_tracking_tag(tag, _tracking_image_ref(project_root, _lc_version()), choice.runtime)
 
     _exec_interactive(target, tag, choice, project_root)
 
