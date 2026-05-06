@@ -106,12 +106,7 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
     return {
         "claude": LaunchTarget(
             name="claude",
-            containerfile=containers_dir / "claude-env.Containerfile",
-            # The Containerfile ENTRYPOINT is already "claude"; arguments here
-            # are appended to it.  --dangerously-skip-permissions suppresses the
-            # folder-trust prompt — appropriate because the container IS the
-            # sandbox.  It also fixes the accidental "claude claude" invocation
-            # that occurred when "claude" was listed as its own entrypoint arg.
+            containerfile=containers_dir / "lightcone-sandbox.Containerfile",
             entrypoint=["--dangerously-skip-permissions"],
             env_passthrough=[
                 "ANTHROPIC_API_KEY",
@@ -168,7 +163,7 @@ _ARG_VERSION_RE = re.compile(r"^ARG LIGHTCONE_VERSION(=[^\n]*)?\n", re.MULTILINE
 
 # Matches the comment + RUN block that handles lightcone-cli installation.
 # Present only in Containerfiles that use the dev-wheel fallback pattern.
-# Intentionally coupled to claude-env.Containerfile's specific install block
+# Intentionally coupled to lightcone-sandbox.Containerfile's specific install block
 # shape: the pattern ends at the first `esac\n`, so inserting a second case
 # statement before this block would truncate the match — update the anchor if
 # the Containerfile layout changes.
@@ -268,7 +263,7 @@ def _render_containerfile(target: LaunchTarget, project_root: Path) -> Path:
     """
     dest_dir = project_root / ".lightcone" / "containers"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{target.name}.Containerfile"
+    dest = dest_dir / target.containerfile.name
 
     version = _lc_version()
     content = target.containerfile.read_text()
