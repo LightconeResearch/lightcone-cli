@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -52,15 +52,56 @@ class TestBuiltinTargets:
     def test_claude_target_fields(self) -> None:
         t = BUILTIN_TARGETS["claude"]
         assert t.name == "claude"
-        assert t.entrypoint == ["--dangerously-skip-permissions"]
+        assert t.entrypoint == ["claude", "--dangerously-skip-permissions"]
         assert "ANTHROPIC_API_KEY" in t.env_passthrough
         assert "CLAUDE_CODE_OAUTH_TOKEN" in t.env_passthrough
         assert "/dev/fuse" in t.devices
         assert ".claude.json" in t.home_mounts
-        assert ".claude" in t.home_mounts
         assert t.run_as_host_user is True
-        # registry_name must match the CI-published image name, not the target name
-        assert t.registry_name == "claude-env"
+        assert t.registry_name == "lightcone-sandbox"
+        assert t.install_cmds == ["npm install -g @anthropic-ai/claude-code"]
+        assert t.committed_tag_prefix == "lightcone-claude"
+
+    def test_mistral_vibe_is_registered(self) -> None:
+        assert "mistral-vibe" in BUILTIN_TARGETS
+
+    def test_mistral_vibe_target_fields(self) -> None:
+        t = BUILTIN_TARGETS["mistral-vibe"]
+        assert t.name == "mistral-vibe"
+        assert t.install_cmds == ["uv tool install mistral-vibe"]
+        assert t.committed_tag_prefix == "lightcone-mistral-vibe"
+        assert t.entrypoint == ["vibe"]
+        assert t.env_passthrough == ["MISTRAL_API_KEY"]
+        assert ".vibe/config.toml" in t.home_mounts
+        assert ".vibe/agents/" in t.home_mounts
+        assert ".vibe/prompts/" in t.home_mounts
+        assert ".vibe/skills/" in t.home_mounts
+        assert ".vibe/tools/" in t.home_mounts
+        assert t.registry_name == "lightcone-sandbox"
+
+    def test_opencode_is_registered(self) -> None:
+        assert "opencode" in BUILTIN_TARGETS
+
+    def test_opencode_target_fields(self) -> None:
+        t = BUILTIN_TARGETS["opencode"]
+        assert t.name == "opencode"
+        assert t.install_cmds == ["npm install -g opencode-ai"]
+        assert t.committed_tag_prefix == "lightcone-opencode"
+        assert t.entrypoint == ["opencode"]
+        assert "OPENAI_API_KEY" in t.env_passthrough
+        assert "ANTHROPIC_API_KEY" in t.env_passthrough
+        assert "MISTRAL_API_KEY" in t.env_passthrough
+        assert "GEMINI_API_KEY" in t.env_passthrough
+        assert "GROQ_API_KEY" in t.env_passthrough
+        assert ".config/opencode/opencode.json" in t.home_mounts
+        assert ".config/opencode/tui.json" in t.home_mounts
+        assert ".config/opencode/agents/" in t.home_mounts
+        assert ".config/opencode/commands/" in t.home_mounts
+        assert ".config/opencode/modes/" in t.home_mounts
+        assert ".config/opencode/plugins/" in t.home_mounts
+        assert ".config/opencode/themes/" in t.home_mounts
+        assert ".config/opencode/AGENTS.md" in t.home_mounts
+        assert t.registry_name == "lightcone-sandbox"
 
 
 class TestResolveTarget:
@@ -271,6 +312,9 @@ class TestLaunchTarget:
         assert cmd[0] == "docker"
         assert "run" in cmd
         assert "-it" in cmd
+        # --entrypoint must appear before the image tag
+        if "--entrypoint" in cmd:
+            assert cmd.index("--entrypoint") < cmd.index("lc-fake-abc123")
 
     @patch("lightcone.engine.launcher.os.execvp")
     @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
@@ -332,7 +376,7 @@ class TestLaunchTarget:
         target = LaunchTarget(
             name="fake",
             containerfile=tmp_path / "fake.Containerfile",
-            entrypoint=["--dangerously-skip-permissions"],
+            entrypoint=["claude", "--dangerously-skip-permissions"],
             run_as_host_user=True,
         )
         (tmp_path / "fake.Containerfile").write_text(
@@ -377,7 +421,7 @@ class TestLaunchTarget:
         target = LaunchTarget(
             name="fake",
             containerfile=tmp_path / "fake.Containerfile",
-            entrypoint=["--dangerously-skip-permissions"],
+            entrypoint=["claude", "--dangerously-skip-permissions"],
             run_as_host_user=True,
         )
         (tmp_path / "fake.Containerfile").write_text(
@@ -426,7 +470,7 @@ class TestLaunchTarget:
         target = LaunchTarget(
             name="fake",
             containerfile=tmp_path / "fake.Containerfile",
-            entrypoint=["--dangerously-skip-permissions"],
+            entrypoint=["claude", "--dangerously-skip-permissions"],
             run_as_host_user=True,
         )
         (tmp_path / "fake.Containerfile").write_text(
@@ -440,8 +484,10 @@ class TestLaunchTarget:
         choice = RuntimeChoice(runtime="podman-hpc", explicit=True)
         launch_target(target.name, choice=choice, project_root=project)
         cmd = mock_exec.call_args[0][1]
+        assert cmd[0] == "podman-hpc"
         assert "--userns=keep-id" not in cmd
         assert "--user" not in cmd
+        assert "--entrypoint" in cmd
         assert "--dangerously-skip-permissions" not in cmd
 
     @patch("lightcone.engine.launcher.os.execvp")
@@ -570,7 +616,7 @@ class TestLaunchTarget:
             name="fake",
             containerfile=cf,
             entrypoint=["bash"],
-            home_mounts=[".claude"],
+            home_mounts=[".claude/"],  # trailing slash = directory
         )
         mock_resolve.return_value = target
         tarball = tmp_path / "lc-fake-abc123.tar"
@@ -584,6 +630,137 @@ class TestLaunchTarget:
         cmd = mock_exec.call_args[0][1]
         expected = str(claude_dir)
         assert f"{expected}:{expected}" in " ".join(cmd)
+
+
+class TestLaunchTargetEnsureHarness:
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher._ensure_harness_image", return_value="lightcone-claude:1.2.3")
+    @patch("lightcone.engine.launcher._apply_tracking_tag")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.tarball_path_for_tag")
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-sandbox-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_ensure_harness_called_when_committed_tag_prefix_set(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_tarball_path: MagicMock,
+        mock_exists: MagicMock,
+        mock_tracking: MagicMock,
+        mock_ensure: MagicMock,
+        mock_exec: MagicMock,
+        project: Path,
+        tmp_path: Path,
+    ) -> None:
+        """launch_target() calls _ensure_harness_image() and uses the returned tag."""
+        from lightcone.engine.launcher import launch_target
+
+        target = LaunchTarget(
+            name="claude",
+            containerfile=tmp_path / "lightcone-sandbox.Containerfile",
+            entrypoint=["claude", "--dangerously-skip-permissions"],
+            install_cmds=["npm install -g @anthropic-ai/claude-code"],
+            committed_tag_prefix="lightcone-claude",
+        )
+        (tmp_path / "lightcone-sandbox.Containerfile").write_text(
+            "FROM python:3.12-slim\nARG LIGHTCONE_VERSION\n"
+        )
+        mock_resolve.return_value = target
+        tarball = tmp_path / "lc-sandbox-abc123.tar"
+        tarball.write_bytes(b"fake")
+        mock_tarball_path.return_value = tarball
+
+        with patch("lightcone.engine.launcher._lc_version", return_value="1.2.3"):
+            choice = RuntimeChoice(runtime="docker", explicit=True)
+            launch_target(target.name, choice=choice, project_root=project)
+
+        mock_ensure.assert_called_once_with(
+            target,
+            base_image="lc-sandbox-abc123",
+            runtime="docker",
+            lc_version="1.2.3",
+        )
+        # _apply_tracking_tag must receive the committed harness tag, not the base image tag
+        assert mock_tracking.call_args[0][0] == "lightcone-claude:1.2.3"
+        # The harness image tag must be passed to _exec_interactive (via os.execvp)
+        cmd = mock_exec.call_args[0][1]
+        assert "lightcone-claude:1.2.3" in cmd
+
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher._ensure_harness_image")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.tarball_path_for_tag")
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-fake-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_ensure_harness_not_called_when_no_committed_tag_prefix(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_tarball_path: MagicMock,
+        mock_exists: MagicMock,
+        mock_ensure: MagicMock,
+        mock_exec: MagicMock,
+        fake_target: LaunchTarget,
+        project: Path,
+        tmp_path: Path,
+    ) -> None:
+        """launch_target() skips _ensure_harness_image() when committed_tag_prefix is empty."""
+        from lightcone.engine.launcher import launch_target
+
+        mock_resolve.return_value = fake_target
+        tarball = tmp_path / "lc-fake-abc123.tar"
+        tarball.write_bytes(b"fake")
+        mock_tarball_path.return_value = tarball
+
+        choice = RuntimeChoice(runtime="docker", explicit=True)
+        launch_target(fake_target.name, choice=choice, project_root=project)
+
+        mock_ensure.assert_not_called()
+        # The base tag must be used directly
+        cmd = mock_exec.call_args[0][1]
+        assert "lc-fake-abc123" in cmd
+
+
+class TestEnsureHostPath:
+    def test_creates_file_when_missing(self, tmp_path: Path) -> None:
+        from lightcone.engine.launcher import _ensure_host_path
+
+        target = tmp_path / "settings.json"
+        assert not target.exists()
+        _ensure_host_path(target, is_dir=False)
+        assert target.is_file()
+
+    def test_creates_directory_when_missing(self, tmp_path: Path) -> None:
+        from lightcone.engine.launcher import _ensure_host_path
+
+        target = tmp_path / "agents"
+        assert not target.exists()
+        _ensure_host_path(target, is_dir=True)
+        assert target.is_dir()
+
+    def test_does_not_clobber_existing_file(self, tmp_path: Path) -> None:
+        from lightcone.engine.launcher import _ensure_host_path
+
+        target = tmp_path / "config.toml"
+        target.write_text("existing content")
+        _ensure_host_path(target, is_dir=False)
+        assert target.read_text() == "existing content"
+
+    def test_does_not_clobber_existing_dir(self, tmp_path: Path) -> None:
+        from lightcone.engine.launcher import _ensure_host_path
+
+        target = tmp_path / "agents"
+        target.mkdir()
+        (target / "my_agent.toml").write_text("agent")
+        _ensure_host_path(target, is_dir=True)
+        assert (target / "my_agent.toml").exists()
+
+    def test_creates_parent_dirs(self, tmp_path: Path) -> None:
+        from lightcone.engine.launcher import _ensure_host_path
+
+        target = tmp_path / "a" / "b" / "settings.json"
+        _ensure_host_path(target, is_dir=False)
+        assert target.is_file()
 
 
 class TestTryPullAndCache:
@@ -688,6 +865,7 @@ class TestLaunchTargetGhcrPull:
     """Tests for the GHCR pull-first path in launch_target."""
 
     @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher._ensure_harness_image", return_value="lightcone-claude:1.2.3")
     @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
     @patch("lightcone.engine.launcher.save_image_as_tarball")
     @patch("lightcone.engine.launcher.build_image")
@@ -700,10 +878,11 @@ class TestLaunchTargetGhcrPull:
         mock_build: MagicMock,
         mock_save: MagicMock,
         mock_exists: MagicMock,
+        mock_ensure: MagicMock,
         mock_exec: MagicMock,
         project: Path,
     ) -> None:
-        """claude target uses registry_name='claude-env', not 'claude', for GHCR ref."""
+        """claude target uses registry_name='lightcone-sandbox', not 'claude', for GHCR ref."""
         from lightcone.engine.launcher import launch_target
 
         # No tarball — forces pull path
@@ -713,7 +892,7 @@ class TestLaunchTargetGhcrPull:
 
         # _try_pull_and_cache(tag, registry_ref, tarball, runtime=...)
         registry_ref = mock_pull.call_args[0][1]
-        assert registry_ref == "ghcr.io/lightconeresearch/claude-env:1.2.3"
+        assert registry_ref == "ghcr.io/lightconeresearch/lightcone-sandbox:1.2.3"
 
     @patch("lightcone.engine.launcher.os.execvp")
     @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
@@ -840,6 +1019,39 @@ class TestLaunchTargetGhcrPull:
         )
 
 
+class TestImageExists:
+    def test_returns_true_when_image_found(self) -> None:
+        from lightcone.engine.launcher import _image_exists
+
+        with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            result = _image_exists("lightcone-claude:0.5.0", "docker")
+
+        mock_run.assert_called_once_with(
+            ["docker", "image", "inspect", "lightcone-claude:0.5.0"],
+            capture_output=True,
+        )
+        assert result is True
+
+    def test_returns_false_when_image_not_found(self) -> None:
+        from lightcone.engine.launcher import _image_exists
+
+        with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            result = _image_exists("lightcone-claude:0.5.0", "docker")
+
+        assert result is False
+
+    def test_returns_false_on_oserror(self) -> None:
+        from lightcone.engine.launcher import _image_exists
+
+        with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
+            mock_run.side_effect = OSError("not found")
+            result = _image_exists("lightcone-claude:0.5.0", "docker")
+
+        assert result is False
+
+
 class TestTrackingTag:
     def test_tracking_image_ref_uses_project_dir_name(self, tmp_path: Path) -> None:
         project = tmp_path / "my-analysis"
@@ -874,3 +1086,102 @@ class TestTrackingTag:
         with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
             mock_run.side_effect = OSError("no such file")
             _apply_tracking_tag("lc-fake-abc123", "lightcone-proj:1.0.0", "docker")
+
+
+class TestEnsureHarnessImage:
+    @pytest.fixture
+    def harness_target(self, tmp_path: Path) -> LaunchTarget:
+        cf = tmp_path / "lightcone-sandbox.Containerfile"
+        cf.write_text("FROM python:3.12-slim\nARG LIGHTCONE_VERSION\n")
+        return LaunchTarget(
+            name="claude",
+            containerfile=cf,
+            entrypoint=["claude", "--dangerously-skip-permissions"],
+            install_cmds=["npm install -g @anthropic-ai/claude-code"],
+            committed_tag_prefix="lightcone-claude",
+        )
+
+    def test_returns_committed_tag_when_image_exists(
+        self, harness_target: LaunchTarget
+    ) -> None:
+        from lightcone.engine.launcher import _ensure_harness_image
+
+        with patch("lightcone.engine.launcher._image_exists", return_value=True):
+            with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
+                result = _ensure_harness_image(
+                    harness_target, "lc-lightcone-sandbox-abc", "docker", "1.2.3"
+                )
+
+        assert result == "lightcone-claude:1.2.3"
+        mock_run.assert_not_called()
+
+    def test_installs_and_commits_when_image_absent(
+        self, harness_target: LaunchTarget
+    ) -> None:
+        from lightcone.engine.launcher import _ensure_harness_image
+
+        with patch("lightcone.engine.launcher._image_exists", return_value=False):
+            with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0)
+                result = _ensure_harness_image(
+                    harness_target, "lc-lightcone-sandbox-abc", "docker", "1.2.3"
+                )
+
+        assert result == "lightcone-claude:1.2.3"
+        calls = [c[0][0] for c in mock_run.call_args_list]
+        # First call: docker run (install)
+        assert calls[0][0] == "docker"
+        assert calls[0][1] == "run"
+        assert "npm install -g @anthropic-ai/claude-code" in calls[0]
+        # Second call: docker commit
+        assert calls[1][0] == "docker"
+        assert calls[1][1] == "commit"
+        assert calls[1][-1] == "lightcone-claude:1.2.3"
+        # Third call: docker rm (cleanup)
+        assert calls[2][0] == "docker"
+        assert calls[2][1] == "rm"
+
+    def test_reinstall_skips_image_exists_check(
+        self, harness_target: LaunchTarget
+    ) -> None:
+        from lightcone.engine.launcher import _ensure_harness_image
+
+        with patch("lightcone.engine.launcher._image_exists") as mock_exists:
+            with patch("lightcone.engine.launcher.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0)
+                _ensure_harness_image(
+                    harness_target,
+                    "lc-lightcone-sandbox-abc",
+                    "docker",
+                    "1.2.3",
+                    reinstall=True,
+                )
+
+        mock_exists.assert_not_called()
+        assert mock_run.call_count == 3
+
+    def test_removes_tmp_container_on_install_failure(
+        self, harness_target: LaunchTarget
+    ) -> None:
+        import subprocess as _sp
+
+        from lightcone.engine.launcher import _ensure_harness_image
+
+        def side_effect(cmd: list[str], **kwargs: object) -> MagicMock:
+            if cmd[1] == "run":  # docker run (install step) fails
+                raise _sp.CalledProcessError(1, cmd)
+            return MagicMock(returncode=0)
+
+        with patch("lightcone.engine.launcher._image_exists", return_value=False):
+            with patch(
+                "lightcone.engine.launcher.subprocess.run", side_effect=side_effect
+            ) as mock_run:
+                with pytest.raises(ContainerBuildError):
+                    _ensure_harness_image(
+                        harness_target, "lc-lightcone-sandbox-abc", "docker", "1.2.3"
+                    )
+
+        # docker rm must still have been called despite the failure (finally block)
+        assert mock_run.call_count == 2  # run (failed) + rm (cleanup)
+        rm_cmd = mock_run.call_args_list[1][0][0]
+        assert rm_cmd[1] == "rm"  # second call is cleanup, not commit

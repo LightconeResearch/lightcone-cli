@@ -869,7 +869,7 @@ def launch(target: str) -> None:
       lc launch claude     # first run builds the container (~5 min), then drops into Claude Code
     """
     from lightcone.engine import launcher
-    from lightcone.engine.container import ContainerBuildError, _DAEMONLESS_RUNTIMES, load_runtime
+    from lightcone.engine.container import _DAEMONLESS_RUNTIMES, ContainerBuildError, load_runtime
 
     project = _project_root()
 

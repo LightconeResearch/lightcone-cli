@@ -17,6 +17,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 from lightcone.engine.container import (
     _DAEMONLESS_RUNTIMES,
@@ -34,6 +35,9 @@ from lightcone.engine.manifest import lc_version as _lc_version
 
 # Registry where pre-built release images are published.
 _GHCR_PREFIX = "ghcr.io/lightconeresearch"
+
+# Local image name for the shared sandbox base image.
+_SANDBOX_IMAGE_NAME = "lightcone-sandbox"
 
 
 def _package_containers_dir() -> Path:
@@ -78,7 +82,8 @@ class LaunchTarget:
     env_passthrough: list[str] = field(default_factory=list)
     devices: list[str] = field(default_factory=list)
     #: Sub-paths of ``$HOME`` to bind-mount at the same absolute path inside
-    #: the container.  Only mounted when the path exists on the host.
+    #: the container.  Entries ending with ``/`` are directories; others are
+    #: files.  Missing paths are created automatically before mounting.
     home_mounts: list[str] = field(default_factory=list)
     #: When True, pass ``--user <uid>:<gid>`` so the container process runs as
     #: the calling user rather than root.  Required for tools (e.g. Claude Code)
@@ -86,8 +91,14 @@ class LaunchTarget:
     run_as_host_user: bool = False
     #: Override the GHCR image name used for pull-first.  Defaults to ``name``
     #: when None.  Needed when the published image name differs from the target
-    #: name (e.g. target "claude" is published as "claude-env").
+    #: name (e.g. all harnesses share the base ``"lightcone-sandbox"`` image).
     registry_name: str | None = None
+    #: Shell commands run inside the base image to install the harness.
+    #: Joined with `` && `` and passed to ``sh -c``.
+    install_cmds: list[str] = field(default_factory=list)
+    #: Prefix for the local committed image tag, e.g. ``"lightcone-claude"``.
+    #: Full tag: ``<committed_tag_prefix>:<lc_version>``.
+    committed_tag_prefix: str = ""
 
 
 #: Set when _make_builtin_targets() catches a ContainerBuildError so
@@ -106,8 +117,8 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
     return {
         "claude": LaunchTarget(
             name="claude",
-            containerfile=containers_dir / "lightcone-sandbox.Containerfile",
-            entrypoint=["--dangerously-skip-permissions"],
+            containerfile=containers_dir / f"{_SANDBOX_IMAGE_NAME}.Containerfile",
+            entrypoint=["claude", "--dangerously-skip-permissions"],
             env_passthrough=[
                 "ANTHROPIC_API_KEY",
                 "ANTHROPIC_BASE_URL",
@@ -116,18 +127,60 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
                 "TERM",
             ],
             devices=["/dev/fuse"],
-            # Mount the host Claude Code config so settings, accepted terms,
-            # and API-key auth are available without re-running setup.
-            # ~/.claude.json  — primary config file (API key, auth tokens)
-            # ~/.claude/      — settings, backups, conversation history
-            home_mounts=[".claude.json", ".claude"],
+            home_mounts=[
+                ".claude.json",
+                ".claude/settings.json",
+                ".claude/settings.local.json",
+                ".claude/keybindings.json",
+            ],
             # Claude Code refuses --dangerously-skip-permissions as root;
             # running as the host UID/GID also ensures correct ownership on
             # the mounted project directory.
             run_as_host_user=True,
-            # CI publishes as "claude-env"; the target name stays "claude" for
-            # the CLI surface (`lc launch claude`).
-            registry_name="claude-env",
+            registry_name=_SANDBOX_IMAGE_NAME,
+            install_cmds=["npm install -g @anthropic-ai/claude-code"],
+            committed_tag_prefix="lightcone-claude",
+        ),
+        "mistral-vibe": LaunchTarget(
+            name="mistral-vibe",
+            containerfile=containers_dir / f"{_SANDBOX_IMAGE_NAME}.Containerfile",
+            entrypoint=["vibe"],
+            env_passthrough=["MISTRAL_API_KEY"],
+            home_mounts=[
+                ".vibe/config.toml",
+                ".vibe/agents/",
+                ".vibe/prompts/",
+                ".vibe/skills/",
+                ".vibe/tools/",
+            ],
+            registry_name=_SANDBOX_IMAGE_NAME,
+            install_cmds=["uv tool install mistral-vibe"],
+            committed_tag_prefix="lightcone-mistral-vibe",
+        ),
+        "opencode": LaunchTarget(
+            name="opencode",
+            containerfile=containers_dir / f"{_SANDBOX_IMAGE_NAME}.Containerfile",
+            entrypoint=["opencode"],
+            env_passthrough=[
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "MISTRAL_API_KEY",
+                "GEMINI_API_KEY",
+                "GROQ_API_KEY",
+            ],
+            home_mounts=[
+                ".config/opencode/opencode.json",
+                ".config/opencode/tui.json",
+                ".config/opencode/agents/",
+                ".config/opencode/commands/",
+                ".config/opencode/modes/",
+                ".config/opencode/plugins/",
+                ".config/opencode/themes/",
+                ".config/opencode/AGENTS.md",
+            ],
+            registry_name=_SANDBOX_IMAGE_NAME,
+            install_cmds=["npm install -g opencode-ai"],
+            committed_tag_prefix="lightcone-opencode",
         ),
     }
 
@@ -354,6 +407,58 @@ def _try_pull_and_cache(
         return False
 
 
+def _image_exists(tag: str, runtime: str) -> bool:
+    """Return True if *tag* exists in the local image store."""
+    try:
+        result = subprocess.run(
+            [runtime, "image", "inspect", tag],
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except OSError:
+        return False
+
+
+def _ensure_harness_image(
+    target: LaunchTarget,
+    base_image: str,
+    runtime: str,
+    lc_version: str,
+    reinstall: bool = False,
+) -> str:
+    """Return the local committed image tag for *target*, installing if absent.
+
+    On first call (or when *reinstall* is True): spins up *base_image* in a
+    temporary container, runs ``target.install_cmds`` inside it, commits the
+    result as ``<committed_tag_prefix>:<lc_version>``, and removes the temp
+    container.  On subsequent calls the existing committed image is reused.
+    """
+    committed_tag = f"{target.committed_tag_prefix}:{lc_version}"
+
+    if not reinstall and _image_exists(committed_tag, runtime):
+        return committed_tag
+
+    tmp_name = f"lc-install-{target.name}-{uuid4().hex[:8]}"
+    install_cmd = " && ".join(target.install_cmds)
+    _print(f"Installing {target.name} harness (first run — this may take a few minutes)…")
+    try:
+        subprocess.run(
+            [runtime, "run", "--name", tmp_name, base_image, "sh", "-c", install_cmd],
+            check=True,
+        )
+        subprocess.run(
+            [runtime, "commit", tmp_name, committed_tag],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise ContainerBuildError(f"Harness install failed for {target.name}: {exc}") from exc
+    finally:
+        subprocess.run([runtime, "rm", "-f", tmp_name], check=False, capture_output=True)
+
+    return committed_tag
+
+
 def launch_target(
     name: str,
     *,
@@ -386,9 +491,33 @@ def launch_target(
     if not image_exists_locally(tag, runtime=choice.runtime, project_path=project_root):
         load_image_from_tarball(tarball, runtime=choice.runtime)
 
+    if target.committed_tag_prefix:
+        tag = _ensure_harness_image(
+            target,
+            base_image=tag,
+            runtime=choice.runtime,
+            lc_version=_lc_version(),
+        )
+
     _apply_tracking_tag(tag, _tracking_image_ref(project_root, _lc_version()), choice.runtime)
 
     _exec_interactive(target, tag, choice, project_root)
+
+
+def _ensure_host_path(path: Path, *, is_dir: bool) -> None:
+    """Create *path* on the host if it does not exist.
+
+    Entries in ``home_mounts`` ending with ``/`` are directories; all others
+    are files.  Creating the path before bind-mounting prevents Docker/Podman
+    from silently creating a directory when the intended target is a file.
+    """
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if is_dir:
+        path.mkdir(parents=True, exist_ok=True)
+    else:
+        path.touch()
 
 
 def _exec_interactive(
@@ -412,10 +541,12 @@ def _exec_interactive(
 
     home = os.environ.get("HOME")
     if home:
-        for subdir in target.home_mounts:
-            host_path = str(Path(home) / subdir)
-            if Path(host_path).exists():
-                cmd += ["-v", f"{host_path}:{host_path}"]
+        for subpath in target.home_mounts:
+            is_dir = subpath.endswith("/")
+            host_path = Path(home) / subpath.rstrip("/")
+            _ensure_host_path(host_path, is_dir=is_dir)
+            path_str = str(host_path)
+            cmd += ["-v", f"{path_str}:{path_str}"]
 
     for device in target.devices:
         if Path(device).exists():
@@ -444,13 +575,17 @@ def _exec_interactive(
         else:
             cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
 
+    if target.entrypoint:
+        cmd += ["--entrypoint", target.entrypoint[0]]
+
     cmd.append(tag)
+
     # On podman-hpc we cannot use --userns=keep-id (see above), so the
     # container runs as UID 0. Claude Code rejects
     # --dangerously-skip-permissions when invoked as root, so drop the
     # flag — the user will see the folder-trust prompt once and accept
     # it manually.
-    entrypoint_args = target.entrypoint
+    entrypoint_args = target.entrypoint[1:]
     if choice.runtime == "podman-hpc":
         entrypoint_args = [
             a for a in entrypoint_args if a != "--dangerously-skip-permissions"
