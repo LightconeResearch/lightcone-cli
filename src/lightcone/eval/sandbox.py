@@ -84,7 +84,7 @@ class EvalSandbox:
                 "astra-tools astra-spec"
                 " jinja2 jsonschema"
                 " snakemake snakemake-interface-executor-plugins"
-                " snakemake-interface-common dask distributed langfuse"
+                " snakemake-interface-common dask distributed"
             )
             image = (
                 Image.debian_slim("3.12")

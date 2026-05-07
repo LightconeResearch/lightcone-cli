@@ -26,7 +26,7 @@ nav.
 | Layer | Package | Role |
 |-------|---------|------|
 | **ASTRA** | `astra-tools` | Pure specification: schema, validation, prior insights & findings, evidence verification helpers, the `astra` CLI. |
-| **lightcone-cli** | `lightcone-cli` | Agentic layer: project scaffolding, Snakemake-based execution, Dask cluster management, container builds, Claude Code skills, telemetry. |
+| **lightcone-cli** | `lightcone-cli` | Agentic layer: project scaffolding, Snakemake-based execution, Dask cluster management, container builds, Claude Code skills. |
 
 `lightcone-cli` depends on `astra-tools`. The `astra` CLI handles the
 spec itself (validation, paper management, evidence verification); the
@@ -60,7 +60,6 @@ claude/lightcone/               # Claude Code plugin (force-included into the wh
 ├── agents/                     # lc-extractor (literature subagent)
 ├── guides/                     # astra-reference, lightcone-cli-reference, ui-brand
 ├── templates/                  # project CLAUDE.md template
-├── hooks/                      # Langfuse telemetry hooks (Python)
 └── scripts/                    # session hooks (bash): venv, validate-on-save, …
 
 tests/                          # pytest, mirrors src/
@@ -131,5 +130,4 @@ just docs-serve     # live docs preview
 - [CLI Reference](cli/index.md) — every command currently shipped
 - [Python API](api/index.md) — the engine modules
 - [Skills](skills/index.md) — what each `/lc-*` skill is supposed to do
-- [Telemetry](telemetry/index.md) — Langfuse tracing hooks
 - [Contributing](contributing/setup.md) — getting the dev loop running

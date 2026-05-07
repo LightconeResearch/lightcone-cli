@@ -5,7 +5,7 @@
 **lightcone-cli** is Lightcone Research's agentic layer for ASTRA (Agentic Schema for Transparent Research Analysis). It ships the `lc` executable and Claude Code skills/hooks used during interactive analysis work.
 
 - **ASTRA** = pure specification: schema, validation, prior insights & findings, evidence verification, helpers, minimal CLI
-- **lightcone-cli** = agentic layer: Claude Code skills, project scaffolding, **Snakemake-based execution**, container builds, telemetry
+- **lightcone-cli** = agentic layer: Claude Code skills, project scaffolding, **Snakemake-based execution**, container builds
 
 lightcone-cli depends on ASTRA. The `astra` CLI handles spec operations; the `lc` CLI handles execution and agent operations.
 
@@ -71,7 +71,6 @@ claude/lightcone/           # Claude plugin source — force-included into the w
 ├── agents/                 # lc-extractor
 ├── guides/                 # astra-reference, lightcone-cli-reference, ui-brand
 ├── templates/              # Project CLAUDE.md template
-├── hooks/                  # Langfuse telemetry hooks (Python)
 └── scripts/                # Session hooks (bash): venv activation, validate-on-save, status display
 
 tests/                      # pytest — mirrors src/ structure

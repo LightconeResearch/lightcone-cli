@@ -259,9 +259,8 @@ paths, and `git push`.
 ### Hooks
 
 The plugin registers Claude Code hooks for venv activation,
-auto-validation on save, integrity-aware "did you forget `lc run`?"
-warnings, and Langfuse telemetry. See
-[Telemetry](telemetry/index.md) and [`hooks` source](https://github.com/LightconeResearch/lightcone-cli/tree/main/claude/lightcone/hooks).
+auto-validation on save, and integrity-aware "did you forget `lc run`?"
+warnings.
 
 ---
 
