@@ -297,4 +297,4 @@ rm -rf ~/.lightcone/lightcone-cli             # only for source installs
 ```
 
 !!! note "Keep your config?"
-    `~/.lightcone/config.yaml` and `~/.lightcone/targets/` survive the uninstall. Delete them too if you want to start fresh.
+    `~/.lightcone/config.yaml` survives the uninstall. Delete it too if you want to start fresh.
