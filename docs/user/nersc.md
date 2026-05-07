@@ -1,0 +1,300 @@
+# lightcone-cli on NERSC (Perlmutter)
+
+A practical guide for running [`lightcone-cli`](https://github.com/LightconeResearch/lightcone-cli) on **Perlmutter**. The CLI itself behaves the same as on a laptop — the wrinkles are in the filesystem layout (DVS-mounted home, Lustre scratch), the container runtime (`podman-hpc`), and SLURM submission. This page covers all three.
+
+!!! tip "Already familiar with the basics?"
+    The generic [Install](install.md) and [Running on a Cluster](cluster.md) pages cover the cross-platform story. This page is the NERSC-specific overlay — read it first if Perlmutter is your home base.
+
+---
+
+## 0. Agentic CLI
+
+`lightcone-cli` is the execution layer of the `lightcone` project — it harnesses an agent-based CLI (currently [Claude Code](https://docs.claude.com/en/docs/claude-code/setup)) to follow the `astra` standard while building and running an analysis. So the very first step, even before touching `lightcone-cli` itself, is to install the agent:
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash   # installs to ~/.local/bin/claude
+```
+
+Make sure `~/.local/bin` is on your `PATH`, then verify and authenticate:
+
+```bash
+claude --version
+claude                                           # first run prompts for login (claude.ai or API key)
+```
+
+Other install routes (npm, native package managers) are documented in the [Claude Code installation docs](https://docs.claude.com/en/docs/claude-code/setup).
+
+---
+
+## 1. Python
+
+NERSC's `python` module gives you a ready-to-use Python distribution with `conda`, `pip`, and many common scientific packages already installed — no env creation needed for the basics:
+
+```bash
+module load python      # NERSC Python (3.11+); brings conda and pip onto PATH
+```
+
+That's enough for installing `lightcone-cli` on top. Skip ahead to [§2](#2-install-lightcone-cli).
+
+!!! note "When you'd want your own conda env"
+    The NERSC python module is shared and read-only. You *can* layer user-level packages on top, but you can't pin a different Python version or guarantee dependency isolation. If you need either, build a conda env on top of the module:
+
+    ```bash
+    module load python
+    conda create -n your-env-name python=3.11 -y
+    conda activate your-env-name
+    ```
+
+    This is also NERSC's [recommended path for `pip install`](https://docs.nersc.gov/development/languages/python/nersc-python/) when you need custom packages: pip-into-conda-env rather than pip-into-base.
+
+!!! warning "Storage note: 40 GB home quota"
+    Conda envs land under `~/.conda/envs/` by default. The Perlmutter home quota is **40 GB**, which gets eaten quickly. NERSC recommends `/global/common/software/<project>/` for larger envs. If you really want them on `$SCRATCH` (note: 12-week purge!), move and symlink:
+
+    ```bash
+    conda deactivate
+    mv ~/.conda/envs/your-env-name $SCRATCH/conda-envs/
+    ln -s $SCRATCH/conda-envs/your-env-name ~/.conda/envs/your-env-name
+    ```
+
+    See [NERSC's Python guide](https://docs.nersc.gov/development/languages/python/nersc-python/) for the full storage strategy.
+
+---
+
+## 2. Install lightcone-cli
+
+With Python in place, install the package itself. Pick the path that matches your environment:
+
+### Path A — On top of NERSC's `python` module (no conda env)
+
+The module is read-only, so install with `--user` to land into your home directory's site-packages:
+
+```bash
+python -m pip install --user lightcone-cli
+```
+
+This drops the `lc` console script into `~/.local/bin/`. Make sure that's on your `PATH` — Perlmutter usually has it by default; check with:
+
+```bash
+echo $PATH | tr : '\n' | grep .local/bin
+```
+
+!!! tip "Already use `uv`?"
+    [`uv`](https://docs.astral.sh/uv/) isn't shipped by NERSC, but if you've installed it yourself (`curl -LsSf https://astral.sh/uv/install.sh | sh`), `uv tool install` is a cleaner alternative — it isolates `lc` in its own venv and exposes the same `~/.local/bin/lc` wrapper:
+
+    ```bash
+    uv tool install lightcone-cli
+    ```
+
+### Path B — Inside a conda env
+
+```bash
+conda activate your-env-name
+python -m pip install lightcone-cli           # or: uv pip install lightcone-cli
+```
+
+`astra-tools` is a transitive dependency, so a single `lightcone-cli` install pulls it in automatically.
+
+### Path C — From source (contributors only)
+
+If you want to track the latest commits or contribute back, clone the repo and install editably. **Most users should stick with PyPI** and skip this section.
+
+```bash
+cd ~/.lightcone                                # or wherever you keep clones
+git clone https://github.com/LightconeResearch/lightcone-cli.git
+pip install -e ./lightcone-cli                 # editable: tracks local edits
+```
+
+If you also want to hack on `astra-tools` (note: PyPI name `astra-tools`, GitHub repo name `ASTRA`):
+
+```bash
+git clone https://github.com/LightconeResearch/ASTRA.git
+pip install -e ./ASTRA
+```
+
+For development tooling (pytest, ruff, mypy), add the `dev` extras:
+
+```bash
+pip install -e "./lightcone-cli[dev]"
+```
+
+### One-time setup
+
+After install, run setup once:
+
+```bash
+lc setup
+```
+
+This creates `~/.lightcone/config.yaml` with `runtime: auto`. You'll pin it to `podman-hpc` for compute nodes in [§5](#5-running-on-compute-nodes).
+
+### Verify
+
+```bash
+which lc            # should resolve inside your active env's bin/
+lc --version
+lc --help
+```
+
+---
+
+## 3. Initialize a new project
+
+Scaffold a project directory and drop into it with the agent:
+
+```bash
+lc init your-analysis      # scaffolds a fresh project tree
+cd your-analysis
+claude                     # launch Claude Code inside the project
+```
+
+---
+
+## 4. Start your research
+
+Once Claude Code is open, drive everything from there. The `lc-*` skills are how you tell the agent what to build:
+
+=== "Start fresh"
+    ```text
+    /lc-new Please sample a standard Gaussian distribution using numpy.
+    ```
+
+=== "Migrate existing code"
+    ```text
+    /lc-migrate I have code that samples a standard Gaussian distribution using numpy at @../gaussian_sampling. Please create an analysis based on it.
+    ```
+
+After that, just keep talking to the agent in plain English about what you want to build next.
+
+!!! warning "You're still on a login node"
+    Everything from `lc init` through your first `/lc-new` runs on a Perlmutter **login node**. That's fine for scaffolding and small recipes, but anything heavyweight needs a compute node — see [§5](#5-running-on-compute-nodes).
+
+---
+
+## 5. Running on compute nodes
+
+Login nodes are shared and rate-limited — fine for `lc init`, `lc status`, and small `lc build` calls, but anything heavyweight belongs on a compute node.
+
+### Pre-flight: pin the container runtime and build images
+
+Perlmutter compute nodes ship `podman-hpc`. Pin it once globally:
+
+```yaml
+# ~/.lightcone/config.yaml
+container:
+  runtime: podman-hpc
+```
+
+Then, on a login node, build and migrate your project's images:
+
+```bash
+cd /path/to/your-analysis
+lc build
+```
+
+`lc build` runs `podman-hpc build` followed by `podman-hpc migrate`, which copies the image into each compute node's local container cache. See [Running on a Cluster → Pre-flight](cluster.md#pre-flight-pick-the-right-container-runtime) for the underlying mechanics.
+
+### Interactive runs (agent-driven)
+
+The agent (Claude Code) calls `lc run` for you whenever a recipe needs to materialize — you never call it directly. What you *do* control is **where Claude Code is running**: it inherits the shell environment you launched it from. To put the agent's recipes onto a compute node, simply launch `claude` from inside a SLURM allocation:
+
+```bash
+salloc -A <your_project> -q interactive -C gpu --nodes=1 -t 00:30:00
+# salloc drops you onto a compute node; from there:
+cd /path/to/your-analysis
+claude
+```
+
+Now everything the agent triggers (`lc run`, scripts, etc.) executes on the allocated node.
+
+!!! note "Picking a QoS"
+    The `interactive` QoS on the GPU partition is right for development. For longer or larger sessions, see [NERSC's queue policy reference](https://docs.nersc.gov/jobs/policy/).
+
+### Unattended batch runs (no agent in the loop)
+
+For production sweeps where the recipes are already nailed down, you can submit `lc run` directly as a batch job. See [Running on a Cluster → A typical SLURM workflow](cluster.md#a-typical-slurm-workflow) for the generic template; on Perlmutter, the only addition is the `-A` / `-q` directives:
+
+```bash
+#!/bin/bash
+#SBATCH -A <your_project>
+#SBATCH -q regular
+#SBATCH -C gpu
+#SBATCH -N 4
+#SBATCH -t 04:00:00
+
+cd $SCRATCH/your-analysis
+source ~/.conda/envs/your-env-name/bin/activate   # or your venv
+lc run -j 16
+```
+
+!!! note "When to use this path"
+    The agent-driven flow above is the right tool during development. Reach for batch submission when you've finished iterating and want a hands-off sweep.
+
+### Storage gotcha: Snakemake state must live on `$SCRATCH`
+
+!!! danger "DVS silently ignores `flock()`"
+    `$HOME` and `/global/cfs/` are mounted on compute nodes via DVS, which silently ignores `flock()`. Snakemake (and any sane locking system) relies on `flock`, so its `.snakemake/` directory and Dask spill files **must** live on Lustre (`$SCRATCH`), which honors `flock`. Otherwise you get intermittent silent rule-rerun loops or hangs.
+
+`lc` redirects state automatically when it detects Perlmutter, so this usually just works. To pin explicitly at project creation:
+
+```bash
+lc init your-analysis --scratch '$SCRATCH'        # kept verbatim, expanded at run time
+```
+
+Or, after the fact, edit `<project>/.lightcone/lightcone.yaml`:
+
+```yaml
+scratch_root: $SCRATCH
+```
+
+!!! warning "12-week purge on `$SCRATCH`"
+    Perlmutter purges `$SCRATCH` on a rolling 12-week window. For outputs you need to keep, copy or symlink to `/global/cfs/cdirs/<project>/`.
+
+### Further reading
+
+- [NERSC interactive jobs](https://docs.nersc.gov/jobs/interactive/) — `salloc` patterns and reservation queues
+- [Perlmutter system overview](https://docs.nersc.gov/systems/perlmutter/) — node types and partitions
+- [NERSC Python guide](https://docs.nersc.gov/development/languages/python/nersc-python/) — module, conda, and pip layering
+
+---
+
+## 6. Common troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `lc: command not found` | Wrong env active, or `~/.local/bin` not on `PATH` | `which lc`; reinstall in the active env, or fix `PATH` |
+| `lc` runs but uses unexpected code | Two installs across two envs shadowing each other on `PATH` | `which lc` and uninstall the stale one |
+| `ModuleNotFoundError: lightcone.cli.__main__` | Tried `python -m lightcone.cli` (the package isn't directly executable) | Use the `lc` console script instead |
+| Snakemake locking errors / silent rule rerun loops | `.snakemake/` ended up on DVS-mounted storage | Set `scratch_root: $SCRATCH` in the project's `.lightcone/lightcone.yaml` |
+| `ImportError: cannot import name 'resolve_analysis_tree' from 'astra.helpers'` | Stale `astra-tools` (pre-0.2.5) | `pip install -U astra-tools` |
+| `PermissionError` reading another user's symlinked `results/` | Cross-user scratch path without group ACLs | Request access from the data owner, or copy the manifests into your own scratch |
+| `pip install` hangs or times out on a compute node | Compute nodes have no public internet | Always install from a login node |
+
+---
+
+## 7. Updating
+
+=== "PyPI install"
+    ```bash
+    pip install -U lightcone-cli astra-tools
+    ```
+
+=== "Source install"
+    ```bash
+    cd ~/.lightcone/lightcone-cli
+    git pull
+    pip install -e .                          # only needed if pyproject.toml changed
+    ```
+
+    Editable installs auto-follow source edits — switching branches or pulling new commits is reflected immediately in `lc`. Re-run `pip install -e .` only when `pyproject.toml` adds a new dependency or changes the `[project.scripts]` table.
+
+---
+
+## 8. Uninstalling
+
+```bash
+pip uninstall lightcone-cli                   # remove from the active env
+rm -rf ~/.lightcone/lightcone-cli             # only for source installs
+```
+
+!!! note "Keep your config?"
+    `~/.lightcone/config.yaml` survives the uninstall. Delete it too if you want to start fresh.
