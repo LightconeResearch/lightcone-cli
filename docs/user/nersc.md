@@ -30,10 +30,12 @@ Next, set up a Python environment for `lightcone-cli` (Python 3.11+ required). T
 ### Option A — conda env (recommended)
 
 ```bash
-module load conda                           # NERSC's miniconda
+module load python                          # NERSC's Python distribution; ships conda
 conda create -n your-env-name python=3.11 -y
 conda activate your-env-name
 ```
+
+(`module load conda` works too — it loads Miniconda directly. Either gives you a working `conda` on `PATH`; `module load python` is the canonical NERSC default.)
 
 Conda envs land under `~/.conda/envs/` (your home, not CFS). They're persistent across sessions; just `conda activate your-env-name` next time. 
 
@@ -55,7 +57,7 @@ Conda envs land under `~/.conda/envs/` (your home, not CFS). They're persistent 
 If you already have a project conda env (e.g. `lightcone`) and just want `lc` available alongside it without polluting the conda env:
 
 ```bash
-module load conda
+module load python
 conda activate lightcone
 python -m venv ~/.lightcone/.venv          # or wherever you prefer
 source ~/.lightcone/.venv/bin/activate
