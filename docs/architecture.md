@@ -274,7 +274,6 @@ warnings.
 | `.lightcone/lightcone.yaml` | Project | Tiny scratchpad — currently writes only `target: local`. Not consumed by today's code. |
 | `~/.lightcone/config.yaml` | User | `container.runtime` (and historically `extraction_model`). |
 | `.claude/settings.json` | Project | Claude Code permissions. |
-| `.claude/settings.local.json` | Project | Telemetry env vars. Not committed. |
 
 The `dagster.yaml` and `~/.lightcone/targets/*.yaml` files referenced in
 older docs are no longer used — historical residue.

@@ -120,19 +120,16 @@ class EvalSandbox:
             "trial": self.trial_id,
         }
 
-        # Merge env vars: host ANTHROPIC_API_KEY + Langfuse creds + eval metadata
+        # Merge env vars: host ANTHROPIC_API_KEY + eval metadata
         sandbox_env = {
             "LIGHTCONE_EVAL": "true",
             "LIGHTCONE_EVAL_TRIAL_ID": self.trial_id,
             "LIGHTCONE_EVAL_TASK_ID": self.task_id,
         }
-        # Pass through host API keys, OAuth token, and Langfuse config
+        # Pass through host API keys and OAuth token.
         for key in (
             "ANTHROPIC_API_KEY",
             "CLAUDE_CODE_OAUTH_TOKEN",
-            "LANGFUSE_PUBLIC_KEY",
-            "LANGFUSE_SECRET_KEY",
-            "LANGFUSE_HOST",
         ):
             val = os.environ.get(key)
             if val:
