@@ -9,7 +9,7 @@ A practical guide for running [`lightcone-cli`](https://github.com/LightconeRese
 `lightcone-cli` is the execution layer of the `lightcone` project — it harnesses a coding agent (e.g. Claude Code) to follow the `astra` standard while building and running an analysis. So the very first step, even before touching `lightcone-cli` itself, is to install the agent. For now the project is built around **Claude Code**, which can be installed via:
 
 ```bash
-curl -fsSL claude.ai/install.sh | bash      # installs to ~/.local/bin/claude
+curl -fsSL https://claude.ai/install.sh | bash   # installs to ~/.local/bin/claude
 ```
 
 Add `~/.local/bin` to your `PATH` if it isn't already, then verify and authenticate:
@@ -71,24 +71,34 @@ With the environment ready, install the package itself.
 
 ### From PyPI (recommended)
 
-`lightcone-cli` and its companion package `astra-tools` are both published to PyPI, so a single command does it:
-
 ```bash
-pip install lightcone-cli astra-tools
+pip install lightcone-cli
 ```
 
-### From source
+If you use [`uv`](https://docs.astral.sh/uv/) (faster, no daemon):
 
-You're also welcome to install from source — useful if you want to follow the latest commits or contribute back to the repo. Note the GitHub repo for `astra-tools` is named `ASTRA`:
+```bash
+uv pip install lightcone-cli
+```
+
+`astra-tools` is a transitive dependency, so a single `pip install lightcone-cli` pulls it in automatically.
+
+### From source (contributor route)
+
+If you want to track the latest commits or contribute back, clone the repo and install editably. This is **optional** — most users should stick with PyPI.
 
 ```bash
 cd ~/.lightcone                              # or wherever you keep clones
 
 git clone https://github.com/LightconeResearch/lightcone-cli.git
 pip install -e ./lightcone-cli               # editable install, follows local edits
+```
 
+If you also want to hack on `astra-tools` itself, clone the `ASTRA` repo (the package is published to PyPI as `astra-tools` but the GitHub repo is named `ASTRA`):
+
+```bash
 git clone https://github.com/LightconeResearch/ASTRA.git
-pip install -e ./ASTRA                       # same for astra-tools
+pip install -e ./ASTRA
 ```
 
 For development work, add the dev extras:
@@ -96,6 +106,14 @@ For development work, add the dev extras:
 ```bash
 pip install -e "./lightcone-cli[dev]"        # adds pytest, ruff, mypy
 ```
+
+### One-time setup
+
+```bash
+lc setup
+```
+
+This creates `~/.lightcone/config.yaml` with a default container runtime of `auto`. You can pin the runtime later (see [§5](#5-running-on-compute-nodes) — Perlmutter compute nodes need `podman-hpc`).
 
 ### Verify
 
@@ -143,7 +161,28 @@ After initialization, just keep talking to the agent in plain English about what
 
 Everything up to this point ran on a Perlmutter **login node** — fine for installation, scaffolding, and `lc status`, but anything heavy belongs on a compute node. Login nodes are shared and should not be abused.
 
-The agent (Claude Code) will invoke `lc run` for you when it decides recipes need to materialize — you don't call it directly. What you control is *where Claude Code is running*: it inherits whatever shell environment you started it from. To get the agent's `lc run` calls onto a compute node, start `claude` from inside a Slurm allocation:
+### Pre-flight: pin the container runtime and build images
+
+On Perlmutter, compute nodes ship `podman-hpc`. Pin it once in your global config:
+
+```yaml
+# ~/.lightcone/config.yaml
+container:
+  runtime: podman-hpc
+```
+
+Then build and migrate the images for your project on a login node (`lc build` runs `podman-hpc build` then `podman-hpc migrate`, which copies the image into the per-node container cache):
+
+```bash
+cd /path/to/your-analysis
+lc build
+```
+
+See [Running on a Cluster → Pre-flight](cluster.md#pre-flight-pick-the-right-container-runtime) for the underlying mechanics.
+
+### Interactive runs (agent-driven)
+
+The agent (Claude Code) will invoke `lc run` for you when it decides recipes need to materialize — you don't call it directly. What you control is *where Claude Code is running*: it inherits whatever shell environment you started it from. To get the agent's `lc run` calls onto a compute node, start `claude` from inside a SLURM allocation:
 
 ```bash
 salloc -A <your_project> -q interactive -C gpu --nodes=1 -t 00:30:00
@@ -154,12 +193,26 @@ claude
 
 Now anything the agent decides to run (`lc run`, scripts, etc.) executes on the allocated node, not the login node.
 
-The `interactive` QoS on the GPU partition is appropriate for development. For longer or larger sessions, other QoS queues will be supported in the future.
+The `interactive` QoS on the GPU partition is appropriate for development. For longer or larger sessions, see [NERSC's queue policy reference](https://docs.nersc.gov/jobs/policy/).
 
-> Unattended batch submission (`sbatch`-style runs of `lc`) is not yet supported — for now, every analysis runs interactively under an allocation that's open while you work.
+### Unattended batch runs (no agent in the loop)
 
+If you want to submit `lc run` as an unattended batch job — i.e., without Claude Code in the loop — that path also works. See [Running on a Cluster → A typical SLURM workflow](cluster.md#a-typical-slurm-workflow) for the generic `sbatch` template; on Perlmutter, the only addition is the `-A`/`-q` directives:
 
+```bash
+#!/bin/bash
+#SBATCH -A <your_project>
+#SBATCH -q regular
+#SBATCH -C gpu
+#SBATCH -N 4
+#SBATCH -t 04:00:00
 
+cd $SCRATCH/your-analysis
+source ~/.conda/envs/your-env-name/bin/activate   # or your venv
+lc run -j 16
+```
+
+> Note: this path runs `lc run` directly, not through the agent — useful for production sweeps where you've already nailed down the recipes interactively. The agent-driven flow above is the right tool for development.
 
 ### Storage gotcha: Snakemake state must live on `$SCRATCH`
 
