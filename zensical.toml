@@ -16,6 +16,7 @@ nav = [
     {"Tutorial: Your First Analysis" = "user/tutorial.md"},
     {"Multiverse Analyses" = "user/multiverse.md"},
     {"Running on a Cluster" = "user/cluster.md"},
+    {"NERSC (Perlmutter)" = "user/nersc.md"},
     {"Troubleshooting" = "user/troubleshooting.md"},
     {"Glossary" = "user/glossary.md"},
   ]},
