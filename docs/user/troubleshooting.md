@@ -3,16 +3,22 @@
 Common issues and how to unstick them. Roughly ordered by how often
 they come up.
 
-## "No global configuration found. Run `lc setup` first."
+## "No global configuration found."
 
-You haven't created `~/.lightcone/config.yaml` yet.
+`~/.lightcone/config.yaml` is normally created automatically on first
+use, but it may be missing if the home directory was unavailable or if
+the file was deleted manually. Re-create it by hand:
 
 ```bash
-lc setup
+mkdir -p ~/.lightcone
+cat > ~/.lightcone/config.yaml <<'EOF'
+container:
+  runtime: auto
+EOF
 ```
 
-That writes a one-line config and you're on your way. There are no
-prompts.
+Or just run any `lc` command (e.g. `lc --version`) — the auto-creation
+runs before every command.
 
 ## "No astra.yaml found in current directory or any parent."
 
@@ -151,7 +157,7 @@ from pathlib import Path
 from lightcone.cli.plugin import get_plugin_source_dir
 src = get_plugin_source_dir()
 dst = Path(".claude")
-for sub in ("skills", "agents", "hooks", "scripts", "guides", "templates"):
+for sub in ("skills", "agents", "scripts", "guides", "templates"):
     s, d = src / sub, dst / sub
     if d.exists(): shutil.rmtree(d)
     if s.exists(): shutil.copytree(s, d)
