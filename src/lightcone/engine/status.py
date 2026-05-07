@@ -1,135 +1,162 @@
-"""Materialization status queries for ASTRA outputs."""
+"""Manifest-driven status walker.
+
+For each output declared in a project's ``astra.yaml``, determines whether
+it is materialized, stale, missing, or an alias — by reading the per-output
+manifest written at ``<output_dir>/.lightcone-manifest.json``.
+
+This module never imports Snakemake. ``lc status`` works on a fresh clone
+with no ``.snakemake/`` directory and on frozen archives.
+"""
 from __future__ import annotations
 
-import logging
-import os
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Literal
 
-import dagster as dg
 from astra.helpers import load_yaml, resolve_analysis_tree
 
-from lightcone.engine.tree import collect_tree_outputs
+from lightcone.engine.container import make_image_tag_resolver
+from lightcone.engine.manifest import code_version, read_manifest
+from lightcone.engine.tree import (
+    TreeOutput,
+    collect_tree_outputs,
+    resolve_container_spec,
+    resolve_output_path,
+    resolve_universe_decisions,
+)
 
-logger = logging.getLogger(__name__)
+StatusLiteral = Literal["ok", "stale", "missing", "alias"]
 
 
-def _get_dagster_instance(project_path: Path) -> dg.DagsterInstance | None:
-    """Load a DagsterInstance from the project's dagster.yaml.
+@dataclass
+class OutputStatus:
+    output_id: str
+    universe_id: str
+    analysis_id: str | None
+    output_dir: Path
+    status: StatusLiteral
+    manifest: dict[str, Any] | None
+    recipe_command: str | None
 
-    Returns None if dagster.yaml doesn't exist or the instance can't be loaded
-    (e.g. corrupted SQLite). Callers treat None as "no events recorded."
 
-    Temporarily changes to project_path so that relative paths in dagster.yaml
-    (e.g. ``base_dir: results/.dagster``) resolve correctly.
+def _decisions_for(
+    tree_output: TreeOutput,
+    universe_decisions: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the decisions visible to a given output for code_version
+    computation.
+
+    v0.0.7: ``Output.decisions`` is the explicit provenance contract —
+    the set of decisions whose option choices can change this output.
+    The Snakefile generator hashes only those into ``code_version``;
+    we mirror that scoping here so ``lc status`` stays in sync.
+    Outputs that do not declare decisions hash an empty dict.
     """
-    # Check .lightcone/ first, then root for backwards compat
-    dagster_yaml = project_path / ".lightcone" / "dagster.yaml"
-    if not dagster_yaml.exists():
-        dagster_yaml = project_path / "dagster.yaml"
-    if not dagster_yaml.exists():
-        return None
-    config_dir = dagster_yaml.parent
-    old_cwd = os.getcwd()
+    declared = tree_output.output_def.get("decisions") or []
+    if not declared:
+        return {}
+    scoped: dict[str, Any] = {}
+    prefix = f"{tree_output.analysis_id}." if tree_output.analysis_id else ""
+    for dec_id in declared:
+        if prefix and (qualified := f"{prefix}{dec_id}") in universe_decisions:
+            scoped[dec_id] = universe_decisions[qualified]
+        elif dec_id in universe_decisions:
+            scoped[dec_id] = universe_decisions[dec_id]
+    return scoped
+
+
+def _load_universe_decisions(
+    project_path: Path,
+    spec: dict[str, Any],
+    universe_id: str,
+) -> dict[str, Any]:
+    """Load merged universe decisions if the file exists; empty dict otherwise.
+
+    Universe files are optional during interactive work, so we tolerate
+    their absence rather than erroring.
+    """
+    universe_yaml = project_path / "universes" / f"{universe_id}.yaml"
+    if not universe_yaml.exists():
+        return {}
     try:
-        os.chdir(project_path)
-        return dg.DagsterInstance.from_config(str(config_dir))
-    except Exception:
-        logger.warning("Failed to load Dagster instance from %s", project_path, exc_info=True)
-        return None
-    finally:
-        os.chdir(old_cwd)
+        return resolve_universe_decisions(project_path, spec, universe_id)
+    except (FileNotFoundError, KeyError):
+        return {}
 
 
 def get_output_status(
     project_path: Path,
+    *,
     universe_id: str,
-    instance: dg.DagsterInstance | None = None,
-) -> dict[str, str]:
-    """Get materialization status for all outputs in a universe.
+) -> Iterator[OutputStatus]:
+    """Yield an :class:`OutputStatus` for every declared output in the project."""
+    spec_path = project_path / "astra.yaml"
+    spec = resolve_analysis_tree(load_yaml(spec_path), project_path)
+    universe_decisions = _load_universe_decisions(project_path, spec, universe_id)
+    project_name = (spec.get("name") or project_path.name).lower().replace(" ", "-")
+    resolve_image = make_image_tag_resolver(project_path, project_name)
 
-    Returns dict mapping qualified output_id to status string:
-    - "no_recipe": output declared but has no recipe block
-    - "pending": has recipe, not yet materialized
-    - "materialized": has recipe and Dagster event log confirms materialization
+    for tree_out in collect_tree_outputs(spec):
+        out_dir = resolve_output_path(project_path, tree_out, universe_id) / tree_out.output_id
 
-    For sub-analysis outputs, keys are qualified: "analysis_id/output_id".
-    Root-level outputs use just "output_id".
-    """
-    spec = load_yaml(project_path / "astra.yaml")
-    # Resolve sub-analysis tree
-    spec = resolve_analysis_tree(spec, project_path)
-
-    if instance is None:
-        instance = _get_dagster_instance(project_path)
-
-    # Collect all outputs from the tree
-    tree_outputs = collect_tree_outputs(spec)
-
-    # Build asset keys for outputs with recipes, then batch-query Dagster
-    recipe_keys: dict[str, dg.AssetKey] = {}  # qualified_id -> asset key
-    for tree_out in tree_outputs:
-        out_id = tree_out.output_id
-        if not out_id or not tree_out.output_def.get("recipe"):
+        # Aliases — outputs without their own recipe — are materialized as
+        # a side effect of their upstream. They have no independent status.
+        recipe = tree_out.output_def.get("recipe")
+        if recipe is None:
+            yield OutputStatus(
+                output_id=tree_out.output_id,
+                universe_id=universe_id,
+                analysis_id=tree_out.analysis_id,
+                output_dir=out_dir,
+                status="alias",
+                manifest=None,
+                recipe_command=None,
+            )
             continue
-        if tree_out.analysis_id:
-            qualified = f"{tree_out.analysis_id}/{out_id}"
-            key = dg.AssetKey([universe_id, tree_out.analysis_id, out_id])
-        else:
-            qualified = out_id
-            key = dg.AssetKey([universe_id, out_id])
-        recipe_keys[qualified] = key
 
-    materialized: set[str] = set()
-    if instance is not None and recipe_keys:
-        events = instance.get_latest_materialization_events(list(recipe_keys.values()))
-        materialized_asset_keys = {k for k, v in events.items() if v is not None}
-        for qualified, key in recipe_keys.items():
-            if key in materialized_asset_keys:
-                materialized.add(qualified)
+        recipe_command = recipe.get("command", "")
 
-    status: dict[str, str] = {}
-    for tree_out in tree_outputs:
-        out_id = tree_out.output_id
-        if not out_id:
+        manifest = read_manifest(out_dir)
+        if manifest is None:
+            yield OutputStatus(
+                output_id=tree_out.output_id,
+                universe_id=universe_id,
+                analysis_id=tree_out.analysis_id,
+                output_dir=out_dir,
+                status="missing",
+                manifest=None,
+                recipe_command=recipe_command,
+            )
             continue
-        if tree_out.analysis_id:
-            qualified = f"{tree_out.analysis_id}/{out_id}"
-        else:
-            qualified = out_id
 
-        if not tree_out.output_def.get("recipe"):
-            # Check for alias outputs (from: sub.output)
-            from_ref = tree_out.output_def.get("from")
-            if from_ref and tree_out.analysis_id is None:
-                status[qualified] = "alias"
-                continue
-            status[qualified] = "no_recipe"
-        elif qualified in materialized:
-            status[qualified] = "materialized"
-        else:
-            status[qualified] = "pending"
+        # Mirror the snakefile generator's image-tag resolution so the
+        # recomputed code_version matches what was written into the
+        # manifest at run time.
+        image_tag = resolve_image(resolve_container_spec(tree_out, spec))
+        current_cv = code_version(
+            recipe=recipe_command,
+            container_image=image_tag,
+            decisions=_decisions_for(tree_out, universe_decisions),
+        )
+        if manifest.get("code_version") != current_cv:
+            yield OutputStatus(
+                output_id=tree_out.output_id,
+                universe_id=universe_id,
+                analysis_id=tree_out.analysis_id,
+                output_dir=out_dir,
+                status="stale",
+                manifest=manifest,
+                recipe_command=recipe_command,
+            )
+            continue
 
-    return status
-
-
-def get_all_universe_status(
-    project_path: Path,
-) -> dict[str, dict[str, str]]:
-    """Get status for all universes.
-
-    Returns dict mapping universe_id to output status dict.
-    """
-    universes_dir = project_path / "universes"
-    if not universes_dir.exists():
-        return {}
-
-    # Create instance once and share across all universe checks
-    instance = _get_dagster_instance(project_path)
-
-    result: dict[str, dict[str, str]] = {}
-    for universe_file in sorted(universes_dir.glob("*.yaml")):
-        universe_data = load_yaml(universe_file)
-        universe_id = universe_data.get("id", universe_file.stem)
-        result[universe_id] = get_output_status(project_path, universe_id, instance=instance)
-
-    return result
+        yield OutputStatus(
+            output_id=tree_out.output_id,
+            universe_id=universe_id,
+            analysis_id=tree_out.analysis_id,
+            output_dir=out_dir,
+            status="ok",
+            manifest=manifest,
+            recipe_command=recipe_command,
+        )

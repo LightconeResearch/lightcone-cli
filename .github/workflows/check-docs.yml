@@ -1,0 +1,52 @@
+name: Documentation Health Check
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  check-docs:
+    # Only run when the PR was actually merged (not just closed)
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write         # To open an issue if docs are stale
+      pull-requests: write  # To post a comment on the merged PR
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed to diff against base SHA
+
+      - name: Check documentation with Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            A pull request has just been merged into this repository.
+
+            PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}
+            Description: ${{ github.event.pull_request.body }}
+
+            Your task: check whether the project documentation is still accurate
+            and complete given the code changes introduced by this PR.
+
+            Steps to follow:
+            1. Run: git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }}
+               to get the list of changed files.
+            2. Read the changed source files (focus on .py, .ts, .js, .go, .rs files).
+            3. Read existing documentation files (README*, docs/**/*.md, CHANGELOG*, CONTRIBUTING*).
+            4. SKIP any files under skills/ or named SKILL.md — these are not user-facing docs.
+            5. Identify any documentation that is now inaccurate, incomplete, or missing
+               given the code changes.
+
+            Then:
+            - Post a comment on PR #${{ github.event.pull_request.number }} summarising
+              your findings (✅ if docs look fine, ⚠️ if issues found).
+            - If you find real documentation issues, open a GitHub Issue titled
+              "📚 Docs may be stale after PR #${{ github.event.pull_request.number }}"
+              with label "documentation", listing the specific files and what needs updating.
+            - Do NOT open an issue if documentation looks fine.
+            - Do NOT modify any files — read-only analysis only.

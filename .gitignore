@@ -207,9 +207,15 @@ marimo/_lsp/
 __marimo__/
 
 
-dev
+dev/
 eval-results
 
 # UV
 ## lockfile should be versioned for applications but not for libraries
 uv.lock
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example

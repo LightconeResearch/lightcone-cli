@@ -1,77 +1,44 @@
 #!/bin/bash
-# PostToolUse hook: Auto-validate ASTRA files after modification
-# Triggers on Write|Edit of astra.yaml or universes/*.yaml
+# PostToolUse(Write|Edit) hook: re-validate after writes to astra.yaml or a
+# universe file, push errors back to the agent as additionalContext.
+#
+# astra is resolved from the project venv via PATH (prepended at
+# SessionStart by activate-venv.sh). Issue #103 traced back to this hook
+# running an older, globally-installed astra when activate-venv failed
+# silently -- with the venv reliably on PATH that whole code path is
+# unnecessary.
 
-# Read JSON input from stdin
 input=$(cat)
-
-# Extract the file path that was modified
 file_path=$(echo "$input" | jq -r '.tool_input.file_path // .tool_response.filePath // empty')
+[ -z "$file_path" ] && exit 0
 
-# Exit silently if no file path
-if [ -z "$file_path" ]; then
-    exit 0
-fi
-
-# Get the filename
 filename=$(basename "$file_path")
-dirpath=$(dirname "$file_path")
-dirname=$(basename "$dirpath")
+parent=$(basename "$(dirname "$file_path")")
 
-# Check if this is an ASTRA-related file
-is_astra_file=false
-
-# Check for astra.yaml (main analysis file)
+# Filter to astra.yaml at any depth and universe files (universes/*.yaml)
 if [ "$filename" = "astra.yaml" ]; then
-    is_astra_file=true
-    file_type="analysis"
-fi
-
-# Check for universe files (in universes/ directory)
-if [ "$dirname" = "universes" ] && [[ "$filename" == *.yaml ]]; then
-    is_astra_file=true
-    file_type="universe"
-fi
-
-# Exit if not an ASTRA file
-if [ "$is_astra_file" = false ]; then
-    exit 0
-fi
-
-# Find the project root (where astra.yaml lives)
-if [ "$file_type" = "analysis" ]; then
-    project_root="$dirpath"
+    project_root=$(dirname "$file_path")
+elif [ "$parent" = "universes" ] && [[ "$filename" == *.yaml ]]; then
+    project_root=$(dirname "$(dirname "$file_path")")
 else
-    # For universe files, go up one level
-    project_root=$(dirname "$dirpath")
-fi
-
-# Check if astra command is available
-if ! command -v astra &> /dev/null; then
-    # ASTRA CLI not installed, skip validation
     exit 0
 fi
 
-# Run validation
+command -v astra &>/dev/null || exit 0
 cd "$project_root" 2>/dev/null || exit 0
 
-if [ "$file_type" = "analysis" ]; then
+if [ "$filename" = "astra.yaml" ]; then
     result=$(astra validate astra.yaml 2>&1)
-    exit_code=$?
 else
     result=$(astra validate "$file_path" 2>&1)
-    exit_code=$?
 fi
+exit_code=$?
 
-# Prepare response
 if [ $exit_code -eq 0 ]; then
-    # Validation passed
-    echo "{\"hookSpecificOutput\": {\"hookEventName\": \"PostToolUse\", \"additionalContext\": \"ASTRA validation passed for $filename\"}}"
+    msg="ASTRA validation passed for $filename"
 else
-    # Validation failed - provide context to Claude
-    # Escape the result for JSON (jq -Rs . adds quotes, so use it directly)
-    escaped_result=$(echo "ASTRA validation FAILED for $filename:\n$result" | jq -Rs .)
-    echo "{\"hookSpecificOutput\": {\"hookEventName\": \"PostToolUse\", \"additionalContext\": $escaped_result}}"
+    msg=$(printf 'ASTRA validation FAILED for %s:\n%s' "$filename" "$result")
 fi
 
+jq -n --arg ctx "$msg" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $ctx}}'
 exit 0

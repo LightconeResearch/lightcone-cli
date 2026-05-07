@@ -29,8 +29,27 @@ from lightcone.eval.sandbox import BUILD_COMPLETE_MARKER, EvalSandbox
 logger = logging.getLogger(__name__)
 
 DEFAULT_LOOP_PROMPT = """\
-/lc-build this analysis and make sure to cover universe {{UNIVERSE}}.
-Do NOT ask for plan approval — skip straight to building. This is an automated eval run.
+Build the analysis specified in `astra.yaml` for universe `{{UNIVERSE}}`.
+
+Read `.claude/guides/lightcone-cli-reference.md` for the workflow and \
+`.claude/guides/astra-reference.md` for spec syntax. Then for each output \
+that needs materializing:
+
+1. Read the recipe's `command` to see what script and arguments it expects.
+2. Write the script under `src/`, parameterizing every decision via argparse \
+   — never hardcode option values.
+3. Run `lc run <output_id> --universe {{UNIVERSE}}` to materialize it through \
+   the engine.
+4. Commit progress as you go.
+
+Build iteratively from upstream outputs to downstream. \
+`lc status --universe {{UNIVERSE}}` shows you what's `ok`, `stale`, or \
+`missing` — you're done when every output shows `ok`. Run \
+`astra validate astra.yaml` at the end.
+
+Skip plan approval and interactive confirmations — this is an automated eval \
+run. When the build is fully complete, end your final response with the \
+literal string `BUILD_COMPLETE`.
 """
 
 
@@ -68,7 +87,7 @@ def run_trial(
     wheels: list[Path],
     sidecar_dir: Path | None = None,
 ) -> TrialResult:
-    """Run a single trial: create sandbox -> run /lc-build -> grade -> teardown."""
+    """Run a single trial: create sandbox -> run the build prompt -> grade -> teardown."""
     trial_id = f"{run_id}-{task.id}-{trial_number}"
     trial = TrialResult(
         trial_id=trial_id,
@@ -102,7 +121,8 @@ def run_trial(
             wheels=wheels,
         )
 
-        # Single invocation: /lc-build handles its own loop internally
+        # Single invocation with a high max-turns budget — the prompt is
+        # self-contained and the agent loops over outputs internally.
         start = time.monotonic()
         try:
             claude_result = sandbox.exec_claude(

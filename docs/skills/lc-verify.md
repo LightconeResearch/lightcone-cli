@@ -1,51 +1,59 @@
 # /lc-verify
 
-Verify `astra.yaml`, code, and results for consistency and completeness.
+Read-only audit. Checks that `astra.yaml`, the code, and the
+materialized results all agree.
 
-## Purpose
+Source: [`claude/lightcone/skills/lc-verify/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-verify/SKILL.md).
 
-`/lc-verify` is a read-only audit skill. It checks the analysis from four angles and produces a structured verification table.
-
-## Checks performed
-
-### 1. Spec validation
-
-Runs `astra validate` and reports any schema errors in `astra.yaml`.
-
-### 2. Recipe coverage
-
-Checks that every declared output either has a `recipe:` block or a valid `from:` reference. Reports outputs with `no_recipe` status.
-
-### 3. Decision–code alignment
-
-**The most important check.** For every `decision:` entry in `astra.yaml`:
-
-- Finds the code that implements it (by searching for the decision key in `scripts/`).
-- Verifies that the actual implementation matches the documented options.
-- Flags discrepancies where the spec says one thing but the code does another.
-
-### 4. Results verification
-
-Checks that materialised outputs contain non-empty, readable files. Flags outputs that are recorded as materialised in Dagster but whose result directories are empty or missing.
-
-## Output format
+## Allowed tools
 
 ```
-## Verification Results
-
-| Check | Status | Notes |
-|-------|--------|-------|
-| astra validate | ✓ | |
-| Recipe coverage | ✓ | 4/4 outputs have recipes |
-| Decision–code alignment | ✗ | `smoothing_kernel`: spec says [gaussian, tophat], code only implements gaussian |
-| Results | ✓ | All 4 materialised outputs have non-empty results |
+Read, Glob, Grep,
+Bash(astra:*), Bash(lc:*), Bash(python:*), Bash(ls:*),
+AskUserQuestion
 ```
 
-## Key rules
+No `Write`, no `Edit`. The skill cannot modify the project.
 
-- This skill is **read-only** — it never modifies files.
-- Decision–code alignment is the most likely source of reproducibility failures; always run this before publishing.
+## What it checks (per universe; default `baseline`)
+
+1. **Spec validation** — `astra validate astra.yaml`. Fix and iterate
+   until clean.
+2. **Materialization status** — `lc status --universe <U>`. Every
+   output should be `ok`. Anything `stale`, `missing`, or `alias`
+   that's not expected gets flagged.
+3. **Decision-code alignment** — *the core value*. For every decision
+   in `astra.yaml`, confirm the code accepts it as a parameter rather
+   than hardcoding the value. Cross-checks `astra info --decisions`
+   against argparse usage in `scripts/`.
+4. **Results match spec** — for every output, verify the result files
+   exist and look well-formed. For `type: metric` outputs, check that
+   each JSON file parses and contains a `{"value": …}` entry.
+
+## Report format
+
+```
+| Check                    | Status |
+|--------------------------|--------|
+| Spec validation          | ✓/✗    |
+| Materialization (N/N)    | ✓/✗    |
+| Decision-code alignment  | ✓/⚠/✗  |
+| Results match spec (N/N) | ✓/✗    |
+```
+
+The skill lists each finding with file paths and line numbers, and
+suggests concrete fixes when something fails.
+
+## Hard rules
+
+- Read-only — never modifies files.
+- One universe at a time.
+- Never skips the decision-code alignment check.
+- Always reads actual result files; never infers from code.
 
 ## Related
 
-- [lc-build](lc-build.md) — fix any issues found by verify
+- [`/lc-build`](lc-build.md) — fix anything `/lc-verify` flags.
+- [`lc verify`](../cli/verify.md) — the deeper, hash-based audit on the
+  CLI side. They complement each other: the skill checks
+  spec-vs-code-vs-results alignment; the CLI checks data integrity.

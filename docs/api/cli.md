@@ -1,128 +1,94 @@
 # lightcone.cli.commands
 
-Click CLI entry point. Implements all `lc` commands as Click decorated functions.
+The Click surface. Defined in `src/lightcone/cli/commands.py`. Six
+public commands: `init`, `run`, `status`, `verify`, `build`, `setup`.
 
----
+The user-facing reference is in [CLI Overview](../cli/index.md). This
+page is a tour of the module internals.
 
-## Entry point: `main`
+## Entry point
 
 ```python
 @click.group()
-def main(): ...
+@click.version_option(package_name="lightcone-cli")
+@click.pass_context
+def main(ctx: click.Context) -> None:
+    ctx.ensure_object(dict)
+    if ctx.invoked_subcommand in ("setup", "init", "eval"):
+        return
+    if not _config_path().exists():
+        # print friendly error, sys.exit(1)
 ```
 
-The root Click group. Auto-triggers `setup` if `~/.lightcone/config.yaml` does not exist (except for `setup`, `target`, `update`, `eval` subcommands).
+`main` is exposed as `lightcone.cli.main` (re-exported from
+`lightcone.cli.__init__`) and is the entry point declared in
+`pyproject.toml::project.scripts`:
 
----
+```toml
+[project.scripts]
+lc = "lightcone.cli:main"
+```
 
 ## `PERMISSION_TIERS`
 
 ```python
-PERMISSION_TIERS: dict[str, dict[str, list[str]]]
+PERMISSION_TIERS: dict[str, dict[str, list[str]]] = { "yolo": {...}, "recommended": {...}, "minimal": {...} }
 ```
 
-Defines Claude Code permission tiers for `.claude/settings.json`. See [Architecture: Permission tiers](../architecture.md#permission-tiers) for the full description.
+Used by `lc init --permissions` to populate `.claude/settings.json`.
+The constant lives at module top so tests and external tools can read
+it directly. To add a new tier, edit this dict and update the
+`click.Choice` on `lc init`.
 
-Keys: `"yolo"`, `"recommended"`, `"minimal"`.
+## Helpers
 
----
+### `_config_path() → Path`
 
-## Plugin discovery: `_get_plugin_source_dir() → Path | None`
+Returns `~/.lightcone/config.yaml`. Used by the `main` group's
+auto-init check and by `setup`.
 
-Finds the lightcone-cli plugin source directory. Checks:
+### `_project_root(start: Path | None = None) → Path`
 
-1. **Bundled** (installed package): `lightcone/cli/claude/lightcone/`
-2. **Development** (repo checkout): `{repo_root}/claude/lightcone/`
+Walks up from `start` (or `cwd`) looking for `astra.yaml`. Raises
+`click.ClickException` if none found. Used by `run`, `status`, `verify`,
+`build`.
 
-Returns `None` if neither exists.
+### `_target_for(project: Path, output_id: str, universe: str) → str`
 
----
+Translate an `output_id` (or qualified `<analysis_id>.<output_id>`) into
+the Snakemake target path that materializes it — specifically the
+manifest file `results/<universe>/<output_id>/.lightcone-manifest.json`.
+Raises `click.ClickException` if the id is unknown or ambiguous.
 
-## Path helpers
+### `_run_filtered(cmd, *, env)`
 
-### `_find_lightcone_yaml(project_path) → Path | None`
+Spawn `snakemake`, line-filter its stdout/stderr to suppress executor
+banner chatter, and return the exit code. The recipe's own output
+streams through untouched, as do unfamiliar diagnostic lines.
 
-Finds `.lightcone/lightcone.yaml`, falling back to `lightcone.yaml` in root for backward compatibility.
+### `_status_label(s: str) → str`
 
-### `_find_dagster_yaml(project_path) → Path | None`
-
-Finds `.lightcone/dagster.yaml`, falling back to `dagster.yaml` in root.
-
-### `_load_lightcone_config(project_path) → dict`
-
-Loads `.lightcone/lightcone.yaml`. Returns `{}` if missing.
-
----
-
-## Permission resolution: `_resolve_permission_tier(flag_value) → str`
-
-Priority order:
-
-1. `--permissions` flag
-2. Saved default in `~/.lightcone/config.yaml`
-3. Interactive prompt (`_prompt_permission_tier()`)
-
----
-
-## Project creation helpers
-
-| Function | Purpose |
-|----------|---------|
-| `_create_dagster_yaml(directory)` | Write `.lightcone/dagster.yaml` |
-| `_create_boilerplate_astra_yaml(directory)` | Write `astra.yaml`, `Containerfile`, `requirements.txt`, `universes/baseline.yaml` |
-| `_create_claude_settings(directory, tier, target)` | Copy plugin files and write `.claude/settings.json` + `settings.local.json` |
-| `_create_lightcone_config(directory, target_name)` | Write `.lightcone/lightcone.yaml` |
-| `_create_claude_md(directory)` | Write `CLAUDE.md` from plugin template |
-| `_create_venv(directory, no_venv)` | Create `.venv/` and install `lightcone-cli` |
-| `_init_git_repo(directory, no_git)` | Run `git init` + initial commit |
-| `_init_existing_project(...)` | Add lightcone-cli infrastructure to an existing code directory |
-| `_init_sub_analysis(directory)` | Scaffold sub-analysis and wire into parent spec |
-
----
-
-## `_create_claude_settings()` detail
-
-This function:
-
-1. Copies `scripts/`, `hooks/`, `skills/`, `agents/`, `guides/` from the plugin source to `.claude/`.
-2. Makes `.sh` scripts and `.py` hooks executable.
-3. Applies extraction model config to `agents/lc-extractor.md`.
-4. Builds permission dict from the selected tier.
-5. Merges site-specific deny rules (e.g. Perlmutter scratch paths).
-6. Writes `.claude/settings.json` with full hook registrations.
-7. Writes `.claude/settings.local.json` with Langfuse credentials.
-
----
-
-## Update helpers
-
-### `_sync_project_plugins(project_dir) → bool`
-
-Syncs `skills/`, `hooks/`, `scripts/`, `agents/`, `guides/` into `project_dir/.claude/`. Updates the managed portion of `CLAUDE.md` (above `## Analysis Context`) while preserving user content below.
-
-### `_update_extractor_agent_model(agents_dir)`
-
-Reads `extraction_model` from `~/.lightcone/config.yaml` and sets (or removes) the `model:` field in `agents/lc-extractor.md` frontmatter.
-
----
-
-## Status display helpers
-
-### `_status_label(s) → str`
-
-Maps status strings to Rich-formatted labels:
+Map a status literal to the Rich-formatted display label:
 
 | Status | Display |
 |--------|---------|
-| `"materialized"` | `ok` (green) |
-| `"pending"` | `pending` (dim) |
-| `"alias"` | `alias` (cyan) |
-| other | `no recipe` (yellow) |
+| `ok` | `[green]✓ ok[/green]` |
+| `stale` | `[yellow]✸ stale[/yellow]` |
+| `missing` | `[red]✗ miss[/red]` |
+| `alias` | `[dim]→ alias[/dim]` |
 
-### `_display_tree_status(name, groups, all_status)`
+## Boilerplate text
 
-Renders a Rich tree with sub-analyses as branches.
+`_BOILERPLATE_ASTRA`, `_GITIGNORE`, and `_PROJECT_CLAUDE_MD` are
+multi-line strings written at `lc init` time. Edit them to change what
+new projects look like.
 
-### `_display_flat_status(name, outputs, all_status)`
+## Plugin install
 
-Renders a Rich table (outputs × universes).
+`_install_claude_plugin(project_dir, plugin_source, permissions)` copies
+the bundled plugin into `project_dir/.claude/` (`skills`, `agents`,
+`hooks`, `scripts`, `guides`, `templates`) and writes
+`.claude/settings.json` from the chosen permission tier. Existing
+subdirectories are removed before copying. **No telemetry env vars are
+written today** — the older `.claude/settings.local.json` file with
+Langfuse credentials is no longer generated by `lc init`.

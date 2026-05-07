@@ -1,14 +1,15 @@
 # Development Setup
 
-## Prerequisites
+You'll need:
 
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-- [just](https://github.com/casey/just) (`brew install just` or `cargo install just`)
+- [uv](https://docs.astral.sh/uv/) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- [just](https://github.com/casey/just) — `brew install just` or `cargo install just`
 - Git
-- Docker or Podman (optional, for container tests)
+- One of: docker, podman, podman-hpc (optional — only needed for
+  container tests and for projects that declare `container:`)
 
-## Clone and install
+## Clone & install
 
 ```bash
 git clone https://github.com/LightconeResearch/lightcone-cli.git
@@ -16,77 +17,84 @@ cd lightcone-cli
 just install        # uv sync --all-groups (dev + docs)
 ```
 
-Dependencies are declared in `pyproject.toml`:
+`just` (alone, with no recipe) lists everything available — the
+recipes that follow are the ones you'll touch most.
 
-| Group | Contents | Install |
-|-------|----------|---------|
-| *(main)* | `dagster`, `langfuse`, `click`, … | `uv sync` |
-| `dev` | `pytest`, `ruff`, `mypy`, … | `uv sync --group dev` |
-| `docs` | `mkdocs-material`, `mkdocstrings` | `uv sync --group docs` |
-| `eval` *(optional-dep)* | `anthropic`, `daytona-sdk`, … | `uv sync --extra eval` |
-
-## Running tests
+## Running the test suite
 
 ```bash
-pytest
+just test               # uv run pytest
+just test-cov           # with coverage report
 ```
 
-Key test patterns:
+The opt-in `slow` marker covers tests that spin up real subsystems
+(local Dask cluster, etc.). They are excluded by default; run with
+`uv run pytest -m slow` to include them.
 
-- **CLI tests**: use `CliRunner().invoke(main, ["command", ...])` — check exit code, output, file side effects.
-- **Asset tests**: call `build_asset_definitions(spec, runner=mock_runner)` — verify keys, deps, metadata.
-- **Runner tests**: create runner with `tmp_path` as project root, call `execute()` — verify exit code and metadata.
-- **Integration tests**: `test_integration.py` and `test_cli_run.py` cover end-to-end flows.
-
-The `_fake_config` fixture monkeypatches `get_config_path()` to prevent the auto-setup wizard from firing during tests:
-
-```python
-@pytest.fixture(autouse=True)
-def _fake_config(tmp_path, monkeypatch):
-    config = tmp_path / "config.yaml"
-    config.write_text("default_target: local\n")
-    monkeypatch.setattr("lightcone.engine.targets.get_config_path", lambda: config)
-```
-
-## Linting and type checking
+## Linting & types
 
 ```bash
-ruff check src/ tests/
-mypy src/
+just lint               # ruff + mypy
+just fix                # ruff --fix
+just fmt                # ruff format
 ```
 
-Ruff rules: E, F, I, N, W, UP. Line length: 100. Target: Python 3.11.
+Ruff rules: `E, F, I, N, W, UP`. Line length: 100. Target: Python 3.11.
+Mypy is strict, with `namespace_packages = true` and
+`explicit_package_bases = true` (we ship a PEP 420 namespace package).
 
-## Package structure
+## Building the docs locally
 
+```bash
+just docs-serve         # syncs docs group + live preview at http://127.0.0.1:8000
+just docs-strict        # build with --strict
+just docs               # one-shot build into site/
 ```
-src/lightcone/          # main package
-claude/lightcone/       # plugin files (bundled via hatch force-include)
-tests/              # mirrors src/ structure
-evals/              # skill evaluation fixtures
-```
+
+The docs use [zensical](https://zensical.org). The nav lives in
+`zensical.toml`.
 
 ## Building the wheel
 
 ```bash
-just build   # uv build
-just version # uv run hatch version
+just build              # uv build
+just version            # current version (from git tags via hatch-vcs)
 ```
 
-The `hatch-vcs` plugin derives the version from git tags. The `claude/lightcone/` directory is force-included in the wheel via `pyproject.toml`:
+The plugin (`claude/lightcone/`) is force-included into the wheel:
 
 ```toml
 [tool.hatch.build.targets.wheel]
-packages = ["src/lightcone"]
+packages = ["src/lightcone", "src/snakemake_executor_plugin_dask"]
 
-[tool.hatch.build.force-include]
+[tool.hatch.build.targets.wheel.force-include]
 "claude/lightcone" = "lightcone/cli/claude/lightcone"
 ```
 
-## Building the documentation
+That layout is what `lightcone.cli.plugin.get_plugin_source_dir()`
+walks — it tries the bundled location first, then the dev location
+relative to the repo root.
+
+## Repo layout
+
+```
+src/lightcone/                       # main namespace (PEP 420; no __init__.py at the package root)
+src/snakemake_executor_plugin_dask/  # Snakemake → Dask executor plugin
+claude/lightcone/                    # Claude Code plugin (force-included into the wheel)
+tests/                               # pytest tree, mirrors src/
+evals/                               # eval task fixtures (tasks/snae/)
+docs/                                # docs site
+```
+
+## Pre-commit checklist
+
+Quick sequence before pushing a PR:
 
 ```bash
-just docs-serve     # syncs docs group + live preview at http://127.0.0.1:8000
-just docs-strict    # build with --strict (fails on warnings)
-just docs-deploy    # push to GitHub Pages
+just lint               # ruff + mypy
+just test               # full pytest run
+just docs-strict        # docs still build cleanly
 ```
+
+Each line maps to one CI check. CI runs them serially; running locally
+catches everything before the PR machinery starts.

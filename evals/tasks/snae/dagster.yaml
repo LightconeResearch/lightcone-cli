@@ -1,3 +1,0 @@
-storage:
-  sqlite:
-    base_dir: results/.dagster

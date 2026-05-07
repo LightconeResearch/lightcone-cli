@@ -1,0 +1,30 @@
+{
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/activate-venv.sh",
+          "timeout": 5
+        },
+        {
+          "type": "command",
+          "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/session-start.sh",
+          "timeout": 15
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "Write|Edit",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/validate-on-save.sh",
+          "timeout": 15
+        }
+      ]
+    }
+  ]
+}

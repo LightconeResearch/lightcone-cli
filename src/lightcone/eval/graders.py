@@ -80,39 +80,44 @@ def _grade_command(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult:
 
 
 def _grade_status(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult:
-    """Check output materialization status via lc status.
+    """Score the fraction of declared outputs that are materialized.
 
-    Parses the text table output, counting 'ok' vs 'pending'/'no_recipe' entries.
+    Uses ``lc status --json`` so the grader is decoupled from any styling
+    or human-readable layout in the CLI's text output. Aliases (outputs
+    without their own recipe) are excluded from the denominator — they
+    are not independently materializable.
     """
-    cmd = f"cd {sandbox.WORK_DIR} && lc status"
+    import json as _json
+
+    cmd = f"cd {sandbox.WORK_DIR} && lc status --json"
     result = sandbox.exec(cmd, timeout=grader.timeout)
 
     if result.exit_code != 0:
         return _error_result(
             grader,
-            f"lc status exited with code {result.exit_code}",
+            f"lc status --json exited with code {result.exit_code}",
             details=result.output[:2000],
         )
 
-    # Parse the Rich table output for status values
+    try:
+        payload = _json.loads(result.output)
+    except _json.JSONDecodeError as exc:
+        return _error_result(
+            grader,
+            f"lc status --json produced invalid JSON: {exc}",
+            details=result.output[:2000],
+        )
+
     materialized = 0
     total = 0
-    for line in result.output.splitlines():
-        # Table rows start with │ and contain status words
-        if "│" not in line:
-            continue
-        cells = [c.strip() for c in line.split("│") if c.strip()]
-        if len(cells) < 2:
-            continue
-        # Skip header row
-        if cells[0].lower() in ("output", ""):
-            continue
-        # Each non-header cell after the first is a status value
-        for cell in cells[1:]:
-            if cell in ("ok", "pending", "no_recipe"):
-                total += 1
-                if cell == "ok":
-                    materialized += 1
+    for u in payload.get("universes", []):
+        for o in u.get("outputs", []):
+            status = o.get("status")
+            if status == "alias":
+                continue
+            total += 1
+            if status == "ok":
+                materialized += 1
 
     if total == 0:
         return GraderResult(
@@ -121,7 +126,7 @@ def _grade_status(sandbox: EvalSandbox, grader: GraderSpec) -> GraderResult:
             passed=False,
             score=0.0,
             weight=grader.weight,
-            details="No outputs found in lc status output",
+            details="No materializable outputs declared",
         )
 
     score = materialized / total

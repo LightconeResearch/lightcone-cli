@@ -1,128 +1,183 @@
 # lightcone.engine.container
 
-Content-addressed container image building from Containerfiles.
+The container layer. Two surfaces: build-time (`compute_image_tag`,
+`build_image`, `pull_image`) and run-time wrap (`wrap_recipe`,
+`make_image_tag_resolver`).
 
-## Overview
+Source: `src/lightcone/engine/container.py`.
 
-A container spec in `astra.yaml` is a single string. lightcone-cli distinguishes two cases by checking whether the string resolves to an existing file:
+## Constants
 
-- **Pre-built image** (e.g. `python:3.9`) — pulled on demand.
-- **Containerfile build** (e.g. `Containerfile`, `containers/gpu.Dockerfile`) — built locally and tagged deterministically.
+| Constant | Value |
+|----------|-------|
+| `RUNTIMES` | `("podman", "docker", "podman-hpc")` — detection priority order |
+| `DEPENDENCY_FILES` | `("requirements.txt", "requirements-dev.txt", "requirements-test.txt", "pyproject.toml", "setup.py", "setup.cfg", "poetry.lock", "Pipfile.lock")` |
 
----
+Detection priority is podman before docker for two reasons: it's
+rootless (less surprising on shared machines), and the docker probe
+includes `docker info` so a stopped daemon doesn't silently win over a
+healthy podman.
 
-## `detect_container_runtime() → str | None`
+## Runtime detection
 
-Checks for `docker` then `podman` on `PATH`. Returns the binary name or `None`.
+### `detect_runtime() → str | None`
 
-Does **not** check for `podman-hpc` (handled separately in SLURM targets).
+Returns the first usable runtime in `RUNTIMES`. "Usable" means the
+binary is on PATH and (for docker) `docker info` succeeds. Returns
+`None` if nothing's available.
 
----
+### `load_runtime(*, project_path=None) → RuntimeChoice`
 
-## `is_containerfile(spec, project_path) → bool`
+Resolve the runtime to use. Reads `container.runtime` from
+`~/.lightcone/config.yaml`:
 
-Returns `True` if `spec` resolves to an existing file in `project_path`.
+- `auto` (default) → first available, else `"none"` with `explicit=False`.
+- `docker | podman | podman-hpc` → explicit; binary must exist or
+  raises `ContainerBuildError`.
+- `none` → explicit opt-out.
+- Anything else → `ContainerBuildError`.
 
----
+`project_path` is accepted for future per-project overrides but is not
+consulted today.
 
-## `compute_image_tag(project_name, containerfile_path, project_path) → str`
-
-Returns a deterministic tag `lc-{name}-{sha256[:12]}` where the hash covers the Containerfile and all dependency files.
-
----
-
-## `resolve_container_spec(spec, project_path, project_name, ...) → str`
-
-Resolves a container spec to a usable image tag:
-
-- If `spec` is a pre-built image name → returns it as-is (Docker will pull).
-- If `spec` is a Containerfile path → builds the image and returns the tag.
-- If the image already exists (content hash matches) → skips the build.
-
-**Parameters:**
-
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `spec` | `str` | — | Container spec from `astra.yaml` |
-| `project_path` | `Path` | — | Project root |
-| `project_name` | `str` | — | Used as image name prefix |
-| `force` | `bool` | `False` | Rebuild even if image exists |
-| `runtime` | `str` | `"docker"` | Container runtime binary name |
-
-**Raises:** `ContainerBuildError` if the build fails.
-
----
-
-## `resolve_container_for_slurm(spec, project_path, project_name, runtime, ...) → str`
-
-Like `resolve_container_spec()` but for HPC targets. Builds (if Containerfile) then runs `{runtime} migrate` to stage the image in the site container cache.
-
----
-
-## `get_container_status(spec, project_path, project_name, runtime) → ContainerStatus`
-
-Returns a `ContainerStatus` describing whether an image exists, its tag, and its type.
-
----
-
-## `find_dependency_files(project_path) → list[Path]`
-
-Returns sorted list of dependency files found in `project_path`. Checks for:
+### `RuntimeChoice` (dataclass)
 
 ```python
-DEPENDENCY_FILES = (
-    "requirements.txt", "requirements-dev.txt", "requirements-test.txt",
-    "pyproject.toml", "setup.py", "setup.cfg", "poetry.lock", "Pipfile.lock",
-)
+@dataclass(frozen=True)
+class RuntimeChoice:
+    runtime: str         # docker | podman | podman-hpc | none
+    explicit: bool       # True if pinned, False if `auto` produced this
 ```
 
----
+`explicit=False` + `runtime="none"` means auto fell back silently. Callers
+should warn — that case mismatches the manifest's recorded
+`container_image` against what actually executed.
 
-## `hash_file_contents(files) → str`
+## Image tag computation
 
-Returns a SHA-256 hex digest of the concatenated contents of the given files.
+### `compute_image_tag(project_name, containerfile, project_path) → str`
 
----
+Returns `lc-<sanitized-name>-<sha256[:12]>`. The hash covers the
+Containerfile contents plus every dependency file from `DEPENDENCY_FILES`
+that exists at the project root.
 
-## Data classes
+Sanitization: lowercase + spaces → hyphens.
 
-### `ContainerBuildResult`
+### `find_dependency_files(project_path) → list[Path]`
+
+Sorted list of dependency files actually present. Used by
+`compute_image_tag`.
+
+### `hash_file_contents(files) → str`
+
+Concatenated SHA-256 hex digest of the listed files. Internal helper.
+
+### `is_containerfile(spec, project_path) → bool`
+
+True if `spec` resolves to an existing file (i.e. it's a Containerfile,
+not a registry image).
+
+## Build
+
+### `build_image(tag, containerfile, context, *, runtime, build_args=None) → ContainerBuildResult`
+
+Run `<runtime> build -t <tag> -f <containerfile> [--build-arg …] <context>`.
+For `podman-hpc`, also runs `podman-hpc migrate <tag>` so compute nodes
+can read the image. Raises `ContainerBuildError` on any failure.
+
+### `pull_image(image, *, runtime) → None`
+
+Run `<runtime> pull <image>`, then (for podman-hpc) `migrate`. Used by
+`lc build` to pre-stage registry images so `lc run` can pass
+`--pull=never`.
+
+### `image_exists_locally(tag, *, runtime) → bool`
+
+Check the local image store. Routes to `image_exists_podman_hpc(tag)`
+for `podman-hpc`, otherwise runs `<runtime> image inspect <tag>`.
+
+### `_podman_hpc_migrate(tag)` (private)
+
+Wraps `podman-hpc migrate`. Raises `ContainerBuildError` on failure.
+
+## Run-time wrap
+
+### `wrap_recipe(recipe, *, image, runtime) → str`
+
+Wrap `recipe` so it executes inside `image` under `runtime`. Returns a
+shell-command string for Snakemake's `shell()`.
+
+No-op cases (`recipe` returned unchanged):
+
+- `image is None`
+- `runtime == "none"`
+
+Otherwise produces:
+
+```bash
+<runtime> run --rm --pull=never \
+  -v "$PWD":"$PWD" -w "$PWD" \
+  <image> bash -c '<shlex.quote(recipe)>'
+```
+
+`--pull=never` is critical: it sidesteps podman's
+`unqualified-search-registries` resolution, which fails for our
+content-addressed `lc-<name>-<hash>` tags. The cost: registry images
+have to be pre-pulled by `lc build`.
+
+The bind mount and `-w "$PWD"` ensure recipes that write to relative
+paths land in the project tree. Snakemake invokes us with `cwd=project`,
+so `$PWD` is the project root.
+
+Snakemake placeholders inside `recipe` (`{output[0]}`, `{input.X}`,
+`{wildcards.universe}`) are preserved — they substitute through Python's
+`str.format` at execution time, after wrapping.
+
+### `make_image_tag_resolver(project_path, project_name) → Callable`
+
+Returns a memoizing wrapper around `resolve_image_for_run`. Multiple
+outputs typically share a Containerfile; resolving re-hashes the file
+plus all dependency files (lockfiles can be megabytes), so caching by
+spec string for the lifetime of the caller's loop matters.
+
+### `resolve_image_for_run(spec, *, project_path, project_name) → str | None`
+
+Translate an `astra.yaml` `container:` value into the image tag the
+runtime will execute:
+
+- `None` / empty → `None`
+- Containerfile path → `lc-<name>-<hash>` (the tag `lc build` would
+  produce)
+- Anything else → returned as-is
+
+## Status
+
+### `get_container_status(spec, project_path, project_name, *, runtime) → ContainerStatus`
+
+Without building or pulling, return a `ContainerStatus` describing what
+would happen.
+
+### `ContainerStatus` (dataclass)
 
 ```python
 @dataclass
-class ContainerBuildResult:
-    tag: str
-    already_existed: bool
-    exit_code: int = 0
-    stdout: str = ""
-    stderr: str = ""
+class ContainerStatus:
+    type: str                                # "none" | "prebuilt" | "build"
+    image: str | None = None                 # the tag (always set for "prebuilt"/"build")
+    exists: bool | None = None               # local-store presence (None for "none" runtime)
+    containerfile: str | None = None         # the spec, only set for "build"
 ```
-
-### `ContainerStatus`
-
-Describes the current state of a container spec:
-
-| Field | Description |
-|-------|-------------|
-| `type` | `"prebuilt"` or `"build"` |
-| `image` | Resolved image tag |
-| `containerfile` | Path to Containerfile (if `type == "build"`) |
-| `exists` | Whether the image is present locally |
-
----
 
 ## Exceptions
 
 ### `ContainerBuildError`
 
-Raised when a container image build fails. Message includes the build command and stderr output.
+Raised by `build_image`, `pull_image`, `_podman_hpc_migrate`, and
+`load_runtime` (configuration errors). Message carries the failing
+runtime and stderr.
 
----
+## Tests
 
-## Image tag format
-
-```
-lc-{sanitised-project-name}-{sha256[:12]}
-```
-
-Sanitisation: lowercase, non-alphanumeric characters replaced with `-`.
+`tests/test_container.py` covers detection, image tag computation,
+build invocation, recipe wrapping, and the `RuntimeChoice` resolution
+matrix.

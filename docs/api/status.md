@@ -1,49 +1,63 @@
 # lightcone.engine.status
 
-Materialisation status queries for ASTRA outputs. Reads from the Dagster SQLite event log.
+Manifest-driven status walker. Reads only the per-output
+`.lightcone-manifest.json` files; does **not** import Snakemake.
 
----
+Source: `src/lightcone/engine/status.py`.
 
-## `get_output_status(project_path, universe_id, instance) → dict[str, str]`
+## Public surface
 
-Returns a dict mapping qualified output IDs to status strings.
+### `get_output_status(project_path, *, universe_id) → Iterator[OutputStatus]`
 
-**Parameters:**
+Yield an `OutputStatus` for every declared output in `project_path`'s
+`astra.yaml`, against the named universe. Used by `lc status` and by
+external tooling that wants a structured view.
 
-| Name | Type | Description |
-|------|------|-------------|
-| `project_path` | `Path` | ASTRA project root |
-| `universe_id` | `str` | Universe to query |
-| `instance` | `DagsterInstance \| None` | Reuse an existing instance (optional) |
+The function:
 
-**Returns:** `{qualified_output_id: status_string}`
+1. Loads and resolves the analysis tree.
+2. Loads merged universe decisions (tolerates a missing universe file —
+   returns an empty dict).
+3. For each tree output:
+   - If it has no `recipe:` → `alias`.
+   - If no manifest at the output dir → `missing`.
+   - Otherwise recomputes `code_version` against the current spec and
+     compares to the manifest's recorded value. Match → `ok`,
+     mismatch → `stale`.
 
-- Root-level outputs use `output_id` as key.
-- Sub-analysis outputs use `analysis_id/output_id` as key.
+### `OutputStatus` (dataclass)
 
----
+```python
+@dataclass
+class OutputStatus:
+    output_id: str
+    universe_id: str
+    analysis_id: str | None       # None for root-level outputs
+    output_dir: Path
+    status: StatusLiteral          # "ok" | "stale" | "missing" | "alias"
+    manifest: dict | None          # None for missing/alias
+```
 
-## `get_all_universe_status(project_path) → dict[str, dict[str, str]]`
+### `StatusLiteral`
 
-Returns `{universe_id: output_status_dict}` for all universes in `project_path/universes/`.
+```python
+StatusLiteral = Literal["ok", "stale", "missing", "alias"]
+```
 
-Shares a single `DagsterInstance` across all universe queries.
+## Why `code_version` is the staleness signal
 
----
+The manifest records the `code_version` that produced the data. Drift
+detection just recomputes the current `code_version` from the live
+spec and compares. Anything that touches recipe text, container image
+tag, or decisions changes `code_version`; everything else is irrelevant
+for staleness.
 
-## Status values
+For staleness against external inputs (e.g. someone edited a CSV under
+`inputs/`), `lc status` doesn't catch it — that's outside `code_version`'s
+scope. Use `lc verify` or rely on Snakemake's `mtime`/`input` rerun
+triggers in `lc run`.
 
-| Value | Meaning |
-|-------|---------|
-| `"no_recipe"` | Output declared in spec, no `recipe` block |
-| `"pending"` | Has a recipe, never materialised |
-| `"materialized"` | Dagster event log confirms a successful run |
-| `"alias"` | Root-level output with a `from:` reference (no recipe needed) |
+## Tests
 
----
-
-## Implementation notes
-
-`get_output_status()` builds a map of `qualified_id → AssetKey` for all outputs that have recipes, then calls `DagsterInstance.get_latest_materialization_events()` in a single batch query to avoid N+1 database hits.
-
-A `None` instance (missing or corrupted `dagster.yaml`) is treated as "no events recorded" — all recipe outputs report `"pending"`.
+`tests/test_status.py` covers the four status branches end-to-end
+against tmp projects, including the alias and decision-drift paths.

@@ -1,76 +1,135 @@
-# lightcone-cli — Maintainer Documentation
+# lightcone-cli
 
-**lightcone-cli** is Lightcone Research's agentic execution layer for **ASTRA** (Agentic Schema for Transparent Research Analysis).
+**lightcone-cli** is Lightcone Research's agentic execution layer for
+**ASTRA** (Agentic Schema for Transparent Research Analysis). It ships
+the `lc` executable, a small set of Claude Code skills, and the
+provenance/integrity machinery that ties an `astra.yaml` spec to a tree
+of materialized outputs.
 
-## Separation of concerns
+This site has two halves.
+
+## I'm a researcher and I want to use this thing
+
+Start at the [User Guide](user/index.md). Friendly, step-by-step, with
+worked examples. You will not need to read any Python.
+
+## I work on lightcone-cli
+
+Welcome — keep reading. The rest of this page is a fast tour for
+contributors and maintainers; deep dives live in the sub-trees of the
+nav.
+
+---
+
+## Two packages, one toolchain
 
 | Layer | Package | Role |
 |-------|---------|------|
-| **ASTRA** | `astra-tools` | Pure specification: schema, validation, prior insights, evidence helpers, minimal CLI |
-| **lightcone-cli** | `lightcone-cli` | Agentic layer: Claude Code skills, project scaffolding, Dagster execution, HPC targets, telemetry |
+| **ASTRA** | `astra-tools` | Pure specification: schema, validation, prior insights & findings, evidence verification helpers, the `astra` CLI. |
+| **lightcone-cli** | `lightcone-cli` | Agentic layer: project scaffolding, Snakemake-based execution, Dask cluster management, container builds, Claude Code skills, telemetry. |
 
-lightcone-cli depends on ASTRA. The `astra` CLI handles spec operations; the `lc` CLI handles execution and agent operations.
+`lightcone-cli` depends on `astra-tools`. The `astra` CLI handles the
+spec itself (validation, paper management, evidence verification); the
+`lc` CLI handles execution and the agent surface.
 
-## Quick orientation for maintainers
-
-```
-src/lightcone/
-├── cli.py              # Click CLI entry point (init, run, build, status, dev, target, setup, update)
-├── container.py        # Content-addressed container builds (Docker, podman-hpc)
-└── dagster/
-    ├── assets.py        # Asset factory — turns astra.yaml recipes into Dagster assets
-    ├── io_manager.py    # Maps (output, universe) → results/{universe}/{output}/
-    ├── runner.py        # Execution backends: Docker, local, venv, SLURM
-    ├── site_registry.py # Known HPC site defaults (Perlmutter, etc.)
-    ├── status.py        # Materialization status queries (SQLite via Dagster)
-    ├── targets.py       # Target config management (~/.lightcone/targets/)
-    └── tree.py          # Sub-analysis tree traversal helpers
-
-claude/lightcone/            # Claude Code plugin (bundled into wheel via hatch force-include)
-├── skills/             # lc-new, lc-build, lc-verify, lc-migrate, lc-feedback
-├── templates/          # Project CLAUDE.md template
-├── agents/             # lc-extractor (literature extraction subagent)
-├── guides/             # astra-reference.md, lightcone-cli-reference.md, ui-brand.md
-├── hooks/              # Langfuse telemetry hooks (Python)
-└── scripts/            # Session hooks (bash): venv activation, validate-on-save, status display
-```
-
-## Key data flow
+## Repository at a glance
 
 ```
-astra.yaml → build_definitions() → Dagster assets → ASTRAContainerRunner → results/{universe}/{output}/
-                                         ↑                    ↑
-                                    ASTRAIOManager        Docker / local / venv / SLURM
+src/lightcone/                  # PEP 420 namespace package — NO __init__.py
+├── cli/                        # Click surface
+│   ├── __init__.py             # exposes main()
+│   ├── commands.py             # init, run, status, verify, build, setup
+│   └── plugin.py               # plugin source-dir discovery
+├── engine/                     # execution substrate
+│   ├── manifest.py             # write_manifest, sha256_dir, code_version
+│   ├── snakefile.py            # generate .lightcone/Snakefile from astra.yaml
+│   ├── container.py            # docker/podman/podman-hpc build + recipe wrap
+│   ├── dask_cluster.py         # cluster lifecycle (local/SLURM/external)
+│   ├── status.py               # manifest-driven status walker (no Snakemake)
+│   ├── verify.py               # recompute hashes, walk the chain
+│   ├── tree.py                 # sub-analysis tree helpers
+│   ├── validation.py           # post-recipe output sanity checks
+│   └── site_registry.py        # vestigial; not imported by active code
+└── eval/                       # evaluation harness for the agent loop
+    ├── cli.py harness.py sandbox.py graders.py build.py report.py models.py
+
+src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
+
+claude/lightcone/               # Claude Code plugin (force-included into the wheel)
+├── skills/                     # lc-new, lc-build, lc-verify, lc-migrate, lc-feedback
+├── agents/                     # lc-extractor (literature subagent)
+├── guides/                     # astra-reference, lightcone-cli-reference, ui-brand
+├── templates/                  # project CLAUDE.md template
+├── hooks/                      # Langfuse telemetry hooks (Python)
+└── scripts/                    # session hooks (bash): venv, validate-on-save, …
+
+tests/                          # pytest, mirrors src/
+pyproject.toml                  # hatchling + hatch-vcs; ASTRA + Snakemake as deps
 ```
 
-1. `build_definitions()` (assets.py) reads `astra.yaml`, resolves the full sub-analysis tree, and creates one Dagster asset per output that has a `recipe` block.
-2. Asset dependencies come from `recipe.inputs` — Dagster resolves execution order automatically.
-3. `ASTRAContainerRunner` (runner.py) dispatches to Docker, venv, local subprocess, or SLURM based on the target config.
-4. Results are always written to `results/{universe_id}/{output_id}/` — enforced by the IO manager.
+The `lightcone.*` namespace is a PEP 420 implicit namespace package.
+**Do not add `src/lightcone/__init__.py`** — that would turn it into a
+regular package and break coexistence with future sibling distributions
+(`lightcone-ui`, etc.). Any new `lightcone-*` package must live under
+`src/lightcone/<name>/` and ship only its own subpackage.
+
+## Execution flow
+
+```
+astra.yaml ── snakefile.generate() ──► .lightcone/Snakefile + .lightcone/snakefile-config.json
+                                              │
+                                       snakemake -s … -d … --executor dask
+                                              │
+                       ┌──────────────────────┼──────────────────────┐
+                       │                      │                      │
+                  DAG resolution         per-rule run:           dask scheduler
+                  (Snakemake)            shell(recipe)           (LocalCluster /
+                                         + write_manifest()       SLURM-srun /
+                                                                  external)
+                       │
+                       └─► results/<u>/<o>/data
+                           results/<u>/<o>/.lightcone-manifest.json
+```
+
+What Snakemake owns (we don't write it): DAG construction, topological
+execution, parallelism, dry-run, locking, retry, log capture,
+per-rule resources, `--rerun-triggers` for staleness detection.
+
+What we own: a Snakefile generator, the manifest layer (write/read/verify),
+a status walker, a verify routine, the Dask cluster manager, the
+container-runtime layer, and a Snakemake executor plugin that submits
+each rule to a Dask scheduler.
+
+## What every materialized output gets
+
+A sidecar `.lightcone-manifest.json` next to its data, recording:
+
+- `code_version` = `sha256(recipe + container_image + decisions)`
+- `data_version` = `sha256_dir(output_dir)` excluding the manifest itself
+- `input_versions` for each declared input (chained data_version when the
+  input is another materialized output, `mtime-size` or `sha256` for
+  external files)
+- `container_image`, `recipe`, `decisions`, `git_sha`, `lc_version`,
+  `host`, `slurm_job_id`, `finished_at`
+
+`lc verify` recomputes `data_version` and walks the chain. Failures
+surface as `tampered_data`, `broken_chain`, or `missing_manifest`. `lc
+status` reads only manifests — works offline, no Snakemake or DB needed.
 
 ## Development setup
 
 ```bash
-uv sync --group dev
-uv run pytest
-uv run ruff check src/ tests/
-uv run mypy src/
+just install        # uv sync --all-groups
+just test           # uv run pytest
+just lint           # ruff + mypy
+just docs-serve     # live docs preview
 ```
 
-## Key invariants
+## Where to read next
 
-- `astra.yaml` is the single source of truth — all inputs, outputs, recipes, decisions, containers.
-- Output paths are always `results/{universe_id}/{output_id}/` — not customizable.
-- Container spec is a single string: an image name (e.g. `python:3.9`) is pulled; a file path (e.g. `Containerfile`) is built.
-- Container image tags are deterministic: `SHA256(Containerfile + dependency files)` → `lc-{name}-{hash}`.
-- Universe decision parameters are injected as CLI args: `--key value` passed to recipe commands.
-- Per-recipe container specs override the analysis-level default.
-
-## Config resolution order
-
-Used by all commands:
-
-| Setting | Priority |
-|---------|----------|
-| Target | `--target` flag › `.lightcone/lightcone.yaml` › `~/.lightcone/config.yaml` › `"local"` |
-| Permission tier | `--permissions` flag › `~/.lightcone/config.yaml` › interactive prompt |
+- [Architecture](architecture.md) — the full execution and integrity story
+- [CLI Reference](cli/index.md) — every command currently shipped
+- [Python API](api/index.md) — the engine modules
+- [Skills](skills/index.md) — what each `/lc-*` skill is supposed to do
+- [Telemetry](telemetry/index.md) — Langfuse tracing hooks
+- [Contributing](contributing/setup.md) — getting the dev loop running

@@ -2,6 +2,7 @@
 name: lc-extractor
 description: Extract prior insights from scientific papers for ASTRA analyses. Reads PDFs, identifies claims relevant to target decisions, extracts verbatim quotes, and verifies them. Use for literature extraction during /lc-new.
 tools: Read, Bash
+model: sonnet
 ---
 
 You are an ASTRA prior insight extraction agent with self-validation capability. Your task is to extract prior insights from a single paper and format them for an ASTRA analysis. Prior insights are knowledge from literature that informs analysis decisions — they go in the `prior_insights:` section of astra.yaml.
@@ -69,12 +70,10 @@ prior_insights:
         doi: "[DOI]"
         version: <version if arXiv, omit otherwise>
         quote:
-          type: TextQuoteSelector
           exact: "<VERIFIED exact quote from paper>"
           prefix: "<~20-100 chars BEFORE the quote>"
           suffix: "<~20-100 chars AFTER the quote>"
         location:
-          type: FragmentSelector
           page: <page number hint>
     scope: "<when this applies -- optional, include only if the claim has limited applicability>"
 
@@ -111,4 +110,4 @@ verification_summary:
 | `prefix/suffix mismatch` | Context text does not match surrounding text | Re-read the area around the quote, copy exact surrounding text |
 | Persistent `not_found` | OCR artifacts, ligatures, or Unicode differences | Try shorter quote avoiding problem characters; increase prefix/suffix |
 
-**Recovery**: Re-read the failing page, copy the exact text, update prefix/suffix, verify with `astra paper verify-quote`, then run `astra validate astra.yaml --verify-evidence`.
+**Recovery**: Re-read the failing page, copy the exact text, update prefix/suffix, verify with `astra paper verify-quotes`, then run `astra validate astra.yaml --verify-evidence`.

@@ -10,14 +10,18 @@ authors = [
 ]
 
 dependencies = [
-    "astra-tools>=0.2.2",
+    "astra-tools>=0.2.5",
     "click>=8.0",
     "pyyaml>=6.0",
     "rich>=13.0",
-    "dagster>=1.9",
-    "dagster-webserver>=1.9",
-    "dagster-docker>=0.25",
+    "jinja2>=3.0",
+    "snakemake>=9.0",
+    "snakemake-interface-executor-plugins>=9.0",
+    "snakemake-interface-common>=1.14",
+    "dask>=2024.1",
+    "distributed>=2024.1",
     "langfuse>=2.0",
+    "rocrate>=0.11",
 ]
 
 [dependency-groups]
@@ -51,13 +55,20 @@ build-backend = "hatchling.build"
 source = "vcs"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lightcone"]
+packages = [
+    "src/lightcone",
+    "src/snakemake_executor_plugin_dask",
+]
 
 [tool.hatch.build.targets.wheel.force-include]
 "claude/lightcone" = "lightcone/cli/claude/lightcone"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/lightcone", "claude/lightcone"]
+include = [
+    "src/lightcone",
+    "src/snakemake_executor_plugin_dask",
+    "claude/lightcone",
+]
 
 [tool.ruff]
 target-version = "py311"
@@ -73,5 +84,17 @@ namespace_packages = true
 explicit_package_bases = true
 mypy_path = "src"
 
+[[tool.mypy.overrides]]
+module = ["dask.*", "distributed.*"]
+ignore_missing_imports = true
+follow_untyped_imports = true
+
+[[tool.mypy.overrides]]
+module = ["rocrate.*", "astra.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: tests that spin up real subsystems (dask cluster, etc.) — opt-in via -m slow",
+]

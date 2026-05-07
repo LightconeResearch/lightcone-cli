@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 from lightcone.eval.graders import (
@@ -48,12 +49,20 @@ class TestGradeCommand:
 
 class TestGradeStatus:
     def test_all_materialized(self):
-        status_output = (
-            "┃ Output ┃ baseline ┃\n"
-            "│ chain  │ ok       │\n"
-            "│ plot   │ ok       │\n"
+        status_output = json.dumps({
+            "universes": [
+                {
+                    "universe_id": "baseline",
+                    "outputs": [
+                        {"output_id": "chain", "analysis_id": None, "status": "ok"},
+                        {"output_id": "plot", "analysis_id": None, "status": "ok"},
+                    ],
+                }
+            ]
+        })
+        sandbox = _mock_sandbox(
+            {"lc status --json": ExecuteResult(exit_code=0, output=status_output)}
         )
-        sandbox = _mock_sandbox({"lc status": ExecuteResult(exit_code=0, output=status_output)})
         grader = GraderSpec(name="status", type=GraderType.status, weight=3.0)
         result = _grade_status(sandbox, grader)
         assert result.passed is True
@@ -61,22 +70,61 @@ class TestGradeStatus:
         assert result.weight == 3.0
 
     def test_partial_materialization(self):
-        status_output = (
-            "┃ Output ┃ baseline ┃\n"
-            "│ chain  │ ok       │\n"
-            "│ plot   │ pending  │\n"
+        status_output = json.dumps({
+            "universes": [
+                {
+                    "universe_id": "baseline",
+                    "outputs": [
+                        {"output_id": "chain", "analysis_id": None, "status": "ok"},
+                        {"output_id": "plot", "analysis_id": None, "status": "missing"},
+                    ],
+                }
+            ]
+        })
+        sandbox = _mock_sandbox(
+            {"lc status --json": ExecuteResult(exit_code=0, output=status_output)}
         )
-        sandbox = _mock_sandbox({"lc status": ExecuteResult(exit_code=0, output=status_output)})
         grader = GraderSpec(name="status", type=GraderType.status)
         result = _grade_status(sandbox, grader)
         assert result.passed is False
         assert result.score == 0.5
 
+    def test_aliases_excluded_from_denominator(self):
+        status_output = json.dumps({
+            "universes": [
+                {
+                    "universe_id": "baseline",
+                    "outputs": [
+                        {"output_id": "chain", "analysis_id": None, "status": "ok"},
+                        {"output_id": "alias_out", "analysis_id": None, "status": "alias"},
+                    ],
+                }
+            ]
+        })
+        sandbox = _mock_sandbox(
+            {"lc status --json": ExecuteResult(exit_code=0, output=status_output)}
+        )
+        grader = GraderSpec(name="status", type=GraderType.status)
+        result = _grade_status(sandbox, grader)
+        assert result.passed is True
+        assert result.score == 1.0
+
     def test_status_command_failure(self):
-        sandbox = _mock_sandbox({"lc status": ExecuteResult(exit_code=1, output="error")})
+        sandbox = _mock_sandbox(
+            {"lc status --json": ExecuteResult(exit_code=1, output="error")}
+        )
         grader = GraderSpec(name="status", type=GraderType.status)
         result = _grade_status(sandbox, grader)
         assert result.error is not None
+
+    def test_invalid_json(self):
+        sandbox = _mock_sandbox(
+            {"lc status --json": ExecuteResult(exit_code=0, output="not json")}
+        )
+        grader = GraderSpec(name="status", type=GraderType.status)
+        result = _grade_status(sandbox, grader)
+        assert result.error is not None
+        assert "invalid JSON" in (result.error or "")
 
 
 class TestCompositeScore:

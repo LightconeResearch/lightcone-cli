@@ -1,15 +1,27 @@
 # Hooks Architecture
 
-The telemetry system is composed of four Python scripts in `claude/lightcone/hooks/`:
+The telemetry hooks are shipped as part of the plugin and copied into
+`.claude/hooks/` by `lc init`. They are dormant unless
+`TRACE_TO_LANGFUSE=true` and the Langfuse credentials are present in
+the environment — see [Telemetry overview](index.md). Today's
+`lc init` does **not** seed `.claude/settings.local.json` automatically,
+so a fresh project ships with the hooks installed but disabled until
+you fill in the env vars.
+
+The system is five Python scripts in `claude/lightcone/hooks/`:
 
 ```
 hooks/
 ├── langfuse_session_init_hook.py   # PreToolUse: create trace ID
-├── langfuse_hook.py                # Stop/SessionEnd: emit full session
+├── langfuse_hook.py                # Stop / SessionEnd: emit full session
 ├── langfuse_git_commit_hook.py     # PostToolUse(Bash): attach git metadata
 ├── langfuse_prepare_commit_msg.py  # git prepare-commit-msg hook
-└── langfuse_utils.py               # Shared utilities
+└── langfuse_utils.py               # shared utilities
 ```
+
+These five files are copied verbatim from
+[langfuse-cli](https://github.com/langfuse/langfuse-cli) (MIT). See the
+NOTICE file at the repo root.
 
 ---
 
