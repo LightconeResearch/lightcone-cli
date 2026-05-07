@@ -1,0 +1,9 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lightcone-cli",
+  "compatibility_date": "2026-05-07",
+  "assets": {
+    "directory": "./site",
+    "not_found_handling": "404-page"
+  }
+}
