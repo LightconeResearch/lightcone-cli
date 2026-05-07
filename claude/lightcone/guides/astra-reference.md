@@ -137,6 +137,8 @@ Set `container:` at analysis level (all recipes inherit); per-recipe `container:
 
 Runners expand `{...}` placeholders in `command:` before invoking it: `{inputs.<id>}` (input path), `{inputs}` (all input paths, declared order), `{decisions.<id>}` (active option ID), `{output}` (artifact path), `{{`/`}}` (literal braces). Every `{inputs.<id>}` and `{decisions.<id>}` must name something declared in the parent Output's `inputs:`/`decisions:` lists -- always **local IDs** (no `../`; bridging is declared once at the Input/Decision via `from:`).
 
+Text outside `{...}` is literal command text and isn't validated. Static constants (`--max-iter 1000`), per-output specialisations when fan-out is unrolled into one Output per value (`--tracer lrg1`), and shell features (`${VAR}`, pipes, redirects) all live as plain text. Only values that vary across the multiverse need to be `{decisions.<id>}` placeholders -- there is no separate `params` channel, and Snakemake-style wildcards (`{chunk_id}`, `{block_i}`) have no spec-level analogue: either inline the value, unroll the fan-out into one Output per value, or describe only the aggregated artifact.
+
 ### Conditional Outputs
 
 Outputs can have `when` conditions -- the output only exists when the condition is met for a given universe. Uses the same syntax as decision `when` (negation with `~`, lists AND'd).
