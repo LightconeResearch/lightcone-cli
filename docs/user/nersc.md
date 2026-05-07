@@ -33,14 +33,6 @@ module load python      # NERSC Python (3.11+); brings conda and pip onto PATH
 
 That's enough for installing `lightcone-cli` on top. See [§2](#2-install-lightcone-cli).
 
-!!! tip "Recommendation"
-    Like the generic [Install](install.md#1-python) page, we recommend [`uv`](https://docs.astral.sh/uv/) for managing Python installations and virtual environments — it's faster than pip and gives you a Python independent of the loaded module.
-
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    uv python install 3.12
-    ```
-
 > **When to create your own conda env.** The NERSC python module is shared and read-only — you can install user-level packages on top of it, but you can't pin a different Python version or guarantee dependency isolation. If you want either, create a conda env on top:
 >
 > ```bash
@@ -69,35 +61,32 @@ With the environment ready, install the package itself.
 
 ### Into NERSC's python module (no conda env)
 
-`uv tool install` is the recommended path — it isolates `lc` in its own venv under `~/.local/share/uv/tools/` with a wrapper at `~/.local/bin/lc`, so the shared NERSC python module stays untouched.
+The shared NERSC `python` module is read-only, so install with `--user` to land into your home dir's site-packages:
 
-=== "uv"
-    ```bash
-    uv tool install lightcone-cli
-    ```
+```bash
+python -m pip install --user lightcone-cli
+```
 
-=== "pip"
-    ```bash
-    python -m pip install --user lightcone-cli
-    ```
+This drops the `lc` console script into `~/.local/bin/`. Make sure that's on your `PATH` (Perlmutter usually has this by default — check with `echo $PATH | tr : '\n' | grep .local/bin`).
 
-Make sure `~/.local/bin` is on your `PATH` (Perlmutter usually has this by default — check with `echo $PATH | tr : '\n' | grep .local/bin`).
+If you already use [`uv`](https://docs.astral.sh/uv/) (NERSC doesn't ship it, but you can install it yourself with `curl -LsSf https://astral.sh/uv/install.sh | sh`), `uv tool install` is a cleaner alternative — it isolates `lc` in its own venv and drops the same `~/.local/bin/lc` wrapper:
+
+```bash
+uv tool install lightcone-cli
+```
 
 ### Into a conda env
 
 ```bash
 conda activate your-env-name
+python -m pip install lightcone-cli
 ```
 
-=== "uv"
-    ```bash
-    uv pip install lightcone-cli
-    ```
+If you use `uv`:
 
-=== "pip"
-    ```bash
-    python -m pip install lightcone-cli
-    ```
+```bash
+uv pip install lightcone-cli
+```
 
 `astra-tools` is a transitive dependency, so a single `lightcone-cli` install pulls it in automatically.
 
