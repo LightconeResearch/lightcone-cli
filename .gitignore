@@ -213,3 +213,7 @@ eval-results
 # UV
 ## lockfile should be versioned for applications but not for libraries
 uv.lock
+
+# Cloudflare Wrangler / Node
+.wrangler/
+node_modules/

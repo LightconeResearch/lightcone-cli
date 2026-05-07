@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Cloudflare Pages build script for docs.lightconeresearch.org.
-# Installs uv, syncs the docs group, and runs `zensical build` → site/.
+# Build script for docs.lightconeresearch.org, run by Cloudflare Workers
+# (Static Assets). Installs uv, syncs the docs group, runs zensical → site/.
 set -euo pipefail
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
