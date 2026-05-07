@@ -25,63 +25,56 @@ Other install routes (npm, native package managers) are documented in the [Claud
 
 ## 1. Pick a Python environment
 
-Next, set up a Python environment for `lightcone-cli` (Python 3.11+ required). There are two practical options on Perlmutter:
-
-### Option A — conda env (recommended)
+NERSC's `python` module gives you a ready-to-use Python distribution with `conda`, `pip`, and many common scientific packages already installed — no env creation needed for the basics:
 
 ```bash
-module load python                          # NERSC's Python distribution; ships conda
-conda create -n your-env-name python=3.11 -y
-conda activate your-env-name
+module load python      # NERSC Python (3.11+); brings conda and pip onto PATH
 ```
 
-(`module load conda` works too — it loads Miniconda directly. Either gives you a working `conda` on `PATH`; `module load python` is the canonical NERSC default.)
+That's enough for installing `lightcone-cli` straight into your user site-packages with `pip install --user`, which is the simplest path. See [§2](#2-install-lightcone-cli).
 
-Conda envs land under `~/.conda/envs/` (your home, not CFS). They're persistent across sessions; just `conda activate your-env-name` next time. 
-
-> The home disk quota on NERSC is capped at 40 GB, so for larger envs it's worth moving the env to `$SCRATCH` and pointing the original location at it via a symlink:
+> **When to create your own conda env.** The NERSC python module is shared and read-only — you can install user-level packages on top of it (`pip install --user`), but you can't pin a different Python version or guarantee dependency isolation. If you want either, create a conda env on top:
 >
 > ```bash
-> # Move the env once it's created, then symlink the original location
+> module load python
+> conda create -n your-env-name python=3.11 -y
+> conda activate your-env-name
+> ```
+>
+> This is also NERSC's [recommended path for `pip install`](https://docs.nersc.gov/development/languages/python/nersc-python/) when you need custom packages: pip-into-conda-env rather than pip-into-base.
+
+> **Storage note.** Conda envs land under `~/.conda/envs/`. The Perlmutter home quota is 40 GB; for larger envs NERSC recommends installing to `/global/common/software/<project>/` instead. If you really want them on `$SCRATCH` (12-week purge!), move and symlink:
+>
+> ```bash
 > conda deactivate
 > mv ~/.conda/envs/your-env-name $SCRATCH/conda-envs/
 > ln -s $SCRATCH/conda-envs/your-env-name ~/.conda/envs/your-env-name
 > ```
 >
-> Caveats: `$SCRATCH` is purged on a 12-week rolling window — the env will silently disappear. If you go this route, set up a periodic `touch` job or use `/global/cfs/cdirs/<project>/conda-envs/` instead.
->
 > See [NERSC's Python guide](https://docs.nersc.gov/development/languages/python/nersc-python/) for the full storage strategy and [the `ln(1)` man page](https://man7.org/linux/man-pages/man1/ln.1.html) for the symlink syntax.
-
-### Option B — venv inside an existing conda env
-
-If you already have a project conda env (e.g. `lightcone`) and just want `lc` available alongside it without polluting the conda env:
-
-```bash
-module load python
-conda activate lightcone
-python -m venv ~/.lightcone/.venv          # or wherever you prefer
-source ~/.lightcone/.venv/bin/activate
-```
-
-**Pitfall:** if `lc` ends up installed in more than one env (e.g. both the conda env and a venv), the wrong one can shadow the other on `PATH`. After install, always run `which lc` to confirm you're getting the binary you expect.
 
 ---
 
 ## 2. Install lightcone-cli
 
-With the environment ready, install the package itself.
+With the environment ready, install the package itself. Pick the path that matches your §1 setup:
 
-### From PyPI (recommended)
+### Into NERSC's python module (no conda env)
 
 ```bash
+pip install --user lightcone-cli
+```
+
+`--user` puts it under `~/.local/`. Make sure `~/.local/bin` is on your `PATH` (Perlmutter usually has this by default — check with `echo $PATH | tr : '\n' | grep .local/bin`).
+
+### Into a conda env
+
+```bash
+conda activate your-env-name
 pip install lightcone-cli
 ```
 
-If you use [`uv`](https://docs.astral.sh/uv/) (faster, no daemon):
-
-```bash
-uv pip install lightcone-cli
-```
+If you use [`uv`](https://docs.astral.sh/uv/) (faster, no daemon), `uv pip install lightcone-cli` works in either flow.
 
 `astra-tools` is a transitive dependency, so a single `pip install lightcone-cli` pulls it in automatically.
 
