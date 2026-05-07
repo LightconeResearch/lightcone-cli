@@ -827,6 +827,113 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
             raise click.ClickException(str(e))
 
 
+# =============================================================================
+# lc export
+# =============================================================================
+
+
+@main.group()
+def export() -> None:
+    """Export project artifacts in interoperable formats."""
+
+
+@export.command("wrroc")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    default=Path("./wrroc"),
+    help="Bundle directory (or .zip path with --zip).",
+    show_default=True,
+)
+@click.option(
+    "--universe",
+    "-u",
+    multiple=True,
+    help="Restrict to specific universes (default: all).",
+)
+@click.option(
+    "--author",
+    default=None,
+    help="Author override, e.g. \"Name <email@host>\". Default: git config.",
+)
+@click.option(
+    "--license",
+    "license_url",
+    default=None,
+    help="License URL or SPDX identifier. Default: CC-BY-4.0.",
+)
+@click.option(
+    "--zip/--no-zip",
+    "zip_bundle",
+    default=False,
+    help="Package the bundle as a .zip after building.",
+)
+@click.option(
+    "--metadata-only",
+    is_flag=True,
+    help="Skip data files; bundle manifests + astra.yaml + universes only.",
+)
+def export_wrroc_cmd(
+    output: Path,
+    universe: tuple[str, ...],
+    author: str | None,
+    license_url: str | None,
+    zip_bundle: bool,
+    metadata_only: bool,
+) -> None:
+    """Export a Workflow Run RO-Crate (WRROC) bundle.
+
+    The bundle is suitable for upload to WorkflowHub, Zenodo (with the
+    RO-Crate plugin), or any RO-Crate-aware archive. The lightcone
+    manifest format on disk is unchanged — this is a publication view
+    generated on demand.
+
+    Examples:
+
+      lc export wrroc                                 # ./wrroc/ directory
+      lc export wrroc -o my-run.zip --zip             # zip bundle
+      lc export wrroc --metadata-only                 # provenance, no data
+      lc export wrroc -u baseline -u alt              # specific universes
+    """
+    from lightcone.engine.wrroc import export_wrroc
+
+    project = _project_root()
+
+    try:
+        result = export_wrroc(
+            project_path=project,
+            output_path=output,
+            universes=list(universe) or None,
+            author=author,
+            license=license_url,
+            zip_bundle=zip_bundle,
+            include_data=not metadata_only,
+        )
+    except FileExistsError as e:
+        raise click.ClickException(str(e))
+
+    flavor = "zip bundle" if result.is_zip else "directory"
+    console.print(
+        f"[green]✓[/green] Wrote WRROC {flavor}: [cyan]{result.bundle_path}[/cyan]"
+    )
+    if result.runs_included == 0:
+        console.print(
+            "[yellow]Warning:[/yellow] no materialized outputs were found — "
+            "the bundle contains only the workflow definition.\n"
+            "  This usually means recipes haven't been run yet (try [cyan]lc run[/cyan]) "
+            "or the [cyan].lightcone-manifest.json[/cyan] sidecars are missing.\n"
+            "  Workflow-only bundles will not pass strict Provenance Run Crate "
+            "validation; that profile requires at least one materialized run."
+        )
+    else:
+        u_list = ", ".join(result.universes_included)
+        console.print(
+            f"  Captured [bold]{result.runs_included}[/bold] runs across "
+            f"universes: [cyan]{u_list}[/cyan]"
+        )
+
+
 # Register eval subgroup (requires optional 'eval' extra)
 try:
     from lightcone.eval.cli import eval_group

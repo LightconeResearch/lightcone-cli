@@ -80,6 +80,8 @@ lc status --json                    # machine-readable output
 lc verify                           # recompute hashes and walk the provenance chain
 lc build                            # pre-build container images from Containerfiles
 lc build --force --runtime podman   # force rebuild and pin runtime
+lc export wrroc                     # export a Workflow Run RO-Crate bundle for publication
+lc export wrroc --zip -o run.zip    # zip the bundle for upload to Zenodo / WorkflowHub
 ```
 
 ## Capabilities
@@ -109,6 +111,10 @@ Jobs always dispatch through a Dask cluster: a `LocalCluster` on a workstation, 
 ### Provenance integrity
 
 Every materialized output gets a `.lightcone-manifest.json` capturing `code_version` (sha256 of recipe + container + decisions), `data_version` (sha256 of the output directory contents), input manifest versions, git SHA, lc version, and host. `lc verify` recomputes hashes and walks the chain — failures surface as `tampered_data`, `broken_chain`, or `missing_manifest`. `lc status` reads only manifests, so it works offline.
+
+### Publishing analyses
+
+`lc export wrroc` walks your manifests and emits a [Workflow Run RO-Crate](https://www.researchobject.org/workflow-run-crate/) bundle — a JSON-LD package readable by WorkflowHub, Zenodo's RO-Crate plugin, and any RO-Crate-aware archive. Each materialization becomes a `CreateAction` with `object` (inputs, including upstream datasets via stable `@id` references) and `result` (the output dataset); decisions become `PropertyValue` entities; the workflow is captured as a `ComputationalWorkflow`. The lightcone manifest format on disk is unchanged — WRROC is the publication view, generated on demand. Use `--metadata-only` to ship only the provenance graph (useful when data files are huge), `--zip` to package the bundle for upload, or `-u <universe>` to restrict to specific universes.
 
 ### Telemetry
 

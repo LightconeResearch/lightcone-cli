@@ -192,6 +192,10 @@ def write_manifest(
         "decisions": cfg.get("decisions", {}),
         "input_versions": input_versions,
         "git_sha": cfg.get("git_sha"),
+        # URL of the git origin remote at the time of materialization.
+        # Optional/additive — older manifests without this field still
+        # parse. Surfaced by ``lc export wrroc`` as a CodeRepository entity.
+        "git_remote": cfg.get("git_remote"),
         "lc_version": cfg.get("lc_version"),
         "finished_at": time.time(),
         "host": socket.gethostname(),

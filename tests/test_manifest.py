@@ -191,6 +191,7 @@ def test_write_manifest_basic(tmp_path: Path) -> None:
             "decisions": {"k": 1},
             "code_version": "sha256:abc",
             "git_sha": "deadbeef",
+            "git_remote": "https://github.com/dkn16/test-repo",
             "lc_version": "0.4.1",
         },
     )
@@ -207,6 +208,7 @@ def test_write_manifest_basic(tmp_path: Path) -> None:
     assert m["decisions"] == {"k": 1}
     assert m["code_version"] == "sha256:abc"
     assert m["git_sha"] == "deadbeef"
+    assert m["git_remote"] == "https://github.com/dkn16/test-repo"
     assert m["lc_version"] == "0.4.1"
     assert m["data_version"].startswith("sha256:")
     assert "raw_data" in m["input_versions"]

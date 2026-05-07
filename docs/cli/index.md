@@ -21,6 +21,7 @@ Code skills, with the CLI as the durable, scriptable backstop.
 | [`lc build`](build.md) | Build container images declared in `astra.yaml`. |
 | [`lc status`](status.md) | Manifest-driven status report. No Snakemake import needed. |
 | [`lc verify`](verify.md) | Recompute hashes, walk the input chain, surface tampering. |
+| [`lc export`](export.md) | Emit interoperable bundles (Workflow Run RO-Crate) for publication. |
 | [`lc setup`](setup.md) | Write a minimal `~/.lightcone/config.yaml`. |
 
 ## Global options
