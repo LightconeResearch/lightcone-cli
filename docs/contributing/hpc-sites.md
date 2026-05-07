@@ -1,51 +1,21 @@
-# Adding an HPC Site
+# Adding an HPC Site (deprecated)
 
-HPC site defaults live in `src/lightcone/dagster/site_registry.py`. See the full reference at [API: site_registry](../api/site_registry.md#adding-a-new-site).
+There is no longer a meaningful concept of "adding an HPC site" — the
+target system that this used to feed is gone. The `site_registry` module
+is still present in the source tree but unused. See
+[api/site_registry](../api/site_registry.md).
 
-## Minimal example
+If you want lightcone-cli to behave well on a new cluster, what you
+actually need is:
 
-```python
-SITE_DEFAULTS["my_cluster"] = {
-    "hostname_patterns": ["mycluster.example.org", "mycluster"],
-    "display_name": "My HPC Cluster",
-    "backend": "slurm",
-    "connection": {
-        "hostname": "mycluster.example.org",
-    },
-    "node_types": {
-        "gpu": {
-            "description": "GPU nodes",
-            "constraint": "gpu",
-            "container_flags": [],
-        },
-    },
-    "qos_options": {
-        "normal": {"description": "Standard priority", "default": True},
-    },
-    "container_runtimes": ["podman"],
-    "resource_limits": {
-        "max_nodes": 4,
-        "max_walltime_minutes": 240,
-        "max_concurrent_jobs": 4,
-    },
-}
-```
-
-## Testing
-
-After adding a site, verify it appears in the setup wizard:
-
-```bash
-lc setup   # → select "Configure HPC" → your site should appear
-```
-
-And that `detect_site()` recognises the hostname:
-
-```python
-from lightcone.engine.site_registry import detect_site
-assert detect_site("mycluster.example.org") == "my_cluster"
-```
-
-## Documentation
-
-Add a row to the sites table in `docs/hpc/site-registry.md`.
+1. **A container runtime that works on compute nodes.** `podman-hpc` is
+   the supported case. Wire it up via `~/.lightcone/config.yaml`.
+2. **Dask workers reachable from the scheduler.** `lc run` already does
+   the right thing inside an `salloc`/`sbatch` allocation — the cluster
+   manager binds the scheduler to the SLURM canonical hostname and
+   launches one worker per node via `srun`. See
+   [api/dask_cluster](../api/dask_cluster.md).
+3. **A scratch path that the agent should not edit.** Today's permission
+   tiers hard-code Perlmutter scratch deny rules; if you add a new
+   site, update `PERMISSION_TIERS` in
+   `src/lightcone/cli/commands.py`.

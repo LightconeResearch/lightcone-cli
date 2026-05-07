@@ -1,6 +1,6 @@
 # lc init
 
-Create a new ASTRA analysis project with full agentic scaffolding.
+Scaffold a new ASTRA project with Claude Code integration.
 
 ## Synopsis
 
@@ -8,86 +8,69 @@ Create a new ASTRA analysis project with full agentic scaffolding.
 lc init [OPTIONS] [DIRECTORY]
 ```
 
-## Description
+`DIRECTORY` defaults to `.` (the current directory).
 
-`lc init` bootstraps a new ASTRA analysis project. It creates:
+## What it creates
 
-- Directory structure (`universes/`, `scripts/`, `results/`, `.lightcone/`)
-- Boilerplate `astra.yaml` with TODO placeholders
-- `Containerfile` and `requirements.txt`
-- A baseline universe (`universes/baseline.yaml`)
-- `.claude/` directory with skills, hooks, scripts, and `settings.json`
-- `.lightcone/lightcone.yaml` linking the project to its execution target
-- `.lightcone/dagster.yaml` pointing Dagster's SQLite store to `results/.dagster/`
-- `CLAUDE.md` from the plugin template
-- Python virtual environment (`.venv/`) with `lightcone-cli` installed
-- Git repository with an initial commit
+Inside `DIRECTORY` (creating it if needed):
+
+```
+astra.yaml                    # tiny boilerplate spec with one example output
+CLAUDE.md                     # short note pointing future agents at the project
+.gitignore                    # Python + lightcone state
+.lightcone/
+  lightcone.yaml              # currently a stub: { target: local }
+results/                      # placeholder; populated by `lc run`
+universes/                    # placeholder; populate via `astra universe generate -n …`
+.claude/                      # bundled Claude Code plugin
+  skills/, agents/, hooks/, scripts/, guides/, templates/
+  settings.json               # the chosen permission tier
+.venv/                        # Python venv (skipped with --no-venv)
+```
+
+`lc init` refuses to run if `DIRECTORY/astra.yaml` already exists.
 
 ## Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `DIRECTORY` | `.` | Project directory to create |
-| `--no-git` | false | Skip git initialisation |
-| `--no-venv` | false | Skip virtual environment creation |
-| `--target`, `-t` | user default | Execution target name to write into `.lightcone/lightcone.yaml` |
-| `--permissions` | saved/prompt | Claude Code permission tier (`yolo`, `recommended`, `minimal`) |
-| `--existing-project` | — | Path to existing code to migrate into the new project |
-| `--sub-analysis` | false | Create a sub-analysis directory and wire it into the parent project |
+| Option | Default | Effect |
+|--------|---------|--------|
+| `--no-git` | off | Skip `git init`. |
+| `--no-venv` | off | Skip `python -m venv .venv`. |
+| `--permissions {yolo,recommended,minimal}` | `recommended` | Which `.claude/settings.json` permission tier to install. |
 
-## Modes
-
-### New project
-
-```bash
-lc init my-analysis
-lc init my-analysis --target perlmutter-gpu
-```
-
-Creates a fresh project in `my-analysis/`.
-
-### Migrate existing code
-
-```bash
-lc init . --existing-project .
-lc init my-analysis --existing-project ../old-code
-```
-
-If `source != directory`, copies the source contents first. Adds lightcone-cli infrastructure without overwriting existing files. Then run `/lc-migrate` inside Claude Code to generate `astra.yaml`.
-
-### Sub-analysis
-
-```bash
-lc init analyses/new_stage --sub-analysis
-lc init --sub-analysis new_stage   # placed under analyses/
-```
-
-Scaffolds a sub-directory with its own `astra.yaml` and baseline universe, and wires it into the parent project's `astra.yaml` and universe files.
+> The historical `--target`, `--existing-project`, and `--sub-analysis`
+> flags have been removed; today's `lc init` only knows the three flags
+> above. For migrating an existing project, run `lc init` in a fresh
+> directory and use the `/lc-migrate` skill from inside Claude Code.
 
 ## Permission tiers
 
-Chosen once at setup and saved to `~/.lightcone/config.yaml`:
+| Tier | Allowed | Denied |
+|------|---------|--------|
+| `yolo` | `Bash(*)`, `Edit`, `Read`, `Write`, `WebSearch`, `WebFetch`, `mcp__*` | — |
+| `recommended` | `Read`, `Edit`, `Write`, `Bash(*)`, `WebSearch`, `WebFetch` | Edits to `~/.ssh`, `~/.aws`, `~/.gnupg`, `/scratch`, `/pscratch`; `sudo`, `rm -rf`, `git push`. |
+| `minimal` | `Read` | Everything else. |
 
-| Tier | Behaviour |
-|------|-----------|
-| `yolo` | All tools allowed, including MCP. No guardrails. |
-| `recommended` | Full access; denies `sudo`, `git push`, SSH/AWS dotfiles, HPC scratch. |
-| `minimal` | Read-only; every write/shell action needs explicit confirmation. |
+The tiers are defined as `PERMISSION_TIERS` in
+`src/lightcone/cli/commands.py` — adjust there if you want to add a tier
+or change defaults.
 
-## Post-init
+## Examples
+
+```bash
+lc init                                # scaffold in cwd, recommended tier
+lc init my-analysis                    # scaffold in ./my-analysis
+lc init my-analysis --no-git --no-venv # bare bones
+lc init . --permissions yolo           # for autonomous loops you trust
+```
+
+## Next steps
 
 ```bash
 cd my-analysis
 claude           # open Claude Code
-# → run /lc-new to scope your research question
+# Inside Claude Code:
+/lc-new          # scope a research question into astra.yaml
+/lc-build        # implement and run it
+/lc-verify       # audit the result
 ```
-
-## Internal helpers
-
-The following private functions do the heavy lifting and are tested directly:
-
-- `_create_dagster_yaml(directory)` — writes `.lightcone/dagster.yaml`
-- `_create_boilerplate_astra_yaml(directory)` — writes `astra.yaml`, `Containerfile`, `requirements.txt`, `universes/baseline.yaml`
-- `_create_claude_settings(directory, tier, target)` — copies plugin files and writes `.claude/settings.json` + `.claude/settings.local.json`
-- `_create_lightcone_config(directory, target_name)` — writes `.lightcone/lightcone.yaml`
-- `_init_sub_analysis(directory)` — scaffolds sub-analysis directory and wires it into the parent spec

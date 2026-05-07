@@ -1,39 +1,19 @@
-# Command Schematics
+# Command Schematics (removed)
 
-Interactive visual reference for all `lc` CLI commands and skills, showing data flow, execution steps, and hook integration points.
+The interactive HTML schematics page was retired along with the legacy
+Dagster-era CLI surface (`lc dev`, `lc target`, `lc update`). Several of the
+commands it documented no longer exist.
 
-[Open full screen](/cli/schematics.html){ .md-button }
+For an up-to-date map of the toolchain, see:
 
-<div style="position: relative; width: 100%; padding-top: 80vh;">
-  <iframe
-    src="/cli/schematics.html"
-    style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; border-radius: 4px;"
-    title="lightcone-cli Command Schematics"
-  ></iframe>
-</div>
+- [Architecture](../architecture.md) — execution and integrity flow
+- [CLI Overview](index.md) — every command currently shipped
+- [Skills Overview](../skills/index.md) — the Claude Code surface
 
-## What's in the schematics
+If you want a graphical view of the analysis DAG for a specific project,
+generate it from the Snakefile that `lc run` produces:
 
-Each panel in the interactive reference covers one command or skill and includes:
-
-- **Flow diagram** — files and programs shown as colour-coded nodes connected by directed edges, making inputs, intermediate artefacts, and outputs immediately visible
-- **Numbered execution steps** — the exact sequence of operations performed, from config resolution to output writing
-- **Hooks** — which Claude Code hooks fire at each stage (PreToolUse, PostToolUse, Stop)
-
-### Node colour legend
-
-| Colour | Meaning |
-|--------|---------|
-| Blue | Input file |
-| Green | Output file |
-| Orange | Program / subprocess |
-| Purple | Skill |
-| Yellow | Config / settings |
-
-### Commands covered
-
-`lc init` · `lc run` · `lc build` · `lc status` · `lc dev` · `lc setup` · `lc target` · `lc update`
-
-### Skills covered
-
-`lc-new` · `lc-build` · `lc-verify` · `lc-migrate` · `lc-feedback`
+```bash
+lc run --dry-run                                   # produces .lightcone/Snakefile
+snakemake -s .lightcone/Snakefile --dag | dot -Tsvg > dag.svg
+```

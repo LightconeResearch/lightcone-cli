@@ -1,78 +1,48 @@
 # lightcone.engine.site_registry
 
-Known HPC site defaults. Used by `lc setup` and `lc target add` to auto-populate scheduler configuration.
+> **Status: orphaned.** Nothing in the active code path imports this
+> module. It's residue from the (now-removed) target system. Keep
+> reading if you want to know what's still there; otherwise skip to
+> [api/container](container.md) and [api/dask_cluster](dask_cluster.md)
+> for what actually drives execution today.
 
----
+Source: `src/lightcone/engine/site_registry.py`.
 
-## `detect_site(hostname_or_name) → str | None`
+## What's still in the file
 
-Returns the site key (e.g. `"perlmutter"`) if the hostname matches any registered site's `hostname_patterns`. Returns `None` otherwise.
+The module exposes:
 
----
+- `SITE_DEFAULTS` — a dict mapping site keys (`"perlmutter"`, `"local"`)
+  to a structured defaults dict (display name, hostname patterns,
+  suggested QoS / constraint / time-limit options, scratch deny paths,
+  container runtime).
+- `detect_site(hostname_or_name) → str | None`
+- `get_site_defaults(site_key) → dict | None`
+- `list_known_sites() → list[tuple[str, str]]`
+- `get_site_scratch_deny_rules(site_key) → list[str]`
 
-## `get_site_defaults(site_key) → dict | None`
+The functions still work on their own; they just don't have a caller
+inside lightcone-cli right now.
 
-Returns the full defaults dict for a site, or `None` if not registered.
+## What's actually used today
 
----
-
-## `list_known_sites() → list[tuple[str, str]]`
-
-Returns `[(site_key, display_name), ...]` for all sites in `SITE_DEFAULTS`.
-
----
-
-## `resolve_account(site_key, account, constraint) → str`
-
-Applies site-specific account suffixes. For example, on Perlmutter GPU jobs need `m4031_g` instead of `m4031` — `resolve_account("perlmutter", "m4031", "gpu")` returns `"m4031_g"`.
-
----
-
-## `get_site_scratch_deny_rules(site_key) → list[str]`
-
-Returns Claude Code `Edit()` deny rules for the site's scratch paths. For Perlmutter:
-
-```python
-["Edit(//pscratch/**)", "Edit(//global/cscratch1/**)", "Edit(//global/cfs/cdirs/**)"]
-```
-
-These are merged into `.claude/settings.json` by `lc init` when a non-local target is configured.
-
----
-
-## Adding a new site
-
-Add an entry to `SITE_DEFAULTS` in `site_registry.py`:
+The Perlmutter scratch deny rules used to be merged into
+`.claude/settings.json` automatically when a non-local target was
+configured. With the target system gone, the equivalent rules are
+hard-coded inline in `PERMISSION_TIERS` (see
+`src/lightcone/cli/commands.py`):
 
 ```python
-SITE_DEFAULTS["frontier"] = {
-    "hostname_patterns": ["frontier.olcf.ornl.gov", "frontier"],
-    "display_name": "OLCF Frontier",
-    "backend": "slurm",
-    "connection": {"hostname": "frontier.olcf.ornl.gov"},
-    "node_types": {
-        "gpu": {
-            "description": "AMD MI250X GPU",
-            "constraint": "gpu",
-            "container_flags": [],
-        },
-    },
-    "qos_options": {
-        "normal": {"description": "Standard priority", "default": True},
-    },
-    "container_runtimes": ["singularity"],
-    "resource_limits": {
-        "max_nodes": 8,
-        "max_walltime_minutes": 120,
-        "max_concurrent_jobs": 4,
-    },
-    "scratch_paths": ["//lustre/orion/**"],
-}
+"Edit(//scratch/**)",
+"Edit(//pscratch/**)",
 ```
 
-## Currently registered sites
+If you want richer per-site rules without rebuilding the target
+system, point `lc init`'s `_install_claude_plugin` at
+`get_site_scratch_deny_rules(detect_site(socket.gethostname()))` and
+merge the result into the deny list. Two lines of code.
 
-| Key | Display name | Hostname |
-|-----|-------------|---------|
-| `perlmutter` | NERSC Perlmutter | `perlmutter.nersc.gov` |
-| `local` | Local | — |
+## Recommendation
+
+Either delete this module (no callers) or revive it for the use case
+above. Leaving it as-is encourages the drift this audit is fighting.

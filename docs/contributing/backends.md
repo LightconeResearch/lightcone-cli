@@ -1,82 +1,42 @@
-# Adding an Execution Backend
+# Adding an Execution Backend (rewritten)
 
-Execution backends are implemented in `src/lightcone/dagster/runner.py` as methods on `ASTRAContainerRunner`.
+The `ASTRAContainerRunner` plugin point is gone. Execution is structured
+quite differently now, and "adding a backend" decomposes into one or both
+of these:
 
-## Steps
+## Adding a container runtime
 
-### 1. Add a `_run_{backend}()` method
+The supported runtimes are `docker`, `podman`, and `podman-hpc` (plus the
+`none` no-op). They are listed in
+`src/lightcone/engine/container.py::RUNTIMES`. To add a new one:
 
-```python
-def _run_mybackend(
-    self,
-    command: str,
-    output_id: str,
-    universe_id: str,
-    # ... backend-specific args
-) -> ExecutionResult:
-    """Execute a recipe using mybackend.
+1. Append the binary name to `RUNTIMES` (detection priority is the tuple
+   order).
+2. If detection needs a probe (like the docker-daemon ping), extend
+   `detect_runtime()`.
+3. If `wrap_recipe()` needs different flags for the runtime, branch on
+   `runtime` there.
+4. If post-build migration is required (the `podman-hpc migrate` model),
+   add a `_<runtime>_migrate(tag)` and call it from `build_image()` /
+   `pull_image()`.
+5. Add tests in `tests/test_container.py`.
 
-    Args:
-        command: Full recipe command with CLI args already appended.
-        output_id: Output identifier (used for error messages).
-        universe_id: Universe being materialised.
+## Adding a Dask cluster shape
 
-    Returns:
-        ExecutionResult with exit_code, output_path, and metadata.
-    """
-    # ... implementation
-    return ExecutionResult(
-        exit_code=returncode,
-        output_path=self.project_root / "results" / universe_id,
-        metadata={"backend": "mybackend", "stdout": ..., "stderr": ...},
-    )
-```
+Today the cluster manager has three branches: existing scheduler, SLURM
+allocation, local. To add a fourth (for example, a custom GPU farm):
 
-### 2. Add dispatch in `execute()`
+1. Add a branch to `cluster_for_run()` in
+   `src/lightcone/engine/dask_cluster.py`.
+2. Make sure it advertises the same resource keys (`cpus`, `memory`,
+   `gpus`) so the [Snakemake executor plugin](../api/dask_executor.md)
+   can match.
+3. Add tests in `tests/test_dask_cluster.py`.
 
-```python
-def execute(self, ...) -> ExecutionResult:
-    ...
-    if self.backend == "mybackend":
-        return self._run_mybackend(...)
-    ...
-```
+## Adding a non-Snakemake executor
 
-### 3. Add target config support
-
-If the backend needs configuration, add the relevant fields to the target YAML format and document them in `docs/hpc/targets.md`.
-
-### 4. Register in `build_definitions()`
-
-If your backend requires special setup in `build_definitions()` (e.g. detecting a runtime), add it alongside the existing `"docker"` / `"slurm"` cases.
-
-### 5. Write tests
-
-Add tests in `tests/dagster/test_runner.py` following the existing pattern:
-
-```python
-def test_mybackend_basic(tmp_path):
-    runner = ASTRAContainerRunner(
-        project_root=str(tmp_path),
-        backend="mybackend",
-    )
-    (tmp_path / "universes").mkdir()
-    result = runner.execute(
-        command="echo hello",
-        output_id="test_output",
-        universe_id="baseline",
-    )
-    assert result.exit_code == 0
-```
-
-## ExecutionResult contract
-
-All `_run_*` methods must return an `ExecutionResult` with:
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `exit_code` | `int` | Yes | 0 for success, non-zero for failure |
-| `output_path` | `Path` | Yes | `project_root / "results" / universe_id` |
-| `metadata["backend"]` | `str` | Yes | Backend name for Dagster materialisation metadata |
-| `metadata["stdout"]` | `str` | No | Last 2000 chars of stdout |
-| `metadata["stderr"]` | `str` | No | Last 2000 chars of stderr |
+In principle Snakemake supports multiple executors and we ship one
+(`snakemake_executor_plugin_dask`). If you need a different scheduler,
+you can write another Snakemake executor plugin and pass it through
+`lc run --executor <name>` — but that flag does not exist today and would
+need to be added to `src/lightcone/cli/commands.py::run`.
