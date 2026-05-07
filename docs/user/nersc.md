@@ -4,9 +4,9 @@ A practical guide for running [`lightcone-cli`](https://github.com/LightconeRese
 
 ---
 
-## 0. Install Claude Code
+## 0. Agentic CLI
 
-`lightcone-cli` is the execution layer of the `lightcone` project — it harnesses a coding agent (e.g. Claude Code) to follow the `astra` standard while building and running an analysis. So the very first step, even before touching `lightcone-cli` itself, is to install the agent. For now the project is built around **Claude Code**, which can be installed via:
+`lightcone-cli` is the execution layer of the `lightcone` project — it harnesses an agent-based CLI (currently Claude Code) to follow the `astra` standard while building and running an analysis. So the very first step, even before touching `lightcone-cli` itself, is to install the agent.
 
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash   # installs to ~/.local/bin/claude
@@ -23,7 +23,7 @@ Other install routes (npm, native package managers) are documented in the [Claud
 
 ---
 
-## 1. Pick a Python environment
+## 1. Python
 
 NERSC's `python` module gives you a ready-to-use Python distribution with `conda`, `pip`, and many common scientific packages already installed — no env creation needed for the basics:
 
@@ -31,9 +31,17 @@ NERSC's `python` module gives you a ready-to-use Python distribution with `conda
 module load python      # NERSC Python (3.11+); brings conda and pip onto PATH
 ```
 
-That's enough for installing `lightcone-cli` straight into your user site-packages with `pip install --user`, which is the simplest path. See [§2](#2-install-lightcone-cli).
+That's enough for installing `lightcone-cli` on top. See [§2](#2-install-lightcone-cli).
 
-> **When to create your own conda env.** The NERSC python module is shared and read-only — you can install user-level packages on top of it (`pip install --user`), but you can't pin a different Python version or guarantee dependency isolation. If you want either, create a conda env on top:
+!!! tip "Recommendation"
+    Like the generic [Install](install.md#1-python) page, we recommend [`uv`](https://docs.astral.sh/uv/) for managing Python installations and virtual environments — it's faster than pip and gives you a Python independent of the loaded module.
+
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    uv python install 3.12
+    ```
+
+> **When to create your own conda env.** The NERSC python module is shared and read-only — you can install user-level packages on top of it, but you can't pin a different Python version or guarantee dependency isolation. If you want either, create a conda env on top:
 >
 > ```bash
 > module load python
@@ -57,26 +65,41 @@ That's enough for installing `lightcone-cli` straight into your user site-packag
 
 ## 2. Install lightcone-cli
 
-With the environment ready, install the package itself. Pick the path that matches your §1 setup:
+With the environment ready, install the package itself.
 
 ### Into NERSC's python module (no conda env)
 
-```bash
-pip install --user lightcone-cli
-```
+`uv tool install` is the recommended path — it isolates `lc` in its own venv under `~/.local/share/uv/tools/` with a wrapper at `~/.local/bin/lc`, so the shared NERSC python module stays untouched.
 
-`--user` puts it under `~/.local/`. Make sure `~/.local/bin` is on your `PATH` (Perlmutter usually has this by default — check with `echo $PATH | tr : '\n' | grep .local/bin`).
+=== "uv"
+    ```bash
+    uv tool install lightcone-cli
+    ```
+
+=== "pip"
+    ```bash
+    python -m pip install --user lightcone-cli
+    ```
+
+Make sure `~/.local/bin` is on your `PATH` (Perlmutter usually has this by default — check with `echo $PATH | tr : '\n' | grep .local/bin`).
 
 ### Into a conda env
 
 ```bash
 conda activate your-env-name
-pip install lightcone-cli
 ```
 
-If you use [`uv`](https://docs.astral.sh/uv/) (faster, no daemon), `uv pip install lightcone-cli` works in either flow.
+=== "uv"
+    ```bash
+    uv pip install lightcone-cli
+    ```
 
-`astra-tools` is a transitive dependency, so a single `pip install lightcone-cli` pulls it in automatically.
+=== "pip"
+    ```bash
+    python -m pip install lightcone-cli
+    ```
+
+`astra-tools` is a transitive dependency, so a single `lightcone-cli` install pulls it in automatically.
 
 ### From source (contributor route)
 
