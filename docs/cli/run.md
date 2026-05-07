@@ -1,67 +1,97 @@
 # lc run
 
-Materialise ASTRA outputs via Dagster.
+Materialize outputs declared in `astra.yaml`. Generates a Snakefile
+and dispatches through Snakemake on a Dask cluster.
 
 ## Synopsis
 
 ```
-lc run [OPTIONS] [OUTPUTS]... [SLURM_FLAGS]...
+lc run [OPTIONS] [OUTPUTS]...
 ```
 
-## Description
-
-`lc run` loads `astra.yaml`, builds Dagster asset definitions, and calls `dagster.materialize()`. Container images are built automatically before execution (unless `--no-build` is given).
-
-Arguments that start with `-` are treated as SLURM scheduling directives and passed through to the `sbatch` script. Everything else is treated as an output name to materialise.
+`OUTPUTS` is zero or more output ids. With no arguments, materializes
+everything (Snakemake's `rule all`).
 
 ## Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `OUTPUTS` | all | Output IDs to materialise. Supports dot-notation for sub-analyses: `hod_fitting.galaxy_mesh`. |
-| `--universe`, `-u` | `baseline` | Universe to materialise |
-| `--target`, `-t` | project default | Execution target |
-| `--no-build` | false | Skip automatic container builds |
+| Option | Default | Effect |
+|--------|---------|--------|
+| `--universe`, `-u NAME` | all universes in `universes/*.yaml` (or `["default"]` if none exist) | Restrict to one universe. |
+| `--jobs`, `-j N` | `os.cpu_count()` | Parallel jobs / Dask submission concurrency. Passed as both `--cores` and `--jobs` to Snakemake. |
+| `--rerun-triggers TRIGGERS` | `code,input,mtime,params` | Comma-separated rerun triggers (forwarded to Snakemake). |
+| `--force`, `-f` | off | `--force` when targets are named, `--forceall` otherwise. |
+| `--verbose`, `-v` | off | Show the underlying Snakemake / executor chatter and the spawned `snakemake` invocation. |
 
-## SLURM passthrough
+## What happens, step by step
 
-Any unknown flags are forwarded as SLURM scheduling directives:
+1. Find the project (walk up looking for `astra.yaml`).
+2. Discover universes from `universes/*.yaml` (default to `["default"]`).
+3. Resolve the container runtime via
+   `lightcone.engine.container.load_runtime`. If `auto` falls back to
+   `none` while the spec declares containers, print a loud provenance
+   warning.
+4. Generate `.lightcone/Snakefile` and
+   `.lightcone/snakefile-config.json` for the selected universes.
+5. Translate any explicit `OUTPUTS` into Snakemake target paths
+   (`<output_dir>/.lightcone-manifest.json`) — this is what tells
+   Snakemake "build that specific output."
+6. Open a Dask cluster context (`local`, `srun`-backed inside
+   `SLURM_JOB_ID`, or external if `DASK_SCHEDULER_ADDRESS` is set).
+7. Spawn `snakemake -s … -d … --cores N --jobs N --executor dask
+   --rerun-triggers …` with `DASK_SCHEDULER_ADDRESS` in the environment.
+8. In the default (non-verbose) path, filter the executor's banner
+   chatter so the output reads as lightcone's, not Snakemake's. Real
+   error content always passes through.
+
+## Output qualification
+
+When the same `output_id` appears in multiple sub-analyses, you must
+qualify it as `<analysis_id>.<output_id>`:
 
 ```bash
-lc run --qos shared --constraint gpu
-lc run --partition gpu-a100
-lc run --gres gpu:1 --time 30:00
+lc run inference                    # error if 'inference' is ambiguous
+lc run hod_fitting.inference        # disambiguated
 ```
 
-These are collected in `target_config["extra_slurm_args"]` and injected into the `sbatch` script verbatim.
+Each rule's body wraps the recipe in a `<runtime> run --rm --pull=never
+-v "$PWD":"$PWD" -w "$PWD" <image> bash -c '<recipe>'` shell when a
+container is configured. After the recipe shell exits, the Snakefile
+calls `write_manifest()` host-side and the validation snippet emits
+warnings for empty / all-NaN / wrong-extension outputs.
 
 ## Examples
 
 ```bash
-lc run                              # all outputs, baseline universe
-lc run accuracy                     # specific output
-lc run --universe experiment1       # different universe
-lc run accuracy -u baseline         # output + universe
-lc run --target perlmutter-gpu      # on SLURM
-lc run --no-build                   # skip container builds
-lc run hod_fitting.galaxy_mesh      # sub-analysis output
-lc run --qos debug --constraint gpu # with SLURM scheduling flags
+lc run                                         # all outputs, all universes
+lc run --universe baseline                     # one universe
+lc run accuracy                                # one output
+lc run accuracy precision --universe baseline  # several
+lc run --jobs 4 --verbose                      # parallel, with stack noise
+lc run --force --universe baseline             # rebuild everything
+lc run --rerun-triggers params,input           # tighter staleness
 ```
 
-## Execution order
+## Inside SLURM
 
-Dagster resolves the dependency graph from `recipe.inputs` entries and materialises outputs in topological order. If an output's recipe fails, downstream outputs are not attempted.
-
-## Output paths
-
-Results are always written to:
-
-```
-results/{universe_id}/{output_id}/
+```bash
+salloc -N 4 ...
+lc run --universe baseline -j 16
 ```
 
-The `ASTRA_OUTPUT_DIR` environment variable is set to the correct path before each recipe runs.
+`lc run` detects `SLURM_JOB_ID`, binds the Dask scheduler to the
+driver's hostname, and launches one `dask worker` per node via `srun`.
+Workers advertise `cpus`, `memory`, and `gpus` resources. Per-rule
+resource hints (`cpus_per_task`, `mem_mb`, `gpus_per_task`) constrain
+which workers can pick up which jobs.
 
-## Dagster persistence
+## Provenance gotcha
 
-Materialisation events are stored in `results/.dagster/` (SQLite). This is what `lc status` queries. If `dagster.yaml` is missing, `lc run` creates it automatically.
+If `~/.lightcone/config.yaml` says `runtime: auto` and no runtime is
+on PATH, `lc run` falls back to running recipes on the host. Because
+each manifest still records the *declared* `container_image`, this is a
+provenance lie. `lc run` prints a yellow warning telling you to either
+install a runtime or set `container.runtime: none` explicitly.
+
+See [api/dask_cluster](../api/dask_cluster.md) for the cluster-shape
+decision and [Architecture](../architecture.md) for the full execution
+flow.

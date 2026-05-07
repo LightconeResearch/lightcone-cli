@@ -1,6 +1,7 @@
 # lc build
 
-Build container images from `Containerfile` specs in `astra.yaml`.
+Build container images declared in `astra.yaml` (or pre-pull registry
+images so `lc run` can use `--pull=never`).
 
 ## Synopsis
 
@@ -8,44 +9,72 @@ Build container images from `Containerfile` specs in `astra.yaml`.
 lc build [OPTIONS]
 ```
 
-## Description
-
-Scans the analysis specification for container build specs (both analysis-level and per-recipe) and builds any missing images. Images are content-addressed — a rebuild only happens when the `Containerfile` or dependency files actually change.
-
-The container runtime is auto-detected from the project's target config. Use `--runtime` to override.
-
 ## Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--force` | false | Rebuild images even if they already exist |
-| `--runtime`, `-r` | auto-detect | Container runtime (`docker`, `podman`, `podman-hpc`) |
+| Option | Default | Effect |
+|--------|---------|--------|
+| `--force` | off | Rebuild / re-pull even if the tag already exists locally. |
+| `--runtime {docker,podman,podman-hpc}` | resolved from `~/.lightcone/config.yaml` | Override the runtime for this build. |
 
-## Image tagging
+## What it does
 
-Tags are deterministic and content-addressed:
+For every distinct `container:` value found in the project (root,
+sub-analysis, or recipe-level):
+
+- **Path to a Containerfile** → compute the content-addressed tag
+  `lc-<project>-<sha256[:12]>`, build the image, and (for `podman-hpc`)
+  migrate it into the per-node container cache.
+- **Anything else** (e.g. `python:3.12-slim`, `ghcr.io/foo/bar:tag`) →
+  pull it into the local image store. This is what lets `lc run` pass
+  `--pull=never` to the runtime, sidestepping `unqualified-search-registries`
+  resolution issues with content-addressed tags.
+
+If the runtime is `none` (either by config or because `auto` couldn't
+find one), `lc build` prints a friendly note and exits 0. There is
+nothing to build.
+
+## Tag computation
 
 ```
-lc-{project_name}-{sha256[:12]}
+lc-<sanitized-project-name>-<sha256[:12]>
 ```
 
-The hash covers:
-- The `Containerfile` contents
-- All dependency files found in the project root: `requirements.txt`, `pyproject.toml`, `poetry.lock`, `Pipfile.lock`, etc.
+The hash covers the Containerfile contents plus any of these dependency
+files at the project root:
 
-## Pre-built image behaviour
+- `requirements.txt`
+- `requirements-dev.txt`
+- `requirements-test.txt`
+- `pyproject.toml`
+- `setup.py`
+- `setup.cfg`
+- `poetry.lock`
+- `Pipfile.lock`
 
-If the `container:` field in `astra.yaml` is a pre-built image name (not a file path), `lc build` with a non-Docker runtime (e.g. `podman-hpc`) will call `resolve_container_for_slurm()` to migrate it to the site container cache.
+Edit any one of those and the tag changes. That, in turn, changes
+`code_version` in every recipe that uses the image, which marks all
+downstream outputs `stale` in `lc status`.
 
 ## Examples
 
 ```bash
-lc build                      # auto-detect runtime from target
-lc build --runtime podman-hpc # force podman-hpc
-lc build --runtime docker     # force docker
-lc build --force              # rebuild all images
+lc build                       # build / pull whatever's missing
+lc build --force               # rebuild / re-pull everything
+lc build --runtime podman-hpc  # force the HPC runtime
 ```
 
-## Integration with lc run
+## Pre-staging for HPC
 
-`lc run` calls the same build logic internally unless `--no-build` is passed. Use `lc build` separately to pre-stage images before an HPC session where network access may be limited.
+On a login node:
+
+```bash
+$EDITOR ~/.lightcone/config.yaml      # container.runtime: podman-hpc
+lc build                              # builds + migrates everything
+```
+
+Then submit a SLURM job for `lc run`. The compute nodes will find every
+image already cached.
+
+See [api/container](../api/container.md) for the implementation and
+[Architecture](../architecture.md) for why we wrap recipes ourselves
+instead of using Snakemake's `container:` directive.

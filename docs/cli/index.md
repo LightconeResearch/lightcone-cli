@@ -1,27 +1,27 @@
 # CLI Reference
 
-The `lc` CLI is the main entry point for all project and execution operations.
+The `lc` CLI is a thin wrapper around the engine. The user-facing
+surface is small on purpose — the heavy lifting happens through Claude
+Code skills, with the CLI as the durable, scriptable backstop.
 
-For a visual overview of how each command and skill flows — inputs, steps, outputs, and hooks — see the **[Command Schematics](schematics.md)** reference.
+## Global behavior
 
-## Global behaviour
+- All commands except `setup`, `init`, and `eval` require
+  `~/.lightcone/config.yaml` to exist. If it doesn't, the command
+  errors out telling you to run `lc setup`.
+- All commands except `setup` and `init` walk up from the cwd looking
+  for `astra.yaml`. If none is found, the command errors out.
 
-- Any command (except `setup`, `target`, `update`, `eval`) triggers an auto-setup wizard if `~/.lightcone/config.yaml` does not exist yet.
-- Commands that operate on a project require `astra.yaml` to be present in the current directory.
-- Target resolution order: `--target` flag › `.lightcone/lightcone.yaml` › `~/.lightcone/config.yaml` › `"local"`.
-
-## Commands at a glance
+## Commands
 
 | Command | Purpose |
 |---------|---------|
-| [`lc init`](init.md) | Create a new ASTRA project (or add lightcone-cli to an existing one) |
-| [`lc run`](run.md) | Materialise outputs via Dagster |
-| [`lc build`](build.md) | Build container images from `Containerfile` specs |
-| [`lc status`](status.md) | Show materialisation status table |
-| [`lc dev`](dev.md) | Launch the Dagster webserver UI |
-| [`lc setup`](setup.md) | Configure execution targets (interactive wizard) |
-| [`lc target`](target.md) | Manage project targets |
-| [`lc update`](update.md) | Upgrade the package and sync plugin files |
+| [`lc init`](init.md) | Scaffold a new ASTRA project (`astra.yaml`, `.claude/`, `.lightcone/`, optional venv & git). |
+| [`lc run`](run.md) | Generate the Snakefile and dispatch through Snakemake + Dask. |
+| [`lc build`](build.md) | Build container images declared in `astra.yaml`. |
+| [`lc status`](status.md) | Manifest-driven status report. No Snakemake import needed. |
+| [`lc verify`](verify.md) | Recompute hashes, walk the input chain, surface tampering. |
+| [`lc setup`](setup.md) | Write a minimal `~/.lightcone/config.yaml`. |
 
 ## Global options
 
@@ -32,3 +32,11 @@ Options:
   --version  Show the version and exit.
   --help     Show this message and exit.
 ```
+
+## Removed commands
+
+For historical context: `lc dev`, `lc target`, and `lc update` no
+longer exist; `lc eval` is partially wired (its sub-commands are
+defined in `src/lightcone/eval/cli.py` but the group is not registered
+on `main`, so `lc eval` will fail with "No such command"). See the
+removal pages for details.

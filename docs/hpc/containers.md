@@ -1,61 +1,52 @@
 # Container Builds for HPC
 
-HPC sites typically do not support Docker. lightcone-cli handles two container runtimes for SLURM targets:
-
-- `podman-hpc` — for NERSC Perlmutter and sites running the `podman-hpc` distribution
-- `singularity` / `apptainer` — for other HPC sites (community-maintained)
+HPC nodes generally cannot reach a docker daemon, so lightcone-cli ships
+support for `podman-hpc` (NERSC Perlmutter and friends). The build/migrate
+workflow is owned by `lightcone.engine.container`.
 
 ## podman-hpc workflow
 
-`podman-hpc` is a rootless container runtime for HPC used at NERSC. lightcone-cli's `resolve_container_for_slurm()` implements a two-step workflow:
-
-### Step 1: Build (if Containerfile)
-
-```bash
-podman build -t lc-{name}-{hash} -f Containerfile .
-```
-
-### Step 2: Migrate
+`podman-hpc` is rootless and HPC-aware. After a build, the image must be
+*migrated* into the per-node container cache so compute nodes can read it
+without a registry.
 
 ```bash
-podman-hpc migrate lc-{name}-{hash}
+# On a login node, with podman-hpc on PATH:
+lc setup                              # writes ~/.lightcone/config.yaml
+$EDITOR ~/.lightcone/config.yaml      # set container.runtime: podman-hpc
+lc build                              # builds + migrates each image
 ```
 
-Migration copies the image to the site-local container cache at a path the batch nodes can access without a registry.
+`lc build` checks for cached tags and skips rebuilds. Use `--force` to
+rebuild everything.
 
-If the spec is a pre-built image (not a Containerfile), only the migrate step runs.
+## Tag computation
 
-### sbatch integration
+Tags are content-addressed:
 
-The migrated image name is passed directly to `podman-hpc run` in the sbatch script:
+```
+lc-<sanitized-project-name>-<sha256[:12]>
+```
+
+The hash covers the Containerfile contents plus any of these dependency
+files found at the project root:
+`requirements.txt`, `requirements-dev.txt`, `requirements-test.txt`,
+`pyproject.toml`, `setup.py`, `setup.cfg`, `poetry.lock`, `Pipfile.lock`.
+
+## At run time
+
+`lc run` does **not** re-shell into Snakemake's `container:` directive or
+`--sdm apptainer`. The Snakefile generator wraps each rule's recipe in:
 
 ```bash
-podman-hpc run --rm \
-  -v /path/to/project:/workspace \
-  -w /workspace \
-  lc-myproject-a1b2c3d \
-  sh -c "python scripts/compute.py --universe baseline ..."
+podman-hpc run --rm --pull=never -v "$PWD":"$PWD" -w "$PWD" \
+  <image> bash -c '<recipe>'
 ```
 
-The `--gpu` container flag is injected automatically for GPU node types.
+`--pull=never` is critical: short-name resolution would otherwise try
+`unqualified-search-registries` for tags like `lc-myproject-abc123` and
+fail. Pre-pulling registry images via `lc build` (or pre-staging
+Containerfile images via `lc build`) is therefore mandatory.
 
-## Content-addressed tags
-
-Tags are deterministic so builds are skipped when nothing has changed:
-
-```
-lc-{sanitised-project-name}-{sha256[:12]}
-```
-
-The hash covers the Containerfile and all dependency files (`requirements.txt`, `pyproject.toml`, etc.).
-
-## Pre-building before a session
-
-To avoid network/build time during an HPC session:
-
-```bash
-# On a login node or locally
-lc build --runtime podman-hpc
-```
-
-This stages all required images before submitting jobs.
+See also: [api/container](../api/container.md) for the implementation,
+and [`lc build`](../cli/build.md) for the user-facing command.

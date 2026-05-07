@@ -1,32 +1,50 @@
 # Telemetry (Langfuse)
 
-lightcone-cli traces Claude Code sessions to [Langfuse](https://langfuse.com/) for observability, debugging, and research workflow analysis. Telemetry is **opt-out** — it is enabled by default in all projects created with `lc init`.
+The plugin ships Langfuse hooks that trace Claude Code sessions to
+[Langfuse](https://langfuse.com/). The hooks are present in every
+project that ran `lc init` (under `.claude/hooks/`), but **they don't
+do anything until you give them credentials**: today's `lc init` does
+not wire `.claude/settings.local.json` automatically.
 
-## What is traced
+## What gets traced (when enabled)
 
-Each Claude Code session in a lightcone-cli project generates:
+Each Claude Code session generates:
 
-- One **trace per turn** (user message + all assistant responses in that turn).
-- **Tool calls** with input arguments and output results (truncated to 2000 chars).
-- **Git metadata** attached to spans after commits: commit SHA, GitHub URL, branch.
-- **Session metadata**: Claude Code version, project name, transcript path.
+- One **trace per turn** (user message + all assistant responses in
+  that turn).
+- **Tool calls** with input arguments and output results (truncated to
+  2000 chars).
+- **Git metadata** attached to spans after commits: commit SHA, GitHub
+  URL, branch.
+- **Session metadata**: Claude Code version, project name, transcript
+  path.
 - **User identity**: Claude user email (from `~/.claude.json`).
 
-## Architecture overview
+## Hooks at a glance
 
-Telemetry is implemented as a set of Claude Code hooks:
+| Hook event | Script | When |
+|------------|--------|------|
+| `PreToolUse` | `langfuse_session_init_hook.py` | Before the first tool call in a session — creates the trace id. |
+| `PostToolUse` (Bash) | `langfuse_git_commit_hook.py` | After any bash command — attaches commit metadata if one happened. |
+| `Stop` / `SessionEnd` | `langfuse_hook.py` | When Claude stops responding or the session ends — flushes the full trace. |
 
-| Hook type | Script | When fired |
-|-----------|--------|------------|
-| `PreToolUse` | `langfuse_session_init_hook.py` | Before the very first tool in a session |
-| `PostToolUse` (Bash) | `langfuse_git_commit_hook.py` | After any bash command (checks for git commits) |
-| `Stop` + `SessionEnd` | `langfuse_hook.py` | At session end or when Claude stops responding |
+`langfuse_utils.py` carries the shared state (`STATE_DIR`, `LOCK_FILE`,
+`tracing_enabled()`, etc.) and is imported by the other hooks.
 
-See [Hooks Architecture](hooks.md) for details.
+See [Hooks Architecture](hooks.md) for the wiring detail.
 
 ## Configuration
 
-Telemetry credentials are stored in `.claude/settings.local.json`:
+Telemetry hooks read credentials from environment variables:
+
+| Var | Purpose |
+|-----|---------|
+| `TRACE_TO_LANGFUSE` | Enable / disable. Hooks no-op when this is unset or `false`. |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse project public key. |
+| `LANGFUSE_SECRET_KEY` | Langfuse project secret key (or `relay` for the Cloudflare relay). |
+| `LANGFUSE_HOST` | Langfuse endpoint. For Lightcone's relay: `https://telemetry.lightconeresearch.workers.dev`. |
+
+Set these in `.claude/settings.local.json` (per project, gitignored):
 
 ```json
 {
@@ -39,8 +57,9 @@ Telemetry credentials are stored in `.claude/settings.local.json`:
 }
 ```
 
-The `LANGFUSE_HOST` points to Lightcone's Cloudflare Worker relay, which forwards traces to the managed Langfuse instance.
+`settings.local.json` is in the default `.gitignore` written by
+`lc init`.
 
-## Disabling telemetry
+## Disabling
 
 See [Opt Out](opt-out.md).
