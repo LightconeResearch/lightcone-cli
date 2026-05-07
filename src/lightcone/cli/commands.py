@@ -41,12 +41,22 @@ PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
     },
     "recommended": {
         "allow": ["Read", "Edit", "Write", "Bash(*)", "WebSearch", "WebFetch"],
+        # Patterns under "ask" prompt the user before the agent can act,
+        # but don't block outright the way "deny" does. Use "ask" for
+        # paths the agent legitimately *might* need to write to but
+        # where a stray edit would be expensive — scratch filesystems
+        # being the obvious case on HPC, where projects often live in
+        # $SCRATCH and a careless edit could trash someone else's data.
+        "ask": [
+            "Edit(//scratch/**)",
+            "Edit(//pscratch/**)",
+            "Write(//scratch/**)",
+            "Write(//pscratch/**)",
+        ],
         "deny": [
             "Edit(~/.ssh/**)",
             "Edit(~/.aws/**)",
             "Edit(~/.gnupg/**)",
-            "Edit(//scratch/**)",
-            "Edit(//pscratch/**)",
             "Bash(sudo *)",
             "Bash(rm -rf *)",
             "Bash(rm -fr *)",
