@@ -438,6 +438,10 @@ def _ensure_harness_image(
     if not reinstall and _image_exists(committed_tag, runtime):
         return committed_tag
 
+    if reinstall:
+        # Remove the old committed image so docker commit doesn't leave a dangling layer.
+        subprocess.run([runtime, "rmi", committed_tag], check=False, capture_output=True)
+
     tmp_name = f"lc-install-{target.name}-{uuid4().hex[:8]}"
     install_cmd = " && ".join(target.install_cmds)
     _print(f"Installing {target.name} harness (first run — this may take a few minutes)…")
@@ -464,6 +468,7 @@ def launch_target(
     *,
     choice: RuntimeChoice,
     project_root: Path,
+    reinstall: bool = False,
 ) -> None:
     """Build (if needed) and exec the named launch target interactively.
 
@@ -497,6 +502,7 @@ def launch_target(
             base_image=tag,
             runtime=choice.runtime,
             lc_version=_lc_version(),
+            reinstall=reinstall,
         )
 
     _apply_tracking_tag(tag, _tracking_image_ref(project_root, _lc_version()), choice.runtime)

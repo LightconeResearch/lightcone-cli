@@ -856,17 +856,22 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
 
 @main.command("launch")
 @click.argument("target")
-def launch(target: str) -> None:
+@click.option(
+    "--reinstall", is_flag=True, default=False, help="Force reinstall of the harness layer."
+)
+def launch(target: str, reinstall: bool) -> None:
     """Launch an interactive containerized environment for this project.
 
     \b
     Targets:
-      claude   Claude Code with lightcone-cli, buildah, and apptainer pre-installed.
-               Recipes build and execute inside nested containers from this environment.
+      claude         Claude Code with lightcone-cli, buildah, and apptainer pre-installed.
+      mistral-vibe   Mistral Vibe with lightcone-cli pre-installed.
+      opencode       OpenCode with lightcone-cli pre-installed.
 
     \b
     Example:
       lc launch claude     # first run builds the container (~5 min), then drops into Claude Code
+      lc launch claude --reinstall  # force re-installation of the harness
     """
     from lightcone.engine import launcher
     from lightcone.engine.container import _DAEMONLESS_RUNTIMES, ContainerBuildError, load_runtime
@@ -897,7 +902,7 @@ def launch(target: str) -> None:
         )
 
     try:
-        launcher.launch_target(target, choice=choice, project_root=project)
+        launcher.launch_target(target, choice=choice, project_root=project, reinstall=reinstall)
     except ContainerBuildError as e:
         raise click.ClickException(str(e))
 

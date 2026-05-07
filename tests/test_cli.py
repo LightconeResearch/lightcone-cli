@@ -156,6 +156,37 @@ def test_run_cmd_no_separator_when_no_targets() -> None:
     assert "--" not in cmd
 
 
+# ---- lc launch --reinstall -----------------------------------------------
+
+
+def test_launch_reinstall_forwarded_to_launch_target(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--reinstall must be forwarded as reinstall=True to launch_target()."""
+    from unittest.mock import patch
+
+    from lightcone.engine.container import RuntimeChoice
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "astra.yaml").write_text("name: test\n")
+    (project / ".lightcone").mkdir()
+    monkeypatch.chdir(project)
+
+    choice = RuntimeChoice(runtime="docker", explicit=True)
+
+    with patch("lightcone.engine.container.load_runtime", return_value=choice):
+        with patch("lightcone.engine.launcher.launch_target") as mock_launch_target:
+            runner.invoke(main, ["launch", "claude", "--reinstall"])
+
+    # launch_target should have been called with the correct target and reinstall=True
+    assert mock_launch_target.called
+    args, kwargs = mock_launch_target.call_args
+    assert args == ("claude",)
+    assert kwargs.get("reinstall") is True
+    assert kwargs.get("project_root") is not None
+
+
 def test_run_cmd_multiple_triggers_all_before_separator() -> None:
     """All four trigger tokens must precede the '--' separator."""
     from lightcone.cli.commands import _build_snakemake_cmd

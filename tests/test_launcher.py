@@ -679,12 +679,62 @@ class TestLaunchTargetEnsureHarness:
             base_image="lc-sandbox-abc123",
             runtime="docker",
             lc_version="1.2.3",
+            reinstall=False,
         )
         # _apply_tracking_tag must receive the committed harness tag, not the base image tag
         assert mock_tracking.call_args[0][0] == "lightcone-claude:1.2.3"
         # The harness image tag must be passed to _exec_interactive (via os.execvp)
         cmd = mock_exec.call_args[0][1]
         assert "lightcone-claude:1.2.3" in cmd
+
+    @patch("lightcone.engine.launcher.os.execvp")
+    @patch("lightcone.engine.launcher._ensure_harness_image", return_value="lightcone-claude:1.2.3")
+    @patch("lightcone.engine.launcher._apply_tracking_tag")
+    @patch("lightcone.engine.launcher.image_exists_locally", return_value=True)
+    @patch("lightcone.engine.launcher.tarball_path_for_tag")
+    @patch("lightcone.engine.launcher.compute_image_tag", return_value="lc-sandbox-abc123")
+    @patch("lightcone.engine.launcher.resolve_launch_target")
+    def test_reinstall_forwarded_to_ensure_harness_image(
+        self,
+        mock_resolve: MagicMock,
+        mock_tag: MagicMock,
+        mock_tarball_path: MagicMock,
+        mock_exists: MagicMock,
+        mock_tracking: MagicMock,
+        mock_ensure: MagicMock,
+        mock_exec: MagicMock,
+        project: Path,
+        tmp_path: Path,
+    ) -> None:
+        """launch_target() forwards reinstall=True to _ensure_harness_image()."""
+        from lightcone.engine.launcher import launch_target
+
+        target = LaunchTarget(
+            name="claude",
+            containerfile=tmp_path / "lightcone-sandbox.Containerfile",
+            entrypoint=["claude", "--dangerously-skip-permissions"],
+            install_cmds=["npm install -g @anthropic-ai/claude-code"],
+            committed_tag_prefix="lightcone-claude",
+        )
+        (tmp_path / "lightcone-sandbox.Containerfile").write_text(
+            "FROM python:3.12-slim\nARG LIGHTCONE_VERSION\n"
+        )
+        mock_resolve.return_value = target
+        tarball = tmp_path / "lc-sandbox-abc123.tar"
+        tarball.write_bytes(b"fake")
+        mock_tarball_path.return_value = tarball
+
+        with patch("lightcone.engine.launcher._lc_version", return_value="1.2.3"):
+            choice = RuntimeChoice(runtime="docker", explicit=True)
+            launch_target(target.name, choice=choice, project_root=project, reinstall=True)
+
+        mock_ensure.assert_called_once_with(
+            target,
+            base_image="lc-sandbox-abc123",
+            runtime="docker",
+            lc_version="1.2.3",
+            reinstall=True,
+        )
 
     @patch("lightcone.engine.launcher.os.execvp")
     @patch("lightcone.engine.launcher._ensure_harness_image")
@@ -1158,7 +1208,10 @@ class TestEnsureHarnessImage:
                 )
 
         mock_exists.assert_not_called()
-        assert mock_run.call_count == 3
+        # rmi (remove old) + run (install) + commit + rm (cleanup temp) = 4 calls
+        assert mock_run.call_count == 4
+        rmi_cmd = mock_run.call_args_list[0][0][0]
+        assert rmi_cmd[1] == "rmi"  # first call removes the old committed image
 
     def test_removes_tmp_container_on_install_failure(
         self, harness_target: LaunchTarget
