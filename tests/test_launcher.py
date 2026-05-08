@@ -57,9 +57,12 @@ class TestBuiltinTargets:
         assert "CLAUDE_CODE_OAUTH_TOKEN" in t.env_passthrough
         assert "/dev/fuse" in t.devices
         assert ".claude.json" in t.home_mounts
+        assert ".claude/session-env/" in t.home_mounts
         assert t.run_as_host_user is True
         assert t.registry_name == "lightcone-sandbox"
-        assert t.install_cmds == ["npm install -g @anthropic-ai/claude-code"]
+        assert t.install_cmds == [
+            "npm install -g @anthropic-ai/claude-code --loglevel=error --no-update-notifier"
+        ]
         assert t.committed_tag_prefix == "lightcone-claude"
 
     def test_mistral_vibe_is_registered(self) -> None:
@@ -85,7 +88,9 @@ class TestBuiltinTargets:
     def test_opencode_target_fields(self) -> None:
         t = BUILTIN_TARGETS["opencode"]
         assert t.name == "opencode"
-        assert t.install_cmds == ["npm install -g opencode-ai"]
+        assert t.install_cmds == [
+            "npm install -g opencode-ai --loglevel=error --no-update-notifier"
+        ]
         assert t.committed_tag_prefix == "lightcone-opencode"
         assert t.entrypoint == ["opencode"]
         assert "OPENAI_API_KEY" in t.env_passthrough
@@ -1165,6 +1170,22 @@ class TestEnsureHarnessImage:
         assert result == "lightcone-claude:1.2.3"
         mock_run.assert_not_called()
 
+    def test_plus_in_version_replaced_for_oci_tag(
+        self, harness_target: LaunchTarget
+    ) -> None:
+        from lightcone.engine.launcher import _ensure_harness_image
+
+        # PEP 440 local versions (e.g. 0.3.5.dev33+g8e1ae4ad0) contain '+' which
+        # is not valid in OCI image tags — must be replaced with '-'.
+        dev_version = "0.3.5.dev33+g8e1ae4ad0"
+        with patch("lightcone.engine.launcher._image_exists", return_value=True):
+            result = _ensure_harness_image(
+                harness_target, "lc-lightcone-sandbox-abc", "docker", dev_version
+            )
+
+        assert "+" not in result
+        assert result == "lightcone-claude:0.3.5.dev33-g8e1ae4ad0"
+
     def test_installs_and_commits_when_image_absent(
         self, harness_target: LaunchTarget
     ) -> None:
@@ -1179,9 +1200,11 @@ class TestEnsureHarnessImage:
 
         assert result == "lightcone-claude:1.2.3"
         calls = [c[0][0] for c in mock_run.call_args_list]
-        # First call: docker run (install)
+        # First call: docker run (install) — must use --entrypoint sh to bypass ENTRYPOINT ["bash"]
         assert calls[0][0] == "docker"
         assert calls[0][1] == "run"
+        assert "--entrypoint" in calls[0]
+        assert calls[0][calls[0].index("--entrypoint") + 1] == "sh"
         assert "npm install -g @anthropic-ai/claude-code" in calls[0]
         # Second call: docker commit
         assert calls[1][0] == "docker"

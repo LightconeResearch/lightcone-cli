@@ -132,13 +132,16 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
                 ".claude/settings.json",
                 ".claude/settings.local.json",
                 ".claude/keybindings.json",
+                ".claude/session-env/",
             ],
             # Claude Code refuses --dangerously-skip-permissions as root;
             # running as the host UID/GID also ensures correct ownership on
             # the mounted project directory.
             run_as_host_user=True,
             registry_name=_SANDBOX_IMAGE_NAME,
-            install_cmds=["npm install -g @anthropic-ai/claude-code"],
+            install_cmds=[
+                "npm install -g @anthropic-ai/claude-code --loglevel=error --no-update-notifier"
+            ],
             committed_tag_prefix="lightcone-claude",
         ),
         "mistral-vibe": LaunchTarget(
@@ -179,7 +182,7 @@ def _make_builtin_targets() -> dict[str, LaunchTarget]:
                 ".config/opencode/AGENTS.md",
             ],
             registry_name=_SANDBOX_IMAGE_NAME,
-            install_cmds=["npm install -g opencode-ai"],
+            install_cmds=["npm install -g opencode-ai --loglevel=error --no-update-notifier"],
             committed_tag_prefix="lightcone-opencode",
         ),
     }
@@ -433,7 +436,9 @@ def _ensure_harness_image(
     result as ``<committed_tag_prefix>:<lc_version>``, and removes the temp
     container.  On subsequent calls the existing committed image is reused.
     """
-    committed_tag = f"{target.committed_tag_prefix}:{lc_version}"
+    # OCI tags allow [a-zA-Z0-9_.-] only — replace '+' from PEP 440 local versions.
+    safe_version = lc_version.replace("+", "-")
+    committed_tag = f"{target.committed_tag_prefix}:{safe_version}"
 
     if not reinstall and _image_exists(committed_tag, runtime):
         return committed_tag
@@ -447,7 +452,8 @@ def _ensure_harness_image(
     _print(f"Installing {target.name} harness (first run — this may take a few minutes)…")
     try:
         subprocess.run(
-            [runtime, "run", "--name", tmp_name, base_image, "sh", "-c", install_cmd],
+            [runtime, "run", "--entrypoint", "sh", "--name", tmp_name,
+             base_image, "-c", install_cmd],
             check=True,
         )
         subprocess.run(
