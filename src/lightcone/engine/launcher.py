@@ -14,10 +14,11 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
+
+from rich.console import Console
 
 from lightcone.engine.container import (
     _DAEMONLESS_RUNTIMES,
@@ -35,6 +36,8 @@ from lightcone.engine.manifest import lc_version as _lc_version
 
 # Registry where pre-built release images are published.
 _GHCR_PREFIX = "ghcr.io/lightconeresearch"
+
+_console = Console(stderr=True)
 
 # Local image name for the shared sandbox base image.
 _SANDBOX_IMAGE_NAME = "lightcone-sandbox"
@@ -394,16 +397,16 @@ def _try_pull_and_cache(
     if runtime in _DAEMONLESS_RUNTIMES:
         return False
     try:
-        _print(f"Pulling {registry_ref} from registry…")
-        pull_image(registry_ref, runtime=runtime)
-        # Retag to the content-addressed local tag so the rest of the launch
-        # pipeline (image_exists_locally, _exec_interactive) works unchanged.
-        subprocess.run(
-            [runtime, "tag", registry_ref, tag],
-            check=True,
-            capture_output=True,
-        )
-        save_image_as_tarball(tag, tarball, runtime=runtime)
+        with _console.status(f"Pulling [bold]{registry_ref}[/] from registry…"):
+            pull_image(registry_ref, runtime=runtime)
+            # Retag to the content-addressed local tag so the rest of the launch
+            # pipeline (image_exists_locally, _exec_interactive) works unchanged.
+            subprocess.run(
+                [runtime, "tag", registry_ref, tag],
+                check=True,
+                capture_output=True,
+            )
+            save_image_as_tarball(tag, tarball, runtime=runtime)
         return True
     except (ContainerBuildError, subprocess.CalledProcessError, OSError):
         _print("Registry pull failed — falling back to local build.")
@@ -449,18 +452,23 @@ def _ensure_harness_image(
 
     tmp_name = f"lc-install-{target.name}-{uuid4().hex[:8]}"
     install_cmd = " && ".join(target.install_cmds)
-    _print(f"Installing {target.name} harness (first run — this may take a few minutes)…")
     try:
-        subprocess.run(
-            [runtime, "run", "--entrypoint", "sh", "--name", tmp_name,
-             base_image, "-c", install_cmd],
-            check=True,
-        )
-        subprocess.run(
-            [runtime, "commit", tmp_name, committed_tag],
-            check=True,
-            capture_output=True,
-        )
+        with _console.status(f"Installing [bold]{target.name}[/] harness…"):
+            result = subprocess.run(
+                [runtime, "run", "--entrypoint", "sh", "--name", tmp_name,
+                 base_image, "-c", install_cmd],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                if result.stderr:
+                    _console.print(result.stderr.strip(), style="red")
+                raise subprocess.CalledProcessError(result.returncode, result.args)
+            subprocess.run(
+                [runtime, "commit", tmp_name, committed_tag],
+                check=True,
+                capture_output=True,
+            )
     except subprocess.CalledProcessError as exc:
         raise ContainerBuildError(f"Harness install failed for {target.name}: {exc}") from exc
     finally:
@@ -495,9 +503,9 @@ def launch_target(
             registry_ref = _registry_image_ref(target.registry_name or target.name, version)
             pulled = _try_pull_and_cache(tag, registry_ref, tarball, runtime=choice.runtime)
         if not pulled:
-            _print(f"Building {name} container (first run — this may take a few minutes)…")
-            build_image(tag, rendered_cf, rendered_cf.parent, runtime=choice.runtime)
-            save_image_as_tarball(tag, tarball, runtime=choice.runtime)
+            with _console.status(f"Building [bold]{name}[/] container…"):
+                build_image(tag, rendered_cf, rendered_cf.parent, runtime=choice.runtime)
+                save_image_as_tarball(tag, tarball, runtime=choice.runtime)
 
     if not image_exists_locally(tag, runtime=choice.runtime, project_path=project_root):
         load_image_from_tarball(tarball, runtime=choice.runtime)
@@ -607,8 +615,19 @@ def _exec_interactive(
     if os.environ.get("LIGHTCONE_LAUNCH_DEBUG"):
         _print(f"[lc launch debug] {' '.join(cmd)}")
 
+    from rich.panel import Panel
+
+    _console.print(
+        Panel(
+            "Run [bold cyan]/lc-new[/] to scaffold a new project and get started.",
+            title="[bold]lightcone sandbox[/]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
     os.execvp(cmd[0], cmd)
 
 
 def _print(msg: str) -> None:
-    print(msg, file=sys.stderr)
+    _console.print(msg)
