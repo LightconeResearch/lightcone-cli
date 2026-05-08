@@ -28,24 +28,30 @@ Other install routes (npm, native package managers) are documented in the [Claud
 
 ## 1. Python
 
-NERSC's `python` module gives you a ready-to-use Python distribution with `conda`, `pip`, and many common scientific packages already installed — no env creation needed for the basics:
+Like the generic [Install](install.md#1-python) page, we recommend [`uv`](https://docs.astral.sh/uv/) for managing Python on Perlmutter — it's faster than pip and gives you a Python independent of NERSC's `module` system. NERSC doesn't ship it, but it installs into your home dir with a single curl:
 
 ```bash
-module load python      # NERSC Python (3.11+); brings conda and pip onto PATH
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv python install 3.12
 ```
 
-That's enough for installing `lightcone-cli` on top. Skip ahead to [§2](#2-install-lightcone-cli).
+This drops both `uv` and an isolated Python 3.12 under `~/.local/`. Make sure `~/.local/bin` is on your `PATH`.
 
-!!! note "When you'd want your own conda env"
-    The NERSC python module is shared and read-only. You *can* layer user-level packages on top, but you can't pin a different Python version or guarantee dependency isolation. If you need either, build a conda env on top of the module:
+!!! note "Alternative: NERSC's `python` module"
+    If you'd rather use NERSC's pre-built environment, `module load python` gives you a ready-to-use distribution with `conda`, `pip`, and many scientific packages already installed:
 
     ```bash
-    module load python
+    module load python      # NERSC Python (3.11+); brings conda and pip onto PATH
+    ```
+
+    Convenient, but the module is shared and read-only — you can't pin a different Python version or guarantee dependency isolation. For that, build a conda env on top:
+
+    ```bash
     conda create -n your-env-name python=3.11 -y
     conda activate your-env-name
     ```
 
-    This is also NERSC's [recommended path for `pip install`](https://docs.nersc.gov/development/languages/python/nersc-python/) when you need custom packages: pip-into-conda-env rather than pip-into-base.
+    This is also NERSC's [recommended path for `pip install`](https://docs.nersc.gov/development/languages/python/nersc-python/) when you need custom packages.
 
 !!! warning "Storage note: 40 GB home quota"
     Conda envs land under `~/.conda/envs/` by default. The Perlmutter home quota is **40 GB**, which gets eaten quickly. NERSC recommends `/global/common/software/<project>/` for larger envs. If you really want them on `$SCRATCH` (note: 12-week purge!), move and symlink:
@@ -62,78 +68,61 @@ That's enough for installing `lightcone-cli` on top. Skip ahead to [§2](#2-inst
 
 ## 2. Install lightcone-cli
 
-With Python in place, install the package itself. Pick the path that matches your environment:
-
-### Path A — On top of NERSC's `python` module (no conda env)
-
-The module is read-only, so install with `--user` to land into your home directory's site-packages:
+The package on PyPI is `lightcone-cli`; the command it provides is `lc`. The recommended install uses `uv tool`, which isolates `lc` in its own venv under `~/.local/share/uv/tools/` and exposes a wrapper at `~/.local/bin/lc`:
 
 ```bash
-python -m pip install --user lightcone-cli
+uv tool install lightcone-cli
 ```
 
-This drops the `lc` console script into `~/.local/bin/`. Make sure that's on your `PATH` — Perlmutter usually has it by default; check with:
+`astra-tools` is a transitive dependency — pulled in automatically.
 
-```bash
-echo $PATH | tr : '\n' | grep .local/bin
-```
+!!! note "Alternative: pip"
+    If you'd rather not use uv, install with pip. The exact command depends on which Python you're using:
 
-!!! tip "Already use `uv`?"
-    [`uv`](https://docs.astral.sh/uv/) isn't shipped by NERSC, but if you've installed it yourself (`curl -LsSf https://astral.sh/uv/install.sh | sh`), `uv tool install` is a cleaner alternative — it isolates `lc` in its own venv and exposes the same `~/.local/bin/lc` wrapper:
+    === "NERSC python module"
+        ```bash
+        module load python
+        python -m pip install --user lightcone-cli   # --user lands in ~/.local/bin/
+        ```
 
-    ```bash
-    uv tool install lightcone-cli
-    ```
+    === "Conda env"
+        ```bash
+        conda activate your-env-name
+        python -m pip install lightcone-cli
+        ```
 
-### Path B — Inside a conda env
+### From source (contributors only)
 
-```bash
-conda activate your-env-name
-python -m pip install lightcone-cli           # or: uv pip install lightcone-cli
-```
-
-`astra-tools` is a transitive dependency, so a single `lightcone-cli` install pulls it in automatically.
-
-### Path C — From source (contributors only)
-
-If you want to track the latest commits or contribute back, clone the repo and install editably. **Most users should stick with PyPI** and skip this section.
+If you want to track the latest commits or contribute back, clone the repo and install editably. **Most users should stick with PyPI.**
 
 ```bash
 cd ~/.lightcone                                # or wherever you keep clones
 git clone https://github.com/LightconeResearch/lightcone-cli.git
-pip install -e ./lightcone-cli                 # editable: tracks local edits
+uv pip install -e ./lightcone-cli              # or: pip install -e ./lightcone-cli
 ```
 
-If you also want to hack on `astra-tools` (note: PyPI name `astra-tools`, GitHub repo name `ASTRA`):
+To hack on `astra-tools` itself (PyPI name `astra-tools`, GitHub repo `ASTRA`):
 
 ```bash
 git clone https://github.com/LightconeResearch/ASTRA.git
-pip install -e ./ASTRA
+uv pip install -e ./ASTRA
 ```
 
-For development tooling (pytest, ruff, mypy), add the `dev` extras:
+For development tooling (pytest, ruff, mypy):
 
 ```bash
-pip install -e "./lightcone-cli[dev]"
+uv pip install -e "./lightcone-cli[dev]"
 ```
 
-### One-time setup
-
-After install, run setup once:
+### One-time setup and sanity check
 
 ```bash
-lc setup
-```
-
-This creates `~/.lightcone/config.yaml` with `runtime: auto`. You'll pin it to `podman-hpc` for compute nodes in [§5](#5-running-on-compute-nodes).
-
-### Verify
-
-```bash
-which lc            # should resolve inside your active env's bin/
+lc setup            # creates ~/.lightcone/config.yaml with runtime: auto
+which lc            # should resolve under ~/.local/bin/ or your active env
 lc --version
-lc --help
 ```
+
+You'll pin `runtime: podman-hpc` for compute nodes in [§5](#5-running-on-compute-nodes).
 
 ---
 
@@ -273,28 +262,39 @@ scratch_root: $SCRATCH
 
 ## 7. Updating
 
-=== "PyPI install"
+=== "uv tool"
+    ```bash
+    uv tool upgrade lightcone-cli
+    ```
+
+=== "pip"
     ```bash
     pip install -U lightcone-cli astra-tools
     ```
 
-=== "Source install"
+=== "Source"
     ```bash
     cd ~/.lightcone/lightcone-cli
     git pull
-    pip install -e .                          # only needed if pyproject.toml changed
+    uv pip install -e .                       # only needed if pyproject.toml changed
     ```
 
-    Editable installs auto-follow source edits — switching branches or pulling new commits is reflected immediately in `lc`. Re-run `pip install -e .` only when `pyproject.toml` adds a new dependency or changes the `[project.scripts]` table.
+    Editable installs auto-follow source edits — switching branches or pulling new commits is reflected immediately in `lc`. Re-install only when `pyproject.toml` adds a new dependency or changes the `[project.scripts]` table.
 
 ---
 
 ## 8. Uninstalling
 
-```bash
-pip uninstall lightcone-cli                   # remove from the active env
-rm -rf ~/.lightcone/lightcone-cli             # only for source installs
-```
+=== "uv tool"
+    ```bash
+    uv tool uninstall lightcone-cli
+    ```
+
+=== "pip"
+    ```bash
+    pip uninstall lightcone-cli
+    rm -rf ~/.lightcone/lightcone-cli         # only for source installs
+    ```
 
 !!! note "Keep your config?"
     `~/.lightcone/config.yaml` survives the uninstall. Delete it too if you want to start fresh.
