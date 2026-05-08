@@ -113,7 +113,6 @@ without an allocation:
 
 ```bash
 lc build                       # build images (uses podman-hpc on login node)
-lc run --dry-run               # generates the Snakefile, doesn't execute
 lc status                      # offline; reads only manifests
 ```
 

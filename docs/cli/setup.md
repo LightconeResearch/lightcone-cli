@@ -1,28 +1,23 @@
-# lc setup
+# lc setup (removed)
 
-Write a minimal global configuration at `~/.lightcone/config.yaml`. Run
-once after install. There is no wizard, no prompt, no flags.
+The `lc setup` command no longer exists. The global configuration file
+(`~/.lightcone/config.yaml`) is now created automatically the first time
+you run any `lc` command — there is nothing to run manually.
 
-## Synopsis
+## Global config file
 
-```
-lc setup
-```
-
-## What it does
-
-If `~/.lightcone/config.yaml` already exists, prints the path and exits
-with no changes. Otherwise creates it with:
+`~/.lightcone/config.yaml` is created with these defaults on first use:
 
 ```yaml
 container:
   runtime: auto
 ```
 
-That's the entire file today. The rest of lightcone-cli requires
-`~/.lightcone/config.yaml` to *exist* (so it knows you've at least
-opted in once); the file's contents control container runtime
-resolution.
+Edit the file by hand to change the container runtime:
+
+```bash
+$EDITOR ~/.lightcone/config.yaml
+```
 
 ## `container.runtime` values
 
@@ -34,18 +29,6 @@ resolution.
 | `podman-hpc` | Pin to podman-hpc — typical on NERSC Perlmutter login nodes. |
 | `none` | Explicit opt-out from containers. Recipes run on the host. |
 
-Edit the file by hand to change runtimes:
-
-```bash
-$EDITOR ~/.lightcone/config.yaml
-```
-
 Setting `runtime: none` explicitly silences the provenance warning
 that `lc run` shows when `auto` falls back to `none`. (See
 [`lc run`](run.md#provenance-gotcha).)
-
-## Removed flags
-
-The `--list`, `--show NAME`, and `--default NAME` options are gone —
-they belonged to the now-removed target system. See
-[`lc target`](target.md) for the redirect.

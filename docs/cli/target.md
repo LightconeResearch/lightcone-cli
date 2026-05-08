@@ -6,7 +6,8 @@ runtime and the cluster shape from a much smaller surface:
 
 - **Container runtime** — `~/.lightcone/config.yaml` carries a single
   `container.runtime` key (`auto | docker | podman | podman-hpc | none`).
-  See [`lc setup`](setup.md) and [api/container](../api/container.md).
+  The file is created automatically on first use; edit it by hand to change
+  runtimes. See [Global config](setup.md) and [api/container](../api/container.md).
 - **Cluster shape** — derived at runtime from the environment.
   `lc run` always dispatches through a Dask cluster; the cluster manager
   picks `LocalCluster` on a workstation, `srun`-launched workers when

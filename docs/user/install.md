@@ -46,13 +46,11 @@ lc --version                # → lightcone-cli, version ...
 > that's you, installing lightcone-cli will shadow the alias —
 > rebind it (e.g. `alias l='ls --color'`).
 
-## 3. One-time setup
+## 3. Global configuration
 
-```bash
-lc setup
-```
-
-This creates `~/.lightcone/config.yaml` with:
+`~/.lightcone/config.yaml` is created automatically the first time you
+run any `lc` command. No manual setup step is needed. The file starts
+as:
 
 ```yaml
 container:
@@ -61,7 +59,7 @@ container:
 
 `auto` detects whichever of `podman`, `docker`, or `podman-hpc` is on
 your PATH (and skips docker if its daemon isn't running). You can pin
-the runtime later by editing this file.
+the runtime later by editing this file directly.
 
 ## 4. Claude Code
 
@@ -91,8 +89,8 @@ runtime:
   daemon) or [Docker](https://docs.docker.com/get-docker/).
 - HPC login node: see [Running on a Cluster](cluster.md).
 
-`lc setup`'s `auto` mode picks whichever you have. If you don't have
-either, you can still use `lc` — set `runtime: none` in
+The `auto` mode picks whichever container runtime you have. If you don't
+have either, you can still use `lc` — set `runtime: none` in
 `~/.lightcone/config.yaml` and recipes will run on the host without
 isolation.
 

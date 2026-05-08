@@ -18,7 +18,7 @@ from lightcone.cli.plugin import get_plugin_source_dir
 
 src = get_plugin_source_dir()
 dst = Path(".claude")
-for sub in ("skills", "agents", "hooks", "scripts", "guides", "templates"):
+for sub in ("skills", "agents", "scripts", "guides", "templates"):
     s, d = src / sub, dst / sub
     if d.exists():
         shutil.rmtree(d)
