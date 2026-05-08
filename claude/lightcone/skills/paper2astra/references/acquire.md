@@ -1,6 +1,6 @@
 # ACQUIRE — fetch the paper, structure it, clone the code
 
-Acquire the paper's full text, structure it for downstream consumption, and (when available) clone the reference code repository. The bundle's primary acquisition path is **arXiv LaTeX source via `/managing-bibliography`**; PDF + Docling is the fallback for non-arXiv papers. ACQUIRE folds in what was previously a separate PARSE phase — for arXiv-LaTeX, the structure is already in the tarball (no extra work); for the PDF fallback, ACQUIRE runs Docling itself.
+Acquire the paper's reading materials and (when available) clone the reference code repository. The substrate work — LaTeX-source download, Docling fallback, figures, tables, outline, citations, embedded bibliography, paper-as-ASTRA-artifact — is delegated to **`/paper-extraction`**, which paper2astra trusts blindly. ACQUIRE adds **Step 2: code-clone**, which is reproduction-specific and stays here.
 
 The constitution's per-phase mode controls whether this runs interactively or as a sub-agent. Default is sub-agent — surfacing happens only on download failures.
 
@@ -11,95 +11,35 @@ The constitution's per-phase mode controls whether this runs interactively or as
 
 ## Outputs
 
-Two shapes depending on the acquisition path:
+After Step 1 (`/paper-extraction`):
 
-**Path A — arXiv LaTeX source:**
+- `work/reference/index.json` — structural index (figures, tables, outline, citations with line numbers, paths)
+- `work/reference/astra.yaml` — ASTRA-shape representation of the paper, including the paper's claimed numerical findings as ASTRA `findings:` (when paper-extraction's optional Step 5 is run)
+- `work/reference/paper.pdf` — always
+- `work/reference/paper.tex` + `work/reference/source/` — Path A (arXiv LaTeX)
+- `work/reference/document.md` — Path B (PDF + Docling)
+- `work/reference/figures/` — figure files
+- `work/reference/tables/` — one .tex file per `\begin{table}` block
+- `work/reference/bibliography-source.{bib,bbl}` — Path A only, copied from source tarball when present
 
-- `work/reference/source/` — extracted arXiv tarball (the canonical text source: `.tex`, `.bbl`, figure files, etc.)
-- `work/reference/paper.pdf` — paper PDF (kept as a backup for `astra validate --verify-evidence`)
+After Step 2 (this phase):
 
-**Path B — PDF + Docling fallback:**
-
-- `work/reference/document.md` — paper as markdown (Docling-extracted)
-- `work/reference/figures/` — extracted figures
-- `work/reference/tables/` — extracted tables
-- `work/reference/metadata.json` — figure / table index with captions and page numbers
-- `work/reference/paper.pdf` — paper PDF
-
-**Both paths:**
-
-- `work/reference/code/` — clone of the code repo (or absent if not found)
+- `work/reference/code/` — cloned reference repo (or absent if not found)
 - `work/reference/code-status.yaml` — record of where the code came from
 
-## Step 1: Acquire and structure the paper text
+## Step 1 — Stand up the paper's reading materials
 
-### Path A — arXiv ID is available (preferred)
+Invoke `/paper-extraction <arxiv-id-or-doi>`. The skill is idempotent — it surveys `work/reference/` first and skips work that's already done.
 
-Invoke `/managing-bibliography`. Use it to download the arXiv LaTeX source tarball:
-
-```bash
-curl -L -o /tmp/<arxiv-id>.tar.gz "https://arxiv.org/src/<arxiv-id>"
-mkdir -p work/reference/source && cd work/reference/source && tar -xzf /tmp/<arxiv-id>.tar.gz
-ls *.tex
+```
+/paper-extraction <arxiv-id-or-doi>
 ```
 
-The LaTeX source gives clean equations, captions, tables, and bibliography — none of the math collapse, ligature artifacts, or caption flattening that plagues PDF extraction. **No conversion to markdown is needed.** Downstream phases (ARCHITECT's paper-side Explore sub-agent, SPECIFY's evidence quotes) read `.tex` directly — Claude reads LaTeX fine, and rendering it to markdown only loses information. The tarball stays as `work/reference/source/`.
+This produces everything under `work/reference/` *except* the code clone. paper2astra ACQUIRE does not re-implement the substrate logic; if something is wrong with the substrate, fix it in `/paper-extraction`, not here.
 
-If you want to identify the main `.tex` file for downstream tools:
+Two starting surfaces: `work/reference/index.json` (structural — figures, tables, outline, citations with line numbers) and `work/reference/astra.yaml` (semantic — the paper as an ASTRA artifact, with `findings:` carrying the paper's central numerical claims as quote-anchored evidence). ARCHITECT reads index.json when its Explore sub-agents fan out across the paper; SPECIFY reads astra.yaml when authoring `prior_insights:` against the paper's claims (the paper's `findings:` map directly to a reproduction's `prior_insights:`).
 
-```bash
-grep -l '\\documentclass' work/reference/source/*.tex
-```
-
-Cache the paper for ASTRA's evidence-verification surface:
-
-```bash
-astra paper add 10.48550/arXiv.<arxiv-id>
-cp "$(astra paper path 10.48550/arXiv.<arxiv-id>)" work/reference/paper.pdf
-```
-
-`astra paper add` for arXiv DOIs fetches the PDF directly. The PDF stays as a backup for `astra validate --verify-evidence`, even though the LaTeX source is the primary text.
-
-There is no PARSE step on Path A. Equation numbers, section numbers, figure references — all preserved in the source. ARCHITECT's paper-side Explore sub-agent (and SPECIFY's evidence-quote pass) resolves `\ref{}` against `\label{}` directly in the source tree.
-
-### Path B — non-arXiv paper (PDF + Docling fallback)
-
-```bash
-astra paper add <DOI>
-cp "$(astra paper path <DOI>)" work/reference/paper.pdf
-file work/reference/paper.pdf
-```
-
-The `file` output must say "PDF document". If it says "HTML document" or anything else, the download was blocked (CAPTCHA, paywall). Search the web for an open-access copy (NASA ADS, arXiv, Unpaywall, Semantic Scholar, the journal's open-access link), download with `curl -L -o work/reference/paper.pdf <url>`, re-validate, then `astra paper add <DOI> --pdf work/reference/paper.pdf` to register the resolved file.
-
-If a valid PDF cannot be obtained, write a clear error to `work/reference/acquire-error.txt` and stop.
-
-Then run Docling to structure the PDF — without this, downstream phases have nothing to read but the raw PDF:
-
-```bash
-docling --output work/reference work/reference/paper.pdf
-```
-
-Docling produces `document.md`, `figures/`, `tables/`, and `metadata.json` directly into `work/reference/`. The `metadata.json` index has the shape:
-
-```json
-{
-  "figures": [
-    {"id": "fig1", "caption": "...", "file": "figures/fig1.pdf", "label": "fig:bao"}
-  ],
-  "tables": [
-    {"id": "tab1", "caption": "...", "file": "tables/tab1.csv", "label": "tab:results"}
-  ]
-}
-```
-
-The `label` field is the source label (where Docling can extract it) so SPECIFY's anchor work can reference the same artifact.
-
-If Docling fails, the PDF may be corrupt — re-download before giving up.
-
-Skip Step 1 if the path's outputs already exist (`work/reference/source/` for Path A, `work/reference/document.md` for Path B).
-
-## Step 2: Search for the code repository
+## Step 2 — Clone the reference code repository
 
 This step matters more than its size suggests. When `work/reference/code/` exists, every implementing iteration treats it as canonical for numerics + method (the canonical-resolution rule, recorded in CLAUDE.md). Without it, iterations have only the paper to anchor to and drift toward "looks right" rather than "matches."
 
@@ -125,14 +65,15 @@ Skip Step 2 if `work/reference/code/` already exists.
 
 Run `ls work/reference/` first.
 
-- If `paper.pdf` is present and either `source/` (Path A) or `document.md` (Path B) is also present, ACQUIRE is done — proceed to ARCHITECT.
-- If `paper.pdf` is present but neither structure exists, run the structuring step for the appropriate path.
-- If nothing is there, run the full ACQUIRE.
+- If `paper.pdf` is present, **and** the path indicator (`source/` for Path A or `document.md` for Path B) is present, **and** `index.json` is present → Step 1 is done.
+- If `work/reference/code/` is present (or `code-status.yaml` records `found: false`) → Step 2 is done.
+- When both are done, ACQUIRE is complete; proceed to ARCHITECT.
+- Otherwise, run whichever step is missing. `/paper-extraction` handles its own idempotency for Step 1.
 
 ## Notes
 
-- **arXiv DOI form is `10.48550/arXiv.<id>`.** `astra paper add` accepts that form directly.
-- **Journal DOIs that 403 on Unpaywall** can be aliased to a locally-downloaded arXiv preprint via `astra paper add <JOURNAL_DOI> --pdf <path-to-arxiv-pdf>`.
-- **Path A is preferred whenever arXiv source is acquirable.** Math, ligatures, and caption fidelity all come through clean from the LaTeX source; PDF + Docling is the fallback for non-arXiv where there's no better source. The acquisition layer's ASTRA-side counterpart — `astra paper add` preferring LaTeX over PDF for the verification cache, and applying the same logic to bibliography references — is filed as a separate ASTRA issue; paper2astra inherits the improvement once it lands.
-- **Equation numbers and section numbers must match the rendered paper.** On Path A, the printed numbers come from the rendered tarball (look at the PDF if uncertain). On Path B, Docling preserves printed numbers in its markdown output. When citing "eq. N" or "§N" in any downstream phase, find the equation or heading by content, not by a naïve count of TeX blocks or markdown headings.
-- This phase's job is acquisition + structuring, not understanding. Do not start indexing or comparing the paper here — that's ARCHITECT.
+- **paper-extraction is the substrate authority.** Don't re-fetch the LaTeX source, don't re-run Docling, don't re-parse the paper from inside ACQUIRE. If a substrate need surfaces that paper-extraction doesn't cover, file it as paper-extraction work — not as ACQUIRE work.
+- **arXiv DOI form is `10.48550/arXiv.<id>`.** Useful when downstream tools want a DOI rather than an arXiv ID.
+- **Equation numbers and section numbers must match the rendered paper.** When citing "eq. N" or "§N" in any downstream phase, find the equation or heading by content, not by a naïve count of TeX blocks or markdown headings. Path A: source preserves printed numbers in `\label{}`s. Path B: Docling preserves printed numbers in its markdown.
+- **This phase is acquisition + code-clone, not understanding.** Do not start indexing or comparing the paper here — that's ARCHITECT.
+- **Code-as-canonical** is loaded by every subsequent phase. The per-paper `CLAUDE.md` restates the rule; ACQUIRE just makes sure `work/reference/code/` exists when possible.

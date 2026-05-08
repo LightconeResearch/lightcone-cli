@@ -7,7 +7,7 @@ description: >
   reproduction work. The loop is 9 phases bookended by two always-interactive
   seams (INTERVIEW at start, REVIEW at close-out); ARCHITECT writes a stub
   astra.yaml decomposition before SPECIFY's two-pass-per-sub-analysis fills
-  it in. Composes sibling skills for each phase: managing-bibliography for
+  it in. Composes sibling skills for each phase: paper-extraction for
   ACQUIRE and narrative for SPECIFY. Use when the user wants to reproduce
   a paper, has a DOI or arXiv ID and wants to start a reproduction project,
   or asks to "reproduce <paper>", "set up reproduction", "paper2astra",
@@ -36,7 +36,7 @@ paper2astra composes the rest of the lightcone-cli paper-reproduction bundle. Al
 
 | Sibling skill | Where it's invoked |
 |---|---|
-| [`/managing-bibliography`](../managing-bibliography/SKILL.md) | ACQUIRE — arXiv LaTeX source download (primary) and BibTeX caching |
+| [`/paper-extraction`](../paper-extraction/SKILL.md) | ACQUIRE — turns an arXiv ID or DOI into `work/reference/` (structural index + stub `astra.yaml`); arXiv LaTeX source primary, PDF + Docling fallback |
 | [`/constitution`](../constitution/SKILL.md) | INTERVIEW — drafting the per-paper reproduction constitution |
 | [`/ralph-loops`](../ralph-loops/SKILL.md) | After interview — launches the loop that drives all subsequent phases (when the chosen runtime mode is one of the loop modes) |
 | [`/narrative`](../narrative/SKILL.md) | SPECIFY — authoring the `narrative:` and `rationale:` prose in `astra.yaml` |
@@ -198,7 +198,7 @@ Workdir signals (file existence implies the phase has been done):
 
 - [`/constitution`](../constitution/SKILL.md) — for the interview's drafting phase
 - [`/ralph-loops`](../ralph-loops/SKILL.md) — for the bash-loop and tmux-orchestrated runtime modes
-- [`/managing-bibliography`](../managing-bibliography/SKILL.md) — for ACQUIRE
+- [`/paper-extraction`](../paper-extraction/SKILL.md) — for ACQUIRE
 - [`/narrative`](../narrative/SKILL.md) — for SPECIFY
 - [`/figure-comparison`](../figure-comparison/SKILL.md) — for REVIEW (close-out, mandatory)
 - [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) — for REVIEW (close-out, opt-in)
