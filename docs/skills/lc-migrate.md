@@ -1,41 +1,85 @@
 # /lc-migrate
 
-Migrate existing research code into ASTRA / lightcone-cli format.
+Migrate an existing project into ASTRA / lightcone-cli. Scans the
+code, generates `astra.yaml`, parameterizes hardcoded analytical
+choices, and runs until outputs materialize. Existing logic stays
+intact — changes should be minimal.
 
-## Purpose
+Source: [`claude/lightcone/skills/lc-migrate/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-migrate/SKILL.md).
 
-`/lc-migrate` is used after `lc init --existing-project` to analyse existing code and generate a complete `astra.yaml` that accurately reflects what the code does.
+## Allowed tools
 
-## Workflow phases
+```
+Read, Write, Edit, Glob, Grep,
+Bash(astra:*), Bash(lc:*), Bash(python:*), Bash(pip:*), Bash(git:*), Bash(mkdir:*), Bash(ls:*),
+Agent, AskUserQuestion
+```
 
-### Phase 1 — Scan & Spec
+## Phases
 
-1. Reads all existing scripts to understand inputs, outputs, and methodology.
-2. Identifies decision points (parameters with multiple valid choices).
-3. Drafts `astra.yaml` with inputs, outputs, and decisions extracted from the code.
-4. Asks for clarification on anything ambiguous.
+### Phase 1 — Scan & spec
 
-### Phase 2 — Implement
+The skill spawns an `Explore` subagent (Claude Code's general-purpose
+search agent) with the decision criteria from `astra-reference.md`
+inlined into the prompt. The subagent returns a structured inventory:
 
-1. Adds `recipe:` blocks to each output, pointing to the existing scripts.
-2. Modifies scripts to accept `--universe`, `--key value` CLI arguments where needed.
-3. Creates the universe file(s) based on the parameters currently hardcoded in the code.
-4. Writes `Containerfile` and `requirements.txt` if not already present.
+- Per script/notebook: file path, what it does, files it reads & writes,
+  hardcoded analytical choices (with file:line, current value, what it
+  controls), how it's invoked.
+- Project-level: dependency files, data files, existing container
+  setup.
 
-### Phase 3 — Run & Debug
+The main agent filters the candidate decisions down to true analytical
+choices (most hardcoded values are implementation details, not
+decisions), drafts `astra.yaml` with `recipe:` blocks pointing at the
+existing scripts, and generates `universes/baseline.yaml` with all
+defaults matching the current hardcoded values — so the first run
+reproduces existing behavior. Spec is then validated with
+`astra validate astra.yaml`.
 
-1. Runs `lc run` and fixes any issues.
-2. Verifies that all outputs materialise correctly.
-3. Runs `/lc-verify` to confirm spec–code alignment.
+The user is asked to review before Phase 2.
 
-## Key rules
+### Phase 2 — Implement (parameterize)
 
-- Never fabricate decisions not present in the original code.
-- Existing logic must be preserved — migration is not a refactor.
-- If the code uses hardcoded parameters, those become decision options.
-- Keep script changes minimal: only add CLI argument parsing.
+The skill picks an approach per script type:
+
+- **Script with hardcoded values** — add (or extend) argparse, replace
+  hardcoded values with parsed args.
+- **Notebook** — move the `.ipynb` to `notebooks/` (preserved as
+  reference), create a `.py` script that does the parameterized
+  version. The recipe points at the new script.
+- **Config-file-driven project** — write a thin wrapper script that
+  accepts ASTRA decision args, writes the config, then calls the
+  original entry point. The user's config-driven code stays untouched.
+
+Hard conventions enforced by the prompt:
+
+- Decision IDs use underscores in `astra.yaml` (`outlier_sigma`).
+  lightcone-cli passes `--outlier_sigma`. Argument parsing must match.
+- Output paths follow `results/{universe}/{output_id}.ext` (the
+  per-output convention).
+- Don't refactor, restructure, or "improve" existing code — only
+  parameter plumbing.
+
+### Phase 3 — Run & debug
+
+`lc run --universe baseline`. Iterate fixes until `lc status` shows all
+outputs `ok`. If the scan turned up existing results elsewhere in the
+project, compare them against the new `results/baseline/` to verify
+the migration preserved behavior. Then `astra validate astra.yaml` and
+present the summary.
+
+## Hard rules
+
+- Minimal changes — no refactor, rename, reorganize.
+- Never guess — read every script before claiming what it does.
+- Filter decisions aggressively — most hardcoded values are
+  implementation details.
+- Preserve behavior — the baseline universe with default values must
+  reproduce the original behavior exactly.
 
 ## Related
 
-- [lc-new](lc-new.md) — for creating analyses from scratch
-- [lc-verify](lc-verify.md) — run after migration to confirm consistency
+- [`/lc-new`](lc-new.md) — for greenfield analyses.
+- [`/lc-verify`](lc-verify.md) — run after migration to confirm
+  spec-code-results alignment.

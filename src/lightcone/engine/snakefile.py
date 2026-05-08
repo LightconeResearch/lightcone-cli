@@ -131,6 +131,38 @@ def _git_sha(project_path: Path) -> str | None:
     return None
 
 
+def _git_remote(project_path: Path) -> str | None:
+    """URL of the ``origin`` git remote, if the project is a git clone.
+
+    Captured into the manifest alongside ``git_sha`` so a published
+    bundle can identify *which repository* the commit belongs to.
+    SSH URLs (``git@host:owner/repo.git``) are normalised to ``https``
+    form so consumers (e.g. WorkflowHub) can render them as clickable
+    links.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(project_path),
+             "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if out.returncode != 0:
+            return None
+        url = out.stdout.strip()
+        if not url:
+            return None
+        if url.startswith("git@"):
+            host_path = url.removeprefix("git@").replace(":", "/", 1)
+            url = f"https://{host_path}"
+        if url.endswith(".git"):
+            url = url.removesuffix(".git")
+        return url
+    except FileNotFoundError:
+        return None
+
+
 def _lc_version() -> str:
     try:
         from importlib.metadata import version
@@ -317,6 +349,7 @@ def generate(
     cfg: dict[str, dict[str, dict[str, Any]]] = {}
 
     git_sha = _git_sha(project_path)
+    git_remote = _git_remote(project_path)
     lc_version = _lc_version()
     resolve_image = make_image_tag_resolver(project_path, project_name)
 
@@ -411,6 +444,7 @@ def generate(
                 "decisions": scoped_decisions,
                 "code_version": cv,
                 "git_sha": git_sha,
+                "git_remote": git_remote,
                 "lc_version": lc_version,
             }
 

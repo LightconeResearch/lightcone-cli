@@ -4,47 +4,26 @@
 
 ```
 tests/
-├── conftest.py               # shared fixtures (_fake_config, tmp project helpers)
-├── test_cli.py               # CLI command tests
-├── test_cli_run.py           # lc run integration tests
-├── test_integration.py       # end-to-end tests
-└── dagster/
-    ├── test_assets.py        # build_asset_definitions tests
-    ├── test_runner.py        # ASTRAContainerRunner tests
-    ├── test_status.py        # status query tests
-    └── test_targets.py       # target config tests
+├── conftest.py             # shared fixtures
+├── test_cli.py             # Click CliRunner integration tests
+├── test_container.py       # detection, image tag, build_image, wrap_recipe, RuntimeChoice
+├── test_dask_cluster.py    # cluster_for_run branches & resource keys
+├── test_dask_plugin.py     # snakemake_executor_plugin_dask
+├── test_eval_*.py          # eval harness (graders, harness, models, report)
+├── test_manifest.py        # write_manifest, sha256_dir, code_version
+├── test_snakefile.py       # generator + final `snakemake -n` parse test
+├── test_status.py          # OutputStatus across ok/stale/missing/alias
+├── test_tree.py            # collect_tree_outputs, find_upstream_output, …
+├── test_validation.py      # validate_output across metric/table/figure types
+└── test_verify.py          # verify_outputs across all three failure kinds
 ```
 
-## Key fixtures
+Tests mirror `src/` 1:1 — when you add a module, add a test file at the
+matching path.
 
-### `_fake_config` (autouse)
+## Common patterns
 
-Prevents the auto-setup wizard from firing during CLI tests by monkeypatching `get_config_path()`:
-
-```python
-@pytest.fixture(autouse=True)
-def _fake_config(tmp_path, monkeypatch):
-    config = tmp_path / "fake_config.yaml"
-    config.write_text("default_target: local\n")
-    monkeypatch.setattr("lightcone.engine.targets.get_config_path", lambda: config)
-    monkeypatch.setattr("lightcone.cli.commands.get_config_path", lambda: config)
-```
-
-### `tmp_project` (helper)
-
-Creates a minimal ASTRA project in `tmp_path`:
-
-```python
-def make_project(tmp_path, spec):
-    (tmp_path / "astra.yaml").write_text(yaml.dump(spec))
-    (tmp_path / "universes").mkdir()
-    (tmp_path / "universes" / "baseline.yaml").write_text("id: baseline\ndecisions: {}\n")
-    return tmp_path
-```
-
-## CLI tests
-
-Use Click's `CliRunner`:
+### CLI tests (Click `CliRunner`)
 
 ```python
 from click.testing import CliRunner
@@ -52,54 +31,61 @@ from lightcone.cli.commands import main
 
 def test_init_creates_structure(tmp_path):
     runner = CliRunner()
-    result = runner.invoke(main, ["init", str(tmp_path / "myproject")])
+    result = runner.invoke(main, ["init", str(tmp_path / "myproject"), "--no-git", "--no-venv"])
     assert result.exit_code == 0
     assert (tmp_path / "myproject" / "astra.yaml").exists()
 ```
 
-## Asset tests
+### End-to-end against a tmp project
 
-```python
-from lightcone.engine.assets import build_asset_definitions
+`test_status.py`, `test_verify.py`, and `test_snakefile.py` build a
+minimal ASTRA project under `tmp_path` (one `astra.yaml`, one
+`universes/baseline.yaml`, optional sub-analyses), then run the
+function under test. Helpers:
 
-def test_asset_keys(simple_spec):
-    assets = build_asset_definitions(simple_spec, universe_id="baseline")
-    keys = {a.key for a in assets if hasattr(a, 'key')}
-    assert dg.AssetKey(["baseline", "accuracy"]) in keys
-```
+- `astra.helpers.load_yaml` / `resolve_analysis_tree` mirror what
+  production code does.
+- `lightcone.engine.snakefile.generate(project, universes=[...], runtime="none")`
+  for tests that need an actual Snakefile.
 
-## Runner tests
+### Snakefile parsing
 
-```python
-from lightcone.engine.runner import ASTRAContainerRunner
+`tests/test_snakefile.py` ends with a parse test that runs
+`snakemake -n -s <generated-Snakefile>` to confirm the generator
+produces a Snakefile the upstream tool actually accepts. Add a similar
+assertion when changing rule shape.
 
-def test_local_execution(tmp_path):
-    (tmp_path / "universes").mkdir()
-    runner = ASTRAContainerRunner(str(tmp_path), backend="local")
-    result = runner.execute(
-        command="echo done",
-        output_id="out",
-        universe_id="baseline",
-    )
-    assert result.exit_code == 0
-    assert result.metadata["backend"] == "local"
-```
-
-## Eval tests
-
-Skill performance evals live in `evals/`. Install the optional dependency and run:
+### Slow tests
 
 ```bash
-pip install -e ".[eval]"
-lc eval run           # run all evals
-lc eval run --skill lc-build  # run a specific skill
+uv run pytest -m slow            # opt in to the slow tests
 ```
 
-Or via just:
+The `slow` marker is reserved for tests that start a real Dask cluster.
+Do not use it for things that are merely a bit chatty — prefer trimming
+test scope.
+
+## Eval harness (separate)
+
+Skill performance evals live in `evals/` with their fixtures in
+`evals/tasks/`. The harness lives at `lightcone.eval.harness`. **The
+`lc eval` CLI subgroup is currently not registered on `main`** — the
+top-level `lc` invocation will fail with "No such command: eval". To
+run evals today, invoke the harness in Python directly:
+
+```python
+from pathlib import Path
+from lightcone.eval.harness import load_run_config, run_eval
+
+config = load_run_config(Path("evals/example-run.yaml"))
+result = run_eval(config, Path("evals"))
+```
+
+When the eval CLI is rewired (it should be a one-line `add_command` in
+`lightcone.cli.commands`), the documented incantation will be:
 
 ```bash
-just evals             # uv sync --extra eval && lc eval run
-just evals-skill lc-build
+lc eval run evals/example-run.yaml
+lc eval report eval-results/<run>/results.json
+lc eval compare eval-results/<run1>.json eval-results/<run2>.json
 ```
-
-Evals measure whether skills produce the expected outputs (e.g. a valid `astra.yaml`) given test fixtures.
