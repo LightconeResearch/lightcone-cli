@@ -22,7 +22,7 @@ A self-contained toolkit for reproducing published papers in ASTRA. The bundle i
 | [`narrative`](narrative/SKILL.md) | Author the `narrative:` prose and decision `rationale:` in `astra.yaml`. Invoked by paper2astra during SPECIFY. |
 | [`constitution`](constitution/SKILL.md) | Draft a constitution — a markdown spec for an iteration runner. Invoked by paper2astra during the interview. |
 | [`ralph-loops`](ralph-loops/SKILL.md) | Drive an autonomous iteration loop. Includes `scripts/ralph` runner. Used by paper2astra's bash-loop and tmux-orchestrated runtime modes. |
-| [`managing-bibliography`](managing-bibliography/SKILL.md) | Read arXiv LaTeX source; manage BibTeX via ADS API. Primary acquisition path for paper2astra's ACQUIRE phase. |
+| [`paper-extraction`](paper-extraction/SKILL.md) | Turn an arXiv ID or DOI into a standardized `work/reference/` directory: structural index (figures, tables, outline, citations) plus a stub `astra.yaml` for the paper. Primary acquisition path for paper2astra's ACQUIRE phase. |
 | [`check-sentence-by-sentence`](check-sentence-by-sentence/SKILL.md) | Audit paper claims against code locations (`file:line` or `NOT FOUND`). Invoked from paper2astra's REVIEW close-out (opt-in); also user-invokable directly. |
 | [`figure-comparison`](figure-comparison/SKILL.md) | Build a self-contained HTML side-by-side: original figures/tables/numerics vs replicated. Invoked from paper2astra's REVIEW close-out (mandatory); also user-invokable directly. |
 

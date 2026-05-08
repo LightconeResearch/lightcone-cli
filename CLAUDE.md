@@ -69,7 +69,7 @@ src/lightcone/              # namespace — NO __init__.py
 claude/lightcone/           # Claude plugin source — force-included into the wheel
 ├── skills/                 # lc-new, lc-build, lc-verify, lc-migrate, lc-feedback;
 │                            # paper-reproduction bundle: paper2astra, narrative,
-│                            # constitution, ralph-loops, managing-bibliography
+│                            # constitution, ralph-loops, paper-extraction
 │                            # (see skills/README.md for the full bundle map)
 ├── agents/                 # lc-extractor
 ├── guides/                 # astra-reference, lightcone-cli-reference, ui-brand
