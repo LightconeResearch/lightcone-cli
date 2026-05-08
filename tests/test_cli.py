@@ -1,7 +1,10 @@
 """Tests for the redesigned lightcone CLI."""
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
@@ -81,6 +84,46 @@ def test_init_refuses_when_astra_yaml_exists(
     result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
     assert result.exit_code != 0
     assert "already exists" in result.output
+
+
+def test_init_venv_uses_uv_when_available(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    assert result.exit_code == 0, result.output
+
+    assert ["uv", "venv", "--python", "3.12", ".venv"] in calls
+    assert ["uv", "pip", "install", "--python", ".venv/bin/python", "lightcone-cli"] in calls
+
+
+def test_init_venv_falls_back_to_python_when_uv_missing(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    assert result.exit_code == 0, result.output
+
+    assert ["python", "-m", "venv", ".venv"] in calls
+    assert [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"] in calls
 
 
 # ---- lc verify ------------------------------------------------------------
