@@ -1,6 +1,6 @@
 ---
 name: lc-new
-description: Create a new ASTRA analysis project with integrated literature support. Scope the research question through conversation, structure outputs and decisions, search for and extract evidence from scientific papers, and build a complete astra.yaml specification. Use when starting a new analysis, when the user says "new project", "new analysis", or "scope". Triggers on "new", "scope", "research question", "start analysis".
+description: Use this skill whenever the user starts a new ASTRA analysis from a research question — scoping the question, structuring inputs and outputs, identifying decisions through literature, and landing astra.yaml + project CLAUDE.md. Triggers on verbs (`new`, `start`, `scope`) combined with nouns (`analysis`, `project`, `question`, `research`) — e.g. "new analysis", "start project", "scope research question" — even if the user doesn't say "project" explicitly. Don't use this for working inside an existing ASTRA project; this is for fresh scoping only.
 allowed-tools: Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md), Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md), Glob, Grep, Bash(astra:*), Bash(lc:*), WebSearch, WebFetch, AskUserQuestion, Agent
 ---
 
