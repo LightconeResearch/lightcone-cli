@@ -53,12 +53,6 @@ nav = [
       {"lc-feedback" = "skills/lc-feedback.md"},
       {"Authoring Skills" = "skills/authoring.md"},
     ]},
-    {"Telemetry (Langfuse)" = [
-      {"Overview" = "telemetry/index.md"},
-      {"Hooks Architecture" = "telemetry/hooks.md"},
-      {"Session Lifecycle" = "telemetry/lifecycle.md"},
-      {"Disabling Telemetry" = "telemetry/opt-out.md"},
-    ]},
     {"Contributing" = [
       {"Development Setup" = "contributing/setup.md"},
       {"Testing" = "contributing/testing.md"},

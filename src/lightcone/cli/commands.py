@@ -311,7 +311,7 @@ def _install_claude_plugin(
     """
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
-    for sub in ("skills", "agents", "hooks", "scripts", "guides", "templates"):
+    for sub in ("skills", "agents", "scripts", "guides", "templates"):
         src = plugin_source / sub
         if src.exists():
             dest = claude_dir / sub

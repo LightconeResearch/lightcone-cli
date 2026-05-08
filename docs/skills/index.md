@@ -52,7 +52,6 @@ claude/lightcone/
 ├── agents/lc-extractor.md             # subagent definition
 ├── guides/                            # reference docs loaded by skills
 ├── templates/CLAUDE.md                # the project CLAUDE.md template
-├── hooks/*.py                         # Langfuse telemetry hooks
 └── scripts/*.sh                       # session lifecycle hooks
 ```
 

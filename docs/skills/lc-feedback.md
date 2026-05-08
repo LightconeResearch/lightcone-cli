@@ -27,7 +27,7 @@ create`.
    - **ASTRA** — the `astra` CLI, schema validation, YAML parsing,
      helpers.
    - **lightcone-cli** — the `lc` CLI, recipes, container builds,
-     scaffolding, skills, telemetry, the engine layer.
+     scaffolding, skills, the engine layer.
    - Default to `lightcone-cli` if ambiguous.
 4. **Collect environment** silently:
    ```bash
@@ -78,6 +78,6 @@ Sections that don't apply are dropped.
 ## Notes for the maintainer who's looking
 
 The triage hint in the prompt currently says "lightcone-cli — `lc` CLI,
-**Dagster execution**, recipes, container builds, scaffolding, skills,
-telemetry." That's stale — the Dagster mention should be replaced
-with "Snakemake/Dask execution." See the `SKILL.md` source.
+**Dagster execution**, recipes, container builds, scaffolding, skills."
+That's stale — the Dagster mention should be replaced with
+"Snakemake/Dask execution." See the `SKILL.md` source.

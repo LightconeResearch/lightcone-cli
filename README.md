@@ -116,10 +116,6 @@ Every materialized output gets a `.lightcone-manifest.json` capturing `code_vers
 
 `lc export wrroc` walks your manifests and emits a [Workflow Run RO-Crate](https://www.researchobject.org/workflow-run-crate/) bundle — a JSON-LD package readable by WorkflowHub, Zenodo's RO-Crate plugin, and any RO-Crate-aware archive. Each materialization becomes a `CreateAction` with `object` (inputs, including upstream datasets via stable `@id` references) and `result` (the output dataset); decisions become `PropertyValue` entities; the workflow is captured as a `ComputationalWorkflow`. The lightcone manifest format on disk is unchanged — WRROC is the publication view, generated on demand. Use `--metadata-only` to ship only the provenance graph (useful when data files are huge), `--zip` to package the bundle for upload, or `-u <universe>` to restrict to specific universes.
 
-### Telemetry
-
-Claude Code sessions are traced to Langfuse with full conversation structure, tool calls, and git commit linking. Disable with `TRACE_TO_LANGFUSE=false` in `.claude/settings.local.json`.
-
 ## License
 
 BSD 3-Clause

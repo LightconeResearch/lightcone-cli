@@ -259,9 +259,8 @@ paths, and `git push`.
 ### Hooks
 
 The plugin registers Claude Code hooks for venv activation,
-auto-validation on save, integrity-aware "did you forget `lc run`?"
-warnings, and Langfuse telemetry. See
-[Telemetry](telemetry/index.md) and [`hooks` source](https://github.com/LightconeResearch/lightcone-cli/tree/main/claude/lightcone/hooks).
+auto-validation on save, and integrity-aware "did you forget `lc run`?"
+warnings.
 
 ---
 
@@ -275,7 +274,6 @@ warnings, and Langfuse telemetry. See
 | `.lightcone/lightcone.yaml` | Project | Tiny scratchpad — currently writes only `target: local`. Not consumed by today's code. |
 | `~/.lightcone/config.yaml` | User | `container.runtime` (and historically `extraction_model`). |
 | `.claude/settings.json` | Project | Claude Code permissions. |
-| `.claude/settings.local.json` | Project | Telemetry env vars. Not committed. |
 
 The `dagster.yaml` and `~/.lightcone/targets/*.yaml` files referenced in
 older docs are no longer used — historical residue.
