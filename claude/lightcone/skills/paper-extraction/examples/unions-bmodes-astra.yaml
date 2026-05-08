@@ -1,0 +1,106 @@
+# Worked Step 5 example for paper-extraction.
+#
+# Generated from arXiv:2604.03227, then filled with 6 quote-anchored
+# findings. Verified with:
+#
+#   astra paper add 10.48550/arXiv.2604.03227 --version 1 --pdf paper.pdf
+#   astra validate astra.yaml --verify-evidence
+
+id: arxiv_2604_03227
+version: "0.0.7"
+name: "UNIONS-3500 Weak Lensing: II. B-mode validation for cosmic shear"
+
+narrative:
+  summary: |
+    At Stage-III sensitivities, cosmic shear $B$ modes unambiguously indicate systematic contamination and are often used to inform data selection and scale cuts for cosmological inference.
+    We validate $B$ modes for the Ultraviolet Near-Infrared Optical Northern Survey (UNIONS)-3500 (\SI{2894}{\square\deg}, $n_\mathrm{eff} \approx \SI{5.0}{arcmin\tothe{-2}}$) using three $E$/$B$-separable statistics: pure-mode correlation functions $\xi_\pm^{\mathrm{B}}(\theta)$, Complete Orthogonal Sets of $E$/$B$-mode Integrals (COSEBI) $B$-mode amplitudes $B_n$, and harmonic-space power spectra $C_\ell^{BB}$.
+    For each statistic, we compute probability-to-exceed (PTE) values over a two-dimensional grid of scale-cut boundaries; our adopted cuts lie in broad stable regions of acceptable PTE.
+    $B$-mode detections and PTE failures on initial catalog versions led us to investigate galaxy size cuts and stellar halo masking.
+    After cuts, all three statistics pass the null test (minimum PTE $= \num{0.18}$).
+    Before scale cuts, we measure an oscillatory COSEBI $B$-mode pattern consistent with repeating additive shear bias, a detector-level effect seen across multiple Stage-III surveys including CFHTLenS, which used the same MegaCam camera; scale cuts that exclude the charge-coupled device (CCD) angular scale suppress it.
+    Although these statistics probe the same two-point shear field, scale cuts in one do not map exactly onto cuts in another, because their respective filter functions weight angular scales differently.
+    The most conservative validation therefore requires scale and sample selections that pass null tests across all frameworks simultaneously, an approach that applies directly to Stage-IV surveys where systematic errors dominate.
+  findings: |
+    The paper validates the UNIONS-3500 weak-lensing B-mode surface across three estimators: the [adopted cuts pass all three null tests](#findings.adopted_cuts_pass_all_statistics), [the conclusion restates consistency with zero at those cuts](#findings.bmodes_consistent_with_zero_at_adopted_cuts), and [the cuts remain acceptable under a two-parameter scale-cut accounting](#findings.scale_cut_degrees_of_freedom_still_pass). The central systematic is an [oscillatory full-range COSEBI pattern consistent with repeating additive shear bias](#findings.full_range_cosebi_repeating_additive_pattern). The paper also shows that [only the fiducial catalog passes in every representation](#findings.fiducial_catalog_only_full_pass) and that [COSEBI versus harmonic-space disagreement is driven by filter-function sensitivity](#findings.filter_functions_drive_representation_disagreement).
+
+inputs: []
+outputs: []
+
+findings:
+  adopted_cuts_pass_all_statistics:
+    id: adopted_cuts_pass_all_statistics
+    label: "Adopted cuts pass all three B-mode null tests"
+    claim: |
+      After galaxy-size cuts and stellar-halo masking choices, the adopted UNIONS-3500 scale cuts pass pure-mode correlation-function, COSEBI, and harmonic-space B-mode null tests, with a minimum PTE of 0.18.
+    created_at: "2026-05-08T03:32:00+02:00"
+    evidence:
+      - id: abstract_minimum_pte
+        doi: "10.48550/arXiv.2604.03227"
+        version: 1
+        quote:
+          exact: "After cuts, all three statistics pass the null test (minimum PTE = 0.18)."
+
+  bmodes_consistent_with_zero_at_adopted_cuts:
+    id: bmodes_consistent_with_zero_at_adopted_cuts
+    label: "B modes are consistent with zero at the adopted scale cuts"
+    claim: |
+      In the paper's conclusion, the adopted scale cuts leave B modes consistent with zero across pure-mode correlation functions, COSEBIs, and harmonic-space power spectra.
+    created_at: "2026-05-08T03:32:00+02:00"
+    evidence:
+      - id: conclusion_consistency
+        doi: "10.48550/arXiv.2604.03227"
+        version: 1
+        quote:
+          exact: "UNIONS-3500 weak-lensing B modes are consistent with zero at the adopted scale cuts across pure-mode correlation functions, COSEBIs, and harmonic-space power spectra."
+
+  scale_cut_degrees_of_freedom_still_pass:
+    id: scale_cut_degrees_of_freedom_still_pass
+    label: "Scale-cut degree-of-freedom accounting still passes"
+    claim: |
+      Treating the selected scale-cut boundaries as two fitted parameters lowers the minimum PTE from 0.18 to 0.09, which remains above the 0.05 failure threshold.
+    created_at: "2026-05-08T03:32:00+02:00"
+    evidence:
+      - id: pte_two_parameter_accounting
+        doi: "10.48550/arXiv.2604.03227"
+        version: 1
+        quote:
+          exact: "Doing so lowers the minimum PTE across all statistics from 0.18 to 0.09, still above the 0.05 threshold."
+
+  full_range_cosebi_repeating_additive_pattern:
+    id: full_range_cosebi_repeating_additive_pattern
+    label: "Full-range COSEBIs show repeating-additive pattern"
+    claim: |
+      Before the adopted cuts, all catalog versions show an oscillatory full-range COSEBI B-mode pattern consistent with repeating additive shear bias at CCD angular scales.
+    created_at: "2026-05-08T03:32:00+02:00"
+    evidence:
+      - id: conclusion_full_range_pattern
+        doi: "10.48550/arXiv.2604.03227"
+        version: 1
+        quote:
+          exact: "On the full angular range, all catalog versions show an oscillatory COSEBI B-mode pattern consistent with repeating additive shear bias at CCD angular scales"
+
+  fiducial_catalog_only_full_pass:
+    id: fiducial_catalog_only_full_pass
+    label: "Only the fiducial catalog passes every representation"
+    claim: |
+      Of the four catalog variants tested, only the fiducial size-cut catalog passes the full set of B-mode validation representations at the adopted cuts.
+    created_at: "2026-05-08T03:32:00+02:00"
+    evidence:
+      - id: conclusion_fiducial_only
+        doi: "10.48550/arXiv.2604.03227"
+        version: 1
+        quote:
+          exact: "Of the four catalog variants tested, only the fiducial passes in every representation."
+
+  filter_functions_drive_representation_disagreement:
+    id: filter_functions_drive_representation_disagreement
+    label: "Filter functions explain representation disagreement"
+    claim: |
+      The paper argues that COSEBI versus harmonic-space disagreement is not a real-space versus harmonic-space basis effect; COSEBI filter functions concentrate sensitivity on contaminated angular scales.
+    created_at: "2026-05-08T03:32:00+02:00"
+    evidence:
+      - id: discussion_harmonic_cosebi_comparison
+        doi: "10.48550/arXiv.2604.03227"
+        version: 1
+        quote:
+          exact: "By computing COSEBIs from the harmonic-space bandpowers, we confirm that the disagreement is not a matter of harmonic versus real space"
