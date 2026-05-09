@@ -142,9 +142,9 @@ node launched via `srun`.
 A Claude Code slash command bundled with the lightcone-cli plugin.
 The `/lc-from-*` family is parallel by what you start from — a question
 (`/lc-new`), code (`/lc-from-code`), or a paper
-(`/lc-from-paper`). The build/verify/feedback skills (`/lc-build`,
-`/lc-verify`, `/lc-feedback`) follow. Each one is a structured prompt
-that drives the agent through a specific phased workflow.
+(`/lc-from-paper`). `/lc-feedback` files upstream issues from inside
+the session. Each one is a structured prompt that drives the agent
+through a specific phased workflow.
 
 ## Subagent
 
@@ -192,12 +192,12 @@ The three labels `lc verify` produces when something's wrong:
 
 ## Ralph loop
 
-The autonomous build loop driven by `/lc-build`. Each iteration:
-survey state, decide what to do next, write/run code, commit, exit.
-The Claude Code stop hook re-injects the loop prompt until the agent
-emits `BUILD_COMPLETE` or hits its iteration limit. State persists
-across crashes in `.claude/ralph-loop.local.md`. Cancel with
-`/cancel-ralph`.
+A reusable autonomous iteration pattern for long-running agent work.
+Each iteration surveys state, decides what to do next, writes or runs
+code, commits, and exits. The Claude Code stop hook can re-inject the
+loop prompt until the agent emits its completion signal or hits an
+iteration limit. State persists across crashes in
+`.claude/ralph-loop.local.md`. Cancel with `/cancel-ralph`.
 
 ## Permission tier
 

@@ -1,11 +1,11 @@
 # The Agent Workflow
 
-The agentic surface is six slash commands. The `/lc-from-*` family is
-parallel by what you start from — a question, code, or a paper — and
-the build/verify/feedback skills follow. Each one is a structured
-prompt: the agent follows a specific phased flow, not free-form chat.
-This page walks through each of them in the order you'd naturally hit
-them.
+The agentic surface is three entry slash commands plus feedback. The
+`/lc-from-*` family is parallel by what you start from — a question,
+code, or a paper — and `/lc-feedback` handles bug reports. Each one is
+a structured prompt: the agent follows a specific phased flow, not
+free-form chat. This page walks through each of them in the order you'd
+naturally hit them.
 
 > The bracketed `→ astra.yaml` etc. notes show what each phase actually
 > writes to disk. You stay in charge of approving everything; the agent
@@ -43,48 +43,6 @@ You don't write any code or YAML during `/lc-new`. By the
 time it finishes, you have a precise specification. The agent enforces
 this: the skill is *only allowed* to edit `astra.yaml`, files in
 `universes/`, and `CLAUDE.md`.
-
-## `/lc-build` — implement and run
-
-**You have a scoped `astra.yaml`. You end with materialized outputs.**
-
-This is the longest-running skill. It has two phases.
-
-**Phase 1: plan.** The agent reads the spec, the universe file, and
-your existing scripts (if any), and writes a plan to
-`.lightcone/plans/build-plan-<universe>.md`. The plan covers
-dependencies, decision selections, ordered build checklist, and
-verification steps. It asks you to approve before doing anything else.
-
-**Phase 2: loop.** Once you approve, the skill activates an
-*autonomous loop*: the agent works through the plan, writes scripts,
-runs `lc run` to materialize outputs, fixes failures, and commits as
-it goes. The loop keeps going until either every output is
-materialized or it hits its iteration limit (default 25).
-
-You can interrupt the loop at any time. If you do, the next time you
-run `/lc-build` it asks whether to resume or start fresh.
-
-The plan file persists across crashes; only successful completion
-deletes it.
-
-## `/lc-verify` — audit a finished build
-
-**You have materialized outputs. You end with a verification report.**
-
-Read-only. Four checks:
-
-1. `astra validate astra.yaml` passes.
-2. `lc status` shows every output `ok` for the universe in question.
-3. **Decision-code alignment** (the most important check). For every
-   decision in the spec, the agent verifies the code accepts that
-   decision as a parameter — i.e. the value isn't silently hardcoded.
-4. Result files exist and look well-formed (a `type: metric` output
-   should be parseable JSON, etc.).
-
-The skill never modifies anything. If it finds a discrepancy, it
-suggests concrete fixes; you re-run `/lc-build` (or fix by hand) and
-re-verify.
 
 ## `/lc-from-code` — wrap existing code
 
@@ -153,5 +111,6 @@ interruptible — every phase writes to disk so a `/clear` (which frees
 up context) doesn't lose your work.
 
 If a skill seems stuck, a quick `/clear` followed by reinvoking the
-slash command is often the right move: the spec, plan, and universe
-files are all on disk, so the agent picks up exactly where it left off.
+slash command is often the right move: the spec, universe files, and
+written work products are all on disk, so the agent can pick up where
+it left off.

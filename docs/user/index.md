@@ -16,8 +16,8 @@ implementation; you stay in charge of the scientific choices.
 - [Getting Started](getting-started.md) — your first `lc init` and
   what every directory means.
 - [The Claude Code Workflow](claude-workflow.md) — `/lc-new`,
-  `/lc-from-code`, `/lc-from-paper`, `/lc-build`, `/lc-verify`,
-  `/lc-feedback` — what each one does and when to reach for it.
+  `/lc-from-code`, `/lc-from-paper`, and `/lc-feedback` — what each
+  one does and when to reach for it.
 - [Tutorial: Your First Analysis](tutorial.md) — an end-to-end worked
   example, written so you can read it without running anything.
 - [Multiverse Analyses](multiverse.md) — how to explore alternative

@@ -63,6 +63,7 @@ at the end so the user has something visible to review at every step.
 
 ## Related
 
-- [`/lc-build`](lc-build.md) — the next step after `/lc-new`.
+- After `/lc-new`, ask the agent to implement the spec through the
+  normal Claude Code workflow.
 - [`claude/lightcone/guides/astra-reference.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/guides/astra-reference.md) — `astra.yaml` schema, decision criteria, prior insights / findings, universe management.
 - [`claude/lightcone/agents/lc-extractor.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/agents/lc-extractor.md) — the literature extraction subagent definition.

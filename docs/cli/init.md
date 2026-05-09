@@ -71,6 +71,6 @@ cd my-analysis
 claude           # open Claude Code
 # Inside Claude Code:
 /lc-new  # scope a research question into astra.yaml
-/lc-build          # implement and run it
-/lc-verify         # audit the result
+# Then ask the agent to implement the spec.
+# It will run lc run, watch lc status, then validate and verify.
 ```

@@ -100,70 +100,59 @@ Phase 4 (**FINALIZE**) runs `astra validate astra.yaml` and writes
 `universes/baseline.yaml`. You're handed back a short summary table —
 two outputs, one decision, zero prior insights.
 
-The agent suggests `/clear` to free up context, then `/lc-build`. Take
-its advice.
+The agent may suggest `/clear` to free up context. Take its advice,
+then ask Claude Code to implement the spec.
 
-## 3. Build it with `/lc-build`
+## 3. Build it
 
 ```
 /clear
-/lc-build
+Implement this analysis from astra.yaml. Write the scripts, run the baseline universe, and verify the result.
 ```
 
-**Phase 1: plan.** The agent reads everything (spec, universe file,
-empty `scripts/` dir, the references in `.claude/guides/`) and writes a
-build plan to `.lightcone/plans/build-plan-baseline.md`. It might look
-like this:
+The agent reads everything (spec, universe file, empty `scripts/` dir,
+and the references in `.claude/guides/`) and makes an implementation
+checklist. It might look like this:
 
 ```
 1. Add Python deps (scikit-learn, matplotlib) to requirements.txt
 2. Write Containerfile if missing
 3. scripts/fit.py — accepts --standardize {standardized,raw}, writes r2.json
 4. scripts/plot.py — reads r2_dir, writes fit_plot.png
-5. lc build to build the container
-6. lc run --universe baseline
-7. /lc-verify
+5. lc run --universe baseline
+6. lc status
+7. astra validate astra.yaml
+8. lc verify
 ```
 
-It asks you to approve. Pick "Approve and start building."
+It works through the checklist one item at a time. You'll see commands
+like:
 
-**Phase 2: loop.** The agent works through the plan one item at a
-time. You'll see lines like:
+```bash
+lc run --universe baseline
+lc status
+astra validate astra.yaml
+lc verify
+```
+
+Expected `lc status` output:
 
 ```
-▶ scripts/fit.py — writing
-▶ lc build — building image lc-r2-decision-demo-9a1f3...
-▶ lc run accuracy --universe baseline
-▶ ✓ ok    r2
-▶ ▶ scripts/plot.py — writing
-▶ ✓ ok    fit_plot
-✓ build complete
+Universe baseline
+  ✓ ok    r2
+  ✓ ok    fit_plot
 ```
+
+Expected validation and verification output is boring in the best way:
+`astra validate astra.yaml` exits cleanly, and `lc verify` reports no
+tampering, broken provenance chain, or missing manifests. If anything
+fails, ask the agent to fix the concrete error and rerun the same
+commands.
 
 The agent commits after each successful output, so your `git log` is a
 clean record of the build.
 
-## 4. Verify it with `/lc-verify`
-
-```
-/lc-verify
-```
-
-Read-only audit:
-
-```
-| Check                    | Status |
-|--------------------------|--------|
-| Spec validation          | ✓      |
-| Materialization (2/2)    | ✓      |
-| Decision-code alignment  | ✓      |
-| Results match spec (2/2) | ✓      |
-```
-
-If anything fails, the agent suggests a fix. Re-run `/lc-build` or fix
-by hand.
-
-## 5. Add the second universe
+## 4. Add the second universe
 
 The whole point of decisions is to sweep them. Drop out of Claude
 Code (`Ctrl+D` or `/exit`) and create the second universe:
@@ -194,7 +183,7 @@ Universe raw
 Each universe has its own `results/<universe>/` tree. The two `r2.json`
 files are the comparison your paper figure needs.
 
-## 6. Verify integrity
+## 5. Verify integrity
 
 ```bash
 lc verify

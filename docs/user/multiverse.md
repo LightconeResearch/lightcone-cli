@@ -107,7 +107,7 @@ The comparison itself is your code: read the per-universe
 `r2.json` files, plot them, write up the result. ASTRA's job is to
 make sure the comparison is *fair* — every universe used the same
 spec, the same container image, the same recipe text. If anything
-drifted, `lc verify` will flag it.
+drifted, `lc status` and `lc verify` will flag it.
 
 ## Decision constraints
 

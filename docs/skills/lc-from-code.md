@@ -81,5 +81,5 @@ present the summary.
 ## Related
 
 - [`/lc-new`](lc-new.md) — for greenfield analyses.
-- [`/lc-verify`](lc-verify.md) — run after migration to confirm
-  spec-code-results alignment.
+- After migration, run `lc verify` to confirm the spec is valid and
+  the provenance chain is intact.

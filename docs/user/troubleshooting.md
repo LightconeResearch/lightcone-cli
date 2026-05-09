@@ -104,30 +104,6 @@ no longer exists. Usually caused by:
 
 Fix: `lc run` the downstream output. The chain will re-anchor.
 
-## "Active lc-build loop detected"
-
-You're picking up a session where a previous `/lc-build` was
-interrupted. The session-start hook prints this in the banner. To
-resume the loop, run `/lc-build --universe <name>`. To cancel it,
-`/cancel-ralph`.
-
-## The build loop runs forever / never says complete
-
-`/lc-build` defaults to a 25-iteration cap. If it's not making
-progress, that's a sign the analysis hit a real problem the agent
-can't resolve on its own — typically a missing dependency, an
-unparseable error, or a step that needs a human decision.
-
-What helps:
-
-- Read the last few iterations carefully — the agent usually
-  describes the blocker.
-- If there's an "open question" the agent flagged, answer it and
-  reinvoke `/lc-build`. The plan file persists; the loop picks up
-  where it left off.
-- A `/clear` followed by `/lc-build` doesn't lose state — only
-  context.
-
 ## Claude Code says it can't write a file
 
 The default permission tier (`recommended`) blocks edits to a few
