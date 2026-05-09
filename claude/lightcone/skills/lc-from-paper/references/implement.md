@@ -30,6 +30,8 @@ If `work/reference/code/` exists, **read the relevant code on every iteration** 
 
 Without this discipline, iterations drift to "looks right" rather than "matches" — the failure mode the first-paper test surfaced.
 
+When the reference code is substantial enough that implementation is really a migration of an existing codebase, follow `/lc-from-code`'s migration workflow in **augment existing ASTRA** mode. Use its code scan, minimal parameter-plumbing, dependency/container, and baseline-preservation strategies, but apply them to this reproduction's existing `astra.yaml`. Do not create a second ASTRA project or duplicate the spec; add recipes, code-backed options, implementation notes, and missing structure to the current reproduction artifact.
+
 ### Parallelize where feasible
 
 When outputs are produced by independent scripts (no shared expensive computation), spawn one Task-tool sub-agent per output. Each sub-agent gets:

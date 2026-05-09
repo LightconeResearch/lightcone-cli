@@ -1,12 +1,12 @@
 ---
 name: lc-from-code
-description: Bring an existing project into ASTRA / lightcone-cli, starting from the code. Scans the codebase, generates astra.yaml, parameterizes decisions, and runs until outputs materialize. Triggers on "migrate", "convert", "existing project", "wrap this code", "start from code".
+description: Bring an existing project into ASTRA / lightcone-cli, starting from the code. Scans the codebase, drafts or augments astra.yaml, parameterizes decisions, and runs until outputs materialize. Triggers on "migrate", "convert", "existing project", "wrap this code", "start from code".
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash(astra:*), Bash(lc:*), Bash(python:*), Bash(pip:*), Bash(git:*), Bash(mkdir:*), Bash(ls:*), Agent, AskUserQuestion
 ---
 
 # /lc-from-code
 
-End-to-end migration: scan existing code, generate the ASTRA spec, parameterize decisions in the code, and run until everything materializes. The user's existing logic stays intact — changes should be minimal.
+End-to-end migration: scan existing code, draft or add to `astra.yaml`, parameterize decisions in the code, and run until everything materializes. This works both as a fresh start from code and as an augmenting pass inside an existing ASTRA project. The user's existing logic stays intact — changes should be minimal.
 
 ## References
 
@@ -14,7 +14,12 @@ End-to-end migration: scan existing code, generate the ASTRA spec, parameterize 
 
 ## Phase 1: Scan & Spec
 
-First, read the Decisions section of [ASTRA Reference](../../guides/astra-reference.md), then spawn an Explore subagent to scan the project. Include the decision criteria in the prompt so the subagent can classify candidates:
+First, read the Decisions section of [ASTRA Reference](../../guides/astra-reference.md), then decide which mode applies:
+
+- **Fresh migration:** no meaningful `astra.yaml` exists yet. Use the code scan to draft `astra.yaml` and `universes/baseline.yaml`.
+- **Augment existing ASTRA:** `astra.yaml` already exists from a paper, user interview, or prior ASTRA work. Use the code scan to add to the current spec — recipes, dependencies, containers, code-backed decision options, baseline selections, implementation notes, and missing inputs / outputs where they naturally belong. Do not create a second `astra.yaml`, do not replace the existing structure wholesale, and surface major structure conflicts to the user before reshaping the spec.
+
+Then spawn an Explore subagent to scan the project. Include the decision criteria in the prompt so the subagent can classify candidates:
 
 ```
 Agent(subagent_type="Explore", prompt="""
@@ -49,7 +54,9 @@ For reference, here are the decision criteria for classifying candidates:
 """)
 ```
 
-Write the scan results to `CLAUDE.md` under `## Project Notes` as a script inventory, then draft `astra.yaml` from the scan results following the spec structure documented in `.claude/guides/astra-reference.md`. Use the decision criteria from [ASTRA Reference](../../guides/astra-reference.md) to filter the subagent's candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
+Write the scan results to `CLAUDE.md` under `## Project Notes` as a script inventory, then draft or add to `astra.yaml` from the scan results following the spec structure documented in `.claude/guides/astra-reference.md`. Use the decision criteria from [ASTRA Reference](../../guides/astra-reference.md) to filter the subagent's candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
+
+In augment mode, preserve the existing paper-derived or user-derived `inputs`, `outputs`, `decisions`, `findings`, and `narrative` unless the code scan shows a real conflict. Attach code evidence to the nearest existing home first. Create new ASTRA structure only when the code reveals a real analysis object that has no suitable home in the current spec.
 
 For each output, list the upstream artifacts it depends on under `Output.inputs: [...]` and the decisions it consumes under `Output.decisions: [...]`. Then add a `recipe.command` template that references each via `{inputs.<id>}` / `{decisions.<id>}` and writes to `{output}`. Example:
 
@@ -68,7 +75,7 @@ outputs:
         --output {output}
 ```
 
-Also generate `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
+Also generate or update `universes/baseline.yaml` with all defaults matching the current hardcoded values (so the first run reproduces existing behavior).
 
 Write to `astra.yaml` and `universes/baseline.yaml`, then validate: `astra validate astra.yaml`. Fix any errors.
 

@@ -19,6 +19,8 @@ description: >
 
 Reproduce a published paper in ASTRA. The skill is **interview-first**: a short interactive crafting phase up front that produces both a **per-paper reproduction constitution** and a **per-paper `CLAUDE.md`**. After the interview, lc-from-paper hands the constitution to a multi-session loop that drives the reproduction. Successive iterations survey the workdir, execute one or two phases, exit cleanly, and re-spawn with fresh context until the constitution is realized.
 
+This is a **composer skill**. It coordinates a paper reproduction by proactively invoking the relevant sibling skills at the right stage — `/paper-extraction` for ACQUIRE, `/constitution` during INTERVIEW, `/narrative` during SPECIFY, `/lc-from-code` strategies when substantial reference code needs migrating into the current `astra.yaml`, and the review skills at close-out. Do not silently re-implement sibling skill behavior inside lc-from-paper; call the skill or explicitly follow its workflow where the phase says to.
+
 This is a Claude-Code-native skill. There is no Python orchestrator, no state machine, no resume mechanic — the workdir on disk + git history are the substrate.
 
 A reproduction does not fit in one context window. The loop is, in its simplest form, a way to split one goal across many context windows so each iteration starts uncluttered. That's the substrate, not an aesthetic.
