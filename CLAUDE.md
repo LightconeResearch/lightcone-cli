@@ -67,7 +67,7 @@ src/lightcone/              # namespace — NO __init__.py
     ├── harness.py, sandbox.py, graders.py, build.py, report.py, models.py
 
 claude/lightcone/           # Claude plugin source — force-included into the wheel
-├── skills/                 # lc-from-question, lc-from-code, lc-from-paper,
+├── skills/                 # lc-new, lc-from-code, lc-from-paper,
 │                            # lc-build, lc-verify, lc-feedback;
 │                            # paper-reproduction bundle: lc-from-paper (entry),
 │                            # narrative, constitution, ralph-loops, paper-extraction

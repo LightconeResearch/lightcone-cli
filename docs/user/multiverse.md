@@ -28,7 +28,7 @@ decisions:
       none:  { label: "No outlier removal" }
 ```
 
-A few rules of thumb (the `/lc-from-question` skill enforces these):
+A few rules of thumb (the `/lc-new` skill enforces these):
 
 - **One choice, one decision.** Don't bundle "preprocessing strategy"
   into one decision with five options that mix different axes.
@@ -140,7 +140,7 @@ with its own `astra.yaml` and own decisions. The full tree is
 resolved automatically; sub-analyses can refer to each other's
 outputs.
 
-`/lc-from-question` will ask "should this be one analysis or several?"
+`/lc-new` will ask "should this be one analysis or several?"
 and help you split. The default answer is one — split only when each
 part genuinely has different inputs and outputs.
 

@@ -80,6 +80,6 @@ present the summary.
 
 ## Related
 
-- [`/lc-from-question`](lc-from-question.md) — for greenfield analyses.
+- [`/lc-new`](lc-new.md) — for greenfield analyses.
 - [`/lc-verify`](lc-verify.md) — run after migration to confirm
   spec-code-results alignment.

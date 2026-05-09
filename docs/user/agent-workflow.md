@@ -11,7 +11,7 @@ them.
 > writes to disk. You stay in charge of approving everything; the agent
 > never publishes a paper for you.
 
-## `/lc-from-question` — scope a new analysis
+## `/lc-new` — scope a new analysis
 
 **You start with a research question. You end with a complete
 `astra.yaml` (and optionally a literature evidence trail).**
@@ -39,7 +39,7 @@ The skill walks you through four phases:
    universe; the `## Working Notes` section of `CLAUDE.md` gets the
    conversational context that wouldn't otherwise survive a `/clear`.
 
-You don't write any code or YAML during `/lc-from-question`. By the
+You don't write any code or YAML during `/lc-new`. By the
 time it finishes, you have a precise specification. The agent enforces
 this: the skill is *only allowed* to edit `astra.yaml`, files in
 `universes/`, and `CLAUDE.md`.

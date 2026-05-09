@@ -141,7 +141,7 @@ node launched via `srun`.
 
 A Claude Code slash command bundled with the lightcone-cli plugin.
 The `/lc-from-*` family is parallel by what you start from — a question
-(`/lc-from-question`), code (`/lc-from-code`), or a paper
+(`/lc-new`), code (`/lc-from-code`), or a paper
 (`/lc-from-paper`). The build/verify/feedback skills (`/lc-build`,
 `/lc-verify`, `/lc-feedback`) follow. Each one is a structured prompt
 that drives the agent through a specific phased workflow.
@@ -150,8 +150,8 @@ that drives the agent through a specific phased workflow.
 
 A Claude Code agent invoked by another agent via the `Task` tool. The
 `lc-extractor` subagent reads PDFs and pulls verifiable quotes; it's
-spawned by `/lc-from-question` during the literature deep-dive phase.
-Subagents have isolated context, which is why `/lc-from-question` uses
+spawned by `/lc-new` during the literature deep-dive phase.
+Subagents have isolated context, which is why `/lc-new` uses
 one per paper — PDFs are big.
 
 ## Prior insight

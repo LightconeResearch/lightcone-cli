@@ -65,7 +65,7 @@ skills follow.
 
 | Command | Use it when… |
 |---------|--------------|
-| `/lc-from-question` | You're starting from a research question and an empty `astra.yaml`. |
+| `/lc-new` | You're starting from a research question and an empty `astra.yaml`. |
 | `/lc-from-code` | You have an existing codebase you want wrapped in ASTRA. |
 | `/lc-from-paper` | You have a published paper (DOI / arXiv ID) you want to reproduce. |
 | `/lc-build` | You have a scoped `astra.yaml` and you want the analysis implemented and run. |

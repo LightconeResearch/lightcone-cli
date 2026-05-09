@@ -56,7 +56,7 @@ src/lightcone/                  # PEP 420 namespace package — NO __init__.py
 src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
 
 claude/lightcone/               # Claude Code plugin (force-included into the wheel)
-├── skills/                     # lc-from-question, lc-from-code, lc-from-paper,
+├── skills/                     # lc-new, lc-from-code, lc-from-paper,
 │                                # lc-build, lc-verify, lc-feedback (+ bundle siblings)
 ├── agents/                     # lc-extractor (literature subagent)
 ├── guides/                     # astra-reference, lightcone-cli-reference, ui-brand

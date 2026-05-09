@@ -18,13 +18,13 @@ cd my-analysis
 claude
 ```
 
-Then tell the agent `/lc-from-question` to scope your research question. After the spec exists, just tell the agent to build it — implementation is a normal Claude Code workflow guided by `.claude/guides/`.
+Then tell the agent `/lc-new` to scope your research question. After the spec exists, just tell the agent to build it — implementation is a normal Claude Code workflow guided by `.claude/guides/`.
 
 ## Skills
 
 The `/lc-from-*` family is parallel by what you start from: a question, code, or a paper.
 
-### `/lc-from-question` — Scope and specify an analysis
+### `/lc-new` — Scope and specify an analysis
 
 Guides you from a research question to a complete `astra.yaml` specification through interactive conversation. The agent will:
 

@@ -15,7 +15,7 @@ code, or a paper.
 
 | Skill | Command | Purpose |
 |-------|---------|---------|
-| [lc-from-question](lc-from-question.md) | `/lc-from-question` | Scope a research question into an `astra.yaml`, with optional literature extraction. |
+| [lc-new](lc-new.md) | `/lc-new` | Scope a research question into an `astra.yaml`, with optional literature extraction. |
 | [lc-from-code](lc-from-code.md) | `/lc-from-code` | Wrap an existing codebase in ASTRA: scan, generate spec, parameterize, run. |
 | lc-from-paper | `/lc-from-paper` | Reproduce a published paper in ASTRA — interview-first orchestrator, multi-session loop. (See the paper-reproduction bundle in [`claude/lightcone/skills/README.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md) for the full bundle map.) |
 | [lc-build](lc-build.md) | `/lc-build` | Plan + autonomous loop until all outputs in a universe materialize. |
@@ -48,7 +48,7 @@ files, anti-patterns. The skill bundles its own helper scripts under
 ```
 claude/lightcone/
 ├── skills/
-│   ├── lc-from-question/SKILL.md
+│   ├── lc-new/SKILL.md
 │   ├── lc-from-code/SKILL.md
 │   ├── lc-from-paper/{SKILL.md, references/*.md}
 │   ├── lc-build/{SKILL.md, assets/loop-prompt.md, scripts/setup-lc-build.sh}
@@ -69,10 +69,10 @@ The plugin is force-included into the wheel via
 
 | File | Purpose |
 |------|---------|
-| `claude/lightcone/guides/astra-reference.md` | Full `astra.yaml` schema reference. Loaded by `lc-from-question`, `lc-build`, `lc-from-code`. |
+| `claude/lightcone/guides/astra-reference.md` | Full `astra.yaml` schema reference. Loaded by `lc-new`, `lc-build`, `lc-from-code`. |
 | `claude/lightcone/guides/lightcone-cli-reference.md` | CLI commands, status interpretation, failure diagnosis. Loaded by build/verify skills. |
 | `claude/lightcone/guides/ui-brand.md` | Visual formatting conventions for skill output. |
-| `claude/lightcone/agents/lc-extractor.md` | Literature extraction subagent invoked by `/lc-from-question`. |
+| `claude/lightcone/agents/lc-extractor.md` | Literature extraction subagent invoked by `/lc-new`. |
 
 ## Authoring a new skill
 

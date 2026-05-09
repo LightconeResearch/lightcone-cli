@@ -70,7 +70,7 @@ lc init . --permissions yolo           # for autonomous loops you trust
 cd my-analysis
 claude           # open Claude Code
 # Inside Claude Code:
-/lc-from-question  # scope a research question into astra.yaml
+/lc-new  # scope a research question into astra.yaml
 /lc-build          # implement and run it
 /lc-verify         # audit the result
 ```

@@ -46,7 +46,7 @@ nav = [
     ]},
     {"Skills" = [
       {"Overview" = "skills/index.md"},
-      {"lc-from-question" = "skills/lc-from-question.md"},
+      {"lc-new" = "skills/lc-new.md"},
       {"lc-from-code" = "skills/lc-from-code.md"},
       {"lc-build" = "skills/lc-build.md"},
       {"lc-verify" = "skills/lc-verify.md"},
