@@ -118,6 +118,8 @@ Stage banner: FINALIZING
 astra universe generate -n baseline
 ```
 
+Generate only `baseline` unless the user explicitly asks for additional universes.
+
 ### Populate Narrative
 
 Replace the TODO entries in `astra.yaml`'s `narrative:` block now that structure is stable: `summary` (one-paragraph framing), `methods` (decisions and sub-analyses), `inputs`, `outputs`. Use `#path.to.element` anchors for cross-references. Leave `findings` as TODO until results exist.

@@ -83,7 +83,7 @@ Use `AskUserQuestion` to ask the user to review the spec — they can open `astr
 
 ## Phase 2: Implement
 
-Parameterize the code so decisions can be varied across universes. The goal is minimal changes to user code. Use your best judgement for the approach — the options below are not exhaustive:
+Parameterize the code from ASTRA decisions so the baseline run reproduces the existing behavior. The goal is minimal changes to user code. Use your best judgement for the approach — the options below are not exhaustive:
 
 **For scripts with hardcoded values:** Add argparse (or extend existing argument parsing) and replace hardcoded values with the parsed args. This is the simplest case.
 
