@@ -31,12 +31,12 @@ You're now in Claude Code, sitting in a fresh project. The first line
 on the screen is the session start banner, which probably says "no
 recipes yet."
 
-## 2. Scope the analysis with `/lc-new`
+## 2. Scope the analysis with `/lc-from-question`
 
 Type:
 
 ```
-/lc-new
+/lc-from-question
 ```
 
 The agent banner switches to **RESEARCH QUESTION** and asks something

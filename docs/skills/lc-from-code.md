@@ -1,11 +1,11 @@
-# /lc-migrate
+# /lc-from-code
 
-Migrate an existing project into ASTRA / lightcone-cli. Scans the
-code, generates `astra.yaml`, parameterizes hardcoded analytical
-choices, and runs until outputs materialize. Existing logic stays
-intact — changes should be minimal.
+Bring an existing project into ASTRA / lightcone-cli, starting from the
+code. Scans the codebase, generates `astra.yaml`, parameterizes hardcoded
+analytical choices, and runs until outputs materialize. Existing logic
+stays intact — changes should be minimal.
 
-Source: [`claude/lightcone/skills/lc-migrate/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-migrate/SKILL.md).
+Source: [`claude/lightcone/skills/lc-from-code/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-from-code/SKILL.md).
 
 ## Allowed tools
 
@@ -80,6 +80,6 @@ present the summary.
 
 ## Related
 
-- [`/lc-new`](lc-new.md) — for greenfield analyses.
+- [`/lc-from-question`](lc-from-question.md) — for greenfield analyses.
 - [`/lc-verify`](lc-verify.md) — run after migration to confirm
   spec-code-results alignment.

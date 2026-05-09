@@ -57,16 +57,19 @@ claude
 That opens an interactive session inside `my-analysis/`. Claude Code
 reads `astra.yaml` and `CLAUDE.md` so it has context.
 
-## 4. The five slash commands
+## 4. The slash commands
 
-Inside Claude Code:
+Inside Claude Code. The `/lc-from-*` family is parallel by what you
+start from — a question, code, or a paper — and the build/verify/feedback
+skills follow.
 
 | Command | Use it when… |
 |---------|--------------|
-| `/lc-new` | You're starting from a research question and an empty `astra.yaml`. |
+| `/lc-from-question` | You're starting from a research question and an empty `astra.yaml`. |
+| `/lc-from-code` | You have an existing codebase you want wrapped in ASTRA. |
+| `/lc-from-paper` | You have a published paper (DOI / arXiv ID) you want to reproduce. |
 | `/lc-build` | You have a scoped `astra.yaml` and you want the analysis implemented and run. |
 | `/lc-verify` | You finished a build and want a read-only audit. |
-| `/lc-migrate` | You have an existing codebase you want wrapped in ASTRA. |
 | `/lc-feedback` | Something broke and you want to file a GitHub issue without leaving the session. |
 
 The next page, [The Claude Code Workflow](claude-workflow.md),

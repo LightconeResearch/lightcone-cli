@@ -1,7 +1,9 @@
 # The Agent Workflow
 
-The agentic surface is five slash commands. Each one is a structured
-prompt — the agent follows a specific phased flow, not free-form chat.
+The agentic surface is six slash commands. The `/lc-from-*` family is
+parallel by what you start from — a question, code, or a paper — and
+the build/verify/feedback skills follow. Each one is a structured
+prompt: the agent follows a specific phased flow, not free-form chat.
 This page walks through each of them in the order you'd naturally hit
 them.
 
@@ -9,7 +11,7 @@ them.
 > writes to disk. You stay in charge of approving everything; the agent
 > never publishes a paper for you.
 
-## `/lc-new` — scope a new analysis
+## `/lc-from-question` — scope a new analysis
 
 **You start with a research question. You end with a complete
 `astra.yaml` (and optionally a literature evidence trail).**
@@ -37,9 +39,9 @@ The skill walks you through four phases:
    universe; the `## Working Notes` section of `CLAUDE.md` gets the
    conversational context that wouldn't otherwise survive a `/clear`.
 
-You don't write any code or YAML during `/lc-new`. By the time it
-finishes, you have a precise specification. The agent enforces this:
-the skill is *only allowed* to edit `astra.yaml`, files in
+You don't write any code or YAML during `/lc-from-question`. By the
+time it finishes, you have a precise specification. The agent enforces
+this: the skill is *only allowed* to edit `astra.yaml`, files in
 `universes/`, and `CLAUDE.md`.
 
 ## `/lc-build` — implement and run
@@ -84,14 +86,14 @@ The skill never modifies anything. If it finds a discrepancy, it
 suggests concrete fixes; you re-run `/lc-build` (or fix by hand) and
 re-verify.
 
-## `/lc-migrate` — wrap existing code
+## `/lc-from-code` — wrap existing code
 
 **You have a folder of scripts. You end with an ASTRA project around
 them.**
 
 When you have an existing analysis (a notebook, a folder of `.py`
-files, a config-driven pipeline), `/lc-migrate` does the wrapping for
-you. Three phases:
+files, a config-driven pipeline), `/lc-from-code` does the wrapping
+for you. Three phases:
 
 1. **Scan.** A subagent reads every script and notebook and returns a
    structured inventory: what each script reads, writes, and contains
@@ -104,9 +106,30 @@ you. Three phases:
    identified decisions, leaves the actual analytical logic alone, and
    iterates on `lc run` until everything materializes.
 
-The hard rule of `/lc-migrate` is **minimal changes**: the skill never
-refactors, renames, or "improves" your code. It only adds the parameter
-plumbing.
+The hard rule of `/lc-from-code` is **minimal changes**: the skill
+never refactors, renames, or "improves" your code. It only adds the
+parameter plumbing.
+
+## `/lc-from-paper` — reproduce a published paper
+
+**You have a DOI or arXiv ID. You end with a reproduction project
+driven by a multi-session loop.**
+
+`/lc-from-paper` is the entry point of the paper-reproduction bundle.
+It opens with a short interactive interview — paper identity, scope
+(full vs targeted), runtime mode (interactive, bash-loop, or
+tmux-orchestrated), termination criterion (frugality vs rigor), and
+per-phase mode — then drafts a per-paper reproduction constitution and
+a per-paper `CLAUDE.md`. After approval, the loop drives nine phases
+(ACQUIRE → ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN →
+COMPARE → REVIEW), bookended by INTERVIEW and REVIEW as the
+always-interactive seams.
+
+The bundle composes sibling skills: `paper-extraction`, `constitution`,
+`ralph-loops`, `narrative`, `figure-comparison`, and
+`check-sentence-by-sentence`. See
+[`claude/lightcone/skills/README.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md)
+for the full bundle map.
 
 ## `/lc-feedback` — file an issue without context-switching
 

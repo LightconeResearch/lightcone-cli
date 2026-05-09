@@ -1,5 +1,5 @@
 ---
-name: paper2astra
+name: lc-from-paper
 description: >
   Reproduce a published scientific paper in ASTRA. Interview the user
   about the paper and the intended scope, draft a per-paper reproduction
@@ -10,14 +10,14 @@ description: >
   it in. Composes sibling skills for each phase: paper-extraction for
   ACQUIRE and narrative for SPECIFY. Use when the user wants to reproduce
   a paper, has a DOI or arXiv ID and wants to start a reproduction project,
-  or asks to "reproduce <paper>", "set up reproduction", "paper2astra",
-  "/paper2astra <doi>", or hands you a published paper as a starting point
+  or asks to "reproduce <paper>", "set up reproduction", "lc-from-paper",
+  "/lc-from-paper <doi>", or hands you a published paper as a starting point
   for ASTRA work.
 ---
 
-# paper2astra
+# lc-from-paper
 
-Reproduce a published paper in ASTRA. The skill is **interview-first**: a short interactive crafting phase up front that produces both a **per-paper reproduction constitution** and a **per-paper `CLAUDE.md`**. After the interview, paper2astra hands the constitution to a multi-session loop that drives the reproduction. Successive iterations survey the workdir, execute one or two phases, exit cleanly, and re-spawn with fresh context until the constitution is realized.
+Reproduce a published paper in ASTRA. The skill is **interview-first**: a short interactive crafting phase up front that produces both a **per-paper reproduction constitution** and a **per-paper `CLAUDE.md`**. After the interview, lc-from-paper hands the constitution to a multi-session loop that drives the reproduction. Successive iterations survey the workdir, execute one or two phases, exit cleanly, and re-spawn with fresh context until the constitution is realized.
 
 This is a Claude-Code-native skill. There is no Python orchestrator, no state machine, no resume mechanic — the workdir on disk + git history are the substrate.
 
@@ -26,13 +26,13 @@ A reproduction does not fit in one context window. The loop is, in its simplest 
 ## When to use this skill
 
 - The user has a paper (DOI, arXiv ID, or PDF) and wants to reproduce its analysis
-- The user invokes `/paper2astra` (with or without an argument)
+- The user invokes `/lc-from-paper` (with or without an argument)
 - The user is starting a fresh reproduction project under `Reproductions/<collab>/<short-name>/`
 - An existing paper-reproduction workdir needs the next phase driven forward (in which case skip the interview, see "Resuming an in-flight reproduction" below)
 
 ## The bundle
 
-paper2astra composes the rest of the lightcone-cli paper-reproduction bundle. All siblings live in the same `claude/lightcone/skills/` directory and are available without separate installs:
+lc-from-paper composes the rest of the lightcone-cli paper-reproduction bundle. All siblings live in the same `claude/lightcone/skills/` directory and are available without separate installs:
 
 | Sibling skill | Where it's invoked |
 |---|---|
@@ -41,7 +41,7 @@ paper2astra composes the rest of the lightcone-cli paper-reproduction bundle. Al
 | [`/ralph-loops`](../ralph-loops/SKILL.md) | After interview — launches the loop that drives all subsequent phases (when the chosen runtime mode is one of the loop modes) |
 | [`/narrative`](../narrative/SKILL.md) | SPECIFY — authoring the `narrative:` and `rationale:` prose in `astra.yaml` |
 
-paper2astra does not re-implement what these skills already do — it tells the agent at each phase to invoke them. The siblings stand alone; they don't know about paper2astra.
+lc-from-paper does not re-implement what these skills already do — it tells the agent at each phase to invoke them. The siblings stand alone; they don't know about lc-from-paper.
 
 Two further siblings are invoked from **REVIEW** (the close-out), the always-interactive phase that runs after the COMPARE → IMPLEMENT loop terminates: [`/figure-comparison`](../figure-comparison/SKILL.md) builds a portable side-by-side HTML report (paper artifacts vs reproduced), and [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) (optional) audits paper claims against code locations. Both have `AskUserQuestion` in their `allowed-tools`, so REVIEW runs interactively in the main loop session — spawning them under the `Task` tool would fire prompts into nothing.
 
@@ -67,7 +67,7 @@ The interview has six jobs:
 
    CLAUDE.md tells you *what kind of place this is*; the constitution tells you *what we're doing here and when we're done*.
 
-Both files live inside the reproduction's directory. After they are approved the interview ends, and paper2astra launches whichever runtime the user chose.
+Both files live inside the reproduction's directory. After they are approved the interview ends, and lc-from-paper launches whichever runtime the user chose.
 
 ### Runtime modes
 
@@ -77,7 +77,7 @@ The interview asks the user to pick *how* the loop runs. Three modes, picked fro
 |---|---|---|
 | **(1) Interactive** | No autonomous loop. The user prompts through phases by hand from the same Claude session, one or two phases at a time. | Tight control, small paper, or token budget is tight. No new substrate beyond Claude itself. |
 | **(2) Bash-loop** | A plain shell loop the user pastes into a terminal (`while …; do claude --dangerously-skip-permissions … ; done`-shaped). No tmux dependency. | Tmux isn't available locally and the connection is stable. Fragile across SSH disconnects unless wrapped in `nohup` — and `nohup` blocks interaction, so for unstable connections this isn't really a fix; mode (3) is. |
-| **(3) Tmux-orchestrated** | A loop inside a tmux session paper2astra drives directly via `../ralph-loops/scripts/ralph`. Survives SSH disconnects; the skill sends keystrokes to the tmux pane, monitors, intervenes. | The smoothest path whenever tmux is available. Becomes the de-facto default once `lc launch claude` ships its registry-shipped python-slim agent container with tmux pre-installed. |
+| **(3) Tmux-orchestrated** | A loop inside a tmux session lc-from-paper drives directly via `../ralph-loops/scripts/ralph`. Survives SSH disconnects; the skill sends keystrokes to the tmux pane, monitors, intervenes. | The smoothest path whenever tmux is available. Becomes the de-facto default once `lc launch claude` ships its registry-shipped python-slim agent container with tmux pre-installed. |
 
 The interview probes for tmux availability with `command -v tmux` and only offers mode (3) when present. Mode (3) is preferred when it's available; it isn't required.
 
@@ -205,7 +205,7 @@ Workdir signals (file existence implies the phase has been done):
 
 ## Discipline
 
-- **paper2astra is the workflow story; phase references are the depth.** SKILL.md tells you when to read which reference; the references carry the prompt prose ported from the legacy Paper2ASTRA Python package.
+- **lc-from-paper is the workflow story; phase references are the depth.** SKILL.md tells you when to read which reference; the references carry the prompt prose ported from the legacy Paper2ASTRA Python package.
 - **Workdir is the state.** No state machine, no resume mechanic — file existence + `git log` + `astra validate` answer "what phase am I on" deterministically. Each iteration's first move is *survey*.
 - **Deterministic checks live in scripts.** When the answer is yes/no, call the script — `astra validate`, `git log`, `yq`, `ls`. Don't ask the agent to introspect what a deterministic check would tell you.
 - **Use the up-to-date CLI surfaces, not skill-specific wrappers.** When `astra validate` already does the job, call it directly. Specifically: `astra validate <file>`, `astra validate --verify-evidence`, `astra paper add`. Use whatever the current `astra --help` surfaces.
@@ -217,7 +217,7 @@ Workdir signals (file existence implies the phase has been done):
 - **ARCHITECT decides structure; SPECIFY decides content.** ARCHITECT's two parallel Explore sub-agents (paper-side + code-side) feed a synthesis sub-agent that writes the stub `astra.yaml` — sub-analyses, inputs, outputs, narrative prose. SPECIFY's per-sub-analysis paper pass + code pass + self-review fills in `decisions:`, `prior_insights:`, `findings:` and weaves anchor references into the narrative. Splitting **structure** from **content** keeps each phase's cognitive load bounded.
 - **No synthetic data.** Unless the paper itself uses synthetic data as its input, every input dataset must be real (downloaded, queried, or fetched from a real archive). The implement phase reference repeats this; treat it as load-bearing.
 - **Tmux preferred-when-available, never required.** Modes (1) and (2) work without it.
-- **The siblings don't know about paper2astra.** Each SKILL stands on its own.
+- **The siblings don't know about lc-from-paper.** Each SKILL stands on its own.
 - **Workdir conventions stay.** The phase references preserve Paper2ASTRA's workdir layout (`work/reference/`, `work/notes/`, `targets/`, `astra.yaml`, `universes/`, `results/`) so workdirs from the legacy Paper2ASTRA package are interoperable with workdirs driven by this skill.
 
 ## Anti-patterns

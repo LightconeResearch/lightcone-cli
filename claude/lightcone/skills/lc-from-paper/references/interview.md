@@ -1,6 +1,6 @@
 # Interview — drafting the per-paper reproduction constitution and CLAUDE.md
 
-The interview is the only phase paper2astra runs interactively. It happens once per project, up front, before any loop is launched. Its job is to crystallize what the user actually wants — which paper, what scope, which runtime, which seams want their attention, which they want delegated — and bake that into the artifacts every iteration walks up to.
+The interview is the only phase lc-from-paper runs interactively. It happens once per project, up front, before any loop is launched. Its job is to crystallize what the user actually wants — which paper, what scope, which runtime, which seams want their attention, which they want delegated — and bake that into the artifacts every iteration walks up to.
 
 Use the [`/constitution`](../../constitution/SKILL.md) skill to draft the constitution. The interview's job is to *gather* the inputs both the constitution and the per-paper `CLAUDE.md` need; the constitution skill carries the discipline of writing the constitution.
 
@@ -13,13 +13,13 @@ The interview produces a **directory for the reproduction** containing two markd
 - **`<paper-slug>/CLAUDE.md`** — *info and rules.* Paper identity (DOI / arxiv id / authors / one-line subject), where the original code lives (`work/reference/code/`), the canonical-resolution rule (code-as-canonical when `work/reference/code/` exists), the never-block-on-`AskUserQuestion`-mid-sub-agent rule, any paper-specific conventions or warnings, pointers to the constitution and `open-questions.md`. Auto-loaded by Claude Code on every walk-up to this directory. **Evolves over time** — iterations that learn new conventions or surface paper-specific gotchas can add lines so future sessions don't re-derive the same context.
 - **`<paper-slug>/<constitution>.md`** — *desired state.* Pointers (not snapshots) for the runner: what "done" looks like, evidence checks, scope fence, the runtime mode the user chose, the termination criterion (weak/strong), the per-phase mode table, and the open-questions section iterations resolve. Read by the runner each iteration as the explicit task.
 
-Both are written at the end of the interview from the same conversation. CLAUDE.md tells you *what kind of place this is*; the constitution tells you *what we're doing here and when we're done*. After they are approved, paper2astra launches whichever runtime the user chose:
+Both are written at the end of the interview from the same conversation. CLAUDE.md tells you *what kind of place this is*; the constitution tells you *what we're doing here and when we're done*. After they are approved, lc-from-paper launches whichever runtime the user chose:
 
 | Runtime | Launch |
 |---|---|
 | **(1) Interactive** | No launch. The user prompts through phases by hand from this Claude session. |
 | **(2) Bash-loop** | Show the user the loop snippet to paste into a terminal — `while …; do claude --dangerously-skip-permissions … ; done`-shaped. |
-| **(3) Tmux-orchestrated** | `../ralph-loops/scripts/ralph <constitution>.md` — paper2astra drives the tmux session directly. |
+| **(3) Tmux-orchestrated** | `../ralph-loops/scripts/ralph <constitution>.md` — lc-from-paper drives the tmux session directly. |
 
 There is no separate "interview state" file. Everything lives in the two artifacts and the workdir.
 
@@ -29,7 +29,7 @@ There is no separate "interview state" file. Everything lives in the two artifac
 
 ### 1. Identify the paper
 
-Use `AskUserQuestion` if the user did not supply enough on `/paper2astra` invocation:
+Use `AskUserQuestion` if the user did not supply enough on `/lc-from-paper` invocation:
 
 - **DOI or arXiv ID.** arXiv ID preferred when available — it unlocks the LaTeX-source acquisition path (see ACQUIRE).
 - **Code repo URL** if the user knows it. (If not, ACQUIRE will search.) **If code is available, every implementing iteration will read from `work/reference/code/`** and treat code as canonical for numerics + method (the canonical-resolution rule, recorded in CLAUDE.md).
@@ -60,7 +60,7 @@ Offer the modes the environment supports:
 
 - **(1) Interactive** — no autonomous loop; the user prompts through phases by hand from this Claude session. Right when control is tight, the paper is small, or the token budget is constrained.
 - **(2) Bash-loop** — a plain shell loop the user pastes into a terminal. No tmux dependency. Right when tmux isn't available *and* the connection is stable. Fragile across SSH disconnects unless wrapped in `nohup`, and `nohup` blocks interaction — so for unstable connections, mode (3) is the answer, not this.
-- **(3) Tmux-orchestrated** — paper2astra drives a tmux session directly via `../ralph-loops/scripts/ralph`. Survives SSH disconnects; the skill sends keystrokes to the pane, monitors, intervenes. Preferred when tmux is available.
+- **(3) Tmux-orchestrated** — lc-from-paper drives a tmux session directly via `../ralph-loops/scripts/ralph`. Survives SSH disconnects; the skill sends keystrokes to the pane, monitors, intervenes. Preferred when tmux is available.
 
 If tmux isn't installed, only (1) and (2) appear in the question. The chosen mode goes into the per-paper constitution.
 

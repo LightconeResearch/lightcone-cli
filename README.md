@@ -18,11 +18,13 @@ cd my-analysis
 claude
 ```
 
-Then tell the agent `/lc-new` to scope your research question. After the spec exists, just tell the agent to build it — implementation is a normal Claude Code workflow guided by `.claude/guides/`.
+Then tell the agent `/lc-from-question` to scope your research question. After the spec exists, just tell the agent to build it — implementation is a normal Claude Code workflow guided by `.claude/guides/`.
 
 ## Skills
 
-### `/lc-new` — Scope and specify an analysis
+The `/lc-from-*` family is parallel by what you start from: a question, code, or a paper.
+
+### `/lc-from-question` — Scope and specify an analysis
 
 Guides you from a research question to a complete `astra.yaml` specification through interactive conversation. The agent will:
 
@@ -34,9 +36,13 @@ Guides you from a research question to a complete `astra.yaml` specification thr
 
 You don't write any code or YAML during this phase — the agent produces the full specification.
 
-### `/lc-migrate` — Bring an existing project into ASTRA
+### `/lc-from-code` — Bring an existing project into ASTRA
 
 Scans an existing codebase, drafts an `astra.yaml` that captures its inputs, outputs, and analytical decisions, parameterizes the code so decisions can vary across universes, and runs the analysis through `lc` until every output materializes. Existing logic is left intact — changes are confined to parameter plumbing.
+
+### `/lc-from-paper` — Reproduce a published paper
+
+Interview-first orchestrator for reproducing a published paper in ASTRA. Drafts a per-paper reproduction constitution and `CLAUDE.md`, then drives a multi-session loop through nine phases (ACQUIRE → ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN → COMPARE → REVIEW). Composes a bundle of sibling skills (paper-extraction, constitution, ralph-loops, narrative, figure-comparison, check-sentence-by-sentence). See [`claude/lightcone/skills/README.md`](claude/lightcone/skills/README.md) for the full bundle map.
 
 ### `/lc-feedback` — Report a bug
 

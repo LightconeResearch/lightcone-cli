@@ -24,7 +24,7 @@ Per-element prose (what each `Input`, `Output`, `Decision`, `Option`, or `Insigh
 `narrative` is the analysis-level story that weaves the pieces together.
 
 This skill is also part of the lightcone-cli paper-reproduction bundle: the
-`/paper2astra` orchestrator invokes it during the SPECIFY phase to author the
+`/lc-from-paper` orchestrator invokes it during the SPECIFY phase to author the
 narrative for the spec it has just crafted. Sibling skills in the bundle —
 `constitution`, `ralph-loops`, `paper-extraction`,
 `check-sentence-by-sentence`, `figure-comparison` — solve adjacent pieces of

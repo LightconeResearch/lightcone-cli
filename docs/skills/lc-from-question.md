@@ -1,10 +1,10 @@
-# /lc-new
+# /lc-from-question
 
-Scope a new ASTRA analysis through conversation. Produces a complete
-`astra.yaml` (and optionally a literature evidence trail) with no code
-written.
+Scope a new ASTRA analysis from a research question through conversation.
+Produces a complete `astra.yaml` (and optionally a literature evidence
+trail) with no code written.
 
-Source: [`claude/lightcone/skills/lc-new/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-new/SKILL.md).
+Source: [`claude/lightcone/skills/lc-from-question/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-from-question/SKILL.md).
 
 ## Allowed tools
 
@@ -42,6 +42,7 @@ at the end so the user has something visible to review at every step.
 
 ## Hard restrictions (from the SKILL.md)
 
+
 - Specification agent only — cannot write Python, R, or other
   implementation code.
 - Files it may touch: `astra.yaml`, `universes/*.yaml`, `CLAUDE.md`
@@ -62,6 +63,6 @@ at the end so the user has something visible to review at every step.
 
 ## Related
 
-- [`/lc-build`](lc-build.md) — the next step after `/lc-new`.
+- [`/lc-build`](lc-build.md) — the next step after `/lc-from-question`.
 - [`claude/lightcone/guides/astra-reference.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/guides/astra-reference.md) — `astra.yaml` schema, decision criteria, prior insights / findings, universe management.
 - [`claude/lightcone/agents/lc-extractor.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/agents/lc-extractor.md) — the literature extraction subagent definition.

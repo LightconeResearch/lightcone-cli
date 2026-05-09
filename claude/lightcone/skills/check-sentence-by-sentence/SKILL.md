@@ -6,7 +6,7 @@ description: >
   discussion, and appendices, locate the corresponding code (file:line) or
   mark NOT FOUND. Use when the user says "check reproduction", "verify the
   paper line by line", or "sentence-by-sentence audit". Run from the project
-  folder containing astra.yaml. In paper2astra projects, read paper sources
+  folder containing astra.yaml. In lc-from-paper projects, read paper sources
   from work/reference/: prefer arXiv TeX under work/reference/source/, fall
   back to Docling/Pandoc markdown at work/reference/document.md.
 allowed-tools: Read, Glob, Grep, Bash(ls:*), Bash(wc:*), Bash(grep:*), Bash(find:*), AskUserQuestion, Agent
@@ -20,7 +20,7 @@ Every sentence that asserts an implementation detail or a numerical/empirical
 result is located in the code (`file:line`) or marked NOT FOUND. The agent
 does NOT run any code -- this is a static reading audit.
 
-In paper2astra projects, the paper substrate comes from `work/reference/`.
+In lc-from-paper projects, the paper substrate comes from `work/reference/`.
 Path A is arXiv source at `work/reference/source/`; Path B is the parsed
 markdown fallback at `work/reference/document.md`, produced by Docling or
 Pandoc.
@@ -41,7 +41,7 @@ Pandoc.
    1. If the argument is a `.tex` file, use it in `tex` mode.
    2. If the argument is `work/reference/` or another directory, first look
       for TeX source under `<dir>/source/`, then for `<dir>/document.md`.
-   3. If no argument was supplied, prefer the paper2astra layout:
+   3. If no argument was supplied, prefer the lc-from-paper layout:
       - `work/reference/source/<main>.tex` if TeX source exists. Identify the
         main file with `grep -l '\\documentclass' work/reference/source/*.tex`;
         if exactly one file matches, use it. If multiple files match, ask the
@@ -51,7 +51,7 @@ Pandoc.
         main TeX wrapper.
       - `work/reference/document.md` if there is no TeX source. This is the
         Docling/Pandoc fallback and should be audited in `markdown` mode.
-   4. Only after those paper2astra paths fail, look for an obvious legacy
+   4. Only after those lc-from-paper paths fail, look for an obvious legacy
       `.tex` source in cwd: a top-level `*.tex`, or one inside `paper/`,
       `tex/`, or a similarly named subdirectory. If exactly one obvious
       candidate is found, use it in `tex` mode.

@@ -41,7 +41,7 @@ universes/                    # placeholder; populate via `astra universe genera
 > The historical `--target`, `--existing-project`, and `--sub-analysis`
 > flags have been removed; today's `lc init` only knows the three flags
 > above. For migrating an existing project, run `lc init` in a fresh
-> directory and use the `/lc-migrate` skill from inside Claude Code.
+> directory and use the `/lc-from-code` skill from inside Claude Code.
 
 ## Permission tiers
 
@@ -70,7 +70,7 @@ lc init . --permissions yolo           # for autonomous loops you trust
 cd my-analysis
 claude           # open Claude Code
 # Inside Claude Code:
-/lc-new          # scope a research question into astra.yaml
-/lc-build        # implement and run it
-/lc-verify       # audit the result
+/lc-from-question  # scope a research question into astra.yaml
+/lc-build          # implement and run it
+/lc-verify         # audit the result
 ```

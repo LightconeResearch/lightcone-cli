@@ -15,9 +15,9 @@ implementation; you stay in charge of the scientific choices.
   machine.
 - [Getting Started](getting-started.md) — your first `lc init` and
   what every directory means.
-- [The Claude Code Workflow](claude-workflow.md) — `/lc-new`,
-  `/lc-build`, `/lc-verify`, `/lc-migrate`, `/lc-feedback` — what each
-  one does and when to reach for it.
+- [The Claude Code Workflow](claude-workflow.md) — `/lc-from-question`,
+  `/lc-from-code`, `/lc-from-paper`, `/lc-build`, `/lc-verify`,
+  `/lc-feedback` — what each one does and when to reach for it.
 - [Tutorial: Your First Analysis](tutorial.md) — an end-to-end worked
   example, written so you can read it without running anything.
 - [Multiverse Analyses](multiverse.md) — how to explore alternative
@@ -36,14 +36,14 @@ implementation; you stay in charge of the scientific choices.
         ```bash
         uv tool install lightcone-cli
         lc init my-analysis && cd my-analysis
-        claude                                 # then, inside Claude Code: /lc-new
+        claude                                 # then, inside Claude Code: /lc-from-question
         ```
 
     === "pip"
         ```bash
         pip install lightcone-cli
         lc init my-analysis && cd my-analysis
-        claude                                # then, inside Claude Code: /lc-new
+        claude                                # then, inside Claude Code: /lc-from-question
         ```
 
 That's the shortest possible path. The rest of the guide is the

@@ -2,7 +2,7 @@
 name: figure-comparison
 description: >
   Build a self-contained HTML report comparing the figures, tables, and
-  numerical results in paper2astra's `work/reference/` paper substrate
+  numerical results in lc-from-paper's `work/reference/` paper substrate
   against artifacts produced under `results/<universe>/`. When
   `comparison-report.yaml` or `targets/targets.md` exists, use that scoped
   target set first; otherwise fall back to paper-driven inventory from arXiv
@@ -55,22 +55,22 @@ results.
    2. If the argument is an arXiv source directory containing `.tex` files,
       use it as `source_root`, and use its parent `work/reference/` as the
       paper reference root when that parent exists.
-   3. If no argument was supplied, prefer paper2astra's layout:
+   3. If no argument was supplied, prefer lc-from-paper's layout:
       - `work/reference/source/` when arXiv TeX source exists. Use the TeX
         files there for labels/captions and the parsed artifacts under
         `work/reference/{figures,tables,metadata.json}` for renderable
         reference files.
       - `work/reference/document.md` plus
         `work/reference/{figures,tables,metadata.json}` when no TeX source
-        exists. This is the PDF + Docling fallback from paper2astra.
-   4. Only after paper2astra paths fail, look for a legacy unzipped arXiv
+        exists. This is the PDF + Docling fallback from lc-from-paper.
+   4. Only after lc-from-paper paths fail, look for a legacy unzipped arXiv
       dir in cwd: a directory containing both a `*.tex` file and figure
       files (`*.pdf`, `*.png`, `*.eps`). Common names: `paper_source/`,
       `arxiv_source/`, `*_Original_Paper/`.
 
    If no usable reference substrate is found, ask:
 
-   > "Where is the paper reference directory? In a paper2astra project this
+   > "Where is the paper reference directory? In a lc-from-paper project this
    > should usually be `work/reference/`, containing `document.md`,
    > `metadata.json`, and extracted `figures/` / `tables/`."
 
@@ -84,7 +84,7 @@ Read, in this order:
 
 1. **Scoped comparison artifacts, if present.**
    - If `comparison-report.yaml` exists, treat it as the highest-priority
-     scope because it records what paper2astra actually compared. Use its
+     scope because it records what lc-from-paper actually compared. Use its
      `outputs:` entries, including `type`, `priority`, `paper_value`,
      `reproduced_value`, `reference_file`, `reproduced_file`, `match`, and
      `notes` when present.

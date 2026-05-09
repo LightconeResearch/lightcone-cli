@@ -1,6 +1,6 @@
 # ACQUIRE — fetch the paper, structure it, clone the code
 
-Acquire the paper's reading materials and (when available) clone the reference code repository. The substrate work — LaTeX-source download, Docling fallback, figures, tables, outline, citations, embedded bibliography, paper-as-ASTRA-artifact — is delegated to **`/paper-extraction`**, which paper2astra trusts blindly. ACQUIRE adds **Step 2: code-clone**, which is reproduction-specific and stays here.
+Acquire the paper's reading materials and (when available) clone the reference code repository. The substrate work — LaTeX-source download, Docling fallback, figures, tables, outline, citations, embedded bibliography, paper-as-ASTRA-artifact — is delegated to **`/paper-extraction`**, which lc-from-paper trusts blindly. ACQUIRE adds **Step 2: code-clone**, which is reproduction-specific and stays here.
 
 The constitution's per-phase mode controls whether this runs interactively or as a sub-agent. Default is sub-agent — surfacing happens only on download failures.
 
@@ -35,7 +35,7 @@ Invoke `/paper-extraction <arxiv-id-or-doi>`. The skill is idempotent — it sur
 /paper-extraction <arxiv-id-or-doi>
 ```
 
-This produces everything under `work/reference/` *except* the code clone. paper2astra ACQUIRE does not re-implement the substrate logic; if something is wrong with the substrate, fix it in `/paper-extraction`, not here.
+This produces everything under `work/reference/` *except* the code clone. lc-from-paper ACQUIRE does not re-implement the substrate logic; if something is wrong with the substrate, fix it in `/paper-extraction`, not here.
 
 Two starting surfaces: `work/reference/index.json` (structural — figures, tables, outline, citations with line numbers) and `work/reference/astra.yaml` (semantic — the paper as an ASTRA artifact, with `findings:` carrying the paper's central numerical claims as quote-anchored evidence). ARCHITECT reads index.json when its Explore sub-agents fan out across the paper; SPECIFY reads astra.yaml when authoring `prior_insights:` against the paper's claims (the paper's `findings:` map directly to a reproduction's `prior_insights:`).
 

@@ -78,8 +78,8 @@ Open a project (in the next page we make one) with:
 claude
 ```
 
-Inside Claude Code you'll type slash commands like `/lc-new` and
-`/lc-build` — see [The Claude Code Workflow](claude-workflow.md).
+Inside Claude Code you'll type slash commands like `/lc-from-question`
+and `/lc-build` — see [The Claude Code Workflow](claude-workflow.md).
 
 ## 5. (Optional) Docker or Podman
 

@@ -161,12 +161,12 @@ PY
 ## I want to start the spec over
 
 Move `astra.yaml` aside (don't delete it — agents like having context
-about what you tried), then `/lc-new` again:
+about what you tried), then `/lc-from-question` again:
 
 ```bash
 mv astra.yaml astra.previous.yaml
 claude
-# /lc-new
+# /lc-from-question
 ```
 
 ## File a bug from inside the session
