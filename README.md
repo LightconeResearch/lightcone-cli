@@ -50,7 +50,7 @@ Files a GitHub issue against the right repo (ASTRA or lightcone-cli) with versio
 
 ### Building and verifying
 
-There is no `/lc-build` or `/lc-verify` skill — building and verifying are part of the normal Claude Code workflow once `astra.yaml` exists. The agent reads `.claude/guides/lightcone-cli-reference.md` (workflow, commands, status meanings) and `.claude/guides/astra-reference.md` (spec syntax) and drives the build directly: write scripts under `src/`, run `lc run`, watch `lc status` until every output is `ok`, then `astra validate astra.yaml` and `lc verify` to confirm the spec is valid and the provenance chain is intact.
+Once `astra.yaml` exists, the agent reads `.claude/guides/lightcone-cli-reference.md` (workflow, commands, status meanings) and `.claude/guides/astra-reference.md` (spec syntax), writes the analysis scripts under `src/`, runs `lc run`, watches `lc status` until every output is `ok`, then runs `astra validate astra.yaml` and `lc verify` to confirm the spec is valid and the provenance chain is intact.
 
 ## CLI Reference
 

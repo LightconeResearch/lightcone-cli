@@ -9,8 +9,6 @@ Each subdirectory is one Claude Code skill: `SKILL.md` plus optional `references
 | `lc-new` | Scaffold a new ASTRA-shaped project from a research question. |
 | `lc-from-code` | Bring an existing codebase into ASTRA — scan, spec, parameterize. |
 | `lc-from-paper` | Reproduce a published paper in ASTRA (paper-reproduction bundle entry point — see below). |
-| `lc-build` | Build container images and dependencies for a project. |
-| `lc-verify` | Run validation across an ASTRA project. |
 | `lc-feedback` | Report bugs and feature requests upstream. |
 
 ## Paper-reproduction bundle
