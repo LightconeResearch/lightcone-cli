@@ -1,36 +1,24 @@
 ---
 name: lc-from-paper
 description: >
-  Reproduce a published scientific paper in ASTRA. Interview the user
-  about the paper and the intended scope, draft a per-paper reproduction
-  constitution, then launch a ralph loop that drives the multi-session
-  reproduction work. The loop is 9 phases bookended by two always-interactive
-  seams (INTERVIEW at start, REVIEW at close-out); ARCHITECT writes a stub
-  astra.yaml decomposition before SPECIFY's two-pass-per-sub-analysis fills
-  it in. Composes sibling skills for each phase: paper-extraction for
-  ACQUIRE and narrative for SPECIFY. Use when the user wants to reproduce
-  a paper, has a DOI or arXiv ID and wants to start a reproduction project,
-  or asks to "reproduce <paper>", "set up reproduction", "lc-from-paper",
-  "/lc-from-paper <doi>", or hands you a published paper as a starting point
-  for ASTRA work.
+  This skill should be used when the user wants to reproduce a published
+  scientific paper in ASTRA, has a DOI/arXiv ID/PDF and wants to start or
+  resume a reproduction project, asks to "reproduce <paper>", "set up
+  reproduction", or "import a paper", or hands over a published paper as the
+  starting point for ASTRA work. It should also be used for existing
+  paper-reproduction workdirs when the user asks to continue, resume, drive the
+  next phase, or close out the reproduction.
 ---
 
 # lc-from-paper
 
-Reproduce a published paper in ASTRA. The skill is **interview-first**: a short interactive crafting phase up front that produces both a **per-paper reproduction constitution** and a **per-paper `CLAUDE.md`**. After the interview, lc-from-paper hands the constitution to a multi-session loop that drives the reproduction. Successive iterations survey the workdir, execute one or two phases, exit cleanly, and re-spawn with fresh context until the constitution is realized.
+Run an interview-first paper reproduction workflow in ASTRA. Start with a short interactive crafting phase that produces both a **per-paper reproduction constitution** and a **per-paper `CLAUDE.md`**. After the interview, hand the constitution to a multi-session loop that drives the reproduction. On each iteration, survey the workdir, execute one or two phases, exit cleanly, and re-spawn with fresh context until the constitution is realized.
 
-This is a **composer skill**. It coordinates a paper reproduction by proactively invoking the relevant sibling skills at the right stage — `/paper-extraction` for ACQUIRE, `/constitution` during INTERVIEW, `/narrative` during SPECIFY, `/lc-from-code` strategies when substantial reference code needs migrating into the current `astra.yaml`, and the review skills at close-out. Do not silently re-implement sibling skill behavior inside lc-from-paper; call the skill or explicitly follow its workflow where the phase says to.
+Treat lc-from-paper as a **composer skill**. Coordinate the reproduction by proactively invoking the relevant sibling skills at the right stage: `/paper-extraction` for ACQUIRE, `/constitution` during INTERVIEW, `/narrative` during SPECIFY, `/lc-from-code` strategies when substantial reference code needs migrating into the current `astra.yaml`, and the review skills at close-out. Do not silently re-implement sibling skill behavior inside lc-from-paper; call the skill or explicitly follow its workflow where the phase says to.
 
-This is a Claude-Code-native skill. There is no Python orchestrator, no state machine, no resume mechanic — the workdir on disk + git history are the substrate.
+Keep the workflow Claude-Code-native. Use the workdir on disk plus git history as the substrate; do not introduce a Python orchestrator, state machine, or separate resume mechanic.
 
-A reproduction does not fit in one context window. The loop is, in its simplest form, a way to split one goal across many context windows so each iteration starts uncluttered. That's the substrate, not an aesthetic.
-
-## When to use this skill
-
-- The user has a paper (DOI, arXiv ID, or PDF) and wants to reproduce its analysis
-- The user invokes `/lc-from-paper` (with or without an argument)
-- The user is starting a fresh reproduction project under `Reproductions/<collab>/<short-name>/`
-- An existing paper-reproduction workdir needs the next phase driven forward (in which case skip the interview, see "Resuming an in-flight reproduction" below)
+Split the reproduction across context windows deliberately. Use the loop to keep each iteration uncluttered while preserving continuity through the workdir, constitution, `CLAUDE.md`, and git history.
 
 ## The bundle
 
