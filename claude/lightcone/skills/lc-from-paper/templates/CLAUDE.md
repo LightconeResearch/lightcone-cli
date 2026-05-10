@@ -16,13 +16,15 @@ Reproduction of <paper title> (<arXiv ID>). DOI: <doi>.
 
 **Out of scope:** <explicit exclusions, fenced from drift.>
 
+**Fidelity intent:** <the user's prose answer from INTERVIEW to "when is this good enough" — captured verbatim or in close paraphrase. E.g. "just checking if the analysis is tractable — quick sanity on a headline number", "Figure 3 must be right; the rest can stay rough", "full fidelity on the BAO fit, baseline elsewhere", "every primary and secondary target lining up within stated tolerance". The orchestrator translates this into per-spawn cheap/heavy decisions and COMPARE grades opportunities against it. Static once approved; the user can sharpen it at any REVIEW.>
+
 ## Rigor
 
-*Current state* — populated by sub-agents as they produce artifacts. Coarse adjectives per output or per phase: *sketch / baseline / tightened / canonical*. Empty until the first phase produces something:
+*Current state* — orchestrator-internal trajectory tracking, updated by sub-agents as they produce artifacts. Coarse adjectives per output or per phase: *sketch / baseline / tightened / canonical*. The orchestrator reads this alongside the Goal's fidelity intent to decide cheap vs heavy on the next spawn. Empty until the first phase produces something:
 
 - (none yet)
 
-*Open opportunities* — what could benefit from more attention if the user comes back, with a sense of leverage. Format: `<area> — <what could be tightened> — <leverage>`. Empty until a sub-agent surfaces a gap:
+*Open opportunities* — gaps that could be tightened if the user comes back, each carrying a sense of leverage and where it sits relative to the Goal's fidelity intent. Format: `<area> — <what could be tightened> — <leverage> — <above|at|below intent>`. Empty until a sub-agent surfaces one:
 
 - (none yet)
 
