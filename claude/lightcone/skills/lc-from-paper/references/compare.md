@@ -1,8 +1,8 @@
 # COMPARE — judge the match, name the opportunities
 
-Compare reproduced results against the paper's replication targets. COMPARE returns two things: a **verdict** (pass / partial / fail) and an **opportunity assessment** — where the gaps are and how much they likely matter. The verdict drives whether the orchestrator re-spawns IMPLEMENT for another retry attempt; the opportunity assessment tells the orchestrator (and the user) which gaps would be high-leverage to close, even on `pass`. Together they replace the old yes/no framing.
+Compare reproduced results against the paper's replication targets. COMPARE returns two things: a **verdict** (pass / partial / fail) and an **opportunity assessment** — where the gaps are, how much they likely matter, and how they sit relative to the user's fidelity intent in CLAUDE.md's Goal section. The verdict drives whether the orchestrator re-spawns IMPLEMENT for another retry; the opportunity assessment tells the orchestrator (and the user) which gaps fall below intent and would be high-leverage to close, even on `pass`. Together they replace the old yes/no framing.
 
-This phase runs as the orchestrator-spawned `compare` sub-agent. The orchestrator and the user together decide what to do with COMPARE's output — spend another IMPLEMENT round now (close a high-leverage gap), accept the current verdict and proceed to REVIEW, or land at the current rigor level and log the gap as an open opportunity in CLAUDE.md's **Rigor** section. The user can drop into the compare sub-agent's chat for the verdict ratification conversation, or wait until REVIEW close-out.
+This phase runs as the orchestrator-spawned `compare` sub-agent. The orchestrator and the user together decide what to do with COMPARE's output — spend another IMPLEMENT round now (close a below-intent gap), accept the current verdict and proceed to REVIEW, or land at the current trajectory and log the gap as an open opportunity in CLAUDE.md's **Rigor** section. The user can drop into the compare sub-agent's chat for the verdict ratification conversation, or wait until REVIEW close-out.
 
 ## Inputs
 
@@ -62,6 +62,7 @@ opportunities:
     gap: "<what could be tightened — even if the target matched>"
     leverage: "<rough sense of impact: 'changes headline number by ~10%' / 'cosmetic only' / 'unknown'>"
     fix_pointer: "<where the fix would land — script:line, decision id, or implementation-notes section>"
+    relative_to_intent: above|at|below
 ```
 
 ## Verdict rules
@@ -81,18 +82,26 @@ The `opportunities:` block surfaces **gaps that didn't necessarily fail the verd
 - A decision SPECIFY recorded with code-as-canonical that has an unresolved disagreement still in `open-questions.md` and could move the result.
 - A sub-analysis whose evidence quotes are paraphrased rather than verbatim (would fail `--verify-evidence` if pushed harder).
 
-Each opportunity gets a leverage one-liner so the orchestrator and user can decide where to spend attention. Empty `opportunities:` is a strong signal — say "the reproduction is at canonical rigor across the targets" rather than padding.
+Each opportunity gets two grades: a **leverage** one-liner (impact if closed) and a **relative_to_intent** placement against the user's fidelity intent in CLAUDE.md's Goal section:
 
-Also write `comparison-report.md` with a human-readable summary. For figure / table comparisons, describe what you see in both and explain your match judgment. Include the opportunity assessment as its own section.
+- `below` — the user's intent calls for tighter than this; closing the gap moves the reproduction toward what they actually want.
+- `at` — closing the gap reaches the intent; further tightening would be gravy.
+- `above` — already past the intent; log it but it doesn't pull on attention.
+
+Read the Goal's fidelity intent prose to make the call. "Figure 3 must be right" + a sketch-level figure 3 systematics = `below`. "Just checking the analysis is tractable" + a canonical-grade outputs block + a sketchy sub-analysis = `above` everywhere except the headline. When intent is silent on something, default to `at` for primary targets, `above` for secondaries.
+
+Empty `opportunities:` is a strong signal — say "the reproduction is at canonical rigor across the targets" rather than padding.
+
+Also write `comparison-report.md` with a human-readable summary. For figure / table comparisons, describe what you see in both and explain your match judgment. Include the opportunity assessment as its own section — group by `relative_to_intent` so the `below` items lead.
 
 ## Verdict + opportunity surfacing
 
-After writing the report, the compare sub-agent reports back to the orchestrator with the verdict, the failing-output count (if any), and the headline opportunities. The orchestrator either:
+After writing the report, the compare sub-agent reports back to the orchestrator with the verdict, the failing-output count (if any), and the headline opportunities — `below`-intent items first. The orchestrator either:
 
-- **Carries the report to the user** (if the user is reachable in the orchestrator session or the compare sub-agent's chat) for ratification: present verdict, the failing outputs (if `partial` / `fail`), and the top opportunities; ask whether to spend another IMPLEMENT round on a high-leverage gap, accept and proceed to REVIEW, or land at this rigor level and log the gaps as open opportunities in CLAUDE.md.
-- **Acts on standing rigor settings** (if the user is unreachable): if attempt < budget AND verdict is `partial` / `fail`, re-spawn `implement` for a retry; if verdict is `pass` OR attempt >= budget, log opportunities in CLAUDE.md's **Rigor** section as open opportunities and proceed to REVIEW.
+- **Carries the report to the user** (if the user is reachable in the orchestrator session or the compare sub-agent's chat) for ratification: present verdict, the failing outputs (if `partial` / `fail`), and the top `below`-intent opportunities; ask whether to spend another IMPLEMENT round on those gaps, accept and proceed to REVIEW, or land at the current trajectory and log the gaps as open opportunities in CLAUDE.md.
+- **Acts against intent** (if the user is unreachable): if attempt < budget AND (verdict is `partial` / `fail` OR any opportunity is `below` intent), re-spawn `implement` targeting the `below` gaps first; if verdict is `pass` AND no opportunities are `below`, OR attempt >= budget, log remaining opportunities in CLAUDE.md's **Rigor** section and proceed to REVIEW.
 
-The verdict is the compare sub-agent's judgment; the **decision to keep iterating or move on** is the orchestrator's (in dialogue with the user). The opportunity assessment is the bridge — it turns a binary verdict into a graded picture the user can navigate.
+The verdict is the compare sub-agent's judgment; the **decision to keep iterating or move on** is the orchestrator's (in dialogue with the user). The opportunity assessment — graded against the user's fidelity intent — is the bridge that turns a binary verdict into a picture both parties can navigate.
 
 ## Survey signals (entry into COMPARE)
 
