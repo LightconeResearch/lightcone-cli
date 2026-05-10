@@ -70,7 +70,8 @@ claude/lightcone/           # Claude plugin source — force-included into the w
 ├── skills/                 # lc-new, lc-from-code, lc-from-paper,
 │                            # lc-feedback;
 │                            # paper-reproduction bundle: lc-from-paper (entry),
-│                            # narrative, constitution, ralph-loops, paper-extraction
+│                            # narrative, paper-extraction, figure-comparison,
+│                            # check-sentence-by-sentence
 │                            # (see skills/README.md for the full bundle map)
 ├── agents/                 # lc-extractor
 ├── guides/                 # astra-reference, lightcone-cli-reference, ui-brand

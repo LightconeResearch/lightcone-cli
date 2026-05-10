@@ -71,21 +71,28 @@ parameter plumbing.
 ## `/lc-from-paper` — reproduce a published paper
 
 **You have a DOI or arXiv ID. You end with a reproduction project
-driven by a multi-session loop.**
+driven by an orchestrator session and named per-phase sub-agents.**
 
 `/lc-from-paper` is the entry point of the paper-reproduction bundle.
 It opens with a short interactive interview — paper identity, scope
-(full vs targeted), runtime mode (interactive, bash-loop, or
-tmux-orchestrated), termination criterion (frugality vs rigor), and
-per-phase mode — then drafts a per-paper reproduction constitution and
-a per-paper `CLAUDE.md`. After approval, the loop drives nine phases
-(ACQUIRE → ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN →
-COMPARE → REVIEW), bookended by INTERVIEW and REVIEW as the
-always-interactive seams.
+(full vs targeted), and any paper-specific conventions — then drafts
+a per-paper `CLAUDE.md` (the durable spec every sub-agent walks up to).
+After approval, the skill becomes a persistent **orchestrator session**
+that spawns named per-phase sub-agents (`acquire`, `architect`,
+`specify`, `literature`, `implement`, `run`, `compare`) you can drop
+into directly via the chat surface. The two bookends — INTERVIEW at
+start and REVIEW at close-out — run in the orchestrator session itself.
 
-The bundle composes sibling skills: `paper-extraction`, `constitution`,
-`ralph-loops`, `narrative`, `figure-comparison`, and
-`check-sentence-by-sentence`. See
+Rigor is chosen per spawn from CLAUDE.md's Rigor section: cheap
+(skip self-review or one fresh-context pass) or heavy (iterate
+fresh-context review until two consecutive clean rounds). COMPARE
+returns a verdict plus an opportunity assessment — where the gaps are
+and how much they likely matter — so you and the orchestrator can
+decide whether to spend another IMPLEMENT round or land at the
+current rigor.
+
+The bundle composes sibling skills: `paper-extraction`, `narrative`,
+`figure-comparison`, and `check-sentence-by-sentence`. See
 [`claude/lightcone/skills/README.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md)
 for the full bundle map.
 

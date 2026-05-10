@@ -42,7 +42,7 @@ Scans an existing codebase, drafts an `astra.yaml` that captures its inputs, out
 
 ### `/lc-from-paper` — Reproduce a published paper
 
-Interview-first orchestrator for reproducing a published paper in ASTRA. Drafts a per-paper reproduction constitution and `CLAUDE.md`, then drives a multi-session loop through nine phases (ACQUIRE → ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN → COMPARE → REVIEW). Composes a bundle of sibling skills (paper-extraction, constitution, ralph-loops, narrative, figure-comparison, check-sentence-by-sentence). See [`claude/lightcone/skills/README.md`](claude/lightcone/skills/README.md) for the full bundle map.
+Interview-first orchestrator for reproducing a published paper in ASTRA. Drafts a per-paper `CLAUDE.md`, then runs as a persistent orchestrator session that spawns named per-phase sub-agents (acquire, architect, specify, literature, implement, run, compare) the user can drop into directly. The two bookends — INTERVIEW and REVIEW — run in the orchestrator session itself. Composes a bundle of sibling skills (paper-extraction, narrative, figure-comparison, check-sentence-by-sentence). See [`claude/lightcone/skills/README.md`](claude/lightcone/skills/README.md) for the full bundle map.
 
 ### `/lc-feedback` — Report a bug
 
