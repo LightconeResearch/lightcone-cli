@@ -4,8 +4,9 @@ description: >
   Turn an arXiv ID or DOI into a standardized `work/reference/` directory:
   paper substrate (arXiv LaTeX source primary, PDF + Docling fallback),
   copied figure files, per-table `.tex` files, section outline with line
-  numbers, deduplicated citation keys with every location they appear,
-  abstract, embedded bibliography (when present in source), and a valid
+  numbers, deduplicated citation keys with every location they appear plus
+  each cited paper's full citation text and resolved DOI, abstract,
+  embedded bibliography (when present in source), and a valid
   `astra.yaml` representing the paper as an ASTRA artifact (with the
   paper's claimed numerical findings as ASTRA `findings:`). Emits a
   top-level `index.json` for the structural surface plus the `astra.yaml`
@@ -33,7 +34,7 @@ Under `work/reference/` (idempotent — skips work already done):
 
 ```
 work/reference/
-├── index.json                # structural index — figures, tables, outline, citations, paths
+├── index.json                # structural index — figures, tables, outline, citations (with DOIs), paths
 ├── astra.yaml                # ASTRA-shape representation: the paper as an ASTRA artifact, including findings
 ├── paper.pdf                 # always
 ├── paper.tex                 # Path A — symlink to the main .tex file
@@ -43,17 +44,19 @@ work/reference/
 ├── figures/                  # figure files (copied from LaTeX or rendered by Docling)
 ├── tables/                   # one .tex file per `\begin{table}` block (Path A)
 ├── bibliography-source.bib   # Path A only — copy of any .bib found in source/
-└── bibliography-source.bbl   # Path A only — copy of any .bbl found in source/
+├── bibliography-source.bbl   # Path A only — copy of any .bbl found in source/
+└── .doi-cache.json           # Crossref/ADS lookup cache for re-run idempotency
 ```
 
 The skill produces only the paper's own reading materials. Anything not contained in or derived from the paper itself — code repositories, supplementary datasets, related papers — is out of scope; the caller handles those.
 
 ### Two surfaces: `index.json` (structural) and `astra.yaml` (semantic)
 
-**`index.json` is structural and machine-friendly.** Everything the script could mechanically extract: figures, tables, section outline with line numbers, citation keys with every location, abstract, paths. Read this when you want to know "what's in this paper, where do I find it." Sample shape:
+**`index.json` is structural and machine-friendly.** Everything the script could mechanically extract: figures, tables, section outline with line numbers, citation keys with every location *plus the cited paper's full citation text and resolved DOI*, abstract, paths. Read this when you want to know "what's in this paper, where do I find it." Sample shape:
 
 ```json
 {
+  "schema_version": 1,
   "path": "A",                                  // or "B"
   "paper_pdf": "paper.pdf",
   "paper_tex": "paper.tex",                     // null on Path B
@@ -76,14 +79,25 @@ The skill produces only the paper's own reading materials. Anything not containe
     {"level": 1, "title": "Introduction", "label": "sec:intro", "source_file": "main.tex", "line": 157}
   ],
   "citations": {
-    "asgari17": [{"file": "main.tex", "line": 178}, {"file": "main.tex", "line": 561}],
-    "smith2024": [{"file": "main.tex", "line": 92}]
+    "asgari17": {
+      "locations": [{"file": "main.tex", "line": 178}, {"file": "main.tex", "line": 561}],
+      "citation": "Asgari, M., et al. (2017) KiDS-450: Tomographic cross-correlation cosmic shear results. MNRAS 464, 1676-1692",
+      "doi": "10.1093/mnras/stw2606"
+    },
+    "planck18_lensing": {
+      "locations": [{"file": "main.tex", "line": 92}],
+      "citation": "Planck Collaboration, et al. (2020) Planck 2018 results. VIII. Gravitational lensing. A&A 641, A8",
+      "doi": "10.1051/0004-6361/201833886"
+    }
   },
   "extraction_warnings": [
-    "figure fig3: \\includegraphics{...} could not resolve to a file in source/"
+    "figure fig3: \\includegraphics{...} could not resolve to a file in source/",
+    "citation kuijken:2011: could not resolve DOI; tried doi-field, eprint-field, Crossref, ADS"
   ]
 }
 ```
+
+The `citations:` block maps each cited paper's BibTeX key (Path A) or synthetic `<lastname>_<year>` key (Path B) to `{locations, citation, doi}`. Downstream consumers (e.g. lc-from-paper's SPECIFY when authoring `prior_insights:` placeholders, LITERATURE when discovering which DOIs to fetch) read the DOI directly from `citations[key].doi`. Unresolvable entries keep `citation: null` and/or `doi: null` and are flagged in `extraction_warnings`.
 
 **`astra.yaml` is semantic and ASTRA-validating.** Treats the paper as an ASTRA artifact: `id`, `version`, `name`, `narrative.summary`, and `findings:` carrying the paper's claimed numerical results in ASTRA's Insight + Evidence shape. Read this when you want to know "what does this paper claim, with quote evidence anchored to the source." The script writes a stub (id, version, name, narrative.summary from abstract, empty findings); Step 5 fills in `findings:`.
 
@@ -128,10 +142,13 @@ The script detects the path automatically and produces:
 - `figures/` populated with copied figure files (Path A) or untouched (Path B — Docling already populated it)
 - `tables/<label-slug>.tex` — one file per `\begin{table}` block (Path A only)
 - `bibliography-source.{bib,bbl}` if present in the source tarball (Path A only)
-- `index.json` — the unified structural index
+- `index.json` — the unified structural index, including the enriched `citations:` block (each cited key carries `{locations, citation, doi}`; DOI resolution covers ~96% of typical-paper bibliographies)
 - `astra.yaml` — stub ASTRA representation: id, version, name (from `\title{}`), narrative.summary (from abstract), empty `findings: {}` for Step 5
+- `.doi-cache.json` — Crossref/ADS lookup cache; re-runs skip the network for already-seen entries
 
 The `--arxiv-id` / `--doi` argument populates the `id` and the evidence `doi:` field in `astra.yaml`. If neither is provided, the script writes placeholder text the agent can fix.
+
+The DOI resolver tries, in order: the entry's `doi:` field → an `eprint:`-derived arXiv DOI → Crossref bibliographic query (free, no API key needed) → ADS title search (only if `ADS_API_TOKEN` env var or `~/.ads/dev_key` is present — graceful skip when absent). Title hits from Crossref are gated by a similarity check against the queried title to drop noisy false matches.
 
 ### Step 4 — Review the script's output and fix structural gaps
 
@@ -140,7 +157,9 @@ The script is purely deterministic. It walks the structural surface but does not
 - **`figure figN: \includegraphics{X} could not resolve`** — the LaTeX referenced a file the script couldn't find. Search the source tree manually (sometimes figures live in non-standard subdirectories with non-standard extensions); copy the file into `figures/` and update the corresponding `index.json` entry's `file` so it's no longer null.
 - **`figure figN: no \caption found`** — composite figures (subfloats) sometimes lack a top-level caption; verify the figure block in source and either record the per-subfigure captions in `caption` or note that the figure is composite.
 - **`table tabN: no \label`** — verify the table is intentional (some `\begin{table}` blocks are non-tabular layout); rename or annotate as needed.
-- **Path B caveat** — outline + citation extraction are not yet implemented for the Docling fallback; the warnings list flags this. For now, on Path B, those fields are empty.
+- **`citation <key>: could not resolve DOI`** — the entry has no `doi:` / `eprint:` field, and neither Crossref nor ADS (when available) returned a match. The entry stays in `citations:` with `doi: null`; a downstream consumer can flag it for human resolution or skip it. If many entries are unresolved, check that the title field is clean (sometimes `.bib` titles carry uncleaned LaTeX commands that drag down the Crossref similarity gate). Delete `.doi-cache.json` to force re-resolution.
+- **`citation <key>: cited in source but no matching entry in bibliography-source.{bib,bbl}`** — a `\cite{<key>}` invocation has no corresponding bib record. Usually a typo in the LaTeX source; flag it and move on. The entry stays in `citations:` with `citation: null, doi: null`, locations preserved.
+- **Path B caveat** — outline extraction is not yet implemented for the Docling fallback. Bibliography resolution works on Path B by parsing the references section at the tail of `document.md` and synthesizing keys (`<lastname>_<year>`), but citation *invocations* from rendered prose aren't yet extracted — Path B citations carry empty `locations: []`. The warnings list flags this.
 
 Also eyeball `astra.yaml`'s `name:` and `narrative.summary:`. The title or abstract may contain unresolved custom `\newcommand` macros (defined elsewhere in the source); the script doesn't expand macros, so they pass through verbatim. Clean them up if you need pretty rendering downstream — none of this blocks validation.
 
@@ -203,7 +222,7 @@ The slash-command form is `/paper-extraction <arxiv-id-or-doi>`.
 
 **Script (`extract-paper-substrate.py`):** walks LaTeX (Path A) or Docling output (Path B) and emits two things:
 
-1. `index.json` — figures (with copied files + line numbers + multi-graphic panels), tables (one `.tex` per block, including AAS `deluxetable`), section outline (with line numbers, in paper-reading order), citation keys (with every file+line they appear on, including biblatex commands), abstract, title, paths.
+1. `index.json` — figures (with copied files + line numbers + multi-graphic panels), tables (one `.tex` per block, including AAS `deluxetable`), section outline (with line numbers, in paper-reading order), citation keys (with every file+line they appear on, including biblatex commands, *plus the cited paper's full citation text and resolved DOI*), abstract, title, paths.
 2. `astra.yaml` — a stub ASTRA artifact: `id` (derived from arxiv-id/DOI), `version`, `name` (from `\title{}`), `narrative.summary` (from abstract), empty `inputs:`/`outputs:`/`findings:`. Validates as-is.
 
 The script handles a few realities of LaTeX papers automatically:
@@ -212,8 +231,9 @@ The script handles a few realities of LaTeX papers automatically:
 - **Multi-file source** (`\input{}` / `\include{}` chains) is read in **paper-reading order** by walking `main.tex`'s input tree, not alphabetical filename order.
 - **Simple `\newcommand{\name}{body}` macros** are expanded in extracted titles, abstracts, captions, and section names. Macros with arguments (`\newcommand{\foo}[1]{...}`) pass through unexpanded — handling those would require evaluating arbitrary LaTeX.
 - **Standard table envs** (`table`, `table*`, `deluxetable`, `deluxetable*`) and **standard citation commands** (natbib family + biblatex `\autocite` / `\textcite` / `\parencite` / `\footcite` / `\smartcite`) are all recognized.
+- **Bibliography parsed in-script.** `.bib` files (preferred — `@type{key, field = value}` entries with brace-protected lastnames recognized) and `.bbl` files (rendered `\bibitem{key}` blocks) are parsed for Path A; the references section at the tail of `document.md` is parsed for Path B (synthesizing `<lastname>_<year>` keys with letter-suffix disambiguation). DOIs are resolved against Crossref + (optionally) ADS, cached for idempotency, and joined back against `\cite{}`-extracted locations.
 
-What the script does *not* do: understand what figures show, identify findings, infer methodology, or handle substrate acquisition (Step 2). It also doesn't expand macros with arguments, resolve `\graphicspath{}` overrides, or parse non-LaTeX abstract metadata blocks.
+What the script does *not* do: understand what figures show, identify findings, infer methodology, or handle substrate acquisition (Step 2). It also doesn't expand macros with arguments, resolve `\graphicspath{}` overrides, parse non-LaTeX abstract metadata blocks, or extract citation invocations from rendered prose (Path B `locations:` arrays are empty as a result).
 
 **Agent (Steps 4 + 5):** reads `index.json`'s `extraction_warnings` and fixes structural gaps (Step 4), then walks the paper and writes `findings:` into `astra.yaml` with quote-anchored evidence (Step 5). The verbosity of the Insight + Evidence shape *is* the back-pressure: the agent has to find and quote actual paper text, not invent.
 
@@ -221,16 +241,17 @@ What the script does *not* do: understand what figures show, identify findings, 
 
 - **One entry-point.** `/paper-extraction <id>` is the whole surface. Don't have callers reach into `scripts/` or `references/` directly. The skill orchestrates; consumers trust `index.json`.
 - **Self-contained.** This skill takes a DOI and produces a standardized directory. It doesn't know who calls it or what they do with the result. Don't add caller-specific logic.
-- **Idempotent.** Survey-first, skip-if-done. Re-invoking on the same paper does no work and produces no errors.
+- **Idempotent.** Survey-first, skip-if-done. Re-invoking on the same paper does no work and produces no errors. DOI lookups cache to `.doi-cache.json`; re-runs don't re-hit the network for already-seen entries.
 - **arXiv-LaTeX is primary.** When an arXiv source tarball is acquirable, Path A wins. PDF + Docling is the fallback for non-arXiv only.
-- **Reading materials only.** The skill produces what's structurally in the paper itself — substrate, figures, tables, outline, citations, embedded bibliography. Adjacent assets (code repos, supplementary datasets, related papers, project bibliography management) are explicitly out of scope.
-- **Script is dumb on purpose.** The deterministic pieces (figure/table blocks, section headings, `\cite{}` keys) belong to the script. Anything that requires understanding what the paper is *about* lives outside this skill — paper-extraction sets the table; it doesn't read the meal.
-- **`extraction_warnings` is the agent surface.** When the script can't resolve something, it doesn't fail or guess — it warns. The agent reads the warnings and decides whether to fix or surface.
+- **Reading materials only.** The skill produces what's structurally in the paper itself — substrate, figures, tables, outline, citations (with resolved DOIs), embedded bibliography. Adjacent assets (code repos, supplementary datasets, related papers, project bibliography *management* — i.e. authoring new entries, curating across papers) are explicitly out of scope; *resolving* the bibliography that's already in the paper is in scope.
+- **Script is dumb on purpose.** The deterministic pieces (figure/table blocks, section headings, `\cite{}` keys, bibliography entries, DOI lookups) belong to the script. Anything that requires understanding what the paper is *about* lives outside this skill — paper-extraction sets the table; it doesn't read the meal.
+- **`extraction_warnings` is the agent surface.** When the script can't resolve something (unmatched citation key, unresolvable DOI, network failure), it doesn't fail or guess — it warns. The agent reads the warnings and decides whether to fix or surface.
 
 ## Anti-patterns
 
 - **Re-fetching what's already there.** Always survey `work/reference/` and read `index.json` first.
 - **Adding numerical-finding extraction to the script.** Macro-based extraction (`\newcommand{\Omegam}{0.315}`) catches almost no real papers; inline-value extraction needs semantic judgment about what's a *result* vs incidental. Findings live in `astra.yaml`, written by the agent in Step 5.
 - **Paraphrasing the `quote.exact` text.** Copy the paper's LaTeX text verbatim. Paraphrasing breaks `astra validate --verify-evidence` and weakens the back-pressure that justified ASTRA shape in the first place.
+- **Producing a parallel cited-papers artifact.** Bibliography resolution lives inside `index.json`'s `citations:` block, not in a side file. Anyone who needs the citation→DOI mapping reads `index.json#citations[key].doi` directly.
 - **Surfacing partial state silently.** If `paper.pdf` was fetched but the LaTeX-source download failed, write `work/reference/extraction-error.txt` with a clear cause and stop, rather than producing a half-populated `work/reference/` with no signal that more was intended.
 - **Knowing about the caller.** The skill's contract is the directory + index. If you're tempted to write logic that depends on a particular invoker, push that logic into the invoker instead.
