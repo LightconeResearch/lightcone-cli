@@ -165,11 +165,9 @@ Also eyeball `astra.yaml`'s `name:` and `narrative.summary:`. The title or abstr
 
 ### Step 5 — *(Optional)* Walk the paper for findings, append to `astra.yaml`
 
-**Skip this step unless a downstream consumer needs it.** Steps 1–4 produce a complete `work/reference/` plus a valid (empty-findings) `astra.yaml` on their own. Step 5 fills in the paper's claimed numerical findings — useful when the next thing you'll do is reproduce the paper (the findings become reproduction targets) or compare against it (the findings become diff anchors). Skip when you just want to read the paper or have the structural index for browsing.
+**Skip unless a downstream consumer needs `findings:` populated.** Steps 1–4 produce a complete `work/reference/` and a valid (empty-findings) `astra.yaml` on their own. Reproductions and diff workflows need findings; reading and browsing don't.
 
-When you do run Step 5: this is the agent's central interpretive step and the one piece the script can't do.
-
-For each **central numerical claim the paper makes about its results**, append a finding to `astra.yaml`'s `findings:` map. The shape (per ASTRA's [Insight + Evidence](https://w3id.org/ASTRA/insight) classes):
+When you do run Step 5: for each **central numerical claim the paper makes about its results** — headline measurements, structural conclusions ("we detect X at Y σ"), validated null-test outcomes — append a finding to `astra.yaml`'s `findings:` map. *Not* methodology choices or dataset descriptions; those live elsewhere. Shape (per ASTRA's [Insight + Evidence](https://w3id.org/ASTRA/insight) classes):
 
 ```yaml
 findings:
@@ -183,30 +181,18 @@ findings:
         version: 1
         quote:
           exact: "we find $S_8 = 0.795 \\pm 0.014$"
-  bmode_pte_fiducial:
-    id: bmode_pte_fiducial
-    claim: "Minimum B-mode PTE = 0.18 across configuration-space, COSEBI, and harmonic-space statistics at fiducial scale cuts"
-    created_at: "2026-04-04T00:00:00Z"
-    evidence:
-      - id: abstract_pte
-        doi: "10.48550/arXiv.2604.03227"
-        version: 1
-        quote:
-          exact: "all three statistics pass the null test (minimum PTE $= \\configPteSixThreeCombined$)"
 ```
 
-**What counts as a finding:** a numerical or specific qualitative result the paper claims, of the kind a reproduction would have to match (or document divergence from). Headline results (S_8, PTEs, χ²), structural conclusions ("we detect X at Y σ"), validated null-test outcomes. *Not* methodology choices, *not* dataset descriptions — those live elsewhere.
+When `findings:` is non-empty, `narrative.findings:` must reference at least one finding — e.g. `narrative: { findings: "The fiducial analysis yields the [S_8 constraint](#findings.s8_constraint)." }`.
+
+See `examples/unions-bmodes-astra.yaml` for a fully populated `astra.yaml` (six findings, narrative, evidence anchored to the published version).
 
 **Discipline:**
 
-1. **Read the abstract and conclusions first.** The paper's own framing of its results lives there. Most central findings can be quoted from one of those two surfaces.
-2. **Use `quote.exact` literally.** Copy the LaTeX text as it appears in `paper.tex` — don't paraphrase, don't expand macros, don't normalize math. The `exact` is what `astra validate --verify-evidence` will look for in the source PDF; if you paraphrase, evidence verification fails. If the quote is hard to make unique, add `prefix:` and `suffix:` (~20–100 chars before/after) per the W3C TextQuoteSelector spec.
-3. **Anchor to the source.** Every finding's evidence carries a `doi:` (the paper's own DOI, e.g. `10.48550/arXiv.2604.03227`) and `version:` (paper version — `1` for v1, `2` for v2 of an arXiv preprint).
-4. **`created_at`** is the timestamp of the finding's creation in this file (i.e., when the agent wrote it). ISO 8601.
-5. **Add the `narrative.findings:` cross-link.** ASTRA requires that when `findings:` is non-empty, `narrative.findings:` exists and references at least one finding. Shape: `narrative: { findings: "The fiducial analysis yields the [S_8 constraint](#findings.s8_constraint); B-mode null tests pass with [minimum PTE = 0.18](#findings.bmode_pte_fiducial)." }`
-6. **Validate.** Run `astra validate work/reference/astra.yaml`. If it passes, the file is a valid ASTRA artifact. Add `--verify-evidence` to confirm each `quote.exact` is actually findable in the cached PDF.
-
-**How many findings?** Aim for the central results, not exhaustive coverage. A paper with one headline measurement (e.g. an S_8 constraint) plus a few supporting null-test outcomes typically has 3–8 findings. A paper covering multiple separate analyses may have more.
+- **Read the abstract and conclusions first.** Most central findings can be quoted from one of those two surfaces.
+- **`quote.exact` is verbatim.** Copy LaTeX as it appears in `paper.tex` — don't paraphrase, don't expand macros, don't normalize math. `astra validate --verify-evidence` searches for this string in the cached PDF; paraphrasing breaks the gate. If the quote isn't unique, add `prefix:` / `suffix:` (~20–100 chars) per W3C TextQuoteSelector.
+- **Every evidence carries `doi:`** (the paper's own DOI, e.g. `10.48550/arXiv.2604.03227`) and `version:` (the arXiv version: `1` for v1, `2` for v2).
+- **Validate.** `astra validate work/reference/astra.yaml` confirms shape; `--verify-evidence` confirms each `quote.exact` is actually findable in the cached PDF.
 
 
 ## Inputs
