@@ -2,79 +2,135 @@
 name: lc-from-paper
 description: >
   This skill should be used when the user wants to reproduce a published
-  scientific paper in ASTRA, has a DOI/arXiv ID/PDF and wants to start or
-  resume a reproduction project, asks to "reproduce <paper>", "set up
-  reproduction", or "import a paper", or hands over a published paper as the
-  starting point for ASTRA work. It should also be used for existing
-  paper-reproduction workdirs when the user asks to continue, resume, drive the
-  next phase, or close out the reproduction.
+  scientific paper in ASTRA — has a DOI, arXiv ID, or PDF — or asks to
+  "reproduce <paper>", "set up reproduction", or "import a paper". Also
+  use when continuing or resuming an existing reproduction workdir. The
+  skill instructs Claude to act as an orchestrator that drives the
+  reproduction across phases by spawning named sub-agents per phase, with
+  the user able to drop into any sub-agent's chat directly to steer.
 ---
 
 # lc-from-paper
 
-Run an interview-first paper reproduction workflow in ASTRA. Use the workdir, the per-paper constitution, `CLAUDE.md`, and git history as the continuity layer across sessions. Survey the workdir at the start of each session, choose the current phase, read that phase's reference in full, and execute one or two phases before stopping at a clean handoff point.
+You are helping the user reproduce a published scientific paper as a complete ASTRA project. This is a long, complex task that won't fit in a single context window — it spans discrete phases: acquire the paper and its code, architect the spec, specify decisions and findings, resolve cited literature, implement, run, compare, review. The complexity is exactly why your role matters. As **orchestrator**, you hold the whole shape for the user — guiding them through the workflow, explaining what's happening, tracking what's been done and what's next, deciding how to delegate. Each sub-agent only ever sees its own slice; you keep the through-line.
 
-## Phase Workflow
+The heavy lifting of any phase is done by a sub-agent: you spawn it pointed at the workdir (where its `CLAUDE.md` auto-loads), let it work in its own context window, and read what it returns when it's done. Your own context stays light — you carry user intent forward, watch the workdir, and choose what to spawn next.
 
-Read [`references/interview.md`](references/interview.md) before starting a fresh reproduction. The interview identifies the paper, scopes the target outputs, chooses runtime and rigor settings, decides which phases should run inline or in sub-agents, drafts the per-paper constitution with [`/constitution`](../constitution/SKILL.md), and writes the per-paper `CLAUDE.md`.
+**The user can interact with any sub-agent directly.** When you spawn one, it appears as a chat surface the user can switch into (typically at the bottom of the screen). Tell them explicitly: *"I'm launching the X sub-agent now — if you want to interact with it, switch to its chat before its first turn finishes."* While the user stays in that chat, the sub-agent stays active — natural turn-by-turn dialogue, prose questions, the user steering directly. When they switch back to you and the sub-agent goes idle, the surface goes away from their view; the sub-agent stays addressable from your side, and addressing it via SendMessage reopens the surface for the user too. **Sub-agents can be resumed at any time, with full context preserved** — if the user wants to drop into any earlier phase, you pull that phase's sub-agent back and it shows up in their chat exactly where it left off.
 
-After the interview, drive the reproduction through these phases. Invoke the named sibling skills when the phase reaches their work; they carry the phase-local procedure.
+**As orchestrator, keep your context lean.** Your job is to coordinate, not to absorb sub-agent outputs or the codebase in detail. The paper itself is the exception worth making — it's among the highest-value text in the workflow, the canonical source the spec is being built against, and worth reading carefully at the start. Your other regular reads are short and load-bearing: the paper-extraction index, `CLAUDE.md`, and what sub-agents return. For everything else, delegate: a quick `grep` or single-file lookup is fine to do directly, but anything more open-ended — cross-cutting search, repeated reads of large content — goes to an Explore sub-agent that reads on your behalf and returns a summary. The failure mode to avoid is the orchestrator quietly turning into "just another iteration" by reading everything itself.
 
-| # | Phase | Reference | Skill composition | Outputs |
+## Setup: git-tracked workdir
+
+The reproduction's directory should be a git repo — if not already, `git init` it locally before spawning the first sub-agent. Every sub-agent commits its work as it goes — small, descriptive commits per significant change. The git log is the chronological trail of the reproduction; `git diff` makes each sub-agent's work auditable from your side without you having to read source files directly. Don't push to a remote unless the user has set one up; local-only is the default.
+
+## The phases
+
+The reproduction runs through nine phases (zero-indexed). Phase 0 (INTERVIEW) and Phase 8 (REVIEW) are the bookends — they happen in your own session because they're short, interactive, and depend on the through-line context only you hold. Phases 1–7 are sub-agent dispatches: you spawn each as a named sub-agent, point it at the matching reference file in `references/`, and let it work in its own context with the per-paper `CLAUDE.md` auto-loading from the workdir.
+
+| # | Phase | Where it runs | Reference | Primary outputs |
 |---|---|---|---|---|
-| 1 | ACQUIRE | [`references/acquire.md`](references/acquire.md) | Use [`/paper-extraction`](../paper-extraction/SKILL.md). | `work/reference/{source/ \| document.md, paper.pdf, figures/, tables/, metadata.json, code/, code-status.yaml}` |
-| 2 | ARCHITECT | [`references/architect.md`](references/architect.md) | Use exploration sub-agents for paper/code indexing when helpful. | stub `astra.yaml`; `work/notes/architect/{paper-index.md, code-index.md}`; `work/notes/cited_papers.yaml` |
-| 3 | SPECIFY | [`references/specify.md`](references/specify.md) | Use [`/narrative`](../narrative/SKILL.md). Use [`/lc-from-code`](../lc-from-code/SKILL.md) in augment mode when substantial reference code should add to the current `astra.yaml`. | filled `astra.yaml`; `universes/baseline.yaml`; `targets/targets.md`; `implementation-notes.md` |
-| 4 | LITERATURE | [`references/literature.md`](references/literature.md) | Use parallel sub-agents for cited-paper resolution when useful. | `prior_insights:` evidence selectors resolved in `astra.yaml`; cited-paper notes under `work/notes/literature/` |
-| 5 | IMPLEMENT | [`references/implement.md`](references/implement.md) | Use implementation and review sub-agents according to the rigor setting. | `scripts/`, `requirements.txt`, executable recipes in `astra.yaml` |
-| 6 | RUN | [`references/run.md`](references/run.md) | Run the declared recipes and diagnose failures from command output. | `results/baseline/<output>/` |
-| 7 | COMPARE | [`references/compare.md`](references/compare.md) | Compare reproduced artifacts against the paper targets. | `comparison-report.{yaml,md}` |
-| 8 | REVIEW | [`references/review.md`](references/review.md) | Use [`/figure-comparison`](../figure-comparison/SKILL.md); optionally use [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md). | `REPRODUCTION-SUMMARY.md`, `.lightcone/comparison.html`, resolved `open-questions.md`, finalized constitution outcome |
+| 0 | INTERVIEW | orchestrator session | [`references/interview.md`](references/interview.md) | per-paper `CLAUDE.md` |
+| 1 | ACQUIRE | sub-agent | [`references/acquire.md`](references/acquire.md) | `work/reference/{source/, paper.pdf, figures/, tables/, metadata.json, code/, code-status.yaml}`; `work/notes/cited_papers.yaml` |
+| 2 | ARCHITECT | sub-agent | [`references/architect.md`](references/architect.md) | stub `astra.yaml` (sub-analyses, inputs, outputs, narrative); `work/notes/architect/{paper-index.md, code-index.md}` |
+| 3 | SPECIFY | sub-agent | [`references/specify.md`](references/specify.md) | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
+| 4 | LITERATURE | sub-agent | [`references/literature.md`](references/literature.md) | `astra.yaml`'s `prior_insights:` resolved with `evidence:` selectors; per-paper PDFs cached via `astra paper add` |
+| 5 | IMPLEMENT | sub-agent | [`references/implement.md`](references/implement.md) | `scripts/`, `requirements.txt`, recipes in `astra.yaml` |
+| 6 | RUN | sub-agent | [`references/run.md`](references/run.md) | `results/<universe>/<output>/` |
+| 7 | COMPARE | sub-agent | [`references/compare.md`](references/compare.md) | `comparison-report.{yaml,md}` |
+| 8 | REVIEW | orchestrator session | [`references/review.md`](references/review.md) | `REPRODUCTION-SUMMARY.md`, `/figure-comparison` HTML, resolved `open-questions.md`, finalized reproduction outcome |
 
-Iterate COMPARE -> IMPLEMENT -> RUN -> COMPARE until the verdict passes, the attempt budget is exhausted, or the user accepts a partial reproduction. Run REVIEW as the close-out phase after the comparison loop terminates.
+COMPARE produces a verdict plus an opportunity assessment — not just pass / fail, but where the gaps are and how much they likely matter. You and the user decide together whether to spend another IMPLEMENT round now (close a high-leverage gap) or land the reproduction at its current rigor level and log the gap as an open opportunity in CLAUDE.md's Rigor section. Either way, control eventually passes to REVIEW.
 
-## Runtime and Rigor
+## Spawning a phase sub-agent
 
-Offer three runtime modes during the interview:
+When you launch a phase, spawn a named sub-agent in the background with the phase reference as its working spec:
 
-| Mode | What runs | Right when |
-|---|---|---|
-| Interactive | The user prompts through phases by hand from the current session. | Tight control, small paper, or token budget is tight. |
-| Bash-loop | A plain shell loop runs one session after another. | Tmux is unavailable and the connection is stable. |
-| Tmux-orchestrated | [`/ralph-loops`](../ralph-loops/SKILL.md) runs the loop inside a tmux session. | Preferred when tmux is available. |
+- **Name** the sub-agent after the phase: `architect`, `specify`, `implement`, etc. The name is what the user sees in their chat list. If you re-spawn under the same name, the previous instance becomes addressable only by ID.
+- **Prompt** the sub-agent to read its phase reference file (`references/<phase>.md`). The reproduction's `CLAUDE.md` auto-loads from the workdir, so it doesn't need to be passed explicitly. Trust the sub-agent to read what else it needs.
+- **Run in background** so the user can switch into the sub-agent's chat without you blocking on it.
+- **Announce the spawn to the user** before it starts: *"I'm launching the &lt;phase&gt; sub-agent now — switch to its chat now if you want to interact, otherwise it'll work autonomously and report back."*
+- **Note the agent ID** when you spawn it. Names are user-facing — if the user dismisses a sub-agent's surface (escape), the name binding goes away and `SendMessage` by name fails. The agent ID + on-disk transcript persist regardless; `SendMessage` by ID resumes the sub-agent from full context and reopens the surface for the user.
 
-Set the rigor dial in the constitution:
+When the sub-agent's turn closes you receive a notification with its full response in the `result` field. Read that, then decide: spawn the next phase, ask the user a clarifying question, or revisit a previous phase.
 
-- **Frugal:** complete the phase checklist with minimal self-review.
-- **Rigorous:** run fresh-context review and fix rounds for artifact-producing phases until consecutive rounds find no fixes, or until the constitution's cap is reached.
+## Per-paper artifact: CLAUDE.md
 
-Thread the rigor setting through ARCHITECT, SPECIFY, LITERATURE, and IMPLEMENT. Review the current artifact against the paper and code from fresh context; incorporate fixes before advancing phases.
+The reproduction's directory holds a single `CLAUDE.md` that sub-agents and future orchestrator sessions walk up to automatically. It is the durable spec for the reproduction, drafted during INTERVIEW and evolving over time as iterations learn paper-specific gotchas. The starting shape is in [`templates/CLAUDE.md`](templates/CLAUDE.md). Sections:
 
-## Operating Discipline
+- **Paper identity** — DOI, arXiv ID, title, authors, one-line subject; where the original code lives (`work/reference/code/`).
+- **Goal** — what the reproduction is aiming for. Desired state, scope (in / out). Stays static once approved at INTERVIEW.
+- **Rigor** — where the reproduction currently stands and what's worth tightening if attention returns. *Current state* per output or per phase (e.g. *sketch / baseline / tightened / canonical*). *Open opportunities* — what could benefit from more attention, with a sense of leverage ("Figure 3's systematics treatment is sketch-level; tightening it would change the headline number by ~10%"). Updated by sub-agents as they work; mined during REVIEW for what's worth coming back for.
+- **Disagreements** — paper-vs-code material disagreements logged by sub-agents as they find them. Code is canonical for numerics; both options are preserved as decision options in `astra.yaml`. CLAUDE.md just summarizes them so every walk-up sees them at a glance. Surfaced to the user when they're around.
+- **Rules** — the code-as-canonical discipline, the never-block-on-`AskUserQuestion`-mid-sub-agent rule (with `open-questions.md` as the autonomous-mode fallback), arxiv-LaTeX-first acquisition, `astra validate --verify-evidence` as the fidelity gate.
+- **Pointers** — to `open-questions.md`, and any paper-specific conventions or warnings the user surfaced during the interview.
 
-- **Workdir survey first.** Determine the current phase from file existence, `git log`, and validation output before acting.
-- **ASTRA CLI checks are the authority.** Use `astra validate <file>`, `astra validate --verify-evidence`, `astra paper add`, and the current `astra --help` surfaces for deterministic checks.
-- **Acquire from the richest source.** Prefer arXiv source tarballs when available; use PDF + Docling fallback when source is unavailable.
-- **Code is canonical when present.** Keep original code under `work/reference/code/`; read relevant code during SPECIFY and IMPLEMENT; model numerics, plotting, and method on the code when paper prose and code disagree.
-- **Material disagreements become decisions.** Represent paper-vs-code conflicts as `decisions:` options in `astra.yaml`; select the baseline option according to the user's choice or the code-as-canonical default, and preserve alternatives for later exploration.
-- **ARCHITECT sets structure; SPECIFY fills content.** ARCHITECT writes the sub-analysis skeleton, inputs, outputs, and narrative scaffold. SPECIFY fills `decisions:`, `prior_insights:`, `findings:`, and ASTRA anchors.
-- **Use real inputs.** Unless the paper itself uses synthetic data as input, fetch or query real datasets during IMPLEMENT.
-- **Keep handoffs crisp.** Each session should leave the constitution, `CLAUDE.md`, `open-questions.md`, git history, and phase artifacts clear enough for the next session to resume.
+Keep it short. Pointers, not snapshots.
 
-## Resuming
+## The two bookends
 
-If the workdir already exists, read the per-paper constitution and `CLAUDE.md`, survey the files below, and continue from the first incomplete phase. Draft a minimal constitution from current state when one is missing.
+### Interview (Phase 0)
+
+The opening interactive phase. Read [`references/interview.md`](references/interview.md) in full before starting. The interview gathers: (1) the paper (DOI / arXiv ID / code repo URL / prior context), (2) scope (full vs targeted, sub-analysis structure), (3) any paper-specific conventions or warnings.
+
+These get drafted into the per-paper `CLAUDE.md` — paper identity, Goal section, Rules, Conventions. The Rigor section starts empty; sub-agents fill it in as they work. Show the user the draft, take corrections, refine, then save.
+
+After the user approves, launch the first sub-agent (typically ACQUIRE).
+
+### Review (Phase 8, close-out)
+
+The closing interactive phase. Drafts `REPRODUCTION-SUMMARY.md`, invokes [`/figure-comparison`](../figure-comparison/SKILL.md) (mandatory) and optionally [`/check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md), walks `open-questions.md` with the user, and finalizes the reproduction outcome.
+
+REVIEW runs in the orchestrator session because both `/figure-comparison` and `/check-sentence-by-sentence` use `AskUserQuestion`, which isn't available to sub-agents.
+
+## Disciplines
+
+**Workdir is the state.** No state machine, no resume mechanic — file existence + `git log` + `astra validate` answer "what phase am I on" deterministically. Each phase sub-agent's first move is to survey the workdir on entry; you (orchestrator) survey at startup and after each completion notification.
+
+**Code-as-canonical, with disagreements recorded.** When the original codebase is at `work/reference/code/`, every implementing sub-agent reads relevant code on entry. Where paper and code disagree on something material (a different choice would plausibly change a numeric result the paper reports), **code is canonical** for numerics, plotting, and method — but the disagreement is recorded: as a decision option in `astra.yaml` with both alternatives preserved, and as an entry in CLAUDE.md's *Disagreements* section so it's visible to every sub-agent and to the user. Surface it to the user the next time they're around. Stylistic / cosmetic / pure-tooling differences aren't material — note them in `implementation-notes.md` and move on. Without this discipline, iterations drift to "looks right" rather than "matches" and material disagreements get silently absorbed.
+
+**Rigor is continuous, chosen per spawn.** A reproduction isn't one-shot — it reaches a baseline, then accumulates rigor as the user comes back. When you spawn an artifact-producing sub-agent (ARCHITECT, SPECIFY, LITERATURE, IMPLEMENT), choose how much fresh-context self-review to ask of it based on where the artifact currently stands (CLAUDE.md's Rigor section) and what the user wants to invest now. *Cheap:* skip self-review or run one fresh-context pass. *Heavy:* iterate fresh-context review + fix until two consecutive rounds find no fixes (capped at 5 rounds). The reviewing sub-agent never sees prior rounds' fixes — fresh context each round, with the prompt "check the artifact is consistent with the paper and the code." Each spawn that produces an artifact updates CLAUDE.md's Rigor section so the picture stays honest across context windows.
+
+**arxiv-LaTeX-first acquisition.** When the paper is on arxiv, the source tarball is the substrate; equations, ligatures, captions, tables come through clean. PDF + Docling is a fallback for non-arxiv only.
+
+**Use the up-to-date `astra` CLI surfaces.** When `astra validate` already does the job, call it directly. Specifically: `astra validate <file>`, `astra validate --verify-evidence`, `astra paper add`. Use whatever the current `astra --help` surfaces — don't write skill-specific wrappers.
+
+**No synthetic data.** Unless the paper itself uses synthetic data as input, every input dataset must be real (downloaded, queried, or fetched from a real archive). The implement reference repeats this; treat it as load-bearing.
+
+**Open-questions for autonomous mode only.** When the user is reachable (in the sub-agent's chat or in your orchestrator session), questions are asked directly in prose. The `<paper-slug>/open-questions.md` accumulator is for autonomous mode — when the user has explicitly stepped away. The user resolves accumulated questions in REVIEW before the reproduction closes.
+
+## Resuming an in-flight reproduction
+
+When you walk into a workdir that already has artifacts:
+
+1. **Skip INTERVIEW** unless the user explicitly wants to revise scope.
+2. CLAUDE.md auto-loads from the workdir — that's the spec.
+3. Survey the workdir to determine the current phase (table below).
+4. Spawn the appropriate next sub-agent.
+
+Workdir signals — file existence implies the phase has been done:
 
 | Signal | Phase done |
 |---|---|
-| `work/reference/source/` or `work/reference/document.md` | ACQUIRE |
-| `work/reference/code/` | ACQUIRE code clone |
-| `work/notes/architect/{paper-index.md,code-index.md}` | ARCHITECT indexing |
-| `astra.yaml` validates with empty `decisions:` / `prior_insights:` / `findings:` blocks | ARCHITECT stub |
-| `work/notes/cited_papers.yaml` | ARCHITECT citation extraction |
-| `astra.yaml` has non-empty `decisions:` and `findings:` per sub-analysis, citation-placeholder `prior_insights:`, `targets/targets.md`, and `implementation-notes.md` | SPECIFY |
-| `prior_insights:` entries have resolved `evidence:` selectors verified by `astra validate --verify-evidence`; `work/notes/literature/<doi-slug>.yaml` files exist | LITERATURE |
-| recipes exist in `astra.yaml` | IMPLEMENT |
-| `results/baseline/<output>/` | RUN |
+| `work/reference/source/` (arxiv tarball) **or** `work/reference/document.md` (Docling fallback) | ACQUIRE |
+| `work/reference/code/` | ACQUIRE (code clone) |
+| `work/notes/architect/{paper-index.md,code-index.md}` | ARCHITECT (Explore pass) |
+| `astra.yaml` validates with empty `decisions:` / `prior_insights:` / `findings:` blocks | ARCHITECT (stub) |
+| `work/notes/cited_papers.yaml` | ARCHITECT (citation extraction) |
+| `astra.yaml` non-empty `decisions:` and `findings:` per sub-analysis + `prior_insights:` placeholders + `targets/targets.md` + `implementation-notes.md` | SPECIFY |
+| `astra.yaml`'s `prior_insights:` resolved with `evidence:` selectors; `work/notes/literature/<doi-slug>.yaml` files present | LITERATURE |
+| recipes present in `astra.yaml` | IMPLEMENT |
+| `results/<universe>/<output>/` | RUN |
 | `comparison-report.yaml` | COMPARE |
-| `REPRODUCTION-SUMMARY.md` and `.lightcone/comparison.html` | REVIEW |
+| `REPRODUCTION-SUMMARY.md` + `.lightcone/comparison.html` + resolved `open-questions.md` | REVIEW |
+
+`git log --oneline` complements this — phase commits are the chronological view.
+
+## Anti-patterns
+
+- **Reading content the orchestrator doesn't need.** If the answer fits in a sub-agent's return, don't re-read the source yourself. Dispatch Explore for open-ended search.
+- **Doing phase work in the orchestrator session.** The orchestrator spawns and routes; phase work happens in sub-agents. Exception: INTERVIEW and REVIEW (the bookends).
+- **Asking a sub-agent to use `AskUserQuestion`.** Sub-agents don't have it. They ask in prose, or surface the question to you so you call `AskUserQuestion` from the orchestrator session.
+- **Re-implementing what `astra` already does.** If `astra validate` returns clean, don't write a separate validator. If `astra paper add` caches the PDF, don't write a separate cache.
+- **Bundling phases into one sub-agent.** Each sub-agent runs one phase. The granularity is what keeps each context window manageable; conflating phases re-creates the failure mode this architecture exists to avoid.
+- **Forgetting to announce the spawn to the user.** They need to know a sub-agent has launched and that they can switch into its chat before it finishes its first turn. Without the announcement, the surface comes and goes invisibly.
