@@ -4,14 +4,15 @@ After SPECIFY's paper pass records each citation marker as a `prior_insights:` *
 
 LITERATURE runs **after SPECIFY**, not before — relevant `prior_insights:` are defined by the decisions and findings they justify. Fetching cited papers speculatively before SPECIFY would do work for citations that may never end up needed.
 
-The constitution's per-phase mode is **always sub-agent** for this phase. Spawn one Task-tool sub-agent per cited paper for parallel resolution — they edit disjoint subsets of `astra.yaml`'s `prior_insights:` entries (only the placeholders whose `doi:` matches the sub-agent's paper). A merge step (orchestrator-inline) writes the per-paper resolutions back into `astra.yaml` after all sub-agents complete; a final fresh-context sub-agent runs the rigor-dialed self-review.
+This phase runs as the orchestrator-spawned `literature` sub-agent. Internally it fans out: one Task-tool sub-sub-agent per cited paper for parallel resolution — they edit disjoint subsets of `astra.yaml`'s `prior_insights:` entries (only the placeholders whose `doi:` matches the sub-sub-agent's paper). A merge step (the literature sub-agent itself) writes the per-paper resolutions back into `astra.yaml` after all sub-sub-agents complete; a final fresh-context Task-tool sub-agent runs the self-review at the rigor level the orchestrator picked for this spawn.
 
 ## Inputs
 
 - `astra.yaml` — filled by SPECIFY's paper (and code) passes; each sub-analysis has `prior_insights:` entries with `claim:` + `doi:` + `decision_links:` but no `evidence:` selector. These are the placeholders LITERATURE resolves.
-- `work/notes/cited_papers.yaml` — citation marker → DOI mapping from ARCHITECT (used to discover which DOIs need fetching, complementing the per-placeholder `doi:` lookup).
-- `work/notes/architect/paper-index.md` — has the decision clusters per sub-analysis; per-paper sub-agents get it as context.
+- `work/notes/cited_papers.yaml` — citation marker → DOI → relevance mapping (built by ACQUIRE, augmented with relevance notes by ARCHITECT's paper-side Explore). Used to discover which DOIs need fetching, complementing the per-placeholder `doi:` lookup.
+- `work/notes/architect/paper-index.md` — has the decision clusters per sub-analysis; per-paper sub-sub-agents get it as context.
 - `work/reference/source/` (Path A — arXiv LaTeX) or `work/reference/document.md` (Path B — Docling) — the target paper (for context on how the cited paper is invoked).
+- CLAUDE.md — **Rigor** for this spawn's chosen rigor level.
 
 ## Outputs
 
@@ -21,12 +22,12 @@ The constitution's per-phase mode is **always sub-agent** for this phase. Spawn 
 
 ## How it runs
 
-1. **Discovery.** Read `astra.yaml` and collect every `prior_insights:` entry whose `evidence:` is missing or empty. Group by `doi:`. Each group becomes a per-paper sub-agent invocation.
-2. **Per-paper resolution (parallel).** Spawn one Task-tool sub-agent per DOI group. Each sub-agent: caches the PDF via `astra paper add`, reads the cited paper, finds verbatim quote(s) supporting each placeholder claim in its group, and writes the per-placeholder `evidence:` resolutions to `work/notes/literature/<doi-slug>.yaml`. Sub-agents do not edit `astra.yaml` directly — they write their per-paper YAML and exit.
-3. **Merge.** A short orchestrator pass (or a single merge sub-agent) reads each `work/notes/literature/<doi-slug>.yaml` and writes the resolved `evidence:` entries back into `astra.yaml`'s `prior_insights[<insight_id>].evidence[]`. Single writer, no merge conflicts.
-4. **Rigor-dialed self-review.** A fresh-context sub-agent reads each `prior_insights:` entry against its cited paper and asks "does this evidence actually justify the claim it's attached to?" Iterate per the rigor dial — frugal: one pass; rigor: N rounds until two consecutive rounds find no fixes (or a 5-round system cap).
+1. **Discovery.** Read `astra.yaml` and collect every `prior_insights:` entry whose `evidence:` is missing or empty. Group by `doi:`. Each group becomes a per-paper sub-sub-agent invocation.
+2. **Per-paper resolution (parallel).** Spawn one Task-tool sub-sub-agent per DOI group. Each one: caches the PDF via `astra paper add`, reads the cited paper, finds verbatim quote(s) supporting each placeholder claim in its group, and writes the per-placeholder `evidence:` resolutions to `work/notes/literature/<doi-slug>.yaml`. Sub-sub-agents do not edit `astra.yaml` directly — they write their per-paper YAML and exit.
+3. **Merge.** The literature sub-agent itself reads each `work/notes/literature/<doi-slug>.yaml` and writes the resolved `evidence:` entries back into `astra.yaml`'s `prior_insights[<insight_id>].evidence[]`. Single writer, no merge conflicts.
+4. **Self-review (rigor chosen per spawn).** A fresh-context Task-tool sub-agent reads each `prior_insights:` entry against its cited paper and asks "does this evidence actually justify the claim it's attached to?" Iterate per the rigor level the orchestrator chose — cheap: one pass; heavy: N rounds until two consecutive rounds find no fixes (or a 5-round system cap).
 
-## Per-paper resolution sub-agent — system prompt
+## Per-paper resolution sub-sub-agent — system prompt
 
 > You are an ASTRA evidence-resolution agent. Your task is to find the verbatim quotes in a single cited paper that justify a set of `prior_insights:` placeholders authored by SPECIFY.
 >
@@ -50,7 +51,7 @@ The constitution's per-phase mode is **always sub-agent** for this phase. Spawn 
 >    - Performance benchmarks or validation results relevant to the choices.
 >    - Recommendations or caveats about specific methods / parameters.
 > 3. For each supporting passage, build a `TextQuoteSelector` (`exact:` + `prefix:` + `suffix:`) and `FragmentSelector` (`page:`).
-> 4. If a placeholder's claim has no supporting evidence in the paper (the citation was loose or the claim was paraphrased beyond what the paper actually says), record it under `unresolved:` with a brief note rather than fabricating evidence. The self-review pass surfaces these to the user via `<paper-slug>/open-questions.md`.
+> 4. If a placeholder's claim has no supporting evidence in the paper (the citation was loose or the claim was paraphrased beyond what the paper actually says), record it under `unresolved:` with a brief note rather than fabricating evidence. The self-review pass surfaces these to `open-questions.md` for the user to resolve at REVIEW close-out.
 > 5. Write the per-placeholder resolutions to the specified output file.
 >
 > ### Caching the source PDF
@@ -119,28 +120,28 @@ The constitution's per-phase mode is **always sub-agent** for this phase. Spawn 
 
 ## Merge step
 
-After all per-paper sub-agents complete, the orchestrator (or a single merge sub-agent) reads each `work/notes/literature/<doi-slug>.yaml` and writes the resolutions back into `astra.yaml`:
+After all per-paper sub-sub-agents complete, the literature sub-agent reads each `work/notes/literature/<doi-slug>.yaml` and writes the resolutions back into `astra.yaml`:
 
 - For each entry in `resolutions:`, locate `prior_insights[<insight_id>]` in `astra.yaml` (sub-analysis ownership is implicit in the id; the placeholder already lives there) and set its `evidence:` field to the resolved selectors.
-- For each entry in `unresolved:`, append a line to `<paper-slug>/open-questions.md` describing the unresolved placeholder and the reason — the user resolves at REVIEW (close-out) by either supplying a different citation, weakening the placeholder's `claim:`, or removing the placeholder entirely.
+- For each entry in `unresolved:`, append a line to `open-questions.md` describing the unresolved placeholder and the reason — the user resolves at REVIEW close-out by either supplying a different citation, weakening the placeholder's `claim:`, or removing the placeholder entirely.
 - Re-run `astra validate astra.yaml` after each per-paper merge to catch any structural breakage early.
 
 A single writer (the merge step) avoids YAML round-trip conflicts that parallel writes would produce.
 
-## Rigor-dialed self-review
+## Self-review (rigor chosen per spawn)
 
-After the merge lands, a fresh-context sub-agent cross-checks each resolved `prior_insights:` entry against its cited paper:
+After the merge lands, a fresh-context Task-tool sub-agent cross-checks each resolved `prior_insights:` entry against its cited paper:
 
 - Does the `evidence:` quote belong to the cited paper at the cited page? (`astra validate --verify-evidence` does the deterministic check; the sub-agent does the semantic check.)
 - Does the quote actually justify the placeholder's `claim:`? Or is the quote technically present but tangential?
 - Does the placeholder's `claim:` actually support the decision option it's linked to via `decision_links:`?
 
-The depth of self-review is set by the constitution's frugality / rigor dial:
+The depth of self-review follows the rigor level the orchestrator picked for this spawn (read CLAUDE.md's **Rigor** section):
 
-- **Frugal:** skip review entirely, or run a single fresh-context sub-agent pass and incorporate its fixes once.
-- **Rigor:** N rounds — each round runs a fresh reviewer against the resolved `prior_insights:` + the cited papers + the target paper; LITERATURE incorporates fixes (re-spawn the per-paper sub-agent for entries that need a different quote, or adjust unresolved entries); the next round runs another fresh reviewer that has not seen the fixes. Iterate until two consecutive rounds find no fixes (the strong-termination criterion the loop already uses), or a 5-round system cap.
+- **Cheap:** skip review entirely, or run a single fresh-context Task-tool sub-agent pass and incorporate its fixes once.
+- **Heavy:** N rounds — each round spawns a fresh Task-tool reviewer against the resolved `prior_insights:` + the cited papers + the target paper; the literature sub-agent incorporates fixes (re-spawn the per-paper sub-sub-agent for entries that need a different quote, or adjust unresolved entries); the next round spawns another fresh reviewer that has not seen the fixes. Iterate until two consecutive rounds find no fixes, or a 5-round system cap.
 
-The discipline matches ARCHITECT's and SPECIFY's self-review shape: each round runs a brand-new sub-agent that does NOT see prior rounds' findings or fixes — pattern-matching on prior fixes defeats the cross-check. Reviewers output findings only; a separate fix pass (the orchestrator inline for trivial fixes, or another LITERATURE iteration for substantive changes) edits `astra.yaml`.
+The discipline matches ARCHITECT's and SPECIFY's self-review shape: each round runs a brand-new sub-agent that does NOT see prior rounds' findings or fixes — pattern-matching on prior fixes defeats the cross-check. Reviewers output findings only; the literature sub-agent edits `astra.yaml` between rounds for trivial mechanical fixes, or re-spawns the relevant per-paper sub-sub-agent for substantive changes.
 
 ### Per-round fresh sub-agent — system prompt
 
@@ -151,7 +152,7 @@ The discipline matches ARCHITECT's and SPECIFY's self-review shape: each round r
 > - `astra.yaml` — focus on every `analyses.<sub-analysis-id>.prior_insights:` entry. Each should have a resolved `evidence:` block.
 > - The cited papers (cached PDFs).
 > - `work/notes/cited_papers.yaml` — DOI lookups.
-> - `<paper-slug>/open-questions.md` — to see which placeholders the resolution sub-agents flagged unresolved.
+> - `open-questions.md` — to see which placeholders the resolution sub-sub-agents flagged unresolved.
 > - `work/reference/source/` (or `document.md`) — the target paper, for context on how the cited paper is invoked.
 >
 > ### What to check
@@ -160,7 +161,7 @@ The discipline matches ARCHITECT's and SPECIFY's self-review shape: each round r
 > 2. **Evidence justifies claim.** For each `prior_insights:` entry, does the quote actually support the `claim:`? Or is it tangential / weaker than the claim asserts?
 > 3. **Claim supports the decision.** For each placeholder's `decision_links:`, does the placeholder's claim actually justify the linked decision option(s)? Or is the link a leap?
 > 4. **Cited paper is the right paper.** Does the target paper actually invoke this DOI for this claim? (Sometimes a citation marker is misread; the wrong paper gets cached.)
-> 5. **Unresolved entries are honest.** For entries in `<paper-slug>/open-questions.md` flagged unresolved, does a closer read of the cited paper actually find supporting evidence? (If yes, the resolution sub-agent missed it; flag for re-resolution.)
+> 5. **Unresolved entries are honest.** For entries in `open-questions.md` flagged unresolved, does a closer read of the cited paper actually find supporting evidence? (If yes, the resolution sub-sub-agent missed it; flag for re-resolution.)
 >
 > ### Output
 >
@@ -191,9 +192,9 @@ The discipline matches ARCHITECT's and SPECIFY's self-review shape: each round r
 
 ### LITERATURE-fix pass between rounds
 
-After each round's findings file lands, a LITERATURE-fix pass (or the orchestrator inline for trivial mechanical fixes) responds to the findings — re-resolving placeholders with different quotes, adjusting claims, re-linking decisions, or surfacing unresolvable entries to `<paper-slug>/open-questions.md`. After any change to `astra.yaml`, re-run `astra validate astra.yaml --verify-evidence` to confirm the structural and quote-fidelity checks still pass.
+After each round's findings file lands, the literature sub-agent responds to the findings — re-resolving placeholders with different quotes, adjusting claims, re-linking decisions, or surfacing unresolvable entries to `open-questions.md`. After any change to `astra.yaml`, re-run `astra validate astra.yaml --verify-evidence` to confirm the structural and quote-fidelity checks still pass.
 
-If N hits the system cap of 5 rounds without two consecutive clean rounds, surface to the user via `AskUserQuestion`: "LITERATURE review reached round cap with N fixes still landing; continue, accept the current resolutions, or revise the constitution?" Default on user silence: accept current state, log the unfinished tail in `<paper-slug>/open-questions.md`, and proceed to IMPLEMENT.
+If N hits the 5-round system cap without two consecutive clean rounds, the literature sub-agent stops and reports back to the orchestrator. If the user is reachable, ask in prose: "LITERATURE review reached round cap with N fixes still landing; continue, accept the current resolutions, or revise scope?" If the user is unreachable, accept current state, log the unfinished tail in `open-questions.md`, and let the orchestrator decide whether to proceed or re-spawn.
 
 ## Survey signals (entry into LITERATURE)
 
@@ -201,14 +202,15 @@ If N hits the system cap of 5 rounds without two consecutive clean rounds, surfa
 - `work/notes/literature/<doi-slug>.yaml` files exist (one per cited DOI) ⇒ per-paper resolution done
 - `astra.yaml`'s `prior_insights:` entries each have a resolved `evidence:` selector ⇒ merge done
 - `astra validate astra.yaml --verify-evidence` returns clean ⇒ structural validation done
-- For frugal: at least a `work/notes/literature-review/round-1.md` with verdict `clean` (or no fixes were incorporated) ⇒ LITERATURE review done
-- For rigor: two consecutive `round-<N>.md` files with verdict `clean` ⇒ LITERATURE review done
+- For cheap: at least a `work/notes/literature-review/round-1.md` with verdict `clean` (or no fixes were incorporated) ⇒ LITERATURE review done
+- For heavy: two consecutive `round-<N>.md` files with verdict `clean` ⇒ LITERATURE review done
 
-When all of the above hold ⇒ LITERATURE complete; proceed to IMPLEMENT.
+When all of the above hold ⇒ LITERATURE complete; orchestrator proceeds to IMPLEMENT.
 
 ## Notes
 
-- **Run per-paper resolutions in parallel.** One sub-agent per cited DOI; they edit disjoint subsets of `prior_insights:` so write conflicts don't arise — but the merge step still serializes the writes back to `astra.yaml` to keep YAML round-trip safe.
+- **Run per-paper resolutions in parallel.** One Task-tool sub-sub-agent per cited DOI; they edit disjoint subsets of `prior_insights:` so write conflicts don't arise — but the merge step still serializes the writes back to `astra.yaml` to keep YAML round-trip safe.
 - **Resume is automatic.** If `work/notes/literature/<doi-slug>.yaml` already exists, skip the per-paper resolution for that DOI. The merge re-runs whenever new per-paper files appear.
-- **Unresolved is not failure.** A placeholder that no quote in the cited paper supports is a real signal — the target paper cited loosely, or paraphrased beyond what the source actually says. Surface to `<paper-slug>/open-questions.md`; don't fabricate evidence to make it green.
-- **`astra validate --verify-evidence` runs after the merge, not after each per-paper sub-agent.** Sub-agents write to per-paper YAMLs; the deterministic check happens once `astra.yaml` is updated.
+- **Unresolved is not failure.** A placeholder that no quote in the cited paper supports is a real signal — the target paper cited loosely, or paraphrased beyond what the source actually says. Surface to `open-questions.md`; don't fabricate evidence to make it green.
+- **`astra validate --verify-evidence` runs after the merge, not after each per-paper sub-sub-agent.** Sub-sub-agents write to per-paper YAMLs; the deterministic check happens once `astra.yaml` is updated.
+- **Commit each per-paper resolution as it lands.** Plus the merge as one commit, plus each review-round file as it lands. The orchestrator reads `git log` to see how far the literature sub-agent got.
