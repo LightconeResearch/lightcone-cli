@@ -13,7 +13,7 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 - `astra.yaml` — the stub from ARCHITECT (sub-analyses, inputs, outputs, narrative; empty `decisions:` / `prior_insights:` / `findings:` blocks)
 - `work/notes/architect/paper-index.md` — paper-side decision clusters, result loci, citations
 - `work/notes/architect/code-index.md` (when code present) — module map, natural decomposition, entry-points, gotchas
-- `work/notes/cited_papers.yaml` — citation marker → DOI mapping (from ACQUIRE, with `relevance:` notes added by ARCHITECT's paper-side Explore); SPECIFY uses it to write each `prior_insights:` placeholder's `doi:` so LITERATURE knows which paper to fetch
+- `work/reference/index.json` — paper-extraction's structural index; its `citations:` block maps each cited paper's BibTeX key (Path A) or synthetic `<lastname>_<year>` key (Path B) to `{locations, citation, doi}`. SPECIFY uses this to write each `prior_insights:` placeholder's `doi:` so LITERATURE knows which paper to fetch.
 - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep into; do not re-read whole)
 - `work/reference/figures/`, `work/reference/tables/`, `work/reference/metadata.json` — extracted artifacts (Path B only)
 - `work/reference/code/` (if present) — original code, canonical reference for numerics + method
@@ -22,7 +22,7 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 
 ## Outputs
 
-- `astra.yaml` — **filled form**: each sub-analysis's `decisions:` and `findings:` populated with paper-anchored `evidence:` selectors; `prior_insights:` populated as citation-only **placeholders** (id, claim, decision_links, `doi:` lookup from `cited_papers.yaml` — but no `evidence:` selector yet, LITERATURE fills those next); `narrative:` keys updated to weave `astra-anchor:` references into prose as entries land. `astra validate astra.yaml` returns clean; `astra validate astra.yaml --verify-evidence` runs after LITERATURE has resolved the placeholders.
+- `astra.yaml` — **filled form**: each sub-analysis's `decisions:` and `findings:` populated with paper-anchored `evidence:` selectors; `prior_insights:` populated as citation-only **placeholders** (id, claim, decision_links, `doi:` looked up from `work/reference/index.json#citations[<cite-key>].doi` — but no `evidence:` selector yet, LITERATURE fills those next); `narrative:` keys updated to weave `astra-anchor:` references into prose as entries land. `astra validate astra.yaml` returns clean; `astra validate astra.yaml --verify-evidence` runs after LITERATURE has resolved the placeholders.
 - `universes/baseline.yaml` — selects the paper's choices (where paper and code disagree per the canonical-resolution rule, see "Material conflicts" below)
 - `implementation-notes.md` — concise practical guidance for the IMPLEMENT phase: tricky algorithms, numerical gotchas, data-format quirks, things the spec can't capture. Bullets, not essays.
 - `targets/targets.md` — small target ledger COMPARE consumes: per output (already declared by ARCHITECT), a brief entry with type, priority, paper value, expected match criteria, and the path to the reference figure / table / metric (when applicable, copy the reference file into `targets/` so the directory is self-contained)
@@ -52,20 +52,20 @@ Read the paper's section(s) covering this sub-analysis. Author:
 
    Read `.claude/guides/decision-guide.md` (in lightcone-cli's plugin bundle) for the full definition of what counts. **Only exclude pure tooling choices** (language, library, file format) and fixed constraints. A typical sub-analysis has 2–6 decisions; if a sub-analysis has fewer than 2, revisit `work/notes/architect/paper-index.md` and reconsider.
 
-2. **`prior_insights:`** — for every citation marker the paper invokes that bears on a decision in this sub-analysis (`[12]`, `Smith+24`, `(Doe & Lee 2023)`), record a **placeholder**: an `id:`, a `claim:` describing what the cited paper supports about the decision (the target paper's framing of why it cites that paper here), a `doi:` looked up from `work/notes/cited_papers.yaml`, and `decision_links:` mapping the placeholder to the relevant decision option(s). **Do not author the `evidence:` selector** — that's LITERATURE's job. Leave `evidence:` absent or empty; LITERATURE fetches the cited paper, finds the supporting quote, and authors the resolved selector back into this placeholder. The placeholder shape:
+2. **`prior_insights:`** — for every `\cite{<key>}` (Path A) or rendered citation invocation (Path B) the paper invokes that bears on a decision in this sub-analysis, record a **placeholder**: an `id:`, a `claim:` describing what the cited paper supports about the decision (the target paper's framing of why it cites that paper here), a `doi:` looked up from `work/reference/index.json#citations[<cite-key>].doi`, and `decision_links:` mapping the placeholder to the relevant decision option(s). **Do not author the `evidence:` selector** — that's LITERATURE's job. Leave `evidence:` absent or empty; LITERATURE fetches the cited paper, finds the supporting quote, and authors the resolved selector back into this placeholder. The placeholder shape:
 
    ```yaml
    prior_insights:
      <insight_id>:
        id: <insight_id>
        claim: "<what the cited paper supports about the decision>"
-       doi: "<DOI from cited_papers.yaml>"
+       doi: "<DOI from index.json#citations[<cite-key>].doi>"
        # evidence: omitted — LITERATURE fills this in
        decision_links:
          <decision_id>: [<option_id>, ...]
    ```
 
-   Don't pre-emptively fetch the cited paper or guess its content; LITERATURE does that with fresh context per paper.
+   When the citation's DOI is unresolved (`citations[<key>].doi: null` — flagged in `extraction_warnings`), record the placeholder with `doi: null` and a note in the `claim:`; LITERATURE will surface it as an unresolved entry rather than fabricate evidence. Don't pre-emptively fetch the cited paper or guess its content; LITERATURE does that with fresh context per paper.
 
 3. **`findings:`** — paper-level claims and quantitative results scoped to this sub-analysis, each with source-anchored `evidence:` (verbatim quote against the paper). Pull the verbatim claims for each output's expected value from the paper text + the result loci in `paper-index.md`.
 
@@ -115,7 +115,7 @@ Self-review depth follows the rigor level the orchestrator picked for this spawn
 > - `work/notes/architect/code-index.md` (when code present)
 > - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep into; do not re-read whole)
 > - `work/reference/code/` (when present) — canonical reference for numerics + method
-> - `work/notes/cited_papers.yaml` — citation marker → DOI mapping (use to confirm each `prior_insights:` placeholder's `doi:` matches what the paper cites)
+> - `work/reference/index.json#citations` — cite-key → `{locations, citation, doi}` mapping from paper-extraction (use to confirm each `prior_insights:` placeholder's `doi:` matches what the paper cites)
 >
 > ### What to check
 >

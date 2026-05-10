@@ -31,7 +31,7 @@ The reproduction runs through nine phases (zero-indexed). Phase 0 (INTERVIEW) an
 | # | Phase | Where it runs | Reference | Primary outputs |
 |---|---|---|---|---|
 | 0 | INTERVIEW | orchestrator session | [`references/interview.md`](references/interview.md) | per-paper `CLAUDE.md` |
-| 1 | ACQUIRE | sub-agent | [`references/acquire.md`](references/acquire.md) | `work/reference/{source/, paper.pdf, figures/, tables/, metadata.json, code/, code-status.yaml}`; `work/notes/cited_papers.yaml` |
+| 1 | ACQUIRE | sub-agent | [`references/acquire.md`](references/acquire.md) | `work/reference/{source/, paper.pdf, figures/, tables/, metadata.json, code/, code-status.yaml, index.json}` (index.json's `citations:` block carries each cited paper's `{locations, citation, doi}`) |
 | 2 | ARCHITECT | sub-agent | [`references/architect.md`](references/architect.md) | stub `astra.yaml` (sub-analyses, inputs, outputs, narrative); `work/notes/architect/{paper-index.md, code-index.md}` |
 | 3 | SPECIFY | sub-agent | [`references/specify.md`](references/specify.md) | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
 | 4 | LITERATURE | sub-agent | [`references/literature.md`](references/literature.md) | `astra.yaml`'s `prior_insights:` resolved with `evidence:` selectors; per-paper PDFs cached via `astra paper add` |
@@ -116,7 +116,6 @@ Workdir signals — file existence implies the phase has been done:
 | `work/reference/code/` | ACQUIRE (code clone) |
 | `work/notes/architect/{paper-index.md,code-index.md}` | ARCHITECT (Explore pass) |
 | `astra.yaml` validates with empty `decisions:` / `prior_insights:` / `findings:` blocks | ARCHITECT (stub) |
-| `work/notes/cited_papers.yaml` | ARCHITECT (citation extraction) |
 | `astra.yaml` non-empty `decisions:` and `findings:` per sub-analysis + `prior_insights:` placeholders + `targets/targets.md` + `implementation-notes.md` | SPECIFY |
 | `astra.yaml`'s `prior_insights:` resolved with `evidence:` selectors; `work/notes/literature/<doi-slug>.yaml` files present | LITERATURE |
 | recipes present in `astra.yaml` | IMPLEMENT |

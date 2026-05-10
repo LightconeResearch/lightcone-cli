@@ -7,8 +7,8 @@ This phase runs as the orchestrator-spawned `architect` sub-agent. Internally it
 ## Inputs
 
 - `work/reference/source/` (Path A — arXiv LaTeX) **or** `work/reference/document.md` + `work/reference/figures/` + `work/reference/tables/` + `work/reference/metadata.json` (Path B — Docling)
+- `work/reference/index.json` — structural index emitted by paper-extraction (consumed by the paper-side Explore; its `citations:` block already carries each cited paper's `{locations, citation, doi}`)
 - `work/reference/code/` — the reference code repo (when present)
-- `work/notes/cited_papers.yaml` — citation marker → DOI mapping from ACQUIRE (consumed by the paper-side Explore for cross-referencing citations against decision clusters)
 - CLAUDE.md — the per-paper artifact at the workdir root; its **Goal** section names the user's intended replication targets
 - `work/notes/notes.md` — user-supplied prior notes, if any (read by every sub-agent if present)
 
@@ -38,8 +38,7 @@ From inside the architect sub-agent's session, spawn two Task-tool Explore sub-a
 > 2. **Sub-analysis boundary candidates.** Where does the paper's pipeline have natural seams — places one stage's output flows as the next stage's input? Look for: a reconstruction stage producing a catalog consumed by a clustering stage; an MCMC producing a chain consumed by a parameter-estimation stage; a fit producing posteriors consumed by a comparison stage. Name each candidate with a noun phrase (`reconstruction`, `clustering`, `bao_fit`) and one-line description.
 > 3. **Decision clusters per sub-analysis.** Group the paper's choices by where they sit in the pipeline. Don't enumerate every choice — name the *clusters* (e.g. "fitting prior choices", "selection criteria for the catalog"). SPECIFY drills back into the paper to author each `decisions:` entry; you're indicating where to look.
 > 4. **Result loci.** Which figures / tables / in-text metrics report the paper's primary and secondary results? Use `path:line` for the `\includegraphics{}` or table source (Path A); use `metadata.json` indexes for Path B. Tag each as primary / secondary based on the paper's own emphasis.
-> 5. **Augment `work/notes/cited_papers.yaml` with relevance notes.** Read the file (already populated by ACQUIRE with marker → citation → DOI for every citation in the bibliography). For each citation that justifies a method, parameter, or value used by the analysis (not general background), add a `relevance:` field with a one-line note on why the citation matters for replication. Skip citations that are pure background. Edit the file in place; preserve every entry (do not delete, even if you don't add relevance to most of them).
-> 6. **Data-flow shape.** A short prose paragraph: "Inputs flow from <source datasets> through <stage 1> producing <intermediate>, into <stage 2> producing <intermediate>, into <stage 3> producing <primary result>." This becomes the seed for the root narrative's data-flow paragraph.
+> 5. **Data-flow shape.** A short prose paragraph: "Inputs flow from <source datasets> through <stage 1> producing <intermediate>, into <stage 2> producing <intermediate>, into <stage 3> producing <primary result>." This becomes the seed for the root narrative's data-flow paragraph.
 >
 > ### Output format — `work/notes/architect/paper-index.md`
 >
@@ -63,13 +62,12 @@ From inside the architect sub-agent's session, spawn two Task-tool Explore sub-a
 > <one-paragraph prose: how inputs flow through the pipeline to the primary result>.
 > ```
 >
-> Augmented relevance notes go directly into `work/notes/cited_papers.yaml`, not the index file.
->
 > ### Rules
 >
 > - **Bounded read.** Do not read the code repo. Your job is paper-side only.
-> - **Index, do not author.** No `decisions:`, no `prior_insights:`, no `findings:`. Those are SPECIFY's. Your primary output is markdown (the index); the only YAML you touch is `work/notes/cited_papers.yaml`, and there only the `relevance:` field per existing entry.
+> - **Index, do not author.** No `decisions:`, no `prior_insights:`, no `findings:`. Those are SPECIFY's. Your output is markdown (the index); you do not write any YAML.
 > - **Quote sparingly.** Brief paper quotes are OK to disambiguate a result locus or a sub-analysis boundary; verbatim claim quotes are SPECIFY's substrate, not yours.
+> - **Bibliography is already resolved.** `work/reference/index.json#citations` carries each cited paper's text + DOI from paper-extraction. You don't need to re-derive that mapping; SPECIFY and LITERATURE will read from it directly.
 
 ### Code-side Explore — system prompt
 
@@ -260,7 +258,6 @@ After the self-review terminates, the architect sub-agent updates CLAUDE.md's **
 ## Survey signals (entry into ARCHITECT)
 
 - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) exists ⇒ ready to architect
-- `work/notes/cited_papers.yaml` exists from ACQUIRE ⇒ paper-side Explore can augment it with `relevance:` notes
 - `work/notes/architect/paper-index.md` and `work/notes/architect/code-index.md` (if code present) exist ⇒ Explore pass done
 - `astra.yaml` exists; `astra validate astra.yaml` returns clean; sub-analyses + inputs + outputs + narrative populated; `decisions:` / `prior_insights:` / `findings:` blocks are present-and-empty ⇒ stub written
 - For cheap: `work/notes/architect/review-round-1.md` with verdict `clean` (or no fixes were incorporated) ⇒ ARCHITECT done
@@ -269,7 +266,7 @@ After the self-review terminates, the architect sub-agent updates CLAUDE.md's **
 ## Notes
 
 - **Run the Explore reads in parallel.** They're fully independent (one reads paper-only, one reads code-only). Synthesis runs once, after both index files exist.
-- **The Explore reads do not write `astra.yaml`.** They write index markdown (and the paper-side adds `relevance:` notes to `work/notes/cited_papers.yaml`). Only the synthesis step writes the stub. This separation keeps each Explore read's context bounded — it doesn't have to think about ASTRA's schema, only the read.
+- **The Explore reads do not write `astra.yaml`.** They write index markdown. Only the synthesis step writes the stub. This separation keeps each Explore read's context bounded — it doesn't have to think about ASTRA's schema, only the read.
 - **The stub's empty blocks are intentional.** `decisions: {}`, `prior_insights: {}`, `findings: {}` make it clear at a glance that ARCHITECT's job is structural, and that SPECIFY is what fills them. Don't try to half-author content — empty is honest.
 - **Code-as-canonical for structure, paper-as-canonical for narrative voice.** The code reveals where the real stage boundaries are; the paper provides the words to describe them. The stub uses both.
 - **Resume is automatic.** If `astra.yaml` already validates and has the structural fields populated, on re-spawn the architect sub-agent skips Step 1 and Step 2 and runs Step 3 (review) only.

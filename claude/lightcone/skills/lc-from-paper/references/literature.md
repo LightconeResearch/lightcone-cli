@@ -9,7 +9,7 @@ This phase runs as the orchestrator-spawned `literature` sub-agent. Internally i
 ## Inputs
 
 - `astra.yaml` — filled by SPECIFY's paper (and code) passes; each sub-analysis has `prior_insights:` entries with `claim:` + `doi:` + `decision_links:` but no `evidence:` selector. These are the placeholders LITERATURE resolves.
-- `work/notes/cited_papers.yaml` — citation marker → DOI → relevance mapping (built by ACQUIRE, augmented with relevance notes by ARCHITECT's paper-side Explore). Used to discover which DOIs need fetching, complementing the per-placeholder `doi:` lookup.
+- `work/reference/index.json#citations` — paper-extraction's cite-key → `{locations, citation, doi}` mapping for every entry in the target paper's bibliography. Used as the canonical cite-key → DOI lookup when cross-checking placeholder DOIs and when surfacing unresolved-DOI cases.
 - `work/notes/architect/paper-index.md` — has the decision clusters per sub-analysis; per-paper sub-sub-agents get it as context.
 - `work/reference/source/` (Path A — arXiv LaTeX) or `work/reference/document.md` (Path B — Docling) — the target paper (for context on how the cited paper is invoked).
 - CLAUDE.md — **Rigor** for this spawn's chosen rigor level.
@@ -151,7 +151,7 @@ The discipline matches ARCHITECT's and SPECIFY's self-review shape: each round r
 >
 > - `astra.yaml` — focus on every `analyses.<sub-analysis-id>.prior_insights:` entry. Each should have a resolved `evidence:` block.
 > - The cited papers (cached PDFs).
-> - `work/notes/cited_papers.yaml` — DOI lookups.
+> - `work/reference/index.json#citations` — cite-key → `{locations, citation, doi}` mapping from paper-extraction.
 > - `open-questions.md` — to see which placeholders the resolution sub-sub-agents flagged unresolved.
 > - `work/reference/source/` (or `document.md`) — the target paper, for context on how the cited paper is invoked.
 >
