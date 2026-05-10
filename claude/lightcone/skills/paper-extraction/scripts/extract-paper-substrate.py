@@ -9,6 +9,7 @@ Reads `work/reference/` and produces:
   - tables/<label-slug>.tex         # one file per LaTeX table block
   - bibliography-source.bib         # copy of any .bib found in source/ (Path A only)
   - bibliography-source.bbl         # copy of any .bbl found in source/ (Path A only)
+  - .doi-cache.json                 # Crossref/ADS lookup cache for re-run idempotency
   - index.json                      # single top-level index of everything extracted
 
 Path A (arXiv LaTeX source): reads from work/reference/source/.
@@ -20,17 +21,29 @@ The script handles only the deterministic pieces. Semantic interpretation —
 extraction — is the agent's job after this script runs. The agent reads
 index.json (specifically extraction_warnings) and fixes or surfaces gaps.
 
+`index.json`'s `citations:` block enriches the cite-key → location mapping
+with each cited paper's full text + resolved DOI, so downstream consumers
+can do citation-key lookups for a paper's bibliography directly (no separate
+cited-papers index file).
+
 Usage:
     python extract-paper-substrate.py [--reference-dir work/reference]
 
-Idempotent — skips files that already exist.
+Idempotent — skips files that already exist; cached DOI lookups don't
+re-hit the network on re-runs.
 """
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import shutil
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from difflib import SequenceMatcher
 from pathlib import Path
 
 
@@ -53,6 +66,20 @@ CITE = re.compile(
     r"(?:\[[^\]]*\]){0,2}\{([^}]+)\}"
 )
 ASTRA_SCHEMA_VERSION = "0.0.7"  # bump when the ASTRA spec version we target changes
+
+# Bump when the structural shape of `index.json` changes in a backwards-incompatible
+# way (a new key added is fine; renaming/reshaping an existing value breaks consumers).
+# v1: introduced explicit versioning; `citations:` value shape transitioned from
+#     `key -> [locations]` to `key -> {locations, citation, doi}`.
+INDEX_SCHEMA_VERSION = 1
+
+CROSSREF_API = "https://api.crossref.org/works"
+CROSSREF_USER_AGENT = (
+    "paper-extraction (https://github.com/LightconeResearch/lightcone-cli; "
+    "mailto:cailmdaley@gmail.com)"
+)
+ADS_API = "https://api.adsabs.harvard.edu/v1/search/query"
+NETWORK_TIMEOUT_S = 10
 CAPTION = re.compile(r"\\caption\{((?:[^{}]|\{[^}]*\})*)\}", re.DOTALL)
 LABEL = re.compile(r"\\label\{([^}]+)\}")
 INCLUDEGRAPHICS = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
@@ -581,6 +608,716 @@ def copy_embedded_bibliography(reference_dir: Path, source_dir: Path) -> tuple[s
 
 
 # ---------------------------------------------------------------------------
+# Bibliography resolution — shared by Path A (.bib/.bbl) and Path B (Docling)
+# ---------------------------------------------------------------------------
+#
+# Produces a list of bibliography entries, each `{key, citation, doi}`, that
+# downstream joins against `extract_citations()`'s `{key: [locations]}` to enrich
+# the `citations:` block in `index.json`.
+#
+# Path A: parse `bibliography-source.bib` first, fall back to `.bbl`. Keys come
+# from BibTeX directly (case-sensitive, unique per-paper, identical to what the
+# tex source's `\cite{}` invocations reference).
+#
+# Path B: parse the references section at the tail of `document.md`. Docling has
+# no \cite{} markers in the prose so we synthesize keys from first-author + year
+# (`asgari_2017`, disambiguated with letter suffixes when needed). The synthetic
+# keys carry no `locations:` entries — citation invocations from rendered prose
+# are a separate extraction problem flagged in `extraction_warnings`.
+
+
+# Parse @type{key, field = value, ...} entries. Skip @comment, @preamble, @string.
+BIB_ENTRY_HEAD = re.compile(r"@(\w+)\s*\{\s*([^,\s]+)\s*,", re.IGNORECASE)
+DOI_IN_TEXT = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
+ARXIV_ID_IN_TEXT = re.compile(
+    r"(?:arXiv:|astro-ph/|hep-(?:th|ph)/|gr-qc/|cond-mat/|math/|cs\.[A-Z]{2}/)"
+    r"\s*([a-zA-Z0-9\-./]+)",
+    re.IGNORECASE,
+)
+# Newer-format arXiv IDs without prefix: 4 digits, dot, 4-5 digits, optional vN
+ARXIV_BARE = re.compile(r"\b(\d{4}\.\d{4,5})(?:v\d+)?\b")
+
+
+def parse_bib(content: str) -> list[dict]:
+    """Parse BibTeX content into a list of entries.
+
+    Each entry: `{"type": str, "key": str, "fields": {<lowercased-field>: <stripped-value>}}`.
+    Skips `@comment`, `@preamble`, `@string` (handling string macros properly would require
+    substitution; for our enrichment purposes we can live without it).
+    Field values are unwrapped from `{...}` or `"..."` and have surrounding whitespace stripped.
+    Doesn't try to interpret LaTeX accents or commands — keeps them verbatim so re-running
+    on the same input is stable.
+    """
+    entries: list[dict] = []
+    i = 0
+    while i < len(content):
+        match = BIB_ENTRY_HEAD.search(content, i)
+        if not match:
+            break
+        entry_type = match.group(1).lower()
+        key = match.group(2)
+        cursor = match.end()
+        if entry_type in ("comment", "preamble", "string"):
+            # Skip to matching closing brace
+            depth = 1
+            while cursor < len(content) and depth > 0:
+                if content[cursor] == "{":
+                    depth += 1
+                elif content[cursor] == "}":
+                    depth -= 1
+                cursor += 1
+            i = cursor
+            continue
+        fields, cursor = _parse_bib_fields(content, cursor)
+        entries.append({"type": entry_type, "key": key, "fields": fields})
+        i = cursor
+    return entries
+
+
+def _parse_bib_fields(content: str, start: int) -> tuple[dict[str, str], int]:
+    """Parse `field = value, field = value, ...}` starting at `start`.
+
+    Returns the field dict plus the offset just after the closing entry brace.
+    """
+    fields: dict[str, str] = {}
+    i = start
+    while i < len(content):
+        # Skip whitespace + commas between fields
+        while i < len(content) and content[i] in " \t\n\r,":
+            i += 1
+        if i >= len(content) or content[i] == "}":
+            return fields, i + 1
+        # Field name
+        name_start = i
+        while i < len(content) and content[i] not in " \t\n\r=":
+            i += 1
+        name = content[name_start:i].strip().lower()
+        # Skip whitespace + `=`
+        while i < len(content) and content[i] in " \t\n\r":
+            i += 1
+        if i >= len(content) or content[i] != "=":
+            # Malformed entry — bail
+            return fields, _skip_to_entry_end(content, i)
+        i += 1
+        while i < len(content) and content[i] in " \t\n\r":
+            i += 1
+        # Field value: `{...}` (balanced), `"..."`, or bare token
+        value, i = _read_bib_value(content, i)
+        if name:
+            fields[name] = value
+    return fields, i
+
+
+def _read_bib_value(content: str, i: int) -> tuple[str, int]:
+    if i >= len(content):
+        return "", i
+    if content[i] == "{":
+        depth = 1
+        i += 1
+        start = i
+        while i < len(content) and depth > 0:
+            if content[i] == "\\" and i + 1 < len(content):
+                i += 2
+                continue
+            if content[i] == "{":
+                depth += 1
+            elif content[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        return content[start:i].strip(), i + 1
+    if content[i] == '"':
+        i += 1
+        start = i
+        while i < len(content) and content[i] != '"':
+            if content[i] == "\\" and i + 1 < len(content):
+                i += 2
+                continue
+            i += 1
+        return content[start:i].strip(), i + 1
+    # Bare token (number, string macro reference)
+    start = i
+    while i < len(content) and content[i] not in " \t\n\r,}":
+        i += 1
+    return content[start:i].strip(), i
+
+
+def _skip_to_entry_end(content: str, i: int) -> int:
+    depth = 1
+    while i < len(content) and depth > 0:
+        if content[i] == "{":
+            depth += 1
+        elif content[i] == "}":
+            depth -= 1
+        i += 1
+    return i
+
+
+def parse_bbl(content: str) -> list[dict]:
+    """Parse a rendered `.bbl` into bibitem records.
+
+    Each `\\bibitem[label]{key}` introduces an entry whose rendered text runs
+    until the next `\\bibitem` or end-of-file. `.bbl` has no field structure,
+    so we return `{key, raw}` — the resolver mines DOI/arXiv-ID hints from `raw`.
+    """
+    bibitem = re.compile(r"\\bibitem(?:\[[^\]]*\])?\s*\{([^}]+)\}", re.DOTALL)
+    matches = list(bibitem.finditer(content))
+    out: list[dict] = []
+    for idx, match in enumerate(matches):
+        key = match.group(1).strip()
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(content)
+        raw = content[start:end].strip()
+        out.append({"key": key, "raw": raw})
+    return out
+
+
+def parse_doc_references(document_md: str) -> list[str]:
+    """Parse the references section out of Docling-rendered markdown.
+
+    Heuristic: find a heading whose text matches `References` / `Bibliography`
+    / `Citations` (case-insensitive, optional numeric prefix), take everything
+    after it, split on blank lines, drop empty paragraphs.
+    """
+    heading_re = re.compile(
+        r"^\s*#{1,6}\s+(?:\d+\.?\s+)?(?:references|bibliography|citations)\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    match = heading_re.search(document_md)
+    if not match:
+        return []
+    body = document_md[match.end():]
+    # If a subsequent top-level heading appears, stop there (acknowledgments,
+    # appendices, supplementary). Stop at the first heading at the same level
+    # or shallower than the references heading.
+    next_section = re.search(r"^\s*#{1,6}\s+\S", body, re.MULTILINE)
+    if next_section:
+        body = body[: next_section.start()]
+    # Split on blank lines into paragraphs; trim and drop empties.
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body)]
+    return [p for p in paragraphs if p]
+
+
+def format_bib_citation(fields: dict[str, str]) -> str:
+    """Build a one-line human-readable citation from a parsed `.bib` entry.
+
+    Best-effort — uses what's present (author, year, title, journal, volume, page).
+    Not a publication-quality formatter; just enough to be useful as a reading
+    aid when a downstream agent sees `index.json`'s `citations:` block.
+    """
+    author = _first_author_from_bib_field(fields.get("author", ""))
+    others = ", et al." if " and " in fields.get("author", "") else ""
+    year = fields.get("year", "").strip()
+    title = _clean_bib_text(fields.get("title", "")).strip().rstrip(".")
+    journal = _clean_bib_text(
+        fields.get("journal", "") or fields.get("booktitle", "") or fields.get("howpublished", "")
+    ).strip()
+    volume = fields.get("volume", "").strip()
+    pages = fields.get("pages", "").strip().replace("--", "-")
+    parts = []
+    if author:
+        parts.append(f"{author}{others}")
+    if year:
+        parts.append(f"({year})")
+    if title:
+        parts.append(f"{title}.")
+    if journal:
+        tail = journal
+        if volume:
+            tail += f" {volume}"
+        if pages:
+            tail += f", {pages}"
+        parts.append(tail)
+    return " ".join(parts).strip() or _clean_bib_text(fields.get("note", "")).strip()
+
+
+def _first_author_from_bib_field(author_field: str) -> str:
+    if not author_field:
+        return ""
+    # Split on ' and ' but respect outer braces — `{Planck Collaboration}` stays one author.
+    first = _split_first_author(author_field).strip()
+    # Brace-wrapped single name w/o internal comma: `{Planck Collaboration}` -> "Planck Collaboration".
+    if first.startswith("{") and "," not in _strip_outer_braces(first):
+        return _clean_bib_text(first.strip("{}"))
+    # BibTeX comma form: "Last, First" (incl. `{Abdalla}, Elcio` which IS comma-form
+    # with brace-protected lastname) -> "Last, F."
+    if _has_top_level_comma(first):
+        last, _, rest = _split_at_top_level_comma(first)
+        initials = " ".join(part[0] + "." for part in _clean_bib_text(rest).split() if part)
+        return f"{_clean_bib_text(last).strip()}, {initials}".strip(", ")
+    # "First Last" -> "Last, F."
+    parts = _clean_bib_text(first).split()
+    if len(parts) == 1:
+        return parts[0]
+    last = parts[-1]
+    initials = " ".join(p[0] + "." for p in parts[:-1] if p)
+    return f"{last}, {initials}"
+
+
+def _strip_outer_braces(s: str) -> str:
+    s = s.strip()
+    while s.startswith("{") and s.endswith("}"):
+        s = s[1:-1].strip()
+    return s
+
+
+def _has_top_level_comma(s: str) -> bool:
+    depth = 0
+    for c in s:
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            return True
+    return False
+
+
+def _split_at_top_level_comma(s: str) -> tuple[str, str, str]:
+    depth = 0
+    for i, c in enumerate(s):
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            return s[:i], ",", s[i + 1:]
+    return s, "", ""
+
+
+def _split_first_author(author_field: str) -> str:
+    """Return the substring up to the first top-level ` and ` separator."""
+    depth = 0
+    i = 0
+    while i < len(author_field):
+        if author_field[i] == "{":
+            depth += 1
+        elif author_field[i] == "}":
+            depth -= 1
+        elif depth == 0 and author_field[i:i + 5].lower() == " and ":
+            return author_field[:i]
+        i += 1
+    return author_field
+
+
+def _clean_bib_text(text: str) -> str:
+    """Strip the most common BibTeX/LaTeX wrappers so citations read cleanly.
+
+    Not exhaustive — anything we don't recognize passes through verbatim.
+    """
+    if not text:
+        return ""
+    text = re.sub(r"\\(?:textit|textbf|emph|texttt|mbox|protect)\s*\{([^{}]*)\}", r"\1", text)
+    text = re.sub(r"\\(?:url|href)\s*\{[^}]*\}\s*\{?([^{}]*)\}?", r"\1", text)
+    text = text.replace("{\\&}", "&").replace("\\&", "&")
+    text = re.sub(r"\{\\['\"`^~]([a-zA-Z])\}", r"\1", text)  # {\'e} -> e (lossy but readable)
+    text = re.sub(r"\\['\"`^~]\{([a-zA-Z])\}", r"\1", text)
+    text = re.sub(r"[{}]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_arxiv_id(raw: str) -> str | None:
+    """Turn an `eprint` field or in-text arXiv id into a clean `YYMM.NNNNN`
+    (new-style) or `field/YYMMNNN` (pre-2007) form. Returns None if no
+    recognizable ID."""
+    raw = raw.strip().lower()
+    raw = re.sub(r"^arxiv:", "", raw)
+    raw = re.sub(r"v\d+$", "", raw)  # drop version
+    if re.match(r"^\d{4}\.\d{4,5}$", raw):
+        return raw
+    if re.match(r"^[a-z\-]+(?:\.[a-z]{2})?/\d{7}$", raw):
+        return raw
+    return None
+
+
+def _doi_from_arxiv(arxiv_id: str) -> str:
+    return f"10.48550/arXiv.{arxiv_id}"
+
+
+def _extract_doi_hints_from_text(text: str) -> tuple[str | None, str | None]:
+    """Mine free-text bibliography rendering for DOI and arXiv ID.
+
+    Returns (doi, arxiv_id), each None when not found. DOI parsing strips trailing
+    punctuation that often follows DOIs in rendered text.
+    """
+    doi = None
+    match = DOI_IN_TEXT.search(text)
+    if match:
+        doi = match.group(0).rstrip(".,;)\"'>")
+    arxiv = None
+    match = ARXIV_ID_IN_TEXT.search(text)
+    if match:
+        arxiv = _normalize_arxiv_id(match.group(1))
+    if not arxiv:
+        match = ARXIV_BARE.search(text)
+        if match:
+            arxiv = match.group(1)
+    return doi, arxiv
+
+
+# Bibitem rendering tends to start with the authors (e.g. "Asgari, M., Lin, C.-A.,...").
+# Year usually follows in `\d{4}` form. This regex is sloppy on purpose — we just want
+# `first-author` for a synthetic key or a Crossref query, not a parser.
+LASTNAME_YEAR = re.compile(r"^([A-Z][A-Za-zÀ-ÿ\-']+).*?\b(19\d{2}|20\d{2})\b", re.DOTALL)
+
+
+def parse_rendered_entry(raw: str) -> dict:
+    """Extract first-author lastname + year from a rendered citation paragraph.
+
+    Returns `{"first_author": str, "year": str, "title_guess": str}` — best effort.
+    Used to build synthetic keys (Path B) and Crossref title queries.
+    """
+    cleaned = _clean_bib_text(raw)
+    match = LASTNAME_YEAR.match(cleaned)
+    first = match.group(1) if match else ""
+    year = match.group(2) if match else ""
+    # Title guess: take the chunk after the year up to next period that isn't an initial.
+    title_guess = ""
+    if year:
+        tail = cleaned.split(year, 1)[1]
+        # Drop a leading delimiter (.,) plus whitespace
+        tail = tail.lstrip(",.: ")
+        # Title ends at the first period followed by a space + capital letter that introduces
+        # journal/volume metadata. Heuristic — good enough for Crossref queries.
+        sentence_end = re.search(r"\.\s+[A-Z]", tail)
+        title_guess = tail[: sentence_end.start()] if sentence_end else tail
+    return {
+        "first_author": first.strip(),
+        "year": year,
+        "title_guess": title_guess.strip().rstrip(".").strip(),
+        "raw_clean": cleaned,
+    }
+
+
+def synth_key(first_author: str, year: str, taken: set[str]) -> str:
+    """Build a unique synthetic key for a Path B entry.
+
+    `<lastname>_<year>`, lowercased. If the name+year pair already exists in
+    `taken`, append a letter suffix (`a`, `b`, ...).
+    """
+    base = re.sub(r"[^a-z0-9]+", "_", (first_author or "anon").lower()).strip("_")
+    if not base:
+        base = "anon"
+    year = year or "ny"
+    candidate = f"{base}_{year}"
+    if candidate not in taken:
+        return candidate
+    for suffix in "abcdefghijklmnopqrstuvwxyz":
+        if f"{candidate}{suffix}" not in taken:
+            return f"{candidate}{suffix}"
+    # 26 collisions is absurd but be safe.
+    counter = 1
+    while f"{candidate}_{counter}" in taken:
+        counter += 1
+    return f"{candidate}_{counter}"
+
+
+# ---------------------------------------------------------------------------
+# DOI resolution
+
+
+class DOIResolver:
+    """Resolve a bibliography entry to a DOI string, with on-disk caching.
+
+    Resolution order, returning the first hit:
+      1. `doi:` field if present in the parsed entry.
+      2. `eprint:` field (or in-text arXiv ID) -> `10.48550/arXiv.<id>`.
+      3. Crossref bibliographic query against the cleaned title + first-author.
+      4. ADS title search (only if `ADS_API_TOKEN` env var or `~/.ads/dev_key` is present).
+
+    Caches `(title, first_author) -> doi` to `cache_path` so re-runs don't re-hit
+    the network. Unresolvable entries cache `None` too — re-running won't retry
+    a known miss (delete the cache to force re-resolution).
+    """
+
+    def __init__(self, cache_path: Path):
+        self.cache_path = cache_path
+        self.cache: dict[str, dict] = {}
+        if cache_path.exists():
+            try:
+                self.cache = json.loads(cache_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                self.cache = {}
+        self.ads_key = self._load_ads_key()
+        self.network_failures = 0
+
+    @staticmethod
+    def _load_ads_key() -> str | None:
+        env = os.environ.get("ADS_API_TOKEN") or os.environ.get("ADS_DEV_KEY")
+        if env:
+            return env.strip()
+        for path in (Path.home() / ".ads" / "dev_key", Path.home() / ".config" / "ads" / "dev_key"):
+            if path.is_file():
+                try:
+                    return path.read_text().strip() or None
+                except OSError:
+                    pass
+        return None
+
+    def resolve(
+        self,
+        title: str,
+        first_author: str,
+        explicit_doi: str | None = None,
+        arxiv_id: str | None = None,
+    ) -> tuple[str | None, str]:
+        """Resolve to a DOI. Returns `(doi-or-None, source-tag)`.
+
+        `source-tag` is one of `doi-field`, `arxiv-eprint`, `crossref`, `ads`, `unresolved`.
+        """
+        if explicit_doi:
+            return self._normalize_doi(explicit_doi), "doi-field"
+        if arxiv_id:
+            return _doi_from_arxiv(arxiv_id), "arxiv-eprint"
+        cache_key = self._cache_key(title, first_author)
+        if cache_key in self.cache:
+            entry = self.cache[cache_key]
+            return entry.get("doi"), entry.get("source", "unresolved")
+        # Network resolution
+        doi, source = self._resolve_via_crossref(title, first_author)
+        if not doi and self.ads_key:
+            doi, source = self._resolve_via_ads(title, first_author)
+        self.cache[cache_key] = {"doi": doi, "source": source, "title": title, "first_author": first_author}
+        return doi, source
+
+    @staticmethod
+    def _normalize_doi(doi: str) -> str:
+        doi = doi.strip()
+        # Strip URL prefix variants
+        doi = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/)", "", doi, flags=re.IGNORECASE)
+        return doi.rstrip(".,;)\"'>")
+
+    @staticmethod
+    def _cache_key(title: str, first_author: str) -> str:
+        digest = hashlib.sha256(
+            f"{title.lower().strip()}||{first_author.lower().strip()}".encode("utf-8")
+        ).hexdigest()
+        return digest[:24]
+
+    def _resolve_via_crossref(self, title: str, first_author: str) -> tuple[str | None, str]:
+        if not title:
+            return None, "unresolved"
+        query = f"{title} {first_author}".strip()
+        url = f"{CROSSREF_API}?query.bibliographic={urllib.parse.quote(query)}&rows=1"
+        try:
+            data = self._http_get_json(url)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            self.network_failures += 1
+            return None, "unresolved"
+        items = ((data or {}).get("message", {}) or {}).get("items", []) or []
+        if not items:
+            return None, "unresolved"
+        top = items[0]
+        candidate_doi = top.get("DOI")
+        candidate_titles = top.get("title") or []
+        if not candidate_doi:
+            return None, "unresolved"
+        # Title-similarity gate: drop noisy hits where the top result clearly isn't
+        # the paper we asked about.
+        if candidate_titles and _title_similarity(title, candidate_titles[0]) < 0.55:
+            return None, "unresolved"
+        return self._normalize_doi(candidate_doi), "crossref"
+
+    def _resolve_via_ads(self, title: str, first_author: str) -> tuple[str | None, str]:
+        if not title:
+            return None, "unresolved"
+        q = f'title:"{title}"'
+        if first_author:
+            q += f' author:"{first_author}"'
+        params = {"q": q, "fl": "doi,title", "rows": "1"}
+        url = f"{ADS_API}?{urllib.parse.urlencode(params)}"
+        try:
+            data = self._http_get_json(
+                url, headers={"Authorization": f"Bearer {self.ads_key}"}
+            )
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            self.network_failures += 1
+            return None, "unresolved"
+        docs = ((data or {}).get("response", {}) or {}).get("docs", []) or []
+        if not docs:
+            return None, "unresolved"
+        doi_list = docs[0].get("doi") or []
+        if not doi_list:
+            return None, "unresolved"
+        return self._normalize_doi(doi_list[0]), "ads"
+
+    @staticmethod
+    def _http_get_json(url: str, headers: dict[str, str] | None = None) -> dict:
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", CROSSREF_USER_AGENT)
+        req.add_header("Accept", "application/json")
+        for key, value in (headers or {}).items():
+            req.add_header(key, value)
+        with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_S) as resp:
+            payload = resp.read()
+        return json.loads(payload.decode("utf-8", errors="replace"))
+
+    def save(self) -> None:
+        try:
+            self.cache_path.write_text(json.dumps(self.cache, indent=2, sort_keys=True))
+        except OSError as e:
+            print(f"warn: could not write DOI cache: {e}", file=sys.stderr)
+
+
+def _title_similarity(a: str, b: str) -> float:
+    """Stdlib fuzzy ratio in [0, 1]. Used to filter Crossref hits whose top result
+    isn't actually the queried paper."""
+    a_norm = re.sub(r"\s+", " ", a.lower()).strip()
+    b_norm = re.sub(r"\s+", " ", b.lower()).strip()
+    if not a_norm or not b_norm:
+        return 0.0
+    return SequenceMatcher(None, a_norm, b_norm).ratio()
+
+
+# ---------------------------------------------------------------------------
+# Top-level bibliography pipeline
+
+
+def resolve_bibliography(
+    reference_dir: Path,
+    bib_path: Path | None,
+    bbl_path: Path | None,
+    document_md: Path | None,
+    extracted_citations: dict[str, list[dict]],
+) -> tuple[dict[str, dict], list[str]]:
+    """Build the enriched `citations:` block for `index.json`.
+
+    Joins parsed bibliography entries (from `.bib`, then `.bbl`, then `document.md`)
+    against `extracted_citations` (from `extract_citations()`). Each key maps to
+    `{locations, citation, doi}`; entries the bibliography has but the source
+    never cited are dropped (would otherwise be noise); entries cited but missing
+    from the bibliography keep `citation: null` and `doi: null` and a warning.
+    """
+    warnings: list[str] = []
+    bib_entries: dict[str, dict] = {}  # key -> {citation, fields, raw, doi_hint, arxiv_hint}
+
+    if bib_path and bib_path.is_file():
+        try:
+            parsed = parse_bib(bib_path.read_text(errors="replace"))
+        except OSError as e:
+            warnings.append(f"bibliography: could not read {bib_path.name}: {e}")
+            parsed = []
+        for entry in parsed:
+            fields = entry["fields"]
+            citation = format_bib_citation(fields)
+            doi_hint = fields.get("doi") or fields.get("DOI".lower())
+            arxiv_hint = _normalize_arxiv_id(fields.get("eprint", "") or "") if fields.get("eprint") else None
+            bib_entries[entry["key"]] = {
+                "citation": citation or None,
+                "doi_hint": doi_hint,
+                "arxiv_hint": arxiv_hint,
+                "title": _clean_bib_text(fields.get("title", "")).strip(),
+                "first_author": _first_author_from_bib_field(fields.get("author", "")).split(",")[0],
+                "source": "bib",
+            }
+
+    if bbl_path and bbl_path.is_file() and not bib_entries:
+        # Only fall back to .bbl if no .bib gave us anything.
+        try:
+            parsed_bbl = parse_bbl(bbl_path.read_text(errors="replace"))
+        except OSError as e:
+            warnings.append(f"bibliography: could not read {bbl_path.name}: {e}")
+            parsed_bbl = []
+        for entry in parsed_bbl:
+            cleaned = _clean_bib_text(entry["raw"])
+            doi_hint, arxiv_hint = _extract_doi_hints_from_text(entry["raw"])
+            parsed_rendering = parse_rendered_entry(entry["raw"])
+            bib_entries[entry["key"]] = {
+                "citation": cleaned or None,
+                "doi_hint": doi_hint,
+                "arxiv_hint": arxiv_hint,
+                "title": parsed_rendering["title_guess"],
+                "first_author": parsed_rendering["first_author"],
+                "source": "bbl",
+            }
+
+    # Path B (document.md): synthetic keys.
+    path_b_entries: list[tuple[str, dict]] = []
+    if document_md and document_md.is_file():
+        paragraphs = parse_doc_references(document_md.read_text(errors="replace"))
+        taken: set[str] = set(bib_entries)
+        for raw in paragraphs:
+            parsed_rendering = parse_rendered_entry(raw)
+            doi_hint, arxiv_hint = _extract_doi_hints_from_text(raw)
+            key = synth_key(parsed_rendering["first_author"], parsed_rendering["year"], taken)
+            taken.add(key)
+            path_b_entries.append(
+                (
+                    key,
+                    {
+                        "citation": parsed_rendering["raw_clean"] or None,
+                        "doi_hint": doi_hint,
+                        "arxiv_hint": arxiv_hint,
+                        "title": parsed_rendering["title_guess"],
+                        "first_author": parsed_rendering["first_author"],
+                        "source": "document_md",
+                    },
+                )
+            )
+
+    resolver = DOIResolver(reference_dir / ".doi-cache.json")
+    enriched: dict[str, dict] = {}
+
+    # Path A: enrich entries cited at least once in the source.
+    for key, locations in extracted_citations.items():
+        entry = bib_entries.get(key)
+        if entry is None:
+            warnings.append(
+                f"citation {key}: cited in source but no matching entry in bibliography-source.{{bib,bbl}}"
+            )
+            enriched[key] = {"locations": locations, "citation": None, "doi": None}
+            continue
+        doi, _source = resolver.resolve(
+            entry["title"], entry["first_author"], entry["doi_hint"], entry["arxiv_hint"]
+        )
+        if doi is None:
+            warnings.append(
+                f"citation {key}: could not resolve DOI; tried doi-field, eprint-field, "
+                f"Crossref{', ADS' if resolver.ads_key else ''}"
+            )
+        enriched[key] = {
+            "locations": locations,
+            "citation": entry["citation"],
+            "doi": doi,
+        }
+
+    # Path B: every parsed entry lands in the citations block with empty locations.
+    # (Citation invocations from rendered prose are a separate substrate-extraction
+    # problem we surface in extraction_warnings rather than solve here.)
+    for key, entry in path_b_entries:
+        doi, _source = resolver.resolve(
+            entry["title"], entry["first_author"], entry["doi_hint"], entry["arxiv_hint"]
+        )
+        if doi is None:
+            warnings.append(
+                f"citation {key}: could not resolve DOI; tried doi-field, eprint-field, "
+                f"Crossref{', ADS' if resolver.ads_key else ''}"
+            )
+        enriched[key] = {
+            "locations": [],
+            "citation": entry["citation"],
+            "doi": doi,
+        }
+
+    if path_b_entries:
+        warnings.append(
+            "Path B (Docling fallback): citation invocations in rendered prose are not yet "
+            "extracted; `locations:` is empty for every Path B citation. Bibliography "
+            "entries are still resolved by DOI."
+        )
+
+    resolver.save()
+    if resolver.network_failures:
+        warnings.append(
+            f"bibliography: {resolver.network_failures} network failure(s) during DOI "
+            "resolution; affected entries cached as unresolved — delete .doi-cache.json "
+            "to retry."
+        )
+    return enriched, warnings
+
+
+# ---------------------------------------------------------------------------
 # Path B — Docling fallback
 # ---------------------------------------------------------------------------
 
@@ -597,12 +1334,29 @@ def extract_path_b(reference_dir: Path) -> dict:
     astra_rel = write_astra_yaml_stub(
         reference_dir, arxiv_id=None, doi=None, title=None, abstract=None
     )
+
+    document_md = reference_dir / "document.md"
+    citations, bib_warnings = resolve_bibliography(
+        reference_dir,
+        bib_path=None,
+        bbl_path=None,
+        document_md=document_md if document_md.is_file() else None,
+        extracted_citations={},
+    )
+
+    extraction_warnings = [
+        "Path B (Docling fallback): title + abstract + outline not yet extracted from "
+        "document.md; that's a future refinement."
+    ]
+    extraction_warnings.extend(bib_warnings)
+
     index = {
+        "schema_version": INDEX_SCHEMA_VERSION,
         "path": "B",
         "paper_pdf": "paper.pdf" if (reference_dir / "paper.pdf").exists() else None,
         "paper_tex": None,
         "source_dir": None,
-        "document_md": "document.md" if (reference_dir / "document.md").exists() else None,
+        "document_md": "document.md" if document_md.is_file() else None,
         "bibliography_source_bib": None,
         "bibliography_source_bbl": None,
         "astra_yaml": astra_rel,
@@ -611,10 +1365,8 @@ def extract_path_b(reference_dir: Path) -> dict:
         "figures": docling.get("figures", []),
         "tables": docling.get("tables", []),
         "outline": [],  # Future refinement: parse Docling's markdown headings
-        "citations": {},  # Future refinement: extract citation markers from document.md
-        "extraction_warnings": [
-            "Path B (Docling fallback): title + abstract + outline + citations not yet extracted from document.md; that's a future refinement."
-        ],
+        "citations": citations,
+        "extraction_warnings": extraction_warnings,
     }
     return index
 
@@ -650,16 +1402,24 @@ def main() -> None:
         figures, fig_warnings = extract_figures(reference_dir, source_dir, tex_files, macros)
         tables, tab_warnings = extract_tables(reference_dir, tex_files, source_dir, macros)
         outline = extract_outline(tex_files, source_dir, macros)
-        citations = extract_citations(tex_files, source_dir)
+        raw_citations = extract_citations(tex_files, source_dir)
         abstract = extract_abstract(tex_files, macros)
         title = extract_title(tex_files, macros)
         bib_rel, bbl_rel = copy_embedded_bibliography(reference_dir, source_dir)
+        citations, bib_warnings = resolve_bibliography(
+            reference_dir,
+            bib_path=reference_dir / bib_rel if bib_rel else None,
+            bbl_path=reference_dir / bbl_rel if bbl_rel else None,
+            document_md=None,
+            extracted_citations=raw_citations,
+        )
         astra_rel = write_astra_yaml_stub(
             reference_dir, args.arxiv_id, args.doi, title, abstract
         )
 
         paper_tex = reference_dir / "paper.tex"
         index = {
+            "schema_version": INDEX_SCHEMA_VERSION,
             "path": "A",
             "paper_pdf": "paper.pdf" if (reference_dir / "paper.pdf").exists() else None,
             "paper_tex": "paper.tex" if paper_tex.exists() or paper_tex.is_symlink() else None,
@@ -674,12 +1434,14 @@ def main() -> None:
             "tables": tables,
             "outline": outline,
             "citations": citations,
-            "extraction_warnings": fig_warnings + tab_warnings,
+            "extraction_warnings": fig_warnings + tab_warnings + bib_warnings,
         }
 
+        resolved_dois = sum(1 for entry in citations.values() if entry.get("doi"))
         print(
             f"  figures: {len(figures)}, tables: {len(tables)}, "
-            f"sections: {len(outline)}, citation-keys: {len(citations)}, "
+            f"sections: {len(outline)}, citation-keys: {len(citations)} "
+            f"({resolved_dois} with DOI), "
             f"title: {'yes' if title else 'no'}, abstract: {'yes' if abstract else 'no'}, "
             f"warnings: {len(index['extraction_warnings'])}"
         )
