@@ -62,5 +62,5 @@ No `paper.tex` and no `source/` on Path B. Consumers detect the path by reading 
 
 ## Notes
 
-- **Outline + citation extraction don't run on Path B in the launch script.** No LaTeX source means no `\section{}` or `\cite{}` markers to walk. `index.json` includes an `extraction_warnings` entry flagging this; a future LLM pass over `document.md` would fill the gap.
+- **Outline extraction and citation-invocation extraction don't run on Path B.** No LaTeX source means no `\section{}` or `\cite{}` markers to walk in the paper body. Bibliography resolution *does* run — the script parses the references section at the tail of `document.md`, synthesizes `<lastname>_<year>` keys (with letter-suffix disambiguation for collisions), and resolves DOIs the same way as Path A. So the `citations:` block is populated with citation text + DOI, but each entry's `locations:` array is empty (the paper-side `\cite`-style invocations weren't extracted from prose). `extraction_warnings` flags both gaps.
 - **Journal DOIs that 403 on Unpaywall** sometimes have an arXiv preprint twin. When that's available, treat the paper as Path A using the arXiv ID — the LaTeX-source surface is far cleaner than any PDF extraction.
