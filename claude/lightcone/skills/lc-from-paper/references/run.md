@@ -2,7 +2,7 @@
 
 Materialize every output in `astra.yaml` for the requested universe. RUN is mostly mechanical — `lc run --universe <id>` does the heavy lifting. The phase exists as a discrete step so failures get diagnosed and re-run before COMPARE.
 
-The constitution's per-phase mode is **user choice** — defaults to sub-agent. Failures may want diagnosis support; the user chooses based on how much trust they have in IMPLEMENT's first pass.
+This phase runs as the orchestrator-spawned `run` sub-agent. The user can drop into its chat if execution failures want diagnosis support; otherwise it logs failures, attempts targeted fixes within scope, and reports back. Universe defaults to `baseline` unless the orchestrator passes a different one when spawning.
 
 ## Inputs
 
@@ -21,7 +21,7 @@ Execute all recipes:
 lc run --universe baseline
 ```
 
-(Use whatever the constitution's `universe` field says; `baseline` is the default.)
+(Use whatever universe the orchestrator passed when spawning; `baseline` is the default.)
 
 Check status:
 
@@ -43,14 +43,15 @@ If outputs fail:
 
 - **Always use `lc run`** — do not run scripts directly. The runner manages dependencies, environments, and artifact paths; bypassing it produces inconsistent results.
 - **Re-runs are idempotent.** `lc run` skips outputs that are already materialized. To force re-execution, the runner has a flag for that — check `lc run --help`.
-- **Failures stay failures until fixed.** Do not "move on" past a failed output by editing it out of `astra.yaml`. Either fix the script or surface the failure as a constitution Open Question and stop.
+- **Failures stay failures until fixed.** Do not "move on" past a failed output by editing it out of `astra.yaml`. Either fix the script, ask the user in prose if reachable, or log the failure to `open-questions.md` and stop.
 
 ## Survey signals (entry into RUN)
 
 - `astra.yaml` has recipes and validates ⇒ ready to run
-- `lc status --universe baseline` returns all `ok` ⇒ RUN done; proceed to COMPARE
+- `lc status --universe baseline` returns all `ok` ⇒ RUN done; orchestrator proceeds to COMPARE
 
 ## Notes
 
 - The runner backend (Docker / local / SLURM) comes from the project's target configuration — `~/.lightcone/config.yaml` and `.lightcone/lightcone.yaml`. RUN does not need to choose; the runner picks based on config.
-- For long-running computations, the script's stdout / stderr stream into the result directory's log file. The phase agent should `tail` the log file to monitor progress, not poll `lc status` repeatedly.
+- For long-running computations, the script's stdout / stderr stream into the result directory's log file. The run sub-agent should `tail` the log file to monitor progress, not poll `lc status` repeatedly.
+- **Commit the materialized results' state when RUN settles.** The actual `results/` artifacts are gitignored heavy data, but the run-level outcome (which outputs reached `ok`, any failures logged) is worth a commit so the orchestrator can read `git log` to know RUN landed.

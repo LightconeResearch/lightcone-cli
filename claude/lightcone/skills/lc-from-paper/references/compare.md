@@ -1,8 +1,8 @@
-# COMPARE — judge whether the reproduction matches
+# COMPARE — judge the match, name the opportunities
 
-Compare reproduced results against the paper's replication targets. Produce a structured verdict the IMPLEMENT-retry loop consumes.
+Compare reproduced results against the paper's replication targets. COMPARE returns two things: a **verdict** (pass / partial / fail) and an **opportunity assessment** — where the gaps are and how much they likely matter. The verdict drives whether the orchestrator re-spawns IMPLEMENT for another retry attempt; the opportunity assessment tells the orchestrator (and the user) which gaps would be high-leverage to close, even on `pass`. Together they replace the old yes/no framing.
 
-The constitution's per-phase mode is **user choice** for this phase — defaults to interactive for verdict ratification (was the reproduction close enough?), but a user who set the loop up to drive itself to terminal verdict can flip it to sub-agent. When sub-agent, COMPARE writes the report and the loop continues per the report's verdict; REVIEW (close-out) ratifies the final verdict at close-out.
+This phase runs as the orchestrator-spawned `compare` sub-agent. The orchestrator and the user together decide what to do with COMPARE's output — spend another IMPLEMENT round now (close a high-leverage gap), accept the current verdict and proceed to REVIEW, or land at the current rigor level and log the gap as an open opportunity in CLAUDE.md's **Rigor** section. The user can drop into the compare sub-agent's chat for the verdict ratification conversation, or wait until REVIEW close-out.
 
 ## Inputs
 
@@ -57,6 +57,11 @@ outputs:
 failure_diagnosis: null|"<root cause>"
 fix_suggestions:
   - "<specific actionable suggestion with script and line number>"
+opportunities:
+  - area: "<which output / sub-analysis / decision>"
+    gap: "<what could be tightened — even if the target matched>"
+    leverage: "<rough sense of impact: 'changes headline number by ~10%' / 'cosmetic only' / 'unknown'>"
+    fix_pointer: "<where the fix would land — script:line, decision id, or implementation-notes section>"
 ```
 
 ## Verdict rules
@@ -67,27 +72,36 @@ fix_suggestions:
 
 If verdict is not `pass`, **`fix_suggestions` MUST reference specific scripts and line numbers**. "The result is wrong" is not actionable; "scripts/bao_fit.py:42 uses `damping_prior=flat`, paper specifies Gaussian; change to gaussian per Howlett+2017 §4.2" is.
 
-Also write `comparison-report.md` with a human-readable summary. For figure / table comparisons, describe what you see in both and explain your match judgment.
+## Opportunity assessment rules
 
-## Verdict ratification (interactive COMPARE)
+The `opportunities:` block surfaces **gaps that didn't necessarily fail the verdict but would be high-leverage to close**. Examples worth flagging:
 
-When COMPARE runs interactively, surface the verdict to the user via `AskUserQuestion` after writing the report:
+- A primary-target match was within tolerance but the underlying method is a sketch (e.g. simplified noise model that happens to land in the right range — tightening it would change the headline by O(10%)).
+- A secondary target failed but is plausibly fixable from the same root cause as a primary that passed (one fix, two outputs).
+- A decision SPECIFY recorded with code-as-canonical that has an unresolved disagreement still in `open-questions.md` and could move the result.
+- A sub-analysis whose evidence quotes are paraphrased rather than verbatim (would fail `--verify-evidence` if pushed harder).
 
-- **If `pass`**: confirm before exiting the COMPARE → IMPLEMENT loop. *"All high-priority targets match. Proceed to close-out?"* The user accepts → REVIEW (close-out) runs interactively (renders `/figure-comparison`, walks the open-questions ledger, lands resolutions, finalizes the constitution outcome); the user rejects → name what's still off and re-enter the loop.
-- **If `partial`**: show the user the failing targets and the diagnosis. *"Partial match. <N> outputs failing: <list>. Continue retrying or accept partial?"* If the attempt budget (from the constitution) is reached, this surfacing is mandatory.
-- **If `fail`**: same shape, but the loop's continuation should be questioned more sharply. A fundamental methodological issue may need a constitution amendment, not another implement retry.
+Each opportunity gets a leverage one-liner so the orchestrator and user can decide where to spend attention. Empty `opportunities:` is a strong signal — say "the reproduction is at canonical rigor across the targets" rather than padding.
 
-When COMPARE runs as a sub-agent, no `AskUserQuestion` — the report is the output. The loop reads the verdict and either retries (if budget remains and verdict is partial/fail) or proceeds to REVIEW (close-out), where the user ratifies the final verdict during close-out.
+Also write `comparison-report.md` with a human-readable summary. For figure / table comparisons, describe what you see in both and explain your match judgment. Include the opportunity assessment as its own section.
 
-The verdict is the agent's judgment; the **decision to keep iterating** is the user's, surfaced either at this seam (interactive COMPARE) or at REVIEW (close-out)'s close-out (sub-agent COMPARE). Default on user silence: continue the loop until the attempt budget is exhausted, then mandatory user surfacing.
+## Verdict + opportunity surfacing
+
+After writing the report, the compare sub-agent reports back to the orchestrator with the verdict, the failing-output count (if any), and the headline opportunities. The orchestrator either:
+
+- **Carries the report to the user** (if the user is reachable in the orchestrator session or the compare sub-agent's chat) for ratification: present verdict, the failing outputs (if `partial` / `fail`), and the top opportunities; ask whether to spend another IMPLEMENT round on a high-leverage gap, accept and proceed to REVIEW, or land at this rigor level and log the gaps as open opportunities in CLAUDE.md.
+- **Acts on standing rigor settings** (if the user is unreachable): if attempt < budget AND verdict is `partial` / `fail`, re-spawn `implement` for a retry; if verdict is `pass` OR attempt >= budget, log opportunities in CLAUDE.md's **Rigor** section as open opportunities and proceed to REVIEW.
+
+The verdict is the compare sub-agent's judgment; the **decision to keep iterating or move on** is the orchestrator's (in dialogue with the user). The opportunity assessment is the bridge — it turns a binary verdict into a graded picture the user can navigate.
 
 ## Survey signals (entry into COMPARE)
 
 - All outputs in `lc status --universe baseline` are `ok` ⇒ ready to compare
 - `comparison-report.yaml` exists with current `attempt` ⇒ COMPARE done for this attempt
-- `comparison-report.yaml` verdict is `pass` ⇒ COMPARE → IMPLEMENT loop terminated; proceed to REVIEW (close-out) (interactive close-out)
+- `comparison-report.yaml` verdict is `pass` (or `partial` accepted) ⇒ COMPARE → IMPLEMENT loop terminated; orchestrator proceeds to REVIEW close-out
 
 ## Notes
 
-- **One COMPARE per IMPLEMENT.** Each IMPLEMENT retry produces a fresh COMPARE; the report's `attempt` field increments. Do not overwrite prior reports — keep them at `comparison-report-attempt-<N>.yaml` if useful, or commit each between iterations so git carries the history.
-- **The verdict is the agent's; the keep-iterating decision is the user's.** Treat them as separate.
+- **One COMPARE per IMPLEMENT.** Each IMPLEMENT retry produces a fresh COMPARE; the report's `attempt` field increments. Do not overwrite prior reports — keep them at `comparison-report-attempt-<N>.yaml` if useful, or commit each between attempts so `git log` carries the history.
+- **The verdict is the compare sub-agent's; the keep-iterating decision is the orchestrator's** (in dialogue with the user, when reachable). Treat them as separate.
+- **The opportunity assessment is part of the durable record.** When the user accepts the current verdict, propagate the un-acted-on opportunities into CLAUDE.md's **Rigor** section's *Open opportunities* list. Future sessions and future-Cail returning to this reproduction see them; tightening any becomes a re-spawn of IMPLEMENT against a clearer target.
