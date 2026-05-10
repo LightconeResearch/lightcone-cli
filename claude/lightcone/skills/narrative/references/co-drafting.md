@@ -14,13 +14,13 @@ Pure greenfield (no `astra.yaml` at all) isn't a coherent narrative-skill task �
 
 ## What's distinct from paper reproduction
 
-- **Source is conversation, not prose.** The paper-reproduction harvest move (paraphrase from a written source) doesn't apply. Draft moves come from `AskUserQuestion`-batched dialogue, not from extracting prose.
+- **Source is conversation, not prose.** The paper-reproduction harvest move (paraphrase from a written source) doesn't apply. Draft moves come from dialogue with the user — `AskUserQuestion` when several framing questions land together, prose follow-ups when one question opens the next.
 - **Voice depends on stage.** Reproduction is always declarative ("The pipeline runs in…"). Co-drafting voice tracks where the work is: present-tense for live work, past tense for completed steps, provisional markers when content is volatile.
 - **Spec and narrative move together.** In reproduction the spec is fixed (or close to it) and the narrative reconstructs the paper. In co-drafting the spec may shift between drafts; expect to revisit narrative when a decision lands or a sub-analysis splits.
 
 ## The ask-first discipline
 
-Co-drafting is the one mode where authoring without asking produces fiction. The user is available; ask. Use `AskUserQuestion` to batch up the load-bearing reads before drafting:
+Co-drafting is the one mode where authoring without asking produces fiction. The user is available; ask. Surface the load-bearing reads before drafting — `AskUserQuestion` when several land together, single questions or prose follow-ups when the conversation wants its own rhythm:
 
 - **Research question.** What are you trying to learn? One sentence.
 - **Current headline finding** (if any). What's been established so far? One sentence; a gesture is fine.

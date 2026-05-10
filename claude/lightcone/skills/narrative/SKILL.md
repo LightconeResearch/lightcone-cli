@@ -1,252 +1,74 @@
 ---
 name: narrative
 description: >
-  Author or revise the `narrative:` prose inside an ASTRA analysis
-  (`astra.yaml` and its sub-analyses) plus decision `rationale:` fields.
-  Five fixed keys at each scale (`summary`, `findings`, `methods`,
-  `inputs`, `outputs`). Three working modes — paper reproduction
-  (ready), existing-analysis retrofit (under development), and
-  interactive in-flight authoring (under development). Use when the
-  `narrative:` block is empty or stub, when a decision needs a
-  `rationale:`, when a sub-analysis needs its own narrative, or when
-  revising existing prose. Triggers on "narrative", "draft the
-  narrative", "narrate this analysis", "narrate this sub-analysis",
-  "rationale for this decision", "write the summary", or any request
-  for reader-facing prose keyed off an astra.yaml.
+  Authors prose throughout an `astra.yaml` — analysis-level
+  `narrative:` blocks (five fixed keys: `summary`, `findings`,
+  `methods`, `inputs`, `outputs`), decision `rationale:` fields, and
+  shorter `description:` / `notes:` prose on individual entities. The
+  five-key narrative is the most substantive case; the same
+  architectural and syntactical frame applies wherever prose appears
+  in the spec.
+  Always written against an existing `astra.yaml`; what differs
+  between modes is the second source paired with the spec — an
+  authoritative text (paper reproduction), project artifacts
+  (retrofit), or dialogue with the user (co-drafting). Triggers on
+  "narrative", "draft the narrative", "narrate this analysis",
+  "rationale for this decision", "write the summary", "describe this
+  input", or any request for reader-facing prose keyed off an
+  `astra.yaml`.
 ---
 
 # narrative
 
-## What this skill writes
+This skill covers prose authoring across an `astra.yaml`. The prose surfaces are:
 
-One field: `narrative:` on an analysis or sub-analysis, or `rationale:` on a decision.
-Per-element prose (what each `Input`, `Output`, `Decision`, `Option`, or `Insight` is and why it matters) lives on those elements' own `description` / `rationale` / `notes` fields.
-`narrative` is the analysis-level story that weaves the pieces together.
+- **Analysis `narrative:` blocks** — five keys (`summary`, `inputs`, `methods`, `findings`, `outputs`) on each analysis and sub-analysis.
+- **Decision `rationale:` fields** — one paragraph per decision.
+- **Per-entity prose** — shorter `description:` / `notes:` on individual inputs, outputs, options, insights.
 
-This skill is also part of the lightcone-cli paper-reproduction bundle: the
-`/lc-from-paper` orchestrator invokes it during the SPECIFY phase to author the
-narrative for the spec it has just crafted. Sibling skills in the bundle —
-`constitution`, `ralph-loops`, `paper-extraction`,
-`check-sentence-by-sentence`, `figure-comparison` — solve adjacent pieces of
-the reproduction story; this skill stands alone and does not need to know
-about them.
+ASTRA's structural content surfaces alongside the prose in renderers like lightcone-ui. **Prose does not duplicate the structure** — it cites into it. An anchor is a citation; a sentence pointing to a decision is a small argument; prose is the layer where decisions, sub-analyses, findings, and outputs become a connected story.
 
-## What a narrative is
+## Modes
 
-Science, from a single decision to a review paper, is a practice of
-engaging with previous work and telling the story of what was tried
-and what it means. Any honest account does three things.
+Prose cites the spec's structure (decisions, findings, outputs, sub-analyses) by anchor, so the structure must exist when the prose lands: write the spec first, write both concurrently, or revise narrative after spec changes settle.
 
-**Grounding.** Where the work sits — state of the field, open
-questions, prior work it responds to, upstream decisions that shape
-its choices. Tells the reader why before the work shows its own
-value. May foreshadow findings.
+There are three modes, distinguished by what's available beyond the spec itself. Every mode draws on the under-construction `astra.yaml`; what differs is the **second source** paired with it.
 
-**Movement of learning.** Not the tidied retrospective ("we did X,
-obtained Y") but traces of the process: what was tried, what failed,
-what forced a step back. The best papers convey this; most compress
-it away under length pressure. ASTRA's telescoping makes it cheap —
-a sentence at the top about global-vs-per-object PSF leakage, one
-level down where the nerd gets the two pages on how the team got
-there. Papers don't have this affordance and so compress iteration
-away; ASTRA does, and authors should spend it.
-
-**Implications.** What the results mean and where they point.
-Results are facts; what they do to the field is the argument.
-Forward-look matters even when unformed — that is where science
-passes the baton.
-
-A narrative that does all three at the appropriate scale is honest.
-One that presents only results and methods elides the meaning-making.
-
-The three phases repeat at every scale. A top-level analysis
-narrates them across five keys (`summary`, `methods`, `findings`,
-`inputs`, `outputs`); a sub-analysis does the same; a decision
-narrates in one paragraph of `rationale:`. The telescope gives the
-reader a short view at their current depth and the option to drill
-in — without exploding the parent.
-
-## Length as forcing function
-
-1–3 paragraphs per key, at any level.
-
-Length is the mechanism that keeps analyses modular, not a style
-preference. If the references don't fit in three paragraphs, the
-analysis is too big — split it. The narrative is a compressor; if
-it won't compress, split the thing being compressed.
-
-## What this prose is for
-
-ASTRA preserves the decision structure that papers compress into
-linear argument; the narrative keeps that structure legible. Three
-consequences:
-
-- **Not wiki, not paper.** A wiki page summarizes ("BAO is the
-  baryon acoustic oscillation feature"); a paper compresses ("we
-  chose the Gaussian prior"). An ASTRA narrative **points into
-  reasoning** — it names the load-bearing decision, anchors to the
-  structured node that records it, and lets the reader follow. The
-  prose does not re-explain the field or re-list the spec.
-- **Read and queried.** The narrative is consumed by human readers
-  *and* by agent retrievers. Anchor coverage and clarity are
-  substrate, not style — an uncited decision is invisible to both
-  readings.
-- **Asymmetric load.** The three phases don't map onto ASTRA's
-  structure evenly. Movement-of-learning has strong structural
-  support — `decisions`, `options`, `prior_insights`, the
-  sub-analysis DAG — and `methods` condenses what structure already
-  carries. Grounding has partial support at the decision site;
-  implications have none. On those two phases, the narrative is the
-  reader's only access — carry just enough, and err toward brevity
-  and certainty.
-
-## Pick a mode first
-
-**Paper reproduction is production-ready. Retrofit and interactive
-are under active development — their references are working drafts.**
-
-Three modes. Read the matching reference file in full before drafting.
-
-| Mode | Reference | Status | When |
+| Mode | Second source | Status | Reference |
 |---|---|---|---|
-| **Paper reproduction** | [`references/paper-reproduction.md`](references/paper-reproduction.md) | **Ready.** | A published paper exists and the analysis mirrors it. Primarily in-house Lightcone work (DESI BAO and similar) plus end users bringing a paper to reproduce. Covers paper sourcing (arXiv LaTeX preferred), paper→ASTRA mapping, voice seams, fidelity rules. |
-| **Existing-analysis retrofit** | [`references/existing-analysis.md`](references/existing-analysis.md) | Under development. | Code, results, or an in-flight project being imported into ASTRA with no source paper. Archaeological work: triage, reconstruction of intent, gaps where the record is silent. |
-| **Interactive (in-flight research)** | [`references/interactive.md`](references/interactive.md) | Under development. | New research being done now; the narrative drafted alongside the work. Provisional voice, ask-first discipline. |
+| **Paper reproduction** | An authoritative text source (paper, thesis, technical report, …) | Ready | [`references/paper-reproduction.md`](references/paper-reproduction.md) |
+| **Retrofit** | Project artifacts — code, notebooks, fibers, commit history | Stub | [`references/existing-analysis.md`](references/existing-analysis.md) |
+| **Co-drafting** | The user, in conversation | Stub | [`references/co-drafting.md`](references/co-drafting.md) |
 
-If unsure which applies, confirm with the user via `AskUserQuestion`.
+If the second source isn't obvious from context, ask: is there an authoritative text (paper, thesis, technical report) to draw from? If not, are we harvesting from existing artifacts, or working from the user's own framing? Hybrid is allowed — a reproduction with co-drafted extensions, a retrofit with co-drafted gap-filling.
 
-The rest of this file is the **mode-independent substrate** every
-reference relies on.
-
----
-
-## Narrate what you declare
-
-The five keys are schema-optional, but `astra validate` applies a
-**conditional requirement** — a section must hold non-empty prose
-when the corresponding structured data exists on the Analysis node.
-
-| Key | Required when |
-|---|---|
-| `findings` | `Analysis.findings` has entries |
-| `methods` | `Analysis.decisions` or `Analysis.analyses` has entries |
-| `inputs` | `Analysis.inputs` has entries |
-| `outputs` | `Analysis.outputs` has entries |
-| `summary` | always optional (no structured counterpart) |
-
-Three consequences worth internalizing:
-
-- **A stub analysis with only `summary` is valid.** Use that for
-  stage-zero scoping.
-- **Don't write a `findings` key before findings are declared.** If the
-  spec's `findings:` list is empty, the narrative's `findings` key
-  should not appear — adding prose about findings that don't exist is
-  fiction.
-- **`summary` is the one key without a structural peer.** It's the
-  "question, scope, orientation" key — the only place prose stands
-  alone, not framing something structural.
+The rest of this file is the mode-independent substrate every reference relies on. Read it through, then open the matching reference.
 
 ---
 
-## The spec renders alongside the narrative
+## The five keys
 
-ASTRA's structural content — decisions, findings, inputs, outputs,
-sub-analyses, options — surfaces alongside the narrative. Structural
-peers will be presented; **prose does not duplicate them.** An
-abstract does not list every methods subsection; a methods section
-does not re-state every appendix equation. Prose assumes its
-structural peers exist and focuses on argument.
+| Key | What it carries | Required when |
+|---|---|---|
+| `summary` | Question, scope, headline shape — the only key without a structural peer. | optional in the schema, but should always exist |
+| `inputs` | Provenance — the data the analysis rests on. | `Analysis.inputs` is non-empty |
+| `methods` | Pipeline walk; cite each decision and sub-analysis by anchor. | `Analysis.decisions` or `Analysis.analyses` is non-empty |
+| `findings` | Synthesis of declared findings; each cited by anchor. | `Analysis.findings` is non-empty |
+| `outputs` | Which artifacts were promoted, and where they go downstream. | `Analysis.outputs` is non-empty |
 
-Applied to the five keys:
+`astra validate` enforces the right column. **Narrate what you declare:** if `findings:` is empty, `narrative.findings` should not appear. A stub analysis with only `summary` is valid.
 
-- `summary` **orients** — question, scope, headline shape.
-- `methods` **walks the pipeline**, citing each decision and
-  sub-analysis by anchor where they appear. Movement-of-learning
-  lives here.
-- `findings` **synthesizes** — each finding cited by anchor as part of
-  the argument, not an enumeration.
-- `inputs` **names provenance**.
-- `outputs` **names what was promoted and why**, citing each by anchor —
-  **and names its downstream consumers** when they exist (see "Data flow" below).
-- Decision `rationale:` **names why the default won**.
+A decision's `rationale:` is its own one-paragraph slot — what was decided, the insight that motivated it (cite by anchor), and what the load-bearing alternative was and why it lost. The alternatives themselves live in the options structure.
 
----
+## Length
 
-## Data flow — name where each output goes
+1–3 paragraphs per key, at any level (root, sub-analysis, decision).
 
-Recipe `inputs:` wires the DAG; the narrative makes the wiring legible. The
-schema already encodes who consumes what — readers should not have to grep
-49 `inputs:` lists to learn what an intermediate output is *for*.
+Length is the mechanism that keeps analyses modular, not a style preference. **If references don't fit in three paragraphs, the analysis is too big — split it.** The narrative is a compressor; if it won't compress, split the thing being compressed.
 
-Two rules — both load-bearing for projects with sub-analyses:
+## Anchors
 
-1. **`narrative.outputs` names downstream consumers.** When authoring
-   `outputs` prose on a sub-analysis or the root, name where each output
-   gets consumed using the `<analysis>.<output>` form that recipe `inputs:`
-   already uses. *"`xi_post_recon_lrg1` feeds
-   [`bao_fit_post_iso_ap_lrg1`](#analyses.bao_fit.outputs.bao_fit_post_iso_ap_lrg1)
-   and [`bao_detection_chi2_lrg1`](#findings.bao_detection_chi2_lrg1)."*
-   Anchor where you can; bare `<analysis>.<output>` text is acceptable when
-   no anchor is reachable from the current scope.
-
-2. **Root narrative includes a top-down data-flow paragraph.** When the
-   project has sub-analyses, the root analysis's `methods` (or `summary`)
-   must include one paragraph that traces the pipeline end-to-end:
-   *"raw catalogs → [reconstruction.post_recon_catalog_*](#analyses.reconstruction)
-   → [clustering.xi_*_recon_*](#analyses.clustering) → root [bao_fit_*](#outputs.bao_fit_post_iso_ap_lrg1)."*
-   This is the one place a reader can land cold and get the shape of the
-   pipeline without reading every recipe declaration.
-
-Closes [lightcone-cli#108](https://github.com/LightconeResearch/lightcone-cli/issues/108).
-The validator does not (yet) enforce this; treat both rules as authorial
-discipline. The information is already in the spec — surface it.
-
----
-
-## Anchor coverage
-
-`astra validate` checks:
-
-- **Broken references** → error. Anchor doesn't resolve to a real id.
-- **Uncited declared elements** → warning. Every declared finding,
-  decision, output, and sub-analysis must be cited somewhere in the
-  narrative tree.
-
-If a declared element is genuinely not worth a prose mention, consider
-whether it should be declared at all.
-
----
-
-## User presence
-
-Multi-turn back-and-forth → user present; use `AskUserQuestion` to
-clarify mode, scale, and reproduction-vs-extension before drafting.
-Single-shot or pipeline invocation → autonomous; make the reasonable
-default inference and note it inline on the narrative. Ambiguous →
-err on present and ask.
-
----
-
-## Phase → key mapping
-
-The three phases (see top) map onto the five keys unevenly:
-
-| Key | Dominant phase |
-|---|---|
-| `summary` | all three, telescoped |
-| `findings` | implications |
-| `inputs` | grounding |
-| `methods` | movement of learning |
-| `outputs` | structural; phase-thin |
-
-There is no `discussion` key. Implications distribute into `summary`
-and `findings`.
-
----
-
-## Anchor syntax
-
-Markdown link syntax, `#`-target, **tree-path-first**.
+Markdown link syntax with `#`-target, **tree-path-first** — same grammar as decision `from:` references.
 
 | Target | Anchor |
 |---|---|
@@ -257,56 +79,89 @@ Markdown link syntax, `#`-target, **tree-path-first**.
 | Finding | `#findings.<id>` |
 | Prior insight | `#prior_insights.<id>` |
 | Sub-analysis (whole node) | `#analyses.<sub>` |
-| Element inside sub-analysis | `#<sub>.<category>.<id>` (e.g. `#reconstruction.decisions.algorithm`) |
+| Element inside sub-analysis | `#<sub>.<category>.<id>` |
 | Parent scope (from a sub-analysis) | `#../decisions.<id>` |
 
-Note the sub-analysis form: **sub-analysis first, then category**.
-`#reconstruction.decisions.algorithm`, not `#decisions.reconstruction.algorithm`.
-References are interpreted **relative to the hosting analysis**; use
-`../` to escape to parent scope (matches decision `from_ref` syntax).
+The sub-analysis form is **sub-analysis first, then category**: `#reconstruction.decisions.algorithm`, not `#decisions.reconstruction.algorithm`. References resolve relative to the hosting analysis; use `../` to escape to parent scope.
 
 Rules:
 
-- Anchor text is authored prose, **not** the raw id.
-- Inline refs do the work of a citation; don't footnote or parenthesize.
-- One ref per idea. Stacking three on a sentence means the sentence
-  carries too much.
-- Findings cannot currently appear in `decisions.options.insights`
-  (see [astra-spec#16](https://github.com/LightconeResearch/astra-spec/issues/16)).
-  When a finding motivates a decision, cite it from the decision's
-  `rationale:` prose.
+- Anchor text is **authored prose**, not the raw id.
+- Inline references do the work of a citation; don't footnote or parenthesize.
+- One reference per idea. Stacking three on a sentence means the sentence carries too much.
+- Prior insights motivate decision options via `decisions.<id>.options.<opt>.insights:`. Findings cannot appear there (validator-enforced); if a finding motivates a decision, cite it from the decision's `rationale:` prose.
+
+### Reserved IDs
+
+These names cannot be used as entity IDs (they collide with the anchor grammar): `inputs`, `outputs`, `decisions`, `findings`, `prior_insights`, `analyses`, `options`, `content`, `narrative`. The validator rejects them.
+
+## Data flow
+
+Make the data-flow linkage navigable in the prose itself. Anchors are the trail — a reader follows the flow inline, without leaving the narrative.
+
+1. **`narrative.outputs` says where each output goes next.** A sub-analysis's outputs are usually consumed by other sub-analyses or roll up into root findings. When you write the `outputs` prose, name those downstream destinations by anchor. Example, in the `reconstruction` sub-analysis's `outputs` key:
+
+   > *"`xi_post_recon_lrg1` feeds [the post-reconstruction BAO fit](#analyses.bao_fit.outputs.bao_fit_post_iso_ap_lrg1) and supports the [headline detection finding](#findings.bao_detection_chi2_lrg1)."*
+
+   Anchor downstream consumers where you can. When no anchor is reachable from the current scope (typically a sibling sub-analysis), bare `<analysis>.<output>` text is acceptable.
+
+2. **The root narrative is the end-to-end view.** When the project has sub-analyses, the root analysis's `methods` (or `summary`) traces the pipeline from raw inputs to final outputs — as much overview as fits in a few paragraphs. The root is the place a reader can land cold and get the shape of the work; details telescope into the sub-analyses. A condensed example:
+
+   > *"raw catalogs → [reconstruction](#analyses.reconstruction) → [clustering](#analyses.clustering) → root [BAO fit](#outputs.bao_fit_post_iso_ap_lrg1)."*
+
+## Validation
+
+```sh
+astra validate astra.yaml
+```
+
+- **Broken references** → error. Anchor doesn't resolve to a real id.
+- **Uncited declared elements** → warning. Every declared finding, decision, output, and sub-analysis must be cited somewhere in the narrative tree. If an element genuinely isn't worth a prose mention, consider whether it should be declared at all.
+- **Conditional coverage** → error. The required-when rule above.
+
+## User presence
+
+Multi-turn back-and-forth → user present; use `AskUserQuestion` to clarify mode, scale, and any mode-specific framing before drafting. Single-shot or pipeline invocation → autonomous; make the reasonable default inference and note it inline on the narrative. Ambiguous → err on present and ask.
 
 ---
 
-## Reserved entity names
+## Craft
 
-These names cannot be used as entity IDs (they collide with the
-anchor grammar): `inputs`, `outputs`, `decisions`, `findings`,
-`prior_insights`, `analyses`, `options`, `content`, `narrative`.
+- **Economy.** Every sentence introduces a new idea or sharpens an existing one. Release real verbs: `conducted cross-correlation` → `cross-correlated`.
+- **Anchor text is prose, not an id.** `[the post-reconstruction catalogs](#analyses.reconstruction)`, not `[reconstruction](#analyses.reconstruction)`.
+- **One reference per idea.** Three anchors on one sentence means the sentence carries too much; split it or drop one.
+- **Specificity.** Names, numbers, references over generic claims.
+- **Arrive through content.** No "in this analysis we will describe…"; the content is the opening.
 
-If you find an entity using one (legacy spec), flag it; the authoring
-tooling and validator will reject it.
+### Real subjects, real verbs
 
----
+"We measure the BAO peak with the LRG sample" reads as agency. "The measurements of the BAO peak reveal a 7σ detection" reads as zombie-noun abstraction. The test: can you picture someone or something physically doing the verb? If not, rewrite.
 
-## Linking relationships — structural vs narrative
+Valid subjects:
 
-| Relationship | Structural | Narrative |
-|---|---|---|
-| Prior insight → decision option | `decisions.<id>.options.<opt>.insights: [ids]` | inline in `methods` when the decision is discussed |
-| Finding → output | `findings.<id>.evidence` → `outputs.<id>` | inline in `findings` |
-| Finding → decision | *no structural link yet* (#16) | inline in decision's `rationale:` |
-| Decision → decision | `decisions.<id>.from: <ref>` or `from: ../decisions.<id>` | inline in the inheriting decision's `rationale:` |
+- **We** — for decisions and actions ("we chose the Gaussian damping prior")
+- **The thing itself** — for states and properties ("the covariance is dominated by shot noise")
+- **Passive voice** — when the actor is obvious ("a redshift cut is applied")
+- **Results / data as epistemic subjects** — for what the data shows ("the measurement shows a 7σ peak"; "Figure 2 reveals…")
+- **Physics doing physics** — for physical processes ("lensing distorts shapes"; "higher-order effects produce B-modes")
 
-If a relationship is structural, don't duplicate it in prose — cite
-it by anchor.
+Anthropomorphized abstractions fail the test: "the methodology validates," "this analysis demonstrates," "the catalogue evolution follows." Rewrite to a real subject doing a real verb.
+
+## Anti-patterns (mode-independent)
+
+- **Wiki-style what-is framing.** "BAO is the baryon acoustic oscillation feature." A wiki summarizes; an ASTRA narrative points into reasoning. Replace with the load-bearing statement and an anchor: "we chose the Gaussian BAO damping prior over flat because flat admitted spurious minima — see [the prior comparison](#decisions.bao_damping_prior)."
+- **Decision-list paragraph.** "We made the following decisions: A, B, C." Cite each decision where it shapes the pipeline, not as recitation. Too many to weave coherently → the spec wants more sub-analyses.
+- **`summary` as primer.** Teaching what the field is. Readers arrive with context.
+- **Drafting `findings` on a sub-analysis with no declared findings.** Skip the key.
+- **Narrative-per-element.** Writing `narrative:` on findings, inputs, outputs, or insights. The five-key analysis narrative is the only home; per-element prose is `description` / `rationale` / `notes`.
+
+Mode-specific anti-patterns live in each mode's reference.
 
 ---
 
 ## Self-contained example
 
-A minimal (not necessarily valid) sketch showing how the blocks fit
-together. The point is the *shape*.
+A minimal (not necessarily valid) sketch showing how the blocks fit together. The point is the *shape*.
 
 ```yaml
 id: example_analysis
@@ -326,21 +181,18 @@ narrative:
     uses [<mocks>](#inputs.validation_mocks).
 
   methods: |
-    The pipeline runs in two stages.
-    [Preparation](#analyses.preparation) ingests the raw catalog and
-    produces [cleaned two-point statistics
-    ](#preparation.outputs.clean_stats).  [Fitting
-    ](#analyses.fitting) consumes those statistics and fits model
-    parameters.  Both stages inherit the parent's
-    [fiducial cosmology](#decisions.fiducial_cosmology) so the
-    distance-redshift relation is used end-to-end.
+    The pipeline runs in two stages.  [Preparation](#analyses.preparation)
+    ingests the raw catalog and produces [cleaned two-point statistics
+    ](#preparation.outputs.clean_stats).  [Fitting](#analyses.fitting)
+    consumes those statistics and fits model parameters.  Both stages
+    inherit the parent's [fiducial cosmology](#decisions.fiducial_cosmology)
+    so the distance-redshift relation is used end-to-end.
 
   findings: |
     Three findings constitute the result: a
     [headline detection](#findings.headline_detection), a
-    [precision comparison with prior work
-    ](#findings.precision_improvement), and
-    [an anomalous feature](#findings.anomaly).  The anomaly is the
+    [precision comparison with prior work](#findings.precision_improvement),
+    and [an anomalous feature](#findings.anomaly).  The anomaly is the
     most-discussed qualitative feature.
 
   outputs: |
@@ -355,8 +207,8 @@ decisions:
     rationale: |
       Planck 2018-ΛCDM is the community reference; distance-redshift
       conversion is downstream of this choice, and fixing it lets
-      results be compared directly to prior measurements.  Inherited
-      by [fitting](#analyses.fitting) so the end-to-end chain uses one
+      results be compared directly to prior measurements.  Inherited by
+      [fitting](#analyses.fitting) so the end-to-end chain uses one
       distance scale.
     default: planck2018
     options:
@@ -367,73 +219,10 @@ decisions:
         excluded_reason: "Superseded; no longer the community reference."
 ```
 
-What to notice:
-
-- Anchor text is prose, not an id.
-- `methods` uses the sub-analysis-first form
-  (`#preparation.outputs.clean_stats`) for cross-scope refs.
-- `findings` synthesizes how three findings relate; each cited by
-  anchor, not recited.
-- `outputs` is thin — two sentences.
-- Decision rationale cites a sub-analysis by anchor when the choice
-  propagates, and says why the default won without enumerating options.
-
-For a canonical reproduction narrative in context, see
-`Reproductions/DESI/desi-dr1-bao/astra.yaml` in
-`LightconeResearch/Reproductions`.
-
----
-
-## Craft
-
-- **Economy.** Every sentence introduces a new idea or sharpens an
-  existing one. Release real verbs: `conducted cross-correlation` →
-  `cross-correlated`.
-- **Epistemic honesty.** Hedges carry information about certainty.
-  "This suggests" reflects real uncertainty; "may perhaps indicate" is
-  decorative.
-- **Show, don't label.** Describe the tension; don't announce it. Cut
-  signposting: "the key insight is," "importantly," "it is worth
-  noting."
-- **Specificity.** Names, numbers, references over generic claims.
-- **Arrive through content.** No "in this analysis we will describe…";
-  the content is the opening.
-
----
-
-## Anti-patterns (mode-independent)
-
-- **Narrative-per-element.** Writing `narrative:` on findings, inputs,
-  outputs, or insights. The five-key analysis narrative is the only
-  home; per-element prose is `description` / `rationale` / `notes`.
-- **Results-only narrative.** Methods without movement-of-learning
-  elides the meaning-making. At minimum, name one pivot or abandoned
-  option per scale.
-- **Decision-list paragraph.** "We made the following decisions: A,
-  B, C." Cite each decision where it shapes the pipeline, not as
-  recitation. Too many to weave coherently → the spec wants more
-  sub-analyses.
-- **Wiki-style what-is framing.** "BAO is the baryon acoustic
-  oscillation feature." A wiki summarizes; an ASTRA narrative points
-  into reasoning. Replace with "we chose the Gaussian BAO damping
-  prior over flat because flat admitted spurious minima" — with the
-  anchor. Applies to every key.
-- **`summary` as primer.** Teaching what the field is. Readers arrive
-  with context.
-
----
-
-## Lint
-
-1. `astra validate <path>` — catches broken anchors, schema
-   violations, uncited declared elements.
-2. Paragraph count per key — flag anything over three.
-3. Only conditionally-required keys present — if `findings:` is
-   empty, `narrative.findings` is absent.
+For a canonical reproduction narrative in context, see `Reproductions/DESI/desi-dr1-bao/astra.yaml` in the [LightconeResearch/Reproductions](https://github.com/LightconeResearch/Reproductions) repo.
 
 ---
 
 ## Now read the mode reference
 
-Before drafting, open the reference file that matches the user's
-situation.
+Open the reference file that matches the user's situation. Each carries the mode's draft order, mode-specific moves, critique pass, and mode-specific anti-patterns.
