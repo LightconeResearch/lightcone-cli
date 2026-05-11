@@ -33,7 +33,7 @@ This is the ceiling; the fidelity intent determines which outputs need to actual
 The substrate this reproduction is built against — the canonical sources iterations consult:
 
 - **Paper:** `work/reference/{paper.pdf, source/ or document.md, index.json, astra.yaml}` (from `/paper-extraction` during ACQUIRE). The `index.json#citations` block carries each cited paper's resolved DOI for LITERATURE.
-- **Code:** `work/reference/code/` (cloned during ACQUIRE; scan inventory at `work/reference/code-index.md`). Code is canonical for numerics, plotting, and method where it disagrees with the paper.
+- **Code:** `work/reference/code/` (cloned during ACQUIRE; scan inventory at `work/reference/code-index.md`).
 - **Paper DOI:** <doi>
 - **arXiv ID:** <id> (if applicable)
 - **Code repo URL:** <url>
