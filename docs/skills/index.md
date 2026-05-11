@@ -21,8 +21,9 @@ user-invokable directly.
 |-------|---------|---------|
 | [lc-new](lc-new.md) | `/lc-new` | Scope a research question into an `astra.yaml`, with optional literature extraction. |
 | [lc-from-code](lc-from-code.md) | `/lc-from-code` | Wrap an existing codebase in ASTRA: scan, generate spec, parameterize, run. |
-| [lc-from-paper](lc-from-paper.md) | `/lc-from-paper` | Reproduce a published paper in ASTRA — interview-first orchestrator that spawns named per-phase sub-agents. |
+| [lc-from-paper](lc-from-paper.md) | `/lc-from-paper` | Reproduce a published paper in ASTRA — interview-first driver that hands off to a ralph loop for the long middle. |
 | [lc-feedback](lc-feedback.md) | `/lc-feedback` | File a GitHub issue against the right Lightcone repo with auto-collected context. |
+| [ralph](ralph.md) | `/ralph` | Author a constitution and run a ralph loop against it. Used by `lc-from-paper` for the long middle; standalone for any other long-running work. |
 
 ### Paper-reproduction bundle (sibling skills)
 
@@ -67,8 +68,9 @@ claude/lightcone/
 ├── skills/
 │   ├── lc-new/{SKILL.md, references/*.md}
 │   ├── lc-from-code/SKILL.md
-│   ├── lc-from-paper/{SKILL.md, references/*.md, templates/CLAUDE.md}
+│   ├── lc-from-paper/{SKILL.md, references/*.md, templates/{constitution.md, CLAUDE.md}}
 │   ├── lc-feedback/SKILL.md
+│   ├── ralph/{SKILL.md, references/*.md, scripts/ralph}
 │   ├── paper-extraction/{SKILL.md, scripts/*.py}
 │   ├── narrative/{SKILL.md, references/*.md}
 │   ├── figure-comparison/{SKILL.md, scripts/*.py}
