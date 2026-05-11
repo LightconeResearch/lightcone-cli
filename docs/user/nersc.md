@@ -9,7 +9,9 @@ A practical guide for running [`lightcone-cli`](https://github.com/LightconeRese
 
 ## 0. Agentic CLI
 
-`lightcone-cli` is the execution layer of the `lightcone` project — it harnesses an agent-based CLI (currently [Claude Code](https://docs.claude.com/en/docs/claude-code/setup)) to follow the `astra` standard while building and running an analysis. So the very first step, even before touching `lightcone-cli` itself, is to install the agent:
+`lightcone-cli` is the execution layer of the `lightcone` project — it harnesses an **agent-based CLI** to follow the `astra` standard while building and running an analysis. The choice of agent is open: anything that can drive a project shell works. Right now the tooling (skills, hooks, slash commands) is best supported on [Claude Code](https://docs.claude.com/en/docs/claude-code/setup), so this guide uses Claude Code as the running example — substitute your preferred agent CLI throughout if you use a different one.
+
+Installing Claude Code:
 
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash   # installs to ~/.local/bin/claude
@@ -134,14 +136,14 @@ Scaffold a project directory and drop into it with the agent:
 ```bash
 lc init your-analysis      # scaffolds a fresh project tree
 cd your-analysis
-claude                     # launch Claude Code inside the project
+claude                     # launch your agent CLI (Claude Code shown here)
 ```
 
 ---
 
 ## 4. Start your research
 
-Once Claude Code is open, drive everything from there. The `lc-*` skills are how you tell the agent what to build:
+Once your agent CLI is open (Claude Code in this guide's examples), drive everything from there. The `lc-*` skills are how you tell the agent what to build:
 
 === "Start fresh"
     ```text
@@ -185,13 +187,13 @@ lc build
 
 ### Interactive runs (agent-driven)
 
-The agent (Claude Code) calls `lc run` for you whenever a recipe needs to materialize — you never call it directly. What you *do* control is **where Claude Code is running**: it inherits the shell environment you launched it from. To put the agent's recipes onto a compute node, simply launch `claude` from inside a SLURM allocation:
+The agent calls `lc run` for you whenever a recipe needs to materialize — you never call it directly. What you *do* control is **where the agent is running**: it inherits the shell environment you launched it from. To put the agent's recipes onto a compute node, simply launch it from inside a SLURM allocation:
 
 ```bash
 salloc -A <your_project> -q interactive -C gpu --nodes=1 -t 00:30:00
 # salloc drops you onto a compute node; from there:
 cd /path/to/your-analysis
-claude
+claude                                            # or whichever agent CLI you use
 ```
 
 Now everything the agent triggers (`lc run`, scripts, etc.) executes on the allocated node.
@@ -201,7 +203,7 @@ Now everything the agent triggers (`lc run`, scripts, etc.) executes on the allo
 
 ### Unattended batch runs (no agent in the loop)
 
-For production sweeps where the recipes are already nailed down, you can submit `lc run` directly as a batch job. See [Running on a Cluster → A typical SLURM workflow](cluster.md#a-typical-slurm-workflow) for the generic template; on Perlmutter, the only addition is the `-A` / `-q` directives:
+For production sweeps where the recipes are already nailed down, you can submit `lc run` directly as a batch job — no agent CLI involved. See [Running on a Cluster → A typical SLURM workflow](cluster.md#a-typical-slurm-workflow) for the generic template; on Perlmutter, the only addition is the `-A` / `-q` directives:
 
 ```bash
 #!/bin/bash
