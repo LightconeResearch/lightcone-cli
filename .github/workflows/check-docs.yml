@@ -13,6 +13,7 @@ jobs:
       contents: read
       issues: write         # To open an issue if docs are stale
       pull-requests: write  # To post a comment on the merged PR
+      id-token: write       # Required for OIDC token (claude-code-action)
 
     steps:
       - name: Checkout repo

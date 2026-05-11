@@ -14,6 +14,7 @@ lc status [OPTIONS]
 | Option | Default | Effect |
 |--------|---------|--------|
 | `--universe`, `-u NAME` | every universe in `universes/*.yaml` | Restrict to one universe. |
+| `--json` | off | Emit machine-readable JSON instead of a styled table. |
 
 ## Output
 
@@ -55,6 +56,7 @@ unparseable, `read_manifest` returns `None` and you also see `missing`
 ```bash
 lc status                       # every output, every universe
 lc status --universe baseline   # just baseline
+lc status --json                # machine-readable JSON output
 ```
 
 ## Related

@@ -222,12 +222,26 @@ def init(
 
     # venv
     if not no_venv:
-        subprocess.run(["python", "-m", "venv", ".venv"], cwd=directory, check=False)
-        subprocess.run(
-            [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"],
-            cwd=directory,
-            check=False,
-        )
+        if shutil.which("uv"):
+            with console.status("[dim]Creating virtual environment…[/dim]"):
+                subprocess.run(["uv", "venv", "--python", "3.12", ".venv"], cwd=directory, check=False, capture_output=True)
+            with console.status("[dim]Installing lightcone-cli…[/dim]"):
+                subprocess.run(
+                    ["uv", "pip", "install", "--python", ".venv/bin/python", "lightcone-cli"],
+                    cwd=directory,
+                    check=False,
+                    capture_output=True,
+                )
+        else:
+            with console.status("[dim]Creating virtual environment…[/dim]"):
+                subprocess.run(["python", "-m", "venv", ".venv"], cwd=directory, check=False, capture_output=True)
+            with console.status("[dim]Installing lightcone-cli…[/dim]"):
+                subprocess.run(
+                    [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"],
+                    cwd=directory,
+                    check=False,
+                    capture_output=True,
+                )
 
     console.print(f"\n[green]Project initialized at[/green] {directory}")
 
