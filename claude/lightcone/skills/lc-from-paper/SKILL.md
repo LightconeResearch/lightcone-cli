@@ -22,7 +22,7 @@ The architecture is two-piece:
 
 2. **A ralph loop for the long middle.** Once the per-paper `constitution.md` is drafted (INTERVIEW) and the substrate is on disk (ACQUIRE), you launch a ralph loop against the constitution. Each iteration starts a fresh session with the constitution as system prompt, surveys the workdir, picks the next valuable move (typically one phase's worth of work), does it, commits, exits. The fresh-context property is automatic — iteration N+1 reads N's work without bias, which makes per-phase review collapse into "the next iteration is the review."
 
-The whole thing is driven by **the per-paper `constitution.md`** at the reproduction workdir root, plus the auto-loading `CLAUDE.md` walk-up. The constitution describes the goal (what "done" looks like, the user's fidelity intent, scope, quality bar); CLAUDE.md carries the running accumulators (rigor state per output, paper-vs-code disagreements log, rules). Every iteration walks up to both.
+The whole thing is driven by **the per-paper `constitution.md`** at the reproduction workdir root, plus the auto-loading `CLAUDE.md` walk-up. The constitution describes the goal (what "done" looks like, the user's fidelity intent, scope, quality bar); CLAUDE.md carries the standing rules plus running accumulators (rigor state per output, paper-vs-code disagreements log). Every iteration walks up to both.
 
 ## Setup: git-tracked workdir
 
@@ -44,7 +44,7 @@ Nine phases (zero-indexed). INTERVIEW and ACQUIRE run before the loop, in the us
 | 7 | COMPARE | ralph iteration | [`references/compare.md`](references/compare.md) | `comparison-report.{yaml,md}` |
 | 8 | REVIEW | user's main session | [`references/review.md`](references/review.md) | `REPRODUCTION-SUMMARY.md`, `/figure-comparison` HTML, resolved `open-questions.md`, finalized reproduction outcome |
 
-COMPARE produces a verdict plus an opportunity assessment — not just pass / fail, but where the gaps are, how much they likely matter, and how they sit relative to the constitution's fidelity intent. A subsequent iteration decides whether to spend another IMPLEMENT round (close a gap that sits below intent) or land the reproduction at its current trajectory and log the gap as an open opportunity in CLAUDE.md's Rigor section. When the constitution's `status:` flips to `closed` (typically by an iteration after COMPARE returns `pass` or after the iteration logs accepted opportunities), the loop terminates and REVIEW runs in the user's main session.
+COMPARE produces a verdict plus an opportunity assessment — not just pass / fail, but where the gaps are, how much they likely matter, and how they sit relative to the constitution's fidelity intent. A subsequent iteration decides whether to spend another IMPLEMENT round (close a gap that sits below intent) or land the reproduction at its current trajectory and log the gap as an open opportunity in CLAUDE.md's Rigor section. Once COMPARE returns `pass` (or user-accepted `partial`) and the un-acted opportunities are logged, a subsequent cold-survey iteration finds nothing left to do and flips the constitution's `status:` to `closed`. The loop terminates; REVIEW runs in the user's main session.
 
 ## The two pre-loop bookends
 
