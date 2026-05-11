@@ -42,8 +42,7 @@ Type:
 The agent banner switches to **RESEARCH QUESTION** and asks something
 like "What are you trying to learn?" Reply in plain prose:
 
-> I want to know how much R² changes on the diabetes dataset depending
-> on whether I standardize features before fitting a linear regression.
+    I want to know how much R² changes on the diabetes dataset depending on whether I standardize features before fitting a linear regression.
 
 A few follow-ups will sharpen this. After Phase 1 your `astra.yaml`
 already has a `name`, `description`, and `version` — open it in another

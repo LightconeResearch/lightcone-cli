@@ -8,27 +8,27 @@ Make sure you've finished the [install](install.md) first.
 
 ## 1. Create a project
 
-```bash
-lc init my-analysis
-cd my-analysis
-```
+    lc init my-analysis
+    cd my-analysis
 
 `lc init` is a one-shot setup. It creates a small, opinionated
 directory layout and stops; it doesn't ask any questions.
 
 ## 2. What you got
 
-```
-my-analysis/
-├── astra.yaml                  # the spec — this is where everything lives
-├── CLAUDE.md                   # short note for the agent (resumes context across sessions)
-├── .gitignore
-├── .venv/                      # Python virtual env (skip with --no-venv)
-├── .lightcone/                 # internal scratchpad — don't edit by hand
-├── .claude/                    # Claude Code plugin — skills, agents, hooks
-├── universes/                  # placeholder for now
-└── results/                    # placeholder for now
-```
+    my-analysis/
+    ├── astra.yaml                  # the spec — this is where everything lives
+    ├── CLAUDE.md                   # short note for the agent (resumes context across sessions)
+    ├── .gitignore
+    ├── .git                        # initialized git repository (skip with --no-git)
+    ├── .venv/                      # Python virtual env (skip with --no-venv)
+    ├── .claude/                    # Claude Code plugin — skills, agents, hooks
+    ├── .lightcone/                 # internal scratchpad — don't edit by hand
+    ├── Containerfile               # build instructions for a local testing container — don't edit by hand
+    ├── requirements.txt            # software dependencies — don't edit by hand
+    ├── universes/                  # 
+    ├── src/                        # placeholder directories for now
+    └── results/                    # 
 
 The two files you'll actually look at:
 
@@ -50,9 +50,7 @@ can edit it by hand whenever you want.
 
 ## 3. Open Claude Code
 
-```bash
-claude
-```
+    claude
 
 That opens an interactive session inside `my-analysis/`. Claude Code
 reads `astra.yaml` and `CLAUDE.md` so it has context.
@@ -69,7 +67,7 @@ Inside Claude Code:
 | `/lc-migrate` | You have an existing codebase you want wrapped in ASTRA. |
 | `/lc-feedback` | Something broke and you want to file a GitHub issue without leaving the session. |
 
-The next page, [The Claude Code Workflow](claude-workflow.md),
+The next page, [The Agentic Workflow](agent-workflow.md),
 explains each of these in more detail.
 
 ## 5. The four CLI commands you'll actually type
@@ -90,7 +88,7 @@ exact flags.
 
 ## 6. Read on
 
-- [The Claude Code Workflow](claude-workflow.md) — how each slash
+- [The Agentic Workflow](agent-workflow.md) — how each slash
   command actually flows.
 - [Tutorial: Your First Analysis](tutorial.md) — end-to-end, with the
   agent doing most of the typing.

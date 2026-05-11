@@ -20,18 +20,16 @@ If you don't already have a recent Python
 === "Windows"
     [python.org](https://www.python.org/downloads/) or WSL
 
-
 !!! tip "Recommendation"
     We highly recommend the use of [uv](https://docs.astral.sh/uv/) to manage Python installation and virtual environments.
 
     `uv` can be installed in a single commandline
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    ```
+
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+
     and a subsequent version of Python
-    ```
-    uv python install 3.12
-    ```
+
+        uv python install 3.12
 
 ## 2. lightcone-cli
 
@@ -50,9 +48,7 @@ is `lc`.
 
 Get a confirmation of the proper installation by running
 
-```bash
-lc --version                # → lightcone-cli, version ...
-```
+    lc --version                # → lightcone-cli, version ...
 
 > **Note** Some people may have already set a personal shell alias `lc='ls --color'`. If that's you, installing lightcone-cli will shadow the alias — make sure to rebind it (e.g. `alias l='ls --color'`).
 
@@ -75,18 +71,15 @@ your PATH (and skips docker if its daemon isn't running). Feel free to pin the r
 Most of your interactions with a lightcone project happen *through* an agent-based CLI, for now we are supporting Claude Code.
 
 Install Claude Code
-```bash
-curl -fsSL https://claude.ai/install.sh | bash
-```
+
+    curl -fsSL https://claude.ai/install.sh | bash
 
 Open a project in your terminal or editor (see [Getting Started](getting-started.md)) and run
 
-```bash
-claude
-```
+    claude
 
 Inside Claude Code you will have dedicated lightcone CLI slash commands available like `/lc-new` and
-`/lc-build` — see [The Claude Code Workflow](claude-workflow.md).
+`/lc-build` — see [The Agentic Workflow](agent-workflow.md).
 
 ## 5. (Optional) Docker or Podman
 
@@ -105,10 +98,8 @@ isolation.
 
 ## Sanity check
 
-```bash
-lc --help
-lc init --help
-```
+    lc --help
+    lc init --help
 
 Both should print help text. If `lc` is shadowed by an `ls` alias,
 unset it (`unalias lc`) or use the full path

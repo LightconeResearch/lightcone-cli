@@ -1,4 +1,4 @@
-# The Agent Workflow
+# The Agentic Workflow
 
 The agentic surface is five slash commands. Each one is a structured
 prompt — the agent follows a specific phased flow, not free-form chat.
