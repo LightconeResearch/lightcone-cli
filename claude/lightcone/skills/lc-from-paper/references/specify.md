@@ -22,7 +22,7 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 
 ## Outputs
 
-- `astra.yaml` — **filled form**: each sub-analysis's `decisions:` and `findings:` populated with paper-anchored `evidence:` selectors; `prior_insights:` populated as citation-only **placeholders** (id, claim, decision_links, `doi:` looked up from `work/reference/index.json#citations[<cite-key>].doi` — but no `evidence:` selector yet, LITERATURE fills those next); `narrative:` keys updated to weave `astra-anchor:` references into prose as entries land. `astra validate astra.yaml` returns clean; `astra validate astra.yaml --verify-evidence` runs after LITERATURE has resolved the placeholders.
+- `astra.yaml` — **filled form**: each sub-analysis's `decisions:` populated with decision-level `rationale:` prose plus options (the paper's choice is identified by `default:`); `findings:` populated as full `Insight` blocks with paper-anchored `evidence:` (the target paper's DOI + `quote: {exact, prefix, suffix}` + `location: {page: N}`); `prior_insights:` populated as citation **placeholders** — each a syntactically-complete `Insight` (`id`, `claim`, `created_at`, `evidence: [{id, doi}]`) whose placeholder Evidence carries the cited paper's DOI looked up from `work/reference/index.json#citations[<cite-key>].doi` **but no `quote:` selector yet** — LITERATURE fills those in. Each option that draws on a placeholder cites it via `Option.insights: [<insight_id>, ...]` (the back-reference that links options to prior_insights in the ASTRA grammar). `narrative:` keys updated to weave `astra-anchor:` references into prose as entries land. `astra validate astra.yaml` returns clean (Evidence with `doi:` and no `quote:` is structurally valid at this stage); `astra validate astra.yaml --verify-evidence` runs after LITERATURE has authored the quotes.
 - `universes/baseline.yaml` — selects the paper's choices (where paper and code disagree per the canonical-resolution rule, see "Material conflicts" below)
 - `implementation-notes.md` — concise practical guidance for the IMPLEMENT phase: tricky algorithms, numerical gotchas, data-format quirks, things the spec can't capture. Bullets, not essays.
 - `targets/targets.md` — small target ledger COMPARE consumes: per output (already declared by ARCHITECT), a brief entry with type, priority, paper value, expected match criteria, and the path to the reference figure / table / metric (when applicable, copy the reference file into `targets/` so the directory is self-contained)
@@ -46,32 +46,64 @@ Read the paper's section(s) covering this sub-analysis. Author:
 1. **`decisions:`** — every choice in this sub-analysis where a different defensible option could plausibly shift a numerical result: algorithmic methods, thresholds, statistical approaches, data selection criteria, calibration choices. Use `when`, `incompatible_with`, and `requires` constraints for non-independent decisions.
 
    For each decision, the paper-pass authors:
-   - The chosen option with its name + a `rationale:` block (use `/narrative` for the prose).
-   - Sibling alternatives mentioned in the paper, each as a separate option.
-   - `evidence:` for the chosen option using `TextQuoteSelector` against the paper text — verbatim quote + `prefix` / `suffix` from real surrounding text + page or section anchor.
+   - **Decision-level fields:** `label:` (short human-readable name), `rationale:` (the paper's stated reasoning — use `/narrative` for the prose), `default:` (the option the paper actually selects), and `options:` (the map of option entries below).
+   - **Options:** the chosen option plus any sibling alternatives the paper discusses. Each option carries `label:` (required) and an optional `description:`. Per the 0.0.10 grammar, options do **not** carry their own `rationale:` or `evidence:` block — the decision's `rationale:` covers the reasoning; paper-text evidence flows through `findings:` (for the paper's own quantitative claims) or via `Option.insights` back-references into `prior_insights:` (for citation-backed support).
+   - **Option ↔ prior_insights linkage:** when the option's support derives from cited literature, list the relevant `prior_insights:` ids in `Option.insights: [<insight_id>, ...]`. The placeholder block under `prior_insights:` (authored in step 2 below) is the back-end of this link — LITERATURE fills in the verbatim cited-paper quote later.
 
    Read `.claude/guides/decision-guide.md` (in lightcone-cli's plugin bundle) for the full definition of what counts. **Only exclude pure tooling choices** (language, library, file format) and fixed constraints. A typical sub-analysis has 2–6 decisions; if a sub-analysis has fewer than 2, revisit `work/reference/index.json` and reconsider.
 
-2. **`prior_insights:`** — for every `\cite{<key>}` (Path A) or rendered citation invocation (Path B) the paper invokes that bears on a decision in this sub-analysis, record a **placeholder**: an `id:`, a `claim:` describing what the cited paper supports about the decision (the target paper's framing of why it cites that paper here), a `doi:` looked up from `work/reference/index.json#citations[<cite-key>].doi`, and `decision_links:` mapping the placeholder to the relevant decision option(s). **Do not author the `evidence:` selector** — that's LITERATURE's job. Leave `evidence:` absent or empty; LITERATURE fetches the cited paper, finds the supporting quote, and authors the resolved selector back into this placeholder. The placeholder shape:
+   ```yaml
+   decisions:
+     <decision_id>:
+       label: "<short human-readable name>"
+       rationale: "<the paper's stated reasoning, weaving astra-anchors into prose>"
+       default: <chosen_option_id>
+       options:
+         <option_id>:
+           label: "<short name>"
+           description: "<optional longer description>"
+           insights: [<prior_insight_id>, ...]   # back-refs to prior_insights this option draws on
+   ```
+
+2. **`prior_insights:`** — for every `\cite{<key>}` (Path A) or rendered citation invocation (Path B) the paper invokes that bears on a decision in this sub-analysis, record a **placeholder**. The placeholder is a syntactically-complete `Insight` (`id`, `claim`, `created_at`, `evidence`) whose `evidence` array contains a single Evidence entry carrying the cited paper's `doi` but **no `quote:` selector** — LITERATURE fetches the cited paper, finds the supporting quote, and writes the resolved `quote: {exact, prefix, suffix}` (+ `location: {page: N}`) onto that Evidence entry. The decision↔insight linkage is the back-reference on the option (`Option.insights`, step 1 above), not a forward link on the insight. The placeholder shape:
 
    ```yaml
    prior_insights:
      <insight_id>:
        id: <insight_id>
        claim: "<what the cited paper supports about the decision>"
-       doi: "<DOI from index.json#citations[<cite-key>].doi>"
-       # evidence: omitted — LITERATURE fills this in
-       decision_links:
-         <decision_id>: [<option_id>, ...]
+       created_at: "<SPECIFY-iteration ISO-8601 timestamp, e.g. 2026-05-11T09:00:00Z>"
+       evidence:
+         - id: <evidence_id>
+           doi: "<DOI from work/reference/index.json#citations[<cite-key>].doi>"
+           # quote: omitted at SPECIFY time — LITERATURE fills the TextQuoteSelector in
    ```
 
-   When the citation's DOI is unresolved (`citations[<key>].doi: null` — flagged in `extraction_warnings`), record the placeholder with `doi: null` and a note in the `claim:`; LITERATURE will surface it as an unresolved entry rather than fabricate evidence. Don't pre-emptively fetch the cited paper or guess its content; LITERATURE does that with fresh context per paper.
+   Evidence with `doi:` and no `quote:` is structurally valid in 0.0.10 (`quote:` is optional on Evidence); the placeholder passes `astra validate` and waits for LITERATURE to fill the quote. `astra validate --verify-evidence` should only be run after LITERATURE has resolved every placeholder.
 
-3. **`findings:`** — paper-level claims and quantitative results scoped to this sub-analysis, each with source-anchored `evidence:` (verbatim quote against the paper). Pull the verbatim claims for each output's expected value from the paper text + the result loci in `paper-index.md`.
+   When the citation's DOI is unresolved (`citations[<key>].doi: null` — flagged in `extraction_warnings`), the placeholder still needs a `doi:` (Evidence requires exactly one of `doi` or `artifact`). In that case, omit the Evidence entry entirely or fall back to an artifact reference if the gap will be resolved internally — and log the unresolved citation to `open-questions.md` so the user can supply the DOI at REVIEW close-out. Don't pre-emptively fetch the cited paper or guess its content; LITERATURE does that with fresh context per paper.
+
+3. **`findings:`** — paper-level claims and quantitative results scoped to this sub-analysis. Each is a full `Insight` (`id`, `claim`, `created_at`, `evidence`) with at least one paper-anchored Evidence entry: `doi:` of the target paper itself + a verbatim `quote: {exact, prefix, suffix}` (TextQuoteSelector) + a `location: {page: N}` (FragmentSelector, page from the rendered PDF). For findings tied to a specific declared output, the Evidence may use `artifact: <output_id>` instead of (or in addition to) the DOI-based quote. Pull the verbatim claims for each output's expected value from the paper text + the result loci in `work/reference/index.json`.
+
+   ```yaml
+   findings:
+     <finding_id>:
+       id: <finding_id>
+       claim: "<the paper's quantitative claim, 1–2 sentences>"
+       created_at: "<ISO-8601 timestamp>"
+       evidence:
+         - id: <evidence_id>
+           doi: "<target paper's DOI>"
+           quote:
+             exact: "<verbatim quote from the paper>"
+             prefix: "<~20–100 chars BEFORE the quote, real surrounding text>"
+             suffix: "<~20–100 chars AFTER the quote, real surrounding text>"
+           location: { page: <N> }
+   ```
 
 4. **Weave `astra-anchor:` references into the existing narrative.** ARCHITECT wrote `narrative:` prose without anchors because the entries didn't exist. Now they do — extend the narrative to point at the new `decisions:` / `prior_insights:` / `findings:` entries via the tree-path anchor grammar. Use `/narrative` for this pass; it carries the discipline.
 
-5. **Verify evidence quotes against the paper source by Grep** — `astra validate --verify-evidence` will verify `prior_insights` evidence after LITERATURE resolves the placeholders; for now, manually Grep the paper source to confirm each `decisions:` and `findings:` `evidence:` quote is verbatim. Artifact-anchored `findings` evidence still needs a manual quote check before the code pass.
+5. **Verify finding quotes against the paper source by Grep.** For each `findings:` Evidence entry with a `quote:`, Grep the paper source to confirm the `exact:` text is verbatim and the `prefix:` / `suffix:` are real surrounding text. `astra validate --verify-evidence` will run the deterministic check across every quote later (after LITERATURE resolves the `prior_insights:` placeholders); a manual Grep now catches typos and paraphrases before the code pass.
 
 ### Pass B — code pass (when `work/reference/code/` exists)
 
@@ -83,7 +115,7 @@ Read the code that implements this sub-analysis (`work/reference/code-index.md`'
 
    For **material** disagreements: take **code as canonical** per the canonical-resolution rule (the iteration runs detached; the user isn't reachable interactively). Append the conflict to CLAUDE.md's **Paper-vs-code disagreements** section AND to `open-questions.md` so the user sees it at REVIEW close-out, with the verbatim paper quote + the `path:line` code anchor + a plausible-impact one-liner ("changes the BAO peak amplitude by ~5%"). Let `universes/baseline.yaml` select the code's method. Preserve both options in the `astra.yaml` `decisions:` entry; the user can flip the baseline at REVIEW close-out.
 
-2. **Code-revealed insights and findings.** Things the code does that the paper doesn't describe (a calibration version, a cut stricter than stated, a hyperparameter the paper compressed). These earn `findings:` entries with `path:line` evidence anchors against the code (when an output corresponds), or `implementation-notes.md` bullets (when no formal output corresponds).
+2. **Code-revealed insights and findings.** Things the code does that the paper doesn't describe (a calibration version, a cut stricter than stated, a hyperparameter the paper compressed). These earn `findings:` entries with Evidence using `artifact: <output_id>` (referencing a declared output) plus an optional `source_commit:` (the git SHA that produced it). When the insight isn't tied to a formal output, drop it into `implementation-notes.md` as a bullet rather than synthesizing a degenerate finding.
 
 3. **Decision-option augmentation.** Where the code reveals an option the paper didn't mention but is defensible (a sibling implementation alternative used in the codebase or referenced in a comment), add it as a sibling option to the relevant `decisions:` entry. Do not pre-emptively author every code variant; only the ones that bear on a real choice.
 
@@ -115,9 +147,9 @@ The check-list and findings-file shape below applies whether the review work hap
 > ### What to check
 >
 > 1. **Decision coverage.** Does this sub-analysis's `decisions:` block cover every choice in the paper-side index's decision clusters? Cosmetic / pure-tooling choices should NOT be decisions; anything material that's missing should be added.
-> 2. **Decision options.** Each decision has the chosen option plus any sibling alternatives the paper discusses or the code reveals. The chosen option's `rationale:` is grounded in the paper's stated reasoning (or the code's, where canonical-resolution applied).
-> 3. **Evidence verification.** Every `evidence:` block uses `TextQuoteSelector` with a verbatim `exact:` quote, real surrounding-text `prefix:` / `suffix:`, and a real page or section anchor. Quotes that are paraphrased or whose prefix / suffix are editorial parentheticals will fail `--verify-evidence`. Note `prior_insights:` placeholders intentionally have no `evidence:` block at this stage — LITERATURE authors them — so do not flag missing `evidence:` on placeholder entries. After LITERATURE resolves the placeholders, run `astra validate astra.yaml --verify-evidence`.
-> 4. **Findings traceability.** Each `findings:` entry's `evidence:` resolves to a real paper claim (verbatim quote + source anchor) or a real code location (`path:line`).
+> 2. **Decision options.** Each decision has the option the paper selects (named in `default:`) plus any sibling alternatives the paper discusses or the code reveals. The decision-level `rationale:` is grounded in the paper's stated reasoning (or the code's, where canonical-resolution applied). Per the 0.0.10 grammar, options do not carry per-option `rationale:` or `evidence:`; cited support is back-referenced via `Option.insights` into a `prior_insights:` entry.
+> 3. **Evidence verification.** Every `findings:` Evidence entry uses `TextQuoteSelector` with a verbatim `exact:` quote, real surrounding-text `prefix:` / `suffix:`, and a `location: {page: N}` (1-indexed). Quotes that are paraphrased or whose `prefix:` / `suffix:` are editorial parentheticals will fail `--verify-evidence`. `prior_insights:` placeholders intentionally have `evidence: [{id, doi}]` without a `quote:` at this stage — LITERATURE authors the quotes — so do not flag a missing quote on placeholder entries. After LITERATURE resolves the placeholders, run `astra validate astra.yaml --verify-evidence`.
+> 4. **Findings traceability.** Each `findings:` Insight's `evidence:` resolves either to a real paper claim (target-paper DOI + verbatim `quote:` + page) or to a real declared output via `artifact: <output_id>` (with optional `source_commit:` and `snapshot:`).
 > 5. **Material-disagreement surfacing.** Where paper and code disagree on a material choice, the spec records both options under the relevant `decisions:` entry, `universes/baseline.yaml` selects the code's option (canonical-resolution default), and the conflict is appended to CLAUDE.md's *Paper-vs-code disagreements* section plus `open-questions.md` for the user to resolve at REVIEW close-out. Flag any material disagreement that got silently dropped, that didn't make it into the disagreements log, or where the baseline picked the paper without the canonical-resolution rule applying.
 > 6. **Narrative anchors.** The sub-analysis's `narrative:` weaves `astra-anchor:` references to the new `decisions:` / `prior_insights:` / `findings:` entries — the tree-path grammar must be valid, and entries actually exist at the referenced paths.
 > 7. **`narrative:` voice fidelity.** Hedges and qualifiers from the paper survive (per the narrative skill's discipline). Editorial commentary added beyond what the paper supports gets flagged.
@@ -204,7 +236,7 @@ Out-of-scope targets stay in `targets/targets.md` with an explicit reason and sh
 ## Survey signals (entry into SPECIFY)
 
 - `astra.yaml` exists with stub form (sub-analyses + inputs + outputs + narrative; empty decisions / prior_insights / findings) ⇒ ready to specify
-- For each sub-analysis: `decisions:` and `findings:` populated with paper-anchored `evidence:` selectors AND `prior_insights:` populated as citation-only placeholders (id, claim, doi, decision_links — no `evidence:` selector yet, LITERATURE fills those next) ⇒ paper pass done
+- For each sub-analysis: `decisions:` populated with decision-level `rationale:` + options (paper's choice at `default:`); `findings:` populated as full Insight blocks with paper-anchored Evidence (DOI + `quote: {exact, prefix, suffix}` + `location: {page}`); `prior_insights:` populated as citation placeholders (`id`, `claim`, `created_at`, `evidence: [{id, doi}]` with `quote:` omitted — LITERATURE fills the quotes next); `Option.insights` back-references wired up where options draw on placeholders ⇒ paper pass done
 - For each sub-analysis: when `work/reference/code/` exists, code-pass material-disagreement entries land in `decisions:` (with both options) and `universes/baseline.yaml` selects the canonical-resolution choice; `implementation-notes.md` carries non-material gotchas ⇒ code pass done
 - For cheap: each sub-analysis has at least a `work/notes/specify-review/<sub>-round-1.md` with verdict `clean` (or no fixes were incorporated) ⇒ SPECIFY review done
 - For heavy: each sub-analysis has two consecutive `<sub>-round-<N>.md` files with verdict `clean` ⇒ SPECIFY review done

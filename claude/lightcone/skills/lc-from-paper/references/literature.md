@@ -1,6 +1,6 @@
 # LITERATURE — resolve `prior_insights:` placeholders against the cited papers
 
-After SPECIFY records each citation marker as a `prior_insights:` *placeholder* (`id`, `claim`, `doi`, `decision_links` — no `evidence:` selector), LITERATURE stands up each cited paper's reading materials, finds the verbatim quote in the cited paper that justifies the placeholder's claim, and authors the resolved `evidence:` selector back into `astra.yaml`. After LITERATURE, every `prior_insights:` entry is a verified citation; `astra validate astra.yaml --verify-evidence` returns clean.
+After SPECIFY records each citation marker as a `prior_insights:` *placeholder* — a syntactically-complete `Insight` (`id`, `claim`, `created_at`, `evidence: [{id, doi}]`) whose Evidence entry carries the cited paper's DOI but **no `quote:` selector yet** — LITERATURE stands up each cited paper's reading materials, finds the verbatim quote in the cited paper that justifies the placeholder's claim, and writes the resolved `quote: {exact, prefix, suffix}` (+ `location: {page: N}`) onto that Evidence entry. The decision↔insight linkage already lives on the option side (`Option.insights: [<insight_id>, ...]`); LITERATURE doesn't touch it — only the Evidence's `quote:` / `location:`. After LITERATURE, every `prior_insights:` Evidence entry has a verified quote; `astra validate astra.yaml --verify-evidence` returns clean.
 
 The quote-finding direction is: **target paper's claim → quote inside the cited paper**. The target paper says "we follow Smith+20's magnitude cut of i<24"; LITERATURE goes to Smith+20 and finds the verbatim quote there that justifies that statement ("we adopt a magnitude cut of i<24 as our fiducial selection"). The point is to verify the target paper's claims about its predecessors are real, not paraphrased or misremembered.
 
@@ -10,7 +10,7 @@ LITERATURE is what a ralph iteration does when the workdir signals "SPECIFY done
 
 ## Inputs
 
-- `astra.yaml` — filled by SPECIFY's paper (and code) passes; each sub-analysis has `prior_insights:` entries with `claim:` + `doi:` + `decision_links:` but no `evidence:` selector. These are the placeholders LITERATURE resolves.
+- `astra.yaml` — filled by SPECIFY's paper (and code) passes; each sub-analysis has `prior_insights:` entries shaped as syntactically-complete `Insight` blocks (`id`, `claim`, `created_at`, `evidence: [{id, doi}]`) where each Evidence carries a `doi:` but no `quote:` selector. These are the placeholders LITERATURE resolves by writing `quote: {exact, prefix, suffix}` and `location: {page}` onto each Evidence entry. The option↔insight linkage already lives on the option side (`Option.insights`); LITERATURE does not touch it.
 - `work/reference/index.json#citations` — paper-extraction's cite-key → `{locations, citation, doi}` mapping for every entry in the target paper's bibliography. Used as the canonical cite-key → DOI lookup when cross-checking placeholder DOIs and surfacing unresolved-DOI cases.
 - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — target paper text. Grep into for context on how the cited paper is invoked, when a placeholder's claim is ambiguous.
 - `constitution.md` — Fidelity intent (used to size cheap vs heavy on this iteration's review).
@@ -18,7 +18,7 @@ LITERATURE is what a ralph iteration does when the workdir signals "SPECIFY done
 
 ## Outputs
 
-- `astra.yaml` — `prior_insights:` placeholders **resolved**: each placeholder now has at least one `evidence:` entry with `TextQuoteSelector` (`exact:`, `prefix:`, `suffix:`) plus `FragmentSelector` (`page:`) pointing at the cited paper. `astra validate astra.yaml --verify-evidence` returns clean.
+- `astra.yaml` — `prior_insights:` placeholders **resolved**: each placeholder's Evidence entries now carry `quote: {exact, prefix, suffix}` (TextQuoteSelector) plus `location: {page: N}` (FragmentSelector, 1-indexed page) pointing at the cited paper. `astra validate astra.yaml --verify-evidence` returns clean.
 - `work/cited/<doi-slug>/` — one directory per cited paper, holding that paper's substrate from paper-extraction (`paper.pdf`, `source/` or `document.md`, `index.json`, `astra.yaml` stub, figures, tables). Resume-by-existence: re-running LITERATURE skips fetching any DOI whose `work/cited/<doi-slug>/` is already populated.
 - `work/notes/literature/resolutions.yaml` — consolidated per-placeholder evidence resolutions before merge (when Haiku fan-out is used, sub-Haiku outputs land in `work/notes/literature/haiku-<N>.yaml` and are merged into this single file). Intermediate; survives for audit.
 
@@ -88,8 +88,13 @@ Inputs:
       id:             the placeholder's unique id within astra.yaml
       claim:          what the cited paper supports about a decision
                       in the target paper (target paper's framing)
-      doi:            DOI of the cited paper
-      decision_links: which decision option(s) this placeholder backs
+      doi:            DOI of the cited paper (lives on the placeholder's
+                      Evidence entry; quote: needs to be filled in)
+      backed_options: a derived list of "<decision_id>.<option_id>" pairs
+                      that reference this placeholder via Option.insights
+                      — surface from astra.yaml when assembling the
+                      placeholder set so the resolver knows which
+                      decision-options this evidence has to support
   - Substrate path per cited paper at work/cited/<doi-slug>/work/reference/:
       paper.pdf, source/*.tex (Path A) or document.md (Path B),
       index.json (structural index for that cited paper).
@@ -104,8 +109,8 @@ For each placeholder:
 
   2. Read targeted spans (offset/limit) around the matches. Find a
      verbatim passage that supports the claim. Focus on:
-       - Empirical comparisons between approaches the claim's
-         decision_links reference.
+       - Empirical comparisons between the approaches the placeholder's
+         backed_options reference.
        - Performance benchmarks or validation results relevant to the
          choices.
        - Recommendations or caveats about specific methods/parameters.
@@ -162,7 +167,7 @@ When the iteration fans out to Haikus, each Haiku is spawned with `model="haiku"
 
 ## Review — by iteration boundary (default) or in-iteration fan-out (optional)
 
-After the merge lands, the cross-check question is: do the `evidence:` quotes belong to the cited paper at the cited page? Do the quotes actually justify the placeholders' claims, or are they technically present but tangential? Do the claims actually support the decision options they're linked to via `decision_links:`?
+After the merge lands, the cross-check question is: do the `evidence:` quotes belong to the cited paper at the cited page? Do the quotes actually justify the placeholders' claims, or are they technically present but tangential? Do the claims actually support the decision options that reference them via `Option.insights`?
 
 **Default: review by iteration boundary.** The iteration that did the merge exits; the next iteration enters fresh, surveys, finds `astra.yaml`'s `prior_insights:` populated with `evidence:` selectors but no `work/notes/literature-review/round-N.md`, runs `astra validate --verify-evidence` for the deterministic check + a semantic re-read of each resolved insight, and writes review findings. The iteration after that applies the fixes (which may include re-running Haiku quote-finding for entries that need a different quote). Two consecutive review-iterations with verdict `clean` terminates the review cycle.
 
