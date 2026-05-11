@@ -240,7 +240,7 @@ Out-of-scope targets stay in `targets/targets.md` with an explicit reason and sh
 - For each sub-analysis: when `work/reference/code/` exists, code-pass material-disagreement entries land in `decisions:` (with both options) and `universes/baseline.yaml` selects the canonical-resolution choice; `implementation-notes.md` carries non-material gotchas ⇒ code pass done
 - For cheap: each sub-analysis has at least a `work/notes/specify-review/<sub>-round-1.md` with verdict `clean` (or no fixes were incorporated) ⇒ SPECIFY review done
 - For heavy: each sub-analysis has two consecutive `<sub>-round-<N>.md` files with verdict `clean` ⇒ SPECIFY review done
-- `astra validate astra.yaml` returns clean (placeholders without `evidence:` are valid at this stage) ⇒ structural side validated; `--verify-evidence` waits until LITERATURE has authored the resolved `evidence:` selectors
+- `astra validate astra.yaml` returns clean (placeholders whose Evidence carries `doi:` without `quote:` are valid at this stage) ⇒ structural side validated; `--verify-evidence` waits until LITERATURE has authored the `quote:` + `location:` selectors
 - `targets/targets.md` exists with each entry mapped to a spec home ⇒ target-ledger done
 - `implementation-notes.md` exists ⇒ practical-guidance side done
 - All of the above ⇒ SPECIFY complete; proceed to IMPLEMENT

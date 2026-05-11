@@ -6,7 +6,7 @@ The quote-finding direction is: **target paper's claim → quote inside the cite
 
 LITERATURE runs **after SPECIFY**, not before — relevant `prior_insights:` are defined by the decisions and findings they justify. Fetching cited papers speculatively before SPECIFY would do work for citations that may never end up needed.
 
-LITERATURE is what a ralph iteration does when the workdir signals "SPECIFY done + `prior_insights:` placeholders present without `evidence:` selectors." Its internal architecture is **two simple stages**: mechanical fetch (paper-extraction's deterministic script, batched-parallel via shell — no agent fan-out), then quote-finding (the iteration does it itself for small placeholder counts; spawns a small number of Haiku sub-agents inside its own main session for large counts). The agentic work is the quote-matching; the fetch is plumbing.
+LITERATURE is what a ralph iteration does when the workdir signals "SPECIFY done + `prior_insights:` placeholders present whose Evidence entries carry `doi:` but no `quote:` selector yet." Its internal architecture is **two simple stages**: mechanical fetch (paper-extraction's deterministic script, batched-parallel via shell — no agent fan-out), then quote-finding (the iteration does it itself for small placeholder counts; spawns a small number of Haiku sub-agents inside its own main session for large counts). The agentic work is the quote-matching; the fetch is plumbing.
 
 ## Inputs
 
@@ -169,7 +169,7 @@ When the iteration fans out to Haikus, each Haiku is spawned with `model="haiku"
 
 After the merge lands, the cross-check question is: do the `evidence:` quotes belong to the cited paper at the cited page? Do the quotes actually justify the placeholders' claims, or are they technically present but tangential? Do the claims actually support the decision options that reference them via `Option.insights`?
 
-**Default: review by iteration boundary.** The iteration that did the merge exits; the next iteration enters fresh, surveys, finds `astra.yaml`'s `prior_insights:` populated with `evidence:` selectors but no `work/notes/literature-review/round-N.md`, runs `astra validate --verify-evidence` for the deterministic check + a semantic re-read of each resolved insight, and writes review findings. The iteration after that applies the fixes (which may include re-running Haiku quote-finding for entries that need a different quote). Two consecutive review-iterations with verdict `clean` terminates the review cycle.
+**Default: review by iteration boundary.** The iteration that did the merge exits; the next iteration enters fresh, surveys, finds `astra.yaml`'s `prior_insights:` Evidence entries populated with resolved `quote:` + `location:` selectors but no `work/notes/literature-review/round-N.md`, runs `astra validate --verify-evidence` for the deterministic check + a semantic re-read of each resolved insight, and writes review findings. The iteration after that applies the fixes (which may include re-running Haiku quote-finding for entries that need a different quote). Two consecutive review-iterations with verdict `clean` terminates the review cycle.
 
 **Optional: in-iteration fan-out.** When the placeholder count is large and the fidelity intent calls for *heavy*, the merge iteration (or a subsequent review iteration) can fan out parallel reviewers as one-level-deep sub-agents inside its own session, partitioned by cited-paper subset. Each reviewer writes findings for its subset; the iteration merges and applies fixes in the same session.
 
@@ -204,10 +204,10 @@ If 5 review-iterations have happened without two consecutive clean rounds, log t
 
 ## Survey signals (entry into LITERATURE)
 
-- `astra.yaml` has `prior_insights:` placeholders — entries with `claim:` + `doi:` but no `evidence:` ⇒ ready to resolve
+- `astra.yaml` has `prior_insights:` placeholders — entries with `claim:` plus Evidence carrying `doi:` but no `quote:` selector ⇒ ready to resolve
 - `work/cited/<doi-slug>/work/reference/index.json` exists for each unique cited DOI ⇒ fetches done
 - `work/notes/literature/resolutions.yaml` exists with non-empty resolutions / unresolved sections ⇒ quote-finding done
-- `astra.yaml`'s `prior_insights:` entries each have a resolved `evidence:` selector ⇒ merge done
+- `astra.yaml`'s `prior_insights:` entries each have a resolved `quote:` (+ `location:`) selector on their Evidence ⇒ merge done
 - `astra validate astra.yaml --verify-evidence` returns clean ⇒ structural validation done
 - For cheap: at least one `work/notes/literature-review/round-<N>.md` with verdict `clean` (or no fixes were incorporated) ⇒ LITERATURE review done
 - For heavy: two consecutive `round-<N>.md` files with verdict `clean` ⇒ LITERATURE review done

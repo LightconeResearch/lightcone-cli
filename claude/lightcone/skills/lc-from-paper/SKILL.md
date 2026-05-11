@@ -38,7 +38,7 @@ Nine phases (zero-indexed). INTERVIEW and ACQUIRE run before the loop, in the us
 | 1 | ACQUIRE | user's main session | [`references/acquire.md`](references/acquire.md) | `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml, code/, code-status.yaml, code-index.md}` |
 | 2 | ARCHITECT | ralph iteration | [`references/architect.md`](references/architect.md) | stub `astra.yaml` at project root (sub-analyses, inputs, outputs, narrative) |
 | 3 | SPECIFY | ralph iteration | [`references/specify.md`](references/specify.md) | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
-| 4 | LITERATURE | ralph iteration | [`references/literature.md`](references/literature.md) | `astra.yaml`'s `prior_insights:` resolved with `evidence:` selectors; per-paper PDFs cached via `astra paper add` |
+| 4 | LITERATURE | ralph iteration | [`references/literature.md`](references/literature.md) | `astra.yaml`'s `prior_insights:` Evidence entries each carry resolved `quote:` + `location:` selectors; per-paper PDFs cached via `astra paper add` |
 | 5 | IMPLEMENT | ralph iteration | [`references/implement.md`](references/implement.md) | `scripts/`, `requirements.txt`, recipes in `astra.yaml` |
 | 6 | RUN | ralph iteration | [`references/run.md`](references/run.md) | `results/<universe>/<output>/` |
 | 7 | COMPARE | ralph iteration | [`references/compare.md`](references/compare.md) | `comparison-report.{yaml,md}` |
@@ -114,7 +114,7 @@ Each iteration's survey reads the workdir to determine what phase is next. File 
 | `work/reference/code/` (or `code-status.yaml` with `found: false`) + `work/reference/code-index.md` | ACQUIRE code substrate |
 | `astra.yaml` at project root validates with empty `decisions:` / `prior_insights:` / `findings:` blocks | ARCHITECT (stub) |
 | `astra.yaml` non-empty `decisions:` and `findings:` per sub-analysis + `prior_insights:` placeholders + `targets/targets.md` + `implementation-notes.md` | SPECIFY |
-| `astra.yaml`'s `prior_insights:` resolved with `evidence:` selectors; `work/cited/<doi-slug>/` populated per cited paper | LITERATURE |
+| `astra.yaml`'s `prior_insights:` Evidence entries each carry resolved `quote:` + `location:` selectors; `work/cited/<doi-slug>/` populated per cited paper | LITERATURE |
 | recipes present in `astra.yaml` + `scripts/` + `requirements.txt` | IMPLEMENT |
 | `results/<universe>/<output>/` for every output | RUN |
 | `comparison-report.yaml` | COMPARE |

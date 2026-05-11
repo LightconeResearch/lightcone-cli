@@ -8,7 +8,7 @@ The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding
 
 ## Inputs
 
-- `astra.yaml` — final spec (validates with `--verify-evidence` once LITERATURE has resolved every `prior_insights:` placeholder's `evidence:` selector)
+- `astra.yaml` — final spec (validates with `--verify-evidence` once LITERATURE has resolved every `prior_insights:` placeholder's Evidence `quote:` selector)
 - `comparison-report.yaml`, `comparison-report.md` — final verdict + opportunity assessment
 - `targets/targets.md` — what was being matched against; reference figures / tables in `targets/`
 - `results/<universe>/<output_id>/` — reproduced figures / tables / metrics
