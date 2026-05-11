@@ -37,7 +37,7 @@ Read `constitution.md`, `CLAUDE.md`, `work/reference/index.json`, `work/referenc
 ### Stub shape — what `astra.yaml` looks like after ARCHITECT
 
 ```yaml
-# Stub: structure + narrative; SPECIFY fills decisions, findings, prior_insights, evidence, anchors.
+# Stub: structure + narrative. SPECIFY fills decisions/findings/prior_insights and weaves astra-anchor references into the narrative.
 id: <paper-slug>
 title: "<paper title>"
 doi: <doi>
