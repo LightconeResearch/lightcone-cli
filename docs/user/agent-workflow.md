@@ -7,6 +7,11 @@ a structured prompt: the agent follows a specific phased flow, not
 free-form chat. This page walks through each of them in the order you'd
 naturally hit them.
 
+The skills are structured entry points; they aren't requirements. Once
+you're inside a project, you can also just describe what you're working
+on to Claude — `astra.yaml` and the `lc` CLI keep things tracked
+whether you go through a skill or not.
+
 > The bracketed `→ astra.yaml` etc. notes show what each phase actually
 > writes to disk. You stay in charge of approving everything; the agent
 > never publishes a paper for you.

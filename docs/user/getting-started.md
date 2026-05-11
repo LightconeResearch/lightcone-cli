@@ -70,6 +70,12 @@ bug reports without leaving the session.
 | `/lc-from-paper` | You have a published paper (DOI / arXiv ID) you want to reproduce. |
 | `/lc-feedback` | Something broke and you want to file a GitHub issue without leaving the session. |
 
+These are structured entry points for common starting situations. You
+don't have to use them — once you're inside a project, you can also
+just describe what you're trying to do to Claude. `astra.yaml`,
+`lc run`, and `lc verify` keep things tracked regardless of how you
+got there.
+
 The next page, [The Agent Workflow](agent-workflow.md),
 explains each of these in more detail.
 

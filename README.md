@@ -18,7 +18,7 @@ cd my-analysis
 claude
 ```
 
-Then tell the agent `/lc-new` to scope your research question. After the spec exists, just tell the agent to build it — implementation is a normal Claude Code workflow guided by `.claude/guides/`.
+Then tell the agent what you have to start from — a research question (`/lc-new`), existing code (`/lc-from-code`), or a paper to reproduce (`/lc-from-paper`). After the spec exists, work with the agent however suits you; the substrate (`astra.yaml`, `lc run`, `lc status`, `lc verify`) keeps things in sync.
 
 ## Skills
 
@@ -50,7 +50,7 @@ Files a GitHub issue against the right repo (ASTRA or lightcone-cli) with versio
 
 ### Building and verifying
 
-Once `astra.yaml` exists, the agent reads `.claude/guides/lightcone-cli-reference.md` (workflow, commands, status meanings) and `.claude/guides/astra-reference.md` (spec syntax), writes the analysis scripts under `src/`, runs `lc run`, watches `lc status` until every output is `ok`, then runs `astra validate astra.yaml` and `lc verify` to confirm the spec is valid and the provenance chain is intact.
+Once `astra.yaml` exists, you (or the agent) build it however suits you. The typical flow is `lc run` to materialize outputs, `lc status` to track progress, `astra validate astra.yaml` for spec validity, and `lc verify` for provenance integrity — agent-driven, ralph-looped, or hand-written, the `lc` substrate stays in sync.
 
 ## CLI Reference
 
