@@ -87,7 +87,7 @@ The discipline is the same shape ARCHITECT, SPECIFY, and LITERATURE use: review 
 > ### What to check
 >
 > 1. **Recipe coverage.** Every output in `astra.yaml` has a recipe; every recipe runs a script that exists in `scripts/`.
-> 2. **Method fidelity.** For each output, the script implements the method described by the relevant sub-analysis's `decisions:` and `findings:` in `astra.yaml` (which carry the verbatim paper quotes and code anchors). Where SPECIFY's code pass surfaced a material disagreement, the script follows the code's method (canonical-resolution rule), unless the spec recorded a different override in `decisions:` and `universes/baseline.yaml`.
+> 2. **Method fidelity.** For each output, the script implements the method described by the relevant sub-analysis's `decisions:` and `findings:` in `astra.yaml`. Where SPECIFY's code pass surfaced a material disagreement, the script follows the code's method (canonical-resolution rule), unless the spec recorded a different override in `decisions:` and `universes/baseline.yaml`.
 > 3. **Numerical correctness.** Constants, hyperparameters, threshold values match the paper (or the code, where the canonical-resolution rule applied). Flag mismatches with `path:line` of the script and the paper §/eq + the relevant `astra.yaml#analyses.<sub-id>.decisions.<key>` entry.
 > 4. **Data acquisition.** Scripts that fetch data use the real acquisition path from `astra.yaml`'s inputs — no synthetic / mock substitutes.
 > 5. **Determinism.** Scripts set random seeds where the paper's method is stochastic. Library versions in `requirements.txt` are pinned where reproducibility requires it.
