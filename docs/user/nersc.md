@@ -9,7 +9,7 @@ A practical guide for running [`lightcone-cli`](https://github.com/LightconeRese
 
 ## 0. Agentic CLI
 
-`lightcone-cli` is the execution layer of the `lightcone` project — it harnesses an **agent-based CLI** to follow the `astra` standard while building and running an analysis. The choice of agent is open: anything that can drive a project shell works. Right now the tooling (skills, hooks, slash commands) is best supported on [Claude Code](https://docs.claude.com/en/docs/claude-code/setup), so this guide uses Claude Code as the running example — substitute your preferred agent CLI throughout if you use a different one.
+`lightcone-cli` is the execution layer of the `lightcone` project — it harnesses an **agent-based CLI** to follow the `astra` standard while building and running an analysis. The choice of agent is open: anything that can drive a project shell works. This guide uses Claude Code as the running example — substitute your preferred agent CLI throughout if you use a different one.
 
 Installing Claude Code:
 
@@ -25,6 +25,14 @@ claude                                           # first run prompts for login (
 ```
 
 Other install routes (npm, native package managers) are documented in the [Claude Code installation docs](https://docs.claude.com/en/docs/claude-code/setup).
+
+!!! note "Other agent CLIs"
+    Other agentic CLIs work too — for example:
+
+    - [OpenAI Codex](https://github.com/openai/codex) — see the repo README for install options.
+    - [opencode](https://opencode.ai/docs/#install) — install via `curl -fsSL https://opencode.ai/install | bash`.
+
+    Pick whichever you prefer; the rest of this guide writes `claude` in concrete commands, but the workflow is the same with any agent CLI.
 
 ---
 
