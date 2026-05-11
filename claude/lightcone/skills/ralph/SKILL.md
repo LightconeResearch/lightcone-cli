@@ -99,16 +99,16 @@ resolves between loops.
 
 ## Launching
 
-The launcher is a shell script bundled with this skill. Inside a project (after `lc init` copies the bundle), its path is:
+The launcher is a shell script bundled with this skill. After `lc init` registers the `lightcone` plugin (or after `claude plugin install lightcone@lightcone-cli`), Claude resolves `${CLAUDE_PLUGIN_ROOT}` to the plugin's install path; the launcher lives at:
 
 ```
-.claude/skills/ralph/scripts/ralph
+${CLAUDE_PLUGIN_ROOT}/skills/ralph/scripts/ralph
 ```
 
 Usage:
 
 ```
-.claude/skills/ralph/scripts/ralph <constitution.md> [--backend claude|codex] [-- extra-flags...]
+${CLAUDE_PLUGIN_ROOT}/skills/ralph/scripts/ralph <constitution.md> [--backend claude|codex] [-- extra-flags...]
 ```
 
 - `<constitution.md>` is the constitution file. YAML frontmatter must carry `status: open` or `status: active`; the launcher refuses to start otherwise. Termination is automatic when an iteration flips `status:` to `closed`.
@@ -132,13 +132,13 @@ Anything after a literal `--` separator forwards to the backend unchanged. Commo
 
 ```bash
 # Launch on a per-paper reproduction constitution
-.claude/skills/ralph/scripts/ralph constitution.md
+${CLAUDE_PLUGIN_ROOT}/skills/ralph/scripts/ralph constitution.md
 
 # Codex backend
-.claude/skills/ralph/scripts/ralph constitution.md --backend codex
+${CLAUDE_PLUGIN_ROOT}/skills/ralph/scripts/ralph constitution.md --backend codex
 
 # Claude backend with Chrome integration and a model override
-.claude/skills/ralph/scripts/ralph constitution.md -- --chrome --model claude-opus-4-6
+${CLAUDE_PLUGIN_ROOT}/skills/ralph/scripts/ralph constitution.md -- --chrome --model claude-opus-4-6
 ```
 
 ---

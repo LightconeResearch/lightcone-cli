@@ -61,7 +61,7 @@ Repeat until it feels solid. It does not have to be complete; open questions bel
 
 ### 4. Launch
 
-When approved, hand to a runner. Bundled option: `.claude/skills/ralph/scripts/ralph my-constitution.md`. The runner re-reads the constitution each iteration, so refinements between iterations are normal.
+When approved, hand to a runner. Bundled option: `${CLAUDE_PLUGIN_ROOT}/skills/ralph/scripts/ralph my-constitution.md`. The runner re-reads the constitution each iteration, so refinements between iterations are normal.
 
 ---
 

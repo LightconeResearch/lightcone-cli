@@ -77,7 +77,7 @@ After explicit user approval, `git init` the workdir if it isn't one already and
 After ORIENT lands, hand the rest of the reproduction off to a ralph loop. From the reproduction workdir:
 
 ```bash
-.claude/skills/ralph/scripts/ralph constitution.md
+"${CLAUDE_PLUGIN_ROOT}/skills/ralph/scripts/ralph" constitution.md
 ```
 
 (Or `--backend codex`, or pass `-- --model <id>` for a specific model. See `/ralph`'s **Launching** section for the full surface.)
@@ -149,7 +149,7 @@ There's no explicit review state machine. Each iteration reads the prior phase's
 When the user walks back into a workdir that already has artifacts:
 
 1. **Skip ORIENT** unless the user explicitly wants to revise scope (in which case edit `constitution.md` together, no re-draft from scratch).
-2. **If `constitution.md`'s `status:` is `active` and the tmux session isn't running**, re-launch the ralph loop: `.claude/skills/ralph/scripts/ralph constitution.md`. The next iteration surveys the workdir and picks up wherever the prior loop left off.
+2. **If `constitution.md`'s `status:` is `active` and the tmux session isn't running**, re-launch the ralph loop: `"${CLAUDE_PLUGIN_ROOT}/skills/ralph/scripts/ralph" constitution.md`. The next iteration surveys the workdir and picks up wherever the prior loop left off.
 3. **If `constitution.md`'s `status:` is `closed`**, the reproduction is at REVIEW. Run REVIEW close-out in your main session.
 4. **If ORIENT substrate is incomplete** — paper-extraction errored mid-flight, or the code clone / scan didn't land — finish the missing stages in your main session before launching the loop. Both `/paper-extraction` and `/lc-from-code` are survey-first and skip done work; re-invoking against partial state is safe.
 

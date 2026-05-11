@@ -1,6 +1,6 @@
 # lightcone-cli skills
 
-Each subdirectory is one Claude Code skill: `SKILL.md` plus optional `references/`, `assets/`, and `scripts/`. `lc init` copies these into a project's `.claude/skills/` so they are discoverable to Claude Code sessions.
+Each subdirectory is one Claude Code skill: `SKILL.md` plus optional `references/`, `assets/`, and `scripts/`. These ship as the `lightcone` Claude Code plugin (manifest at `claude/lightcone/.claude-plugin/plugin.json`). `lc init` shells out to `claude plugin marketplace add` + `claude plugin install lightcone@lightcone-cli` so the skills register user-scoped — discoverable in every Claude Code session, not duplicated into each project's `.claude/`.
 
 ## Project lifecycle skills
 
@@ -23,7 +23,7 @@ Not direct entry points — Claude invokes these (or other skills invoke them) t
 
 ## Paper-reproduction bundle
 
-A self-contained toolkit for reproducing published papers in ASTRA. The bundle is co-located so a single `lc init` brings the full toolkit into a project — no plugin marketplace, no separate installs.
+A self-contained toolkit for reproducing published papers in ASTRA. The bundle is co-located inside the `lightcone` plugin so a single `lc init` brings the full toolkit — one marketplace registration, one plugin install, all skills available.
 
 | Skill | Role |
 |---|---|

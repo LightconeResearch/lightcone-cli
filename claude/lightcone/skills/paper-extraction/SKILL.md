@@ -132,7 +132,7 @@ Read [`references/arxiv-source.md`](references/arxiv-source.md) for Path A; [`re
 `scripts/extract-paper-substrate.py` does the deterministic structural pass and writes the `astra.yaml` stub:
 
 ```bash
-python3 .claude/skills/paper-extraction/scripts/extract-paper-substrate.py \
+python3 "${CLAUDE_PLUGIN_ROOT}/skills/paper-extraction/scripts/extract-paper-substrate.py" \
   --arxiv-id <arxiv-id>   # or --doi <doi>
 ```
 
