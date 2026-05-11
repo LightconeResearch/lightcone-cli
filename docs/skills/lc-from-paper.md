@@ -51,7 +51,7 @@ user's main session; phases 2–7 run as ralph iterations.
 | 0 | INTERVIEW | user's main session | per-paper `constitution.md` + `CLAUDE.md` |
 | 1 | ACQUIRE | user's main session | `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml, code/, code-status.yaml, code-index.md}` |
 | 2 | ARCHITECT | ralph iteration | stub `astra.yaml` (sub-analyses, inputs, outputs, narrative) |
-| 3 | SPECIFY | ralph iteration | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `universes/baseline.yaml` |
+| 3 | SPECIFY | ralph iteration | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
 | 4 | LITERATURE | ralph iteration | `prior_insights:` resolved with `evidence:` selectors; per-paper PDFs cached via `astra paper add` |
 | 5 | IMPLEMENT | ralph iteration | `scripts/`, `requirements.txt`, recipes in `astra.yaml` |
 | 6 | RUN | ralph iteration | `results/<universe>/<output>/` |
