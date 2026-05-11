@@ -84,7 +84,7 @@ The `opportunities:` block surfaces **gaps that didn't necessarily fail the verd
 - A decision SPECIFY recorded with code-as-canonical that has an unresolved disagreement still in `open-questions.md` and could move the result.
 - A sub-analysis whose evidence quotes are paraphrased rather than verbatim (would fail `--verify-evidence` if pushed harder).
 
-Each opportunity gets two grades: a **leverage** one-liner (impact if closed) and a **relative_to_intent** placement against the user's fidelity intent in CLAUDE.md's Goal section:
+Each opportunity gets two grades: a **leverage** one-liner (impact if closed) and a **relative_to_intent** placement against the user's fidelity intent in `constitution.md`'s Goal section:
 
 - `below` — the user's intent calls for tighter than this; closing the gap moves the reproduction toward what they actually want.
 - `at` — closing the gap reaches the intent; further tightening would be gravy.

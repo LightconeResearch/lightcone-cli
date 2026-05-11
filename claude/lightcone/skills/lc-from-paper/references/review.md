@@ -12,10 +12,11 @@ The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding
 - `comparison-report.yaml`, `comparison-report.md` — final verdict + opportunity assessment
 - `targets/targets.md` — what was being matched against; reference figures / tables in `targets/`
 - `results/<universe>/<output_id>/` — reproduced figures / tables / metrics
-- `open-questions.md` at the workdir root — running report from sub-agent phases (paper-vs-code conflicts, ambiguities, anything sub-agents flagged for user resolution)
+- `open-questions.md` at the workdir root — running report from the iteration-phases (paper-vs-code conflicts, ambiguities, anything iterations flagged for user resolution)
 - `work/reference/index.json` and `work/reference/code-index.md` — for context
 - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) and `work/reference/code/` — directly available for follow-up questions the user asks during REVIEW that the report and CLAUDE.md don't answer ("remind me what the paper says about X", "did the original code do Y"). Grep into for specifics; read targeted spans by offset/limit.
-- `CLAUDE.md` at the workdir root — paper identity, Goal, Rigor, Paper-vs-code disagreements (the at-a-glance summary that's accumulated across all sub-agent spawns)
+- `CLAUDE.md` at the workdir root — paper identity, Rules, Rigor, Paper-vs-code disagreements (the at-a-glance summary that's accumulated across iterations)
+- `constitution.md` at the workdir root — Goal, Fidelity intent, Scope, Quality bar, Evidence (the driving document the loop has been working against)
 
 ## Outputs
 
@@ -50,8 +51,8 @@ Output lands at `.lightcone/check-sentence-by-sentence.md` (or wherever the skil
 Read `open-questions.md` at the workdir root. For each unresolved entry, surface it via `AskUserQuestion` with:
 
 - **The question** (verbatim from the file)
-- **Origin** — which sub-agent flagged it
-- **The default the sub-agent applied** (if any — e.g. "code as canonical")
+- **Origin** — which phase flagged it
+- **The default the phase applied** (if any — e.g. "code as canonical")
 - **Three options**: ratify the default, override (user spells out their choice), or defer (leave as a known limitation in the final report)
 
 Append a `## Resolutions` section to `open-questions.md` capturing what the user said for each entry. This makes the resolution durable — re-runs and future sessions see it. Cross-reference with CLAUDE.md's **Paper-vs-code disagreements** section: every entry there should now have its resolution recorded, either inline (if the user picked the canonical default) or in `open-questions.md`.
@@ -69,7 +70,7 @@ A single markdown file at the project root, ~1–2 pages. The canonical record o
 5. **Open opportunities** — pull from `comparison-report.yaml`'s `opportunities:` block, plus anything in CLAUDE.md's **Rigor** section's *Open opportunities* list. One bullet each with the leverage assessment. This is what a future session (or a future-Cail revisiting) would tighten next.
 6. **What was learned** — anything the reproduction surfaced that wasn't visible from the paper alone (a parameter the code uses but the paper doesn't mention, a data cut stricter than stated, etc.). The reproduction's value to the broader literature.
 7. **Resolved open questions** — pull from `open-questions.md`'s `## Resolutions` section. One bullet per question + its resolution.
-8. **Re-running** — one paragraph: how to re-run from this workdir (`lc run --universe baseline`, the relevant `astra.yaml`, where CLAUDE.md lives so future sub-agents auto-load it).
+8. **Re-running** — one paragraph: how to re-run from this workdir (`lc run --universe baseline`, the relevant `astra.yaml`, where CLAUDE.md lives so future Claude Code sessions auto-load it on walk-up).
 
 Brief, not exhaustive. The depth lives in `astra.yaml` and the workdir's notes; the summary is the door into them.
 
