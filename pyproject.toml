@@ -59,14 +59,21 @@ packages = [
     "src/snakemake_executor_plugin_dask",
 ]
 
+# The plugin bundle lives at claude/lightcone/. The marketplace manifest at
+# the repo root (.claude-plugin/marketplace.json) points at it; both ship
+# inside the wheel so `lc init` can shell out to `claude plugin marketplace
+# add <wheel-installed-marketplace-root>` and `claude plugin install
+# lightcone@lightcone-cli` without needing a separate checkout.
 [tool.hatch.build.targets.wheel.force-include]
 "claude/lightcone" = "lightcone/cli/claude/lightcone"
+".claude-plugin/marketplace.json" = "lightcone/cli/.claude-plugin/marketplace.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "src/lightcone",
     "src/snakemake_executor_plugin_dask",
     "claude/lightcone",
+    ".claude-plugin/marketplace.json",
 ]
 
 [tool.ruff]

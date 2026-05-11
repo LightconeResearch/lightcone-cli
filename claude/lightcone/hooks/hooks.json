@@ -4,12 +4,12 @@
       "hooks": [
         {
           "type": "command",
-          "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/activate-venv.sh",
+          "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/activate-venv.sh\"",
           "timeout": 5
         },
         {
           "type": "command",
-          "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/session-start.sh",
+          "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.sh\"",
           "timeout": 15
         }
       ]
@@ -21,7 +21,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/validate-on-save.sh",
+          "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/validate-on-save.sh\"",
           "timeout": 15
         }
       ]

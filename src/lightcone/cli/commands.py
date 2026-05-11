@@ -30,7 +30,11 @@ import click
 import yaml
 from rich.console import Console
 
-from lightcone.cli.plugin import get_plugin_source_dir
+from lightcone.cli.plugin import (
+    MARKETPLACE_NAME,
+    PLUGIN_NAME,
+    get_marketplace_root,
+)
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -223,10 +227,13 @@ def init(
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
 
-    # Claude Code plugin bundle
-    plugin_source = get_plugin_source_dir()
-    if plugin_source is not None and plugin_source.exists():
-        _install_claude_plugin(directory, plugin_source, permissions)
+    # Claude Code plugin: write the project's permission tier into
+    # .claude/settings.json, then shell out to the claude CLI so the plugin
+    # (skills, agents, hooks) lives in the user's global Claude Code config —
+    # not duplicated into every project. Soft-fails when claude isn't on PATH
+    # so users on other agents (codex, …) get a clear pointer rather than a
+    # hard error from `lc init`.
+    _install_claude_plugin(directory, permissions)
 
     # Project CLAUDE.md (a stub)
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
@@ -364,32 +371,77 @@ input hashes, and output hash.
 """
 
 
-def _install_claude_plugin(
-    project_dir: Path,
-    plugin_source: Path,
-    permissions: str,
-) -> None:
-    """Copy the bundled Claude Code plugin into the project's ``.claude/``.
+def _install_claude_plugin(project_dir: Path, permissions: str) -> None:
+    """Wire up the Claude Code plugin for this project.
 
-    The hook configuration ships with the plugin as ``hooks.json`` so
-    that hook entries live next to the scripts they reference. The CLI
-    only owns the ``--permissions`` tier selection.
+    Two things happen here, in this order:
+
+    1. Write ``.claude/settings.json`` with the chosen ``--permissions`` tier.
+       This file is project-scoped — it lives next to ``astra.yaml`` and only
+       controls what tools the agent may invoke in *this* project.
+
+    2. Shell out to the ``claude`` CLI to register the marketplace and
+       install the lightcone plugin. The plugin (skills, agents, hooks) is
+       *user-scoped* — Claude Code installs it under ``~/.claude/`` and
+       activates it in every session, including this one. Idempotent: a
+       second ``lc init`` (in a different project) is a no-op for the plugin.
+
+    Both ``claude plugin marketplace add`` and ``claude plugin install`` are
+    idempotent, mirroring the felt setup pattern that this lift models on.
+    When the ``claude`` CLI isn't on PATH we print a manual-install hint and
+    continue — Codex users (and anyone consuming the plugin via a future
+    npx-skills bridge) shouldn't have ``lc init`` hard-fail on them.
     """
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
-    for sub in ("skills", "agents", "scripts", "guides", "templates"):
-        src = plugin_source / sub
-        if src.exists():
-            dest = claude_dir / sub
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest)
-    hooks = json.loads((plugin_source / "hooks.json").read_text())
-    settings = {
-        "permissions": PERMISSION_TIERS[permissions],
-        "hooks": hooks,
-    }
-    (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"permissions": PERMISSION_TIERS[permissions]}, indent=2)
+    )
+
+    marketplace_root = get_marketplace_root()
+    if marketplace_root is None:
+        # Shouldn't happen for a normal install — the wheel force-includes
+        # marketplace.json and the dev path resolves from the repo root. Log
+        # loudly and continue so the rest of init still completes.
+        console.print(
+            "[yellow]⚠ Could not locate the lightcone Claude plugin marketplace "
+            "manifest. Plugin install skipped.[/yellow]"
+        )
+        return
+
+    plugin_ref = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
+
+    if shutil.which("claude") is None:
+        console.print(
+            "[yellow]claude CLI not found on PATH — skipping plugin install.[/yellow]\n"
+            "  To install manually once Claude Code is available, run:\n"
+            f"    [cyan]claude plugin marketplace add {marketplace_root}[/cyan]\n"
+            f"    [cyan]claude plugin install {plugin_ref}[/cyan]\n"
+            "  (Codex / other-agent users can ignore this — the bundle still ships in the wheel.)"
+        )
+        return
+
+    # Surface the CLI's own stdout/stderr so the user sees the same status
+    # output Claude Code prints natively. Both commands are idempotent, so
+    # re-running `lc init` on subsequent projects (or after manual claude
+    # plugin work) doesn't double-install.
+    try:
+        subprocess.run(
+            ["claude", "plugin", "marketplace", "add", str(marketplace_root)],
+            check=False,
+        )
+        subprocess.run(
+            ["claude", "plugin", "install", plugin_ref],
+            check=False,
+        )
+    except OSError as e:
+        # Defensive: shutil.which found `claude` but exec failed (broken
+        # symlink, permission flip, race with an upgrade). Don't crash init.
+        console.print(
+            f"[yellow]⚠ Could not invoke `claude plugin install`: {e}[/yellow]\n"
+            f"  Install manually: claude plugin marketplace add {marketplace_root} && "
+            f"claude plugin install {plugin_ref}"
+        )
 
 
 # =============================================================================

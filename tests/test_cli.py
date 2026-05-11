@@ -27,6 +27,27 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return fake_home
 
 
+@pytest.fixture(autouse=True)
+def _no_real_claude_plugin_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent tests from shelling out to a real ``claude plugin install``.
+
+    ``lc init`` calls ``shutil.which("claude")`` to decide whether to register
+    the marketplace and install the plugin via the Claude Code CLI. In CI and
+    on dev machines that have ``claude`` on PATH, the unmocked behavior would
+    write to the user's actual ``~/.claude/`` config. We default to the
+    soft-fail branch (print a hint, continue); tests that want to exercise
+    the install path override ``shutil.which`` and ``subprocess.run`` locally.
+    """
+    real_which = shutil.which
+
+    def fake_which(name: str, *args: object, **kwargs: object) -> str | None:
+        if name == "claude":
+            return None
+        return real_which(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+
 # ---- top-level ------------------------------------------------------------
 
 
@@ -104,6 +125,83 @@ def test_init_venv_uses_uv_when_available(
 
     assert ["uv", "venv", "--python", "3.12", ".venv"] in calls
     assert ["uv", "pip", "install", "--python", ".venv/bin/python", "lightcone-cli"] in calls
+
+
+def test_init_writes_settings_with_only_permissions(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The new ``lc init`` no longer copies skills/agents/scripts into the
+    project. ``.claude/settings.json`` carries only the permissions tier; the
+    plugin (skills, agents, hooks) lives in the user's ``~/.claude/`` after
+    ``claude plugin install``.
+    """
+    import json
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+
+    settings = json.loads((project / ".claude" / "settings.json").read_text())
+    assert set(settings.keys()) == {"permissions"}, (
+        "settings.json should only carry the permissions tier; the plugin "
+        "ships hooks via claude plugin install"
+    )
+    # No per-project copies of plugin assets:
+    assert not (project / ".claude" / "skills").exists()
+    assert not (project / ".claude" / "agents").exists()
+    assert not (project / ".claude" / "scripts").exists()
+    assert not (project / ".claude" / "guides").exists()
+    assert not (project / ".claude" / "templates").exists()
+
+
+def test_init_invokes_claude_plugin_when_available(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``claude`` is on PATH, ``lc init`` shells out to register the
+    marketplace and install the plugin — both commands idempotent.
+    """
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    # `claude` resolves, `uv` does not (so the venv branch falls back to
+    # python -m venv, but we pass --no-venv anyway).
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+
+    # The marketplace-add call's last arg is the marketplace root, which is
+    # either the bundled wheel path or the dev repo root — both end in a
+    # `.claude-plugin/marketplace.json`. We only assert the verb shape.
+    add_calls = [c for c in calls if c[:3] == ["claude", "plugin", "marketplace"]]
+    install_calls = [c for c in calls if c[:3] == ["claude", "plugin", "install"]]
+    assert add_calls, f"expected `claude plugin marketplace add` invocation, got {calls}"
+    assert add_calls[0][3] == "add"
+    assert install_calls == [["claude", "plugin", "install", "lightcone@lightcone-cli"]]
+
+
+def test_init_prints_hint_when_claude_missing(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """When ``claude`` is missing (autouse fixture default), ``lc init`` still
+    succeeds and prints a manual-install hint instead of hard-failing.
+
+    This is the path Codex / other-agent users hit — and we don't want a
+    missing ``claude`` CLI to break ``lc init`` for them.
+    """
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+    assert "claude CLI not found" in result.output
+    assert "claude plugin marketplace add" in result.output
+    assert "claude plugin install lightcone@lightcone-cli" in result.output
 
 
 def test_init_venv_falls_back_to_python_when_uv_missing(

@@ -1,0 +1,13 @@
+{
+  "name": "lightcone",
+  "version": "0.1.0",
+  "description": "Lightcone Research's agentic layer for ASTRA. Bundles the /lc-* skills (lc-new, lc-from-code, lc-from-paper, lc-feedback, ralph, and the paper-reproduction sibling bundle), the /astra and /lc-cli reference skills, the lc-extractor literature subagent, and SessionStart + PostToolUse hooks that prepend the project venv to PATH, surface validation status, and auto-validate astra.yaml edits.",
+  "author": {
+    "name": "Lightcone Research",
+    "url": "https://github.com/LightconeResearch"
+  },
+  "homepage": "https://lightconeresearch.github.io/lightcone-cli/",
+  "repository": "https://github.com/LightconeResearch/lightcone-cli",
+  "license": "BSD-3-Clause",
+  "keywords": ["astra", "lightcone", "research", "reproducibility", "snakemake"]
+}

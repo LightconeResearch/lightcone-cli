@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "lightcone-cli",
+  "description": "Lightcone Research's agentic layer for ASTRA — Claude Code plugin shipping the /lc-* skills, /astra and /lc-cli reference skills, lc-extractor subagent, and session hooks that integrate Claude Code with the lc workflow.",
+  "owner": {
+    "name": "Lightcone Research",
+    "url": "https://github.com/LightconeResearch"
+  },
+  "plugins": [
+    {
+      "name": "lightcone",
+      "description": "Skills, agents, and hooks for working on ASTRA projects in Claude Code. Installed by `lc init` (which shells out to `claude plugin install lightcone@lightcone-cli`).",
+      "source": "./claude/lightcone"
+    }
+  ]
+}
