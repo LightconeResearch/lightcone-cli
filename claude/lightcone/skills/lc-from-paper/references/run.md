@@ -2,7 +2,7 @@
 
 Materialize every output in `astra.yaml` for the requested universe. RUN is mostly mechanical — `lc run --universe <id>` does the heavy lifting. The phase exists as a discrete step so failures get diagnosed and re-run before COMPARE.
 
-This phase runs as what a ralph iteration does when the workdir signals "recipes present in astra.yaml + scripts/ committed + results/<universe>/<output>/ absent for any output." The iteration runs the recipes, diagnoses failures, attempts targeted fixes, and exits. Universe defaults to `baseline`.
+RUN is what a ralph iteration does when the workdir signals "recipes present in `astra.yaml` + `scripts/` committed + `results/<universe>/<output>/` absent for any output." The iteration runs the recipes, diagnoses failures, attempts targeted fixes, and exits. Universe defaults to `baseline`.
 
 ## Inputs
 
