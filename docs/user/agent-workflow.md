@@ -71,28 +71,46 @@ parameter plumbing.
 ## `/lc-from-paper` — reproduce a published paper
 
 **You have a DOI or arXiv ID. You end with a reproduction project
-driven by an orchestrator session and named per-phase sub-agents.**
+driven by an interview-first agent that hands off to a long-running
+ralph loop for the heavy middle.**
 
 `/lc-from-paper` is the entry point of the paper-reproduction bundle.
 It opens with a short interactive interview — paper identity, scope
-(full vs targeted), and any paper-specific conventions — then drafts
-a per-paper `CLAUDE.md` (the durable spec every sub-agent walks up to).
-After approval, the skill becomes a persistent **orchestrator session**
-that spawns named per-phase sub-agents (`acquire`, `architect`,
-`specify`, `literature`, `implement`, `run`, `compare`) you can drop
-into directly via the chat surface. The two bookends — INTERVIEW at
-start and REVIEW at close-out — run in the orchestrator session itself.
+(full vs targeted), fidelity intent (your prose answer to "when is
+this good enough"), and any paper-specific conventions — then drafts
+**two files** at the reproduction workdir root: `constitution.md`
+(the ralph loop's driving document — Goal, fidelity intent, scope,
+quality bar, evidence) and `CLAUDE.md` (the auto-loading walk-up with
+rules, the Rigor accumulator, and the paper-vs-code disagreements log).
+ACQUIRE then runs in the same session, standing up the paper and code
+substrate via `/paper-extraction` and `/lc-from-code` in scan-only mode.
 
-Rigor is chosen per spawn from CLAUDE.md's Rigor section: cheap
-(skip self-review or one fresh-context pass) or heavy (iterate
-fresh-context review until two consecutive clean rounds). COMPARE
-returns a verdict plus an opportunity assessment — where the gaps are
-and how much they likely matter — so you and the orchestrator can
-decide whether to spend another IMPLEMENT round or land at the
-current rigor.
+After ACQUIRE lands, the skill launches a **ralph loop** in a detached
+tmux session against `constitution.md`. Each iteration starts a fresh
+worker that surveys the workdir, picks the next valuable move
+(typically one of ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN
+→ COMPARE), does it, commits, exits. The fresh-context property
+between iterations is what makes per-phase review work: iteration N
+writes, iteration N+1 reads N's work without bias. You attach to the
+loop with `tmux attach` to watch or steer; iterations are detached so
+they can't ask you questions interactively — they log open questions
+to `open-questions.md` with a best-judgment default and the loop
+keeps moving.
 
-The bundle composes sibling skills: `paper-extraction`, `narrative`,
-`figure-comparison`, and `check-sentence-by-sentence`. See
+When the loop closes (constitution `status: closed` after COMPARE
+returns `pass` and a cold-survey iteration finds nothing left to
+improve), come back and the agent runs **REVIEW close-out** in your
+session: `/figure-comparison` against the targets, optional
+`/check-sentence-by-sentence`, a walk through the accumulated open
+questions, a `REPRODUCTION-SUMMARY.md`. COMPARE's opportunity
+assessment — where the gaps are, how much they likely matter, and how
+they sit relative to your fidelity intent — propagates into
+CLAUDE.md's Rigor section as the trajectory of what could be tightened
+on a return visit.
+
+The bundle composes sibling skills: `ralph` (the loop substrate),
+`paper-extraction`, `narrative`, `figure-comparison`, and
+`check-sentence-by-sentence`. See
 [`claude/lightcone/skills/README.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md)
 for the full bundle map.
 

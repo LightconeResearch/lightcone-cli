@@ -53,7 +53,7 @@ Return the results as a markdown table:
 
 And a separate list of ALL candidate decisions with file:line references.
 Err on the side of completeness — include anything that could plausibly
-be an analytical choice. The orchestrator will filter down later.
+be an analytical choice. The caller will filter down later.
 
 For reference, here are the decision criteria for classifying candidates:
 <decision-criteria>

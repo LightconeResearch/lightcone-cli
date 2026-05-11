@@ -98,7 +98,7 @@ $SPEC_CONTENT
 SYSEOF
 
     cat > "$PROMPT_FILE" << 'PROMPTEOF'
-You are inside a ralph loop — meditative iteration toward a desired state. Activate the ralph-loops skill and follow its iteration protocol against the constitution above. The workdir's CLAUDE.md auto-loads; read it on entry.
+You are inside a ralph loop — meditative iteration toward a desired state. Activate the ralph skill and follow its Loop protocol against the constitution above. The workdir's CLAUDE.md auto-loads; read it on entry.
 PROMPTEOF
 
     PROMPT=$(cat "$PROMPT_FILE")

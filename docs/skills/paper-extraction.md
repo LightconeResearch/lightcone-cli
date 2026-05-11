@@ -126,7 +126,8 @@ cached PDF — paraphrasing breaks the gate.
 ## Related
 
 - [`/lc-from-paper`](lc-from-paper.md) — invokes `/paper-extraction`
-  during ACQUIRE; the resulting `paper-expert` sub-agent reads
-  `index.json` and the substrate.
+  during ACQUIRE for the target paper, and again from inside a ralph
+  iteration for each cited paper during LITERATURE; each iteration
+  reads `index.json` and the substrate directly.
 - [`claude/lightcone/guides/astra-reference.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/guides/astra-reference.md)
   — Insight + Evidence shape, `quote.exact` rules.
