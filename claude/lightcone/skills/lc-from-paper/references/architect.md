@@ -63,7 +63,7 @@ analyses:
         description: |
           <one-line on what this output is>
     decisions: {}      # SPECIFY fills
-    prior_insights: {} # SPECIFY records placeholders (citation only), LITERATURE resolves evidence
+    prior_insights: {} # SPECIFY records placeholders (Evidence with doi:, no quote: yet), LITERATURE fills the quote: selectors
     findings: {}       # SPECIFY fills
 
   <sub-analysis-id-2>:

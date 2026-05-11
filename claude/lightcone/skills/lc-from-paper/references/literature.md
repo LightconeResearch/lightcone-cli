@@ -26,7 +26,7 @@ LITERATURE is what a ralph iteration does when the workdir signals "SPECIFY done
 
 ### Stage 1 — Mechanical fetch (batched, no agent fan-out)
 
-Collect every `prior_insights:` entry whose `evidence:` is missing or empty. Group by DOI. Each unique DOI becomes one fetch.
+Collect every unresolved `prior_insights:` placeholder — its Evidence carries `doi:` but no `quote:` selector yet. Group those DOIs uniquely; each unique DOI becomes one fetch.
 
 Run paper-extraction's substrate script for each unique DOI **in batches of 5** via shell parallelism. paper-extraction's `extract-paper-substrate.py` is deterministic — no agent involvement needed. Each invocation writes to `work/cited/<doi-slug>/work/reference/`:
 
@@ -68,7 +68,7 @@ The exact Haiku threshold and partition size are heuristic — they trade off co
 
 The iteration reads `work/notes/literature/resolutions.yaml` and writes the resolutions back into `astra.yaml`:
 
-- For each resolved placeholder, locate `prior_insights[<id>]` in `astra.yaml` (the placeholder already lives in its sub-analysis; the merge just sets its `evidence:` field).
+- For each resolved placeholder, locate `prior_insights[<id>]` in `astra.yaml` (the placeholder already lives in its sub-analysis with `evidence: [{id, doi}]`; the merge augments each Evidence entry with the newly-authored `quote:` + `location:` selectors — `id` and `doi` were already there).
 - For each unresolved placeholder, append a line to `open-questions.md` describing it — the user resolves at REVIEW close-out by either supplying a different citation, weakening the claim, or removing the placeholder entirely.
 - Run `astra validate astra.yaml --verify-evidence` after the merge to catch structural breakage early.
 
