@@ -1,8 +1,8 @@
 # Constitution — depth reference
 
-Drafting a constitution. The SKILL body covers the procedural backbone (Study → Draft → Refine → Launch). This reference goes deeper on voice, sections, and the discipline that keeps a constitution from sliding into a plan.
+Drafting a constitution. The SKILL body's **Authoring** section covers the procedural backbone (Study → Draft → Refine → Launch). This reference goes deeper on voice, sections, and the discipline that keeps a constitution from sliding into a plan.
 
-The constitution itself is just a markdown file with YAML frontmatter that a runner reads on each iteration. The bundled runner is `ralph-loops` (`scripts/ralph`); other dispatchers can read the same markdown shape. The runner is interchangeable; the constitution is what matters.
+The constitution itself is just a markdown file with YAML frontmatter that a runner reads on each iteration. The bundled runner is `scripts/ralph` (next to this skill); other dispatchers can read the same markdown shape. The runner is interchangeable; the constitution is what matters.
 
 ---
 
@@ -39,13 +39,7 @@ Read relevant files, understand existing patterns. This informs the **constituti
 
 ### 2. Draft
 
-Create the constitution file from the bundled template:
-
-```bash
-cp .claude/skills/ralph-loops/assets/spec.md my-constitution.md
-```
-
-Or write the constitution at a path the runner expects (e.g. `/lc-from-paper` writes `constitution.md` at the reproduction workdir root).
+Create the constitution as a markdown file with `status: active` in YAML frontmatter (that's what the launcher checks). Some workflows expect a specific path so a runner picks it up — e.g. `/lc-from-paper` writes `constitution.md` at the reproduction workdir root. Otherwise put it wherever the work lives. The section block in the SKILL's "What goes in a constitution" is your starting shape; fill what fits, drop what doesn't.
 
 Use the crafting process from [`crafting.md`](crafting.md):
 
@@ -67,7 +61,7 @@ Repeat until it feels solid. It does not have to be complete; open questions bel
 
 ### 4. Launch
 
-When approved, hand to a runner. Bundled option: `.claude/skills/ralph-loops/scripts/ralph my-constitution.md`. The runner re-reads the constitution each iteration, so refinements between iterations are normal.
+When approved, hand to a runner. Bundled option: `.claude/skills/ralph/scripts/ralph my-constitution.md`. The runner re-reads the constitution each iteration, so refinements between iterations are normal.
 
 ---
 
