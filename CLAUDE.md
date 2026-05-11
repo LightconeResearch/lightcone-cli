@@ -68,9 +68,10 @@ src/lightcone/              # namespace — NO __init__.py
 
 claude/lightcone/           # Claude plugin source — force-included into the wheel
 ├── skills/                 # lc-new, lc-from-code, lc-from-paper,
-│                            # lc-feedback;
+│                            # lc-feedback, ralph;
 │                            # paper-reproduction bundle: lc-from-paper (entry),
-│                            # narrative, paper-extraction, figure-comparison,
+│                            # ralph (loop substrate), narrative,
+│                            # paper-extraction, figure-comparison,
 │                            # check-sentence-by-sentence
 │                            # (see skills/README.md for the full bundle map)
 ├── agents/                 # lc-extractor
