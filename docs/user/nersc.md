@@ -114,15 +114,16 @@ For development tooling (pytest, ruff, mypy):
 uv pip install -e "./lightcone-cli[dev]"
 ```
 
-### One-time setup and sanity check
+### Sanity check
 
 ```bash
-lc setup            # creates ~/.lightcone/config.yaml with runtime: auto
 which lc            # should resolve under ~/.local/bin/ or your active env
 lc --version
+lc --help
 ```
 
-You'll pin `runtime: podman-hpc` for compute nodes in [§5](#5-running-on-compute-nodes).
+!!! note "Global config is auto-created"
+    The first `lc` invocation writes `~/.lightcone/config.yaml` with `runtime: auto` — no manual setup step needed. You'll pin it to `podman-hpc` for compute nodes in [§5](#5-running-on-compute-nodes).
 
 ---
 
@@ -211,7 +212,11 @@ For production sweeps where the recipes are already nailed down, you can submit 
 #SBATCH -t 04:00:00
 
 cd $SCRATCH/your-analysis
-source ~/.conda/envs/your-env-name/bin/activate   # or your venv
+
+# Make `lc` available — pick the line that matches your install:
+export PATH=$HOME/.local/bin:$PATH                # uv tool install (default)
+# source ~/.conda/envs/your-env-name/bin/activate # conda env
+
 lc run -j 16
 ```
 
