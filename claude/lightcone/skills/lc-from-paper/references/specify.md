@@ -33,7 +33,7 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 
 - **`/narrative`** — narrative authoring (any of the five `narrative.{summary,inputs,methods,findings,outputs}` keys, plus decision `rationale:` fields) is owned by the narrative skill. Invoke it during the **paper pass** when authoring or extending narrative prose. The narrative skill teaches reserved entity names, the tree-path anchor grammar, the conditional-narrative requirement (which keys are required when), the five-key authoring order, paper-reproduction fidelity discipline, and the new downstream-consumer discipline (lightcone-cli#108). Do not duplicate that content.
 
-Your responsibility in this phase is the **content**: build out the `decisions:` / `prior_insights:` / `findings:` for each sub-analysis with verbatim paper quotes anchored to the paper as evidence, and weave `astra-anchor:` references back into the narrative as entries land. ARCHITECT already settled the structure.
+Your responsibility in this phase is the **content**: build out the `decisions:` / `prior_insights:` / `findings:` for each sub-analysis (each with its own evidence shape — detailed below), and weave `astra-anchor:` references back into the narrative as entries land. ARCHITECT already settled the structure.
 
 ## The two-pass-per-sub-analysis structure
 
