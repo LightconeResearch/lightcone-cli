@@ -264,9 +264,9 @@ def init(
             )
 
     console.print("\nNext steps:")
-    console.print("  • Edit [cyan]astra.yaml[/cyan] to declare outputs and recipes")
-    console.print("  • [cyan]lc run[/cyan] to materialize outputs")
-    console.print("  • [cyan]lc status[/cyan] to check what's done")
+    console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
+    console.print("  • Start [cyan]claude[/cyan]")
+    console.print("  • Run [cyan]/lightcone:new[/cyan] to get started on a new analysis")
 
 
 _CONTAINERFILE = """\
