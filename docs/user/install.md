@@ -80,7 +80,7 @@ claude
 
 Inside Claude Code you'll type slash commands like `/lc-new`,
 `/lc-from-code`, and `/lc-from-paper` — see
-[The Claude Code Workflow](claude-workflow.md).
+[The Agent Workflow](agent-workflow.md).
 
 ## 5. (Optional) Docker or Podman
 

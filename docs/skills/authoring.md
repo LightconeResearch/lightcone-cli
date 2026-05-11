@@ -79,9 +79,9 @@ Spawn agents in parallel by issuing them in a single tool-use block.
 
 The `evals/` tree has fixtures (currently `evals/tasks/snae/`) and the
 runner lives at `lightcone.eval.harness`. Eval CLI commands are defined
-in `lightcone.eval.cli` (`lc eval run|report|compare`), but **note that
-this group is currently not wired into the top-level `lc` CLI** — see
-the [maintainer summary](../index.md) for status. To run evals
+in `lightcone.eval.cli` and registered as `lc eval run|report|compare`
+when the optional `eval` extra is installed (the registration is
+gated on `ImportError` in `lightcone.cli.commands`). To run evals
 programmatically:
 
 ```python

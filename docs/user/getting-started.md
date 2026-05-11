@@ -70,7 +70,7 @@ bug reports without leaving the session.
 | `/lc-from-paper` | You have a published paper (DOI / arXiv ID) you want to reproduce. |
 | `/lc-feedback` | Something broke and you want to file a GitHub issue without leaving the session. |
 
-The next page, [The Claude Code Workflow](claude-workflow.md),
+The next page, [The Agent Workflow](agent-workflow.md),
 explains each of these in more detail.
 
 ## 5. The four CLI commands you'll actually type
@@ -91,7 +91,7 @@ exact flags.
 
 ## 6. Read on
 
-- [The Claude Code Workflow](claude-workflow.md) — how each slash
+- [The Agent Workflow](agent-workflow.md) — how each slash
   command actually flows.
 - [Tutorial: Your First Analysis](tutorial.md) — end-to-end, with the
   agent doing most of the typing.
