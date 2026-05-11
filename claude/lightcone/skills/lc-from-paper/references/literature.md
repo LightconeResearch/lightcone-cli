@@ -165,13 +165,11 @@ Rules:
 
 When the iteration fans out to Haikus, each Haiku is spawned with `model="haiku"` and gets this contract plus its assigned subset of placeholders and substrate paths.
 
-## Review — by iteration boundary (default) or in-iteration fan-out (optional)
+## Review by iteration boundary
 
 After the merge lands, the cross-check question is: do the `evidence:` quotes belong to the cited paper at the cited page? Do the quotes actually justify the placeholders' claims, or are they technically present but tangential? Do the claims actually support the decision options that reference them via `Option.insights`?
 
-**Default: review by iteration boundary.** The iteration that did the merge exits; the next iteration enters fresh, surveys, finds `astra.yaml`'s `prior_insights:` Evidence entries populated with resolved `quote:` + `location:` selectors but no `work/notes/literature-review/round-N.md`, runs `astra validate --verify-evidence` for the deterministic check + a semantic re-read of each resolved insight, and writes review findings. The iteration after that applies the fixes (which may include re-running Haiku quote-finding for entries that need a different quote). Two consecutive review-iterations with verdict `clean` terminates the review cycle.
-
-**Optional: in-iteration fan-out.** When the placeholder count is large and the fidelity intent calls for *heavy*, the merge iteration (or a subsequent review iteration) can fan out parallel reviewers as one-level-deep sub-agents inside its own session, partitioned by cited-paper subset. Each reviewer writes findings for its subset; the iteration merges and applies fixes in the same session.
+The iteration that did the merge exits; the next iteration enters fresh, surveys, finds `astra.yaml`'s `prior_insights:` Evidence entries populated with resolved `quote:` + `location:` selectors but no `work/notes/literature-review/round-N.md`, runs `astra validate --verify-evidence` for the deterministic check + a semantic re-read of each resolved insight, and writes review findings. The iteration after that applies the fixes (which may include re-running Haiku quote-finding for entries that need a different quote). Two consecutive review-iterations with verdict `clean` terminates the review cycle.
 
 Sized from the constitution's Fidelity intent: *cheap* — one clean review-iteration is enough; *heavy* — require two consecutive clean.
 

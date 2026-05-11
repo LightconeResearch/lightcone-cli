@@ -4,7 +4,7 @@ Read the stub `astra.yaml` from ARCHITECT and fill in `decisions:`, `prior_insig
 
 SPECIFY is what a ralph iteration does when the workdir signals "stub `astra.yaml` present + sub-analyses' `decisions:` / `prior_insights:` / `findings:` blocks still empty." Iterations run detached in tmux; the user isn't reachable interactively, so the canonical-resolution default (code wins where paper and code disagree on a material choice) applies and disagreements are logged to CLAUDE.md's **Paper-vs-code disagreements** section plus `open-questions.md` for REVIEW close-out.
 
-The structure runs **two passes per sub-analysis** (paper, then code, when code exists), then iteration-boundary review (or optional in-iteration fan-out). The two passes are the cross-check: the paper pass authors what the paper says; the code pass surfaces where the code says something different; the difference is gold (it's where the reproduction has to make a decision).
+The structure runs **two passes per sub-analysis** (paper, then code, when code exists), then iteration-boundary review. The two passes are the cross-check: the paper pass authors what the paper says; the code pass surfaces where the code says something different; the difference is gold (it's where the reproduction has to make a decision).
 
 Per-sub-analysis work is parallelizable when sub-analyses are independent. Each sub-analysis's two passes (paper, then code) run sequentially within that sub-analysis; across sub-analyses the iteration can fan out parallel work as one-level-deep sub-agents from inside its main session. When SPECIFY needs paper- or code-side context, Grep into `work/reference/source/` / `document.md` for paper text or read targeted modules under `work/reference/code/`; the structural index at `work/reference/index.json` and the code inventory at `work/reference/code-index.md` give you the orientation to know where to look. Don't try to absorb the paper or code whole.
 
@@ -119,19 +119,17 @@ Read the code that implements this sub-analysis (`work/reference/code-index.md`'
 
 3. **Decision-option augmentation.** Where the code reveals an option the paper didn't mention but is defensible (a sibling implementation alternative used in the codebase or referenced in a comment), add it as a sibling option to the relevant `decisions:` entry. Do not pre-emptively author every code variant; only the ones that bear on a real choice.
 
-### Review — by iteration boundary (default) or in-iteration fan-out (optional)
+### Review by iteration boundary
 
 After the paper + code passes land for a sub-analysis, the cross-check question is: are the decisions covering everything material? Are the evidence quotes verbatim? Are the findings actually traceable to the paper or code? Did any material disagreement get silently dropped?
 
-**Default: review by iteration boundary.** The iteration that wrote a sub-analysis's passes exits when its passes are done; the next iteration enters fresh, surveys, finds the sub-analysis's passes present but no `work/notes/specify-review/<sub>-round-N.md`, reads the slice of `astra.yaml` + the paper + the code, and writes review findings. The iteration after that applies the fixes. Two consecutive review-iterations with verdict `clean` per sub-analysis terminates that sub-analysis's review cycle. The fresh-context-no-bias property is automatic at iteration boundaries — review iteration N doesn't see review iteration N-2's fixes any more than it would if they were sub-agent spawns. The depth is sized from the gap between CLAUDE.md's Rigor *Current state* for the sub-analysis and `constitution.md`'s Fidelity intent: *cheap* — accept after one clean review-iteration; *heavy* — require two consecutive clean.
+The iteration that wrote a sub-analysis's passes exits when its passes are done; the next iteration enters fresh, surveys, finds the sub-analysis's passes present but no `work/notes/specify-review/<sub>-round-N.md`, reads the slice of `astra.yaml` + the paper + the code, and writes review findings. The iteration after that applies the fixes. Two consecutive review-iterations with verdict `clean` per sub-analysis terminates that sub-analysis's review cycle. The fresh-context-no-bias property is automatic at iteration boundaries — review iteration N doesn't see review iteration N-2's fixes. The depth is sized from the gap between CLAUDE.md's Rigor *Current state* for the sub-analysis and `constitution.md`'s Fidelity intent: *cheap* — accept after one clean review-iteration; *heavy* — require two consecutive clean.
 
-**Optional: in-iteration fan-out.** When there are many independent sub-analyses to review and the iteration's fidelity-intent calculus calls for *heavy*, the iteration that holds the review work can fan out one-level-deep sub-agents (one per sub-analysis) inside its own session, merge findings, and apply fixes in the same iteration. This trades the natural fresh-context property between iterations for parallelism within an iteration. Reach for this only where the parallelism actually pays — most reproductions have small enough sub-analysis counts that sequential review via iteration boundaries is cleaner.
+#### Per-review-iteration prompt
 
-#### Per-review-iteration prompt (whether sequential or fan-out)
+The reviewer reads the slice fresh and writes findings only — never edits `astra.yaml` directly; that's the next iteration's job.
 
-The check-list and findings-file shape below applies whether the review work happens in a standalone iteration (default) or as a fan-out sub-agent inside an iteration (optional). Either way, the reviewer reads the slice fresh and writes findings only — never edits `astra.yaml` directly; that's the next iteration's (or the fan-out merge step's) job.
-
-> You are a SPECIFY reviewer for one sub-analysis. Read the relevant slice of `astra.yaml`, the paper, and the code (when present), and report any inconsistencies you find. You will be one of several independent reviewers (whether across iterations or across fan-out spawns); do not assume anything has already been fixed.
+> You are a SPECIFY reviewer for one sub-analysis. Read the relevant slice of `astra.yaml`, the paper, and the code (when present), and report any inconsistencies you find. You will be one of several independent reviewers across iterations; do not assume anything has already been fixed.
 >
 > ### Inputs
 >
@@ -157,7 +155,7 @@ The check-list and findings-file shape below applies whether the review work hap
 >
 > ### What NOT to do
 >
-> - **Do not edit `astra.yaml`** or any other file. Your output is a findings file; the next iteration (or the fan-out merge step) applies the fixes. Editing here defeats the fresh-context discipline that makes review work.
+> - **Do not edit `astra.yaml`** or any other file. Your output is a findings file; the next iteration applies the fixes. Editing here defeats the fresh-context discipline that makes review work.
 > - **Do not flag missing `recipes:`.** Recipes are IMPLEMENT's, not SPECIFY's.
 > - **Do not re-read the entire paper.** Use Grep on `work/reference/source/` (or `document.md`) for the specific claims you want to verify; lean on `work/reference/index.json`.
 > - **Do not invent problems.** If the sub-analysis is consistent with paper + code, say so briefly.
@@ -195,17 +193,14 @@ astra validate astra.yaml
 astra validate astra.yaml --verify-evidence  # after LITERATURE has resolved the prior_insights placeholders
 ```
 
-For in-iteration fan-out, the iteration that spawned the parallel reviewers reads each reviewer's findings file and merges fixes back into `astra.yaml` itself in the same iteration; the next iteration's survey acts as the consolidating review.
-
 #### Termination
 
-- **Cheap (sequential):** one review-iteration per sub-analysis after the passes land. Done after the next iteration applies the fixes (or immediately, if `fixes_needed` was 0).
-- **Heavy (sequential):**
+- **Cheap:** one review-iteration per sub-analysis after the passes land. Done after the next iteration applies the fixes (or immediately, if `fixes_needed` was 0).
+- **Heavy:**
   - If review-iteration N's `fixes_needed` was 0 AND review-iteration (N-1)'s was also 0 → done.
   - If review-iteration N is the first review (N=1), the next review-iteration runs unconditionally so we can compare across two fresh passes.
   - If review-iteration N produced fixes, the next iteration applies them, and the iteration after that runs the next review fresh.
   - If 5 review-iterations have happened without two consecutive clean rounds, log the unfinished tail in `open-questions.md` ("SPECIFY review for <sub-analysis-id> reached round cap; user should review during REVIEW close-out") and let the next iteration advance to LITERATURE.
-- **In-iteration fan-out (when chosen):** one iteration writes the passes; the next spawns N parallel reviewers and merges fixes in the same iteration. The iteration after that runs the next standalone review-iteration (or another fan-out, the iteration's call) for the second clean pass.
 
 When all sub-analyses' reviews terminate, SPECIFY produces the final outputs:
 
@@ -250,6 +245,6 @@ Out-of-scope targets stay in `targets/targets.md` with an explicit reason and sh
 - **Material disagreements** are appended to CLAUDE.md's **Paper-vs-code disagreements** section AND `open-questions.md`. CLAUDE.md is the at-a-glance summary every iteration sees; `open-questions.md` is the user-resolution accumulator. Both lead to the same place: the user resolves at REVIEW close-out.
 - **The narrative skill is the prose author, not the structure author.** SPECIFY's job is content correctness; `/narrative` invocation comes during the paper pass when authoring or extending the narrative prose to weave in anchor references.
 - **The target ledger is a derivation, not a separate phase's output.** Treat `targets/targets.md` as a small index produced alongside the filled `astra.yaml`, not a heavyweight artifact. The depth lives in `astra.yaml`'s `outputs:` / `findings:` / `decisions:`.
-- **Two-pass discipline is the cross-check.** Skipping the code pass (when code exists) loses the canonical-resolution surface and lets paper-vs-code material disagreements slip through. The fresh-context review (iteration boundary or in-iteration fan-out) can recover *some* of these but not all — the disciplined sequence (paper → code → review) catches more.
+- **Two-pass discipline is the cross-check.** Skipping the code pass (when code exists) loses the canonical-resolution surface and lets paper-vs-code material disagreements slip through. The fresh-context review can recover *some* of these but not all — the disciplined sequence (paper → code → review) catches more.
 - **Per-sub-analysis parallelism is opt-in.** When sub-analyses are independent (no shared decision blocks, no cross-sub-analysis findings), the iteration can fan out one-level-deep sub-agents (one per sub-analysis from inside its main session) to run their passes in parallel. When they share material decisions or findings (rare), serialize across iterations.
 - **Commit per sub-analysis as it lands.** Each sub-analysis's filled-in `astra.yaml` slice + its targets/implementation-notes/baseline updates earn one commit; review files commit one per review-iteration. The next iteration reads `git log` to track progress; small commits keep the trail readable.

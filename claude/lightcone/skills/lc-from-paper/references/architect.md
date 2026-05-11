@@ -119,8 +119,6 @@ The iteration after the review-iteration reads `work/notes/architect/review-<N>.
 - If 5 review iterations have happened without two consecutive clean rounds, log the unfinished tail to `open-questions.md` ("ARCHITECT review reached round cap with N fixes still landing; user should review during REVIEW close-out") and let the next iteration advance to SPECIFY anyway. Don't loop forever on stub-level review.
 - If the iteration's fidelity-intent assessment calls for *cheap* — verdict `pass` on the first review-iteration is enough; skip the second-clean-round requirement and move on. The Rigor accumulator stays *stub: baseline*.
 
-This "review by iteration boundary" pattern is the default. For phases where parallelism actually pays (LITERATURE with many cited papers, SPECIFY with many independent sub-analyses, IMPLEMENT with many outputs), the relevant reference describes in-iteration fan-out as an alternative. ARCHITECT is small and serial enough that sequential-via-iteration is always the right call.
-
 ## Survey signals (entry into ARCHITECT)
 
 - `work/reference/index.json` + `work/reference/astra.yaml` + `work/reference/code-index.md` (when code present) exist ⇒ ACQUIRE substrate is ready

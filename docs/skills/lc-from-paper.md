@@ -90,9 +90,9 @@ Pointers, not snapshots.
 - **Rigor is a trajectory toward the user's intent.** Each iteration
   sizes its work from the gap between *Current state* and the Goal's
   fidelity intent — cheap (one clean review-iteration is enough) vs
-  heavy (two consecutive clean review-iterations required). Default is
-  sequential review via iteration boundaries; in-iteration fan-out is
-  the orthogonal parallelism option where it actually pays.
+  heavy (two consecutive clean review-iterations required). Review
+  happens sequentially via iteration boundaries; the fresh-context
+  property is automatic.
 - **arxiv-LaTeX-first acquisition.** PDF + Docling is the non-arxiv
   fallback only.
 - **No synthetic data.** Unless the paper itself uses synthetic data,

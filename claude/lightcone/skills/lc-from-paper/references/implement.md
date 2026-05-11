@@ -1,6 +1,6 @@
 # IMPLEMENT — write scripts and recipes; review by iteration boundary
 
-Read `astra.yaml` (the filled spec) and `implementation-notes.md` (practical guidance). Write scripts in `scripts/` that produce each output, then add recipes to `astra.yaml` so the asset graph is wired end to end. After the first-pass implementation lands, review (by iteration boundary, or in-iteration fan-out for parallelism) cross-checks the implementation against paper + code — same fresh-context-no-bias shape ARCHITECT, SPECIFY, and LITERATURE use, with the fresh-context property given for free by iteration boundaries.
+Read `astra.yaml` (the filled spec) and `implementation-notes.md` (practical guidance). Write scripts in `scripts/` that produce each output, then add recipes to `astra.yaml` so the asset graph is wired end to end. After the first-pass implementation lands, review by iteration boundary cross-checks the implementation against paper + code — same fresh-context-no-bias shape ARCHITECT, SPECIFY, and LITERATURE use, with the fresh-context property given for free by iteration boundaries.
 
 IMPLEMENT is what a ralph iteration does when the workdir signals "SPECIFY done + scripts/ absent (first pass) or comparison-report.yaml shows partial/fail (retry pass)". Most implementation is mechanical (translate spec → script). Where parallelization is feasible (multiple independent outputs from different scripts), the iteration fans out to one-level-deep sub-agents per output (inside its own main session) and merges.
 
@@ -60,15 +60,13 @@ The iteration merges scripts and recipes after the per-output sub-agents finish.
 5. **Do not execute scripts** — the RUN phase handles execution via `lc run`.
 6. **Validate** with `astra validate astra.yaml` after adding recipes.
 
-## Step 2: review — by iteration boundary (default) or in-iteration fan-out (optional)
+## Step 2: review by iteration boundary
 
-After the first-pass implementation lands, the cross-check question is: is the implementation consistent with the paper and the code? The depth is sized from the gap between CLAUDE.md's Rigor *Current state* and `constitution.md`'s Fidelity intent:
+After the first-pass implementation lands, the cross-check question is: is the implementation consistent with the paper and the code? The depth is sized from the gap between CLAUDE.md's Rigor *Current state* and `constitution.md`'s Fidelity intent.
 
-**Default: review by iteration boundary.** The iteration that wrote the first pass exits when `scripts/`, recipes, and `requirements.txt` are committed; the next iteration enters fresh, surveys, finds the implementation present but no `work/notes/implement-review/round-1.md`, reads `scripts/` + `astra.yaml`'s recipes + the paper, and writes findings to `round-1.md`. The iteration after that applies the fixes. Two consecutive review-iterations with verdict `clean` terminates the review cycle; the next iteration advances to RUN. Sized: *cheap* — accept after one clean review-iteration; *heavy* — require two consecutive clean.
+The iteration that wrote the first pass exits when `scripts/`, recipes, and `requirements.txt` are committed; the next iteration enters fresh, surveys, finds the implementation present but no `work/notes/implement-review/round-1.md`, reads `scripts/` + `astra.yaml`'s recipes + the paper, and writes findings to `round-1.md`. The iteration after that applies the fixes. Two consecutive review-iterations with verdict `clean` terminates the review cycle; the next iteration advances to RUN. Sized: *cheap* — accept after one clean review-iteration; *heavy* — require two consecutive clean.
 
-**Optional: in-iteration fan-out.** When the implementation is large (many outputs, many scripts) and the fidelity intent calls for *heavy*, the iteration holding the review can fan out parallel reviewers as one-level-deep sub-agents inside its own session, partitioned by output or sub-analysis, merge findings, apply fixes in the same iteration. The next iteration's survey acts as the consolidating review.
-
-The discipline is the same shape ARCHITECT, SPECIFY, and LITERATURE use: review is fresh-context (whether across iterations or across fan-out spawns), prompted to check "is the implementation consistent with the paper and the code?", outputs findings only — not edits. Fixes are applied between iterations by the next iteration (or merged in the same iteration for fan-out). Pattern-matching on prior fixes defeats the cross-check; the no-bias rule is load-bearing.
+The discipline is the same shape ARCHITECT, SPECIFY, and LITERATURE use: review is fresh-context, prompted to check "is the implementation consistent with the paper and the code?", outputs findings only — not edits. Fixes are applied between iterations by the next iteration. Pattern-matching on prior fixes defeats the cross-check; the no-bias rule is load-bearing.
 
 ### Per-round fresh reviewer — system prompt
 
@@ -163,6 +161,6 @@ A retry attempt re-runs IMPLEMENT review (by iteration boundary) on the changed 
 - **`lc run` is the canonical execution surface.** Scripts assume they will be invoked via the lightcone-cli runner. Do not hard-code working directories or assume environment activation.
 - **Determinism where possible.** Set random seeds, fix library versions, prefer reproducible installations. The IMPLEMENT goal is not just "produces output once" but "reproducibly produces output across runs."
 - **Tight coupling earns shared scripts.** When two outputs come from the same expensive computation (e.g. an MCMC produces both a parameter chain and a summary statistic), one script with multiple output paths is cleaner than two scripts that each re-do the work.
-- **The fresh-context discipline is the same as ARCHITECT's, SPECIFY's, and LITERATURE's review.** A reviewer that sees the prior round's findings stops finding the next class of inconsistency. Iteration boundaries give fresh context automatically; in-iteration fan-out reviewers each get fresh-from-merge state without prior-round contamination.
+- **The fresh-context discipline is the same as ARCHITECT's, SPECIFY's, and LITERATURE's review.** A reviewer that sees the prior round's findings stops finding the next class of inconsistency. Iteration boundaries give fresh context automatically.
 - **Minimize churn in fixes.** Targeted edits, not restructures. Big restructures defeat the round-over-round comparison the iteration sequence uses to decide termination.
 - **Commit per output as it lands.** One commit per script + recipe wiring; one commit per review-round file; one commit per fix pass. The next iteration reads `git log` to track progress.

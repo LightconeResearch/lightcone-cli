@@ -138,7 +138,7 @@ REVIEW runs in your main session because `/figure-comparison` and `/check-senten
 
 Each iteration translates the fidelity intent into a tactical sizing decision when working on an artifact-producing phase (ARCHITECT, SPECIFY, LITERATURE, IMPLEMENT). Derive how much review the artifact needs from the gap between where it currently stands (CLAUDE.md's Rigor *Current state* — *sketch / baseline / tightened / canonical*) and what the Goal's intent says the user cares about. *Cheap:* one clean review-iteration is enough — write, let the next iter read it fresh and review, accept after that single clean pass (with fixes applied in between if needed). *Heavy:* two consecutive clean review-iterations required — the review/fix cycle runs until two fresh-eyes passes both find nothing to fix. Either way, update CLAUDE.md's Rigor *Current state* so the trajectory stays honest across iterations.
 
-The default is **sequential review via iteration boundaries** — cheaper, no fan-out, and the fresh-context property is automatic. Reach for in-iteration fan-out when the parallelism actually pays (LITERATURE with many cited papers, SPECIFY with many independent sub-analyses, IMPLEMENT with many outputs).
+Review always happens via iteration boundaries — the fresh-context property is automatic. (Work fan-out for the artifact-producing phases is separate; see "Parallel fan-out lives inside an iteration" above.)
 
 The *sketch / baseline / tightened / canonical* and *cheap / heavy* vocabularies are the iteration's internal scaffolding for sizing its work. The user's surface is the intent prose; the scaffolding only shows through when they ask how an iteration sized itself.
 
