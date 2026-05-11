@@ -217,8 +217,10 @@ def init(
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
 
     # git init last so the initial commit captures every scaffolded file.
+    no_git = no_git or (directory / ".git").exists()
     if not no_git:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
+        console.print("[green]✓[/green] Initialized git repository")
 
     # venv
     if not no_venv:
