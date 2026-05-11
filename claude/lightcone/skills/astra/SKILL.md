@@ -114,6 +114,17 @@ A decision is a methodological choice where a different defensible option could 
 
 Decisions may carry an optional `tags:` list for grouping (e.g. `[preprocessing]`, `[physics]`, `[stats]`). Keep the tag vocabulary **small and consolidated** -- reuse existing tags rather than minting new ones, since tags are mostly useful for cross-cutting views over a shared decision space, and that view fragments quickly when every decision invents its own label.
 
+### Options
+
+Each decision must have at least one option. Options are `key: { ... }` entries:
+
+- `label:` (required) -- short human-readable name for compact rendering.
+- `description:` (optional) -- longer prose explaining what the option means.
+- `insights:` (optional) -- list of `prior_insights:` IDs that justify this option; back-references the supporting evidence (see [Prior Insights and Findings](#prior-insights-and-findings)).
+- `excluded:` + `excluded_reason:` -- option considered but rejected. See [Constraints](#constraints).
+
+`label:` and `options:` are required on the decision itself. An aliased decision (one that points at another via `from: ../decisions.foo` -- see [Composition Mechanics](#composition-mechanics)) inherits both from its source and doesn't redeclare them.
+
 ### Parameterization
 
 **Every decision must be parameterized in code** -- never hardcode a decision value. The recipe's `command:` template references it via `{decisions.<id>}` (see [Command Template Substitution](#command-template-substitution)).
@@ -187,7 +198,7 @@ Two kinds of insight, distinguished by direction:
 - **Prior insights** (`prior_insights:`) — knowledge from outside the analysis that informs decisions. From literature (by DOI) or artifacts from a prior/parent analysis.
 - **Findings** (`findings:`) — conclusions from the analysis itself, backed by its own output artifacts.
 
-Both use the same Insight model: `id`, `label` (optional), `claim`, `created_at`, `evidence`, plus optional `derived` (true if synthesized/inferred from multiple sources), `scope` (applicability conditions), `tags`, `notes`. Placement determines direction.
+Both use the same Insight model. Required: `id`, `claim`, `created_at` (ISO 8601 datetime — e.g. `"2025-02-01T14:00:00"`), `evidence`. Optional: `label`, `derived` (true if synthesized/inferred from multiple sources), `scope` (applicability conditions), `tags`, `notes`. Placement determines direction.
 
 Each evidence item has its own fields: `id`, exactly one of `doi` (literature) or `artifact` (output ID), and either a `quote` (TextQuoteSelector with required `exact`, optional `prefix`/`suffix`) or `location` (FragmentSelector with `value` like `"page=6"` and/or 1-indexed `page`). DOI evidence may add `version` (arXiv version). Artifact evidence may add `snapshot` (path to an immutable artifact copy) and `source_commit` (git commit that produced it).
 
