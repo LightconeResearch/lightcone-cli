@@ -121,7 +121,12 @@ def _project_root(start: Path | None = None) -> Path:
 # =============================================================================
 # lc init
 # =============================================================================
-
+_LIGHTCONE = """
+_______________________
+| . _ |_ _|_ _ _  _  _ 
+|_|(_|| | | (_(_)| |(/_
+_____|_________________
+"""
 
 @main.command()
 @click.argument("directory", type=click.Path(path_type=Path), default=".")
@@ -159,6 +164,8 @@ def init(
     ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
     and an optional Python venv.
     """
+    console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
+
     from astra.cli import init as astra_init
 
     from lightcone.engine.site_registry import detect_current_site
