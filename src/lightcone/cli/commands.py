@@ -261,9 +261,13 @@ def init(
             )
 
     console.print("\nNext steps:")
-    console.print("  • Edit [cyan]astra.yaml[/cyan] to declare outputs and recipes")
-    console.print("  • [cyan]lc run[/cyan] to materialize outputs")
-    console.print("  • [cyan]lc status[/cyan] to check what's done")
+    console.print(
+        "  • Launch [cyan]claude[/cyan] (or your agent of choice) and tell it what you want to do"
+    )
+    console.print(
+        "  • [cyan]lc run[/cyan] / [cyan]lc status[/cyan] / [cyan]lc verify[/cyan] "
+        "keep the substrate in sync along the way"
+    )
 
 
 _CONTAINERFILE = """\
