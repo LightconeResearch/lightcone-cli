@@ -12,6 +12,15 @@ Each subdirectory is one Claude Code skill: `SKILL.md` plus optional `references
 | `lc-feedback` | Report bugs and feature requests upstream. |
 | `ralph` | Author a constitution and run a ralph loop against it (authoring + launching + iterating in one skill). `lc-from-paper` uses this for the long middle of a reproduction; standalone for any other long-running work. |
 
+## Reference skills
+
+Not direct entry points — Claude invokes these (or other skills invoke them) to load reference content into the session. The session-start hook primes their names so they're discoverable from turn one.
+
+| Skill | Role |
+|---|---|
+| `astra` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, narrative anchors, composition mechanics. |
+| `lc-cli` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, WRROC export. |
+
 ## Paper-reproduction bundle
 
 A self-contained toolkit for reproducing published papers in ASTRA. The bundle is co-located so a single `lc init` brings the full toolkit into a project — no plugin marketplace, no separate installs.
