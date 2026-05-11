@@ -72,7 +72,7 @@ Light touch. Ask the user if there's anything they want every iteration to know 
 
 Open both templates side-by-side:
 
-- [`../templates/constitution.md`](../templates/constitution.md) — fill in the header, Goal (with fidelity intent), Scope (in / out), Quality bar, Evidence (paper DOI, arXiv ID, code repo URL — these are pointers to substrate, not to the workdir paths, which CLAUDE.md handles), Open dimensions. Leave the YAML frontmatter `status: active` intact.
+- [`../templates/constitution.md`](../templates/constitution.md) — fill in the header, Goal (with fidelity intent), Scope (in / out), Quality bar, Evidence (paper DOI, arXiv ID, code repo URL — these are the user-supplied identifiers; the substrate-path bullets in the template stay as boilerplate, naming where each substrate lives on disk), Open dimensions. Leave the YAML frontmatter `status: active` intact.
 - [`../templates/CLAUDE.md`](../templates/CLAUDE.md) — fill in the header (paper title + arXiv ID + DOI + one-line subject), any paper-specific Pointers. Leave Rules in the template state (universal across reproductions). Leave Rigor and Disagreements sections empty — iterations populate them.
 
 Show both drafts to the user, take corrections, refine, save. Then `git init` the workdir if it isn't one already (per SKILL.md's *Setup: git-tracked workdir* discipline) and commit both as the first commit.
