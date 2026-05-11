@@ -131,7 +131,7 @@ This "review by iteration boundary" pattern is the default. For phases where par
 
 ## Notes
 
-- **No persistent expert sub-agents.** The on-disk substrate (`index.json`, `code-index.md`, the paper-extraction `astra.yaml`) carries the orientation iterations need. Targeted reads on entry replace what used to be SendMessage queries to long-lived experts.
+- **No persistent expert sub-agents.** The on-disk substrate (`index.json`, `code-index.md`, the paper-extraction `astra.yaml`) carries the orientation iterations need; re-read what you need on entry.
 - **The stub's empty blocks are intentional.** `decisions: {}`, `prior_insights: {}`, `findings: {}` make it clear at a glance that ARCHITECT's job is structural and SPECIFY fills them. Don't try to half-author content — empty is honest.
 - **Code-as-canonical for structure, paper-as-canonical for narrative voice.** The code reveals where the real stage boundaries are; the paper provides the words to describe them. The stub uses both.
 - **The narrative skill is the prose author, not the structure author.** Invoke `/narrative` for the prose blocks; ARCHITECT's job is the structural skeleton plus invoking `/narrative` to fill the `narrative:` keys cleanly.
