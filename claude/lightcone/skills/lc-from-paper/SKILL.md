@@ -44,7 +44,7 @@ Nine phases (zero-indexed). INTERVIEW and ACQUIRE run before the loop, in the us
 | 7 | COMPARE | ralph iteration | [`references/compare.md`](references/compare.md) | `comparison-report.{yaml,md}` |
 | 8 | REVIEW | user's main session | [`references/review.md`](references/review.md) | `REPRODUCTION-SUMMARY.md`, `/figure-comparison` HTML, resolved `open-questions.md`, finalized reproduction outcome |
 
-COMPARE produces a verdict plus an opportunity assessment — not just pass / fail, but where the gaps are, how much they likely matter, and how they sit relative to the constitution's fidelity intent. A subsequent iteration decides whether to spend another IMPLEMENT round (close a gap that sits below intent) or land the reproduction at its current trajectory and log the gap as an open opportunity in CLAUDE.md's Rigor section. Once COMPARE returns `pass` (or user-accepted `partial`) and the un-acted opportunities are logged, a subsequent cold-survey iteration finds nothing left to do and flips the constitution's `status:` to `closed`. The loop terminates; REVIEW runs in the user's main session.
+COMPARE produces a verdict plus an opportunity assessment — not just pass / fail, but where the gaps are, how much they likely matter, and how they sit relative to the constitution's fidelity intent. A subsequent iteration decides whether to spend another IMPLEMENT round (close a gap that sits below intent) or land the reproduction at its current trajectory and log the gap as an open opportunity in CLAUDE.md's Rigor section. Once the COMPARE → IMPLEMENT loop terminates (verdict `pass`, or `partial` with the un-acted opportunities logged), a subsequent cold-survey iteration finds nothing left to do and flips the constitution's `status:` to `closed`. The loop terminates; REVIEW runs in the user's main session.
 
 ## The two pre-loop bookends
 
@@ -86,7 +86,7 @@ After INTERVIEW + ACQUIRE land, hand the rest of the reproduction off to a ralph
 
 The launcher detaches a tmux session named `ralph-<workdir>-constitution`. The user attaches with `tmux attach -t <session>`. Iterations start firing immediately; each runs in a fresh Claude (or Codex) session with `constitution.md` injected as the system prompt and the workdir's `CLAUDE.md` auto-loading.
 
-The loop runs until an iteration flips `constitution.md`'s frontmatter `status:` to `closed` — typically after COMPARE returns `pass` (or user-accepted `partial`) and the iteration that runs after that survey finds nothing left to do.
+The loop runs until an iteration flips `constitution.md`'s frontmatter `status:` to `closed` — typically after COMPARE returns `pass` (or `partial` with the un-acted opportunities logged) and the iteration that runs after that survey finds nothing left to do.
 
 Tell the user explicitly: "Launching the ralph loop in tmux session `<name>`. Attach with `tmux attach -t <name>`. Detach with the usual tmux prefix + `d`. The loop will run until the constitution closes (typically after COMPARE returns `pass`); at that point come back here and I'll run REVIEW close-out."
 

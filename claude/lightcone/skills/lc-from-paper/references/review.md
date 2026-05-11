@@ -92,7 +92,7 @@ This commit is the durable mark that the reproduction has reached close-out. Fut
 
 ## Survey signals (entry into REVIEW)
 
-- `comparison-report.yaml` verdict is `pass` (or user has accepted `partial`) ⇒ ready to close out
+- `comparison-report.yaml` verdict is `pass` (or `partial` with un-acted opportunities logged) ⇒ ready to close out
 - `.lightcone/comparison.html` exists ⇒ `/figure-comparison` rendered
 - `open-questions.md` has a `## Resolutions` section covering every entry ⇒ open-questions walkthrough done
 - `REPRODUCTION-SUMMARY.md` exists ⇒ final report written
