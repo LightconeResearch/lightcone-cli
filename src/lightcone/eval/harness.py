@@ -31,9 +31,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_LOOP_PROMPT = """\
 Build the analysis specified in `astra.yaml` for universe `{{UNIVERSE}}`.
 
-Read `.claude/guides/lightcone-cli-reference.md` for the workflow and \
-`.claude/guides/astra-reference.md` for spec syntax. Then for each output \
-that needs materializing:
+Invoke the `/lc-cli` skill for the lc workflow (spec-code invariant, status \
+interpretation, failure diagnosis) and `/astra` for spec syntax (decisions, \
+inputs/outputs, sub-analyses). Then for each output that needs materializing:
 
 1. Read the recipe's `command` to see what script and arguments it expects.
 2. Write the script under `src/`, parameterizing every decision via argparse \
