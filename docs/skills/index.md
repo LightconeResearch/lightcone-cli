@@ -11,8 +11,8 @@ guide is the friendly version. This page is for maintainers.
 ## Available skills
 
 The `/lc-from-*` family is parallel by what you start from: a question,
-code, or a paper. `/lc-from-paper` is the entry point of a five-skill
-paper-reproduction bundle; the four bundle siblings stand alone and are
+code, or a paper. `/lc-from-paper` is the entry point of a six-skill
+paper-reproduction bundle; the five bundle siblings stand alone and are
 user-invokable directly.
 
 ### Project lifecycle
@@ -33,6 +33,7 @@ dispatches them by role during the reproduction.
 
 | Skill | Command | Purpose |
 |-------|---------|---------|
+| [ralph](ralph.md) | `/ralph` | Loop substrate. `lc-from-paper`'s INTERVIEW invokes ralph's Authoring mode to draft the per-paper constitution; ACQUIRE's hand-off invokes the launcher; each iteration runs ralph's Loop protocol. Also user-invokable standalone (see the Project lifecycle row above). |
 | [paper-extraction](paper-extraction.md) | `/paper-extraction` | Turn an arXiv ID or DOI into a standardized `work/reference/` directory: substrate, figures, tables, citations (with resolved DOIs), and a stub `astra.yaml`. |
 | [narrative](narrative.md) | `/narrative` | Author the `narrative:` prose and decision `rationale:` against an existing `astra.yaml`, in paper-reproduction, retrofit, or co-drafting mode. |
 | [figure-comparison](figure-comparison.md) | `/figure-comparison` | Build a self-contained HTML side-by-side: paper figures, tables, and numerics vs reproduced artifacts. |
