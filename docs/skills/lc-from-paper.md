@@ -89,10 +89,10 @@ Pointers, not snapshots.
   CLAUDE.md.
 - **Rigor is a trajectory toward the user's intent.** Each iteration
   sizes its work from the gap between *Current state* and the Goal's
-  fidelity intent — cheap (write and exit; let the next iteration's
-  fresh-context survey serve as the review) vs heavy (in-iteration
-  fan-out for parallel review). Default is sequential review via
-  iteration boundaries.
+  fidelity intent — cheap (one clean review-iteration is enough) vs
+  heavy (two consecutive clean review-iterations required). Default is
+  sequential review via iteration boundaries; in-iteration fan-out is
+  the orthogonal parallelism option where it actually pays.
 - **arxiv-LaTeX-first acquisition.** PDF + Docling is the non-arxiv
   fallback only.
 - **No synthetic data.** Unless the paper itself uses synthetic data,
