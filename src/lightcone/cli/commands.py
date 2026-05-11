@@ -244,6 +244,7 @@ def init(
                     check=False,
                     capture_output=True,
                 )
+        console.print(f"[green]✓[/green] Virtual environment created in [cyan]{directory}/.venv[/cyan]")    
 
     console.print(f"\n[green]Project initialized at[/green] {directory}")
 
