@@ -1,8 +1,8 @@
-# IMPLEMENT — write scripts and recipes; per-spawn self-review
+# IMPLEMENT — write scripts and recipes; review by iteration boundary
 
-Read `astra.yaml` (the filled spec) and `implementation-notes.md` (practical guidance). Write scripts in `scripts/` that produce each output, then add recipes to `astra.yaml` so the asset graph is wired end to end. After the first-pass implementation lands, a self-review pass cross-checks the implementation against paper + code — same fresh-context-no-bias shape ARCHITECT, SPECIFY, and LITERATURE use. Fixes feed back inside the same implement sub-agent for the next iteration.
+Read `astra.yaml` (the filled spec) and `implementation-notes.md` (practical guidance). Write scripts in `scripts/` that produce each output, then add recipes to `astra.yaml` so the asset graph is wired end to end. After the first-pass implementation lands, review (by iteration boundary, or in-iteration fan-out for parallelism) cross-checks the implementation against paper + code — same fresh-context-no-bias shape ARCHITECT, SPECIFY, and LITERATURE use, with the fresh-context property given for free by iteration boundaries.
 
-This phase runs as the orchestrator-spawned `implement` sub-agent. Most implementation is mechanical (translate spec → script), but algorithm choices on tricky steps may want user ratification — the user can drop into the implement sub-agent's chat for that. Where parallelization is feasible (multiple independent outputs from different scripts), the implement sub-agent fans out to one Task-tool sub-sub-agent per output and merges.
+IMPLEMENT is what a ralph iteration does when the workdir signals "SPECIFY done + scripts/ absent (first pass) or comparison-report.yaml shows partial/fail (retry pass)". Most implementation is mechanical (translate spec → script). Where parallelization is feasible (multiple independent outputs from different scripts), the iteration fans out to one-level-deep sub-agents per output (inside its own main session) and merges.
 
 ## Inputs
 
@@ -11,17 +11,16 @@ This phase runs as the orchestrator-spawned `implement` sub-agent. Most implemen
 - `work/reference/index.json` — paper-side structural index (figures, tables, outline, citations); useful when the spec compresses or you need to find where in the paper a behavior is described.
 - `work/reference/code-index.md` (when code present) — code inventory: module map, candidate decisions with file:line, entry-points, data dependencies, gotchas (the canonical map of where each sub-analysis's logic lives in `work/reference/code/`).
 - `work/reference/code/` (if present) — **canonical reference. Read it when implementing each output.** Where paper and code disagree, code wins for numerics, plotting, and method.
-- **code-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. The first stop for "where does X live in the code", "what's the canonical entry-point for Y", "what's the default parameter the code uses for Z". Cheaper than re-reading the code yourself.
-- **paper-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Useful when implementing an output and the spec doesn't fully capture what the paper says it should produce (e.g. "what's the expected axis range for Figure 4").
-- CLAUDE.md — **Rigor** for this spawn's chosen rigor level; **Paper-vs-code disagreements** for prior conflicts already logged.
+- `constitution.md` — Fidelity intent (used to size cheap vs heavy on this iteration's review).
+- CLAUDE.md — Rigor *Current state* per output; **Paper-vs-code disagreements** for prior conflicts already logged.
 
 ## Outputs
 
 - `scripts/<output>.py` (or `.sh`, or whatever fits) — one script per output (or shared scripts for tightly-coupled outputs)
 - `requirements.txt` — Python dependencies
 - Recipes in `astra.yaml` — each output gets a `recipe:` block with `command:` and `inputs:`
-- `work/notes/implement-review/round-<N>.md` — each review round's findings (one file per round; how many rounds depends on the rigor level)
-- CLAUDE.md updates — append to **Paper-vs-code disagreements** for any new conflict surfaced during implementation; update **Rigor** with the post-spawn state per output (e.g. *baseline* after a cheap pass, *tightened* after heavy review).
+- `work/notes/implement-review/round-<N>.md` — each review iteration's findings (one file per review-iteration; how many depends on the fidelity-intent calculus)
+- CLAUDE.md updates — append to **Paper-vs-code disagreements** for any new conflict surfaced during implementation; update **Rigor** *Current state* with the post-iteration state per output (e.g. *baseline* after a one-iteration pass, *tightened* after a review-iteration applied fixes).
 
 ## Step 1: write recipes + scripts
 
@@ -29,10 +28,7 @@ Read `astra.yaml` and `implementation-notes.md`. For each output, write a script
 
 ### With a code reference (`work/reference/code/` exists)
 
-**Read the relevant code when implementing each output** — not just to resolve ambiguities but as the canonical source of truth for numerics + method. Write clean scripts following ASTRA conventions (not verbatim copies), but treat the code's behavior as authoritative when it disagrees with the paper. When you encounter a paper-vs-code disagreement that SPECIFY's code pass missed:
-
-- **User reachable** (in the implement sub-agent's chat): ask in prose — paper method + code method + plausible impact + which one to take.
-- **User unreachable**: continue with the code's behavior, append the disagreement to CLAUDE.md's **Paper-vs-code disagreements** AND `open-questions.md`, and note it in `implementation-notes.md` so REVIEW close-out can ratify or override.
+**Read the relevant code when implementing each output** — not just to resolve ambiguities but as the canonical source of truth for numerics + method. Write clean scripts following ASTRA conventions (not verbatim copies), but treat the code's behavior as authoritative when it disagrees with the paper. When you encounter a paper-vs-code disagreement that SPECIFY's code pass missed: continue with the code's behavior (per the canonical-resolution default; the iteration runs detached, no interactive ratification), append the disagreement to CLAUDE.md's **Paper-vs-code disagreements** AND `open-questions.md`, and note it in `implementation-notes.md` so REVIEW close-out can ratify or override.
 
 Without this discipline, the implementation drifts to "looks right" rather than "matches" — the failure mode the first-paper test surfaced.
 
@@ -40,20 +36,20 @@ When the reference code is substantial enough that implementation is really a mi
 
 ### Without a code reference (`work/reference/code/` is absent)
 
-When `code-status.yaml` records `found: false` or the cloned repo turned out to be unusable, there is no canonical code substrate to anchor against. **Write the implementation fresh from the spec** — `astra.yaml`'s decisions, findings, and prior_insights are now the only source of method-level truth, and the paper's prose (consulted via paper-expert) is the source of numerics-level truth. Don't pretend a code reference exists; don't try to find a similar paper's code as a stand-in. Implement what the spec describes, ask paper-expert when the spec compresses something you need clarified, and rely on COMPARE to surface anywhere the implementation has drifted from the paper's claims.
+When `code-status.yaml` records `found: false` or the cloned repo turned out to be unusable, there is no canonical code substrate to anchor against. **Write the implementation fresh from the spec** — `astra.yaml`'s decisions, findings, and prior_insights are now the only source of method-level truth, and the paper's prose (Grep into `work/reference/source/` or `document.md` for specific facts) is the source of numerics-level truth. Don't pretend a code reference exists; don't try to find a similar paper's code as a stand-in. Implement what the spec describes, read targeted paper sections when the spec compresses something you need clarified, and rely on COMPARE to surface anywhere the implementation has drifted from the paper's claims.
 
 The code-as-canonical rule does not apply here — there is no code to be canonical. The paper is the only anchor. This is the harder path; reproductions on it converge slower and have more open questions for REVIEW close-out. Surface that honestly to the user as you go; don't dress up paper-only implementations as if they had a code anchor.
 
 ### Parallelize where feasible
 
-When outputs are produced by independent scripts (no shared expensive computation), the implement sub-agent spawns one Task-tool sub-sub-agent per output. Each sub-sub-agent gets:
+When outputs are produced by independent scripts (no shared expensive computation), the iteration spawns one-level-deep sub-agents per output (inside its own main session). Each sub-agent gets:
 
 - The output's spec entry from `astra.yaml` (including its sub-analysis's `decisions:` / `findings:` for context)
 - The relevant section of `implementation-notes.md`
 - The matching entry in `work/reference/code-index.md`'s natural-decomposition / entry-points block — that's the pointer back to the canonical code location for the sub-analysis the output lives in
 - The relevant code path(s) under `work/reference/code/`
 
-The implement sub-agent merges scripts and recipes after the per-output sub-sub-agents finish. Tightly-coupled outputs (e.g. an MCMC producing both a chain and a summary statistic) stay in one sub-sub-agent and one script.
+The iteration merges scripts and recipes after the per-output sub-agents finish. Tightly-coupled outputs (e.g. an MCMC producing both a chain and a summary statistic) stay in one sub-agent and one script.
 
 ### Rules for the first pass
 
@@ -64,14 +60,15 @@ The implement sub-agent merges scripts and recipes after the per-output sub-sub-
 5. **Do not execute scripts** — the RUN phase handles execution via `lc run`.
 6. **Validate** with `astra validate astra.yaml` after adding recipes.
 
-## Step 2: self-review (rigor chosen per spawn)
+## Step 2: review — by iteration boundary (default) or in-iteration fan-out (optional)
 
-After the first-pass implementation lands, the rigor level the orchestrator picked for this spawn (read CLAUDE.md's **Rigor** section) decides what happens next:
+After the first-pass implementation lands, the cross-check question is: is the implementation consistent with the paper and the code? The depth is sized from the gap between CLAUDE.md's Rigor *Current state* and `constitution.md`'s Fidelity intent:
 
-- **Cheap:** one minimal review pass — a single fresh Task-tool sub-agent reads `scripts/`, `astra.yaml`'s recipes, and the paper, and reports any obvious paper-vs-implementation inconsistencies. Fixes are applied once; no further iteration. If no fixes are needed, IMPLEMENT proceeds to RUN.
-- **Heavy:** N rounds of fresh-context Task-tool sub-agent review + fix. Each round spawns a fresh reviewer that does not see the prior round's findings or fixes. Stop when **two consecutive rounds find no fixes**, or after 5 rounds (system cap), whichever comes first.
+**Default: review by iteration boundary.** The iteration that wrote the first pass exits when `scripts/`, recipes, and `requirements.txt` are committed; the next iteration enters fresh, surveys, finds the implementation present but no `work/notes/implement-review/round-1.md`, reads `scripts/` + `astra.yaml`'s recipes + the paper, and writes findings to `round-1.md`. The iteration after that applies the fixes. Two consecutive review-iterations with verdict `clean` terminates the review cycle; the next iteration advances to RUN. Sized: *cheap* — accept after one clean review-iteration; *heavy* — require two consecutive clean.
 
-The discipline is the same shape ARCHITECT, SPECIFY, and LITERATURE use: each round's reviewer is fresh, prompted to check "is the implementation consistent with the paper and the code?", and outputs findings only — not edits. Fixes are applied between rounds by the implement sub-agent itself (or the orchestrator inline for trivial mechanical fixes). Pattern-matching on prior fixes defeats the cross-check; the no-bias rule is load-bearing.
+**Optional: in-iteration fan-out.** When the implementation is large (many outputs, many scripts) and the fidelity intent calls for *heavy*, the iteration holding the review can fan out parallel reviewers as one-level-deep sub-agents inside its own session, partitioned by output or sub-analysis, merge findings, apply fixes in the same iteration. The next iteration's survey acts as the consolidating review.
+
+The discipline is the same shape ARCHITECT, SPECIFY, and LITERATURE use: review is fresh-context (whether across iterations or across fan-out spawns), prompted to check "is the implementation consistent with the paper and the code?", outputs findings only — not edits. Fixes are applied between iterations by the next iteration (or merged in the same iteration for fan-out). Pattern-matching on prior fixes defeats the cross-check; the no-bias rule is load-bearing.
 
 ### Per-round fresh sub-agent — system prompt
 
@@ -99,7 +96,7 @@ The discipline is the same shape ARCHITECT, SPECIFY, and LITERATURE use: each ro
 > ### What NOT to do
 >
 > - **Do not edit any file.** Your output is a findings file; an IMPLEMENT-fix pass responds to the findings.
-> - **Do not re-read the entire paper.** Ask paper-expert / code-expert via `SendMessage` for claim verification, or Grep into `work/reference/index.json`, `work/reference/code-index.md`, and `work/reference/source/` (or `document.md`) for specific items. The filled `astra.yaml` is your primary source for what each sub-analysis is supposed to do.
+> - **Do not re-read the entire paper.** Grep into `work/reference/index.json`, `work/reference/code-index.md`, and `work/reference/source/` (or `document.md`) for specific items. The filled `astra.yaml` is your primary source for what each sub-analysis is supposed to do.
 > - **Do not invent problems.** If the implementation matches paper + code, say so briefly.
 > - **Do not assume a prior reviewer has been here.** You are fresh. First-principles read only.
 >
@@ -128,14 +125,14 @@ The discipline is the same shape ARCHITECT, SPECIFY, and LITERATURE use: each ro
 
 ### Step 3: IMPLEMENT-fix pass between rounds
 
-After each round's findings file lands, the implement sub-agent (or the orchestrator inline for trivial fixes) edits `scripts/`, `astra.yaml` recipes, `requirements.txt`, and `implementation-notes.md` per the suggested fixes. After any change to `astra.yaml`, run `astra validate astra.yaml`.
+After each round's findings file lands, the iteration edits `scripts/`, `astra.yaml` recipes, `requirements.txt`, and `implementation-notes.md` per the suggested fixes. After any change to `astra.yaml`, run `astra validate astra.yaml`.
 
 ### Step 4: termination check
 
 - **Cheap:** one pass. Done after fixes (or immediately, if `fixes_needed` was 0).
 - **Heavy:**
   - If round N's `fixes_needed` was 0 AND round (N-1)'s was also 0 → done.
-  - If N hits the 5-round system cap without two consecutive clean rounds, the implement sub-agent stops and reports back to the orchestrator. If the user is reachable, ask in prose: "implement-review reached round cap with N fixes still landing; continue, accept the current implementation, or revise scope?" If the user is unreachable, accept current implementation, log the unfinished tail in `open-questions.md`, and let the orchestrator decide whether to proceed or re-spawn.
+  - If N hits the 5-round system cap without two consecutive clean rounds, an iteration logs the unfinished tail in `open-questions.md` ('IMPLEMENT review reached round cap with N fixes still landing; user should review during REVIEW close-out') and the next iteration advances to RUN anyway.
 
 The IMPLEMENT-review iterations are independent of the COMPARE → IMPLEMENT retry loop — review iterations run before RUN, on the spec/implementation alignment side; COMPARE retries run after RUN, on the result-matching side.
 
@@ -149,23 +146,23 @@ If a dataset is behind a paywall, requires registration, or is "available upon r
 
 ## Retry attempts (post-COMPARE)
 
-If `comparison-report.yaml` exists from a prior COMPARE that returned `partial` or `fail`, the orchestrator may re-spawn `implement` as a **retry attempt**. Read `comparison-report.yaml` to understand what went wrong; focus on the outputs marked as non-matching. Default attempt budget is 5 (the orchestrator can override per spawn); the implement sub-agent's first move is to check whether `attempt` in the report has reached the budget. If it has, stop and report back — if the user is reachable, ask in prose ("verdict still failing after N attempts — continue, change scope, or accept partial?"); if not, accept partial, log the failure in CLAUDE.md's **Rigor** section as an open opportunity, and let the orchestrator decide.
+If `comparison-report.yaml` exists from a prior COMPARE that returned `partial` or `fail`, a subsequent iteration may take on a **retry attempt**. Read `comparison-report.yaml` to understand what went wrong; focus on the outputs marked as non-matching. Default attempt budget is 5; the iteration's first move is to check whether `attempt` in the report has reached the budget. If it has, accept partial, log the failure in CLAUDE.md's **Rigor** section as an open opportunity (so REVIEW close-out can decide whether to push further or accept the trajectory), and exit; subsequent iterations either accept the verdict via a cold close or pivot scope based on REVIEW's input.
 
-A retry attempt re-runs the IMPLEMENT-review iterations on the changed scripts before proceeding to RUN.
+A retry attempt re-runs IMPLEMENT review (by iteration boundary) on the changed scripts before the next iteration advances to RUN.
 
 ## Survey signals (entry into IMPLEMENT)
 
 - `astra.yaml` validates and `implementation-notes.md` exists ⇒ ready to implement first pass
 - `scripts/` has one entry per output id; `requirements.txt` exists; recipes appear in `astra.yaml` ⇒ first-pass IMPLEMENT done
 - For cheap: `work/notes/implement-review/round-1.md` with verdict `clean` (or no fixes were incorporated) ⇒ IMPLEMENT done
-- For heavy: two consecutive `work/notes/implement-review/round-<N>.md` files both have verdict `clean` ⇒ IMPLEMENT done; orchestrator proceeds to RUN
-- `comparison-report.yaml` returns `pass` ⇒ COMPARE → IMPLEMENT loop terminated; orchestrator proceeds to REVIEW close-out
+- For heavy: two consecutive `work/notes/implement-review/round-<N>.md` files both have verdict `clean` ⇒ IMPLEMENT done; the next iteration surveys and advances to RUN
+- `comparison-report.yaml` returns `pass` ⇒ COMPARE → IMPLEMENT loop terminated; the constitution can close after a cold survey, and REVIEW close-out runs in the user's main session
 
 ## Notes
 
 - **`lc run` is the canonical execution surface.** Scripts assume they will be invoked via the lightcone-cli runner. Do not hard-code working directories or assume environment activation.
 - **Determinism where possible.** Set random seeds, fix library versions, prefer reproducible installations. The IMPLEMENT goal is not just "produces output once" but "reproducibly produces output across runs."
 - **Tight coupling earns shared scripts.** When two outputs come from the same expensive computation (e.g. an MCMC produces both a parameter chain and a summary statistic), one script with multiple output paths is cleaner than two scripts that each re-do the work.
-- **The fresh-context discipline is the same as ARCHITECT's, SPECIFY's, and LITERATURE's self-review.** A reviewer that sees the prior round's findings stops finding the next class of inconsistency. Each round must spawn a brand-new Task-tool sub-agent.
-- **Minimize churn in fixes.** Targeted edits, not restructures. Big restructures defeat the round-over-round comparison the implement sub-agent uses to decide termination.
-- **Commit per output as it lands.** One commit per script + recipe wiring; one commit per review-round file; one commit per fix pass. The orchestrator reads `git log` to track progress.
+- **The fresh-context discipline is the same as ARCHITECT's, SPECIFY's, and LITERATURE's review.** A reviewer that sees the prior round's findings stops finding the next class of inconsistency. Iteration boundaries give fresh context automatically; in-iteration fan-out reviewers each get fresh-from-merge state without prior-round contamination.
+- **Minimize churn in fixes.** Targeted edits, not restructures. Big restructures defeat the round-over-round comparison the iteration sequence uses to decide termination.
+- **Commit per output as it lands.** One commit per script + recipe wiring; one commit per review-round file; one commit per fix pass. The next iteration reads `git log` to track progress.

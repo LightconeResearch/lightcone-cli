@@ -2,7 +2,7 @@
 
 Materialize every output in `astra.yaml` for the requested universe. RUN is mostly mechanical — `lc run --universe <id>` does the heavy lifting. The phase exists as a discrete step so failures get diagnosed and re-run before COMPARE.
 
-This phase runs as the orchestrator-spawned `run` sub-agent. The user can drop into its chat if execution failures want diagnosis support; otherwise it logs failures, attempts targeted fixes within scope, and reports back. Universe defaults to `baseline` unless the orchestrator passes a different one when spawning.
+This phase runs as what a ralph iteration does when the workdir signals "recipes present in astra.yaml + scripts/ committed + results/<universe>/<output>/ absent for any output." The iteration runs the recipes, diagnoses failures, attempts targeted fixes, and exits. Universe defaults to `baseline`.
 
 ## Inputs
 
@@ -21,7 +21,7 @@ Execute all recipes:
 lc run --universe baseline
 ```
 
-(Use whatever universe the orchestrator passed when spawning; `baseline` is the default.)
+(Universe defaults to `baseline`; iterations override if the constitution scopes a different universe.)
 
 Check status:
 
@@ -48,10 +48,10 @@ If outputs fail:
 ## Survey signals (entry into RUN)
 
 - `astra.yaml` has recipes and validates ⇒ ready to run
-- `lc status --universe baseline` returns all `ok` ⇒ RUN done; orchestrator proceeds to COMPARE
+- `lc status --universe baseline` returns all `ok` ⇒ RUN done; the next iteration surveys and advances to COMPARE
 
 ## Notes
 
 - The runner backend (Docker / local / SLURM) comes from the project's target configuration — `~/.lightcone/config.yaml` and `.lightcone/lightcone.yaml`. RUN does not need to choose; the runner picks based on config.
-- For long-running computations, the script's stdout / stderr stream into the result directory's log file. The run sub-agent should `tail` the log file to monitor progress, not poll `lc status` repeatedly.
-- **Commit the materialized results' state when RUN settles.** The actual `results/` artifacts are gitignored heavy data, but the run-level outcome (which outputs reached `ok`, any failures logged) is worth a commit so the orchestrator can read `git log` to know RUN landed.
+- For long-running computations, the script's stdout / stderr stream into the result directory's log file. The iteration should use the Monitor tool on the log file to stream events (each stdout line surfaces as a notification), not poll `lc status` repeatedly. For one-shot waits, Bash with `run_in_background` notifies on completion.
+- **Commit the materialized results' state when RUN settles.** The actual `results/` artifacts are gitignored heavy data, but the run-level outcome (which outputs reached `ok`, any failures logged) is worth a commit so the next iteration can read `git log` to know RUN landed.

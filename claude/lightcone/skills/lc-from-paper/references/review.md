@@ -1,6 +1,6 @@
-# REVIEW — orchestrator-session close-out
+# REVIEW — close-out in the user's main session
 
-The reproduction has converged (verdict `pass` or user-accepted `partial`). Control returns to the user. REVIEW is the second of two bookends that run in the orchestrator session itself, not as a named sub-agent (INTERVIEW being the first). It runs orchestrator-side because both `/figure-comparison` and `/check-sentence-by-sentence` use `AskUserQuestion`, which sub-agents don't have.
+The reproduction has converged: the constitution's `status:` is `closed` (after COMPARE returned `pass` or a cold-survey iteration accepted `partial` and logged the opportunities). The ralph loop's tmux session has exited. REVIEW runs back in the user's main session — the second of two interactive bookends, the first being INTERVIEW. It runs in the user's main session (not as an iteration) because both `/figure-comparison` and `/check-sentence-by-sentence` use `AskUserQuestion`, which isn't available inside detached ralph iterations.
 
 Its job is to render the validation surfaces, walk the user through the accumulated open questions, land the resolutions, draft the final report, and propagate any un-acted-on opportunities from the latest COMPARE into CLAUDE.md's **Rigor** section — in one interactive arc.
 
@@ -14,7 +14,7 @@ The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding
 - `results/<universe>/<output_id>/` — reproduced figures / tables / metrics
 - `open-questions.md` at the workdir root — running report from sub-agent phases (paper-vs-code conflicts, ambiguities, anything sub-agents flagged for user resolution)
 - `work/reference/index.json` and `work/reference/code-index.md` — for context
-- **paper-expert** and **code-expert** — still reachable via `SendMessage` if the user asks a follow-up question during REVIEW that the report and CLAUDE.md don't answer. The experts persist for the lifetime of the reproduction; they're useful here for "remind me what the paper says about X" or "did the original code do Y" without leaving the orchestrator session.
+- `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) and `work/reference/code/` — directly available for follow-up questions the user asks during REVIEW that the report and CLAUDE.md don't answer ("remind me what the paper says about X", "did the original code do Y"). Grep into for specifics; read targeted spans by offset/limit.
 - `CLAUDE.md` at the workdir root — paper identity, Goal, Rigor, Paper-vs-code disagreements (the at-a-glance summary that's accumulated across all sub-agent spawns)
 
 ## Outputs
@@ -31,17 +31,17 @@ The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding
 
 ### `/figure-comparison` (mandatory)
 
-Invoke the `/figure-comparison` skill from the orchestrator session. It builds a portable HTML side-by-side comparing paper artifacts (from `targets/`) to reproduced artifacts (from `results/<universe>/`). The skill uses `AskUserQuestion` for any inputs it can't infer from the workdir; that works because REVIEW runs orchestrator-side — the prompts land in this session, not in a sub-agent's chat.
+Invoke the `/figure-comparison` skill from the user's main session. It builds a portable HTML side-by-side comparing paper artifacts (from `targets/`) to reproduced artifacts (from `results/<universe>/`). The skill uses `AskUserQuestion` for any inputs it can't infer from the workdir; that works because REVIEW runs back in the user's main session — the prompts land here, not in a detached iteration.
 
 Output lands at `.lightcone/comparison.html`. Show the user the path and offer to open it (`open` on macOS, `xdg-open` on Linux, or just print the path so they click in their terminal).
 
-**Do not spawn `/figure-comparison` under the `Task` tool or as a named sub-agent.** It has `AskUserQuestion` in its `allowed-tools`; sub-agents have no user-reach, so the prompt fires into nothing.
+**Do not spawn `/figure-comparison` under the `Task` tool or inside a ralph iteration.** It has `AskUserQuestion` in its `allowed-tools`; sub-agents and detached iterations have no user-reach, so the prompt fires into nothing.
 
 ### `/check-sentence-by-sentence` (opt-in)
 
 Ask the user via `AskUserQuestion` whether they want the claim audit. It's optional because for many reproductions the figure-comparison already settles "did it match?"; the sentence-by-sentence audit earns its keep when the paper makes many specific quantitative claims and the user wants each one anchored to a code location.
 
-If yes, invoke `/check-sentence-by-sentence`. Same discipline as `/figure-comparison` — it can prompt the user; do not spawn under `Task` or as a named sub-agent.
+If yes, invoke `/check-sentence-by-sentence`. Same discipline as `/figure-comparison` — it can prompt the user; do not spawn under `Task` or inside a ralph iteration.
 
 Output lands at `.lightcone/check-sentence-by-sentence.md` (or wherever the skill writes it). Show the user the path.
 
@@ -100,10 +100,10 @@ This commit is the durable mark that the reproduction has reached close-out. Fut
 
 ## Notes
 
-- **This phase runs in the orchestrator session.** Do not spawn it as a named sub-agent. The whole point of REVIEW is that the user is reachable — every step uses `AskUserQuestion` (directly, or via the sibling skills it invokes).
-- **`/figure-comparison` and `/check-sentence-by-sentence` use `AskUserQuestion`.** That's why REVIEW runs orchestrator-side and they live here, not in any sub-agent. Spawning either as a sub-agent fires prompts into nothing.
-- **The user owns the verdict-acceptance decision.** REVIEW's purpose is to let the user see what the sub-agents did and decide whether they accept it. The skill renders surfaces and asks; it does not unilaterally close.
-- **Don't confuse with the per-spawn self-reviews.** ARCHITECT, SPECIFY, LITERATURE, and IMPLEMENT each run their own internal fresh-context self-review passes during their work. Those are unrelated to this close-out — same word, different jobs. The phase boundary makes them unambiguous: per-spawn self-reviews live inside their host phase's reference; this one is the orchestrator-session close-out.
+- **This phase runs in the user's main session.** Do not invoke it from inside a ralph iteration. The whole point of REVIEW is that the user is reachable — every step uses `AskUserQuestion` (directly, or via the sibling skills it invokes), and iterations are detached.
+- **`/figure-comparison` and `/check-sentence-by-sentence` use `AskUserQuestion`.** That's why REVIEW runs in the user's main session and they live here, not in any iteration. Invoking either inside an iteration fires prompts into nothing.
+- **The user owns the verdict-acceptance decision.** REVIEW's purpose is to let the user see what the loop's iterations did and decide whether they accept it. The skill renders surfaces and asks; it does not unilaterally close.
+- **Don't confuse with the per-phase reviews inside the loop.** ARCHITECT, SPECIFY, LITERATURE, and IMPLEMENT each have their own fresh-context review discipline that happens by iteration boundary (or in-iteration fan-out). Those are unrelated to this close-out — same word, different jobs. The phase boundary makes them unambiguous: per-phase reviews live inside their host phase's reference; this one is the post-loop close-out in the user's main session.
 - **Open-question resolutions are durable.** Append to `open-questions.md`'s `## Resolutions` section so the next re-run / future session sees what was decided. Do not delete the original questions.
 - **Keep the report short.** Long reports get skimmed; short reports get read. Two pages is generous.
 - **Do not invent further work.** If the user has accepted the verdict and the opportunities are propagated, the reproduction is done. The next session, the user, or a future revisit can decide whether tightening any open opportunity still serves them.

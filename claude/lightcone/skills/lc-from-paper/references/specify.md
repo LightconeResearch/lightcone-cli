@@ -1,27 +1,24 @@
 # SPECIFY — fill the stub `astra.yaml`, two passes per sub-analysis
 
-Read the stub `astra.yaml` from ARCHITECT and fill in `decisions:`, `prior_insights:`, `findings:` per sub-analysis, weaving the existing narrative with `astra-anchor:` references as entries land. SPECIFY is the **first user-ratification seam** — material paper-vs-code conflicts surface here, and they're often the highest-value moments for the user to weigh in on directly.
+Read the stub `astra.yaml` from ARCHITECT and fill in `decisions:`, `prior_insights:`, `findings:` per sub-analysis, weaving the existing narrative with `astra-anchor:` references as entries land. SPECIFY is the **first material-disagreement seam** — paper-vs-code conflicts surface here, and they're often the highest-value moments for the user to weigh in on at REVIEW.
 
-This phase runs as the orchestrator-spawned `specify` sub-agent. When the orchestrator launches it, it announces to the user: *"specify is the natural seam for paper-vs-code conflicts — drop into its chat if you want to ratify them as they come up; otherwise it'll take code as canonical and log disagreements to CLAUDE.md."* If the user is reachable in the sub-agent's chat, SPECIFY asks paper-vs-code conflicts in prose. If not, it takes the canonical-resolution default (code wins where paper and code disagree on a material choice) and logs the disagreement to CLAUDE.md's **Paper-vs-code disagreements** section plus `open-questions.md` for REVIEW close-out.
+SPECIFY is what a ralph iteration does when the workdir signals "stub `astra.yaml` present + sub-analyses' `decisions:` / `prior_insights:` / `findings:` blocks still empty." Iterations run detached in tmux; the user isn't reachable interactively, so the canonical-resolution default (code wins where paper and code disagree on a material choice) applies and disagreements are logged to CLAUDE.md's **Paper-vs-code disagreements** section plus `open-questions.md` for REVIEW close-out.
 
-The new structure runs **two passes per sub-analysis** (paper, then code, when code exists), then a self-review pass whose depth follows the rigor level the orchestrator picked for this spawn. The two passes are the cross-check: the paper pass authors what the paper says; the code pass surfaces where the code says something different; the difference is gold (it's where the reproduction has to make a decision).
+The structure runs **two passes per sub-analysis** (paper, then code, when code exists), then iteration-boundary review (or optional in-iteration fan-out). The two passes are the cross-check: the paper pass authors what the paper says; the code pass surfaces where the code says something different; the difference is gold (it's where the reproduction has to make a decision).
 
-Per-sub-analysis work is parallelizable when sub-analyses are independent. Each sub-analysis's two passes (paper, then code) run sequentially within that sub-analysis; across sub-analyses the work fans out via Task-tool sub-sub-agents from inside the specify session.
-
-When the specify sub-agent (or its per-sub-analysis sub-sub-agents) needs paper- or code-side context, prefer **querying paper-expert / code-expert via `SendMessage`** over re-reading materials directly. The experts already have deep context built up from ACQUIRE; SendMessage queries are cheaper and richer than fresh Explore passes. Falling back to direct reads (Grep on `work/reference/source/` / `document.md` / `code/`) is still fine for specific verbatim quote-hunting, but the experts should be the first stop for understanding.
+Per-sub-analysis work is parallelizable when sub-analyses are independent. Each sub-analysis's two passes (paper, then code) run sequentially within that sub-analysis; across sub-analyses the iteration can fan out parallel work as one-level-deep sub-agents from inside its main session. When SPECIFY needs paper- or code-side context, Grep into `work/reference/source/` / `document.md` for paper text or read targeted modules under `work/reference/code/`; the structural index at `work/reference/index.json` and the code inventory at `work/reference/code-index.md` give you the orientation to know where to look. Don't try to absorb the paper or code whole.
 
 ## Inputs
 
 - `astra.yaml` — the stub from ARCHITECT (sub-analyses, inputs, outputs, narrative; empty `decisions:` / `prior_insights:` / `findings:` blocks)
+- `constitution.md` — Goal (scope), Fidelity intent (used to size cheap-vs-heavy on this iteration's work), Quality bar
+- `CLAUDE.md` — Rules; Rigor *Current state* for the per-output trajectory tracking; **Paper-vs-code disagreements** for prior-iteration entries
 - `work/reference/index.json` — paper-extraction's structural index: figures, tables, section outline, citations. The `citations:` block maps each cited paper's BibTeX key (Path A) or synthetic `<lastname>_<year>` key (Path B) to `{locations, citation, doi}`. SPECIFY uses this to write each `prior_insights:` placeholder's `doi:` so LITERATURE knows which paper to fetch.
 - `work/reference/code-index.md` (when code present) — code inventory: module map, candidate decisions with file:line, entry-points, data dependencies, gotchas.
-- **paper-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Ask the deeper paper-side questions the structural index doesn't answer: "what decisions does the paper describe for the apodization choice", "where does the paper define the fiducial cosmology", "what does §4.2 conclude about the null tests". paper-expert has the paper's full context built up.
-- **code-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Ask: "which module implements the BAO fit", "what's the default magnitude cut hardcoded in this script", "how does the code split data into bins". code-expert has the code's full context built up.
-- `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep into; do not re-read whole)
+- `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text. Grep into for specific facts; read targeted spans by offset/limit when you need more context. Don't re-read whole.
 - `work/reference/figures/`, `work/reference/tables/`, `work/reference/metadata.json` — extracted artifacts (Path B only)
-- `work/reference/code/` (if present) — original code, canonical reference for numerics + method
-- CLAUDE.md — **Goal** for scope, **Rigor** for the rigor level the orchestrator chose for this spawn, **Paper-vs-code disagreements** for prior-spawn entries
-- `work/notes/notes.md` — user-supplied context (read by every sub-agent if present)
+- `work/reference/code/` (if present) — original code, canonical reference for numerics + method. Read the modules that `code-index.md` points at for the sub-analysis you're filling.
+- `work/notes/notes.md` — user-supplied context (read by every iteration if present)
 
 ## Outputs
 
@@ -29,8 +26,8 @@ When the specify sub-agent (or its per-sub-analysis sub-sub-agents) needs paper-
 - `universes/baseline.yaml` — selects the paper's choices (where paper and code disagree per the canonical-resolution rule, see "Material conflicts" below)
 - `implementation-notes.md` — concise practical guidance for the IMPLEMENT phase: tricky algorithms, numerical gotchas, data-format quirks, things the spec can't capture. Bullets, not essays.
 - `targets/targets.md` — small target ledger COMPARE consumes: per output (already declared by ARCHITECT), a brief entry with type, priority, paper value, expected match criteria, and the path to the reference figure / table / metric (when applicable, copy the reference file into `targets/` so the directory is self-contained)
-- CLAUDE.md updates — append entries to **Paper-vs-code disagreements** for each material conflict surfaced; update **Rigor** with the post-spawn state of `astra.yaml` per sub-analysis (e.g. *baseline* after a cheap pass, *tightened* after heavy review)
-- `work/notes/specify-review/<sub-analysis>-round-<N>.md` — each review round's findings (one file per round per sub-analysis; how many rounds depends on the rigor level)
+- CLAUDE.md updates — append entries to **Paper-vs-code disagreements** for each material conflict surfaced; update **Rigor** *Current state* with the post-iteration state of `astra.yaml` per sub-analysis (e.g. *baseline* after a one-iteration write, *tightened* after a review-iteration applied fixes)
+- `work/notes/specify-review/<sub-analysis>-round-<N>.md` — each review iteration's findings (one file per review-iteration per sub-analysis; subsequent fix iterations apply them)
 
 ## Substrate skills to invoke
 
@@ -84,30 +81,25 @@ Read the code that implements this sub-analysis (`work/reference/code-index.md`'
    - **Material** = a different choice would plausibly change a numeric result the paper reports.
    - **Stylistic / cosmetic / pure-tooling** = not material; record in `implementation-notes.md` and move on.
 
-   For **material** disagreements, behavior depends on whether the user is reachable:
-   - **User reachable** (in the specify sub-agent's chat or in the orchestrator session): ask in prose — present the paper's stated method (with quote + section), the code's actual method (with `path:line`), the plausible impact ("changes the BAO peak amplitude by ~5%"), and offer three paths: paper, code, or something custom. The user can also defer ("just take code, I'll look in REVIEW"). **Default on user silence is code when `work/reference/code/` exists, otherwise paper.**
-   - **User unreachable** (sub-agent surface dismissed and orchestrator hasn't relayed): take **code as canonical** per the canonical-resolution rule, append the conflict to CLAUDE.md's **Paper-vs-code disagreements** section AND to `open-questions.md` so the user sees it at the next session boundary, and let `universes/baseline.yaml` select the code's method. The user can flip the baseline at REVIEW close-out.
-
-   Either way, the override is preserved in `astra.yaml` as a `decisions:` entry with both options preserved, plus the `universes/baseline.yaml` selecting whichever option won. A `findings:` entry (or an insight if the conflict matters for replication discipline broadly) records the conflict with quote + line evidence.
+   For **material** disagreements: take **code as canonical** per the canonical-resolution rule (the iteration runs detached; the user isn't reachable interactively). Append the conflict to CLAUDE.md's **Paper-vs-code disagreements** section AND to `open-questions.md` so the user sees it at REVIEW close-out, with the verbatim paper quote + the `path:line` code anchor + a plausible-impact one-liner ("changes the BAO peak amplitude by ~5%"). Let `universes/baseline.yaml` select the code's method. Preserve both options in the `astra.yaml` `decisions:` entry; the user can flip the baseline at REVIEW close-out.
 
 2. **Code-revealed insights and findings.** Things the code does that the paper doesn't describe (a calibration version, a cut stricter than stated, a hyperparameter the paper compressed). These earn `findings:` entries with `path:line` evidence anchors against the code (when an output corresponds), or `implementation-notes.md` bullets (when no formal output corresponds).
 
 3. **Decision-option augmentation.** Where the code reveals an option the paper didn't mention but is defensible (a sibling implementation alternative used in the codebase or referenced in a comment), add it as a sibling option to the relevant `decisions:` entry. Do not pre-emptively author every code variant; only the ones that bear on a real choice.
 
-4. **Surface paper-vs-code material disagreements** in prose (when user reachable) or to CLAUDE.md's **Paper-vs-code disagreements** section + `open-questions.md` (when user unreachable). The verbatim paper quote + the `path:line` code anchor + the plausible-impact one-liner should make it into both surfaces so the user sees enough to decide at REVIEW close-out.
+### Review — by iteration boundary (default) or in-iteration fan-out (optional)
 
-### Pass C — self-review (rigor chosen per spawn)
+After the paper + code passes land for a sub-analysis, the cross-check question is: are the decisions covering everything material? Are the evidence quotes verbatim? Are the findings actually traceable to the paper or code? Did any material disagreement get silently dropped?
 
-After the paper + code passes land for a sub-analysis, a fresh-context Task-tool sub-agent cross-checks: are the decisions covering everything material? Are the evidence quotes verbatim? Are the findings actually traceable to the paper or code? Did any material disagreement get silently dropped?
+**Default: review by iteration boundary.** The iteration that wrote a sub-analysis's passes exits when its passes are done; the next iteration enters fresh, surveys, finds the sub-analysis's passes present but no `work/notes/specify-review/<sub>-round-N.md`, reads the slice of `astra.yaml` + the paper + the code, and writes review findings. The iteration after that applies the fixes. Two consecutive review-iterations with verdict `clean` per sub-analysis terminates that sub-analysis's review cycle. The fresh-context-no-bias property is automatic at iteration boundaries — review iteration N doesn't see review iteration N-2's fixes any more than it would if they were sub-agent spawns. The depth is sized from the gap between CLAUDE.md's Rigor *Current state* for the sub-analysis and `constitution.md`'s Fidelity intent: *cheap* — accept after one clean review-iteration; *heavy* — require two consecutive clean.
 
-Self-review depth follows the rigor level the orchestrator picked for this spawn (read CLAUDE.md's **Rigor** section). Same shape as ARCHITECT's review pass and IMPLEMENT's:
+**Optional: in-iteration fan-out.** When there are many independent sub-analyses to review and the iteration's fidelity-intent calculus calls for *heavy*, the iteration that holds the review work can fan out one-level-deep sub-agents (one per sub-analysis) inside its own session, merge findings, and apply fixes in the same iteration. This trades the natural fresh-context property between iterations for parallelism within an iteration. Reach for this only where the parallelism actually pays — most reproductions have small enough sub-analysis counts that sequential review via iteration boundaries is cleaner.
 
-- **Cheap:** skip self-review, or run a single fresh Task-tool sub-agent pass and incorporate its fixes once.
-- **Heavy:** N rounds — each round spawns a fresh Task-tool reviewer; fixes are incorporated; the next round spawns another fresh reviewer that has not seen the fixes. Iterate until two consecutive rounds find no fixes, or a 5-round system cap. Each round runs a brand-new sub-agent that does NOT see prior rounds' findings or fixes — pattern-matching on prior fixes defeats the cross-check.
+#### Per-review-iteration prompt (whether sequential or fan-out)
 
-#### Per-round fresh sub-agent — system prompt
+The check-list and findings-file shape below applies whether the review work happens in a standalone iteration (default) or as a fan-out sub-agent inside an iteration (optional). Either way, the reviewer reads the slice fresh and writes findings only — never edits `astra.yaml` directly; that's the next iteration's (or the fan-out merge step's) job.
 
-> You are a SPECIFY reviewer for one sub-analysis. Read the relevant slice of `astra.yaml`, the paper, and the code (when present), and report any inconsistencies you find. You will be one of several independent reviewers; do not assume anything has already been fixed.
+> You are a SPECIFY reviewer for one sub-analysis. Read the relevant slice of `astra.yaml`, the paper, and the code (when present), and report any inconsistencies you find. You will be one of several independent reviewers (whether across iterations or across fan-out spawns); do not assume anything has already been fixed.
 >
 > ### Inputs
 >
@@ -117,7 +109,7 @@ Self-review depth follows the rigor level the orchestrator picked for this spawn
 > - `work/reference/index.json` — the decision clusters and result loci that scoped the work
 > - `work/reference/code-index.md` (when code present)
 > - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep into; do not re-read whole)
-> - `work/reference/code/` (when present) — canonical reference for numerics + method
+> - `work/reference/code/` (when present) — canonical reference for numerics + method (read targeted modules pointed at by code-index.md)
 > - `work/reference/index.json#citations` — cite-key → `{locations, citation, doi}` mapping from paper-extraction (use to confirm each `prior_insights:` placeholder's `doi:` matches what the paper cites)
 >
 > ### What to check
@@ -133,7 +125,7 @@ Self-review depth follows the rigor level the orchestrator picked for this spawn
 >
 > ### What NOT to do
 >
-> - **Do not edit `astra.yaml`** or any other file. Your output is a findings file; a SPECIFY-fix pass responds to the findings. Editing here defeats the multi-round-fresh-context discipline.
+> - **Do not edit `astra.yaml`** or any other file. Your output is a findings file; the next iteration (or the fan-out merge step) applies the fixes. Editing here defeats the fresh-context discipline that makes review work.
 > - **Do not flag missing `recipes:`.** Recipes are IMPLEMENT's, not SPECIFY's.
 > - **Do not re-read the entire paper.** Use Grep on `work/reference/source/` (or `document.md`) for the specific claims you want to verify; lean on `work/reference/index.json`.
 > - **Do not invent problems.** If the sub-analysis is consistent with paper + code, say so briefly.
@@ -162,23 +154,26 @@ Self-review depth follows the rigor level the orchestrator picked for this spawn
 > - **clean** | **needs-fixes**
 > ```
 
-#### SPECIFY-fix pass between rounds
+#### Applying fixes (the iteration after the review-iteration)
 
-After each round's findings file lands, a SPECIFY-fix pass (or the orchestrator inline for trivial mechanical fixes) edits `astra.yaml` for the sub-analysis, plus `universes/baseline.yaml` and `implementation-notes.md` per the suggested fixes. After any change to `astra.yaml`:
+The iteration after each review-iteration reads `work/notes/specify-review/<sub-analysis>-round-<N>.md`, applies the fixes to `astra.yaml` for the sub-analysis (plus `universes/baseline.yaml` and `implementation-notes.md` per the suggested fixes), commits, and exits. After any change to `astra.yaml`:
 
 ```bash
 astra validate astra.yaml
 astra validate astra.yaml --verify-evidence  # after LITERATURE has resolved the prior_insights placeholders
 ```
 
+For in-iteration fan-out, the iteration that spawned the parallel reviewers reads each reviewer's findings file and merges fixes back into `astra.yaml` itself in the same iteration; the next iteration's survey acts as the consolidating review.
+
 #### Termination
 
-- **Cheap:** one pass per sub-analysis. Done after fixes (or immediately, if `fixes_needed` was 0).
-- **Heavy:**
-  - If round N's `fixes_needed` was 0 AND round (N-1)'s was also 0 → done.
-  - If round N is the first round (N=1), spawn round 2 unconditionally so we can compare.
-  - If round N produced fixes, spawn round (N+1) as a fresh sub-agent that does not see round N's findings or the fixes.
-  - If N hits the 5-round system cap without two consecutive clean rounds, the specify sub-agent stops on this sub-analysis and reports back to the orchestrator. If the user is reachable, ask in prose: "SPECIFY review for <sub-analysis-id> reached round cap with N fixes still landing; continue, accept the current spec, or revise scope?" If the user is unreachable, accept the current sub-analysis spec, log the unfinished tail in `open-questions.md`, and let the orchestrator decide whether to proceed or re-spawn.
+- **Cheap (sequential):** one review-iteration per sub-analysis after the passes land. Done after the next iteration applies the fixes (or immediately, if `fixes_needed` was 0).
+- **Heavy (sequential):**
+  - If review-iteration N's `fixes_needed` was 0 AND review-iteration (N-1)'s was also 0 → done.
+  - If review-iteration N is the first review (N=1), the next review-iteration runs unconditionally so we can compare across two fresh passes.
+  - If review-iteration N produced fixes, the next iteration applies them, and the iteration after that runs the next review fresh.
+  - If 5 review-iterations have happened without two consecutive clean rounds, log the unfinished tail in `open-questions.md` ("SPECIFY review for <sub-analysis-id> reached round cap; user should review during REVIEW close-out") and let the next iteration advance to LITERATURE.
+- **In-iteration fan-out (when chosen):** one iteration writes the passes; the next spawns N parallel reviewers and merges fixes in the same iteration. The iteration after that runs the next standalone review-iteration (or another fan-out, the iteration's call) for the second clean pass.
 
 When all sub-analyses' reviews terminate, SPECIFY produces the final outputs:
 
@@ -203,7 +198,7 @@ Out-of-scope targets stay in `targets/targets.md` with an explicit reason and sh
 - **Do NOT add executable implementation code or invented run commands.** Do add concise provenance / recipe descriptions where ASTRA fields support them, especially for paper-derived calculations, figure generation, imported constants, and values that IMPLEMENT will need to regenerate.
 - **Equation and section numbers must match the rendered paper / PDF**, not a naïve count of TeX blocks or markdown headings. When citing "eq. N" or "§N", find the equation or heading by content in the rendered paper and use the printed number.
 - **Validate** with `astra validate astra.yaml` after each pass.
-- **Work primarily through paper-expert and code-expert** via `SendMessage` — they have the deep context built up. Use `work/reference/index.json` and `work/reference/code-index.md` for structural lookups, and `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) only to verify specific verbatim quotes (Grep for terms, or read targeted sections with offset/limit). Do not re-read the whole paper.
+- **Targeted reads, not whole-paper absorption.** Use `work/reference/index.json` and `work/reference/code-index.md` for structural lookups; Grep into `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) for specific verbatim quotes; read targeted code modules under `work/reference/code/` for canonical method details. Don't re-read the whole paper or whole code base.
 - **The narrative skill is the prose author, not the structure author.** SPECIFY weaves anchors into the prose ARCHITECT wrote — the structural surface is fixed, the anchored references are SPECIFY's contribution.
 
 ## Survey signals (entry into SPECIFY)
@@ -220,9 +215,9 @@ Out-of-scope targets stay in `targets/targets.md` with an explicit reason and sh
 
 ## Notes
 
-- **Material conflicts that the user explicitly defers** are appended to CLAUDE.md's **Paper-vs-code disagreements** section AND `open-questions.md`. CLAUDE.md is the at-a-glance summary every future sub-agent or orchestrator session sees; `open-questions.md` is the autonomous-mode resolution accumulator. Both lead to the same place: the user resolves at REVIEW close-out.
+- **Material disagreements** are appended to CLAUDE.md's **Paper-vs-code disagreements** section AND `open-questions.md`. CLAUDE.md is the at-a-glance summary every iteration sees; `open-questions.md` is the user-resolution accumulator. Both lead to the same place: the user resolves at REVIEW close-out.
 - **The narrative skill is the prose author, not the structure author.** SPECIFY's job is content correctness; `/narrative` invocation comes during the paper pass when authoring or extending the narrative prose to weave in anchor references.
 - **The target ledger is a derivation, not a separate phase's output.** Treat `targets/targets.md` as a small index produced alongside the filled `astra.yaml`, not a heavyweight artifact. The depth lives in `astra.yaml`'s `outputs:` / `findings:` / `decisions:`.
-- **Two-pass discipline is the cross-check.** Skipping the code pass (when code exists) loses the canonical-resolution surface and lets paper-vs-code material disagreements slip through. The fresh-context self-review can recover *some* of these but not all — the disciplined sequence (paper → code → self-review) catches more.
-- **Per-sub-analysis parallelism is opt-in.** When sub-analyses are independent (no shared decision blocks, no cross-sub-analysis findings), spawn one Task-tool sub-sub-agent per sub-analysis from inside specify's session to run its passes in parallel. When they share material decisions or findings (rare), serialize.
-- **Commit per sub-analysis as it lands.** Each sub-analysis's filled-in `astra.yaml` slice + its targets/implementation-notes/baseline updates earn one commit; review-round files commit one per round. The orchestrator reads `git log` to track progress; small commits keep the trail readable.
+- **Two-pass discipline is the cross-check.** Skipping the code pass (when code exists) loses the canonical-resolution surface and lets paper-vs-code material disagreements slip through. The fresh-context review (iteration boundary or in-iteration fan-out) can recover *some* of these but not all — the disciplined sequence (paper → code → review) catches more.
+- **Per-sub-analysis parallelism is opt-in.** When sub-analyses are independent (no shared decision blocks, no cross-sub-analysis findings), the iteration can fan out one-level-deep sub-agents (one per sub-analysis from inside its main session) to run their passes in parallel. When they share material decisions or findings (rare), serialize across iterations.
+- **Commit per sub-analysis as it lands.** Each sub-analysis's filled-in `astra.yaml` slice + its targets/implementation-notes/baseline updates earn one commit; review files commit one per review-iteration. The next iteration reads `git log` to track progress; small commits keep the trail readable.

@@ -1,8 +1,8 @@
 # COMPARE — judge the match, name the opportunities
 
-Compare reproduced results against the paper's replication targets. COMPARE returns two things: a **verdict** (pass / partial / fail) and an **opportunity assessment** — where the gaps are, how much they likely matter, and how they sit relative to the user's fidelity intent in CLAUDE.md's Goal section. The verdict drives whether the orchestrator re-spawns IMPLEMENT for another retry; the opportunity assessment tells the orchestrator (and the user) which gaps fall below intent and would be high-leverage to close, even on `pass`. Together they replace the old yes/no framing.
+Compare reproduced results against the paper's replication targets. COMPARE returns two things: a **verdict** (pass / partial / fail) and an **opportunity assessment** — where the gaps are, how much they likely matter, and how they sit relative to the user's fidelity intent in `constitution.md`'s Goal section. The verdict drives whether a subsequent iteration retries IMPLEMENT; the opportunity assessment tells the next iteration (and the user at REVIEW) which gaps fall below intent and would be high-leverage to close, even on `pass`. Together they replace the old yes/no framing.
 
-This phase runs as the orchestrator-spawned `compare` sub-agent. The orchestrator and the user together decide what to do with COMPARE's output — spend another IMPLEMENT round now (close a below-intent gap), accept the current verdict and proceed to REVIEW, or land at the current trajectory and log the gap as an open opportunity in CLAUDE.md's **Rigor** section. The user can drop into the compare sub-agent's chat for the verdict ratification conversation, or wait until REVIEW close-out.
+COMPARE is what a ralph iteration does when the workdir signals "RUN done (`results/` materialized) + `comparison-report.yaml` absent or stale relative to latest RUN." The iteration writes the report; what happens next depends on the verdict and the iteration's read of the constitution's Fidelity intent. If verdict is `partial`/`fail` AND an opportunity is below intent AND attempt budget remains, the next iteration takes a retry attempt at IMPLEMENT against the failing outputs first. If verdict is `pass` AND no opportunities are below intent (or budget is exhausted), the iteration logs un-acted opportunities into CLAUDE.md's **Rigor** *Open opportunities*; a subsequent cold-survey iteration with no contributions closes the constitution and REVIEW runs in the user's main session.
 
 ## Inputs
 
@@ -10,8 +10,8 @@ This phase runs as the orchestrator-spawned `compare` sub-agent. The orchestrato
 - `astra.yaml` — output definitions (each target maps to an output)
 - `targets/` — reference figures / tables for comparison
 - `results/<universe>/<output_id>/` — reproduced results
-- **paper-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Useful for "what does the paper actually claim for this number" or "how does the paper describe what Figure 3 should show" when grading the comparison.
-- **code-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Useful for diagnosing divergence: "what does the reference code compute here that ours might miss".
+- `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — target paper text. Grep into for "what does the paper actually claim for this number" or "how does the paper describe what Figure 3 should show" when grading the comparison.
+- `work/reference/code/` (when present) — read targeted modules pointed at by `code-index.md` for diagnosing divergence: "what does the reference code compute here that ours might miss".
 
 ## Outputs
 
@@ -98,21 +98,21 @@ Also write `comparison-report.md` with a human-readable summary. For figure / ta
 
 ## Verdict + opportunity surfacing
 
-After writing the report, the compare sub-agent reports back to the orchestrator with the verdict, the failing-output count (if any), and the headline opportunities — `below`-intent items first. The orchestrator either:
+After writing the report, the iteration acts against the fidelity intent (iterations run detached; the user isn't reachable interactively):
 
-- **Carries the report to the user** (if the user is reachable in the orchestrator session or the compare sub-agent's chat) for ratification: present verdict, the failing outputs (if `partial` / `fail`), and the top `below`-intent opportunities; ask whether to spend another IMPLEMENT round on those gaps, accept and proceed to REVIEW, or land at the current trajectory and log the gaps as open opportunities in CLAUDE.md.
-- **Acts against intent** (if the user is unreachable): if attempt < budget AND (verdict is `partial` / `fail` OR any opportunity is `below` intent), re-spawn `implement` targeting the `below` gaps first; if verdict is `pass` AND no opportunities are `below`, OR attempt >= budget, log remaining opportunities in CLAUDE.md's **Rigor** section and proceed to REVIEW.
+- If attempt < budget AND (verdict is `partial` / `fail` OR any opportunity is `below` intent), commit the report, exit. The next iteration surveys, sees the report's `below`-intent opportunities, and takes a retry attempt at IMPLEMENT targeting those gaps first.
+- If verdict is `pass` AND no opportunities are `below` intent, OR attempt budget is exhausted, log un-acted opportunities into CLAUDE.md's **Rigor** *Open opportunities* list, commit. A subsequent cold-survey iteration (no contributions) closes the constitution by flipping `status:` to `closed`, and REVIEW close-out runs in the user's main session.
 
-The verdict is the compare sub-agent's judgment; the **decision to keep iterating or move on** is the orchestrator's (in dialogue with the user). The opportunity assessment — graded against the user's fidelity intent — is the bridge that turns a binary verdict into a picture both parties can navigate.
+The verdict is the iteration's judgment from the data; the **decision to keep iterating or close** happens by iteration boundary — one iteration writes the report and the take, the next surveys and decides whether to retry or accept. The opportunity assessment — graded against the user's fidelity intent — is the bridge that turns a binary verdict into a picture the next iteration (and REVIEW) can navigate.
 
 ## Survey signals (entry into COMPARE)
 
 - All outputs in `lc status --universe baseline` are `ok` ⇒ ready to compare
 - `comparison-report.yaml` exists with current `attempt` ⇒ COMPARE done for this attempt
-- `comparison-report.yaml` verdict is `pass` (or `partial` accepted) ⇒ COMPARE → IMPLEMENT loop terminated; orchestrator proceeds to REVIEW close-out
+- `comparison-report.yaml` verdict is `pass` (or `partial` with un-acted opportunities logged to CLAUDE.md as Open opportunities) ⇒ COMPARE → IMPLEMENT loop terminated; the next cold-survey iteration closes the constitution and REVIEW runs in the user's main session
 
 ## Notes
 
 - **One COMPARE per IMPLEMENT.** Each IMPLEMENT retry produces a fresh COMPARE; the report's `attempt` field increments. Do not overwrite prior reports — keep them at `comparison-report-attempt-<N>.yaml` if useful, or commit each between attempts so `git log` carries the history.
-- **The verdict is the compare sub-agent's; the keep-iterating decision is the orchestrator's** (in dialogue with the user, when reachable). Treat them as separate.
+- **The verdict is the iteration's judgment from the data; the keep-iterating decision happens at iteration boundary.** One iteration writes the report and the take on what should happen next; the next iteration surveys, reads the take, and either retries or accepts. The user's voice enters at REVIEW close-out, not mid-loop.
 - **The opportunity assessment is part of the durable record.** When the user accepts the current verdict, propagate the un-acted-on opportunities into CLAUDE.md's **Rigor** section's *Open opportunities* list. Future sessions and future-Cail returning to this reproduction see them; tightening any becomes a re-spawn of IMPLEMENT against a clearer target.

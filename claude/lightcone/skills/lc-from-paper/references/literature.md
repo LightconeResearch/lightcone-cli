@@ -6,15 +6,15 @@ The quote-finding direction is: **target paper's claim → quote inside the cite
 
 LITERATURE runs **after SPECIFY**, not before — relevant `prior_insights:` are defined by the decisions and findings they justify. Fetching cited papers speculatively before SPECIFY would do work for citations that may never end up needed.
 
-This phase runs as the orchestrator-spawned `literature` sub-agent. Its internal architecture is **two simple stages**: mechanical fetch (paper-extraction's deterministic script, batched-parallel via shell — no agent fan-out), then quote-finding (literature does it itself for small placeholder counts; spawns a small number of Haiku sub-agents for large counts). The agentic work is the quote-matching; the fetch is plumbing.
+LITERATURE is what a ralph iteration does when the workdir signals "SPECIFY done + `prior_insights:` placeholders present without `evidence:` selectors." Its internal architecture is **two simple stages**: mechanical fetch (paper-extraction's deterministic script, batched-parallel via shell — no agent fan-out), then quote-finding (the iteration does it itself for small placeholder counts; spawns a small number of Haiku sub-agents inside its own main session for large counts). The agentic work is the quote-matching; the fetch is plumbing.
 
 ## Inputs
 
 - `astra.yaml` — filled by SPECIFY's paper (and code) passes; each sub-analysis has `prior_insights:` entries with `claim:` + `doi:` + `decision_links:` but no `evidence:` selector. These are the placeholders LITERATURE resolves.
 - `work/reference/index.json#citations` — paper-extraction's cite-key → `{locations, citation, doi}` mapping for every entry in the target paper's bibliography. Used as the canonical cite-key → DOI lookup when cross-checking placeholder DOIs and surfacing unresolved-DOI cases.
-- `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — the target paper; useful for context on how the cited paper is invoked.
-- **paper-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Useful when a placeholder's claim is ambiguous and you need to know what the target paper actually says around the citation site.
-- CLAUDE.md — **Rigor** for this spawn's chosen rigor level.
+- `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — target paper text. Grep into for context on how the cited paper is invoked, when a placeholder's claim is ambiguous.
+- `constitution.md` — Fidelity intent (used to size cheap vs heavy on this iteration's review).
+- CLAUDE.md — Rigor *Current state* per output (so this iteration knows where prior insights currently sit).
 
 ## Outputs
 
@@ -31,7 +31,7 @@ Collect every `prior_insights:` entry whose `evidence:` is missing or empty. Gro
 Run paper-extraction's substrate script for each unique DOI **in batches of 5** via shell parallelism. paper-extraction's `extract-paper-substrate.py` is deterministic — no agent involvement needed. Each invocation writes to `work/cited/<doi-slug>/work/reference/`:
 
 ```bash
-# Pseudocode for the batched fetch loop the literature sub-agent runs.
+# Pseudocode for the batched fetch loop an iteration runs.
 # For each unique DOI in the placeholder set:
 mkdir -p work/cited/<doi-slug>
 cd work/cited/<doi-slug>
@@ -58,23 +58,23 @@ Resume: if `work/cited/<doi-slug>/work/reference/index.json` already exists, ski
 
 Once all substrate is in place, count placeholders:
 
-- **≤10 placeholders:** the literature sub-agent does the quote-finding itself. It walks the placeholders one at a time, greps into the relevant cited paper's substrate for terms from the claim, identifies the verbatim quote, and writes `{exact, prefix, suffix, page}` to `work/notes/literature/resolutions.yaml`. Single agent, low context overhead per placeholder (grep + targeted read, not whole-paper-absorption).
+- **≤10 placeholders:** the iteration does the quote-finding itself. It walks the placeholders one at a time, greps into the relevant cited paper's substrate for terms from the claim, identifies the verbatim quote, and writes `{exact, prefix, suffix, page}` to `work/notes/literature/resolutions.yaml`. Single agent, low context overhead per placeholder (grep + targeted read, not whole-paper-absorption).
 
-- **>10 placeholders:** the literature sub-agent partitions placeholders across **a small number of Haiku sub-agents** (rough rule: aim for 5–8 placeholders per Haiku, so 11–15 placeholders → 2 Haikus, 30 placeholders → 4 Haikus). Each Haiku gets its subset of placeholders + the substrate paths for the cited papers those placeholders reference. Haikus are cheap and fast and the work is well-bounded (grep + format YAML), so this is the right model. Each Haiku writes to `work/notes/literature/haiku-<N>.yaml`; literature reads them all, merges into `resolutions.yaml`, then writes back to `astra.yaml`.
+- **>10 placeholders:** the iteration partitions placeholders across **a small number of Haiku sub-agents** (rough rule: aim for 5–8 placeholders per Haiku, so 11–15 placeholders → 2 Haikus, 30 placeholders → 4 Haikus). Each Haiku gets its subset of placeholders + the substrate paths for the cited papers those placeholders reference. Haikus are cheap and fast and the work is well-bounded (grep + format YAML), so this is the right model. Each Haiku writes to `work/notes/literature/haiku-<N>.yaml`; the iteration reads them all, merges into `resolutions.yaml`, then writes back to `astra.yaml`.
 
-The exact Haiku threshold and partition size are heuristic — they trade off context-budget per Haiku vs. orchestration overhead. The literature sub-agent has discretion; the rule of thumb is "few enough to track easily, each one small enough to finish in a single fast turn."
+The exact Haiku threshold and partition size are heuristic — they trade off context-budget per Haiku vs. orchestration overhead. The iteration has discretion; the rule of thumb is "few enough to track easily, each one small enough to finish in a single fast turn."
 
 ### Stage 3 — Merge into astra.yaml
 
-The literature sub-agent reads `work/notes/literature/resolutions.yaml` and writes the resolutions back into `astra.yaml`:
+The iteration reads `work/notes/literature/resolutions.yaml` and writes the resolutions back into `astra.yaml`:
 
 - For each resolved placeholder, locate `prior_insights[<id>]` in `astra.yaml` (the placeholder already lives in its sub-analysis; the merge just sets its `evidence:` field).
 - For each unresolved placeholder, append a line to `open-questions.md` describing it — the user resolves at REVIEW close-out by either supplying a different citation, weakening the claim, or removing the placeholder entirely.
 - Run `astra validate astra.yaml --verify-evidence` after the merge to catch structural breakage early.
 
-Single writer (the literature sub-agent), no merge conflicts even when Haikus produced the inputs in parallel.
+Single writer (the iteration), no merge conflicts even when Haikus produced the inputs in parallel.
 
-## Quote-finding contract (used by both the literature sub-agent and Haiku sub-agents)
+## Quote-finding contract (used by both the iteration itself and any Haiku sub-agents the iteration spawns)
 
 The agent doing the quote-finding (literature itself, or each Haiku) follows the same contract. The Haiku prompt is just this contract with concrete placeholders + paths spliced in.
 
@@ -158,22 +158,17 @@ Rules:
   - Do NOT edit astra.yaml. The merge step does that.
 ```
 
-When the literature sub-agent fans out to Haikus, each Haiku is spawned with `model="haiku"` and gets this contract plus its assigned subset of placeholders and substrate paths.
+When the iteration fans out to Haikus, each Haiku is spawned with `model="haiku"` and gets this contract plus its assigned subset of placeholders and substrate paths.
 
-## Self-review (rigor chosen per spawn)
+## Review — by iteration boundary (default) or in-iteration fan-out (optional)
 
-After the merge lands, a fresh-context Task-tool sub-agent cross-checks each resolved `prior_insights:` entry against its cited paper:
+After the merge lands, the cross-check question is: do the `evidence:` quotes belong to the cited paper at the cited page? Do the quotes actually justify the placeholders' claims, or are they technically present but tangential? Do the claims actually support the decision options they're linked to via `decision_links:`?
 
-- Does the `evidence:` quote belong to the cited paper at the cited page? (`astra validate --verify-evidence` does the deterministic check; the sub-agent does the semantic check.)
-- Does the quote actually justify the placeholder's `claim:`? Or is the quote technically present but tangential?
-- Does the placeholder's `claim:` actually support the decision option it's linked to via `decision_links:`?
+**Default: review by iteration boundary.** The iteration that did the merge exits; the next iteration enters fresh, surveys, finds `astra.yaml`'s `prior_insights:` populated with `evidence:` selectors but no `work/notes/literature-review/round-N.md`, runs `astra validate --verify-evidence` for the deterministic check + a semantic re-read of each resolved insight, and writes review findings. The iteration after that applies the fixes (which may include re-running Haiku quote-finding for entries that need a different quote). Two consecutive review-iterations with verdict `clean` terminates the review cycle.
 
-The depth of self-review follows the rigor level the orchestrator picked for this spawn (read CLAUDE.md's **Rigor** section):
+**Optional: in-iteration fan-out.** When the placeholder count is large and the fidelity intent calls for *heavy*, the merge iteration (or a subsequent review iteration) can fan out parallel reviewers as one-level-deep sub-agents inside its own session, partitioned by cited-paper subset. Each reviewer writes findings for its subset; the iteration merges and applies fixes in the same session.
 
-- **Cheap:** skip review entirely, or run a single fresh-context reviewer pass and incorporate its fixes once.
-- **Heavy:** N rounds — each round spawns a fresh reviewer; literature incorporates fixes between rounds; the next round spawns another fresh reviewer that does not see the prior round's fixes. Iterate until two consecutive rounds find no fixes, or a 5-round system cap.
-
-Each round runs a brand-new sub-agent that does NOT see prior rounds' findings or fixes — pattern-matching on prior fixes defeats the cross-check. Reviewers output findings only; the literature sub-agent edits `astra.yaml` between rounds (or re-spawns Haiku quote-finding for entries that need a different quote).
+Sized from the constitution's Fidelity intent: *cheap* — one clean review-iteration is enough; *heavy* — require two consecutive clean.
 
 ### Per-round fresh reviewer — prompt shape
 
@@ -200,7 +195,7 @@ Output findings to work/notes/literature-review/round-<N>.md, one fix
 per F-N entry. Verdict is `clean` or a count. Do NOT edit astra.yaml.
 ```
 
-If N hits the 5-round system cap without two consecutive clean rounds, the literature sub-agent stops and reports back to the orchestrator. If the user is reachable, ask in prose: "LITERATURE review reached round cap with N fixes still landing; continue, accept the current resolutions, or revise scope?" If unreachable, accept current state, log the unfinished tail in `open-questions.md`, and let the orchestrator decide whether to proceed or re-spawn.
+If 5 review-iterations have happened without two consecutive clean rounds, log the unfinished tail in `open-questions.md` ("LITERATURE review reached round cap with N fixes still landing; user should review during REVIEW close-out") and let the next iteration advance to IMPLEMENT anyway. Don't loop forever on literature review.
 
 ## Survey signals (entry into LITERATURE)
 
@@ -212,14 +207,14 @@ If N hits the 5-round system cap without two consecutive clean rounds, the liter
 - For cheap: at least one `work/notes/literature-review/round-<N>.md` with verdict `clean` (or no fixes were incorporated) ⇒ LITERATURE review done
 - For heavy: two consecutive `round-<N>.md` files with verdict `clean` ⇒ LITERATURE review done
 
-When all of the above hold ⇒ LITERATURE complete; orchestrator proceeds to IMPLEMENT.
+When all of the above hold ⇒ LITERATURE complete; the next iteration surveys and advances to IMPLEMENT.
 
 ## Notes
 
 - **Mechanical fetch is the substrate; quote-finding is the agentic work.** Don't conflate them. paper-extraction's deterministic script handles the fetch — batched-parallel via shell, no agent fan-out. Quote-finding is the semantic match between target-paper-claim and cited-paper-quote; that's the agent's job.
 - **paper-extraction is the canonical fetch mechanism.** Using `astra paper add` would give only the cached PDF; paper-extraction gives substrate (LaTeX source where available, structural index, figures, citations) which is much better material for verbatim quote-finding. The cost is small and parallelizable.
-- **Haiku is the right model for fan-out quote-finding.** Cheap, fast, well-suited to bounded grep-and-format work. Use Sonnet/Opus only when the placeholder count is small enough that the literature sub-agent does it itself anyway.
+- **Haiku is the right model for fan-out quote-finding.** Cheap, fast, well-suited to bounded grep-and-format work. Use Sonnet/Opus only when the placeholder count is small enough that the iteration does the quote-finding itself anyway.
 - **Resume is automatic.** If `work/cited/<doi-slug>/work/reference/index.json` exists, skip that DOI's fetch. If `work/notes/literature/resolutions.yaml` has an entry for a placeholder, skip that placeholder's quote-finding.
 - **Unresolved is not failure.** A placeholder that no quote in the cited paper supports is a real signal — the target paper cited loosely or paraphrased beyond what the source actually says. Surface to `open-questions.md`; don't fabricate evidence.
 - **`astra validate --verify-evidence` runs after the merge**, not after each Haiku's per-placeholder output. Haikus write to disjoint files; the deterministic check happens once `astra.yaml` is updated.
-- **Commit per stage.** Fetches commit together once Stage 1 completes (one commit for all cited-paper substrates). Quote-finding commits together once Stage 2 completes (`resolutions.yaml` + Haiku files). The merge into `astra.yaml` is its own commit. Each review round file commits as it lands. The orchestrator reads `git log` to see progress.
+- **Commit per stage.** Fetches commit together once Stage 1 completes (one commit for all cited-paper substrates). Quote-finding commits together once Stage 2 completes (`resolutions.yaml` + Haiku files). The merge into `astra.yaml` is its own commit. Each review round file commits as it lands. The next iteration reads `git log` to see progress.
