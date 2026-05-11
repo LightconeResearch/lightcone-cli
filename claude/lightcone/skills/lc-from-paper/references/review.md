@@ -4,7 +4,7 @@ The reproduction has converged: the constitution's `status:` is `closed` (after 
 
 Its job is to render the validation surfaces, walk the user through the accumulated open questions, land the resolutions, draft the final report, and propagate any un-acted-on opportunities from the latest COMPARE into CLAUDE.md's **Rigor** section — in one interactive arc.
 
-The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding into ARCHITECT, SPECIFY, LITERATURE, and IMPLEMENT as their per-spawn self-review passes. This close-out is what the previous shape called SUMMARIZE_RUN.
+The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding into ARCHITECT, SPECIFY, LITERATURE, and IMPLEMENT as their per-iteration self-review passes. This close-out is what the previous shape called SUMMARIZE_RUN.
 
 ## Inputs
 
@@ -57,7 +57,7 @@ Read `open-questions.md` at the workdir root. For each unresolved entry, surface
 
 Append a `## Resolutions` section to `open-questions.md` capturing what the user said for each entry. This makes the resolution durable — re-runs and future sessions see it. Cross-reference with CLAUDE.md's **Paper-vs-code disagreements** section: every entry there should now have its resolution recorded, either inline (if the user picked the canonical default) or in `open-questions.md`.
 
-If a resolution warrants a spec change (the user picks an override), edit `astra.yaml` / `implementation-notes.md` / `universes/baseline.yaml` accordingly and re-run `astra validate astra.yaml`. If the change would invalidate the comparison report (e.g. flips the canonical method for a primary output), surface that to the user — in most cases the reproduction is "done" and the override is a known limitation, but the user may choose to re-spawn IMPLEMENT.
+If a resolution warrants a spec change (the user picks an override), edit `astra.yaml` / `implementation-notes.md` / `universes/baseline.yaml` accordingly and re-run `astra validate astra.yaml`. If the change would invalidate the comparison report (e.g. flips the canonical method for a primary output), surface that to the user — in most cases the reproduction is "done" and the override is a known limitation, but the user may choose to re-open the loop for another IMPLEMENT pass.
 
 ## Step 3: write `REPRODUCTION-SUMMARY.md`
 
@@ -76,7 +76,7 @@ Brief, not exhaustive. The depth lives in `astra.yaml` and the workdir's notes; 
 
 ## Step 4: propagate opportunities into CLAUDE.md
 
-For each opportunity in `comparison-report.yaml`'s `opportunities:` block that the user did NOT act on (i.e. they accepted the current verdict and chose to land here), append it to CLAUDE.md's **Rigor** section's *Open opportunities* list. Format: `<area> — <what could be tightened> — <leverage>`. This is what future sessions and future re-spawns walk up to; it's how the reproduction stays honest about what's at sketch / baseline / tightened / canonical rigor across its outputs.
+For each opportunity in `comparison-report.yaml`'s `opportunities:` block that the user did NOT act on (i.e. they accepted the current verdict and chose to land here), append it to CLAUDE.md's **Rigor** section's *Open opportunities* list. Format: `<area> — <what could be tightened> — <leverage>`. This is what future sessions and future loop re-launches walk up to; it's how the reproduction stays honest about what's at sketch / baseline / tightened / canonical rigor across its outputs.
 
 If the user acted on an opportunity (e.g. authorized one more IMPLEMENT round to close a gap), it doesn't go in the open list — but its closure is worth noting in *Current state* (e.g. *Figure 3: tightened* if the systematics treatment got a heavier pass).
 

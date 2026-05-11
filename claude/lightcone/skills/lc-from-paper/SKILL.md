@@ -136,7 +136,7 @@ REVIEW runs in your main session because `/figure-comparison` and `/check-senten
 
 **Rigor is a trajectory toward the user's intent.** A reproduction isn't one-shot — it reaches a baseline, then accumulates. The anchor is the user's **fidelity intent**, captured in `constitution.md`'s Goal section at INTERVIEW as prose — their own words for what "good enough" looks like (e.g. *"just checking the analysis is tractable"*, *"Figure 3 must be right; the rest can stay rough"*, *"every primary and secondary target lining up within stated tolerance"*).
 
-Each iteration translates the fidelity intent into a per-spawn tactical decision when working on an artifact-producing phase (ARCHITECT, SPECIFY, LITERATURE, IMPLEMENT). Derive how much in-iteration self-review-via-fan-out to run from the gap between where the artifact currently stands (CLAUDE.md's Rigor *Current state* — *sketch / baseline / tightened / canonical*) and what the Goal's intent says the user cares about. *Cheap:* write the artifact and exit; let the next iteration's fresh-context survey serve as the review. *Heavy:* fan out parallel reviewers as one-level-deep sub-agents inside the iteration, merge findings, apply fixes, exit. Either way, update CLAUDE.md's Rigor *Current state* so the trajectory stays honest across iterations.
+Each iteration translates the fidelity intent into a tactical sizing decision when working on an artifact-producing phase (ARCHITECT, SPECIFY, LITERATURE, IMPLEMENT). Derive how much in-iteration self-review-via-fan-out to run from the gap between where the artifact currently stands (CLAUDE.md's Rigor *Current state* — *sketch / baseline / tightened / canonical*) and what the Goal's intent says the user cares about. *Cheap:* write the artifact and exit; let the next iteration's fresh-context survey serve as the review. *Heavy:* fan out parallel reviewers as one-level-deep sub-agents inside the iteration, merge findings, apply fixes, exit. Either way, update CLAUDE.md's Rigor *Current state* so the trajectory stays honest across iterations.
 
 The default is **sequential review via iteration boundaries** — cheaper, no fan-out, and the fresh-context property is automatic. Reach for in-iteration fan-out when the parallelism actually pays (LITERATURE with many cited papers, SPECIFY with many independent sub-analyses, IMPLEMENT with many outputs).
 
@@ -157,7 +157,7 @@ When the user walks back into a workdir that already has artifacts:
 1. **Skip INTERVIEW** unless the user explicitly wants to revise scope (in which case edit `constitution.md` together, no re-draft from scratch).
 2. **If `constitution.md`'s `status:` is `active` and the tmux session isn't running**, re-launch the ralph loop: `.claude/skills/ralph/scripts/ralph constitution.md`. The next iteration surveys the workdir and picks up wherever the prior loop left off.
 3. **If `constitution.md`'s `status:` is `closed`**, the reproduction is at REVIEW. Run REVIEW close-out in your main session.
-4. **If ACQUIRE substrate is incomplete**, finish ACQUIRE in your main session before launching the loop — re-spawn `/paper-extraction` and/or `/lc-from-code` against the existing partial state (both are survey-first and skip done work).
+4. **If ACQUIRE substrate is incomplete**, finish ACQUIRE in your main session before launching the loop — re-invoke `/paper-extraction` and/or `/lc-from-code` against the existing partial state (both are survey-first and skip done work).
 
 ## Anti-patterns
 

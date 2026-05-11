@@ -70,7 +70,7 @@ After the first-pass implementation lands, the cross-check question is: is the i
 
 The discipline is the same shape ARCHITECT, SPECIFY, and LITERATURE use: review is fresh-context (whether across iterations or across fan-out spawns), prompted to check "is the implementation consistent with the paper and the code?", outputs findings only — not edits. Fixes are applied between iterations by the next iteration (or merged in the same iteration for fan-out). Pattern-matching on prior fixes defeats the cross-check; the no-bias rule is load-bearing.
 
-### Per-round fresh sub-agent — system prompt
+### Per-round fresh reviewer — system prompt
 
 > You are a paper-vs-implementation review agent. Read the implementation (`scripts/`, `astra.yaml` recipes), the paper, and the code (when present), and report any inconsistencies you find. You will be one of several independent reviewers; do not assume anything has already been fixed.
 >
