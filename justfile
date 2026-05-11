@@ -67,6 +67,21 @@ docs-serve-port port="8080": docs-install
 docs-clean:
     rm -rf site/
 
+# Deploy a versioned snapshot of the docs to gh-pages via mike, updating
+# the named alias (default: latest). Run after `just release`.
+docs-deploy version alias='latest': docs-install
+  uv run mike deploy --push --update-aliases {{version}} {{alias}}
+
+docs-set-default alias='latest':
+  uv run mike set-default --push {{alias}}
+
+docs-versions:
+  uv run mike list
+
+docs-delete-version version:
+  uv run mike delete --push {{version}}
+
+
 # ── Package ────────────────────────────────────────────────────────────────────
 
 # Build the wheel and sdist
