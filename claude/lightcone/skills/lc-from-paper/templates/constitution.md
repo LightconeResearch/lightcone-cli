@@ -6,6 +6,8 @@ status: active
 
 The driving document for the ralph loop reproducing <paper title> (<arXiv ID>, DOI <doi>). Every iteration reads this on entry to know what "done" looks like and how to size its next move. **Sharpened slowly** — only when something fundamental shifts (target moves, scope opens or fences, a material disagreement makes us re-think a sub-analysis). Running accumulators (per-output rigor state, the disagreements log, opportunities) live in `CLAUDE.md`, not here.
 
+**Closing rule.** An iteration that contributed anything this run cannot flip this constitution's `status:` to `closed`. Closing is reserved for an iteration whose cold survey found nothing left to improve — verdict on disk, accumulators caught up, no open opportunity below the fidelity intent. This adds at least one fresh-eyes review pass on every closing decision.
+
 ## Goal
 
 <What "done" looks like for this reproduction. Concrete: which targets, what verdict against them, what validation passes. E.g.: "A complete `astra.yaml` with recipes that produce reproduced versions of <list of targets>, validated by `astra validate astra.yaml --verify-evidence`, with `comparison-report.yaml` verdict `pass` against the targets in `targets/targets.md`.">
