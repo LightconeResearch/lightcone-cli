@@ -111,8 +111,8 @@ Implement this analysis from astra.yaml. Write the scripts, run the baseline uni
 ```
 
 The agent reads everything (spec, universe file, empty `scripts/` dir,
-and the references in `.claude/guides/`) and makes an implementation
-checklist. It might look like this:
+plus the `/astra` and `/lc-cli` reference skills primed at session
+start) and makes an implementation checklist. It might look like this:
 
 ```
 1. Add Python deps (scikit-learn, matplotlib) to requirements.txt

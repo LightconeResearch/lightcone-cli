@@ -90,7 +90,6 @@ claude/lightcone/
 │   ├── astra/SKILL.md                  # reference: astra.yaml spec
 │   └── lc-cli/SKILL.md                 # reference: lc workflow
 ├── agents/lc-extractor.md             # literature subagent for /lc-new
-├── guides/ui-brand.md                 # visual formatting conventions
 ├── templates/CLAUDE.md                # the project CLAUDE.md template
 └── scripts/*.sh                       # session lifecycle hooks (incl. session-start primer)
 ```
@@ -105,7 +104,6 @@ The two reference *skills* (`/astra` and `/lc-cli`) live under `skills/` and are
 
 | File | Purpose |
 |------|---------|
-| `claude/lightcone/guides/ui-brand.md` | Visual formatting conventions for skill output. |
 | `claude/lightcone/agents/lc-extractor.md` | Literature extraction subagent invoked by `/lc-new`. |
 | `claude/lightcone/scripts/session-start.sh` | Session-start hook — surfaces validation + materialization status and primes Claude with the substrate CLIs and reference skill names. |
 

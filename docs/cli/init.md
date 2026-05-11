@@ -23,7 +23,7 @@ CLAUDE.md                     # short note pointing future agents at the project
 results/                      # placeholder; populated by `lc run`
 universes/                    # placeholder; populate via `astra universe generate -n …`
 .claude/                      # bundled Claude Code plugin
-  skills/, agents/, hooks/, scripts/, guides/, templates/
+  skills/, agents/, hooks/, scripts/, templates/
   settings.json               # the chosen permission tier
 .venv/                        # Python venv (skipped with --no-venv)
 ```

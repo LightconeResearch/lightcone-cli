@@ -60,7 +60,6 @@ claude/lightcone/               # Claude Code plugin (force-included into the wh
 │                                # lc-feedback, ralph (+ bundle siblings);
 │                                # reference skills: astra, lc-cli
 ├── agents/                     # lc-extractor (literature subagent)
-├── guides/                     # ui-brand
 ├── templates/                  # project CLAUDE.md template
 └── scripts/                    # session hooks (bash): venv, validate-on-save, session-start primer
 

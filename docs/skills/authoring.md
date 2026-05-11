@@ -38,8 +38,6 @@ argument-hint: "[OPTIONAL ARG] [--flag VALUE]"
 
 ## Body conventions
 
-Follow [`claude/lightcone/guides/ui-brand.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/guides/ui-brand.md):
-
 - `##` for phase headings; lead with a "Stage banner" line that the
   skill prints to the chat.
 - `✓ / ○ / ✗` for status; never emojis except inside the agent's own
