@@ -42,7 +42,7 @@ Scans an existing codebase, drafts an `astra.yaml` that captures its inputs, out
 
 ### `/lc-from-paper` — Reproduce a published paper
 
-Interview-first orchestrator for reproducing a published paper in ASTRA. Drafts a per-paper `CLAUDE.md`, then runs as a persistent orchestrator session that spawns named per-phase sub-agents (acquire, architect, specify, literature, implement, run, compare) the user can drop into directly. The two bookends — INTERVIEW and REVIEW — run in the orchestrator session itself. Composes a bundle of sibling skills (paper-extraction, narrative, figure-comparison, check-sentence-by-sentence). See [`claude/lightcone/skills/README.md`](claude/lightcone/skills/README.md) for the full bundle map.
+Interview-first orchestrator for reproducing a published paper in ASTRA. Drafts a per-paper `CLAUDE.md`, then runs as a persistent orchestrator session that spawns named per-phase sub-agents (architect, specify, literature, implement, run, compare) the user can drop into directly. The bookends — INTERVIEW, ACQUIRE, and REVIEW — run in the orchestrator session itself; ACQUIRE spawns two persistent expert sub-agents (`paper-expert`, `code-expert`) that downstream phases consult via `SendMessage` instead of re-ingesting materials. Composes a bundle of sibling skills (paper-extraction, narrative, figure-comparison, check-sentence-by-sentence). See [`claude/lightcone/skills/README.md`](claude/lightcone/skills/README.md) for the full bundle map.
 
 ### `/lc-feedback` — Report a bug
 
@@ -57,8 +57,6 @@ Once `astra.yaml` exists, the agent reads `.claude/guides/lightcone-cli-referenc
 ### Global configuration
 
 The first `lc` invocation auto-creates `~/.lightcone/config.yaml` with `container.runtime: auto`. To pin a runtime or change other settings, edit the file directly.
-
-**Extraction model:** Literature extraction subagents default to Sonnet. To change this, set `extraction_model:` in `~/.lightcone/config.yaml` (options: `sonnet`, `haiku`, or omit for inherit).
 
 ### Project scaffolding
 
