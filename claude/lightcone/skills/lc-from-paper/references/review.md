@@ -13,7 +13,8 @@ The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding
 - `targets/targets.md` — what was being matched against; reference figures / tables in `targets/`
 - `results/<universe>/<output_id>/` — reproduced figures / tables / metrics
 - `open-questions.md` at the workdir root — running report from sub-agent phases (paper-vs-code conflicts, ambiguities, anything sub-agents flagged for user resolution)
-- `work/notes/architect/paper-index.md` and `work/notes/architect/code-index.md` — for context
+- `work/reference/index.json` and `work/reference/code-index.md` — for context
+- **paper-expert** and **code-expert** — still reachable via `SendMessage` if the user asks a follow-up question during REVIEW that the report and CLAUDE.md don't answer. The experts persist for the lifetime of the reproduction; they're useful here for "remind me what the paper says about X" or "did the original code do Y" without leaving the orchestrator session.
 - `CLAUDE.md` at the workdir root — paper identity, Goal, Rigor, Paper-vs-code disagreements (the at-a-glance summary that's accumulated across all sub-agent spawns)
 
 ## Outputs

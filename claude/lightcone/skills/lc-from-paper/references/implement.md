@@ -8,9 +8,11 @@ This phase runs as the orchestrator-spawned `implement` sub-agent. Most implemen
 
 - `astra.yaml` — the filled spec (sub-analyses, decisions, prior_insights, findings, narrative — all populated by SPECIFY)
 - `implementation-notes.md` — tricky algorithms, numerical gotchas, data-format quirks
-- `work/notes/architect/paper-index.md` — for context when the spec compresses (sub-analysis decomposition, result loci, decision clusters)
-- `work/notes/architect/code-index.md` (when code present) — natural decomposition + entry-points + data dependencies + gotchas (the canonical map of where each sub-analysis's logic lives in `work/reference/code/`)
+- `work/reference/index.json` — paper-side structural index (figures, tables, outline, citations); useful when the spec compresses or you need to find where in the paper a behavior is described.
+- `work/reference/code-index.md` (when code present) — code inventory: module map, candidate decisions with file:line, entry-points, data dependencies, gotchas (the canonical map of where each sub-analysis's logic lives in `work/reference/code/`).
 - `work/reference/code/` (if present) — **canonical reference. Read it when implementing each output.** Where paper and code disagree, code wins for numerics, plotting, and method.
+- **code-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. The first stop for "where does X live in the code", "what's the canonical entry-point for Y", "what's the default parameter the code uses for Z". Cheaper than re-reading the code yourself.
+- **paper-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Useful when implementing an output and the spec doesn't fully capture what the paper says it should produce (e.g. "what's the expected axis range for Figure 4").
 - CLAUDE.md — **Rigor** for this spawn's chosen rigor level; **Paper-vs-code disagreements** for prior conflicts already logged.
 
 ## Outputs
@@ -25,7 +27,9 @@ This phase runs as the orchestrator-spawned `implement` sub-agent. Most implemen
 
 Read `astra.yaml` and `implementation-notes.md`. For each output, write a script in `scripts/` that produces it, and add a `recipe:` block to the output's entry in `astra.yaml` with `command:` and `inputs:`.
 
-If `work/reference/code/` exists, **read the relevant code when implementing each output** — not just to resolve ambiguities but as the canonical source of truth for numerics + method. Write clean scripts following ASTRA conventions (not verbatim copies), but treat the code's behavior as authoritative when it disagrees with the paper. When you encounter a paper-vs-code disagreement that SPECIFY's code pass missed:
+### With a code reference (`work/reference/code/` exists)
+
+**Read the relevant code when implementing each output** — not just to resolve ambiguities but as the canonical source of truth for numerics + method. Write clean scripts following ASTRA conventions (not verbatim copies), but treat the code's behavior as authoritative when it disagrees with the paper. When you encounter a paper-vs-code disagreement that SPECIFY's code pass missed:
 
 - **User reachable** (in the implement sub-agent's chat): ask in prose — paper method + code method + plausible impact + which one to take.
 - **User unreachable**: continue with the code's behavior, append the disagreement to CLAUDE.md's **Paper-vs-code disagreements** AND `open-questions.md`, and note it in `implementation-notes.md` so REVIEW close-out can ratify or override.
@@ -34,13 +38,19 @@ Without this discipline, the implementation drifts to "looks right" rather than 
 
 When the reference code is substantial enough that implementation is really a migration of an existing codebase, follow `/lc-from-code`'s migration workflow in **augment existing ASTRA** mode. Use its code scan, minimal parameter-plumbing, dependency/container, and baseline-preservation strategies, but apply them to this reproduction's existing `astra.yaml`. Do not create a second ASTRA project or duplicate the spec; add recipes, code-backed options, implementation notes, and missing structure to the current reproduction artifact.
 
+### Without a code reference (`work/reference/code/` is absent)
+
+When `code-status.yaml` records `found: false` or the cloned repo turned out to be unusable, there is no canonical code substrate to anchor against. **Write the implementation fresh from the spec** — `astra.yaml`'s decisions, findings, and prior_insights are now the only source of method-level truth, and the paper's prose (consulted via paper-expert) is the source of numerics-level truth. Don't pretend a code reference exists; don't try to find a similar paper's code as a stand-in. Implement what the spec describes, ask paper-expert when the spec compresses something you need clarified, and rely on COMPARE to surface anywhere the implementation has drifted from the paper's claims.
+
+The code-as-canonical rule does not apply here — there is no code to be canonical. The paper is the only anchor. This is the harder path; reproductions on it converge slower and have more open questions for REVIEW close-out. Surface that honestly to the user as you go; don't dress up paper-only implementations as if they had a code anchor.
+
 ### Parallelize where feasible
 
 When outputs are produced by independent scripts (no shared expensive computation), the implement sub-agent spawns one Task-tool sub-sub-agent per output. Each sub-sub-agent gets:
 
 - The output's spec entry from `astra.yaml` (including its sub-analysis's `decisions:` / `findings:` for context)
 - The relevant section of `implementation-notes.md`
-- The matching entry in `work/notes/architect/code-index.md`'s natural-decomposition / entry-points block — that's the pointer back to the canonical code location for the sub-analysis the output lives in
+- The matching entry in `work/reference/code-index.md`'s natural-decomposition / entry-points block — that's the pointer back to the canonical code location for the sub-analysis the output lives in
 - The relevant code path(s) under `work/reference/code/`
 
 The implement sub-agent merges scripts and recipes after the per-output sub-sub-agents finish. Tightly-coupled outputs (e.g. an MCMC producing both a chain and a summary statistic) stay in one sub-sub-agent and one script.
@@ -72,8 +82,8 @@ The discipline is the same shape ARCHITECT, SPECIFY, and LITERATURE use: each ro
 > - `scripts/` — first-pass implementation
 > - `astra.yaml` — the spec (recipes are part of the implementation; structural + content fields are ARCHITECT's and SPECIFY's)
 > - `implementation-notes.md`
-> - `work/notes/architect/paper-index.md` — Grep into; do not re-read whole
-> - `work/notes/architect/code-index.md` (when present) — natural decomposition + entry-points + gotchas
+> - `work/reference/index.json` — Grep into; do not re-read whole
+> - `work/reference/code-index.md` (when present) — natural decomposition + entry-points + gotchas
 > - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep)
 > - `work/reference/code/` (when present) — canonical reference for numerics + method
 >
@@ -89,7 +99,7 @@ The discipline is the same shape ARCHITECT, SPECIFY, and LITERATURE use: each ro
 > ### What NOT to do
 >
 > - **Do not edit any file.** Your output is a findings file; an IMPLEMENT-fix pass responds to the findings.
-> - **Do not re-read the entire paper.** Grep into `work/notes/architect/` and `work/reference/source/` (or `document.md`) for the specific claims you want to verify; the filled `astra.yaml` is your primary source for what each sub-analysis is supposed to do.
+> - **Do not re-read the entire paper.** Ask paper-expert / code-expert via `SendMessage` for claim verification, or Grep into `work/reference/index.json`, `work/reference/code-index.md`, and `work/reference/source/` (or `document.md`) for specific items. The filled `astra.yaml` is your primary source for what each sub-analysis is supposed to do.
 > - **Do not invent problems.** If the implementation matches paper + code, say so briefly.
 > - **Do not assume a prior reviewer has been here.** You are fresh. First-principles read only.
 >

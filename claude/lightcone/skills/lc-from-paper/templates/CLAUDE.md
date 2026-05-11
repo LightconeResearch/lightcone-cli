@@ -6,7 +6,8 @@ Reproduction of <paper title> (<arXiv ID>). DOI: <doi>.
 
 - Authors: <list>
 - One-line subject: <e.g. "BAO scale measurement from DESI DR1">
-- Code repo: <url> (cloned to `work/reference/code/` during ACQUIRE)
+- Code repo: <url> (cloned to `work/reference/code/` during ACQUIRE; scan inventory at `work/reference/code-index.md`)
+- Paper materials: `work/reference/{paper.pdf, source/ or document.md, index.json, astra.yaml}` (from `/paper-extraction` during ACQUIRE)
 
 ## Goal
 
@@ -36,7 +37,8 @@ Material disagreements between paper and code, logged here as sub-agents find th
 
 ## Rules
 
-- **Code-as-canonical when `work/reference/code/` exists.** Every implementing sub-agent reads relevant code on entry. Where paper and code disagree, code is canonical for numerics, plotting, and method.
+- **Code-as-canonical when `work/reference/code/` exists.** Every implementing sub-agent reads relevant code on entry. Where paper and code disagree, code is canonical for numerics, plotting, and method. When `work/reference/code/` is absent, paper is the only anchor — implement fresh from the spec, expect slower convergence, and surface gaps honestly to the user rather than dressing them up.
+- **Persistent experts during a session.** ACQUIRE spawns `paper-expert` (knows the paper) and `code-expert` (knows the cloned code, when present) as named sub-agents that stay alive for the reproduction. Downstream sub-agents receive their agent IDs at spawn and consult them via `SendMessage` instead of re-ingesting paper / code materials from scratch. The expert IDs are session-scoped — they don't persist across orchestrator sessions, so if the orchestrator session restarts, ACQUIRE re-spawns them against the existing on-disk substrate.
 - **Never block on `AskUserQuestion` mid-sub-agent.** Sub-agents don't have `AskUserQuestion`. Ask in prose if the user is reachable; otherwise append the question to `open-questions.md` and continue with the best-judgment default. The user resolves accumulated questions in REVIEW.
 - **arxiv-LaTeX-first acquisition.** PDF + Docling is a fallback for non-arxiv only.
 - **`astra validate --verify-evidence`** is the fidelity gate; evidence quotes must match source PDFs.
@@ -45,4 +47,7 @@ Material disagreements between paper and code, logged here as sub-agents find th
 ## Pointers
 
 - `open-questions.md` — accumulated questions from autonomous-mode runs, resolved in REVIEW.
+- `work/reference/index.json` — paper structural index (figures, tables, outline, citations with DOIs); the starting surface for any "where in the paper does X happen" lookup. Or just ask `paper-expert` via `SendMessage`.
+- `work/reference/code-index.md` — code inventory (when code present): module map, candidate decisions with file:line, entry-points, gotchas. Or just ask `code-expert` via `SendMessage`.
+- `work/cited/<doi-slug>/` — per-cited-paper substrate produced by LITERATURE for `prior_insights:` resolution.
 - <any paper-specific conventions or warnings the user surfaced during the interview>

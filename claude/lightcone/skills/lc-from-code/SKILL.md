@@ -8,6 +8,12 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash(astra:*), Bash(lc:*), Bash(py
 
 End-to-end migration: scan existing code, draft or add to `astra.yaml`, parameterize decisions in the code, and run until everything materializes. This works both as a fresh start from code and as an augmenting pass inside an existing ASTRA project. The user's existing logic stays intact — changes should be minimal.
 
+## Invocation contexts
+
+This skill has two invocation contexts. The first is the user-driven default described in the phases below: do the full scan → spec → parameterize → run flow.
+
+The second is **scan-only**, used when `/lc-from-paper`'s ACQUIRE spawns this skill as `code-expert`. The orchestrator's prompt will tell you explicitly to *do only Phase 1's scan*, write the inventory to a path it specifies (typically `work/reference/code-index.md`), and **stop** — do not touch `astra.yaml` at the project root, do not parameterize any code, do not run anything, do not modify the cloned repo. After scanning, stay alive: ARCHITECT and later phases will `SendMessage` you with questions about the code as they write the spec. Trust the spawn prompt's instructions over the defaults below; if the prompt says scan-only, the scan-only contract holds.
+
 ## References
 
 - [ASTRA Reference](../../guides/astra-reference.md) -- spec structure, decision identification, recipes, universes

@@ -8,12 +8,15 @@ The new structure runs **two passes per sub-analysis** (paper, then code, when c
 
 Per-sub-analysis work is parallelizable when sub-analyses are independent. Each sub-analysis's two passes (paper, then code) run sequentially within that sub-analysis; across sub-analyses the work fans out via Task-tool sub-sub-agents from inside the specify session.
 
+When the specify sub-agent (or its per-sub-analysis sub-sub-agents) needs paper- or code-side context, prefer **querying paper-expert / code-expert via `SendMessage`** over re-reading materials directly. The experts already have deep context built up from ACQUIRE; SendMessage queries are cheaper and richer than fresh Explore passes. Falling back to direct reads (Grep on `work/reference/source/` / `document.md` / `code/`) is still fine for specific verbatim quote-hunting, but the experts should be the first stop for understanding.
+
 ## Inputs
 
 - `astra.yaml` — the stub from ARCHITECT (sub-analyses, inputs, outputs, narrative; empty `decisions:` / `prior_insights:` / `findings:` blocks)
-- `work/notes/architect/paper-index.md` — paper-side decision clusters, result loci, citations
-- `work/notes/architect/code-index.md` (when code present) — module map, natural decomposition, entry-points, gotchas
-- `work/reference/index.json` — paper-extraction's structural index; its `citations:` block maps each cited paper's BibTeX key (Path A) or synthetic `<lastname>_<year>` key (Path B) to `{locations, citation, doi}`. SPECIFY uses this to write each `prior_insights:` placeholder's `doi:` so LITERATURE knows which paper to fetch.
+- `work/reference/index.json` — paper-extraction's structural index: figures, tables, section outline, citations. The `citations:` block maps each cited paper's BibTeX key (Path A) or synthetic `<lastname>_<year>` key (Path B) to `{locations, citation, doi}`. SPECIFY uses this to write each `prior_insights:` placeholder's `doi:` so LITERATURE knows which paper to fetch.
+- `work/reference/code-index.md` (when code present) — code inventory: module map, candidate decisions with file:line, entry-points, data dependencies, gotchas.
+- **paper-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Ask the deeper paper-side questions the structural index doesn't answer: "what decisions does the paper describe for the apodization choice", "where does the paper define the fiducial cosmology", "what does §4.2 conclude about the null tests". paper-expert has the paper's full context built up.
+- **code-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Ask: "which module implements the BAO fit", "what's the default magnitude cut hardcoded in this script", "how does the code split data into bins". code-expert has the code's full context built up.
 - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep into; do not re-read whole)
 - `work/reference/figures/`, `work/reference/tables/`, `work/reference/metadata.json` — extracted artifacts (Path B only)
 - `work/reference/code/` (if present) — original code, canonical reference for numerics + method
@@ -50,7 +53,7 @@ Read the paper's section(s) covering this sub-analysis. Author:
    - Sibling alternatives mentioned in the paper, each as a separate option.
    - `evidence:` for the chosen option using `TextQuoteSelector` against the paper text — verbatim quote + `prefix` / `suffix` from real surrounding text + page or section anchor.
 
-   Read `.claude/guides/decision-guide.md` (in lightcone-cli's plugin bundle) for the full definition of what counts. **Only exclude pure tooling choices** (language, library, file format) and fixed constraints. A typical sub-analysis has 2–6 decisions; if a sub-analysis has fewer than 2, revisit `work/notes/architect/paper-index.md` and reconsider.
+   Read `.claude/guides/decision-guide.md` (in lightcone-cli's plugin bundle) for the full definition of what counts. **Only exclude pure tooling choices** (language, library, file format) and fixed constraints. A typical sub-analysis has 2–6 decisions; if a sub-analysis has fewer than 2, revisit `work/reference/index.json` and reconsider.
 
 2. **`prior_insights:`** — for every `\cite{<key>}` (Path A) or rendered citation invocation (Path B) the paper invokes that bears on a decision in this sub-analysis, record a **placeholder**: an `id:`, a `claim:` describing what the cited paper supports about the decision (the target paper's framing of why it cites that paper here), a `doi:` looked up from `work/reference/index.json#citations[<cite-key>].doi`, and `decision_links:` mapping the placeholder to the relevant decision option(s). **Do not author the `evidence:` selector** — that's LITERATURE's job. Leave `evidence:` absent or empty; LITERATURE fetches the cited paper, finds the supporting quote, and authors the resolved selector back into this placeholder. The placeholder shape:
 
@@ -75,7 +78,7 @@ Read the paper's section(s) covering this sub-analysis. Author:
 
 ### Pass B — code pass (when `work/reference/code/` exists)
 
-Read the code that implements this sub-analysis (`work/notes/architect/code-index.md`'s natural-decomposition rows point at the relevant modules / scripts). Augment / amend:
+Read the code that implements this sub-analysis (`work/reference/code-index.md`'s natural-decomposition rows point at the relevant modules / scripts). Augment / amend:
 
 1. **Code-as-canonical material disagreements.** For each decision authored in the paper pass, locate its implementation in the code. Where paper and code disagree:
    - **Material** = a different choice would plausibly change a numeric result the paper reports.
@@ -111,8 +114,8 @@ Self-review depth follows the rigor level the orchestrator picked for this spawn
 > - `astra.yaml` — focus on `analyses.<sub-analysis-id>` (`decisions:`, `prior_insights:`, `findings:`, `narrative:`, `inputs:`, `outputs:`)
 > - `universes/baseline.yaml`
 > - `implementation-notes.md`
-> - `work/notes/architect/paper-index.md` — the decision clusters and result loci that scoped the work
-> - `work/notes/architect/code-index.md` (when code present)
+> - `work/reference/index.json` — the decision clusters and result loci that scoped the work
+> - `work/reference/code-index.md` (when code present)
 > - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — paper text (Grep into; do not re-read whole)
 > - `work/reference/code/` (when present) — canonical reference for numerics + method
 > - `work/reference/index.json#citations` — cite-key → `{locations, citation, doi}` mapping from paper-extraction (use to confirm each `prior_insights:` placeholder's `doi:` matches what the paper cites)
@@ -132,7 +135,7 @@ Self-review depth follows the rigor level the orchestrator picked for this spawn
 >
 > - **Do not edit `astra.yaml`** or any other file. Your output is a findings file; a SPECIFY-fix pass responds to the findings. Editing here defeats the multi-round-fresh-context discipline.
 > - **Do not flag missing `recipes:`.** Recipes are IMPLEMENT's, not SPECIFY's.
-> - **Do not re-read the entire paper.** Use Grep on `work/reference/source/` (or `document.md`) for the specific claims you want to verify; lean on `work/notes/architect/paper-index.md`.
+> - **Do not re-read the entire paper.** Use Grep on `work/reference/source/` (or `document.md`) for the specific claims you want to verify; lean on `work/reference/index.json`.
 > - **Do not invent problems.** If the sub-analysis is consistent with paper + code, say so briefly.
 > - **Do not assume a prior reviewer has been here.** You are fresh. First-principles read only.
 >
@@ -200,7 +203,7 @@ Out-of-scope targets stay in `targets/targets.md` with an explicit reason and sh
 - **Do NOT add executable implementation code or invented run commands.** Do add concise provenance / recipe descriptions where ASTRA fields support them, especially for paper-derived calculations, figure generation, imported constants, and values that IMPLEMENT will need to regenerate.
 - **Equation and section numbers must match the rendered paper / PDF**, not a naïve count of TeX blocks or markdown headings. When citing "eq. N" or "§N", find the equation or heading by content in the rendered paper and use the printed number.
 - **Validate** with `astra validate astra.yaml` after each pass.
-- **Work primarily from `work/notes/architect/`** — the index files distilled the relevant scope per sub-analysis. Use `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) only to look up specific details (Grep for terms, or read targeted sections with offset/limit). Do not re-read the whole paper.
+- **Work primarily through paper-expert and code-expert** via `SendMessage` — they have the deep context built up. Use `work/reference/index.json` and `work/reference/code-index.md` for structural lookups, and `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) only to verify specific verbatim quotes (Grep for terms, or read targeted sections with offset/limit). Do not re-read the whole paper.
 - **The narrative skill is the prose author, not the structure author.** SPECIFY weaves anchors into the prose ARCHITECT wrote — the structural surface is fixed, the anchored references are SPECIFY's contribution.
 
 ## Survey signals (entry into SPECIFY)

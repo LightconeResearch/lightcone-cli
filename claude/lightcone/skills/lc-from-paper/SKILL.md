@@ -26,13 +26,15 @@ The reproduction's directory should be a git repo — if not already, `git init`
 
 ## The phases
 
-The reproduction runs through nine phases (zero-indexed). Phase 0 (INTERVIEW) and Phase 8 (REVIEW) are the bookends — they happen in your own session because they're short, interactive, and depend on the through-line context only you hold. Phases 1–7 are sub-agent dispatches: you spawn each as a named sub-agent, point it at the matching reference file in `references/`, and let it work in its own context with the per-paper `CLAUDE.md` auto-loading from the workdir.
+The reproduction runs through nine phases (zero-indexed). Phase 0 (INTERVIEW), Phase 1 (ACQUIRE), and Phase 8 (REVIEW) run in your own session — INTERVIEW and REVIEW because they're interactive bookends, ACQUIRE because its work is two parallel sub-skill invocations (`/paper-extraction` and `/lc-from-code` in scan-only mode) plus capturing the resulting persistent sub-agents as `paper-expert` and `code-expert`. Phases 2–7 are sub-agent dispatches: you spawn each as a named sub-agent, point it at the matching reference file in `references/`, and let it work in its own context with the per-paper `CLAUDE.md` auto-loading from the workdir.
+
+ARCHITECT (Phase 2) is the first sub-agent dispatch. It receives the `paper-expert` and `code-expert` agent IDs in its spawn prompt and consults them via `SendMessage` as it writes the stub `astra.yaml`. Later phases inherit the same pattern — the experts stay alive for the duration of the reproduction and are addressable by any sub-agent that's given their IDs.
 
 | # | Phase | Where it runs | Reference | Primary outputs |
 |---|---|---|---|---|
 | 0 | INTERVIEW | orchestrator session | [`references/interview.md`](references/interview.md) | per-paper `CLAUDE.md` |
-| 1 | ACQUIRE | sub-agent | [`references/acquire.md`](references/acquire.md) | `work/reference/{source/, paper.pdf, figures/, tables/, metadata.json, code/, code-status.yaml, index.json}` (index.json's `citations:` block carries each cited paper's `{locations, citation, doi}`) |
-| 2 | ARCHITECT | sub-agent | [`references/architect.md`](references/architect.md) | stub `astra.yaml` (sub-analyses, inputs, outputs, narrative); `work/notes/architect/{paper-index.md, code-index.md}` |
+| 1 | ACQUIRE | orchestrator session | [`references/acquire.md`](references/acquire.md) | `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml, code/, code-status.yaml, code-index.md}`; two persistent sub-agents — `paper-expert` and `code-expert` — reachable by agent ID via `SendMessage` |
+| 2 | ARCHITECT | sub-agent | [`references/architect.md`](references/architect.md) | stub `astra.yaml` at project root (sub-analyses, inputs, outputs, narrative); `work/notes/architect/review-round-<N>.md` |
 | 3 | SPECIFY | sub-agent | [`references/specify.md`](references/specify.md) | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
 | 4 | LITERATURE | sub-agent | [`references/literature.md`](references/literature.md) | `astra.yaml`'s `prior_insights:` resolved with `evidence:` selectors; per-paper PDFs cached via `astra paper add` |
 | 5 | IMPLEMENT | sub-agent | [`references/implement.md`](references/implement.md) | `scripts/`, `requirements.txt`, recipes in `astra.yaml` |
@@ -51,6 +53,7 @@ When you launch a phase, spawn a named sub-agent in the background with the phas
 - **Run in background** so the user can switch into the sub-agent's chat without you blocking on it.
 - **Announce the spawn to the user** before it starts: *"I'm launching the &lt;phase&gt; sub-agent now — switch to its chat now if you want to interact, otherwise it'll work autonomously and report back."*
 - **Note the agent ID** when you spawn it. Names are user-facing — if the user dismisses a sub-agent's surface (escape), the name binding goes away and `SendMessage` by name fails. The agent ID + on-disk transcript persist regardless; `SendMessage` by ID resumes the sub-agent from full context and reopens the surface for the user.
+- **Hand in the expert agent IDs** from ACQUIRE — `paper-expert` and `code-expert` — so the phase sub-agent can `SendMessage` them for paper/code questions instead of re-ingesting materials. The experts have already read their materials in depth; querying them is cheaper and richer than another fresh Explore pass.
 
 When the sub-agent's turn closes you receive a notification with its full response in the `result` field. Read that, then decide: spawn the next phase, ask the user a clarifying question, or revisit a previous phase.
 
@@ -75,7 +78,7 @@ The opening interactive phase. Read [`references/interview.md`](references/inter
 
 These get drafted into the per-paper `CLAUDE.md` — paper identity, Goal section, Rules, Conventions. The Rigor section starts empty; sub-agents fill it in as they work. Show the user the draft, take corrections, refine, then save.
 
-After the user approves, launch the first sub-agent (typically ACQUIRE).
+After the user approves, run ACQUIRE in your own session (it spawns `paper-expert` and `code-expert` as parallel sub-agents and waits for both). When ACQUIRE returns, launch the architect sub-agent with the expert agent IDs handed in.
 
 ### Review (Phase 8, close-out)
 
@@ -116,10 +119,9 @@ Workdir signals — file existence implies the phase has been done:
 
 | Signal | Phase done |
 |---|---|
-| `work/reference/source/` (arxiv tarball) **or** `work/reference/document.md` (Docling fallback) | ACQUIRE |
-| `work/reference/code/` | ACQUIRE (code clone) |
-| `work/notes/architect/{paper-index.md,code-index.md}` | ARCHITECT (Explore pass) |
-| `astra.yaml` validates with empty `decisions:` / `prior_insights:` / `findings:` blocks | ARCHITECT (stub) |
+| `work/reference/source/` (arxiv tarball) **or** `work/reference/document.md` (Docling fallback) + `work/reference/index.json` + `work/reference/astra.yaml` | ACQUIRE paper substrate (paper-expert ran) |
+| `work/reference/code/` (or `code-status.yaml` with `found: false`) + `work/reference/code-index.md` | ACQUIRE code work (code-expert ran) |
+| `astra.yaml` at project root validates with empty `decisions:` / `prior_insights:` / `findings:` blocks | ARCHITECT (stub) |
 | `astra.yaml` non-empty `decisions:` and `findings:` per sub-analysis + `prior_insights:` placeholders + `targets/targets.md` + `implementation-notes.md` | SPECIFY |
 | `astra.yaml`'s `prior_insights:` resolved with `evidence:` selectors; `work/notes/literature/<doi-slug>.yaml` files present | LITERATURE |
 | recipes present in `astra.yaml` | IMPLEMENT |
@@ -132,7 +134,7 @@ Workdir signals — file existence implies the phase has been done:
 ## Anti-patterns
 
 - **Reading content the orchestrator doesn't need.** If the answer fits in a sub-agent's return, don't re-read the source yourself. Dispatch Explore for open-ended search.
-- **Doing phase work in the orchestrator session.** The orchestrator spawns and routes; phase work happens in sub-agents. Exception: INTERVIEW and REVIEW (the bookends).
+- **Doing phase work in the orchestrator session.** The orchestrator spawns and routes; phase work happens in sub-agents. Exceptions: INTERVIEW and REVIEW (the interactive bookends), and ACQUIRE (which is two parallel sub-skill invocations + capturing their persistent transcripts — no separate `acquire` sub-agent needed because the work IS the spawns).
 - **Asking a sub-agent to use `AskUserQuestion`.** Sub-agents don't have it. They ask in prose, or surface the question to you so you call `AskUserQuestion` from the orchestrator session.
 - **Re-implementing what `astra` already does.** If `astra validate` returns clean, don't write a separate validator. If `astra paper add` caches the PDF, don't write a separate cache.
 - **Bundling phases into one sub-agent.** Each sub-agent runs one phase. The granularity is what keeps each context window manageable; conflating phases re-creates the failure mode this architecture exists to avoid.

@@ -10,6 +10,8 @@ This phase runs as the orchestrator-spawned `compare` sub-agent. The orchestrato
 - `astra.yaml` — output definitions (each target maps to an output)
 - `targets/` — reference figures / tables for comparison
 - `results/<universe>/<output_id>/` — reproduced results
+- **paper-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Useful for "what does the paper actually claim for this number" or "how does the paper describe what Figure 3 should show" when grading the comparison.
+- **code-expert** (agent ID passed in by the orchestrator) — reachable via `SendMessage`. Useful for diagnosing divergence: "what does the reference code compute here that ours might miss".
 
 ## Outputs
 
