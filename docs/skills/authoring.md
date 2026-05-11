@@ -48,17 +48,19 @@ Follow [`claude/lightcone/guides/ui-brand.md`](https://github.com/LightconeResea
 - A `## Restrictions` (or `## Hard rules`) section at the end listing
   invariants Claude must not break.
 
-## Referencing guide files
+## Referencing reference skills
 
-Guides live alongside the skills:
+Spec and CLI reference content live in their own skills — `/astra` and
+`/lc-cli` — so any skill needing depth can invoke them directly:
 
 ```markdown
-Before starting, read `.claude/guides/astra-reference.md` for the
-spec, and `.claude/guides/lightcone-cli-reference.md` for the CLI.
+Invoke `/astra` and read the Decisions section before classifying
+candidate decisions, and `/lc-cli` for the Spec-Code Invariant rules.
 ```
 
-The plugin layout means these paths are stable across both bundled
-(installed-package) and dev (in-repo) modes.
+Both are named in the session-start primer so they're discoverable
+from the first turn; explicit invocation in a skill body is the right
+call when a specific section is load-bearing for that skill's work.
 
 ## Spawning subagents
 

@@ -129,5 +129,4 @@ cached PDF — paraphrasing breaks the gate.
   during ACQUIRE for the target paper, and again from inside a ralph
   iteration for each cited paper during LITERATURE; each iteration
   reads `index.json` and the substrate directly.
-- [`claude/lightcone/guides/astra-reference.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/guides/astra-reference.md)
-  — Insight + Evidence shape, `quote.exact` rules.
+- [`/astra`](index.md#reference-skills-auto-primed-via-session-start) — Insight + Evidence shape, `quote.exact` rules.

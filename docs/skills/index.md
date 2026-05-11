@@ -41,6 +41,17 @@ dispatches them by role during the reproduction.
 
 See the [bundle README](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md) for the rationale behind co-location vs plugin install.
 
+### Reference skills (auto-primed via session-start)
+
+Not direct entry points — invoked by other skills (or by Claude directly when relevant) to load reference content into the working session. The session-start hook names both in its primer, so Claude is aware they exist from the first turn.
+
+| Skill | Command | Purpose |
+|-------|---------|---------|
+| `astra` | `/astra` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, narrative anchors, composition mechanics. |
+| `lc-cli` | `/lc-cli` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, publishing via WRROC. |
+
+These intentionally don't appear in the top-level README — researchers use the project-lifecycle skills directly; the reference skills are infrastructure.
+
 ## How a skill is wired
 
 Each skill is a `claude/lightcone/skills/<name>/SKILL.md` file with
@@ -75,25 +86,28 @@ claude/lightcone/
 │   ├── paper-extraction/{SKILL.md, scripts/*.py}
 │   ├── narrative/{SKILL.md, references/*.md}
 │   ├── figure-comparison/{SKILL.md, scripts/*.py}
-│   └── check-sentence-by-sentence/SKILL.md
+│   ├── check-sentence-by-sentence/SKILL.md
+│   ├── astra/SKILL.md                  # reference: astra.yaml spec
+│   └── lc-cli/SKILL.md                 # reference: lc workflow
 ├── agents/lc-extractor.md             # literature subagent for /lc-new
-├── guides/                            # reference docs loaded by skills
+├── guides/ui-brand.md                 # visual formatting conventions
 ├── templates/CLAUDE.md                # the project CLAUDE.md template
-└── scripts/*.sh                       # session lifecycle hooks
+└── scripts/*.sh                       # session lifecycle hooks (incl. session-start primer)
 ```
 
 The plugin is force-included into the wheel via
 `pyproject.toml::tool.hatch.build.targets.wheel.force-include`, so
 `lc init` finds it whether you're running from source or PyPI.
 
-## Reference guides loaded by skills
+## Other plugin files
+
+The two reference *skills* (`/astra` and `/lc-cli`) live under `skills/` and are listed in the [Reference skills](#reference-skills-auto-primed-via-session-start) section above. Remaining plugin files:
 
 | File | Purpose |
 |------|---------|
-| `claude/lightcone/guides/astra-reference.md` | Full `astra.yaml` schema reference. Loaded by `lc-new` and `lc-from-code`. |
-| `claude/lightcone/guides/lightcone-cli-reference.md` | CLI commands, status interpretation, failure diagnosis. Loaded by implementation and validation workflows. |
 | `claude/lightcone/guides/ui-brand.md` | Visual formatting conventions for skill output. |
 | `claude/lightcone/agents/lc-extractor.md` | Literature extraction subagent invoked by `/lc-new`. |
+| `claude/lightcone/scripts/session-start.sh` | Session-start hook — surfaces validation + materialization status and primes Claude with the substrate CLIs and reference skill names. |
 
 ## Authoring a new skill
 

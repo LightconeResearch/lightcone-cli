@@ -1,3 +1,17 @@
+---
+name: astra
+description: >
+  Comprehensive reference for the `astra.yaml` specification — top-level
+  structure, sub-analyses, inputs/outputs, decisions and options, prior
+  insights and findings, evidence and quote verification, narrative
+  anchors, and composition mechanics. Invoke whenever reading, writing,
+  validating, or debugging an `astra.yaml` spec; whenever working with
+  decisions, options, prior_insights, findings, or evidence; or whenever
+  the user asks about ASTRA schema, spec syntax, or sub-analysis
+  composition.
+allowed-tools: Read, Glob, Grep, Bash(astra:*)
+---
+
 # ASTRA Reference
 
 ## What an ASTRA Analysis Is

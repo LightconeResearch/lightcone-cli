@@ -1,11 +1,12 @@
 #!/bin/bash
 # SessionStart hook: surface a terse project status to the agent.
 #
-# Reports validation status, materialization counts, and pointers to the
-# canonical reference docs. Project name / decision count / universe count
-# are intentionally omitted -- they are trivia the agent reads from
-# astra.yaml and CLAUDE.md when needed, and they cost against the 10k
-# additionalContext budget.
+# Reports validation status, materialization counts, and a tight CLI
+# primer so the agent knows what substrate commands exist and which
+# reference skills carry the depth. Project name / decision count /
+# universe count are intentionally omitted -- they are trivia the agent
+# reads from astra.yaml and CLAUDE.md when needed, and they cost against
+# the 10k additionalContext budget.
 
 input=$(cat)
 cwd=$(echo "$input" | jq -r '.cwd // empty')
@@ -48,7 +49,13 @@ fi
 summary="$summary
 Materialization: ok=$ok_count stale=$stale_count missing=$missing_count alias=$alias_count
 
-References: .claude/guides/astra-reference.md (spec) and .claude/guides/lightcone-cli-reference.md (CLI)."
+Substrate CLIs (use --help on any):
+  lc init / lc run / lc status / lc verify / lc build / lc export wrroc
+  astra validate / astra paper add / astra universe generate
+
+Reference skills (invoke when the surface above isn't enough):
+  /astra   — astra.yaml spec: decisions, prior_insights, findings, evidence, sub-analyses, narrative anchors
+  /lc-cli  — lc workflow: spec-code invariant, status interpretation, failure diagnosis"
 
 if [ "$validation_ok" -ne 0 ]; then
     # tail rather than head -- the leading lines are success markers

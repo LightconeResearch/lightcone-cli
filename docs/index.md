@@ -57,11 +57,12 @@ src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
 
 claude/lightcone/               # Claude Code plugin (force-included into the wheel)
 ├── skills/                     # lc-new, lc-from-code, lc-from-paper,
-│                                # lc-feedback, ralph (+ bundle siblings)
+│                                # lc-feedback, ralph (+ bundle siblings);
+│                                # reference skills: astra, lc-cli
 ├── agents/                     # lc-extractor (literature subagent)
-├── guides/                     # astra-reference, lightcone-cli-reference, ui-brand
+├── guides/                     # ui-brand
 ├── templates/                  # project CLAUDE.md template
-└── scripts/                    # session hooks (bash): venv, validate-on-save, …
+└── scripts/                    # session hooks (bash): venv, validate-on-save, session-start primer
 
 tests/                          # pytest, mirrors src/
 pyproject.toml                  # hatchling + hatch-vcs; ASTRA + Snakemake as deps

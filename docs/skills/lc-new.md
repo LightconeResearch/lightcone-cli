@@ -65,5 +65,5 @@ at the end so the user has something visible to review at every step.
 
 - After `/lc-new`, ask the agent to implement the spec through the
   normal Claude Code workflow.
-- [`claude/lightcone/guides/astra-reference.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/guides/astra-reference.md) — `astra.yaml` schema, decision criteria, prior insights / findings, universe management.
+- [`/astra`](index.md#reference-skills-auto-primed-via-session-start) — `astra.yaml` schema, decision criteria, prior insights / findings, universe management.
 - [`claude/lightcone/agents/lc-extractor.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/agents/lc-extractor.md) — the literature extraction subagent definition.

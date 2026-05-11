@@ -130,7 +130,7 @@ decisions:
 
 `requires:` means "this option is only valid when those conditions
 hold." `incompatible_with:` is the dual. The full schema is in the
-[ASTRA spec reference](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/guides/astra-reference.md).
+[`/astra` reference skill](../skills/index.md#reference-skills-auto-primed-via-session-start).
 
 ## Sub-analyses
 

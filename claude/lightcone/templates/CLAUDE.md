@@ -2,10 +2,7 @@
 
 ASTRA analysis project, orchestrated by lightcone-cli.
 
-**Source of truth:**
-- `astra.yaml` — the analysis specification
-- `.claude/guides/astra-reference.md` — astra.yaml spec syntax
-- `.claude/guides/lightcone-cli-reference.md` — `lc` CLI commands, workflow, status, failures
+The single source of truth for this analysis is `astra.yaml`. Spec syntax and CLI workflow live in the `/astra` and `/lc-cli` reference skills (named in the session-start primer; invoke when you need depth).
 
 ### Quick Start
 
@@ -16,7 +13,7 @@ lc verify                 # check provenance integrity
 
 ### Keep astra.yaml and code in sync
 
-`astra.yaml` and the code must never diverge. When you change one, update the other in the same edit and run `astra validate astra.yaml`. See `lightcone-cli-reference.md` → "Spec-Code Invariant" for the full rules.
+`astra.yaml` and the code must never diverge. When you change one, update the other in the same edit and run `astra validate astra.yaml`.
 
 ---
 

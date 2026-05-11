@@ -20,8 +20,8 @@ Agent, AskUserQuestion
 ### Phase 1 — Scan & spec
 
 The skill spawns an `Explore` subagent (Claude Code's general-purpose
-search agent) with the decision criteria from `astra-reference.md`
-inlined into the prompt. The subagent returns a structured inventory:
+search agent) with the decision criteria from `/astra` (Decisions
+section) inlined into the prompt. The subagent returns a structured inventory:
 
 - Per script/notebook: file path, what it does, files it reads & writes,
   hardcoded analytical choices (with file:line, current value, what it

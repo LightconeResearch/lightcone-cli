@@ -104,5 +104,4 @@ Mode-specific anti-patterns live in each mode's reference under
 
 - [`/lc-from-paper`](lc-from-paper.md) — invokes `/narrative` during
   SPECIFY in paper-reproduction mode.
-- [`claude/lightcone/guides/astra-reference.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/guides/astra-reference.md)
-  — full schema reference.
+- [`/astra`](index.md#reference-skills-auto-primed-via-session-start) — full schema reference.
