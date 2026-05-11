@@ -7,26 +7,19 @@ tooling:
 pip install --upgrade lightcone-cli       # or: uv pip install -U lightcone-cli
 ```
 
-To pull updated plugin files into an existing project (`lc init` refuses to
-run if `astra.yaml` already exists, so we copy by hand):
+The lightcone plugin (skills, agents, hooks) lives user-scoped under
+`~/.claude/plugins/` — installed once by `lc init` via `claude plugin
+install lightcone@lightcone-cli`, not duplicated per project. To pull in
+plugin changes after a `pip install --upgrade`:
 
 ```bash
-python - <<'PY'
-import shutil
-from pathlib import Path
-from lightcone.cli.plugin import get_plugin_source_dir
-
-src = get_plugin_source_dir()
-dst = Path(".claude")
-for sub in ("skills", "agents", "scripts", "guides", "templates"):
-    s, d = src / sub, dst / sub
-    if d.exists():
-        shutil.rmtree(d)
-    if s.exists():
-        shutil.copytree(s, d)
-print("synced from", src)
-PY
+# Re-register the marketplace at its new wheel-installed location, then
+# re-install the plugin so Claude Code reads from the updated source.
+python -c "from lightcone.cli.plugin import get_marketplace_root; print(get_marketplace_root())" \
+    | xargs claude plugin marketplace add
+claude plugin install lightcone@lightcone-cli
 ```
 
-A short `bin/lc-sync` helper or a `lc init --sync` flag would make this
-nicer — see the issue tracker if interested.
+Both commands are idempotent. `claude plugin marketplace remove
+lightcone-cli` then `add` again is the heaviest hammer, and rarely
+necessary.

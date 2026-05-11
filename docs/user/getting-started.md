@@ -8,27 +8,33 @@ Make sure you've finished the [install](install.md) first.
 
 ## 1. Create a project
 
-    lc init my-analysis
-    cd my-analysis
+```bash
+lc init my-analysis
+cd my-analysis
+```
 
 `lc init` is a one-shot setup. It creates a small, opinionated
 directory layout and stops; it doesn't ask any questions.
 
 ## 2. What you got
 
-    my-analysis/
-    ├── astra.yaml                  # the spec — this is where everything lives
-    ├── CLAUDE.md                   # short note for the agent (resumes context across sessions)
-    ├── .gitignore
-    ├── .git                        # initialized git repository (skip with --no-git)
-    ├── .venv/                      # Python virtual env (skip with --no-venv)
-    ├── .claude/                    # Claude Code plugin — skills, agents, hooks
-    ├── .lightcone/                 # internal scratchpad — don't edit by hand
-    ├── Containerfile               # build instructions for a local testing container — don't edit by hand
-    ├── requirements.txt            # software dependencies — don't edit by hand
-    ├── universes/                  # 
-    ├── src/                        # placeholder directories for now
-    └── results/                    # 
+```
+my-analysis/
+├── astra.yaml                  # the spec — this is where everything lives
+├── CLAUDE.md                   # short note for the agent (resumes context across sessions)
+├── .gitignore
+├── .venv/                      # Python virtual env (skip with --no-venv)
+├── .lightcone/                 # internal scratchpad — don't edit by hand
+├── .claude/settings.json       # project-scoped Claude Code permissions tier
+├── universes/                  # placeholder for now
+└── results/                    # placeholder for now
+```
+
+The lightcone Claude Code plugin — skills, agents, hooks — installs
+*user-scoped* under `~/.claude/plugins/`. `lc init` shells out to
+`claude plugin install lightcone@lightcone-cli` once; from then on the
+plugin activates in every Claude Code session you start, regardless of
+which project you're in.
 
 The two files you'll actually look at:
 
@@ -50,7 +56,9 @@ can edit it by hand whenever you want.
 
 ## 3. Open Claude Code
 
-    claude
+```bash
+claude
+```
 
 That opens an interactive session inside `my-analysis/`. Claude Code
 reads `astra.yaml` and `CLAUDE.md` so it has context.
@@ -74,7 +82,7 @@ just describe what you're trying to do to Claude. `astra.yaml`,
 `lc run`, and `lc verify` keep things tracked regardless of how you
 got there.
 
-The next page, [The Agentic Workflow](agent-workflow.md),
+The next page, [The Agent Workflow](agent-workflow.md),
 explains each of these in more detail.
 
 ## 5. The four CLI commands you'll actually type
@@ -95,7 +103,7 @@ exact flags.
 
 ## 6. Read on
 
-- [The Agentic Workflow](agent-workflow.md) — how each slash
+- [The Agent Workflow](agent-workflow.md) — how each slash
   command actually flows.
 - [Tutorial: Your First Analysis](tutorial.md) — end-to-end, with the
   agent doing most of the typing.

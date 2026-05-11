@@ -61,7 +61,8 @@ just build              # uv build
 just version            # current version (from git tags via hatch-vcs)
 ```
 
-The plugin (`claude/lightcone/`) is force-included into the wheel:
+The plugin (`claude/lightcone/`) and the repo-root marketplace manifest
+(`.claude-plugin/marketplace.json`) are both force-included into the wheel:
 
 ```toml
 [tool.hatch.build.targets.wheel]
@@ -69,18 +70,25 @@ packages = ["src/lightcone", "src/snakemake_executor_plugin_dask"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "claude/lightcone" = "lightcone/cli/claude/lightcone"
+".claude-plugin/marketplace.json" = "lightcone/cli/.claude-plugin/marketplace.json"
 ```
 
-That layout is what `lightcone.cli.plugin.get_plugin_source_dir()`
-walks — it tries the bundled location first, then the dev location
-relative to the repo root.
+That layout is what `lightcone.cli.plugin.get_marketplace_root()` walks —
+it returns the directory containing `.claude-plugin/marketplace.json` (the
+wheel-installed package root in a normal install, or the dev repo root
+when running from a checkout). `lc init` shells out to
+`claude plugin marketplace add <root>` and `claude plugin install
+lightcone@lightcone-cli` against that root.
 
 ## Repo layout
 
 ```text
 src/lightcone/                       # main namespace (PEP 420; no __init__.py at the package root)
 src/snakemake_executor_plugin_dask/  # Snakemake → Dask executor plugin
+.claude-plugin/marketplace.json      # marketplace manifest (force-included into the wheel)
 claude/lightcone/                    # Claude Code plugin (force-included into the wheel)
+  .claude-plugin/plugin.json         #   plugin manifest
+  skills/  agents/  hooks/  scripts/  templates/
 tests/                               # pytest tree, mirrors src/
 evals/                               # eval task fixtures (tasks/snae/)
 docs/                                # docs site

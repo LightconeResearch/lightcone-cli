@@ -50,7 +50,7 @@ src/lightcone/              # namespace — NO __init__.py
 ├── cli/                    # Click surface
 │   ├── __init__.py         # exposes main()
 │   ├── commands.py         # init, run, status, verify, build
-│   ├── plugin.py           # get_plugin_source_dir
+│   ├── plugin.py           # get_marketplace_root + MARKETPLACE_NAME / PLUGIN_NAME constants
 │   └── claude/             # force-included Claude plugin bundle (in installed wheel only)
 ├── engine/                 # execution substrate — Snakemake-based
 │   ├── __init__.py
@@ -66,17 +66,23 @@ src/lightcone/              # namespace — NO __init__.py
     ├── cli.py              # `lc eval` subcommand group
     ├── harness.py, sandbox.py, graders.py, build.py, report.py, models.py
 
-claude/lightcone/           # Claude plugin source — force-included into the wheel
+.claude-plugin/             # marketplace manifest (force-included into the wheel)
+└── marketplace.json        # declares the `lightcone` plugin sourced from ./claude/lightcone
+
+claude/lightcone/           # Claude Code plugin source — force-included into the wheel
+├── .claude-plugin/plugin.json  # plugin manifest (name=lightcone)
 ├── skills/                 # lc-new, lc-from-code, lc-from-paper,
 │                            # lc-feedback, ralph;
 │                            # paper-reproduction bundle: lc-from-paper (entry),
 │                            # ralph (loop substrate), narrative,
 │                            # paper-extraction, figure-comparison,
 │                            # check-sentence-by-sentence
+│                            # plus reference skills astra, lc-cli
 │                            # (see skills/README.md for the full bundle map)
 ├── agents/                 # lc-extractor
-├── templates/              # Project CLAUDE.md template
-└── scripts/                # Session hooks (bash): venv activation, validate-on-save, session-start primer
+├── hooks/hooks.json        # hook config (${CLAUDE_PLUGIN_ROOT}-rooted commands)
+├── scripts/                # hook handlers (bash): activate-venv, session-start primer, validate-on-save
+└── templates/              # Project CLAUDE.md template
 
 tests/                      # pytest — mirrors src/ structure
 pyproject.toml              # hatchling + hatch-vcs, ASTRA + Snakemake as deps

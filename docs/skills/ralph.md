@@ -31,11 +31,13 @@ One mode applies at a time.
 
 ## Launching
 
-After `lc init` copies the bundle into a project, the launcher lives at
-`.claude/skills/ralph/scripts/ralph`:
+After `lc init` (or `claude plugin install lightcone@lightcone-cli`)
+registers the plugin, the launcher lives at
+`${CLAUDE_PLUGIN_ROOT}/skills/ralph/scripts/ralph` — Claude resolves
+`${CLAUDE_PLUGIN_ROOT}` to the user-scoped plugin install path:
 
 ```bash
-.claude/skills/ralph/scripts/ralph <constitution.md> [--backend claude|codex] [-- extra-flags...]
+${CLAUDE_PLUGIN_ROOT}/skills/ralph/scripts/ralph <constitution.md> [--backend claude|codex] [-- extra-flags...]
 ```
 
 The constitution must have `status: open` or `status: active` in YAML
