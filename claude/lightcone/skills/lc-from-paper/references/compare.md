@@ -49,7 +49,7 @@ attempt: <attempt_number>
 outputs:
   <output_id>:
     type: metric|figure|table
-    priority: high|medium|low
+    priority: primary|secondary
     paper_value: "<from targets/targets.md>"
     reproduced_value: "<from results>"
     reference_file: "<path in targets/>"
@@ -69,9 +69,9 @@ opportunities:
 
 ## Verdict rules
 
-- **`pass`**: ALL high-priority targets match, no major issues with medium-priority.
-- **`partial`**: some high-priority match, or all high-priority match but medium has issues.
-- **`fail`**: most high-priority don't match, or fundamental methodological issue.
+- **`pass`**: ALL primary targets match, no major issues with secondary targets.
+- **`partial`**: some primary targets match, or all primary match but secondary has issues.
+- **`fail`**: most primary targets don't match, or fundamental methodological issue.
 
 If verdict is not `pass`, **`fix_suggestions` MUST reference specific scripts and line numbers**. "The result is wrong" is not actionable; "scripts/bao_fit.py:42 uses `damping_prior=flat`, paper specifies Gaussian; change to gaussian per Howlett+2017 §4.2" is.
 
