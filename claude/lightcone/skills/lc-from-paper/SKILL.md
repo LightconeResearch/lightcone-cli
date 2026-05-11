@@ -102,7 +102,6 @@ Iterations follow the `/ralph` skill's Loop protocol — Survey → Work → Upd
 - **`AskUserQuestion` is not available inside an iteration.** Each iteration runs in a detached tmux session; the user isn't reachable interactively. Iterations append questions to `open-questions.md` with their best-judgment default applied, and the user resolves them at REVIEW close-out (back in their main session).
 - **Update the accumulators in CLAUDE.md** before exit: Rigor *Current state* per output that the iteration changed; *Paper-vs-code disagreements* for any material conflict the iteration surfaced; *Open opportunities* for COMPARE-surfaced gaps.
 - **Sharpen the constitution body itself** if something fundamental shifted — the user's fidelity intent reframed, a sub-analysis decomposition rethought, a quality-bar item that's now more concrete. Don't accrete amendment sections; rewrite the affected prose.
-- **An iteration that contributed cannot close the constitution.** Closing the loop (flipping `constitution.md`'s frontmatter `status:` to `closed`) is reserved for an iteration whose cold survey found *nothing left to improve or contribute* — verdict `pass` (or user-accepted `partial`) is on disk, accumulators are caught up, no open opportunity sits below the fidelity intent. If you wrote anything this iteration — even small fixes, even just an accumulator update — commit, exit, let the next fresh-eyes iteration decide. This adds a round of review on every closing decision: at least one cold pass has to confirm there's genuinely nothing left.
 
 ## Workdir-as-state
 
@@ -167,5 +166,4 @@ When the user walks back into a workdir that already has artifacts:
 - **Asking an iteration to use `AskUserQuestion`.** Iterations run detached. Surface questions to `open-questions.md` with a default applied; the user resolves at REVIEW.
 - **Re-implementing what `astra` already does.** If `astra validate` returns clean, don't write a separate validator. If `astra paper add` caches the PDF, don't write a separate cache.
 - **Bundling phases into one iteration.** Each iteration does one phase's worth of work. Conflating phases re-creates the failure mode the loop exists to avoid: no fresh-context review between phases.
-- **Spawning a sub-agent from inside another sub-agent.** The Agent tool is one level deep. An iteration's main session can spawn sub-agents (Haiku fan-out, per-sub-analysis fan-out, per-output fan-out); sub-agents cannot spawn sub-agents. If a piece of work needs sub-agents, it has to happen at the iteration level, not nested.
 - **Accreting amendment sections in `constitution.md`.** When something fundamental shifts, *reshape* the affected prose. The chronology lives in commits; the body lives in *now*.
