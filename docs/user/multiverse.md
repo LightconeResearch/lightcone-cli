@@ -79,7 +79,7 @@ lc run accuracy --universe baseline   # one of each
 
 Each universe gets its own results directory:
 
-```
+```text
 results/
 ├── baseline/
 │   ├── r2/...
@@ -92,7 +92,7 @@ results/
 `lc status` shows a per-universe column, so you can see at a glance
 which universes are caught up:
 
-```
+```text
 Universe baseline
   ✓ ok    r2
   ✓ ok    fit_plot

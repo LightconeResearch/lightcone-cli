@@ -35,7 +35,7 @@ recipes yet."
 
 Type:
 
-```
+```text
 /lc-new
 ```
 
@@ -95,16 +95,18 @@ outputs:
 container: Containerfile
 ```
 
-Phase 4 (**FINALIZE**) runs `astra validate astra.yaml` and writes
-`universes/baseline.yaml`. You're handed back a short summary table —
-two outputs, one decision, zero prior insights.
+Phase 4 (**FINALIZE**) runs `astra validate astra.yaml`, writes
+`universes/baseline.yaml`, and fills in the `narrative:` block in
+`astra.yaml` (`summary`, `methods`, `inputs`, `outputs`). You're handed
+back a short summary table — two outputs, one decision, zero prior
+insights.
 
 The agent suggests `/clear` to free up context, then `/lc-build`. Take
 its advice.
 
 ## 3. Build it with `/lc-build`
 
-```
+```text
 /clear
 /lc-build
 ```
@@ -114,7 +116,7 @@ empty `scripts/` dir, the references in `.claude/guides/`) and writes a
 build plan to `.lightcone/plans/build-plan-baseline.md`. It might look
 like this:
 
-```
+```text
 1. Add Python deps (scikit-learn, matplotlib) to requirements.txt
 2. Write Containerfile if missing
 3. scripts/fit.py — accepts --standardize {standardized,raw}, writes r2.json
@@ -129,7 +131,7 @@ It asks you to approve. Pick "Approve and start building."
 **Phase 2: loop.** The agent works through the plan one item at a
 time. You'll see lines like:
 
-```
+```text
 ▶ scripts/fit.py — writing
 ▶ lc build — building image lc-r2-decision-demo-9a1f3...
 ▶ lc run accuracy --universe baseline
@@ -144,13 +146,13 @@ clean record of the build.
 
 ## 4. Verify it with `/lc-verify`
 
-```
+```text
 /lc-verify
 ```
 
 Read-only audit:
 
-```
+```text
 | Check                    | Status |
 |--------------------------|--------|
 | Spec validation          | ✓      |
@@ -181,7 +183,7 @@ lc status
 
 You should see:
 
-```
+```text
 Universe baseline
   ✓ ok    r2
   ✓ ok    fit_plot

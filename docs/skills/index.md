@@ -41,7 +41,7 @@ files, anti-patterns. The skill bundles its own helper scripts under
 
 ## Plugin layout
 
-```
+```text
 claude/lightcone/
 ├── skills/
 │   ├── lc-new/SKILL.md

@@ -6,7 +6,7 @@ future formats without breaking the CLI surface.
 
 ## Synopsis
 
-```
+```text
 lc export wrroc [OPTIONS]
 ```
 
@@ -53,7 +53,7 @@ lc export wrroc --license https://opensource.org/licenses/MIT
 
 ### Output
 
-```
+```text
 ✓ Wrote WRROC directory: ./wrroc
   Captured 7 runs across universes: baseline, alt_method
 ```
@@ -61,7 +61,7 @@ lc export wrroc --license https://opensource.org/licenses/MIT
 If no materialized outputs are found, the bundle still writes — but only
 contains the workflow definition, and a warning is printed:
 
-```
+```text
 ✓ Wrote WRROC directory: ./wrroc
 Warning: no materialized outputs were found — the bundle contains only
   the workflow definition.
