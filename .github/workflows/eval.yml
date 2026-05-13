@@ -24,9 +24,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Configure git credentials for private ASTRA repo
-        run: git config --local url."https://x-access-token:${{ secrets.ASP_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
         with:
