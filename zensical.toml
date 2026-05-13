@@ -16,6 +16,7 @@ nav = [
     {"Tutorial: Your First Analysis" = "user/tutorial.md"},
     {"Multiverse Analyses" = "user/multiverse.md"},
     {"Running on a Cluster" = "user/cluster.md"},
+    {"NERSC (Perlmutter)" = "user/nersc.md"},
     {"Troubleshooting" = "user/troubleshooting.md"},
     {"Glossary" = "user/glossary.md"},
   ]},
@@ -29,7 +30,6 @@ nav = [
       {"lc status" = "cli/status.md"},
       {"lc verify" = "cli/verify.md"},
       {"lc export" = "cli/export.md"},
-      {"lc setup" = "cli/setup.md"},
     ]},
     {"Python API" = [
       {"Overview" = "api/index.md"},

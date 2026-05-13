@@ -9,7 +9,7 @@ Source: [`claude/lightcone/skills/lc-from-code/SKILL.md`](https://github.com/Lig
 
 ## Allowed tools
 
-```
+```text
 Read, Write, Edit, Glob, Grep,
 Bash(astra:*), Bash(lc:*), Bash(python:*), Bash(pip:*), Bash(git:*), Bash(mkdir:*), Bash(ls:*),
 Agent, AskUserQuestion

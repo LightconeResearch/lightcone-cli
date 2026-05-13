@@ -7,7 +7,7 @@ Skills are markdown files with YAML frontmatter. Each one lives in
 
 ## File layout
 
-```
+```text
 claude/lightcone/skills/
 └── my-skill/
     ├── SKILL.md

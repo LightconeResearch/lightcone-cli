@@ -155,7 +155,7 @@ claude
 
 Inside Claude Code:
 
-```
+```text
 /lc-feedback the lc-extractor agent crashed on PDF X
 ```
 

@@ -35,15 +35,14 @@ recipes yet."
 
 Type:
 
-```
+```text
 /lc-new
 ```
 
 The agent banner switches to **RESEARCH QUESTION** and asks something
 like "What are you trying to learn?" Reply in plain prose:
 
-> I want to know how much R² changes on the diabetes dataset depending
-> on whether I standardize features before fitting a linear regression.
+    I want to know how much R² changes on the diabetes dataset depending on whether I standardize features before fitting a linear regression.
 
 A few follow-ups will sharpen this. After Phase 1 your `astra.yaml`
 already has a `name`, `description`, and `version` — open it in another
@@ -96,16 +95,18 @@ outputs:
 container: Containerfile
 ```
 
-Phase 4 (**FINALIZE**) runs `astra validate astra.yaml` and writes
-`universes/baseline.yaml`. You're handed back a short summary table —
-two outputs, one decision, zero prior insights.
+Phase 4 (**FINALIZE**) runs `astra validate astra.yaml`, writes
+`universes/baseline.yaml`, and fills in the `narrative:` block in
+`astra.yaml` (`summary`, `methods`, `inputs`, `outputs`). You're handed
+back a short summary table — two outputs, one decision, zero prior
+insights.
 
 The agent may suggest `/clear` to free up context. Take its advice,
 then ask Claude Code to implement the spec.
 
 ## 3. Build it
 
-```
+```text
 /clear
 Implement this analysis from astra.yaml. Write the scripts, run the baseline universe, and verify the result.
 ```
@@ -114,7 +115,7 @@ The agent reads everything (spec, universe file, empty `scripts/` dir,
 plus the `/astra` and `/lc-cli` reference skills primed at session
 start) and makes an implementation checklist. It might look like this:
 
-```
+```text
 1. Add Python deps (scikit-learn, matplotlib) to requirements.txt
 2. Write Containerfile if missing
 3. scripts/fit.py — accepts --standardize {standardized,raw}, writes r2.json
@@ -171,7 +172,7 @@ lc status
 
 You should see:
 
-```
+```text
 Universe baseline
   ✓ ok    r2
   ✓ ok    fit_plot
@@ -216,6 +217,5 @@ floating-point nondeterminism in your numerical libraries).
 
 ## Where to next
 
-- [Multiverse Analyses](multiverse.md) — sweep more than one decision.
 - [Running on a Cluster](cluster.md) — take the same project to SLURM.
 - [Troubleshooting](troubleshooting.md) — when something goes sideways.

@@ -2,12 +2,12 @@
 
 `lightcone-cli` is a small toolchain that turns a research question into
 a reproducible analysis. You describe what you're trying to learn,
-Claude Code helps you turn that into a precise specification, and the
+a cli agent helps you turn that into a precise specification, and the
 `lc` command line keeps the resulting code, decisions, and outputs in
 sync — forever.
 
 You don't need to write Python or YAML by hand. The agent handles the
-implementation; you stay in charge of the scientific choices.
+implementation; **you stay in charge of the scientific choices**.
 
 ## What this guide covers
 
@@ -15,13 +15,11 @@ implementation; you stay in charge of the scientific choices.
   machine.
 - [Getting Started](getting-started.md) — your first `lc init` and
   what every directory means.
-- [The Agent Workflow](agent-workflow.md) — `/lc-new`,
+- [The Agentic Workflow](agent-workflow.md) — `/lc-new`,
   `/lc-from-code`, `/lc-from-paper`, and `/lc-feedback` — what each
   one does and when to reach for it.
 - [Tutorial: Your First Analysis](tutorial.md) — an end-to-end worked
   example, written so you can read it without running anything.
-- [Multiverse Analyses](multiverse.md) — how to explore alternative
-  defensible choices side by side.
 - [Running on a Cluster](cluster.md) — taking your analysis to a SLURM
   HPC system.
 - [Troubleshooting](troubleshooting.md) — common issues and how to
@@ -57,7 +55,7 @@ unhurried version.
   Python commands, not a DSL. There's no learning curve beyond what's
   in the [tutorial](tutorial.md).
 - **An IDE.** `lc` is a command-line tool; the agent surface lives
-  inside Claude Code.
+  inside the agent harness (Claude Code for now).
 
 If you'd rather skim the design and architecture, the
 [maintainer docs](../index.md) are the other half of this site.

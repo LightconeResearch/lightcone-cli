@@ -15,6 +15,7 @@ Commands:
 The global config at ``~/.lightcone/config.yaml`` is auto-created with
 defaults on first invocation if missing.
 """
+
 from __future__ import annotations
 
 import json
@@ -37,7 +38,15 @@ logger = logging.getLogger(__name__)
 
 PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
     "yolo": {
-        "allow": ["Bash(*)", "Edit", "Read", "Write", "WebSearch", "WebFetch", "mcp__*"],
+        "allow": [
+            "Bash(*)",
+            "Edit",
+            "Read",
+            "Write",
+            "WebSearch",
+            "WebFetch",
+            "mcp__*",
+        ],
     },
     "recommended": {
         "allow": ["Read", "Edit", "Write", "Bash(*)", "WebSearch", "WebFetch"],
@@ -121,6 +130,12 @@ def _project_root(start: Path | None = None) -> Path:
 # =============================================================================
 # lc init
 # =============================================================================
+_LIGHTCONE = """
+_______________________
+| . _ |_ _|_ _ _  _  _
+|_|(_|| | | (_(_)| |(/_
+_____|_________________
+"""
 
 
 @main.command()
@@ -159,6 +174,8 @@ def init(
     ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
     and an optional Python venv.
     """
+    console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
+
     from astra.cli import init as astra_init
 
     from lightcone.engine.site_registry import detect_current_site
@@ -172,11 +189,9 @@ def init(
     # src/. We hold off on git init until our own files are in place so
     # the initial commit captures the full project state.
     try:
-        astra_init.callback(directory=directory, no_git=True)
+        astra_init.callback(directory=directory, no_git=True)  # type: ignore[misc]
     except SystemExit as e:
-        raise click.ClickException(
-            f"astra init failed (exit code {e.code})."
-        ) from e
+        raise click.ClickException(f"astra init failed (exit code {e.code}).") from e
 
     # Point the spec at our project-local Containerfile. The astra
     # boilerplate ships ``container: python:3.12-slim`` so the scaffold
@@ -217,24 +232,43 @@ def init(
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
 
     # git init last so the initial commit captures every scaffolded file.
+    no_git = no_git or (directory / ".git").exists()
     if not no_git:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
+        console.print("[green]✓[/green] Initialized git repository")
 
     # venv
     if not no_venv:
         if shutil.which("uv"):
             with console.status("[dim]Creating virtual environment…[/dim]"):
-                subprocess.run(["uv", "venv", "--python", "3.12", ".venv"], cwd=directory, check=False, capture_output=True)
+                subprocess.run(
+                    ["uv", "venv", "--python", "3.12", ".venv"],
+                    cwd=directory,
+                    check=False,
+                    capture_output=True,
+                )
             with console.status("[dim]Installing lightcone-cli…[/dim]"):
                 subprocess.run(
-                    ["uv", "pip", "install", "--python", ".venv/bin/python", "lightcone-cli"],
+                    [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--python",
+                        ".venv/bin/python",
+                        "lightcone-cli",
+                    ],
                     cwd=directory,
                     check=False,
                     capture_output=True,
                 )
         else:
             with console.status("[dim]Creating virtual environment…[/dim]"):
-                subprocess.run(["python", "-m", "venv", ".venv"], cwd=directory, check=False, capture_output=True)
+                subprocess.run(
+                    ["python", "-m", "venv", ".venv"],
+                    cwd=directory,
+                    check=False,
+                    capture_output=True,
+                )
             with console.status("[dim]Installing lightcone-cli…[/dim]"):
                 subprocess.run(
                     [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"],
@@ -242,6 +276,9 @@ def init(
                     check=False,
                     capture_output=True,
                 )
+        console.print(
+            f"[green]✓[/green] Virtual environment created in [cyan]{directory}/.venv[/cyan]"
+        )
 
     console.print(f"\n[green]Project initialized at[/green] {directory}")
 
@@ -261,12 +298,12 @@ def init(
             )
 
     console.print("\nNext steps:")
+    console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
+    console.print("  • Start [cyan]claude[/cyan]")
     console.print(
-        "  • Launch [cyan]claude[/cyan] (or your agent of choice) and tell it what you want to do"
-    )
-    console.print(
-        "  • [cyan]lc run[/cyan] / [cyan]lc status[/cyan] / [cyan]lc verify[/cyan] "
-        "keep the substrate in sync along the way"
+        "  • Run [cyan]/lc-new[/cyan] to scope a new analysis, "
+        "[cyan]/lc-from-code[/cyan] to port existing code, "
+        "or [cyan]/lc-from-paper[/cyan] to reproduce a paper"
     )
 
 
@@ -276,7 +313,10 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+RUN uv pip install -r requirements.txt
 
 COPY . .
 """
@@ -430,9 +470,7 @@ def run(
     rundirs = prepare_run_dirs(project)
     ensure_snakemake_symlink(project, rundirs.snakemake_state)
     if verbose:
-        console.print(
-            f"[dim]Scratch root:[/dim] {resolve_scratch_root(project)}"
-        )
+        console.print(f"[dim]Scratch root:[/dim] {resolve_scratch_root(project)}")
 
     choice = load_runtime(project_path=project)
     _ensure_images(project, runtime=choice.runtime)
@@ -448,12 +486,14 @@ def run(
     # removes the container declarations.
     if choice.runtime == "none" and not choice.explicit:
         cfg_data = json.loads(cfg_path.read_text())
-        declared = sorted({
-            entry["container_image"]
-            for rule_entries in cfg_data.values()
-            for entry in rule_entries.values()
-            if entry.get("container_image")
-        })
+        declared = sorted(
+            {
+                entry["container_image"]
+                for rule_entries in cfg_data.values()
+                for entry in rule_entries.values()
+                if entry.get("container_image")
+            }
+        )
         if declared:
             console.print(
                 "[yellow]⚠ No container runtime found on PATH "
@@ -586,12 +626,18 @@ def _build_snakemake_cmd(
     """
     cmd: list[str] = [
         "snakemake",
-        "-s", str(snakefile_path),
-        "-d", str(project),
-        "--cores", n,
-        "--jobs", n,
-        "--executor", "dask",
-        "--rerun-triggers", *rerun_triggers.split(","),
+        "-s",
+        str(snakefile_path),
+        "-d",
+        str(project),
+        "--cores",
+        n,
+        "--jobs",
+        n,
+        "--executor",
+        "dask",
+        "--rerun-triggers",
+        *rerun_triggers.split(","),
     ]
     if force:
         # ``--force`` scopes to explicit targets; ``rule all`` itself
@@ -638,7 +684,9 @@ def _target_for(project: Path, output_id: str, universe: str) -> str:
         )
 
     _, to = matches[0]
-    target = resolve_output_path(project, to, universe) / to.output_id / MANIFEST_FILENAME
+    target = (
+        resolve_output_path(project, to, universe) / to.output_id / MANIFEST_FILENAME
+    )
     return str(target.relative_to(project))
 
 
@@ -823,9 +871,7 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
             # without depending on the runtime's registry resolution.
             if image_exists_locally(spec_str, runtime=runtime) and not force:
                 continue
-            console.print(
-                f"[cyan]Pulling[/cyan] {spec_str} [dim](via {runtime})[/dim]"
-            )
+            console.print(f"[cyan]Pulling[/cyan] {spec_str} [dim](via {runtime})[/dim]")
             try:
                 pull_image(spec_str, runtime=runtime)
             except ContainerBuildError as e:
@@ -873,7 +919,7 @@ def export() -> None:
 @click.option(
     "--author",
     default=None,
-    help="Author override, e.g. \"Name <email@host>\". Default: git config.",
+    help='Author override, e.g. "Name <email@host>". Default: git config.',
 )
 @click.option(
     "--license",

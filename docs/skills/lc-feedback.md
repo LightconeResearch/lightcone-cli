@@ -10,7 +10,7 @@ Argument hint: `<what went wrong>`.
 
 ## Allowed tools
 
-```
+```text
 Bash(gh:*), Bash(python:*), Bash(uname:*), AskUserQuestion
 ```
 
@@ -48,7 +48,7 @@ create`.
 
 ## Issue body template
 
-```
+```text
 ## What happened
 [1–3 sentences combining user description + session context]
 
@@ -74,3 +74,10 @@ Sections that don't apply are dropped.
 - Trim aggressively — only the relevant portion of errors.
 - No sensitive data — strip absolute paths, credentials, tokens.
 - Don't editorialize — report what happened.
+
+## Notes for the maintainer who's looking
+
+The triage hint in the skill prompt distinguishes ASTRA (schema, validation,
+`astra` CLI) from lightcone-cli (Snakemake/Dask execution, `lc` CLI,
+container builds, scaffolding, skills). When in doubt, the skill defaults
+to lightcone-cli. See the `SKILL.md` source for the exact wording.

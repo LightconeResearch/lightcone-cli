@@ -5,7 +5,7 @@ Manifest-driven status report for every output declared in
 
 ## Synopsis
 
-```
+```text
 lc status [OPTIONS]
 ```
 
