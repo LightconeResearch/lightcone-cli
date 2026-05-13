@@ -93,6 +93,6 @@ from lightcone.eval.cli import run_cmd
 ## Installing changes into an existing project
 
 `lc init` copies the plugin once and refuses to run a second time on
-the same directory. See [`lc update`](../cli/update.md) for the Python
-heredoc that resyncs all the plugin subdirs (`skills`, `agents`,
-`scripts`, `guides`, `templates`) into an existing project.
+the same directory. See [Updating an existing project](../cli/update.md)
+for the Python heredoc that resyncs all the plugin subdirs (`skills`,
+`agents`, `scripts`, `guides`, `templates`) into an existing project.
