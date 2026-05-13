@@ -13,6 +13,22 @@ This site has two halves.
 Start at the [User Guide](user/index.md). Friendly, step-by-step, with
 worked examples. You will not need to read any Python.
 
+The shortest possible path:
+
+=== "uv"
+    ```bash
+    uv tool install lightcone-cli
+    lc init my-analysis && cd my-analysis
+    claude                                # then, inside Claude Code: /lc-new
+    ```
+
+=== "pip"
+    ```bash
+    pip install lightcone-cli
+    lc init my-analysis && cd my-analysis
+    claude                               # then, inside Claude Code: /lc-new
+    ```
+
 ## I work on lightcone-cli
 
 Welcome — keep reading. The rest of this page is a fast tour for
@@ -34,11 +50,11 @@ spec itself (validation, paper management, evidence verification); the
 
 ## Repository at a glance
 
-```
+```text
 src/lightcone/                  # PEP 420 namespace package — NO __init__.py
 ├── cli/                        # Click surface
 │   ├── __init__.py             # exposes main()
-│   ├── commands.py             # init, run, status, verify, build, setup
+│   ├── commands.py             # init, run, status, verify, build, export
 │   └── plugin.py               # plugin source-dir discovery
 ├── engine/                     # execution substrate
 │   ├── manifest.py             # write_manifest, sha256_dir, code_version
@@ -74,7 +90,7 @@ regular package and break coexistence with future sibling distributions
 
 ## Execution flow
 
-```
+```text
 astra.yaml ── snakefile.generate() ──► .lightcone/Snakefile + .lightcone/snakefile-config.json
                                               │
                                        snakemake -s … -d … --executor dask

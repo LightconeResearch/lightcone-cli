@@ -5,7 +5,7 @@ and dispatches through Snakemake on a Dask cluster.
 
 ## Synopsis
 
-```
+```text
 lc run [OPTIONS] [OUTPUTS]...
 ```
 

@@ -2,7 +2,7 @@
 
 ## Test layout
 
-```
+```text
 tests/
 ├── conftest.py             # shared fixtures
 ├── test_cli.py             # Click CliRunner integration tests

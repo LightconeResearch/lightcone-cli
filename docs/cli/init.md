@@ -4,7 +4,7 @@ Scaffold a new ASTRA project with Claude Code integration.
 
 ## Synopsis
 
-```
+```text
 lc init [OPTIONS] [DIRECTORY]
 ```
 
@@ -14,7 +14,7 @@ lc init [OPTIONS] [DIRECTORY]
 
 Inside `DIRECTORY` (creating it if needed):
 
-```
+```text
 astra.yaml                    # tiny boilerplate spec with one example output
 CLAUDE.md                     # short note pointing future agents at the project
 .gitignore                    # Python + lightcone state

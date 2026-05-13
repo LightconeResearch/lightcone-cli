@@ -11,7 +11,7 @@ Defaults: universe `baseline`, max-iterations `25`.
 
 ## Allowed tools
 
-```
+```text
 Read, Write, Edit, Glob, Grep,
 Bash(astra:*), Bash(lc:*), Bash(python:*), Bash(git:*), Bash(pip:*), Bash(mkdir:*),
 Bash(setup-lc-build:*),

@@ -5,7 +5,7 @@ input chain. Catches tampering, drift, and forged manifests.
 
 ## Synopsis
 
-```
+```text
 lc verify [OPTIONS]
 ```
 

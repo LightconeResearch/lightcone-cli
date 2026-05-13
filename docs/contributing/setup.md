@@ -77,7 +77,7 @@ relative to the repo root.
 
 ## Repo layout
 
-```
+```text
 src/lightcone/                       # main namespace (PEP 420; no __init__.py at the package root)
 src/snakemake_executor_plugin_dask/  # Snakemake → Dask executor plugin
 claude/lightcone/                    # Claude Code plugin (force-included into the wheel)
