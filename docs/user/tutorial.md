@@ -228,6 +228,5 @@ floating-point nondeterminism in your numerical libraries).
 
 ## Where to next
 
-- [Multiverse Analyses](multiverse.md) — sweep more than one decision.
 - [Running on a Cluster](cluster.md) — take the same project to SLURM.
 - [Troubleshooting](troubleshooting.md) — when something goes sideways.

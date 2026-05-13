@@ -20,8 +20,6 @@ implementation; **you stay in charge of the scientific choices**.
   one does and when to reach for it.
 - [Tutorial: Your First Analysis](tutorial.md) — an end-to-end worked
   example, written so you can read it without running anything.
-- [Multiverse Analyses](multiverse.md) — how to explore alternative
-  defensible choices side by side.
 - [Running on a Cluster](cluster.md) — taking your analysis to a SLURM
   HPC system.
 - [Troubleshooting](troubleshooting.md) — common issues and how to
