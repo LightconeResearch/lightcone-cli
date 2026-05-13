@@ -180,12 +180,19 @@ Open both templates side-by-side:
 
 ### Stage 7 — User review, refine, commit, launch
 
-Show both drafts to the user, take corrections, refine, save. When the user approves:
+**Halt here for explicit user approval.** This is the user's only review point before the autonomous loop takes over; treat it as the final author-mode editorial pass. Do not commit or launch the ralph loop until the user explicitly confirms — silence is not approval.
 
-1. `git init` the workdir if it isn't one already (per SKILL.md's *Setup: git-tracked workdir* discipline).
-2. Commit `constitution.md` + `CLAUDE.md` + the full `work/reference/` substrate (paper + code, when code present) as the first commit. A single commit captures the full ORIENT deliverable.
-3. The `work/reference/code/` clone itself can be `.gitignore`d for large monorepos; `code-index.md` is what downstream iterations actually consult. The clone is reproducible from `code-status.yaml`'s URL.
-4. Launch the ralph loop per SKILL.md's *Launching the loop* section.
+1. **Show the drafts.** Point the user at `constitution.md` and `CLAUDE.md` (file paths plus a brief inline summary of what each carries — Goal / Fidelity intent / Scope / Quality bar / Evidence for the constitution; paper header + Pointers for the CLAUDE.md). The user reads the actual files; don't paste the full bodies inline.
+
+2. **Surface any open questions you have at this gate.** If a paper detail is ambiguous, a scope choice didn't fully resolve in Stages 3–5, a sub-analysis decomposition is uncertain, or a fidelity intent is implicit but not pinned — ask now, in this same exchange, *before* the loop launches. Each ralph iteration runs cold from `constitution.md` + `CLAUDE.md`; an open question held back here is much harder to raise later.
+
+3. **Gate on `AskUserQuestion`.** Offer options like "Looks good — commit and launch", "I want to edit first" (point them at the file paths), "I have feedback" (collect, refine, re-show, gate again). The launch decision waits on this answer.
+
+4. **When the user approves:**
+   - `git init` the workdir if it isn't one already (per SKILL.md's *Setup: git-tracked workdir* discipline).
+   - Commit `constitution.md` + `CLAUDE.md` + the full `work/reference/` substrate (paper + code, when code present) as the first commit. A single commit captures the full ORIENT deliverable.
+   - The `work/reference/code/` clone itself can be `.gitignore`d for large monorepos; `code-index.md` is what downstream iterations actually consult. The clone is reproducible from `code-status.yaml`'s URL.
+   - Launch the ralph loop per SKILL.md's *Launching the loop* section.
 
 Tell the user the tmux session name and the attach command, and that you'll be ready for REVIEW close-out when the loop terminates.
 

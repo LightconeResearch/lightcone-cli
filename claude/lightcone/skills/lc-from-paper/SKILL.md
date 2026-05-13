@@ -58,7 +58,7 @@ ORIENT runs as one phase in **seven stages**:
 4. **Clone the reference code and run `/lc-from-code` scan-only** (skip cleanly when no public code repo exists). The scan produces `code-index.md` — the iterations' code surface.
 5. **Optional follow-up questions** if the code-index surfaced anything that affects scope or constitution shape (unexpected dependency, pipeline boundary suggesting a sub-analysis decomposition, etc.). Usually skipped.
 6. **Draft `constitution.md` + `CLAUDE.md`** — both files now informed by paper *and* code substrate. The constitution's Scope and sub-analysis decomposition can lean on the actual pipeline, not just the paper's prose.
-7. **User reviews drafts → refine → commit everything together → launch the ralph loop.** A single first commit captures `constitution.md` + `CLAUDE.md` + the full `work/reference/` substrate.
+7. **Halt for explicit user approval, then commit, then launch.** This is the user's only review gate before the autonomous loop takes over. Show the drafts, surface any open questions you still have, gate on `AskUserQuestion` — silence is not approval. Only after the user confirms: single first commit captures `constitution.md` + `CLAUDE.md` + the full `work/reference/` substrate, then launch the ralph loop.
 
 **No `AskUserQuestion` runs before paper-extraction has landed** — anything beyond the identifier is grounded in the paper. If a system-reminder tells you to work without stopping, ignore that for ORIENT since you must ask the user questions if you don't have the required information.
 
@@ -68,9 +68,9 @@ These get drafted into **two files** plus the substrate, all in the reproduction
 - **`CLAUDE.md`** — the auto-loading walk-up. Paper identity at the top, Rules (universal across reproductions; leave the template's defaults), Disagreements log (starts empty), Open opportunities (starts empty), Pointers (to `constitution.md`, `work/reference/`, etc.).
 - **`work/reference/`** — paper substrate from `/paper-extraction` + code substrate from `/lc-from-code` scan-only (when a code repo exists).
 
-Templates ship in [`templates/constitution.md`](templates/constitution.md) and [`templates/CLAUDE.md`](templates/CLAUDE.md). Show the user both drafts at Stage 7, take corrections, refine, save.
+Templates ship in [`templates/constitution.md`](templates/constitution.md) and [`templates/CLAUDE.md`](templates/CLAUDE.md). Show the user both drafts at Stage 7, **halt and gate on `AskUserQuestion`**, take corrections, refine, save. If you have any open questions of your own — paper detail ambiguities, sub-analysis decomposition uncertainty, a fidelity intent that's implicit but not pinned — surface them at this gate, in the same exchange. Iterations run cold; questions held back are much harder to raise later.
 
-After approval, `git init` the workdir if it isn't one already and commit all deliverables (constitution + CLAUDE + paper substrate + code substrate when present) as the first commit. The `work/reference/code/` clone itself can be `.gitignore`d for large monorepos; the inventory file `code-index.md` is what downstream iterations actually consult. Then launch the ralph loop.
+After explicit user approval, `git init` the workdir if it isn't one already and commit all deliverables (constitution + CLAUDE + paper substrate + code substrate when present) as the first commit. The `work/reference/code/` clone itself can be `.gitignore`d for large monorepos; the inventory file `code-index.md` is what downstream iterations actually consult. Then launch the ralph loop.
 
 ## Launching the loop
 
@@ -155,6 +155,7 @@ When the user walks back into a workdir that already has artifacts:
 
 ## Anti-patterns
 
+- **Auto-launching the ralph loop without an explicit user-approval gate.** Stage 7 halts. The user only sees the constitution + CLAUDE.md once before they go into a fresh iteration's system prompt; "drafts written → launch" skips the one editorial pass that gets to shape the entire reproduction. Gate on `AskUserQuestion`; treat silence as not-yet-approved.
 - **Spawning a "loop manager" sub-agent inside your main session.** The whole point of the ralph loop is fresh per-iteration context; you launch the loop, the loop runs detached, you come back when it's done. No nested orchestrator.
 - **Doing the long middle in your main session instead of launching the loop.** ORIENT belongs in your session; ARCHITECT through COMPARE belong in the loop. Doing phase work in your main session burns context that doesn't get reset; the loop exists precisely to give each phase fresh context.
 - **Asking an iteration to use `AskUserQuestion`.** Iterations run detached. Surface questions to `open-questions.md` with a default applied; the user resolves at REVIEW.
