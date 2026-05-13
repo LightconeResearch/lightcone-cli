@@ -189,37 +189,7 @@ chains. If anything fails, ask the agent to fix the concrete error and rerun.
 The agent commits after each successful output, so your `git log` is a clean
 record of the build.
 
-## 6. Add a second universe
-
-The point of decisions is to sweep them. Drop out of Claude Code
-(`Ctrl+D` or `/exit`) and create the second universe:
-
-```bash
-astra universe generate -n raw -d standardize=raw
-```
-
-That writes `universes/raw.yaml` selecting `standardize: raw`. Materialize it:
-
-```bash
-lc run --universe raw
-lc status
-```
-
-You should see:
-
-```
-Universe baseline
-  ✓ ok    r2
-  ✓ ok    fit_plot
-Universe raw
-  ✓ ok    r2
-  ✓ ok    fit_plot
-```
-
-Each universe has its own `results/<universe>/` tree. The two `r2.json` files
-are the comparison your paper figure needs.
-
-## 7. Verify integrity
+## 6. Verify integrity
 
 ```bash
 lc verify
