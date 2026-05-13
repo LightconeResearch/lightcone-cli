@@ -25,7 +25,6 @@ lc build [--force] [--runtime docker]                             # Build contai
 lc status [--universe NAME] [--json]                              # Materialization status (text or JSON)
 lc verify [--universe NAME]                                       # Recompute hashes and walk the provenance chain
 lc export wrroc [--output PATH] [--universe NAME] [--zip] [--metadata-only] [--author "NAME <EMAIL>"]  # Export Workflow Run RO-Crate bundle
-lc eval {run,report,compare}                                      # Run/inspect eval suites (requires the 'eval' extra)
 ```
 
 `lc run` is quiet by default — pass `--verbose` to see worker output. `--scratch` is only relevant on HPC sites where `$HOME` doesn't honor `flock` (NERSC etc.); it redirects Snakemake state and Dask spill onto the named filesystem.
