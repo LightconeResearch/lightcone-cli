@@ -4,11 +4,9 @@ description: >
   Sentence-by-sentence audit of a paper against an ASTRA project's code. For
   every claim about implementation or results in the methodology, results,
   discussion, and appendices, locate the corresponding code (file:line) or
-  mark NOT FOUND. Use when the user says "check reproduction", "verify the
-  paper line by line", or "sentence-by-sentence audit". Run from the project
-  folder containing astra.yaml. In lc-from-paper projects, read paper sources
-  from work/reference/: prefer arXiv TeX under work/reference/source/, fall
-  back to Docling/Pandoc markdown at work/reference/document.md.
+  mark NOT FOUND. Only the user can invoke this skill, though this skill can be suggested for the user to invoke during paper reproduction. Other skills may mention this skill as an optional follow-up, but should not invoke it themselves. Run from the project folder containing astra.yaml. In lc-from-paper projects, read paper sources from
+  work/reference/: prefer arXiv TeX under work/reference/source/, fall back to
+  Docling/Pandoc markdown at work/reference/document.md.
 allowed-tools: Read, Glob, Grep, Bash(ls:*), Bash(wc:*), Bash(grep:*), Bash(find:*), AskUserQuestion, Agent
 argument-hint: "[path to paper source, e.g. work/reference/source/main.tex or work/reference/document.md]"
 ---
