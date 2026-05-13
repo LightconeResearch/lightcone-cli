@@ -1,9 +1,9 @@
 # /lc-from-code
 
-Bring an existing project into ASTRA / lightcone-cli, starting from the
-code. Scans the codebase, generates `astra.yaml`, parameterizes hardcoded
-analytical choices, and runs until outputs materialize. Existing logic
-stays intact — changes should be minimal.
+Wrap an existing codebase in ASTRA. The skill scans the project, drafts
+`astra.yaml` against what the code already does, parameterizes its
+hardcoded analytical choices, and runs until outputs materialize.
+Existing logic stays intact; the edits are minimal parameter plumbing.
 
 Source: [`claude/lightcone/skills/lc-from-code/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-from-code/SKILL.md).
 
@@ -20,63 +20,62 @@ Agent, AskUserQuestion
 ### Phase 1 — Scan & spec
 
 The skill spawns an `Explore` subagent (Claude Code's general-purpose
-search agent) with the decision criteria from `/astra` (Decisions
-section) inlined into the prompt. The subagent returns a structured inventory:
+search agent) with `/astra`'s Decisions criteria inlined into the
+prompt. The subagent returns a structured inventory:
 
-- Per script/notebook: file path, what it does, files it reads & writes,
-  hardcoded analytical choices (with file:line, current value, what it
-  controls), how it's invoked.
-- Project-level: dependency files, data files, existing container
-  setup.
+- **Per script/notebook**: file path, what it does, files it reads
+  and writes, hardcoded analytical choices (with `file:line`, current
+  value, what it controls), how it's invoked.
+- **Project-level**: dependency files, data files, any existing
+  container setup.
 
-The main agent filters the candidate decisions down to true analytical
-choices (most hardcoded values are implementation details, not
-decisions), drafts `astra.yaml` with `recipe:` blocks pointing at the
-existing scripts, and generates `universes/baseline.yaml` with all
-defaults matching the current hardcoded values — so the first run
-reproduces existing behavior. Spec is then validated with
-`astra validate astra.yaml`.
-
-The user is asked to review before Phase 2.
+The main agent keeps only the genuinely analytical choices (most
+hardcoded values are implementation details), drafts `astra.yaml` with
+`recipe:` blocks pointing at the existing scripts, and generates
+`universes/baseline.yaml` with defaults matching the current hardcoded
+values — so the first run reproduces existing behavior. `astra validate
+astra.yaml` then checks the spec, and the user reviews before Phase 2.
 
 ### Phase 2 — Implement (parameterize)
 
-The skill picks an approach per script type:
+The approach depends on the shape of each script:
 
-- **Script with hardcoded values** — add (or extend) argparse, replace
-  hardcoded values with parsed args.
-- **Notebook** — move the `.ipynb` to `notebooks/` (preserved as
-  reference), create a `.py` script that does the parameterized
-  version. The recipe points at the new script.
-- **Config-file-driven project** — write a thin wrapper script that
-  accepts ASTRA decision args, writes the config, then calls the
-  original entry point. The user's config-driven code stays untouched.
+- **Script with hardcoded values.** Add or extend `argparse`; replace
+  the hardcoded values with parsed args.
+- **Notebook.** Move the `.ipynb` to `notebooks/` (kept as reference)
+  and create a `.py` script that does the parameterized version. The
+  recipe points at the new script.
+- **Config-file-driven project.** Write a thin wrapper that accepts
+  ASTRA decision args, writes the config, and calls the original
+  entry point. The user's config-driven code stays untouched.
 
 Hard conventions enforced by the prompt:
 
-- Decision IDs use underscores in `astra.yaml` (`outlier_sigma`).
-  lightcone-cli passes `--outlier_sigma`. Argument parsing must match.
-- Output paths follow `results/{universe}/{output_id}.ext` (the
-  per-output convention).
-- Don't refactor, restructure, or "improve" existing code — only
-  parameter plumbing.
+- Decision IDs use underscores (`outlier_sigma`), and lightcone-cli
+  passes them as `--outlier_sigma`. Argument parsing must match.
+- Each output is a *directory*, `results/{universe}/{output_id}/`. The
+  recipe receives `{output}` as that directory; scripts write artifacts
+  inside it (`{output}/data.parquet`).
+- Don't refactor, restructure, or "improve" existing code — parameter
+  plumbing only.
 
 ### Phase 3 — Run & debug
 
-`lc run --universe baseline`. Iterate fixes until `lc status` shows all
-outputs `ok`. If the scan turned up existing results elsewhere in the
-project, compare them against the new `results/baseline/` to verify
-the migration preserved behavior. Then `astra validate astra.yaml` and
-present the summary.
+Run `lc run --universe baseline`, then iterate fixes until `lc status`
+shows every output `ok`. If the scan surfaced existing results
+elsewhere in the project, compare them against the new
+`results/baseline/<output_id>/` to confirm the migration preserved
+behavior. Re-validate with `astra validate astra.yaml` and present
+the summary.
 
 ## Hard rules
 
-- Minimal changes — no refactor, rename, reorganize.
-- Never guess — read every script before claiming what it does.
-- Filter decisions aggressively — most hardcoded values are
-  implementation details.
-- Preserve behavior — the baseline universe with default values must
-  reproduce the original behavior exactly.
+- **Minimal changes.** No refactor, no rename, no reorganize.
+- **Never guess.** Read every script before claiming what it does.
+- **Filter decisions aggressively.** Most hardcoded values are
+  implementation details, not decisions.
+- **Preserve behavior.** The baseline universe, with default values,
+  must reproduce the original exactly.
 
 ## Related
 
