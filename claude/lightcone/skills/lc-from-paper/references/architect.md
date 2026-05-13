@@ -109,4 +109,4 @@ Don't flag empty `decisions:` / `prior_insights:` / `findings:` — that's SPECI
 - **The stub's empty blocks are intentional.** `decisions: {}`, `prior_insights: {}`, `findings: {}` make it clear at a glance that ARCHITECT's job is structural and SPECIFY fills them. Don't try to half-author content — empty is honest.
 - **Code-as-canonical for structure, paper-as-canonical for narrative voice.** The code reveals where the real stage boundaries are; the paper provides the words to describe them. The stub uses both.
 - **The narrative skill is the prose author, not the structure author.** Invoke `/narrative` for the prose blocks; ARCHITECT's job is the structural skeleton plus invoking `/narrative` to fill the `narrative:` keys cleanly.
-- **Commit each artifact as it lands.** Stub commits before any review-N file; review-N files commit one per iteration; each fix pass commits separately. Small, descriptive commits keep `git log` legible to the next iteration.
+- **Commit each artifact as it lands.** The stub commits when it lands; each subsequent fix pass commits separately. Small, descriptive commits keep `git log` legible to the next iteration.
