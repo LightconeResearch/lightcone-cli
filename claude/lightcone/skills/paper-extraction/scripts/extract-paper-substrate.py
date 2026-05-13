@@ -44,7 +44,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from difflib import SequenceMatcher
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 
@@ -69,12 +69,9 @@ CITE = re.compile(
 # Derived from the installed astra-spec package so the stub `astra.yaml` always
 # stamps the version actually present in the environment — `astra validate` will
 # warn if the analysis declares a version the installed astra-spec can't honour.
-# Falls back to "0.0.0" only if astra-spec isn't importable (defensive — this
-# script ships with lightcone-cli, which depends on astra-spec).
-try:
-    ASTRA_SCHEMA_VERSION = _pkg_version("astra-spec")
-except PackageNotFoundError:
-    ASTRA_SCHEMA_VERSION = "0.0.0"
+# Let PackageNotFoundError propagate: this script ships with lightcone-cli, which
+# depends on astra-spec, so a missing install is a real bug we want loud.
+ASTRA_SCHEMA_VERSION = _pkg_version("astra-spec")
 
 # Bump when the structural shape of `index.json` changes in a backwards-incompatible
 # way (a new key added is fine; renaming/reshaping an existing value breaks consumers).
