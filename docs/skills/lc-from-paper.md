@@ -1,25 +1,25 @@
 # /lc-from-paper
 
 Reproduce a published scientific paper as a complete ASTRA project. The
-skill is **interview-first** and **ralph-driven**: INTERVIEW + ACQUIRE
-run in the user's main session to set up the per-paper substrate, then
-a ralph loop carries the long middle (ARCHITECT → SPECIFY → LITERATURE
-→ IMPLEMENT → RUN → COMPARE) across many iterations against the same
-constitution, with REVIEW returning to the user's main session after
-the loop closes.
+skill is **interview-first** and **ralph-driven**. INTERVIEW and
+ACQUIRE run in the user's main session to set up the per-paper
+substrate. A ralph loop then carries the long middle —
+ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN → COMPARE —
+across many iterations against the same constitution. REVIEW returns
+to the user's main session once the loop closes.
 
 `/lc-from-paper` is the entry point of the paper-reproduction bundle.
-The sibling skills ([`ralph`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/SKILL.md)
+Sibling skills ([`ralph`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/SKILL.md)
 for the loop, [`paper-extraction`](paper-extraction.md),
 [`narrative`](narrative.md), [`figure-comparison`](figure-comparison.md),
-[`check-sentence-by-sentence`](check-sentence-by-sentence.md)) are
-co-located in the same plugin and invoked by role across the phases.
+[`check-sentence-by-sentence`](check-sentence-by-sentence.md)) live in
+the same plugin and are invoked by role across the phases.
 
 Source: [`claude/lightcone/skills/lc-from-paper/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-from-paper/SKILL.md).
 
 ## Architecture
 
-Two pieces:
+Two pieces.
 
 1. **Interactive bookends in the user's main session.** INTERVIEW and
    REVIEW are conversations with the user. ACQUIRE is two parallel
@@ -30,16 +30,15 @@ Two pieces:
 2. **A ralph loop for the long middle.** Once `constitution.md` is
    drafted (INTERVIEW) and the substrate is on disk (ACQUIRE),
    `/lc-from-paper` launches a ralph loop against the constitution.
-   Each iteration starts a fresh tmux-detached Claude session with the
-   constitution as system prompt, surveys the workdir, picks the next
-   valuable move (typically one phase's worth of work), does it,
-   commits, exits. The fresh-context property is automatic — iteration
-   N+1 reads N's work without bias, which makes per-phase review
-   collapse into "the next iteration is the review."
-
-Parallel fan-out (LITERATURE Haiku quote-finders, SPECIFY per-sub-
-analysis work, IMPLEMENT per-output work) happens *inside* an
-iteration, one level deep from the iteration's main session.
+   Each iteration starts a fresh tmux-detached Claude session with
+   the constitution as system prompt, surveys the workdir, picks the
+   next valuable move (typically one phase's worth of work), does
+   it, commits, and exits. The fresh-context property is automatic:
+   iteration N+1 reads N's work without bias, so per-phase review
+   collapses into "the next iteration is the review." Parallel
+   fan-out (LITERATURE Haiku quote-finders, SPECIFY per-sub-analysis
+   work, IMPLEMENT per-output work) happens *inside* an iteration,
+   one level deep from the iteration's main session.
 
 ## Phases
 
@@ -60,47 +59,47 @@ user's main session; phases 2–7 run as ralph iterations.
 
 ## Per-paper substrate: constitution + CLAUDE.md
 
-Drafted during INTERVIEW. The reproduction workdir holds **two files**
-that iterations walk up to automatically:
+INTERVIEW drafts two files in the reproduction workdir; every
+iteration walks up to them automatically.
 
 - **`constitution.md`** — the ralph loop's driving document. YAML
-  frontmatter `status: active`; sections: Goal (with **fidelity
-  intent** prose — the user's own answer to "when is this good
-  enough"), Scope (in / out), Quality bar, Evidence (paper DOI, arXiv
-  ID, code repo URL), Open dimensions. Sharpens slowly — only when
-  something fundamental shifts.
-- **`CLAUDE.md`** — auto-loading walk-up. Paper identity at the top,
-  Rules (code-as-canonical, never-block-on-`AskUserQuestion`-
-  mid-iteration, arxiv-LaTeX-first, `astra validate --verify-evidence`
-  as the fidelity gate), Rigor accumulator (*Current state* per output
-  + *Open opportunities*, updated by iterations), Disagreements log
-  (running, updated by iterations), Pointers.
+  frontmatter declares `status: active`. Sections: Goal (carrying the
+  **fidelity intent** — the user's own "when is this good enough"),
+  Scope (in/out), Quality bar, Evidence (paper DOI, arXiv ID, code
+  repo URL), Open dimensions. Sharpens slowly, only when something
+  fundamental shifts.
+- **`CLAUDE.md`** — the auto-loading walk-up. Paper identity at the
+  top; Rules (code-as-canonical, no blocking on `AskUserQuestion`
+  mid-iteration, arXiv-LaTeX-first, `astra validate
+  --verify-evidence` as the fidelity gate); Rigor accumulator
+  (*Current state* per output plus *Open opportunities*, updated each
+  iteration); Disagreements log (running, also updated each
+  iteration); Pointers.
 
 Pointers, not snapshots.
 
 ## Disciplines
 
-- **Workdir is the state.** File existence + `git log` + `astra
-  validate` answer "what phase am I on" deterministically. No separate
-  state machine.
-- **Code-as-canonical, with disagreements recorded.** Where paper and
-  code disagree on something material, code wins for numerics but the
-  disagreement is preserved as a decision option and noted in
-  CLAUDE.md.
+- **Workdir is the state.** File existence, `git log`, and `astra
+  validate` answer "what phase am I on" deterministically — no
+  separate state machine.
+- **Code-as-canonical, with disagreements recorded.** Where paper
+  and code disagree on something material, code wins for numerics,
+  but the disagreement is preserved as a decision option and noted
+  in CLAUDE.md.
 - **Rigor is a trajectory toward the user's intent.** Each iteration
-  sizes its work from the gap between *Current state* and the Goal's
-  fidelity intent — cheap (one clean review-iteration is enough) vs
-  heavy (two consecutive clean review-iterations required). Review
-  happens sequentially via iteration boundaries; the fresh-context
-  property is automatic.
-- **arxiv-LaTeX-first acquisition.** PDF + Docling is the non-arxiv
-  fallback only.
+  calibrates its work from the gap between *Current state* and the
+  Goal's fidelity intent: cheap (one clean review-iteration is
+  enough) versus heavy (two consecutive clean review-iterations
+  required). Review happens sequentially via iteration boundaries;
+  the fresh-context property is automatic.
+- **arXiv LaTeX first.** PDF + Docling is the non-arXiv fallback only.
 - **No synthetic data.** Unless the paper itself uses synthetic data,
   every input must be real.
-- **Open-questions for autonomous iteration.** Iterations run detached
-  in tmux; `AskUserQuestion` isn't available. Questions go to
+- **Open questions for autonomous iteration.** Iterations run detached
+  in tmux, so `AskUserQuestion` isn't available. Questions go to
   `open-questions.md` with the iteration's best-judgment default
-  applied; the user resolves at REVIEW close-out.
+  applied; the user resolves them at REVIEW close-out.
 
 ## Anti-patterns
 
