@@ -194,10 +194,12 @@ The three labels `lc verify` produces when something's wrong:
 
 A reusable autonomous iteration pattern for long-running agent work.
 Each iteration surveys state, decides what to do next, writes or runs
-code, commits, and exits. The Claude Code stop hook can re-inject the
-loop prompt until the agent emits its completion signal or hits an
-iteration limit. State persists across crashes in
-`.claude/ralph-loop.local.md`. Cancel with `/cancel-ralph`.
+code, commits, and exits. A bundled tmux runner spawns a fresh worker
+per iteration with the *constitution* — a markdown file describing what
+"done" looks like — as system prompt; the constitution stays editable
+across iterations. Stop the loop by setting `status: closed` in the
+constitution's frontmatter (the next iteration sees it and exits) or by
+killing the tmux session.
 
 ## Permission tier
 
