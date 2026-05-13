@@ -9,7 +9,7 @@ Source: [`claude/lightcone/skills/lc-migrate/SKILL.md`](https://github.com/Light
 
 ## Allowed tools
 
-```
+```text
 Read, Write, Edit, Glob, Grep,
 Bash(astra:*), Bash(lc:*), Bash(python:*), Bash(pip:*), Bash(git:*), Bash(mkdir:*), Bash(ls:*),
 Agent, AskUserQuestion

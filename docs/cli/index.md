@@ -24,7 +24,7 @@ Code skills, with the CLI as the durable, scriptable backstop.
 
 ## Global options
 
-```
+```text
 lc [OPTIONS] COMMAND [ARGS]...
 
 Options:

@@ -8,7 +8,7 @@ Source: [`claude/lightcone/skills/lc-new/SKILL.md`](https://github.com/Lightcone
 
 ## Allowed tools
 
-```
+```text
 Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md),
 Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md),
 Glob, Grep, Bash(astra:*), Bash(lc:*), Bash(mkdir:*), Bash(echo:*),
@@ -34,7 +34,9 @@ arbitrary files. The lc-extractor subagent is invoked via `Task`.
    and write them to `astra.yaml`.
 4. **Finalize** — `astra validate astra.yaml`, `astra validate
    --verify-evidence` if quotes exist, `astra universe generate -n
-   baseline`, populate the `## Working Notes` section of `CLAUDE.md`
+   baseline`, populate the `narrative:` block in `astra.yaml` (`summary`,
+   `methods`, `inputs`, `outputs` — `findings` stays TODO until results
+   exist), then populate the `## Working Notes` section of `CLAUDE.md`
    with conversational context not captured in the spec.
 
 The skill writes to `astra.yaml` after each phase rather than in bulk

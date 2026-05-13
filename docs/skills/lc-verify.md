@@ -7,7 +7,7 @@ Source: [`claude/lightcone/skills/lc-verify/SKILL.md`](https://github.com/Lightc
 
 ## Allowed tools
 
-```
+```text
 Read, Glob, Grep,
 Bash(astra:*), Bash(lc:*), Bash(python:*), Bash(ls:*),
 AskUserQuestion
@@ -32,7 +32,7 @@ No `Write`, no `Edit`. The skill cannot modify the project.
 
 ## Report format
 
-```
+```text
 | Check                    | Status |
 |--------------------------|--------|
 | Spec validation          | ✓/✗    |

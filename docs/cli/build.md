@@ -5,7 +5,7 @@ images so `lc run` can use `--pull=never`).
 
 ## Synopsis
 
-```
+```text
 lc build [OPTIONS]
 ```
 
@@ -35,7 +35,7 @@ nothing to build.
 
 ## Tag computation
 
-```
+```text
 lc-<sanitized-project-name>-<sha256[:12]>
 ```
 

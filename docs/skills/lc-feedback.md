@@ -10,7 +10,7 @@ Argument hint: `<what went wrong>`.
 
 ## Allowed tools
 
-```
+```text
 Bash(gh:*), Bash(python:*), Bash(uname:*), AskUserQuestion
 ```
 
@@ -48,7 +48,7 @@ create`.
 
 ## Issue body template
 
-```
+```text
 ## What happened
 [1–3 sentences combining user description + session context]
 
@@ -77,7 +77,7 @@ Sections that don't apply are dropped.
 
 ## Notes for the maintainer who's looking
 
-The triage hint in the prompt currently says "lightcone-cli — `lc` CLI,
-**Dagster execution**, recipes, container builds, scaffolding, skills."
-That's stale — the Dagster mention should be replaced with
-"Snakemake/Dask execution." See the `SKILL.md` source.
+The triage hint in the skill prompt distinguishes ASTRA (schema, validation,
+`astra` CLI) from lightcone-cli (Snakemake/Dask execution, `lc` CLI,
+container builds, scaffolding, skills). When in doubt, the skill defaults
+to lightcone-cli. See the `SKILL.md` source for the exact wording.
