@@ -147,7 +147,7 @@ Anything after a literal `--` separator forwards to the backend unchanged. Commo
 
 1. **Survey** — Fresh eyes. Read the constitution and the workdir's `CLAUDE.md`. Check `git log`, glance at sub-fibers or notes the prior iteration left, look at what's actually in the workdir.
 2. **Work** — Stay and work from the vantage point the survey built. Make 1–3 substantial contributions; don't try to clear the queue in one iteration.
-3. **Update** — Before exiting: commit your work; update `CLAUDE.md`'s accumulators (Rigor *Current state*, Paper-vs-code disagreements, open opportunities — whichever the project carries) if anything sharpened; sharpen the constitution body itself if a fact stable enough to belong in *Context* or *Desired State* landed.
+3. **Update** — Before exiting: commit your work; update `CLAUDE.md`'s accumulators (Paper-vs-code disagreements, Open opportunities — whichever the project carries) if anything sharpened; sharpen the constitution body itself if a fact stable enough to belong in *Context* or *Desired State* landed.
 4. **Exit** — `kill $PPID`.
 
 ### Earn the vantage point
