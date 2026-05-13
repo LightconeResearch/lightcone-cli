@@ -16,7 +16,7 @@ The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding
 - `work/reference/index.json` and `work/reference/code-index.md` — for context
 - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) and `work/reference/code/` — directly available for follow-up questions the user asks during REVIEW that the report and CLAUDE.md don't answer ("remind me what the paper says about X", "did the original code do Y"). Grep into for specifics; read targeted spans by offset/limit.
 - `CLAUDE.md` at the workdir root — paper identity, Rules, Paper-vs-code disagreements, Open opportunities (the durable surface, accumulated across iterations)
-- `constitution.md` at the workdir root — Goal, Fidelity intent, Scope, Quality bar, Evidence, Rigor *Current state* (the driving document the loop has been working against)
+- `constitution.md` at the workdir root — Goal, Fidelity intent, Scope, Quality bar, Evidence, Open dimensions (the driving document the loop has been working against)
 
 ## Outputs
 
@@ -76,7 +76,7 @@ Brief, not exhaustive. The depth lives in `astra.yaml` and the workdir's notes; 
 
 ## Step 4: reconcile the Open opportunities list
 
-COMPARE iterations have been logging un-acted-on opportunities into CLAUDE.md's *Open opportunities* list as they run, so the list is already populated. REVIEW's job here is reconciliation: cross-check that every opportunity in `comparison-report.yaml`'s `opportunities:` block that the user did NOT act on is present in CLAUDE.md's list, and remove any that the user acted on at REVIEW (e.g. authorized one more IMPLEMENT round to close). Note any acted-on closures in the constitution's Rigor *Current state* (e.g. *Figure 3: tightened* if the systematics treatment got a heavier pass).
+COMPARE iterations have been logging un-acted-on opportunities into CLAUDE.md's *Open opportunities* list as they run, so the list is already populated. REVIEW's job here is reconciliation: cross-check that every opportunity in `comparison-report.yaml`'s `opportunities:` block that the user did NOT act on is present in CLAUDE.md's list, and remove any that the user acted on at REVIEW (e.g. authorized one more IMPLEMENT round to close).
 
 ## Step 5: commit
 

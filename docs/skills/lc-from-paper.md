@@ -63,12 +63,13 @@ INTERVIEW drafts two files in the reproduction workdir; every
 iteration picks them up on launch.
 
 - **`constitution.md`** — the ralph loop's driving document, *task-bound*.
-  YAML frontmatter declares `status: active`. Top half (sharpens slowly):
-  Goal (carrying the **fidelity intent** — the user's own "what do you
-  want out of this stretch, given what you have to spend on it"), Scope
-  (in/out), Quality bar, Evidence (paper DOI, arXiv ID, code repo URL).
-  Bottom half (updates each iteration): Rigor *Current state* per
-  output, Open dimensions. Archivable once the reproduction closes.
+  YAML frontmatter declares `status: active`. Goal (carrying the
+  **fidelity intent** — the user's own "what do you want out of this
+  stretch, given what you have to spend on it"), Scope (in/out),
+  Quality bar, Evidence (paper DOI, arXiv ID, code repo URL), Open
+  dimensions (decisions worth user ratification, updated each
+  iteration). The body sharpens slowly. Archivable once the
+  reproduction closes.
 - **`CLAUDE.md`** — the auto-loading walk-up, *durable*. Paper identity
   at the top; Rules (code-as-canonical, no blocking on `AskUserQuestion`
   mid-iteration, arXiv-LaTeX-first, `astra validate --verify-evidence`
@@ -97,14 +98,13 @@ Pointers, not snapshots.
   intent is partly aesthetic ("how good does this need to be?") and
   partly pragmatic ("what's feasible given the compute, tokens, and
   wall-clock available?"). The honest meta-conversation lives in
-  INTERVIEW; each iteration then sizes its work from the gap between
-  the constitution's Rigor *Current state* and that intent. The
-  vocabulary is *sketch / baseline / tightened / canonical*: the
-  write iteration produces *baseline*; each subsequent fresh-context
-  iteration either lands fixes (→ *tightened*) or finds nothing to fix
-  (→ *canonical*, which terminates the review cycle). The iteration
-  that applied fixes can't declare the artifact *canonical* — that
-  judgment belongs to the next fresh-context read.
+  INTERVIEW. There's no explicit review state machine: every
+  iteration reads the most recent artifact critically as part of
+  survey, fixes what needs fixing or advances if nothing does. The
+  fresh-context property at iteration boundaries makes the next
+  iteration the review. Gaps the intent wants pushed further than
+  the loop has time to deliver become Open opportunities in
+  CLAUDE.md for a future loop.
 - **arXiv LaTeX first.** PDF + Docling is the non-arXiv fallback only.
 - **No synthetic data.** Unless the paper itself uses synthetic data,
   every input must be real.

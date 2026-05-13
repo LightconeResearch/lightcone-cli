@@ -4,7 +4,7 @@ status: active
 
 # <paper-slug> — reproduction constitution
 
-The driving document for the ralph loop reproducing <paper title> (<arXiv ID>, DOI <doi>). Every iteration reads this on entry to know what "done" looks like and where each output currently sits. The top half (Goal, Scope, Quality bar, Evidence) **sharpens slowly** — only when something fundamental shifts (target moves, scope opens or fences, a material disagreement makes us re-think a sub-analysis). The bottom half (Rigor *Current state*, Open dimensions) is updated each iteration. Durable findings that stay useful past the reproduction — paper-vs-code disagreements, open opportunities for future tightening, pointers to substrate — live in `CLAUDE.md`.
+The driving document for the ralph loop reproducing <paper title> (<arXiv ID>, DOI <doi>). Every iteration reads this on entry to know what "done" looks like. The body **sharpens slowly** — only when something fundamental shifts (target moves, scope opens or fences, a material disagreement makes us re-think a sub-analysis); Open dimensions is updated each iteration as decisions worth user ratification surface. Durable findings that stay useful past the reproduction — paper-vs-code disagreements, open opportunities for future tightening, pointers to substrate — live in `CLAUDE.md`.
 
 ## Goal
 
@@ -26,7 +26,7 @@ What "canonical" rigor looks like for *this* paper. The bar that primary-target 
 - <e.g. "magnitude cuts and selection match the code's defaults exactly; any deviation is recorded as a paper-vs-code disagreement with both options preserved">
 - <e.g. "every prior insight cites a real verbatim quote from the cited paper">
 
-This is the ceiling; the fidelity intent determines which outputs need to actually reach it. The *Rigor — current state* table below tracks where each output currently sits relative to this bar.
+This is the ceiling; the fidelity intent determines which outputs need to actually reach it.
 
 ## Evidence
 
@@ -37,12 +37,6 @@ The substrate this reproduction is built against — the canonical sources itera
 - **Paper DOI:** <doi>
 - **arXiv ID:** <id> (if applicable)
 - **Code repo URL:** <url>
-
-## Rigor — current state
-
-Per-output trajectory tracking, updated by iterations as they produce or review artifacts. Coarse adjectives per output or per phase: *sketch / baseline / tightened / canonical*. *baseline* — first version written. *tightened* — at least one fresh-context iteration reviewed and applied fixes. *canonical* — a fresh-context iteration reviewed and found nothing to fix (terminates the review cycle for that artifact). Read alongside Fidelity intent above so each iteration knows where each output currently sits. Empty until the first iteration produces something:
-
-- (none yet)
 
 ## Open dimensions
 

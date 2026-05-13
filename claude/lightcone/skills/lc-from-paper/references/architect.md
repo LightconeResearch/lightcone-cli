@@ -18,7 +18,7 @@ ARCHITECT is what a ralph iteration does when the workdir signals "paper substra
 ## Outputs
 
 - `astra.yaml` at the project root — **stub form**: sub-analyses named, architecture wired (inputs / outputs declared at the sub-analysis level), high-level `narrative:` prose blocks per analysis. **No `decisions:`, `prior_insights:`, `findings:`, or `astra-anchor:` references yet** — those entries don't exist for the narrative to reference.
-- `constitution.md` updates: Rigor *Current state* appended with the stub's state (e.g. *stub: baseline* after a single-iteration write, *stub: tightened* if this iteration was a review pass that incorporated fixes).
+- `constitution.md` updates: Open dimensions, when something material surfaces that warrants user ratification at REVIEW.
 
 ## Step 1 — Read the substrate, then write the stub
 
@@ -80,42 +80,28 @@ analyses:
 - **Validate before exit.** `astra validate astra.yaml` must return clean.
 - **Targeted reads, not whole-paper absorption.** The indices give you most of what you need; reach into the source / document / code for specific items, not as a default.
 
-After the stub is written and validates, commit it (`architect: stub astra.yaml`) and update the constitution's Rigor *Current state* with the stub's state (e.g. *stub: baseline*).
+After the stub is written and validates, commit it (`architect: stub astra.yaml`) and exit.
 
-## Review-and-fix — the iterations after the write
+## Reviewing prior ARCHITECT work as part of survey
 
-There is no in-iteration review-round mechanism. The ralph loop's iteration boundary *is* the fresh-context review: iteration N writes the stub at *baseline*; the next iteration reads it cold, reviews silently, applies any fixes inline, updates the constitution's Rigor *Current state* (*baseline → tightened* if fixes landed, *baseline → canonical* if nothing needed fixing), commits, and exits. **The iteration that makes changes cannot declare the stub done** — a subsequent fresh-context iteration has to read it and find nothing to fix for it to reach *canonical*.
+There is no separate review phase. Every iteration that enters and finds an ARCHITECT stub on disk reads it critically before doing anything else. If you see real issues — wrong sub-analysis decomposition, reserved-name collision, missing in-scope output, narrative gap — fix them inline, commit (`architect: fix <what>`), and exit. Only when a fresh-context read finds nothing to fix does the iteration move on to SPECIFY work. The fresh-context property at iteration boundaries makes the next iteration the review; nothing else is needed.
 
-The cycle terminates when the stub hits *canonical*. Typical shapes:
-- Write iteration writes a clean stub → next iteration finds nothing → stub: *canonical* in two iterations.
-- Write iteration leaves small issues → next iteration fixes them (→ *tightened*) → iteration after that finds nothing (→ *canonical*) in three.
-- Bigger gaps may take more, but cap at 5 review iterations: if *canonical* isn't reached by then, log the tail in `open-questions.md` ("ARCHITECT review cap reached; user to review at close-out") and let the survey advance to SPECIFY.
-
-### When entering as a review-and-fix iteration
-
-The signal is "stub `astra.yaml` exists, Rigor *Current state* says *stub: baseline* or *stub: tightened*." Read the stub cold, then check:
+What to look at:
 
 1. **Sub-analysis decomposition.** Right cuts? Consistent with `code-index.md`? Defensible against the paper where the paper compresses?
 2. **Sub-analysis IDs.** Noun phrases. No reserved-name collisions (`inputs`, `outputs`, `decisions`, `findings`, `prior_insights`, `analyses`, `options`, `content`, `narrative`).
 3. **Inputs at sub-analysis level.** Each input has a stable id; the data dependency is real (cross-check against `code-index.md`'s External-data-dependencies and the paper's data section).
 4. **Outputs at sub-analysis level.** Each output corresponds to a result locus from `index.json` OR an intermediate artifact a downstream sub-analysis consumes. Targeted scope from `constitution.md`'s Scope is honored — no out-of-scope outputs sneaking in, no in-scope targets missed.
-5. **Narrative coverage.** Root narrative includes a data-flow paragraph (when sub-analyses exist). Each sub-analysis's narrative accurately describes its role. No `astra-anchor:` references at this stage; flag any that snuck in.
+5. **Narrative coverage.** Root narrative includes a data-flow paragraph (when sub-analyses exist). Each sub-analysis's narrative accurately describes its role. No `astra-anchor:` references at this stage.
 6. **Validates.** `astra validate astra.yaml` returns clean.
 
-Apply fixes inline as you find them. Don't write a separate findings file — the diff against the prior commit is the record of what changed. If fixes landed, commit (`architect: review-and-fix stub`) and update the constitution to *stub: tightened*. If nothing needed fixing, commit (`architect: review confirmed clean`, possibly empty) and update the constitution to *stub: canonical*. Exit.
-
-### What NOT to do during review-and-fix
-
-- Don't flag empty `decisions:` / `prior_insights:` / `findings:`. That's SPECIFY's territory.
-- Don't re-read the entire paper or code. Use the indices and targeted reads.
-- Don't declare the stub *canonical* in the same iteration where you applied fixes — the next fresh-context iteration earns that judgment.
+Don't flag empty `decisions:` / `prior_insights:` / `findings:` — that's SPECIFY's territory. Don't re-read the entire paper or code; use the indices and targeted reads. If you see the same artifact getting churned across many recent commits without convergence, log the situation to `open-questions.md` and advance the phase anyway.
 
 ## Survey signals (entry into ARCHITECT)
 
 - `work/reference/index.json` + `work/reference/astra.yaml` (paper substrate from INTERVIEW) + `work/reference/code-index.md` (code substrate from ACQUIRE, when code present) exist ⇒ paper + code substrate is ready
-- `astra.yaml` at project root absent (or present-but-empty) ⇒ this iteration writes the stub (records *stub: baseline*)
-- `astra.yaml` exists with stub form (sub-analyses + inputs + outputs + narrative populated; `decisions:` / `prior_insights:` / `findings:` blocks present-and-empty), Rigor *Current state* shows *stub: baseline* or *stub: tightened* ⇒ this iteration is review-and-fix
-- Rigor *Current state* shows *stub: canonical* ⇒ ARCHITECT done; next iteration surveys for SPECIFY
+- `astra.yaml` at project root absent (or present-but-empty) ⇒ this iteration writes the stub
+- `astra.yaml` exists with stub form (sub-analyses + inputs + outputs + narrative populated; `decisions:` / `prior_insights:` / `findings:` blocks present-and-empty) ⇒ ARCHITECT's output is on disk; read it critically. Fix anything wrong; otherwise the iteration moves on to SPECIFY.
 
 ## Notes
 

@@ -13,7 +13,7 @@ LITERATURE is what a ralph iteration does when the workdir signals "SPECIFY done
 - `astra.yaml` — filled by SPECIFY's paper (and code) passes; each sub-analysis has `prior_insights:` entries shaped as syntactically-complete `Insight` blocks (`id`, `claim`, `created_at`, `evidence: [{id, doi}]`) where each Evidence carries a `doi:` but no `quote:` selector. These are the placeholders LITERATURE resolves by writing `quote: {exact, prefix, suffix}` and `location: {page}` onto each Evidence entry. The option↔insight linkage already lives on the option side (`Option.insights`); LITERATURE does not touch it.
 - `work/reference/index.json#citations` — paper-extraction's cite-key → `{locations, citation, doi}` mapping for every entry in the target paper's bibliography. Used as the canonical cite-key → DOI lookup when cross-checking placeholder DOIs and surfacing unresolved-DOI cases.
 - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — target paper text. Grep into for context on how the cited paper is invoked, when a placeholder's claim is ambiguous.
-- `constitution.md` — Fidelity intent; Rigor *Current state* per output (so this iteration knows where prior insights currently sit).
+- `constitution.md` — Fidelity intent.
 
 ## Outputs
 
@@ -164,9 +164,9 @@ Rules:
 
 When the iteration fans out to Haikus, each Haiku is spawned with `model="haiku"` and gets this contract plus its assigned subset of placeholders and substrate paths.
 
-## Review-and-fix — iterations after the merge
+## Reviewing prior LITERATURE work as part of survey
 
-After the merge lands (Rigor: *baseline*), the next fresh-context iteration reads cold, runs `astra validate --verify-evidence` for the deterministic check, does a semantic re-read of each resolved insight, applies fixes inline if needed, updates Rigor *Current state* (*baseline → tightened* if fixes landed, → *canonical* if nothing needed fixing), and exits. **The iteration that applied fixes cannot declare LITERATURE done** — a subsequent fresh-context iteration earns *canonical* by reading the resolutions and finding nothing to fix. Cap at 5 review iterations: if *canonical* isn't reached by then, log the tail to `open-questions.md` and let the survey advance.
+There is no separate review phase. Every iteration that enters and finds `prior_insights:` placeholders resolved on disk reads them critically — running `astra validate --verify-evidence` for the deterministic check, plus a semantic re-read of each insight. If you see real issues — tangential quote, wrong cited paper, broken `Option.insights` linkage — fix them inline, commit (`literature: fix <what>`), exit. When a fresh-context read finds nothing to fix, the iteration advances to IMPLEMENT.
 
 The cross-check questions on entry:
 
@@ -176,7 +176,7 @@ The cross-check questions on entry:
 4. **Cited paper is the right paper.** Does the target paper actually invoke this DOI for this claim?
 5. **Unresolved entries are honest.** For entries in `open-questions.md` flagged unresolved, does a closer read of the cited paper find supporting evidence the resolver missed?
 
-Apply fixes inline as you find them — `astra.yaml`'s `prior_insights:` entries (including re-running Haiku quote-finding for entries that need a different quote, when the gap is mechanical rather than semantic). If fixes landed: commit (`literature: review-and-fix`), update Rigor to *tightened*. If nothing needed fixing: commit (`literature: review confirmed clean`, possibly empty), update Rigor to *canonical*. Exit.
+Apply fixes inline as you find them — `astra.yaml`'s `prior_insights:` entries (including re-running Haiku quote-finding for entries that need a different quote, when the gap is mechanical rather than semantic). Commit the diff and exit.
 
 If the entry genuinely has no supporting quote in the cited paper, log it to `open-questions.md` with a "no support found" note and leave the entry as-is for the user to resolve at REVIEW. Don't fabricate evidence.
 
@@ -185,9 +185,8 @@ If the entry genuinely has no supporting quote in the cited paper, log it to `op
 - `astra.yaml` has `prior_insights:` placeholders — entries with `claim:` plus Evidence carrying `doi:` but no `quote:` selector ⇒ ready to resolve
 - `work/cited/<doi-slug>/work/reference/index.json` exists for each unique cited DOI ⇒ fetches done
 - `work/notes/literature/resolutions.yaml` exists with non-empty resolutions / unresolved sections ⇒ quote-finding done
-- `astra.yaml`'s `prior_insights:` entries each have a resolved `quote:` (+ `location:`) selector on their Evidence ⇒ merge done (Rigor: *baseline*)
-- `astra validate astra.yaml --verify-evidence` returns clean ⇒ structural validation done
-- Rigor *Current state* reaches *canonical* for LITERATURE ⇒ LITERATURE done; the next iteration surveys and advances to IMPLEMENT
+- `astra.yaml`'s `prior_insights:` entries each have a resolved `quote:` (+ `location:`) selector on their Evidence ⇒ merge done
+- `astra validate astra.yaml --verify-evidence` returns clean ⇒ structural validation done; read the resolutions critically. Fix anything wrong; otherwise the iteration advances to IMPLEMENT.
 
 ## Notes
 

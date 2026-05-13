@@ -11,7 +11,7 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 ## Inputs
 
 - `astra.yaml` — the stub from ARCHITECT (sub-analyses, inputs, outputs, narrative; empty `decisions:` / `prior_insights:` / `findings:` blocks)
-- `constitution.md` — Goal (scope), Fidelity intent, Quality bar, Rigor *Current state* for the per-output trajectory tracking
+- `constitution.md` — Goal (scope), Fidelity intent, Quality bar
 - `CLAUDE.md` — Rules; **Paper-vs-code disagreements** for prior-iteration entries
 - `work/reference/index.json` — paper-extraction's structural index: figures, tables, section outline, citations. The `citations:` block maps each cited paper's BibTeX key (Path A) or synthetic `<lastname>_<year>` key (Path B) to `{locations, citation, doi}`. SPECIFY uses this to write each `prior_insights:` placeholder's `doi:` so LITERATURE knows which paper to fetch.
 - `work/reference/code-index.md` (when code present) — code inventory: module map, candidate decisions with file:line, entry-points, data dependencies, gotchas.
@@ -26,8 +26,8 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 - `universes/baseline.yaml` — selects the paper's choices (where paper and code disagree per the canonical-resolution rule, see "Material conflicts" below)
 - `implementation-notes.md` — concise practical guidance for the IMPLEMENT phase: tricky algorithms, numerical gotchas, data-format quirks, things the spec can't capture. Bullets, not essays.
 - `targets/targets.md` — small target ledger COMPARE consumes: per output (already declared by ARCHITECT), a brief entry with type, priority, paper value, expected match criteria, and the path to the reference figure / table / metric (when applicable, copy the reference file into `targets/` so the directory is self-contained)
-- `constitution.md` updates — Rigor *Current state* per sub-analysis (*baseline* after the write iteration, *tightened* after a review-and-fix iteration that landed changes, *canonical* after a fresh-context iteration found nothing to fix)
 - `CLAUDE.md` updates — append entries to **Paper-vs-code disagreements** for each material conflict surfaced
+- `constitution.md` updates — Open dimensions when something material warrants user ratification at REVIEW
 
 ## Substrate skills to invoke
 
@@ -119,11 +119,11 @@ Read the code that implements this sub-analysis (`work/reference/code-index.md`'
 
 3. **Decision-option augmentation.** Where the code reveals an option the paper didn't mention but is defensible (a sibling implementation alternative used in the codebase or referenced in a comment), add it as a sibling option to the relevant `decisions:` entry. Do not pre-emptively author every code variant; only the ones that bear on a real choice.
 
-### Review-and-fix — the iterations after the passes
+### Reviewing prior SPECIFY work as part of survey
 
-After the paper + code passes land for a sub-analysis (Rigor: *baseline*), the next fresh-context iteration reads the slice cold, reviews silently, applies any fixes inline, updates the Rigor *Current state* (*baseline → tightened* if fixes landed, *baseline → canonical* if nothing needed fixing), commits, and exits. **The iteration that makes changes cannot declare the sub-analysis done** — a subsequent fresh-context iteration earns *canonical* by reading the work and finding nothing to fix. Cap at 5 review iterations per sub-analysis: if *canonical* isn't reached by then, log the tail to `open-questions.md` and let the survey advance.
+There is no separate review phase. Every iteration that enters and finds a SPECIFY-filled sub-analysis on disk reads it critically before doing anything else. If you see real issues — missing decision, paraphrased quote, dropped disagreement, broken anchor — fix them inline, commit (`specify: fix <sub-analysis-id> <what>`), and exit. When a fresh-context read finds nothing to fix in a sub-analysis, the iteration moves on (next sub-analysis, or next phase if every sub-analysis is clean).
 
-The cross-check question on entry: are the decisions covering everything material? Are the evidence quotes verbatim? Are the findings actually traceable to the paper or code? Did any material disagreement get silently dropped?
+The cross-check questions on entry: are the decisions covering everything material? Are the evidence quotes verbatim? Are the findings actually traceable to the paper or code? Did any material disagreement get silently dropped?
 
 #### What to check
 
@@ -143,15 +143,15 @@ astra validate astra.yaml
 astra validate astra.yaml --verify-evidence  # after LITERATURE has resolved the prior_insights placeholders
 ```
 
-If fixes landed: commit (`specify: review-and-fix <sub-analysis-id>`), update Rigor to *tightened*. If nothing needed fixing: commit (`specify: review confirmed clean <sub-analysis-id>`, possibly empty), update Rigor to *canonical*. Exit. The next iteration's survey checks each sub-analysis's Rigor state to decide what's next.
+Commit the diff (`specify: fix <sub-analysis-id> <what>`) and exit.
 
-#### What NOT to do during review-and-fix
+#### What NOT to do
 
 - **Don't flag missing `recipes:`.** Recipes are IMPLEMENT's, not SPECIFY's.
 - **Don't re-read the entire paper.** Use Grep on `work/reference/source/` (or `document.md`) for the specific claims you want to verify; lean on `work/reference/index.json`.
-- **Don't declare a sub-analysis *canonical* in the same iteration where you applied fixes.** That's the next fresh-context iteration's call.
+- **Don't declare the sub-analysis done in the iteration where you landed fixes.** The next fresh-context iteration reads it cold; if nothing needs fixing, it moves on, which is the "done" signal.
 
-When every sub-analysis reaches *canonical*, SPECIFY produces the final outputs:
+When every sub-analysis is clean and the SPECIFY-final outputs (target ledger, baseline universe, implementation-notes) are in place, SPECIFY produces its final artifacts:
 
 ## Target-ledger output
 
@@ -182,7 +182,7 @@ Out-of-scope targets stay in `targets/targets.md` with an explicit reason and sh
 - `astra.yaml` exists with stub form (sub-analyses + inputs + outputs + narrative; empty decisions / prior_insights / findings) ⇒ ready to specify
 - For each sub-analysis: `decisions:` populated with decision-level `rationale:` + options (paper's choice at `default:`); `findings:` populated as full Insight blocks with paper-anchored Evidence (DOI + `quote: {exact, prefix, suffix}` + `location: {page}`); `prior_insights:` populated as citation placeholders (`id`, `claim`, `created_at`, `evidence: [{id, doi}]` with `quote:` omitted — LITERATURE fills the quotes next); `Option.insights` back-references wired up where options draw on placeholders ⇒ paper pass done
 - For each sub-analysis: when `work/reference/code/` exists, code-pass material-disagreement entries land in `decisions:` (with both options) and `universes/baseline.yaml` selects the canonical-resolution choice; `implementation-notes.md` carries non-material gotchas ⇒ code pass done
-- For each sub-analysis: Rigor *Current state* reaches *canonical* ⇒ that sub-analysis's review cycle is done
+- For each sub-analysis: a fresh-context iteration reads the slice and finds nothing to fix ⇒ that sub-analysis is done; the next iteration moves on
 - `astra validate astra.yaml` returns clean (placeholders whose Evidence carries `doi:` without `quote:` are valid at this stage) ⇒ structural side validated; `--verify-evidence` waits until LITERATURE has authored the `quote:` + `location:` selectors
 - `targets/targets.md` exists with each entry mapped to a spec home ⇒ target-ledger done
 - `implementation-notes.md` exists ⇒ practical-guidance side done

@@ -2,7 +2,7 @@
 
 Reproduction of **<paper title>** (<arXiv ID>). DOI: <doi>. One-line subject: <e.g. "BAO scale measurement from DESI DR1">.
 
-The driving document for this reproduction is [`constitution.md`](constitution.md) — Goal, Fidelity intent, Scope, Quality bar, Evidence, and the running Rigor *Current state* per output. Every ralph iteration reads it on entry. This file (`CLAUDE.md`) is the auto-loading walk-up: rules + durable findings that stay useful past the reproduction (Open opportunities for future tightening, Paper-vs-code disagreements, pointers).
+The driving document for this reproduction is [`constitution.md`](constitution.md) — Goal, Fidelity intent, Scope, Quality bar, Evidence, Open dimensions. Every ralph iteration reads it on entry. This file (`CLAUDE.md`) is the auto-loading walk-up: rules + durable findings that stay useful past the reproduction (Open opportunities for future tightening, Paper-vs-code disagreements, pointers).
 
 ## Rules
 
