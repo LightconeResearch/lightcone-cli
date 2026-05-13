@@ -40,9 +40,9 @@ argument-hint: "[OPTIONAL ARG] [--flag VALUE]"
 
 - `##` for phase headings; lead with a "Stage banner" line that the
   skill prints to the chat.
-- `✓ / ○ / ✗` for status; never emojis except inside the agent's own
-  branded output.
-- Action prompts in bold sentences (`> "What are you trying to learn?"`).
+- `✓ / ○ / ✗` for status. Skip emoji elsewhere — they belong only
+  inside the agent's own branded banner output.
+- Action prompts in blockquotes (`> "What are you trying to learn?"`).
 - A `## Restrictions` (or `## Hard rules`) section at the end listing
   invariants Claude must not break.
 
@@ -62,7 +62,7 @@ call when a specific section is load-bearing for that skill's work.
 
 ## Spawning subagents
 
-Use `Task` with `subagent_type` to delegate work. The
+Use `Agent` with `subagent_type` to delegate work. The
 `lc-extractor` subagent in `agents/` is the canonical example:
 
 ```python
@@ -92,19 +92,7 @@ from lightcone.eval.cli import run_cmd
 
 ## Installing changes into an existing project
 
-`lc init` copies the plugin once. To pull updated skills into an
-existing project after editing them:
-
-```bash
-python - <<'PY'
-import shutil
-from pathlib import Path
-from lightcone.cli.plugin import get_plugin_source_dir
-src = get_plugin_source_dir()
-dst = Path(".claude/skills")
-if dst.exists(): shutil.rmtree(dst)
-shutil.copytree(src / "skills", dst)
-PY
-```
-
-(See [`lc update`](../cli/update.md) for the longer story.)
+`lc init` copies the plugin once and refuses to run a second time on
+the same directory. See [`lc update`](../cli/update.md) for the Python
+heredoc that resyncs all the plugin subdirs (`skills`, `agents`,
+`scripts`, `guides`, `templates`) into an existing project.
