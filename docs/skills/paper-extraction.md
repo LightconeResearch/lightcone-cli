@@ -4,7 +4,7 @@ Turn an arXiv ID or DOI into a standardized, indexed `work/reference/`
 directory: substrate (arXiv LaTeX source preferred, PDF + Docling
 fallback), copied figures, per-table `.tex` files, a section outline
 with line numbers, deduplicated citation keys with resolved DOIs, the
-abstract, and a stub `astra.yaml` treating the paper as an ASTRA
+abstract, and a stub `astra.yaml` that treats the paper as an ASTRA
 artifact.
 
 Source: [`claude/lightcone/skills/paper-extraction/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/paper-extraction/SKILL.md).
@@ -18,9 +18,9 @@ Argument hint: `<arxiv-id-or-doi>` — invoked as `/paper-extraction
 Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch
 ```
 
-The deterministic structural work is done by
-`scripts/extract-paper-substrate.py`; the agent runs it, then walks
-warnings and (optionally) fills `findings:`.
+The agent runs `scripts/extract-paper-substrate.py` for the
+deterministic structural pass, then walks any warnings and (optionally)
+fills `findings:`.
 
 ## Outputs
 
@@ -64,24 +64,23 @@ text.
 
 ## Workflow
 
-1. **Survey** — `ls work/reference/`; read `index.json` if present.
-   Skip work already done.
-2. **Acquire substrate** — Path A (arXiv → LaTeX source) or Path B
+1. **Survey.** `ls work/reference/`; read `index.json` if present. Skip
+   any work already done.
+2. **Acquire substrate.** Path A (arXiv → LaTeX source) or Path B
    (journal-only DOI → PDF + Docling).
-3. **Run the extraction script** — `extract-paper-substrate.py` does
-   the deterministic structural pass: figure copying, per-table
-   `.tex` extraction, outline, citation resolution, `astra.yaml`
-   stub.
-4. **Review warnings and fix structural gaps** — unresolved figures,
+3. **Run the extraction script.** `extract-paper-substrate.py` does
+   the deterministic structural pass: figure copying, per-table `.tex`
+   extraction, outline, citation resolution, `astra.yaml` stub.
+4. **Review warnings and fix structural gaps.** Unresolved figures,
    missing captions, unresolved citation DOIs, Path B caveats.
-5. **(Optional) Walk the paper for findings** — append the paper's
+5. **(Optional) Walk the paper for findings.** Append the paper's
    central numerical claims to `astra.yaml`'s `findings:` map with
    verbatim `quote.exact` evidence. Skip unless a downstream consumer
    needs it.
 
 Path A is preferred whenever the paper is on arXiv — equations,
-ligatures, captions, tables come through clean. Path B is for
-non-arxiv only.
+ligatures, captions, and tables come through clean. Path B is for
+non-arXiv only.
 
 ## Citation DOI resolution
 
