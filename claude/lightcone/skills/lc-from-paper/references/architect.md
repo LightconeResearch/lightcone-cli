@@ -18,7 +18,7 @@ ARCHITECT is what a ralph iteration does when the workdir signals "ACQUIRE subst
 ## Outputs
 
 - `astra.yaml` at the project root — **stub form**: sub-analyses named, architecture wired (inputs / outputs declared at the sub-analysis level), high-level `narrative:` prose blocks per analysis. **No `decisions:`, `prior_insights:`, `findings:`, or `astra-anchor:` references yet** — those entries don't exist for the narrative to reference.
-- `CLAUDE.md` updates: Rigor *Current state* appended with the stub's state (e.g. *stub: baseline* after a single-iteration write, *stub: tightened* if this iteration was a review pass that incorporated fixes).
+- `constitution.md` updates: Rigor *Current state* appended with the stub's state (e.g. *stub: baseline* after a single-iteration write, *stub: tightened* if this iteration was a review pass that incorporated fixes).
 
 ## Step 1 — Read the substrate, then write the stub
 
@@ -80,21 +80,15 @@ analyses:
 - **Validate before exit.** `astra validate astra.yaml` must return clean.
 - **Targeted reads, not whole-paper absorption.** The indices give you most of what you need; reach into the source / document / code for specific items, not as a default.
 
-After the stub is written and validates, commit it (`architect: stub astra.yaml`) and update `CLAUDE.md`'s Rigor with the stub's state (e.g. *stub: baseline*).
+After the stub is written and validates, commit it (`architect: stub astra.yaml`) and update the constitution's Rigor *Current state* with the stub's state (e.g. *stub: baseline*).
 
-## Review — the next iteration
+## Review-and-fix — the next iteration
 
-There is no in-iteration review-round mechanism. The ralph loop's iteration boundary *is* the fresh-context review: iteration N writes the stub; iteration N+1 reads it fresh and reviews; iteration N+2 applies fixes if any; the cycle terminates when two consecutive iterations find nothing to fix or after a 5-iteration cap on this artifact. The fresh-context-no-bias property is automatic at iteration boundaries.
+There is no in-iteration review-round mechanism. The ralph loop's iteration boundary *is* the fresh-context review, and it's a single pass: iteration N writes the stub; iteration N+1 reads it cold, reviews silently, applies any fixes inline, commits, and exits. Done. No intermediate findings file, no separate fix iteration, no second clean check. If the user wants more rigor than one review-and-fix pass delivers, that's a future loop (logged as an Open opportunity in CLAUDE.md).
 
-When a subsequent iteration enters, surveys, and finds the stub `astra.yaml` exists but `work/notes/architect/review-N.md` is missing (or the prior review iteration left findings to apply), this is what its work looks like:
+### When entering as the review-and-fix iteration
 
-### When entering as a review iteration
-
-Don't edit `astra.yaml` on the first review pass — read it fresh and write findings. Apply fixes in a follow-up iteration so the next fresh iteration can review the fixes too.
-
-Write findings to `work/notes/architect/review-<N>.md` (incrementing `<N>` based on existing files). For the first review iteration after the stub lands, `<N> = 1`; for the next, `<N> = 2`; and so on.
-
-### What to check
+The signal is "stub `astra.yaml` exists at project root, `decisions:` / `prior_insights:` / `findings:` blocks empty, no `architect: review-and-fix` commit yet in the log." Read the stub cold, then check:
 
 1. **Sub-analysis decomposition.** Right cuts? Consistent with `code-index.md`? Defensible against the paper where the paper compresses?
 2. **Sub-analysis IDs.** Noun phrases. No reserved-name collisions (`inputs`, `outputs`, `decisions`, `findings`, `prior_insights`, `analyses`, `options`, `content`, `narrative`).
@@ -103,29 +97,20 @@ Write findings to `work/notes/architect/review-<N>.md` (incrementing `<N>` based
 5. **Narrative coverage.** Root narrative includes a data-flow paragraph (when sub-analyses exist). Each sub-analysis's narrative accurately describes its role. No `astra-anchor:` references at this stage; flag any that snuck in.
 6. **Validates.** `astra validate astra.yaml` returns clean.
 
-### What NOT to do during review
+Apply fixes inline as you find them. Don't write a separate findings file — the diff against the prior commit is the record of what changed. Commit (`architect: review-and-fix stub`), update the constitution's Rigor *Current state* (e.g. *stub: tightened*), exit. The next iteration's survey moves on to SPECIFY.
+
+### What NOT to do during review-and-fix
 
 - Don't flag empty `decisions:` / `prior_insights:` / `findings:`. That's SPECIFY's territory.
-- Don't edit `astra.yaml` on the review iteration itself — write findings, exit, let the next iteration apply fixes (and the iteration after that re-review the fixes).
 - Don't re-read the entire paper or code. Use the indices and targeted reads.
-
-### Review-fix pass
-
-The iteration after the review-iteration reads `work/notes/architect/review-<N>.md`, applies the fixes to `astra.yaml`, commits (`architect: apply review-N fixes`), updates `CLAUDE.md`'s Rigor (e.g. *stub: tightened* after review-N fixes land), and exits. The iteration after *that* is the next review-iteration — fresh context, no memory of the prior round's fixes.
-
-### Termination
-
-- If two consecutive `work/notes/architect/review-<N>.md` files both have verdict `clean`, ARCHITECT is done; the next iteration's survey advances to SPECIFY.
-- If 5 review iterations have happened without two consecutive clean rounds, log the unfinished tail to `open-questions.md` ("ARCHITECT review reached round cap with N fixes still landing; user should review during REVIEW close-out") and let the next iteration advance to SPECIFY anyway. Don't loop forever on stub-level review.
-- If the iteration's fidelity-intent assessment calls for *cheap* — verdict `pass` on the first review-iteration is enough; skip the second-clean-round requirement and move on. The Rigor accumulator stays *stub: baseline*.
+- Don't open a second review pass on the same stub. One pass is the protocol; further tightening waits for a future loop.
 
 ## Survey signals (entry into ARCHITECT)
 
 - `work/reference/index.json` + `work/reference/astra.yaml` + `work/reference/code-index.md` (when code present) exist ⇒ ACQUIRE substrate is ready
 - `astra.yaml` at project root absent (or present-but-empty) ⇒ this iteration writes the stub
-- `astra.yaml` exists, validates clean, sub-analyses + inputs + outputs + narrative populated, `decisions:` / `prior_insights:` / `findings:` blocks present-and-empty, but no `work/notes/architect/review-1.md` ⇒ this iteration writes review-1
-- `review-N.md` exists with `needs-fixes` verdict, fixes not yet applied ⇒ this iteration applies the fixes
-- Two consecutive `review-<N>.md` files both `clean` ⇒ ARCHITECT done; next iteration surveys for SPECIFY
+- `astra.yaml` exists, validates clean, sub-analyses + inputs + outputs + narrative populated, `decisions:` / `prior_insights:` / `findings:` blocks present-and-empty, no `architect: review-and-fix` commit ⇒ this iteration is the review-and-fix
+- `architect: review-and-fix` commit landed ⇒ ARCHITECT done; next iteration surveys for SPECIFY
 
 ## Notes
 

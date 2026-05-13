@@ -13,8 +13,7 @@ LITERATURE is what a ralph iteration does when the workdir signals "SPECIFY done
 - `astra.yaml` — filled by SPECIFY's paper (and code) passes; each sub-analysis has `prior_insights:` entries shaped as syntactically-complete `Insight` blocks (`id`, `claim`, `created_at`, `evidence: [{id, doi}]`) where each Evidence carries a `doi:` but no `quote:` selector. These are the placeholders LITERATURE resolves by writing `quote: {exact, prefix, suffix}` and `location: {page}` onto each Evidence entry. The option↔insight linkage already lives on the option side (`Option.insights`); LITERATURE does not touch it.
 - `work/reference/index.json#citations` — paper-extraction's cite-key → `{locations, citation, doi}` mapping for every entry in the target paper's bibliography. Used as the canonical cite-key → DOI lookup when cross-checking placeholder DOIs and surfacing unresolved-DOI cases.
 - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) — target paper text. Grep into for context on how the cited paper is invoked, when a placeholder's claim is ambiguous.
-- `constitution.md` — Fidelity intent (used to size cheap vs heavy on this iteration's review).
-- CLAUDE.md — Rigor *Current state* per output (so this iteration knows where prior insights currently sit).
+- `constitution.md` — Fidelity intent; Rigor *Current state* per output (so this iteration knows where prior insights currently sit).
 
 ## Outputs
 
@@ -165,40 +164,23 @@ Rules:
 
 When the iteration fans out to Haikus, each Haiku is spawned with `model="haiku"` and gets this contract plus its assigned subset of placeholders and substrate paths.
 
-## Review by iteration boundary
+## Review-and-fix — the next iteration
 
-After the merge lands, the cross-check question is: do the `evidence:` quotes belong to the cited paper at the cited page? Do the quotes actually justify the placeholders' claims, or are they technically present but tangential? Do the claims actually support the decision options that reference them via `Option.insights`?
+After the merge lands, one fresh-context iteration reads cold, runs `astra validate --verify-evidence` for the deterministic check, does a semantic re-read of each resolved insight, applies fixes inline, commits, exits.
 
-The iteration that did the merge exits; the next iteration enters fresh, surveys, finds `astra.yaml`'s `prior_insights:` Evidence entries populated with resolved `quote:` + `location:` selectors but no `work/notes/literature-review/round-N.md`, runs `astra validate --verify-evidence` for the deterministic check + a semantic re-read of each resolved insight, and writes review findings. The iteration after that applies the fixes (which may include re-running Haiku quote-finding for entries that need a different quote). Two consecutive review-iterations with verdict `clean` terminates the review cycle.
+The cross-check questions on entry:
 
-Sized from the constitution's Fidelity intent: *cheap* — one clean review-iteration is enough; *heavy* — require two consecutive clean.
+1. **Evidence integrity.** `astra validate --verify-evidence` handles the deterministic check; do the semantic check yourself.
+2. **Evidence justifies claim.** Does the quote actually support the claim, or is it tangential?
+3. **Claim supports the decision.** Does the placeholder's claim justify the decision option that references it via `Option.insights`?
+4. **Cited paper is the right paper.** Does the target paper actually invoke this DOI for this claim?
+5. **Unresolved entries are honest.** For entries in `open-questions.md` flagged unresolved, does a closer read of the cited paper find supporting evidence the resolver missed?
 
-### Per-round fresh reviewer — prompt shape
+Apply fixes inline as you find them — `astra.yaml`'s `prior_insights:` entries (including re-running Haiku quote-finding for entries that need a different quote, when the gap is mechanical rather than semantic). Commit (`literature: review-and-fix`), update the constitution's Rigor *Current state* (e.g. *baseline → tightened*), exit. The next iteration's survey advances to IMPLEMENT.
 
-```
-You are a LITERATURE reviewer. Read astra.yaml's prior_insights:
-entries, the cited papers (substrate at work/cited/<doi-slug>/), and
-the target paper. Report inconsistencies. You are one of several
-independent reviewers; assume nothing has been fixed.
+If the entry genuinely has no supporting quote in the cited paper, log it to `open-questions.md` with a "no support found" note and leave the entry as-is for the user to resolve at REVIEW. Don't fabricate evidence.
 
-Check:
-  1. Evidence integrity. (astra validate --verify-evidence handles the
-     deterministic check; you do the semantic check.)
-  2. Evidence justifies claim. Does the quote actually support the
-     claim, or is it tangential?
-  3. Claim supports the decision. Does the placeholder's claim justify
-     the linked decision option?
-  4. Cited paper is the right paper. Does the target paper actually
-     invoke this DOI for this claim?
-  5. Unresolved entries are honest. For entries in open-questions.md
-     flagged unresolved, does a closer read of the cited paper find
-     supporting evidence the resolver missed?
-
-Output findings to work/notes/literature-review/round-<N>.md, one fix
-per F-N entry. Verdict is `clean` or a count. Do NOT edit astra.yaml.
-```
-
-If 5 review-iterations have happened without two consecutive clean rounds, log the unfinished tail in `open-questions.md` ("LITERATURE review reached round cap with N fixes still landing; user should review during REVIEW close-out") and let the next iteration advance to IMPLEMENT anyway. Don't loop forever on literature review.
+One pass. If LITERATURE needs more rigor than this delivers, that's an Open opportunity for a future loop.
 
 ## Survey signals (entry into LITERATURE)
 
@@ -207,8 +189,7 @@ If 5 review-iterations have happened without two consecutive clean rounds, log t
 - `work/notes/literature/resolutions.yaml` exists with non-empty resolutions / unresolved sections ⇒ quote-finding done
 - `astra.yaml`'s `prior_insights:` entries each have a resolved `quote:` (+ `location:`) selector on their Evidence ⇒ merge done
 - `astra validate astra.yaml --verify-evidence` returns clean ⇒ structural validation done
-- For cheap: at least one `work/notes/literature-review/round-<N>.md` with verdict `clean` (or no fixes were incorporated) ⇒ LITERATURE review done
-- For heavy: two consecutive `round-<N>.md` files with verdict `clean` ⇒ LITERATURE review done
+- A `literature: review-and-fix` commit lands ⇒ LITERATURE review-and-fix done
 
 When all of the above hold ⇒ LITERATURE complete; the next iteration surveys and advances to IMPLEMENT.
 
@@ -220,4 +201,4 @@ When all of the above hold ⇒ LITERATURE complete; the next iteration surveys a
 - **Resume is automatic.** If `work/cited/<doi-slug>/work/reference/index.json` exists, skip that DOI's fetch. If `work/notes/literature/resolutions.yaml` has an entry for a placeholder, skip that placeholder's quote-finding.
 - **Unresolved is not failure.** A placeholder that no quote in the cited paper supports is a real signal — the target paper cited loosely or paraphrased beyond what the source actually says. Surface to `open-questions.md`; don't fabricate evidence.
 - **`astra validate --verify-evidence` runs after the merge**, not after each Haiku's per-placeholder output. Haikus write to disjoint files; the deterministic check happens once `astra.yaml` is updated.
-- **Commit per stage.** Fetches commit together once Stage 1 completes (one commit for all cited-paper substrates). Quote-finding commits together once Stage 2 completes (`resolutions.yaml` + Haiku files). The merge into `astra.yaml` is its own commit. Each review round file commits as it lands. The next iteration reads `git log` to see progress.
+- **Commit per stage.** Fetches commit together once Stage 1 completes (one commit for all cited-paper substrates). Quote-finding commits together once Stage 2 completes (`resolutions.yaml` + Haiku files). The merge into `astra.yaml` is its own commit. The review-and-fix iteration commits its diff. The next iteration reads `git log` to see progress.

@@ -62,19 +62,19 @@ user's main session; phases 2–7 run as ralph iterations.
 INTERVIEW drafts two files in the reproduction workdir; every
 iteration picks them up on launch.
 
-- **`constitution.md`** — the ralph loop's driving document. YAML
-  frontmatter declares `status: active`. Sections: Goal (carrying the
-  **fidelity intent** — the user's own "when is this good enough"),
-  Scope (in/out), Quality bar, Evidence (paper DOI, arXiv ID, code
-  repo URL), Open dimensions. Sharpens slowly, only when something
-  fundamental shifts.
-- **`CLAUDE.md`** — the auto-loading walk-up. Paper identity at the
-  top; Rules (code-as-canonical, no blocking on `AskUserQuestion`
-  mid-iteration, arXiv-LaTeX-first, `astra validate
-  --verify-evidence` as the fidelity gate); Rigor accumulator
-  (*Current state* per output plus *Open opportunities*, updated each
-  iteration); Disagreements log (running, also updated each
-  iteration); Pointers.
+- **`constitution.md`** — the ralph loop's driving document, *task-bound*.
+  YAML frontmatter declares `status: active`. Top half (sharpens slowly):
+  Goal (carrying the **fidelity intent** — the user's own "what do you
+  want out of this stretch, given what you have to spend on it"), Scope
+  (in/out), Quality bar, Evidence (paper DOI, arXiv ID, code repo URL).
+  Bottom half (updates each iteration): Rigor *Current state* per
+  output, Open dimensions. Archivable once the reproduction closes.
+- **`CLAUDE.md`** — the auto-loading walk-up, *durable*. Paper identity
+  at the top; Rules (code-as-canonical, no blocking on `AskUserQuestion`
+  mid-iteration, arXiv-LaTeX-first, `astra validate --verify-evidence`
+  as the fidelity gate); Disagreements log (running); Open opportunities
+  (gaps that future work could tighten); Pointers. Stays useful for any
+  follow-on work in this directory.
 
 Pointers, not snapshots.
 
@@ -83,11 +83,12 @@ Pointers, not snapshots.
 - **Workdir is the state.** File existence, `git log`, and `astra
   validate` answer "what phase am I on" deterministically — no
   separate state machine.
-- **CLAUDE.md is a state-expresser too.** Beyond the workdir's
-  ground-truth files, CLAUDE.md carries running pointers — Rigor
-  accumulator, Disagreements log, paper identity. Each iteration
-  keeps those pointers current so the next cold survey reads them
-  as fact.
+- **Constitution is task-bound; CLAUDE.md is durable.** The constitution
+  carries what *this reproduction* is trying to achieve and how it's
+  progressing — archivable once the reproduction closes. CLAUDE.md carries
+  what stays useful past the reproduction: paper identity, rules,
+  paper-vs-code disagreements, pointers to substrate. Keep both current
+  so the next cold survey reads them as fact.
 - **Code-as-canonical, with disagreements recorded.** Where paper
   and code disagree on something material, code wins for numerics,
   but the disagreement is preserved as a decision option and noted
@@ -95,10 +96,13 @@ Pointers, not snapshots.
 - **Rigor is a trajectory toward the user's intent.** Fidelity
   intent is partly aesthetic ("how good does this need to be?") and
   partly pragmatic ("what's feasible given the compute, tokens, and
-  time available?"). The honest meta-conversation lives in INTERVIEW;
-  each iteration then sizes its work from the gap between *Current
-  state* and that intent. Review happens sequentially via iteration
-  boundaries.
+  wall-clock available?"). The honest meta-conversation lives in
+  INTERVIEW; each iteration then sizes its work from the gap between
+  the constitution's Rigor *Current state* and that intent. The
+  per-artifact protocol is simple: iteration N writes, iteration N+1
+  reads cold and does one review-and-fix pass. Outputs that need
+  more rigor than that delivers become Open opportunities in
+  CLAUDE.md for a future loop.
 - **arXiv LaTeX first.** PDF + Docling is the non-arXiv fallback only.
 - **No synthetic data.** Unless the paper itself uses synthetic data,
   every input must be real.

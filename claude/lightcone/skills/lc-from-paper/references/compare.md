@@ -2,7 +2,7 @@
 
 Compare reproduced results against the paper's replication targets. COMPARE returns two things: a **verdict** (pass / partial / fail) and an **opportunity assessment** — where the gaps are, how much they likely matter, and how they sit relative to the user's fidelity intent in `constitution.md`'s Goal section. The verdict drives whether a subsequent iteration retries IMPLEMENT; the opportunity assessment tells the next iteration (and the user at REVIEW) which gaps fall below intent and would be high-leverage to close, even on `pass`. Together they replace the old yes/no framing.
 
-COMPARE is what a ralph iteration does when the workdir signals "RUN done (`results/` materialized) + `comparison-report.yaml` absent or stale relative to latest RUN." The iteration writes the report; what happens next depends on the verdict and the iteration's read of the constitution's Fidelity intent. If verdict is `partial`/`fail` AND an opportunity is below intent AND attempt budget remains, the next iteration takes a retry attempt at IMPLEMENT against the failing outputs first. If verdict is `pass` AND no opportunities are below intent (or budget is exhausted), the iteration logs un-acted opportunities into CLAUDE.md's **Rigor** *Open opportunities*; a subsequent cold-survey iteration with no contributions closes the constitution and REVIEW runs in the user's main session.
+COMPARE is what a ralph iteration does when the workdir signals "RUN done (`results/` materialized) + `comparison-report.yaml` absent or stale relative to latest RUN." The iteration writes the report; what happens next depends on the verdict and the iteration's read of the constitution's Fidelity intent. If verdict is `partial`/`fail` AND an opportunity is below intent AND attempt budget remains, the next iteration takes a retry attempt at IMPLEMENT against the failing outputs first. If verdict is `pass` AND no opportunities are below intent (or budget is exhausted), the iteration logs un-acted opportunities into CLAUDE.md's *Open opportunities*; a subsequent cold-survey iteration with no contributions closes the constitution and REVIEW runs in the user's main session.
 
 ## Inputs
 
@@ -101,7 +101,7 @@ Also write `comparison-report.md` with a human-readable summary. For figure / ta
 After writing the report, the iteration acts against the fidelity intent (iterations run detached; the user isn't reachable interactively):
 
 - If attempt < budget AND (verdict is `partial` / `fail` OR any opportunity is `below` intent), commit the report, exit. The next iteration surveys, sees the report's `below`-intent opportunities, and takes a retry attempt at IMPLEMENT targeting those gaps first.
-- If verdict is `pass` AND no opportunities are `below` intent, OR attempt budget is exhausted, log un-acted opportunities into CLAUDE.md's **Rigor** *Open opportunities* list, commit. A subsequent cold-survey iteration (no contributions) closes the constitution by flipping `status:` to `closed`, and REVIEW close-out runs in the user's main session.
+- If verdict is `pass` AND no opportunities are `below` intent, OR attempt budget is exhausted, log un-acted opportunities into CLAUDE.md's *Open opportunities* list, commit. A subsequent cold-survey iteration (no contributions) closes the constitution by flipping `status:` to `closed`, and REVIEW close-out runs in the user's main session.
 
 The verdict is the iteration's judgment from the data; the **decision to keep iterating or close** happens by iteration boundary — one iteration writes the report and the take, the next surveys and decides whether to retry or accept. The opportunity assessment — graded against the user's fidelity intent — is the bridge that turns a binary verdict into a picture the next iteration (and REVIEW) can navigate.
 
@@ -109,10 +109,10 @@ The verdict is the iteration's judgment from the data; the **decision to keep it
 
 - All outputs in `lc status --universe baseline` are `ok` ⇒ ready to compare
 - `comparison-report.yaml` exists with current `attempt` ⇒ COMPARE done for this attempt
-- `comparison-report.yaml` verdict is `pass` (or `partial` with un-acted opportunities logged to CLAUDE.md as Open opportunities) ⇒ COMPARE → IMPLEMENT loop terminated; the next cold-survey iteration closes the constitution and REVIEW runs in the user's main session
+- `comparison-report.yaml` verdict is `pass` (or `partial` with un-acted opportunities logged into CLAUDE.md's Open opportunities) ⇒ COMPARE → IMPLEMENT loop terminated; the next cold-survey iteration closes the constitution and REVIEW runs in the user's main session
 
 ## Notes
 
 - **One COMPARE per IMPLEMENT.** Each IMPLEMENT retry produces a fresh COMPARE; the report's `attempt` field increments. Do not overwrite prior reports — keep them at `comparison-report-attempt-<N>.yaml` if useful, or commit each between attempts so `git log` carries the history.
 - **The verdict is the iteration's judgment from the data; the keep-iterating decision happens at iteration boundary.** One iteration writes the report and the take on what should happen next; the next iteration surveys, reads the take, and either retries or accepts. The user's voice enters at REVIEW close-out, not mid-loop.
-- **The opportunity assessment is part of the durable record.** When the user accepts the current verdict, propagate the un-acted-on opportunities into CLAUDE.md's **Rigor** section's *Open opportunities* list. Future sessions and future-Cail returning to this reproduction see them; tightening any becomes a future IMPLEMENT pass against a clearer target.
+- **The opportunity assessment stays accessible past close-out.** Un-acted-on opportunities sit in CLAUDE.md's *Open opportunities* list — durable, auto-loaded on any future Claude Code session in this workdir. Tightening any becomes a future IMPLEMENT pass against a clearer target.

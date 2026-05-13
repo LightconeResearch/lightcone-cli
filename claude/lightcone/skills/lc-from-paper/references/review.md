@@ -2,7 +2,7 @@
 
 The reproduction has converged: the constitution's `status:` is `closed` (after COMPARE returned `pass`, or `partial` with the un-acted opportunities logged, and the next cold-survey iteration found nothing left to do). The ralph loop's tmux session has exited. REVIEW runs back in the user's main session — the second of two interactive bookends, the first being INTERVIEW. It runs in the user's main session (not as an iteration) because both `/figure-comparison` and `/check-sentence-by-sentence` use `AskUserQuestion`, which isn't available inside detached ralph iterations.
 
-Its job is to render the validation surfaces, walk the user through the accumulated open questions, land the resolutions, draft the final report, and propagate any un-acted-on opportunities from the latest COMPARE into CLAUDE.md's **Rigor** section — in one interactive arc.
+Its job is to render the validation surfaces, walk the user through the accumulated open questions, land the resolutions, and draft the final report — in one interactive arc. The Open opportunities list in CLAUDE.md already carries un-acted-on opportunities from the latest COMPARE (those iterations logged them directly); REVIEW just reads them.
 
 The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding into ARCHITECT, SPECIFY, LITERATURE, and IMPLEMENT as their per-iteration self-review passes. This close-out is what the previous shape called SUMMARIZE_RUN.
 
@@ -15,8 +15,8 @@ The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding
 - `open-questions.md` at the workdir root — running report from the iteration-phases (paper-vs-code conflicts, ambiguities, anything iterations flagged for user resolution)
 - `work/reference/index.json` and `work/reference/code-index.md` — for context
 - `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) and `work/reference/code/` — directly available for follow-up questions the user asks during REVIEW that the report and CLAUDE.md don't answer ("remind me what the paper says about X", "did the original code do Y"). Grep into for specifics; read targeted spans by offset/limit.
-- `CLAUDE.md` at the workdir root — paper identity, Rules, Rigor, Paper-vs-code disagreements (the at-a-glance summary that's accumulated across iterations)
-- `constitution.md` at the workdir root — Goal, Fidelity intent, Scope, Quality bar, Evidence (the driving document the loop has been working against)
+- `CLAUDE.md` at the workdir root — paper identity, Rules, Paper-vs-code disagreements, Open opportunities (the durable surface, accumulated across iterations)
+- `constitution.md` at the workdir root — Goal, Fidelity intent, Scope, Quality bar, Evidence, Rigor *Current state* (the driving document the loop has been working against)
 
 ## Outputs
 
@@ -25,7 +25,7 @@ The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding
 - `open-questions.md` — same file, but with `## Resolutions` section appended capturing what the user said for each entry
 - Edits to `astra.yaml` / `implementation-notes.md` / `universes/baseline.yaml` if any open-question resolution warrants a spec change
 - `REPRODUCTION-SUMMARY.md` — final report; concise (~1–2 pages); the canonical record of what the reproduction landed on
-- CLAUDE.md updates — *Open opportunities* list under **Rigor** propagated from COMPARE's un-acted-on opportunities; **Paper-vs-code disagreements** entries reconciled with their resolutions
+- CLAUDE.md updates — **Paper-vs-code disagreements** entries reconciled with their resolutions (Open opportunities already there from COMPARE iterations)
 - A commit closing out the reproduction
 
 ## Step 1: render the validation surfaces
@@ -67,18 +67,16 @@ A single markdown file at the project root, ~1–2 pages. The canonical record o
 2. **Verdict** — pass / partial. If partial, what failed and why we accepted it.
 3. **Material decisions** — the paper-vs-code conflicts SPECIFY's code pass (and any IMPLEMENT pass) surfaced, what the user chose (in prose ratification or by canonical-resolution default), and why.
 4. **Outputs** — pointers to the figures / tables / metrics produced. One bullet per primary target with the path to the reproduced result and a one-line match note from the comparison report.
-5. **Open opportunities** — pull from `comparison-report.yaml`'s `opportunities:` block, plus anything in CLAUDE.md's **Rigor** section's *Open opportunities* list. One bullet each with the leverage assessment. This is what a future session (or a future-Cail revisiting) would tighten next.
+5. **Open opportunities** — pull from CLAUDE.md's *Open opportunities* list (already carries un-acted-on opportunities from the latest COMPARE), plus anything fresh in `comparison-report.yaml`'s `opportunities:` block not yet reflected there. One bullet each with the leverage assessment. This is what a future session (or a future-Cail revisiting) would tighten next.
 6. **What was learned** — anything the reproduction surfaced that wasn't visible from the paper alone (a parameter the code uses but the paper doesn't mention, a data cut stricter than stated, etc.). The reproduction's value to the broader literature.
 7. **Resolved open questions** — pull from `open-questions.md`'s `## Resolutions` section. One bullet per question + its resolution.
 8. **Re-running** — one paragraph: how to re-run from this workdir (`lc run --universe baseline`, the relevant `astra.yaml`, where CLAUDE.md lives so future Claude Code sessions auto-load it on walk-up).
 
 Brief, not exhaustive. The depth lives in `astra.yaml` and the workdir's notes; the summary is the door into them.
 
-## Step 4: propagate opportunities into CLAUDE.md
+## Step 4: reconcile the Open opportunities list
 
-For each opportunity in `comparison-report.yaml`'s `opportunities:` block that the user did NOT act on (i.e. they accepted the current verdict and chose to land here), append it to CLAUDE.md's **Rigor** section's *Open opportunities* list. Format: `<area> — <what could be tightened> — <leverage>`. This is what future sessions and future loop re-launches walk up to; it's how the reproduction stays honest about what's at sketch / baseline / tightened / canonical rigor across its outputs.
-
-If the user acted on an opportunity (e.g. authorized one more IMPLEMENT round to close a gap), it doesn't go in the open list — but its closure is worth noting in *Current state* (e.g. *Figure 3: tightened* if the systematics treatment got a heavier pass).
+COMPARE iterations have been logging un-acted-on opportunities into CLAUDE.md's *Open opportunities* list as they run, so the list is already populated. REVIEW's job here is reconciliation: cross-check that every opportunity in `comparison-report.yaml`'s `opportunities:` block that the user did NOT act on is present in CLAUDE.md's list, and remove any that the user acted on at REVIEW (e.g. authorized one more IMPLEMENT round to close). Note any acted-on closures in the constitution's Rigor *Current state* (e.g. *Figure 3: tightened* if the systematics treatment got a heavier pass).
 
 ## Step 5: commit
 
@@ -96,7 +94,7 @@ This commit is the durable mark that the reproduction has reached close-out. Fut
 - `.lightcone/comparison.html` exists ⇒ `/figure-comparison` rendered
 - `open-questions.md` has a `## Resolutions` section covering every entry ⇒ open-questions walkthrough done
 - `REPRODUCTION-SUMMARY.md` exists ⇒ final report written
-- CLAUDE.md's **Rigor** section's *Open opportunities* list reflects the un-acted-on opportunities from the latest COMPARE ⇒ propagation done
+- CLAUDE.md's *Open opportunities* list reflects the un-acted-on opportunities from the latest COMPARE ⇒ reconciliation done
 - A `review:` commit lands ⇒ REVIEW done; reproduction complete
 
 ## Notes

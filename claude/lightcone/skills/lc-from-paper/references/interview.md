@@ -10,8 +10,8 @@ The interview is short. Three to six `AskUserQuestion` rounds, total. The user d
 
 Two files at the reproduction workdir root:
 
-- **`constitution.md`** — drafted from [`../templates/constitution.md`](../templates/constitution.md). YAML frontmatter `status: active`, then Goal, Fidelity intent, Scope (in / out), Quality bar, Evidence (paper DOI, arXiv ID, code repo URL, where the substrate lives), Open dimensions. The ralph loop's driving document; each iteration reads it on entry. Sharpens slowly; the user can revise it at any point (including mid-loop — successive iterations re-read it).
-- **`CLAUDE.md`** — drafted from [`../templates/CLAUDE.md`](../templates/CLAUDE.md). Paper identity at the top (DOI, title, one-line subject), Rules (universal across reproductions; leave the template's defaults), Rigor accumulator (starts empty; iterations append), Disagreements log (starts empty; iterations append), Pointers (to `constitution.md`, `work/reference/`, etc.). The auto-loading walk-up; every Claude Code session in the workdir picks it up.
+- **`constitution.md`** — drafted from [`../templates/constitution.md`](../templates/constitution.md). YAML frontmatter `status: active`, then Goal, Fidelity intent, Scope (in / out), Quality bar, Evidence (paper DOI, arXiv ID, code repo URL, where the substrate lives), Rigor *Current state* per output (starts empty; iterations append), Open dimensions. The ralph loop's driving document; each iteration reads it on entry. The top half (Goal, Scope, Quality bar, Evidence) sharpens slowly; the bottom half (Rigor *Current state*) is updated each iteration. Task-bound — archivable once the reproduction closes.
+- **`CLAUDE.md`** — drafted from [`../templates/CLAUDE.md`](../templates/CLAUDE.md). Paper identity at the top (DOI, title, one-line subject), Rules (universal across reproductions; leave the template's defaults), Disagreements log (starts empty; iterations append), Open opportunities (starts empty; iterations append), Pointers (to `constitution.md`, `work/reference/`, etc.). The auto-loading walk-up; every Claude Code session in the workdir picks it up. Durable — stays useful for any follow-on work in this directory once the reproduction lands.
 
 There is no separate "constitution skill" invocation — `/ralph`'s Authoring mode (Study → Draft → Refine → Launch) is what you're following here; the constitution authoring discipline + reference materials live there. Pull the discipline mentally; the deliverable is these two markdown files.
 
@@ -29,7 +29,7 @@ Use `AskUserQuestion` for whatever the user did not supply on `/lc-from-paper` i
 
 - **DOI or arXiv ID.** arXiv ID preferred when available — it unlocks the LaTeX-source acquisition path (see ACQUIRE).
 - **Code repo URL** if the user knows it. (If not, ACQUIRE will search.) When code is available, every iteration that touches a sub-analysis reads from `work/reference/code/` and treats code as canonical for numerics + method. This is recorded in CLAUDE.md's Rules.
-- **User's prior familiarity.** Has the user reproduced this paper before? Read it recently? Worked with the original authors? Affects how much you'd lean toward heavy in-iteration review on first iterations.
+- **User's prior familiarity.** Has the user reproduced this paper before? Read it recently? Worked with the original authors? Useful context for the iterations (and for the user at REVIEW).
 - **Notes file.** If the user has any prior notes (their own writeup, a sketch of which figures matter), capture the path; iterations will read it during ARCHITECT.
 
 ### 2. Scope the reproduction
@@ -50,19 +50,19 @@ A reproduction can land anywhere from a quick "does this even run" sanity check 
 
 The job is to **elicit prose intent** — the user's own words for what "good enough" looks like for this stretch — and capture it into `constitution.md`'s Goal section. Reach for whichever pivot fits; you usually only need one or two:
 
-- *"What's the right shape for this stretch — a quick check that the analysis is tractable, getting one specific figure right, or a full match across primary targets? How much compute and time do you have to spend on it?"*
+- *"What's the right shape for this stretch — a quick check that the analysis is tractable, getting one specific figure right, or a full match across primary targets? How much compute and wall-clock do you have to spend on it?"*
 - *"Is there a specific result you care about more than the rest, where you'd want full fidelity even if the others stay rough?"*
 - *"Are you trying to verify the paper, build on it, or critique it? That shifts where the fidelity bar wants to sit."*
-- *"If this took several sessions to reach high fidelity everywhere, is that the right investment? Or would a working version in a couple of sessions be enough to decide where to push further?"*
+- *"If this took a few days of iteration to reach high fidelity everywhere, is that the right investment? Or would a working version overnight be enough to decide where to push further?"*
 
 Record the answer verbatim or in close paraphrase under **Fidelity intent** in `constitution.md`'s Goal section. Concrete examples of what good prose intent looks like:
 
-- *"Just checking if the analysis is tractable — quick sanity that some headline number comes out close."*
-- *"I care about Figure 3 being right. The rest can stay rough."*
-- *"Full fidelity on the BAO fit specifically; the rest can stay rough. One session of compute."*
-- *"Every primary and secondary target lining up within stated tolerance, every paper-vs-code conflict adjudicated. Two sessions max."*
+- *"Just checking if the analysis is tractable — quick sanity that some headline number comes out close. An afternoon."*
+- *"I care about Figure 3 being right. The rest can stay rough. Overnight if needed."*
+- *"Full fidelity on the BAO fit specifically; the rest can stay rough. A day or two."*
+- *"Every primary and secondary target lining up within stated tolerance, every paper-vs-code conflict adjudicated. No hard deadline."*
 
-Each iteration reads this when sizing its next move, and COMPARE grades opportunities against it. If the user genuinely doesn't know yet, write that — *"Not sure yet; let's get something running and revisit"* is itself useful intent, and they can sharpen it at any future REVIEW.
+Time/compute bounds are part of the intent — the user's spendable budget shapes what "good enough" can mean for this stretch. Each iteration reads the intent when sizing its next move; COMPARE grades opportunities against it. If the user genuinely doesn't know yet, write that — *"Not sure yet; let's get something running and revisit"* is itself useful intent, and they can sharpen it at any future REVIEW.
 
 ### 4. Paper-specific conventions or warnings
 
@@ -75,7 +75,7 @@ Light touch. Ask the user if there's anything they want every iteration to know 
 Open both templates side-by-side:
 
 - [`../templates/constitution.md`](../templates/constitution.md) — fill in the header, Goal (with fidelity intent), Scope (in / out), Quality bar, Evidence (paper DOI, arXiv ID, code repo URL — these are the user-supplied identifiers; the substrate-path bullets in the template stay as boilerplate, naming where each substrate lives on disk), Open dimensions. Leave the YAML frontmatter `status: active` intact.
-- [`../templates/CLAUDE.md`](../templates/CLAUDE.md) — fill in the header (paper title + arXiv ID + DOI + one-line subject), any paper-specific Pointers. Leave Rules in the template state (universal across reproductions). Leave Rigor and Disagreements sections empty — iterations populate them.
+- [`../templates/CLAUDE.md`](../templates/CLAUDE.md) — fill in the header (paper title + arXiv ID + DOI + one-line subject), any paper-specific Pointers. Leave Rules in the template state (universal across reproductions). Leave the Disagreements log and Open opportunities sections empty — iterations populate them.
 
 Show both drafts to the user, take corrections, refine, save. Then `git init` the workdir if it isn't one already (per SKILL.md's *Setup: git-tracked workdir* discipline) and commit both as the first commit.
 
