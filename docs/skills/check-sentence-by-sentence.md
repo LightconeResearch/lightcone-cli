@@ -23,7 +23,7 @@ execution.
 
 ## Setup
 
-1. **Confirm project root** — `astra.yaml` in cwd, or ask the user to
+1. **Confirm project root.** `astra.yaml` in cwd, or ask the user to
    `cd` to the ASTRA project.
 2. **Confirm paper source.** Resolve in order:
    - A `.tex` argument → `tex` mode.
@@ -54,10 +54,10 @@ Audit-relevant sections: methodology, results, discussion,
 appendices. Skip abstract, introduction, acknowledgements,
 references, author lists.
 
-Each leaf (sub)section becomes one parallel sub-agent dispatch — a
-section with subsections spawns one sub-agent per subsection plus
-optionally one for any pre-subsection prose span. Spawn them in a
-single message so they run in parallel.
+Each leaf (sub)section becomes one sub-agent. A section with
+subsections spawns one sub-agent per subsection, plus optionally one
+more for any pre-subsection prose span. Issue them in a single
+tool-use block so they run in parallel.
 
 ## Per-sub-agent output
 
@@ -95,11 +95,12 @@ appendices, with each entry's `quote`, `location`, and `note`.
 - **No execution.** Numerical results can be located at the line that
   computes them, but agreement isn't verifiable here. Use a note like
   "value computed at runtime".
-- **Quote verbatim**, trimmed to one sentence. Long sentences may keep
+- **Quote verbatim.** Trim to one sentence; long sentences may keep
   just the claim-bearing clause.
-- **`file:line` is specific** — the function call, parameter
-  assignment, or computed value, not just a file.
-- **Read only the assigned line range** in each sub-agent.
+- **`file:line` is specific.** The function call, parameter assignment,
+  or computed value — not just a file.
+- **Read only the assigned line range.** Each sub-agent stays inside
+  its window.
 
 ## When to invoke
 
