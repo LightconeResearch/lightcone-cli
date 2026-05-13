@@ -273,7 +273,7 @@ def init(
     console.print("\nNext steps:")
     console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
     console.print("  • Start [cyan]claude[/cyan]")
-    console.print("  • Run [cyan]/lightcone:new[/cyan] to get started on a new analysis")
+    console.print("  • Run [cyan]/lc-new[/cyan] to get started on a new analysis")
 
 
 _CONTAINERFILE = """\
