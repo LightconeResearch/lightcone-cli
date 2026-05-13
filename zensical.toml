@@ -22,6 +22,10 @@ nav = [
   ]},
   {"Maintainer Docs" = [
     {"Architecture" = "architecture.md"},
+    {"Contributing" = [
+      {"Development Setup" = "contributing/setup.md"},
+      {"Testing" = "contributing/testing.md"},
+    ]},
     {"CLI Reference" = [
       {"Overview" = "cli/index.md"},
       {"lc init" = "cli/init.md"},
@@ -56,10 +60,6 @@ nav = [
       {"figure-comparison" = "skills/figure-comparison.md"},
       {"check-sentence-by-sentence" = "skills/check-sentence-by-sentence.md"},
       {"Authoring Skills" = "skills/authoring.md"},
-    ]},
-    {"Contributing" = [
-      {"Development Setup" = "contributing/setup.md"},
-      {"Testing" = "contributing/testing.md"},
     ]},
   ]},
 ]
