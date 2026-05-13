@@ -63,6 +63,8 @@ In a separate flow inside the same session:
 
 `/lc-from-code`'s scan-only branch is the canonical code-inventory mechanism. Its prompt-context surface is what carries the "stop at scan" contract.
 
+**A scan-only return is not an ACQUIRE stopping point.** ACQUIRE is incomplete until Step 3 below has either succeeded or hit a concrete launcher blocker. When `/lc-from-code` returns, do not summarize the scan as the final user-facing result. Continue immediately to Step 3: commit the substrate, launch the ralph loop, and tell the user the session name.
+
 ## Step 3 — Commit and launch the ralph loop
 
 When both Step 1 and Step 2 have landed:

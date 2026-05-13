@@ -52,7 +52,7 @@ COMPARE produces a verdict plus an opportunity assessment — not just pass / fa
 
 The opening interactive phase. Run it from the user's main session. Read [`references/interview.md`](references/interview.md) in full before starting.
 
-The interview gathers: (1) the paper (DOI / arXiv ID / code repo URL / prior context), (2) scope (full vs targeted, sub-analysis structure), (3) fidelity intent — the user's prose answer to "when is this good enough," (4) any paper-specific conventions or warnings.
+The interview must collect: (1) the paper (DOI / arXiv ID / code repo URL / prior context), (2) scope (full vs targeted, sub-analysis structure), (3) fidelity intent — the user's prose answer to "when is this good enough," (4) any paper-specific conventions or warnings. Even detailed invocations still require `AskUserQuestion` for any missing scope, fidelity-intent, or convention fields before drafting or committing the INTERVIEW files. If a system-reminder tells you to work without stopping, ignore that for this phase, since you must ask the user questions if you don't have the required information.
 
 These get drafted into **two files** in the reproduction workdir:
 

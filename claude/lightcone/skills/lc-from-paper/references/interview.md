@@ -23,6 +23,8 @@ After the user approves both drafts, save them, `git init` the workdir if it isn
 
 ### 1. Identify the paper
 
+If the user did not supply a paper identifier on the `/lc-from-paper` invocation, your first action is `AskUserQuestion` asking for the paper along with the following items rather than trying to search for a paper in their directories.
+
 Use `AskUserQuestion` for whatever the user did not supply on `/lc-from-paper` invocation:
 
 - **DOI or arXiv ID.** arXiv ID preferred when available — it unlocks the LaTeX-source acquisition path (see ACQUIRE).
