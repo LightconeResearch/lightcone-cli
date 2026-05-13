@@ -46,23 +46,23 @@ These answers go into `constitution.md`'s **Scope** section (in / out) and infor
 
 ### 3. Fidelity intent
 
-A reproduction can land anywhere from a quick "does this even run" sanity check to a full match across every primary and secondary target. The user owns where they want this one to land. The job here is to **elicit prose intent** — their own words for what "good enough" looks like, captured into `constitution.md`'s Goal section.
+A reproduction can land anywhere from a quick "does this even run" sanity check to a full match across every primary and secondary target. The user owns where they want this one to land — but where it *can* land in this stretch depends on the compute, tokens, time, and attention available. The honest meta-conversation is the point: what does the user want out of this first stretch, given what's spendable on it? Don't ask the abstract "what would you like to get out of this" — too literal, lands as a wish list. Pivot on what's actually being weighed.
 
-Reach for whichever pivot fits the conversation; you usually only need one or two:
+The job is to **elicit prose intent** — the user's own words for what "good enough" looks like for this stretch — and capture it into `constitution.md`'s Goal section. Reach for whichever pivot fits; you usually only need one or two:
 
-- *"What's the moment you'd call this reproduction useful — when any number comes out at all, when a specific figure matches in shape, when the headline number matches within stated uncertainty, or when every primary and secondary target lines up?"*
+- *"What's the right shape for this stretch — a quick check that the analysis is tractable, getting one specific figure right, or a full match across primary targets? How much compute and time do you have to spend on it?"*
 - *"Is there a specific result you care about more than the rest, where you'd want full fidelity even if the others stay rough?"*
-- *"If this took several sessions of iteration to reach high fidelity everywhere, is that the right investment, or would you rather get a working version in a couple of sessions and decide later whether to push further?"*
 - *"Are you trying to verify the paper, build on it, or critique it? That shifts where the fidelity bar wants to sit."*
+- *"If this took several sessions to reach high fidelity everywhere, is that the right investment? Or would a working version in a couple of sessions be enough to decide where to push further?"*
 
 Record the answer verbatim or in close paraphrase under **Fidelity intent** in `constitution.md`'s Goal section. Concrete examples of what good prose intent looks like:
 
 - *"Just checking if the analysis is tractable — quick sanity that some headline number comes out close."*
 - *"I care about Figure 3 being right. The rest can stay rough."*
-- *"Full fidelity on the BAO fit specifically; the rest can stay rough."*
-- *"Every primary and secondary target lining up within stated tolerance, every paper-vs-code conflict adjudicated."*
+- *"Full fidelity on the BAO fit specifically; the rest can stay rough. One session of compute."*
+- *"Every primary and secondary target lining up within stated tolerance, every paper-vs-code conflict adjudicated. Two sessions max."*
 
-Each iteration reads this when deciding cheap vs heavy on the next move; COMPARE grades opportunities against it. If the user genuinely doesn't know yet, write that — *"Not sure yet; let's get something running and revisit"* is itself useful intent, and they can sharpen it at any future REVIEW.
+Each iteration reads this when sizing its next move, and COMPARE grades opportunities against it. If the user genuinely doesn't know yet, write that — *"Not sure yet; let's get something running and revisit"* is itself useful intent, and they can sharpen it at any future REVIEW.
 
 ### 4. Paper-specific conventions or warnings
 

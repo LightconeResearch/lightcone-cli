@@ -31,14 +31,14 @@ Two pieces.
    drafted (INTERVIEW) and the substrate is on disk (ACQUIRE),
    `/lc-from-paper` launches a ralph loop against the constitution.
    Each iteration starts a fresh tmux-detached Claude session with
-   the constitution as system prompt, surveys the workdir, picks the
-   next valuable move (typically one phase's worth of work), does
-   it, commits, and exits. The fresh-context property is automatic:
-   iteration N+1 reads N's work without bias, so per-phase review
-   collapses into "the next iteration is the review." Parallel
-   fan-out (LITERATURE Haiku quote-finders, SPECIFY per-sub-analysis
-   work, IMPLEMENT per-output work) happens *inside* an iteration,
-   one level deep from the iteration's main session.
+   the constitution loaded into its system prompt, surveys the
+   workdir, picks the next valuable move (typically one phase's
+   worth of work), does it, commits, and exits. Iteration N+1 reads
+   N's work cold, so per-phase review collapses into "the next
+   iteration is the review." Parallel fan-out (LITERATURE Haiku
+   quote-finders, SPECIFY per-sub-analysis work, IMPLEMENT per-output
+   work) happens *inside* an iteration, one level deep from the
+   iteration's main session.
 
 ## Phases
 
@@ -60,7 +60,7 @@ user's main session; phases 2–7 run as ralph iterations.
 ## Per-paper substrate: constitution + CLAUDE.md
 
 INTERVIEW drafts two files in the reproduction workdir; every
-iteration walks up to them automatically.
+iteration picks them up on launch.
 
 - **`constitution.md`** — the ralph loop's driving document. YAML
   frontmatter declares `status: active`. Sections: Goal (carrying the
@@ -83,16 +83,22 @@ Pointers, not snapshots.
 - **Workdir is the state.** File existence, `git log`, and `astra
   validate` answer "what phase am I on" deterministically — no
   separate state machine.
+- **CLAUDE.md is a state-expresser too.** Beyond the workdir's
+  ground-truth files, CLAUDE.md carries running pointers — Rigor
+  accumulator, Disagreements log, paper identity. Each iteration
+  keeps those pointers current so the next cold survey reads them
+  as fact.
 - **Code-as-canonical, with disagreements recorded.** Where paper
   and code disagree on something material, code wins for numerics,
   but the disagreement is preserved as a decision option and noted
   in CLAUDE.md.
-- **Rigor is a trajectory toward the user's intent.** Each iteration
-  calibrates its work from the gap between *Current state* and the
-  Goal's fidelity intent: cheap (one clean review-iteration is
-  enough) versus heavy (two consecutive clean review-iterations
-  required). Review happens sequentially via iteration boundaries;
-  the fresh-context property is automatic.
+- **Rigor is a trajectory toward the user's intent.** Fidelity
+  intent is partly aesthetic ("how good does this need to be?") and
+  partly pragmatic ("what's feasible given the compute, tokens, and
+  time available?"). The honest meta-conversation lives in INTERVIEW;
+  each iteration then sizes its work from the gap between *Current
+  state* and that intent. Review happens sequentially via iteration
+  boundaries.
 - **arXiv LaTeX first.** PDF + Docling is the non-arXiv fallback only.
 - **No synthetic data.** Unless the paper itself uses synthetic data,
   every input must be real.
