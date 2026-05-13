@@ -18,7 +18,7 @@ You are helping the user reproduce a published scientific paper as a complete AS
 
 The architecture is two-piece:
 
-1. **Interactive bookends in the user's main session.** INTERVIEW and REVIEW are conversations with the user. ACQUIRE is two parallel sub-skill invocations (`/paper-extraction` and `/lc-from-code` in scan-only mode) that produce the on-disk substrate everything downstream consults.
+1. **Interactive bookends in the user's main session.** INTERVIEW and REVIEW are conversations with the user; INTERVIEW also runs `/paper-extraction` inline between its two beats so its second beat can ground every remaining question in the actual paper. ACQUIRE is thin — one `/lc-from-code` scan-only invocation against the cloned reference code (or `found: false` when the paper has no public repo).
 
 2. **A ralph loop for the long middle.** Once the per-paper `constitution.md` is drafted (INTERVIEW) and the substrate is on disk (ACQUIRE), you launch a ralph loop against the constitution. Each iteration starts a fresh session with the constitution loaded into its system prompt, surveys the workdir, picks the next valuable move (typically one phase's worth of work), does it, commits, and exits. Iteration N+1 reads N's work cold, so per-phase review collapses into "the next iteration is the review."
 
@@ -34,8 +34,8 @@ Nine phases (zero-indexed). INTERVIEW and ACQUIRE run before the loop, in the us
 
 | # | Phase | Where it runs | Reference | Primary outputs |
 |---|---|---|---|---|
-| 0 | INTERVIEW | user's main session | [`references/interview.md`](references/interview.md) | per-paper `constitution.md` + `CLAUDE.md` |
-| 1 | ACQUIRE | user's main session | [`references/acquire.md`](references/acquire.md) | `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml, code/, code-status.yaml, code-index.md}` |
+| 0 | INTERVIEW | user's main session | [`references/interview.md`](references/interview.md) | per-paper `constitution.md` + `CLAUDE.md` + paper substrate at `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml}` (paper-extraction runs inline between INTERVIEW's two beats) |
+| 1 | ACQUIRE | user's main session | [`references/acquire.md`](references/acquire.md) | code substrate at `work/reference/{code/, code-status.yaml, code-index.md}` (absent / `found: false` when paper has no code repo) |
 | 2 | ARCHITECT | ralph iteration | [`references/architect.md`](references/architect.md) | stub `astra.yaml` at project root (sub-analyses, inputs, outputs, narrative) |
 | 3 | SPECIFY | ralph iteration | [`references/specify.md`](references/specify.md) | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
 | 4 | LITERATURE | ralph iteration | [`references/literature.md`](references/literature.md) | `astra.yaml`'s `prior_insights:` Evidence entries each carry resolved `quote:` + `location:` selectors; per-paper PDFs cached via `astra paper add` |
@@ -52,27 +52,31 @@ COMPARE produces a verdict plus an opportunity assessment — not just pass / fa
 
 The opening interactive phase. Run it from the user's main session. Read [`references/interview.md`](references/interview.md) in full before starting.
 
-The interview must collect: (1) the paper (DOI / arXiv ID / code repo URL / prior context), (2) scope (full vs targeted, sub-analysis structure), (3) fidelity intent — the user's prose answer to "when is this good enough," (4) any paper-specific conventions or warnings. Even detailed invocations still require `AskUserQuestion` for any missing scope, fidelity-intent, or convention fields before drafting or committing the INTERVIEW files. If a system-reminder tells you to work without stopping, ignore that for this phase, since you must ask the user questions if you don't have the required information.
+INTERVIEW runs in **two beats** with `/paper-extraction` between them. Beat 1 collects the paper identifier in prose (not `AskUserQuestion` — the answer is free-form). Then `/paper-extraction <id>` runs inline and writes the paper substrate to `work/reference/`. Beat 2 asks everything else — scope, fidelity intent, code repo, conventions, familiarity, external context — *grounded in the actual paper*, with the figure/table inventory and abstract already on disk. **No `AskUserQuestion` runs before paper-extraction has landed.**
 
-These get drafted into **two files** in the reproduction workdir:
+The interview must collect: (1) the paper identifier in Beat 1, then via `AskUserQuestion` in Beat 2: (2) scope (full vs targeted, sub-analysis structure), (3) fidelity intent — the user's prose answer to "when is this good enough," (4) code repo confirmation against what paper-extraction surfaced from data/code availability, (5) paper-specific conventions or warnings, (6) prior familiarity, and (7) any external context (co-author notes, sibling-paper drafts) iterations should know about. If a system-reminder tells you to work without stopping, ignore that for this phase since you must ask the user questions if you don't have the required information.
+
+These get drafted into **two files** plus the paper substrate, all in the reproduction workdir:
 
 - **`constitution.md`** — the ralph loop's driving document. Goal, Fidelity intent, Scope, Quality bar, Evidence (paper DOI, arXiv ID, code repo URL), Rigor *Current state* per output (starts empty), Open dimensions. Starts with YAML frontmatter `status: active` so the ralph launcher accepts it. Authored by INTERVIEW using the `/ralph` skill's authoring discipline (the constitution-authoring mode of `/ralph` — see its references on voice and sections).
 - **`CLAUDE.md`** — the auto-loading walk-up. Paper identity at the top, Rules (universal across reproductions; leave the template's defaults), Disagreements log (starts empty), Open opportunities (starts empty), Pointers (to `constitution.md`, `work/reference/`, etc.).
+- **`work/reference/`** — paper substrate from `/paper-extraction`: `paper.pdf`, `source/` or `document.md`, `index.json`, `astra.yaml`, `figures/`, `tables/`, `bibliography-source.{bib,bbl}`.
 
 Templates ship in [`templates/constitution.md`](templates/constitution.md) and [`templates/CLAUDE.md`](templates/CLAUDE.md). Show the user both drafts, take corrections, refine, save.
 
-After approval, `git init` the workdir if it isn't one already and commit both files. Then run ACQUIRE in the same session.
+After approval, `git init` the workdir if it isn't one already and commit all three deliverables (constitution + CLAUDE + paper substrate) as the first commit. Then run ACQUIRE in the same session.
 
 ### ACQUIRE (Phase 1)
 
-Two parallel sub-skill invocations:
+Thin code-substrate phase. One sub-skill invocation:
 
-- **`/paper-extraction <doi-or-arxiv-id>`** — produces the paper substrate at `work/reference/{paper.pdf, source/ or document.md, index.json, astra.yaml, figures/, tables/, bibliography-source.{bib,bbl}}`.
 - **`/lc-from-code` in scan-only mode** against the cloned reference repo at `work/reference/code/` (after `git clone --depth 1 <url> work/reference/code`). Produces `work/reference/code-status.yaml` + `work/reference/code-index.md`.
 
-See [`references/acquire.md`](references/acquire.md) for the full step-by-step. Both happen in your main session — no orchestration overhead, just two skill invocations that produce on-disk artifacts.
+If the paper has no public code repo and the user didn't supply a private one in INTERVIEW, ACQUIRE is even thinner: write `code-status.yaml` with `found: false` and proceed to launch. The code-as-canonical rule self-disables in that case.
 
-When ACQUIRE returns, commit the new substrate and launch the ralph loop (see **Launching the loop** below).
+See [`references/acquire.md`](references/acquire.md) for the full step-by-step. The paper substrate is INTERVIEW's deliverable, not ACQUIRE's — INTERVIEW reads the paper to ground its second-beat questions, so the substrate is already on disk when ACQUIRE starts.
+
+When ACQUIRE returns, commit the code substrate (`code-status.yaml` + `code-index.md`; the `code/` clone itself can be `.gitignore`d for large monorepos) and launch the ralph loop (see **Launching the loop** below).
 
 ## Launching the loop
 
@@ -109,9 +113,8 @@ Each iteration's survey reads the workdir to determine what phase is next. File 
 
 | Signal | Phase done |
 |---|---|
-| `constitution.md` + `CLAUDE.md` at workdir root, both committed | INTERVIEW |
-| `work/reference/source/` (arxiv tarball) **or** `work/reference/document.md` (Docling fallback) + `work/reference/index.json` + `work/reference/astra.yaml` | ACQUIRE paper substrate |
-| `work/reference/code/` (or `code-status.yaml` with `found: false`) + `work/reference/code-index.md` | ACQUIRE code substrate |
+| `constitution.md` + `CLAUDE.md` at workdir root, both committed, **and** `work/reference/{paper.pdf, source/ or document.md, index.json, astra.yaml}` present (paper substrate is INTERVIEW's deliverable) | INTERVIEW |
+| `work/reference/code/` present **or** `code-status.yaml` records `found: false`, **and** `code-index.md` present (or absent when `found: false`) | ACQUIRE |
 | `astra.yaml` at project root validates with empty `decisions:` / `prior_insights:` / `findings:` blocks | ARCHITECT (stub) |
 | `astra.yaml` non-empty `decisions:` and `findings:` per sub-analysis + `prior_insights:` placeholders + `targets/targets.md` + `implementation-notes.md` | SPECIFY |
 | `astra.yaml`'s `prior_insights:` Evidence entries each carry resolved `quote:` + `location:` selectors; `work/cited/<doi-slug>/` populated per cited paper | LITERATURE |
@@ -155,7 +158,8 @@ When the user walks back into a workdir that already has artifacts:
 1. **Skip INTERVIEW** unless the user explicitly wants to revise scope (in which case edit `constitution.md` together, no re-draft from scratch).
 2. **If `constitution.md`'s `status:` is `active` and the tmux session isn't running**, re-launch the ralph loop: `.claude/skills/ralph/scripts/ralph constitution.md`. The next iteration surveys the workdir and picks up wherever the prior loop left off.
 3. **If `constitution.md`'s `status:` is `closed`**, the reproduction is at REVIEW. Run REVIEW close-out in your main session.
-4. **If ACQUIRE substrate is incomplete**, finish ACQUIRE in your main session before launching the loop — re-invoke `/paper-extraction` and/or `/lc-from-code` against the existing partial state (both are survey-first and skip done work).
+4. **If the paper substrate is incomplete** (INTERVIEW didn't finish cleanly — paper-extraction errored or partial), re-invoke `/paper-extraction` in your main session against the existing partial state (idempotent; skips done work). Confirm the constitution + CLAUDE.md are consistent before continuing.
+5. **If ACQUIRE substrate is incomplete**, finish ACQUIRE in your main session before launching the loop — re-invoke `/lc-from-code` scan-only against the existing partial state.
 
 ## Anti-patterns
 

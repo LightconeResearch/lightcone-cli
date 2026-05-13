@@ -2,7 +2,7 @@
 
 ARCHITECT is the structural seam: decide the sub-analysis decomposition, wire the inputs and outputs at the sub-analysis level, and author high-level narrative prose for each analysis — all in one stub `astra.yaml`. SPECIFY then fills the stub with `decisions:`, `prior_insights:`, `findings:`, and `astra-anchor:` references. Splitting **structure** from **content** keeps each iteration's cognitive load manageable: ARCHITECT decides *what the analyses are*; SPECIFY decides *what's inside each one*.
 
-ARCHITECT is what a ralph iteration does when the workdir signals "ACQUIRE substrate present + project-root `astra.yaml` absent (or empty stub)." The heavy work of *understanding* the paper and code happened in `/paper-extraction` and `/lc-from-code`'s scan-only branch; their on-disk substrate (the structural `index.json`, the paper-extraction `astra.yaml`, the `code-index.md`) is what you read on entry. No persistent expert sub-agents; targeted reads against the substrate carry the orientation.
+ARCHITECT is what a ralph iteration does when the workdir signals "paper substrate (from INTERVIEW) + code substrate (from ACQUIRE) both present + project-root `astra.yaml` absent (or empty stub)." The heavy work of *understanding* the paper and code happened in `/paper-extraction` (which INTERVIEW invokes inline) and `/lc-from-code`'s scan-only branch (which ACQUIRE invokes); their on-disk substrate (the structural `index.json`, the paper-extraction `astra.yaml`, the `code-index.md`) is what you read on entry. No persistent expert sub-agents; targeted reads against the substrate carry the orientation.
 
 ## Inputs
 
@@ -112,7 +112,7 @@ Apply fixes inline as you find them. Don't write a separate findings file — th
 
 ## Survey signals (entry into ARCHITECT)
 
-- `work/reference/index.json` + `work/reference/astra.yaml` + `work/reference/code-index.md` (when code present) exist ⇒ ACQUIRE substrate is ready
+- `work/reference/index.json` + `work/reference/astra.yaml` (paper substrate from INTERVIEW) + `work/reference/code-index.md` (code substrate from ACQUIRE, when code present) exist ⇒ paper + code substrate is ready
 - `astra.yaml` at project root absent (or present-but-empty) ⇒ this iteration writes the stub (records *stub: baseline*)
 - `astra.yaml` exists with stub form (sub-analyses + inputs + outputs + narrative populated; `decisions:` / `prior_insights:` / `findings:` blocks present-and-empty), Rigor *Current state* shows *stub: baseline* or *stub: tightened* ⇒ this iteration is review-and-fix
 - Rigor *Current state* shows *stub: canonical* ⇒ ARCHITECT done; next iteration surveys for SPECIFY
