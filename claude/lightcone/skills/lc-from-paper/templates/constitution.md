@@ -10,7 +10,7 @@ The driving document for the ralph loop reproducing <paper title> (<arXiv ID>, D
 
 <What "done" looks like for this reproduction. Concrete: which targets, what verdict against them, what validation passes. E.g.: "A complete `astra.yaml` with recipes that produce reproduced versions of <list of targets>, validated by `astra validate astra.yaml --verify-evidence`, with `comparison-report.yaml` verdict `pass` against the targets in `targets/targets.md`.">
 
-**Fidelity intent.** <The user's prose answer from INTERVIEW to "what do you want out of this stretch, given what you have to spend on it" — captured verbatim or in close paraphrase. Carries both the aesthetic dimension (what "good enough" looks like) and the pragmatic dimension (compute, tokens, wall-clock budget). E.g.: "just checking if the analysis is tractable — an afternoon of compute", "Figure 3 must be right; the rest can stay rough — overnight", "full fidelity on the BAO fit, baseline elsewhere — a few days", "every primary and secondary target lining up within stated tolerance, no hard deadline". Each iteration reads this when sizing its next move; COMPARE grades opportunities against it. Static once approved at INTERVIEW; the user can sharpen at any REVIEW.>
+**Fidelity intent.** <The user's prose answer from ORIENT to "what do you want out of this stretch, given what you have to spend on it" — captured verbatim or in close paraphrase. Carries both the aesthetic dimension (what "good enough" looks like) and the pragmatic dimension (compute, tokens, wall-clock budget). E.g.: "just checking if the analysis is tractable — an afternoon of compute", "Figure 3 must be right; the rest can stay rough — overnight", "full fidelity on the BAO fit, baseline elsewhere — a few days", "every primary and secondary target lining up within stated tolerance, no hard deadline". Each iteration reads this when sizing its next move; COMPARE grades opportunities against it. Static once approved at ORIENT; the user can sharpen at any REVIEW.>
 
 ## Scope
 
@@ -32,8 +32,8 @@ This is the ceiling; the fidelity intent determines which outputs need to actual
 
 The substrate this reproduction is built against — the canonical sources iterations consult:
 
-- **Paper:** `work/reference/{paper.pdf, source/ or document.md, index.json, astra.yaml}` (from `/paper-extraction` during ACQUIRE). The `index.json#citations` block carries each cited paper's resolved DOI for LITERATURE.
-- **Code:** `work/reference/code/` (cloned during ACQUIRE; scan inventory at `work/reference/code-index.md`).
+- **Paper:** `work/reference/{paper.pdf, source/ or document.md, index.json, astra.yaml}` (from `/paper-extraction` during ORIENT). The `index.json#citations` block carries each cited paper's resolved DOI for LITERATURE.
+- **Code:** `work/reference/code/` (cloned during ORIENT; scan inventory at `work/reference/code-index.md`).
 - **Paper DOI:** <doi>
 - **arXiv ID:** <id> (if applicable)
 - **Code repo URL:** <url>

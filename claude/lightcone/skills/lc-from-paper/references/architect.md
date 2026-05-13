@@ -2,7 +2,7 @@
 
 ARCHITECT is the structural seam: decide the sub-analysis decomposition, wire the inputs and outputs at the sub-analysis level, and author high-level narrative prose for each analysis — all in one stub `astra.yaml`. SPECIFY then fills the stub with `decisions:`, `prior_insights:`, `findings:`, and `astra-anchor:` references. Splitting **structure** from **content** keeps each iteration's cognitive load manageable: ARCHITECT decides *what the analyses are*; SPECIFY decides *what's inside each one*.
 
-ARCHITECT is what a ralph iteration does when the workdir signals "paper substrate (from INTERVIEW) + code substrate (from ACQUIRE) both present + project-root `astra.yaml` absent (or empty stub)." The heavy work of *understanding* the paper and code happened in `/paper-extraction` (which INTERVIEW invokes inline) and `/lc-from-code`'s scan-only branch (which ACQUIRE invokes); their on-disk substrate (the structural `index.json`, the paper-extraction `astra.yaml`, the `code-index.md`) is what you read on entry. No persistent expert sub-agents; targeted reads against the substrate carry the orientation.
+ARCHITECT is what a ralph iteration does when the workdir signals "ORIENT substrate present + project-root `astra.yaml` absent (or empty stub)." The heavy work of *understanding* the paper and code happened in `/paper-extraction` and `/lc-from-code`'s scan-only branch — both invoked inline during ORIENT in the user's main session. Their on-disk substrate (the structural `index.json`, the paper-extraction `astra.yaml`, the `code-index.md`) is what you read on entry. No persistent expert sub-agents; targeted reads against the substrate carry the orientation.
 
 ## Inputs
 
@@ -99,7 +99,7 @@ Don't flag empty `decisions:` / `prior_insights:` / `findings:` — that's SPECI
 
 ## Survey signals (entry into ARCHITECT)
 
-- `work/reference/index.json` + `work/reference/astra.yaml` (paper substrate from INTERVIEW) + `work/reference/code-index.md` (code substrate from ACQUIRE, when code present) exist ⇒ paper + code substrate is ready
+- `work/reference/index.json` + `work/reference/astra.yaml` + `work/reference/code-index.md` (when code present) exist ⇒ ORIENT substrate is ready
 - `astra.yaml` at project root absent (or present-but-empty) ⇒ this iteration writes the stub
 - `astra.yaml` exists with stub form (sub-analyses + inputs + outputs + narrative populated; `decisions:` / `prior_insights:` / `findings:` blocks present-and-empty) ⇒ ARCHITECT's output is on disk; read it critically. Fix anything wrong; otherwise the iteration moves on to SPECIFY.
 

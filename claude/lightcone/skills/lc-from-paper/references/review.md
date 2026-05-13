@@ -1,6 +1,6 @@
 # REVIEW — close-out in the user's main session
 
-The reproduction has converged: the constitution's `status:` is `closed` (after COMPARE returned `pass`, or `partial` with the un-acted opportunities logged, and the next cold-survey iteration found nothing left to do). The ralph loop's tmux session has exited. REVIEW runs back in the user's main session — the second of two interactive bookends, the first being INTERVIEW. It runs in the user's main session (not as an iteration) because both `/figure-comparison` and `/check-sentence-by-sentence` use `AskUserQuestion`, which isn't available inside detached ralph iterations.
+The reproduction has converged: the constitution's `status:` is `closed` (after COMPARE returned `pass`, or `partial` with the un-acted opportunities logged, and the next cold-survey iteration found nothing left to do). The ralph loop's tmux session has exited. REVIEW runs back in the user's main session — the second of two interactive bookends, the first being ORIENT. It runs in the user's main session (not as an iteration) because both `/figure-comparison` and `/check-sentence-by-sentence` use `AskUserQuestion`, which isn't available inside detached ralph iterations.
 
 Its job is to render the validation surfaces, walk the user through the accumulated open questions, land the resolutions, and draft the final report — in one interactive arc. The Open opportunities list in CLAUDE.md already carries un-acted-on opportunities from the latest COMPARE (those iterations logged them directly); REVIEW just reads them.
 
