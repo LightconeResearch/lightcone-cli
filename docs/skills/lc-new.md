@@ -1,8 +1,9 @@
 # /lc-new
 
-Scope a new ASTRA analysis from a research question through conversation.
-Produces a complete `astra.yaml` (and optionally a literature evidence
-trail) with no code written.
+Scope a new ASTRA analysis from a research question, through
+conversation. The output is a complete `astra.yaml` and (optionally) a
+literature evidence trail. Implementation comes later — `/lc-new`
+writes spec, not code.
 
 Source: [`claude/lightcone/skills/lc-new/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-new/SKILL.md).
 
@@ -11,55 +12,55 @@ Source: [`claude/lightcone/skills/lc-new/SKILL.md`](https://github.com/Lightcone
 ```text
 Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md),
 Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md),
-Glob, Grep, Bash(astra:*), Bash(lc:*), Bash(mkdir:*), Bash(echo:*),
-WebSearch, WebFetch, AskUserQuestion, Task
+Glob, Grep, Bash(astra:*), Bash(lc:*),
+WebSearch, WebFetch, AskUserQuestion, Agent
 ```
 
-The skill is locked to spec-only writes — it cannot write Python, R, or
-arbitrary files. The lc-extractor subagent is invoked via `Task`.
+Writes are locked to the spec surface — no Python, no R, no arbitrary
+files. The `lc-extractor` subagent is dispatched via `Agent`.
 
 ## Phases
 
-1. **Research question** — sharpen the question, write `version`, `name`,
-   `description` to `astra.yaml` immediately so the user sees progress.
-2. **Analysis structure** — walk through inputs, outputs, sub-analyses.
-   One output per output: a single metric, a single plot, a single
-   artifact. Updates `astra.yaml` with `inputs:` and `outputs:`.
-3. **Deep dive** (per section) — optional literature pass. Collect paper
-   candidates; for each approved paper, spawn one `lc-extractor`
-   subagent (parallel, via `Task`). Each subagent reads the PDF, pulls
-   verbatim quotes, runs `astra paper verify-quotes` to machine-verify
-   the quotes against the source, and returns extracted prior insights.
-   Then identify decisions informed by the conversation + literature
-   and write them to `astra.yaml`.
-4. **Finalize** — `astra validate astra.yaml`, `astra validate
-   --verify-evidence` if quotes exist, `astra universe generate -n
-   baseline`, populate the `narrative:` block in `astra.yaml` (`summary`,
-   `methods`, `inputs`, `outputs` — `findings` stays TODO until results
-   exist), then populate the `## Working Notes` section of `CLAUDE.md`
-   with conversational context not captured in the spec.
+1. **Research question.** Sharpen the question, then write `version`,
+   `name`, and `description` to `astra.yaml` so the user has something
+   visible to react to from the first turn.
+2. **Analysis structure.** Walk through inputs, outputs, and any
+   sub-analyses. One output per output: one metric, one plot, one
+   artifact. `inputs:` and `outputs:` land in `astra.yaml` as they
+   crystallize.
+3. **Deep dive (per section).** An optional literature pass. Collect
+   paper candidates with the user; for each approved paper, dispatch
+   one `lc-extractor` subagent in parallel. Each subagent reads the
+   PDF, pulls verbatim quotes, runs `astra paper verify-quotes` to
+   machine-verify the quotes against the source, and returns prior
+   insights. Decisions then fall out of the conversation and the
+   literature together.
+4. **Finalize.** `astra validate astra.yaml`; `astra validate
+   --verify-evidence` if quotes exist; `astra universe generate -n
+   baseline`. Populate the `narrative:` block (`summary`, `methods`,
+   `inputs`, `outputs` — `findings` stays TODO until results exist),
+   then fill the `## Working Notes` section of `CLAUDE.md` with
+   conversational context the spec doesn't carry.
 
-The skill writes to `astra.yaml` after each phase rather than in bulk
-at the end so the user has something visible to review at every step.
+Writes happen at the end of each phase, not in bulk — the user always
+has something visible to review.
 
 ## Hard restrictions (from the SKILL.md)
 
-
-- Specification agent only — cannot write Python, R, or other
-  implementation code.
-- Files it may touch: `astra.yaml`, `universes/*.yaml`, `CLAUDE.md`
+- Specification agent only. No Python, no R, no implementation code.
+- Touchable files: `astra.yaml`, `universes/*.yaml`, and `CLAUDE.md`
   (Finalize only).
-- Never fabricates quotes — all evidence must pass
+- Quotes are never fabricated; every evidence entry must pass
   `astra validate --verify-evidence`.
-- PDFs are read by lc-extractor subagents only; the main agent never
-  pulls a PDF into its own context.
+- PDFs stay inside `lc-extractor` subagents — the main agent never
+  pulls one into its own context.
 
 ## Anti-patterns called out in the prompt
 
 - Bulk-writing decisions at the end instead of after each crystallizes.
-- Accepting vague goals like "analyze this data" without sharpening.
-- Method-only decisions; the prompt actively probes for data
-  exclusion, variable operationalization, inference criteria.
+- Letting vague goals like "analyze this data" pass without sharpening.
+- Method-only decisions. The prompt actively probes data exclusion,
+  variable operationalization, and inference criteria.
 - Reading PDFs in the main agent context.
 - Skipping `astra validate --verify-evidence`.
 

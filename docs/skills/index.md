@@ -1,18 +1,19 @@
 # Skills
 
 Skills are Claude Code slash commands bundled in the lightcone-cli
-plugin. They give the agent a structured, phase-by-phase workflow for
-the most common research operations.
+plugin. Each shapes the agent's workflow around a recurring research
+operation: scoping an analysis, wrapping existing code, reproducing
+a paper.
 
-If you're a researcher trying to *use* these, the
-[Claude Code Workflow](../user/agent-workflow.md) page in the user
-guide is the friendly version. This page is for maintainers.
+If you want to *use* these, start with
+[The Agentic Workflow](../user/agent-workflow.md) in the user guide.
+This page is for maintainers.
 
 ## Available skills
 
-The `/lc-from-*` family is parallel by what you start from: a question,
+The `/lc-from-*` family is parallel in what you start from: a question,
 code, or a paper. `/lc-from-paper` is the entry point of a six-skill
-paper-reproduction bundle; the five bundle siblings stand alone and are
+paper-reproduction bundle; the five siblings stand alone and are
 user-invokable directly.
 
 ### Project lifecycle
@@ -43,14 +44,14 @@ See the [bundle README](https://github.com/LightconeResearch/lightcone-cli/blob/
 
 ### Reference skills (auto-primed via session-start)
 
-Not direct entry points — invoked by other skills (or by Claude directly when relevant) to load reference content into the working session. The session-start hook names both in its primer, so Claude is aware they exist from the first turn.
+Not entry points. Other skills invoke them — or Claude does, when a deeper reference would help — to load reference content into the working session. The session-start hook names both in its primer, so Claude knows they exist from the first turn.
 
 | Skill | Command | Purpose |
 |-------|---------|---------|
 | `astra` | `/astra` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, narrative anchors, composition mechanics. |
 | `lc-cli` | `/lc-cli` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, publishing via WRROC. |
 
-These intentionally don't appear in the top-level README — researchers use the project-lifecycle skills directly; the reference skills are infrastructure.
+These intentionally stay out of the top-level README. Researchers use the project-lifecycle skills directly; the reference skills are infrastructure.
 
 ## How a skill is wired
 
@@ -67,11 +68,11 @@ argument-hint: "[DESCRIPTION]"
 ---
 ```
 
-The frontmatter configures Claude Code: which tools the skill may
-invoke, and what the slash command's argument hint looks like. The
-body is the prompt — phase definitions, rules, references to guide
-files, anti-patterns. The skill bundles its own helper scripts under
-`scripts/` and its loop prompt template under `assets/` when relevant.
+The frontmatter tells Claude Code which tools the skill may invoke
+and what the slash command's argument hint looks like. The body is the
+prompt itself: phase definitions, rules, references to guide files,
+anti-patterns. Skills bundle their own helper scripts under `scripts/`
+and longer prompt fragments under `assets/` when relevant.
 
 ## Plugin layout
 
