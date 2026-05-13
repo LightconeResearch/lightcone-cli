@@ -69,11 +69,11 @@ Sections that don't apply are dropped.
 
 ## Hard rules
 
-- Be fast — minimize back-and-forth, one confirmation then file.
-- Read-only on the project.
-- Trim aggressively — only the relevant portion of errors.
-- No sensitive data — strip absolute paths, credentials, tokens.
-- Don't editorialize — report what happened.
+- **Be fast.** Minimize back-and-forth: one confirmation, then file.
+- **Read-only on the project.**
+- **Trim aggressively.** Only the relevant portion of errors.
+- **No sensitive data.** Strip absolute paths, credentials, tokens.
+- **Don't editorialize.** Report what happened.
 
 ## Notes for the maintainer who's looking
 
