@@ -99,10 +99,12 @@ Pointers, not snapshots.
   wall-clock available?"). The honest meta-conversation lives in
   INTERVIEW; each iteration then sizes its work from the gap between
   the constitution's Rigor *Current state* and that intent. The
-  per-artifact protocol is simple: iteration N writes, iteration N+1
-  reads cold and does one review-and-fix pass. Outputs that need
-  more rigor than that delivers become Open opportunities in
-  CLAUDE.md for a future loop.
+  vocabulary is *sketch / baseline / tightened / canonical*: the
+  write iteration produces *baseline*; each subsequent fresh-context
+  iteration either lands fixes (→ *tightened*) or finds nothing to fix
+  (→ *canonical*, which terminates the review cycle). The iteration
+  that applied fixes can't declare the artifact *canonical* — that
+  judgment belongs to the next fresh-context read.
 - **arXiv LaTeX first.** PDF + Docling is the non-arXiv fallback only.
 - **No synthetic data.** Unless the paper itself uses synthetic data,
   every input must be real.

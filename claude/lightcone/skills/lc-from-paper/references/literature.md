@@ -164,9 +164,9 @@ Rules:
 
 When the iteration fans out to Haikus, each Haiku is spawned with `model="haiku"` and gets this contract plus its assigned subset of placeholders and substrate paths.
 
-## Review-and-fix — the next iteration
+## Review-and-fix — iterations after the merge
 
-After the merge lands, one fresh-context iteration reads cold, runs `astra validate --verify-evidence` for the deterministic check, does a semantic re-read of each resolved insight, applies fixes inline, commits, exits.
+After the merge lands (Rigor: *baseline*), the next fresh-context iteration reads cold, runs `astra validate --verify-evidence` for the deterministic check, does a semantic re-read of each resolved insight, applies fixes inline if needed, updates Rigor *Current state* (*baseline → tightened* if fixes landed, → *canonical* if nothing needed fixing), and exits. **The iteration that applied fixes cannot declare LITERATURE done** — a subsequent fresh-context iteration earns *canonical* by reading the resolutions and finding nothing to fix. Cap at 5 review iterations: if *canonical* isn't reached by then, log the tail to `open-questions.md` and let the survey advance.
 
 The cross-check questions on entry:
 
@@ -176,22 +176,18 @@ The cross-check questions on entry:
 4. **Cited paper is the right paper.** Does the target paper actually invoke this DOI for this claim?
 5. **Unresolved entries are honest.** For entries in `open-questions.md` flagged unresolved, does a closer read of the cited paper find supporting evidence the resolver missed?
 
-Apply fixes inline as you find them — `astra.yaml`'s `prior_insights:` entries (including re-running Haiku quote-finding for entries that need a different quote, when the gap is mechanical rather than semantic). Commit (`literature: review-and-fix`), update the constitution's Rigor *Current state* (e.g. *baseline → tightened*), exit. The next iteration's survey advances to IMPLEMENT.
+Apply fixes inline as you find them — `astra.yaml`'s `prior_insights:` entries (including re-running Haiku quote-finding for entries that need a different quote, when the gap is mechanical rather than semantic). If fixes landed: commit (`literature: review-and-fix`), update Rigor to *tightened*. If nothing needed fixing: commit (`literature: review confirmed clean`, possibly empty), update Rigor to *canonical*. Exit.
 
 If the entry genuinely has no supporting quote in the cited paper, log it to `open-questions.md` with a "no support found" note and leave the entry as-is for the user to resolve at REVIEW. Don't fabricate evidence.
-
-One pass. If LITERATURE needs more rigor than this delivers, that's an Open opportunity for a future loop.
 
 ## Survey signals (entry into LITERATURE)
 
 - `astra.yaml` has `prior_insights:` placeholders — entries with `claim:` plus Evidence carrying `doi:` but no `quote:` selector ⇒ ready to resolve
 - `work/cited/<doi-slug>/work/reference/index.json` exists for each unique cited DOI ⇒ fetches done
 - `work/notes/literature/resolutions.yaml` exists with non-empty resolutions / unresolved sections ⇒ quote-finding done
-- `astra.yaml`'s `prior_insights:` entries each have a resolved `quote:` (+ `location:`) selector on their Evidence ⇒ merge done
+- `astra.yaml`'s `prior_insights:` entries each have a resolved `quote:` (+ `location:`) selector on their Evidence ⇒ merge done (Rigor: *baseline*)
 - `astra validate astra.yaml --verify-evidence` returns clean ⇒ structural validation done
-- A `literature: review-and-fix` commit lands ⇒ LITERATURE review-and-fix done
-
-When all of the above hold ⇒ LITERATURE complete; the next iteration surveys and advances to IMPLEMENT.
+- Rigor *Current state* reaches *canonical* for LITERATURE ⇒ LITERATURE done; the next iteration surveys and advances to IMPLEMENT
 
 ## Notes
 

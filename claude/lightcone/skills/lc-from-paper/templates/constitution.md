@@ -40,7 +40,7 @@ The substrate this reproduction is built against — the canonical sources itera
 
 ## Rigor — current state
 
-Per-output trajectory tracking, updated by iterations as they produce artifacts. Coarse adjectives per output or per phase: *sketch / baseline / tightened*. Read alongside Fidelity intent above so each iteration knows where each output currently sits. Empty until the first iteration produces something:
+Per-output trajectory tracking, updated by iterations as they produce or review artifacts. Coarse adjectives per output or per phase: *sketch / baseline / tightened / canonical*. *baseline* — first version written. *tightened* — at least one fresh-context iteration reviewed and applied fixes. *canonical* — a fresh-context iteration reviewed and found nothing to fix (terminates the review cycle for that artifact). Read alongside Fidelity intent above so each iteration knows where each output currently sits. Empty until the first iteration produces something:
 
 - (none yet)
 

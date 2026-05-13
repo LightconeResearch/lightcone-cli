@@ -82,13 +82,18 @@ analyses:
 
 After the stub is written and validates, commit it (`architect: stub astra.yaml`) and update the constitution's Rigor *Current state* with the stub's state (e.g. *stub: baseline*).
 
-## Review-and-fix — the next iteration
+## Review-and-fix — the iterations after the write
 
-There is no in-iteration review-round mechanism. The ralph loop's iteration boundary *is* the fresh-context review, and it's a single pass: iteration N writes the stub; iteration N+1 reads it cold, reviews silently, applies any fixes inline, commits, and exits. Done. No intermediate findings file, no separate fix iteration, no second clean check. If the user wants more rigor than one review-and-fix pass delivers, that's a future loop (logged as an Open opportunity in CLAUDE.md).
+There is no in-iteration review-round mechanism. The ralph loop's iteration boundary *is* the fresh-context review: iteration N writes the stub at *baseline*; the next iteration reads it cold, reviews silently, applies any fixes inline, updates the constitution's Rigor *Current state* (*baseline → tightened* if fixes landed, *baseline → canonical* if nothing needed fixing), commits, and exits. **The iteration that makes changes cannot declare the stub done** — a subsequent fresh-context iteration has to read it and find nothing to fix for it to reach *canonical*.
 
-### When entering as the review-and-fix iteration
+The cycle terminates when the stub hits *canonical*. Typical shapes:
+- Write iteration writes a clean stub → next iteration finds nothing → stub: *canonical* in two iterations.
+- Write iteration leaves small issues → next iteration fixes them (→ *tightened*) → iteration after that finds nothing (→ *canonical*) in three.
+- Bigger gaps may take more, but cap at 5 review iterations: if *canonical* isn't reached by then, log the tail in `open-questions.md` ("ARCHITECT review cap reached; user to review at close-out") and let the survey advance to SPECIFY.
 
-The signal is "stub `astra.yaml` exists at project root, `decisions:` / `prior_insights:` / `findings:` blocks empty, no `architect: review-and-fix` commit yet in the log." Read the stub cold, then check:
+### When entering as a review-and-fix iteration
+
+The signal is "stub `astra.yaml` exists, Rigor *Current state* says *stub: baseline* or *stub: tightened*." Read the stub cold, then check:
 
 1. **Sub-analysis decomposition.** Right cuts? Consistent with `code-index.md`? Defensible against the paper where the paper compresses?
 2. **Sub-analysis IDs.** Noun phrases. No reserved-name collisions (`inputs`, `outputs`, `decisions`, `findings`, `prior_insights`, `analyses`, `options`, `content`, `narrative`).
@@ -97,20 +102,20 @@ The signal is "stub `astra.yaml` exists at project root, `decisions:` / `prior_i
 5. **Narrative coverage.** Root narrative includes a data-flow paragraph (when sub-analyses exist). Each sub-analysis's narrative accurately describes its role. No `astra-anchor:` references at this stage; flag any that snuck in.
 6. **Validates.** `astra validate astra.yaml` returns clean.
 
-Apply fixes inline as you find them. Don't write a separate findings file — the diff against the prior commit is the record of what changed. Commit (`architect: review-and-fix stub`), update the constitution's Rigor *Current state* (e.g. *stub: tightened*), exit. The next iteration's survey moves on to SPECIFY.
+Apply fixes inline as you find them. Don't write a separate findings file — the diff against the prior commit is the record of what changed. If fixes landed, commit (`architect: review-and-fix stub`) and update the constitution to *stub: tightened*. If nothing needed fixing, commit (`architect: review confirmed clean`, possibly empty) and update the constitution to *stub: canonical*. Exit.
 
 ### What NOT to do during review-and-fix
 
 - Don't flag empty `decisions:` / `prior_insights:` / `findings:`. That's SPECIFY's territory.
 - Don't re-read the entire paper or code. Use the indices and targeted reads.
-- Don't open a second review pass on the same stub. One pass is the protocol; further tightening waits for a future loop.
+- Don't declare the stub *canonical* in the same iteration where you applied fixes — the next fresh-context iteration earns that judgment.
 
 ## Survey signals (entry into ARCHITECT)
 
 - `work/reference/index.json` + `work/reference/astra.yaml` + `work/reference/code-index.md` (when code present) exist ⇒ ACQUIRE substrate is ready
-- `astra.yaml` at project root absent (or present-but-empty) ⇒ this iteration writes the stub
-- `astra.yaml` exists, validates clean, sub-analyses + inputs + outputs + narrative populated, `decisions:` / `prior_insights:` / `findings:` blocks present-and-empty, no `architect: review-and-fix` commit ⇒ this iteration is the review-and-fix
-- `architect: review-and-fix` commit landed ⇒ ARCHITECT done; next iteration surveys for SPECIFY
+- `astra.yaml` at project root absent (or present-but-empty) ⇒ this iteration writes the stub (records *stub: baseline*)
+- `astra.yaml` exists with stub form (sub-analyses + inputs + outputs + narrative populated; `decisions:` / `prior_insights:` / `findings:` blocks present-and-empty), Rigor *Current state* shows *stub: baseline* or *stub: tightened* ⇒ this iteration is review-and-fix
+- Rigor *Current state* shows *stub: canonical* ⇒ ARCHITECT done; next iteration surveys for SPECIFY
 
 ## Notes
 

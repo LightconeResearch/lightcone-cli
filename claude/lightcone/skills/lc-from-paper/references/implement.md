@@ -1,6 +1,6 @@
-# IMPLEMENT — write scripts and recipes; one review-and-fix pass
+# IMPLEMENT — write scripts and recipes; review by iteration boundary
 
-Read `astra.yaml` (the filled spec) and `implementation-notes.md` (practical guidance). Write scripts in `scripts/` that produce each output, then add recipes to `astra.yaml` so the asset graph is wired end to end. After the first-pass implementation lands, one fresh-context iteration reads it cold, reviews against paper + code, applies fixes inline, and exits. One pass — same shape ARCHITECT and SPECIFY use.
+Read `astra.yaml` (the filled spec) and `implementation-notes.md` (practical guidance). Write scripts in `scripts/` that produce each output, then add recipes to `astra.yaml` so the asset graph is wired end to end. After the first-pass implementation lands at *baseline*, each subsequent fresh-context iteration reads it cold, reviews against paper + code, applies fixes inline if any, updates Rigor *Current state* (*baseline → tightened* or → *canonical*), and exits. The cycle terminates when the implementation reaches *canonical* (a fresh-context iteration read it and found nothing to fix). Same shape ARCHITECT and SPECIFY use.
 
 IMPLEMENT is what a ralph iteration does when the workdir signals "SPECIFY done + scripts/ absent (first pass) or comparison-report.yaml shows partial/fail (retry pass)". Most implementation is mechanical (translate spec → script). Where parallelization is feasible (multiple independent outputs from different scripts), the iteration fans out to one-level-deep sub-agents per output (inside its own main session) and merges.
 
@@ -19,7 +19,7 @@ IMPLEMENT is what a ralph iteration does when the workdir signals "SPECIFY done 
 - `scripts/<output>.py` (or `.sh`, or whatever fits) — one script per output (or shared scripts for tightly-coupled outputs)
 - `requirements.txt` — Python dependencies
 - Recipes in `astra.yaml` — each output gets a `recipe:` block with `command:` and `inputs:`
-- `constitution.md` updates — Rigor *Current state* per output (e.g. *baseline* after the write iteration, *tightened* after the review-and-fix iteration)
+- `constitution.md` updates — Rigor *Current state* per output (*baseline* after the write iteration, *tightened* after a review-and-fix iteration that landed changes, *canonical* after a fresh-context iteration found nothing to fix)
 - `CLAUDE.md` updates — append to **Paper-vs-code disagreements** for any new conflict surfaced during implementation
 
 ## Step 1: write recipes + scripts
@@ -60,9 +60,9 @@ The iteration merges scripts and recipes after the per-output sub-agents finish.
 5. **Do not execute scripts** — the RUN phase handles execution via `lc run`.
 6. **Validate** with `astra validate astra.yaml` after adding recipes.
 
-## Step 2: review-and-fix — the next iteration
+## Step 2: review-and-fix — iterations after the write
 
-After the first-pass implementation lands, one fresh-context iteration reads it cold, reviews silently against paper + code, applies any fixes inline, commits, exits.
+After the first-pass implementation lands at *baseline*, the next fresh-context iteration reads it cold, reviews silently against paper + code, applies any fixes inline if needed, updates Rigor *Current state* (*baseline → tightened* if fixes landed, → *canonical* if nothing needed fixing), and exits. **The iteration that applied fixes cannot declare the implementation done** — a subsequent fresh-context iteration earns *canonical* by reading the implementation and finding nothing to fix. Cap at 5 review iterations: if *canonical* isn't reached by then, log the tail to `open-questions.md` and let the survey advance to RUN.
 
 The cross-check question on entry: is the implementation consistent with the paper and the code?
 
@@ -75,14 +75,14 @@ The cross-check question on entry: is the implementation consistent with the pap
 5. **Determinism.** Scripts set random seeds where the paper's method is stochastic. Library versions in `requirements.txt` are pinned where reproducibility requires it.
 6. **Recipe wiring.** Recipe `inputs:` references match the data-flow the scripts actually consume; no orphan dependencies, no missing dependencies.
 
-Apply fixes inline as you find them — `scripts/`, `astra.yaml` recipes, `requirements.txt`, `implementation-notes.md`, the disagreements log in CLAUDE.md when a new material conflict surfaces. After any change to `astra.yaml`, run `astra validate astra.yaml`. Commit (`implement: review-and-fix`), update the constitution's Rigor *Current state* per output (e.g. *baseline → tightened*), exit. The next iteration's survey advances to RUN.
+Apply fixes inline as you find them — `scripts/`, `astra.yaml` recipes, `requirements.txt`, `implementation-notes.md`, the disagreements log in CLAUDE.md when a new material conflict surfaces. After any change to `astra.yaml`, run `astra validate astra.yaml`. If fixes landed: commit (`implement: review-and-fix`), update Rigor to *tightened*. If nothing needed fixing: commit (`implement: review confirmed clean`, possibly empty), update Rigor to *canonical*. Exit.
 
 ### What NOT to do during review-and-fix
 
 - **Don't re-read the entire paper.** Grep into `work/reference/index.json`, `work/reference/code-index.md`, and `work/reference/source/` (or `document.md`) for specific items.
-- **Don't open a second review pass.** One pass is the protocol. If the implementation needs more rigor than this delivers, log an Open opportunity in CLAUDE.md and let a future loop close it.
+- **Don't declare the implementation *canonical* in the same iteration where you applied fixes.** That's the next fresh-context iteration's call.
 
-The post-RUN COMPARE → IMPLEMENT retry loop is separate from this review-and-fix pass — that loop handles result-matching after the pipeline executes, not spec/implementation alignment before it.
+The post-RUN COMPARE → IMPLEMENT retry loop is separate from this review cycle — that loop handles result-matching after the pipeline executes, not spec/implementation alignment before it.
 
 ## Data: REAL DATA ONLY
 
@@ -96,13 +96,14 @@ If a dataset is behind a paywall, requires registration, or is "available upon r
 
 If `comparison-report.yaml` exists from a prior COMPARE that returned `partial` or `fail`, a subsequent iteration may take on a **retry attempt**. Read `comparison-report.yaml` to understand what went wrong; focus on the outputs marked as non-matching. Default attempt budget is 5; the iteration's first move is to check whether `attempt` in the report has reached the budget. If it has, accept partial, log the failure as an Open opportunity in CLAUDE.md (so REVIEW close-out can decide whether to push further or accept the trajectory), and exit; subsequent iterations either accept the verdict via a cold close or pivot scope based on REVIEW's input.
 
-A retry attempt re-runs the IMPLEMENT review-and-fix pass on the changed scripts before the next iteration advances to RUN.
+A retry attempt restarts the IMPLEMENT review cycle on the changed scripts (back to *baseline*) before the next iteration advances to RUN.
 
 ## Survey signals (entry into IMPLEMENT)
 
 - `astra.yaml` validates and `implementation-notes.md` exists ⇒ ready to implement first pass
-- `scripts/` has one entry per output id; `requirements.txt` exists; recipes appear in `astra.yaml` ⇒ first-pass IMPLEMENT done
-- An `implement: review-and-fix` commit lands ⇒ IMPLEMENT done; the next iteration surveys and advances to RUN
+- `scripts/` has one entry per output id; `requirements.txt` exists; recipes appear in `astra.yaml` ⇒ first-pass IMPLEMENT done (Rigor: *baseline*)
+- Rigor *Current state* shows *baseline* or *tightened* for the implementation ⇒ this iteration is review-and-fix
+- Rigor *Current state* reaches *canonical* ⇒ IMPLEMENT done; the next iteration surveys and advances to RUN
 - `comparison-report.yaml` returns `pass` ⇒ COMPARE → IMPLEMENT loop terminated; the constitution can close after a cold survey, and REVIEW close-out runs in the user's main session
 
 ## Notes
@@ -110,5 +111,5 @@ A retry attempt re-runs the IMPLEMENT review-and-fix pass on the changed scripts
 - **`lc run` is the canonical execution surface.** Scripts assume they will be invoked via the lightcone-cli runner. Do not hard-code working directories or assume environment activation.
 - **Determinism where possible.** Set random seeds, fix library versions, prefer reproducible installations. The IMPLEMENT goal is not just "produces output once" but "reproducibly produces output across runs."
 - **Tight coupling earns shared scripts.** When two outputs come from the same expensive computation (e.g. an MCMC produces both a parameter chain and a summary statistic), one script with multiple output paths is cleaner than two scripts that each re-do the work.
-- **One review-and-fix pass per artifact.** The fresh-context property is automatic at iteration boundaries. Re-opening a second pass on the same artifact in the same loop is anti-pattern — log an Open opportunity and let a future loop close it.
-- **Commit as you go.** One commit per script + recipe wiring; one commit for the review-and-fix pass. The next iteration reads `git log` to track progress.
+- **The iteration that fixed the artifact can't declare it canonical.** Termination requires a subsequent fresh-context iteration to read the work and find nothing to fix. This is what the fresh-context-no-bias property buys you; conflating the fix-iteration with the canonical-judgment defeats it.
+- **Commit as you go.** One commit per script + recipe wiring; one commit per review-and-fix pass; one commit per confirmed-clean review. The next iteration reads `git log` and Rigor *Current state* to track progress.
