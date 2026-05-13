@@ -14,7 +14,6 @@ nav = [
     {"Getting Started" = "user/getting-started.md"},
     {"The Agent Workflow" = "user/agent-workflow.md"},
     {"Running on a Cluster" = "user/cluster.md"},
-    {"NERSC (Perlmutter)" = "user/nersc.md"},
     {"Troubleshooting" = "user/troubleshooting.md"},
     {"Glossary" = "user/glossary.md"},
   ]},

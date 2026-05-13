@@ -19,7 +19,7 @@ implementation; **you stay in charge of the scientific choices**.
   `/lc-from-code`, `/lc-from-paper`, and `/lc-feedback` — what each
   one does and when to reach for it.
 - [Running on a Cluster](cluster.md) — taking your analysis to a SLURM
-  HPC system.
+  HPC system, including Perlmutter-specific notes.
 - [Troubleshooting](troubleshooting.md) — common issues and how to
   unstick them.
 - [Glossary](glossary.md) — the terms that show up everywhere

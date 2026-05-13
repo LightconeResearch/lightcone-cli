@@ -5,11 +5,6 @@ a SLURM HPC system. There's no separate configuration to learn — the
 same `lc run` command works inside an allocation, just with more
 hardware to spread across.
 
-> On NERSC Perlmutter, the filesystem layout (DVS-mounted home, Lustre
-> scratch) and the `module load conda` workflow add a few site-specific
-> considerations. See [NERSC (Perlmutter)](nersc.md) for a focused
-> walkthrough.
-
 ## The big picture
 
 `lc run` always dispatches through a Dask cluster. Three branches:
@@ -27,8 +22,8 @@ you do differently on a cluster is request the nodes.
 ## Pre-flight: pick the right container runtime
 
 On most HPC sites, docker isn't available on compute nodes. Most
-allocations of NERSC-style systems support `podman-hpc`. On a login
-node:
+SLURM systems (including NERSC Perlmutter) provide `podman-hpc`. On a
+login node:
 
 ```bash
 $EDITOR ~/.lightcone/config.yaml
@@ -69,16 +64,35 @@ sbatch run.sbatch                                    # batch
 
 `run.sbatch` looks like:
 
-```bash
-#!/bin/bash
-#SBATCH -N 4
-#SBATCH -t 02:00:00
-#SBATCH -C gpu
+=== "Generic"
+    ```bash
+    #!/bin/bash
+    #SBATCH -N 4
+    #SBATCH -t 02:00:00
+    #SBATCH -C gpu
 
-cd $HOME/my-analysis
-source .venv/bin/activate
-lc run -j 16
-```
+    cd $HOME/my-analysis
+    source .venv/bin/activate
+    lc run -j 16
+    ```
+
+=== "NERSC Perlmutter"
+    ```bash
+    #!/bin/bash
+    #SBATCH -A <your_project>
+    #SBATCH -q regular
+    #SBATCH -C gpu
+    #SBATCH -N 4
+    #SBATCH -t 04:00:00
+
+    cd $SCRATCH/your-analysis
+
+    # make `lc` available — pick the line that matches your install:
+    export PATH=$HOME/.local/bin:$PATH                # uv tool install
+    # source ~/.conda/envs/your-env-name/bin/activate # conda env
+
+    lc run -j 16
+    ```
 
 ### 2. `lc run` inside the allocation
 
@@ -111,6 +125,25 @@ The Snakemake-via-Dask executor maps these to per-task resource
 requests, so a rule that needs a GPU only schedules on nodes that
 advertise one.
 
+## Interactive: agent-driven runs
+
+During development you're usually iterating — ask the agent to build
+something, check the result, adjust the spec, repeat. For that loop
+you want to run the agent itself from inside a SLURM allocation so
+that `lc run` executes on the compute node rather than the login node.
+
+```bash
+salloc -A <your_project> -q interactive -C gpu --nodes=1 -t 00:30:00
+# salloc drops you onto a compute node; from there:
+cd /path/to/your-analysis
+claude                   # or whichever agent CLI you prefer
+```
+
+Everything the agent triggers (`lc run`, scripts, etc.) now executes
+on the allocated node. When you're done iterating and want a
+hands-off sweep of all universes, submit `lc run` as a batch job
+instead (the sbatch template above).
+
 ## What about login-node-only operations?
 
 Build images, dry-run, look at status — all fine on a login node
@@ -137,6 +170,49 @@ lc run
 `lc run` notices the env var and connects rather than starting its
 own scheduler. It does *not* tear the scheduler down on exit.
 
+## NERSC Perlmutter: site-specific notes
+
+!!! note "Setting up on Perlmutter for the first time?"
+    The [Install](install.md) page has NERSC-specific tabs for Python
+    (uv vs `module load python`, conda env storage), lightcone-cli, and
+    the agent CLI. Come back here once `lc --version` works.
+
+### Storage: keep Snakemake state on `$SCRATCH`
+
+!!! danger "DVS silently ignores `flock()`"
+    `$HOME` and `/global/cfs/` are mounted on compute nodes via DVS,
+    which silently ignores `flock()`. Snakemake relies on `flock` for
+    locking, so its `.snakemake/` directory and Dask spill files
+    **must** live on Lustre (`$SCRATCH`), which honors `flock`.
+    Otherwise you get intermittent silent rule-rerun loops or hangs.
+
+`lc` redirects state automatically when it detects Perlmutter, so
+this usually just works. To pin explicitly at project creation:
+
+```bash
+lc init your-analysis --scratch '$SCRATCH'   # kept verbatim, expanded at run time
+```
+
+Or, after the fact, edit `<project>/.lightcone/lightcone.yaml`:
+
+```yaml
+scratch_root: $SCRATCH
+```
+
+!!! warning "12-week purge on `$SCRATCH`"
+    Perlmutter purges `$SCRATCH` on a rolling 12-week window. For
+    outputs you need to keep, copy or symlink to
+    `/global/cfs/cdirs/<project>/`.
+
+### Further reading
+
+- [NERSC interactive jobs](https://docs.nersc.gov/jobs/interactive/)
+  — `salloc` patterns and reservation queues
+- [Perlmutter system overview](https://docs.nersc.gov/systems/perlmutter/)
+  — node types and partitions
+- [NERSC queue policy](https://docs.nersc.gov/jobs/policy/)
+  — QoS options for GPU and CPU partitions
+
 ## Troubleshooting
 
 - `dask CLI is not on PATH inside the SLURM allocation`. Install
@@ -148,6 +224,14 @@ own scheduler. It does *not* tear the scheduler down on exit.
 - Image not found on compute nodes. Re-run `lc build` on the login
   node — the migrate step is the one that actually publishes the
   image to the per-node cache.
+- Snakemake locking errors or silent rule-rerun loops on Perlmutter.
+  `.snakemake/` ended up on DVS-mounted storage — set
+  `scratch_root: $SCRATCH` in the project's `.lightcone/lightcone.yaml`.
+- `pip install` hangs or times out. Compute nodes have no public
+  internet — always install from a login node.
+- `PermissionError` reading another user's symlinked `results/`.
+  Cross-user scratch path without group ACLs — request access from
+  the data owner, or copy the manifests into your own scratch.
 
 For the wiring detail, see
 [engine/dask_cluster](../api/dask_cluster.md) in the maintainer docs.
