@@ -3,7 +3,6 @@ name: lc-feedback
 description: >
   File a bug report from the current session. Use when something breaks:
   /lc-feedback <description of what went wrong>
-allowed-tools: Bash(gh:*), Bash(python:*), Bash(uname:*), AskUserQuestion
 argument-hint: "<what went wrong>"
 ---
 

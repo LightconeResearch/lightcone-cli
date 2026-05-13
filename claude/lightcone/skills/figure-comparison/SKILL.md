@@ -11,7 +11,6 @@ description: >
   "compare results", "side-by-side comparison", "build comparison HTML", or
   "did we reproduce the paper". Run from the project folder containing
   astra.yaml.
-allowed-tools: Read, Write, Glob, Grep, Bash(ls:*), Bash(wc:*), Bash(grep:*), Bash(find:*), Bash(file:*), Bash(python3:*), Bash(python:*), Bash(base64:*), AskUserQuestion, Agent
 argument-hint: "[path to paper reference dir, e.g. work/reference/]"
 ---
 

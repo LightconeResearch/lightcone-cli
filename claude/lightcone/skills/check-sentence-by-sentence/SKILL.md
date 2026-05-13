@@ -7,7 +7,6 @@ description: >
   mark NOT FOUND. Only the user can invoke this skill, though this skill can be suggested for the user to invoke during paper reproduction. Other skills may mention this skill as an optional follow-up, but should not invoke it themselves. Run from the project folder containing astra.yaml. In lc-from-paper projects, read paper sources from
   work/reference/: prefer arXiv TeX under work/reference/source/, fall back to
   Docling/Pandoc markdown at work/reference/document.md.
-allowed-tools: Read, Glob, Grep, Bash(ls:*), Bash(wc:*), Bash(grep:*), Bash(find:*), AskUserQuestion, Agent
 argument-hint: "[path to paper source, e.g. work/reference/source/main.tex or work/reference/document.md]"
 ---
 

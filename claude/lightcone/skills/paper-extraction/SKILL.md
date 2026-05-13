@@ -13,7 +13,6 @@ description: >
   for the semantic surface. Triggers on: "read paper", "prep paper",
   "ingest paper", "extract paper", "set up paper", "fetch arxiv", "arxiv
   id", "DOI", "find paper", or `/paper-extraction <id>`.
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch
 ---
 
 # paper-extraction
