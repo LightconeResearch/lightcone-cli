@@ -1,11 +1,11 @@
 # /ralph
 
 Author a constitution — a markdown document describing a desired state
-for autonomous iteration — and run a ralph loop against it. The loop is
-a detached tmux session that respawns a fresh worker per iteration,
-with the constitution injected as the system prompt; iterations
-terminate when one flips the constitution's frontmatter `status:` to
-`closed` after a cold survey.
+for autonomous iteration — and run a ralph loop against it. The loop
+is a detached tmux session that respawns a fresh worker per iteration,
+with the constitution injected as system prompt. Iterations terminate
+when one of them, after a cold survey, flips the constitution's
+frontmatter `status:` to `closed`.
 
 Used by [`/lc-from-paper`](lc-from-paper.md) for the long middle of a
 reproduction (ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN →
@@ -17,7 +17,7 @@ Source: [`claude/lightcone/skills/ralph/SKILL.md`](https://github.com/LightconeR
 
 ## Three modes
 
-One applies at a time:
+One mode applies at a time.
 
 - **Authoring** — drafting a constitution from scratch (Study → Draft
   → Refine → Launch). Reference depth in
@@ -50,10 +50,9 @@ double-starting.
 ## What goes in a constitution
 
 A constitution describes what the system looks like when it's right —
-the desired state. It outlasts any single iteration. Nothing in it
-becomes confusing or unnecessary as the desired state is reached. The
-constitutional principle: write what remains true until the work is
-done.
+the desired state. It outlasts any single iteration; nothing in it
+goes stale as the work progresses. The constitutional principle:
+write what stays true until the work is done.
 
 Common sections — use what fits, skip what doesn't:
 
