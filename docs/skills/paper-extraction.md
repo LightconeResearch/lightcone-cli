@@ -125,7 +125,7 @@ cached PDF — paraphrasing breaks the gate.
 ## Related
 
 - [`/lc-from-paper`](lc-from-paper.md) — invokes `/paper-extraction`
-  during ACQUIRE for the target paper, and again from inside a ralph
-  iteration for each cited paper during LITERATURE; each iteration
+  during ORIENT Stage 2 for the target paper, and again from inside a
+  ralph iteration for each cited paper during LITERATURE; each iteration
   reads `index.json` and the substrate directly.
 - [`/astra`](index.md#reference-skills-auto-primed-via-session-start) — Insight + Evidence shape, `quote.exact` rules.

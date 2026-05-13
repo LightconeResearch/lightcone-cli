@@ -34,7 +34,7 @@ dispatches them by role during the reproduction.
 
 | Skill | Command | Purpose |
 |-------|---------|---------|
-| [ralph](ralph.md) | `/ralph` | Loop substrate. `lc-from-paper`'s INTERVIEW invokes ralph's Authoring mode to draft the per-paper constitution; ACQUIRE's hand-off invokes the launcher; each iteration runs ralph's Loop protocol. Also user-invokable standalone (see the Project lifecycle row above). |
+| [ralph](ralph.md) | `/ralph` | Loop substrate. `lc-from-paper`'s ORIENT invokes ralph's Authoring mode to draft the per-paper constitution; the loop launcher hands off after ORIENT lands; each iteration runs ralph's Loop protocol. Also user-invokable standalone (see the Project lifecycle row above). |
 | [paper-extraction](paper-extraction.md) | `/paper-extraction` | Turn an arXiv ID or DOI into a standardized `work/reference/` directory: substrate, figures, tables, citations (with resolved DOIs), and a stub `astra.yaml`. |
 | [narrative](narrative.md) | `/narrative` | Author the `narrative:` prose and decision `rationale:` against an existing `astra.yaml`, in paper-reproduction, retrofit, or co-drafting mode. |
 | [figure-comparison](figure-comparison.md) | `/figure-comparison` | Build a self-contained HTML side-by-side: paper figures, tables, and numerics vs reproduced artifacts. |

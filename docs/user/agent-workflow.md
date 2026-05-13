@@ -83,17 +83,22 @@ driven by an interview-first agent that hands off to a long-running
 ralph loop for the heavy middle.**
 
 `/lc-from-paper` is the entry point of the paper-reproduction bundle.
-It opens with a short interactive interview — paper identity, scope
-(full vs targeted), fidelity intent (your prose answer to "when is
-this good enough"), and any paper-specific conventions — then drafts
-**two files** at the reproduction workdir root: `constitution.md`
-(the ralph loop's driving document — Goal, fidelity intent, scope,
-quality bar, evidence) and `CLAUDE.md` (the auto-loading walk-up with
-rules, the Rigor accumulator, and the paper-vs-code disagreements log).
-ACQUIRE then runs in the same session, standing up the paper and code
-substrate via `/paper-extraction` and `/lc-from-code` in scan-only mode.
+It opens with **ORIENT** — one pre-loop phase in your main session
+that runs in seven stages: ask for the paper, run `/paper-extraction`
+inline (so subsequent questions are grounded in the actual paper),
+interview you (scope, fidelity intent — your prose answer to "when is
+this good enough" — code repo confirmation, paper-specific
+conventions, prior familiarity, external context), clone the
+reference code and run `/lc-from-code` scan-only (when a repo exists),
+optionally follow up, then draft **two files** at the workdir root:
+`constitution.md` (the ralph loop's driving document — Goal, fidelity
+intent, scope, quality bar, evidence) and `CLAUDE.md` (the auto-loading
+walk-up with rules, the paper-vs-code disagreements log, open
+opportunities). You review the drafts, then a single first commit
+captures `constitution.md` + `CLAUDE.md` + the full `work/reference/`
+substrate.
 
-After ACQUIRE lands, the skill launches a **ralph loop** in a detached
+After ORIENT lands, the skill launches a **ralph loop** in a detached
 tmux session against `constitution.md`. Each iteration starts a fresh
 worker that surveys the workdir, picks the next valuable move
 (typically one of ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN

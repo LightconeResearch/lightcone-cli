@@ -1,12 +1,13 @@
 # /lc-from-paper
 
 Reproduce a published scientific paper as a complete ASTRA project. The
-skill is **interview-first** and **ralph-driven**. INTERVIEW and
-ACQUIRE run in the user's main session to set up the per-paper
-substrate. A ralph loop then carries the long middle —
-ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN → COMPARE —
-across many iterations against the same constitution. REVIEW returns
-to the user's main session once the loop closes.
+skill is **ORIENT-first** and **ralph-driven**. ORIENT runs in the
+user's main session — figuring out what the user wants, standing up the
+paper and code substrate, and drafting the per-paper constitution. A
+ralph loop then carries the long middle — ARCHITECT → SPECIFY →
+LITERATURE → IMPLEMENT → RUN → COMPARE — across many iterations against
+the same constitution. REVIEW returns to the user's main session once
+the loop closes.
 
 `/lc-from-paper` is the entry point of the paper-reproduction bundle.
 Sibling skills ([`ralph`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/SKILL.md)
@@ -21,14 +22,16 @@ Source: [`claude/lightcone/skills/lc-from-paper/SKILL.md`](https://github.com/Li
 
 Two pieces.
 
-1. **Interactive bookends in the user's main session.** INTERVIEW and
-   REVIEW are conversations with the user. ACQUIRE is two parallel
-   sub-skill invocations (`/paper-extraction` and `/lc-from-code` in
-   scan-only mode) that produce the on-disk substrate everything
-   downstream consults.
+1. **Interactive bookends in the user's main session.** ORIENT and
+   REVIEW are conversations with the user. ORIENT runs in stages —
+   ask for the paper, run `/paper-extraction` inline, interview
+   (grounded in the paper), clone the code and run `/lc-from-code`
+   scan-only (if a repo exists), optionally follow up, then draft
+   `constitution.md` + `CLAUDE.md` from the full paper-plus-code
+   context for user review.
 
-2. **A ralph loop for the long middle.** Once `constitution.md` is
-   drafted (INTERVIEW) and the substrate is on disk (ACQUIRE),
+2. **A ralph loop for the long middle.** Once ORIENT lands —
+   `constitution.md` drafted, paper and code substrate on disk —
    `/lc-from-paper` launches a ralph loop against the constitution.
    Each iteration starts a fresh tmux-detached Claude session with
    the constitution loaded into its system prompt, surveys the
@@ -42,25 +45,53 @@ Two pieces.
 
 ## Phases
 
-Nine phases, zero-indexed. INTERVIEW + ACQUIRE + REVIEW run in the
-user's main session; phases 2–7 run as ralph iterations.
+Eight phases, zero-indexed. ORIENT + REVIEW run in the user's main
+session; phases 1–6 run as ralph iterations.
 
 | # | Phase | Where | Primary outputs |
 |---|-------|-------|------------------|
-| 0 | INTERVIEW | user's main session | per-paper `constitution.md` + `CLAUDE.md` |
-| 1 | ACQUIRE | user's main session | `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml, code/, code-status.yaml, code-index.md}` |
-| 2 | ARCHITECT | ralph iteration | stub `astra.yaml` (sub-analyses, inputs, outputs, narrative) |
-| 3 | SPECIFY | ralph iteration | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
-| 4 | LITERATURE | ralph iteration | `prior_insights:` Evidence entries each carry resolved `quote:` + `location:` selectors; per-paper PDFs cached via `astra paper add` |
-| 5 | IMPLEMENT | ralph iteration | `scripts/`, `requirements.txt`, recipes in `astra.yaml` |
-| 6 | RUN | ralph iteration | `results/<universe>/<output>/` |
-| 7 | COMPARE | ralph iteration | `comparison-report.{yaml,md}` plus an opportunity assessment graded against the user's fidelity intent |
-| 8 | REVIEW | user's main session | `REPRODUCTION-SUMMARY.md`, `/figure-comparison` HTML, resolved `open-questions.md`, finalized reproduction outcome |
+| 0 | ORIENT | user's main session | per-paper `constitution.md` + `CLAUDE.md` + paper substrate at `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml}` (from inline `/paper-extraction`) + code substrate at `work/reference/{code/, code-status.yaml, code-index.md}` (from inline `/lc-from-code` scan-only, when a repo exists) |
+| 1 | ARCHITECT | ralph iteration | stub `astra.yaml` (sub-analyses, inputs, outputs, narrative) |
+| 2 | SPECIFY | ralph iteration | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
+| 3 | LITERATURE | ralph iteration | `prior_insights:` Evidence entries each carry resolved `quote:` + `location:` selectors; per-paper PDFs cached via `astra paper add` |
+| 4 | IMPLEMENT | ralph iteration | `scripts/`, `requirements.txt`, recipes in `astra.yaml` |
+| 5 | RUN | ralph iteration | `results/<universe>/<output>/` |
+| 6 | COMPARE | ralph iteration | `comparison-report.{yaml,md}` plus an opportunity assessment graded against the user's fidelity intent |
+| 7 | REVIEW | user's main session | `REPRODUCTION-SUMMARY.md`, `/figure-comparison` HTML, resolved `open-questions.md`, finalized reproduction outcome |
+
+## ORIENT stages
+
+ORIENT is one phase executed in seven stages, each grounded in what
+the earlier stages produced:
+
+1. **Ask for the paper** in prose (the answer is free-form: arXiv ID,
+   DOI, or PDF path). No `AskUserQuestion` here — it's the wrong
+   shape for a free-form string.
+2. **Run `/paper-extraction <id>` inline** and read the substrate
+   it produced — index.json, abstract, conclusions, data/code
+   availability, acknowledgements. This grounds every subsequent
+   question.
+3. **Interview the user** with `AskUserQuestion` for scope, fidelity
+   intent, code repo confirmation, paper-specific conventions, prior
+   familiarity, and external context — each question referencing the
+   paper's actual figures, claims, and structure.
+4. **Clone the reference code and run `/lc-from-code` scan-only**
+   (skip cleanly when no public code repo exists). The scan produces
+   `code-index.md` — the iterations' code surface.
+5. **Optional follow-up questions** if the code-index surfaced
+   something that affects scope or constitution shape. Usually
+   skipped.
+6. **Draft `constitution.md` + `CLAUDE.md`** — both files now
+   informed by paper *and* code substrate. The constitution's Scope
+   and sub-analysis decomposition can lean on the actual pipeline.
+7. **User reviews drafts → refine → single first commit (constitution
+   + CLAUDE + paper substrate + code substrate) → launch the ralph
+   loop.**
 
 ## Per-paper substrate: constitution + CLAUDE.md
 
-INTERVIEW drafts two files in the reproduction workdir; every
-iteration picks them up on launch.
+ORIENT drafts two files in the reproduction workdir; every iteration
+picks them up on launch.
 
 - **`constitution.md`** — the ralph loop's driving document, *task-bound*.
   YAML frontmatter declares `status: active`. Goal (carrying the
@@ -98,13 +129,13 @@ Pointers, not snapshots.
   intent is partly aesthetic ("how good does this need to be?") and
   partly pragmatic ("what's feasible given the compute, tokens, and
   wall-clock available?"). The honest meta-conversation lives in
-  INTERVIEW. There's no explicit review state machine: every
-  iteration reads the most recent artifact critically as part of
-  survey, fixes what needs fixing or advances if nothing does. The
-  fresh-context property at iteration boundaries makes the next
-  iteration the review. Gaps the intent wants pushed further than
-  the loop has time to deliver become Open opportunities in
-  CLAUDE.md for a future loop.
+  ORIENT. There's no explicit review state machine: every iteration
+  reads the most recent artifact critically as part of survey,
+  fixes what needs fixing or advances if nothing does. The fresh-context
+  property at iteration boundaries makes the next iteration the
+  review. Gaps the intent wants pushed further than the loop has
+  time to deliver become Open opportunities in CLAUDE.md for a future
+  loop.
 - **arXiv LaTeX first.** PDF + Docling is the non-arXiv fallback only.
 - **No synthetic data.** Unless the paper itself uses synthetic data,
   every input must be real.
@@ -116,8 +147,8 @@ Pointers, not snapshots.
 ## Anti-patterns
 
 - Doing the long middle in the user's main session instead of launching
-  the loop. INTERVIEW + ACQUIRE + REVIEW belong in the main session;
-  ARCHITECT through COMPARE belong in iterations.
+  the loop. ORIENT and REVIEW belong in the main session; ARCHITECT
+  through COMPARE belong in iterations.
 - Asking an iteration to use `AskUserQuestion` — iterations are
   detached.
 - Re-implementing what `astra` already does (`astra validate`, `astra
@@ -132,7 +163,7 @@ Pointers, not snapshots.
   — why the bundle is co-located rather than a separate plugin install.
 - [`/ralph`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/SKILL.md)
   — the loop substrate (authoring + launching + iterating).
-- [`/paper-extraction`](paper-extraction.md) — ACQUIRE's primary
+- [`/paper-extraction`](paper-extraction.md) — ORIENT Stage 2's
   acquisition path; also invoked per cited paper by LITERATURE.
 - [`/narrative`](narrative.md) — ARCHITECT's structural narrative and
   SPECIFY's anchored content narrative.
