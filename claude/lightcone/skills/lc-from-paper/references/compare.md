@@ -90,9 +90,9 @@ Each opportunity gets two grades: a **leverage** one-liner (impact if closed) an
 - `at` — closing the gap reaches the intent; further tightening would be gravy.
 - `above` — already past the intent; log it but it doesn't pull on attention.
 
-Read the Goal's fidelity intent prose to make the call. "Figure 3 must be right" + a sketch-level figure 3 systematics = `below`. "Just checking the analysis is tractable" + a canonical-grade outputs block + a sketchy sub-analysis = `above` everywhere except the headline. When intent is silent on something, default to `at` for primary targets, `above` for secondaries.
+Read the Goal's fidelity intent prose to make the call. "Figure 3 must be right" + a rough figure 3 systematics = `below`. "Just checking the analysis is tractable" + a tight outputs block + a rough sub-analysis = `above` everywhere except the headline. When intent is silent on something, default to `at` for primary targets, `above` for secondaries.
 
-Empty `opportunities:` is a strong signal — say "the reproduction is at canonical rigor across the targets" rather than padding.
+Empty `opportunities:` is a strong signal — say "the reproduction reaches the fidelity intent across the targets" rather than padding.
 
 Also write `comparison-report.md` with a human-readable summary. For figure / table comparisons, describe what you see in both and explain your match judgment. Include the opportunity assessment as its own section — group by `relative_to_intent` so the `below` items lead.
 

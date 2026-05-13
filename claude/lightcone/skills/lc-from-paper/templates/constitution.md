@@ -20,7 +20,7 @@ The driving document for the ralph loop reproducing <paper title> (<arXiv ID>, D
 
 ## Quality bar
 
-What "canonical" rigor looks like for *this* paper. The bar that primary-target outputs aim for when the fidelity intent calls for it:
+What the quality bar looks like for *this* paper. The level primary-target outputs aim for when the fidelity intent calls for it:
 
 - <e.g. "BAO fit posteriors match the paper's Figure 4 within 1σ across the full damping prior range">
 - <e.g. "magnitude cuts and selection match the code's defaults exactly; any deviation is recorded as a paper-vs-code disagreement with both options preserved">
