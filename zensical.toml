@@ -13,7 +13,6 @@ nav = [
     {"Install" = "user/install.md"},
     {"Getting Started" = "user/getting-started.md"},
     {"The Agent Workflow" = "user/agent-workflow.md"},
-    {"Multiverse Analyses" = "user/multiverse.md"},
     {"Running on a Cluster" = "user/cluster.md"},
     {"NERSC (Perlmutter)" = "user/nersc.md"},
     {"Troubleshooting" = "user/troubleshooting.md"},
