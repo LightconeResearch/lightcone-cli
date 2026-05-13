@@ -7,7 +7,8 @@ is a thin Click wrapper around these modules.
 
 | Module | Role |
 |--------|------|
-| [`lightcone.cli.commands`](cli.md) | Click CLI: `init`, `run`, `build`, `status`, `verify`, `setup`. |
+| [`lightcone.cli.commands`](cli.md) | Click CLI: `init`, `run`, `build`, `status`, `verify`, `export` (plus `eval` when the optional extra is installed). |
+| [`lightcone.cli.plugin`](cli.md#lightconecliplugin) | Marketplace discovery for the Claude Code plugin bundled in the wheel. `get_marketplace_root()` + `MARKETPLACE_NAME` / `PLUGIN_NAME` constants. |
 | [`lightcone.engine.manifest`](manifest.md) | Per-output `.lightcone-manifest.json` write/read; `code_version`, `sha256_dir`. The integrity layer. |
 | [`lightcone.engine.snakefile`](snakefile.md) | Generate `.lightcone/Snakefile` and `snakefile-config.json` from `astra.yaml`. |
 | [`lightcone.engine.container`](container.md) | Runtime detection, content-addressed image tags, `wrap_recipe`. |
