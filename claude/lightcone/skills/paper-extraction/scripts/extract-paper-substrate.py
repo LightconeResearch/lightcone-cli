@@ -80,7 +80,9 @@ CROSSREF_USER_AGENT = (
 )
 ADS_API = "https://api.adsabs.harvard.edu/v1/search/query"
 NETWORK_TIMEOUT_S = 10
-CAPTION = re.compile(r"\\caption\{((?:[^{}]|\{[^}]*\})*)\}", re.DOTALL)
+# Match caption commands; the body itself is walked with balanced-brace logic so
+# nested braces and escaped braces survive intact.
+CAPTION = re.compile(r"\\caption\*?\s*(?:\[[^\]]*\])?\s*\{")
 LABEL = re.compile(r"\\label\{([^}]+)\}")
 INCLUDEGRAPHICS = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
 PLOTONE = re.compile(r"\\plotone\{([^}]+)\}")
@@ -104,8 +106,14 @@ def extract_caption(text: str, macros: dict[str, str]) -> str:
 
     Composite figures often have empty subfigure captions before the real
     top-level caption; taking the first caption produces a false warning.
+    Balanced-brace walking preserves nested LaTeX and escaped braces inside
+    caption bodies.
     """
-    captions = [m.group(1).strip() for m in CAPTION.finditer(text)]
+    captions = []
+    for match in CAPTION.finditer(text):
+        body = walk_balanced_braces(text, match.end() - 1)
+        if body is not None:
+            captions.append(body.strip())
     nonempty = [caption for caption in captions if caption]
     return expand_macros(nonempty[-1], macros) if nonempty else ""
 
