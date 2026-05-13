@@ -12,7 +12,7 @@ End-to-end migration: scan existing code, draft or add to `astra.yaml`, paramete
 
 This skill has two invocation contexts. The first is the user-driven default described in the phases below: do the full scan → spec → parameterize → run flow.
 
-The second is **scan-only**, used when `/lc-from-paper`'s ACQUIRE invokes this skill against a cloned reference repo at `work/reference/code/`. The invocation prompt will tell you explicitly to *do only Phase 1's scan*, write the inventory to a path it specifies (typically `work/reference/code-index.md`), and **stop** — do not touch `astra.yaml` at the project root, do not parameterize any code, do not run anything, do not modify the cloned repo. In scan-only mode, **do the inventory work inline** (using Read, Glob, Grep directly) rather than dispatching the Explore sub-agent that fresh-migration mode uses below. The scan-only branch can run nested inside another agent context (no sub-agent dispatch is safe in that case), and the inventory is bounded enough to do inline. Trust the invocation prompt's instructions over the fresh-migration defaults below; if the prompt says scan-only, the scan-only contract holds.
+The second is **scan-only**, used when `/lc-from-paper`'s ORIENT Stage 4 invokes this skill against a cloned reference repo at `work/reference/code/`. The invocation prompt will tell you explicitly to *do only Phase 1's scan*, write the inventory to a path it specifies (typically `work/reference/code-index.md`), and **stop** — do not touch `astra.yaml` at the project root, do not parameterize any code, do not run anything, do not modify the cloned repo. Reach for an Explore sub-agent (or parallel Explore spawns when the repo is large enough that one survey misses the breadth) — that's the cost-effective tool for inventorying a real codebase, and there's no longer any nested-context concern that would forbid it. Trust the invocation prompt's instructions over the fresh-migration defaults below; if the prompt says scan-only, the scan-only contract holds (stop after writing the inventory file).
 
 ## Phase 1: Scan & Spec
 
@@ -23,7 +23,7 @@ First, invoke `/astra` and read its Decisions section, then decide which mode ap
 
 ### Scanning the project
 
-In **fresh migration** mode (user's main session, full migration flow), spawn an Explore subagent to scan the project. Include the decision criteria in the prompt so the subagent can classify candidates:
+In both modes, spawn an Explore sub-agent to scan the project. Include the decision criteria in the prompt so the sub-agent can classify candidates:
 
 ```
 Agent(subagent_type="Explore", prompt="""
@@ -58,14 +58,9 @@ For reference, here are the decision criteria for classifying candidates:
 """)
 ```
 
-In **scan-only** mode (invoked by `/lc-from-paper` ACQUIRE), do the same inventory work inline using Read / Glob / Grep:
+When the codebase is large enough that one Explore pass risks missing depth (a multi-project monorepo, a workflow folder plus a notebooks tree plus a `src/` package), spawn Explores in parallel against the named subtrees — one Explore per coherent region. Aggregate their inventories into the final scan output.
 
-- `Glob` for `**/*.py`, `**/*.ipynb`, `**/Dockerfile`, `**/Containerfile`, `**/requirements*.txt`, `**/environment*.yml`, `**/pyproject.toml`, and any other relevant dependency / container manifests. Inventory the matches.
-- For each script and notebook, `Read` it (paginating with offset / limit for large files) to identify what it does, what it reads / writes, and any hardcoded analytical choices with `file:line` references.
-- `Grep` for repeated patterns when surveying for candidate decisions across the tree (magic numbers, common method-selector patterns, config-dict keys).
-- Apply the same decision criteria from `/astra` (Decisions section) to classify candidates; the criteria are the filter regardless of whether the inventory came from an Explore sub-agent or inline reads.
-
-Either way, write the scan results to `CLAUDE.md` under `## Project Notes` (fresh migration) or to the path the invocation prompt specifies (scan-only — typically `work/reference/code-index.md`) as a script inventory, then in fresh migration mode draft or add to `astra.yaml` from the scan results following the spec structure documented in `/astra`. In scan-only mode, stop after the inventory file lands; do not touch `astra.yaml`. Use the decision criteria from `/astra` (Decisions section) to filter candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
+Write the scan results to `CLAUDE.md` under `## Project Notes` (fresh migration) or to the path the invocation prompt specifies (scan-only — typically `work/reference/code-index.md`) as a script inventory, then in fresh migration mode draft or add to `astra.yaml` from the scan results following the spec structure documented in `/astra`. In scan-only mode, stop after the inventory file lands; do not touch `astra.yaml`. Use the decision criteria from `/astra` (Decisions section) to filter candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
 
 In augment mode, preserve the existing paper-derived or user-derived `inputs`, `outputs`, `decisions`, `findings`, and `narrative` unless the code scan shows a real conflict. Attach code evidence to the nearest existing home first. Create new ASTRA structure only when the code reveals a real analysis object that has no suitable home in the current spec.
 
