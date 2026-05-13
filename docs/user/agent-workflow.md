@@ -1,4 +1,4 @@
-# The Agent Workflow
+# The Agentic Workflow
 
 The agentic surface is five slash commands. Each one is a structured
 prompt — the agent follows a specific phased flow, not free-form chat.
@@ -34,8 +34,11 @@ The skill walks you through four phases:
    (methodological choices that could shift results). `→ astra.yaml`.
 4. **Finalize.** `astra validate astra.yaml` to make sure the spec is
    valid; `astra universe generate -n baseline` to seed a baseline
-   universe; the `## Working Notes` section of `CLAUDE.md` gets the
-   conversational context that wouldn't otherwise survive a `/clear`.
+   universe; the `narrative:` block in `astra.yaml` gets filled in
+   (`summary`, `methods`, `inputs`, `outputs` — `findings` stays TODO
+   until results exist); the `## Working Notes` section of `CLAUDE.md`
+   gets the conversational context that wouldn't otherwise survive a
+   `/clear`.
 
 You don't write any code or YAML during `/lc-new`. By the time it
 finishes, you have a precise specification. The agent enforces this:

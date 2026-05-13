@@ -1,50 +1,56 @@
 # Install
 
-You need three things on your machine: Python 3.11+, the `lc` CLI, and
-Claude Code. A container runtime is optional but recommended.
+To get started on a lightcone project, you need three things on your machine: Python 3.11+, the lightcone command line tool `lc`, and
+an agent-based CLI (currently supporting Claude Code).  
+A container runtime is optional but recommended.
 
-## 1. Python 3.11+
+## 1. Python
 
-If you don't already have a recent Python:
+If you don't already have a recent Python
 
-- macOS: `brew install python@3.12`
-- Linux: your package manager (`apt install python3.12`, etc.) or
-  [pyenv](https://github.com/pyenv/pyenv).
-- Windows: [python.org](https://www.python.org/downloads/) or WSL.
+=== "macOS"
+    ```bash
+    brew install python@3.12
+    ```
 
-Confirm:
+=== "Linux"
+    Your package manager (`apt install python3.12`, etc.) or
+    [pyenv](https://github.com/pyenv/pyenv)
 
-```bash
-python3 --version           # → Python 3.11.x or newer
-```
+=== "Windows"
+    [python.org](https://www.python.org/downloads/) or WSL
+
+!!! tip "Recommendation"
+    We highly recommend the use of [uv](https://docs.astral.sh/uv/) to manage Python installation and virtual environments.
+
+    `uv` can be installed in a single commandline
+
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+
+    and a subsequent version of Python
+
+        uv python install 3.12
 
 ## 2. lightcone-cli
 
 The published name on PyPI is `lightcone-cli`; the command it provides
 is `lc`.
 
-```bash
-pip install lightcone-cli
-```
+=== "uv"
+    ```bash
+    uv tool install lightcone-cli
+    ```
 
-If you use [uv](https://docs.astral.sh/uv/) (recommended):
+=== "pip"
+    ```bash
+    python -m pip install lightcone-cli
+    ```
 
-```bash
-uv pip install lightcone-cli
-# or, project-local:
-uv tool install lightcone-cli
-```
+Get a confirmation of the proper installation by running
 
-Confirm:
+    lc --version                # → lightcone-cli, version ...
 
-```bash
-lc --version                # → lightcone-cli, version ...
-```
-
-> **Heads-up about the `lc` name.** `lc` is not a standard Unix tool,
-> but a few people have a personal shell alias `lc='ls --color'`. If
-> that's you, installing lightcone-cli will shadow the alias —
-> rebind it (e.g. `alias l='ls --color'`).
+> **Note** Some people may have already set a personal shell alias `lc='ls --color'`. If that's you, installing lightcone-cli will shadow the alias — make sure to rebind it (e.g. `alias l='ls --color'`).
 
 ## 3. Global configuration
 
@@ -58,26 +64,22 @@ container:
 ```
 
 `auto` detects whichever of `podman`, `docker`, or `podman-hpc` is on
-your PATH (and skips docker if its daemon isn't running). You can pin
-the runtime later by editing this file directly.
+your PATH (and skips docker if its daemon isn't running). Feel free to pin the runtime later by editing this file directly.
 
-## 4. Claude Code
+## 4. Agentic CLI
 
-Most of your interactions with lightcone-cli happen *through* Claude
-Code, the CLI that drives Claude.
+Most of your interactions with a lightcone project happen *through* an agent-based CLI, for now we are supporting Claude Code.
 
-```bash
-curl -fsSL https://claude.ai/install.sh | bash
-```
+Install Claude Code
 
-Open a project (in the next page we make one) with:
+    curl -fsSL https://claude.ai/install.sh | bash
 
-```bash
-claude
-```
+Open a project in your terminal or editor (see [Getting Started](getting-started.md)) and run
 
-Inside Claude Code you'll type slash commands like `/lc-new` and
-`/lc-build` — see [The Claude Code Workflow](claude-workflow.md).
+    claude
+
+Inside Claude Code you will have dedicated lightcone CLI slash commands available like `/lc-new` and
+`/lc-build` — see [The Agentic Workflow](agent-workflow.md).
 
 ## 5. (Optional) Docker or Podman
 
@@ -96,10 +98,8 @@ isolation.
 
 ## Sanity check
 
-```bash
-lc --help
-lc init --help
-```
+    lc --help
+    lc init --help
 
 Both should print help text. If `lc` is shadowed by an `ls` alias,
 unset it (`unalias lc`) or use the full path

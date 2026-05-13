@@ -45,11 +45,11 @@ def _get_git_info(repo_root: Path) -> VersionInfo:
         pass
 
     try:
-        result = subprocess.run(
+        dirty = subprocess.run(
             ["git", "diff", "--quiet", "HEAD"],
             capture_output=True, cwd=repo_root,
         )
-        info.lightcone_dirty = result.returncode != 0
+        info.lightcone_dirty = dirty.returncode != 0
     except subprocess.CalledProcessError:
         info.lightcone_dirty = True
 

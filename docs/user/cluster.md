@@ -5,6 +5,11 @@ a SLURM HPC system. There's no separate configuration to learn — the
 same `lc run` command works inside an allocation, just with more
 hardware to spread across.
 
+> On NERSC Perlmutter, the filesystem layout (DVS-mounted home, Lustre
+> scratch) and the `module load conda` workflow add a few site-specific
+> considerations. See [NERSC (Perlmutter)](nersc.md) for a focused
+> walkthrough.
+
 ## The big picture
 
 `lc run` always dispatches through a Dask cluster. Three branches:
