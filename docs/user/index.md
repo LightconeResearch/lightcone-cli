@@ -13,13 +13,11 @@ implementation; **you stay in charge of the scientific choices**.
 
 - [Install](install.md) — get `lc` and Claude Code running on your
   machine.
-- [Getting Started](getting-started.md) — your first `lc init` and
-  what every directory means.
+- [Getting Started](getting-started.md) — create your first project,
+  run it end-to-end, and understand what each piece does.
 - [The Agentic Workflow](agent-workflow.md) — `/lc-new`,
   `/lc-from-code`, `/lc-from-paper`, and `/lc-feedback` — what each
   one does and when to reach for it.
-- [Tutorial: Your First Analysis](tutorial.md) — an end-to-end worked
-  example, written so you can read it without running anything.
 - [Running on a Cluster](cluster.md) — taking your analysis to a SLURM
   HPC system.
 - [Troubleshooting](troubleshooting.md) — common issues and how to
@@ -53,7 +51,7 @@ unhurried version.
   things itself.
 - **A workflow language.** Recipes in `astra.yaml` are short shell or
   Python commands, not a DSL. There's no learning curve beyond what's
-  in the [tutorial](tutorial.md).
+  in [Getting Started](getting-started.md).
 - **An IDE.** `lc` is a command-line tool; the agent surface lives
   inside the agent harness (Claude Code for now).
 
