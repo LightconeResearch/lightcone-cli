@@ -6,6 +6,8 @@ on:
     paths:
       - "docs/**"
       - "zensical.toml"
+      - ".github/workflows/docs-deploy.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
