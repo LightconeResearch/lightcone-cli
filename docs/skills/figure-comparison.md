@@ -57,8 +57,8 @@ and reproduced artifacts on the right. Helper scripts and intermediate
 manifests also live under `.lightcone/` so they don't pollute the
 baseline results.
 
-The HTML embeds figure images as base64 — portable to email, shared
-drives, or Slack without breaking links.
+The HTML embeds figure images as base64 — paste it into email, drop
+it on a shared drive, or send it through Slack without breaking links.
 
 ## When to invoke
 
