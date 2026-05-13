@@ -264,6 +264,78 @@ warnings.
 
 ---
 
+## Repository at a glance
+
+```text
+src/lightcone/                  # PEP 420 namespace package — NO __init__.py
+├── cli/                        # Click surface
+│   ├── __init__.py             # exposes main()
+│   ├── commands.py             # init, run, status, verify, build, export
+│   └── plugin.py               # plugin source-dir discovery
+├── engine/                     # execution substrate
+│   ├── manifest.py             # write_manifest, sha256_dir, code_version
+│   ├── snakefile.py            # generate .lightcone/Snakefile from astra.yaml
+│   ├── container.py            # docker/podman/podman-hpc build + recipe wrap
+│   ├── dask_cluster.py         # cluster lifecycle (local/SLURM/external)
+│   ├── status.py               # manifest-driven status walker (no Snakemake)
+│   ├── verify.py               # recompute hashes, walk the chain
+│   ├── tree.py                 # sub-analysis tree helpers
+│   ├── validation.py           # post-recipe output sanity checks
+│   └── site_registry.py        # vestigial; not imported by active code
+└── eval/                       # evaluation harness for the agent loop
+    ├── cli.py harness.py sandbox.py graders.py build.py report.py models.py
+
+src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
+
+claude/lightcone/               # Claude Code plugin (force-included into the wheel)
+├── skills/                     # lc-new, lc-from-code, lc-from-paper,
+│                                # lc-feedback, ralph (+ bundle siblings);
+│                                # reference skills: astra, lc-cli
+├── agents/                     # lc-extractor (literature subagent)
+├── templates/                  # project CLAUDE.md template
+└── scripts/                    # session hooks (bash): venv, validate-on-save, session-start primer
+
+tests/                          # pytest, mirrors src/
+pyproject.toml                  # hatchling + hatch-vcs; ASTRA + Snakemake as deps
+```
+
+The `lightcone.*` namespace is a PEP 420 implicit namespace package.
+**Do not add `src/lightcone/__init__.py`** — that would turn it into a
+regular package and break coexistence with future sibling distributions
+(`lightcone-ui`, etc.). Any new `lightcone-*` package must live under
+`src/lightcone/<name>/` and ship only its own subpackage.
+
+---
+
+## Execution flow
+
+```text
+astra.yaml ── snakefile.generate() ──► .lightcone/Snakefile + .lightcone/snakefile-config.json
+                                              │
+                                       snakemake -s … -d … --executor dask
+                                              │
+                       ┌──────────────────────┼──────────────────────┐
+                       │                      │                      │
+                  DAG resolution         per-rule run:           dask scheduler
+                  (Snakemake)            shell(recipe)           (LocalCluster /
+                                         + write_manifest()       SLURM-srun /
+                                                                  external)
+                       │
+                       └─► results/<u>/<o>/data
+                           results/<u>/<o>/.lightcone-manifest.json
+```
+
+What Snakemake owns (we don't write it): DAG construction, topological
+execution, parallelism, dry-run, locking, retry, log capture,
+per-rule resources, `--rerun-triggers` for staleness detection.
+
+What we own: a Snakefile generator, the manifest layer (write/read/verify),
+a status walker, a verify routine, the Dask cluster manager, the
+container-runtime layer, and a Snakemake executor plugin that submits
+each rule to a Dask scheduler.
+
+--- 
+
 ## Configuration files
 
 | File | Scope | Purpose |
