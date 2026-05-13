@@ -1,8 +1,8 @@
 # /lc-from-code
 
-Wrap an existing codebase in ASTRA. The skill scans the project, drafts
-`astra.yaml` against what the code already does, parameterizes its
-hardcoded analytical choices, and runs until outputs materialize.
+Import an existing codebase into ASTRA. The skill scans the project,
+drafts `astra.yaml` against what the code already does, parameterizes
+its hardcoded analytical choices, and runs until outputs materialize.
 Existing logic stays intact; the edits are minimal parameter plumbing.
 
 Source: [`claude/lightcone/skills/lc-from-code/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-from-code/SKILL.md).
