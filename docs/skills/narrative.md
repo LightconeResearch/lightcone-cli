@@ -23,8 +23,8 @@ If the second source isn't obvious, the skill asks. Hybrid is allowed
 (reproduction with co-drafted extensions; retrofit with co-drafted
 gap-filling).
 
-`/narrative` is invoked by `/lc-from-paper` during SPECIFY (paper-
-reproduction mode), and is also user-invokable directly in any mode.
+`/lc-from-paper` invokes `/narrative` during SPECIFY (paper-reproduction
+mode); users can invoke it directly in any mode.
 
 ## Allowed surfaces
 
