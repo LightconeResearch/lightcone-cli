@@ -79,7 +79,7 @@ parameter plumbing.
 ## `/lc-from-paper` — reproduce a published paper
 
 **You have a DOI or arXiv ID. You end with a reproduction project
-driven by an interview-first agent that hands off to a long-running
+driven by an ORIENT-first agent that hands off to a long-running
 ralph loop for the heavy middle.**
 
 `/lc-from-paper` is the entry point of the paper-reproduction bundle.
@@ -118,8 +118,8 @@ session: `/figure-comparison` against the targets, optional
 questions, a `REPRODUCTION-SUMMARY.md`. COMPARE's opportunity
 assessment — where the gaps are, how much they likely matter, and how
 they sit relative to your fidelity intent — propagates into
-CLAUDE.md's Rigor section as the trajectory of what could be tightened
-on a return visit.
+CLAUDE.md's *Open opportunities* list as the trajectory of what could
+be tightened on a return visit.
 
 The bundle composes sibling skills: `ralph` (the loop substrate),
 `paper-extraction`, `narrative`, `figure-comparison`, and
