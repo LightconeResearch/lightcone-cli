@@ -1,0 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* Light mode — parchment + blue-ink palette */
+:root > * {
+  --md-primary-fg-color:        #4e5a70;
+  --md-primary-fg-color--light: #6b7a8d;
+  --md-primary-fg-color--dark:  #3a4456;
+  --md-accent-fg-color:         #426b78;
+  --md-default-bg-color:        #f8f7f3;
+  --md-default-bg-color--light: #ffffff;
+  --md-default-bg-color--dark:  #f1efe9;
+  --md-text-font:               "Libre Baskerville", Georgia, serif;
+  --md-code-font:               "JetBrains Mono", "Fira Code", monospace;
+}
+
+/* Apply parchment to all major surface areas */
+body,
+.md-header,
+.md-main,
+.md-main__inner,
+.md-content,
+.md-tabs {
+  background-color: #f8f7f3;
+}
+
+/* Dark mode — charcoal base, blue-ink hue */
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #221f20;
+  --md-hue:              219;
+}
+
+[data-md-color-scheme="slate"] body,
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-main,
+[data-md-color-scheme="slate"] .md-main__inner,
+[data-md-color-scheme="slate"] .md-content,
+[data-md-color-scheme="slate"] .md-tabs {
+  background-color: #221f20;
+}
+
+/* Sidebar */
+.md-sidebar {
+  background-color: #f8f7f3;
+}
+
+[data-md-color-scheme="slate"] .md-sidebar {
+  background-color: #2c2829;
+}
