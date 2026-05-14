@@ -57,6 +57,6 @@ That's the shortest possible path. The rest of the guide is the unhurried versio
   inside the agent harness (Claude Code for now).
 
 If you'd rather skim the design and architecture, the
-[maintainer docs](../index.md) are the other half of this site.
+[maintainer docs](../maintainer.md) are the other half of this site.
 
 [astra]: https://astra-spec.org/latest/
