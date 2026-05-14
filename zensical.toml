@@ -3,6 +3,7 @@ site_name = "lightcone-cli"
 site_description = "Agentic execution layer for ASTRA research pipelines"
 site_author = "Lightcone Research Team"
 repo_url = "https://github.com/LightconeResearch/lightcone-cli"
+repo_name = "LightconeResearch/lightcone-cli"
 copyright = "&copy; 2026 Lightcone Research"
 docs_dir = "docs"
 extra_css = ["stylesheets/extra.css"]
@@ -60,6 +61,7 @@ nav = [
       {"Authoring Skills" = "skills/authoring.md"},
     ]},
   ]},
+  {"ASTRA docs" = "https://astra-spec.org/latest/"},
 ]
 
 [project.theme]
