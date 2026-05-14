@@ -42,8 +42,7 @@ of materialized outputs.
 
 -   __astra-tools__
 
-    The SDK for working with [**ASTRA**][astra] analysis specifications.  
-    This library provides the `astra` CLI which handles the [**ASTRA**][astra] lifecycle and validation process (schema, prior insights & findings, evidence verification helpers).
+    The SDK for working with [**ASTRA**][astra] analysis specifications. This library provides the `astra` CLI which handles the [**ASTRA**][astra] lifecycle and validation process (schema, prior insights & findings, evidence verification helpers).
 
     [:fontawesome-brands-github: Repository][astra-tools]{ .md-button }
 
