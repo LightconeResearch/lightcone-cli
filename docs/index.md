@@ -6,72 +6,43 @@ the `lc` executable, a small set of Claude Code skills, and the
 provenance/integrity machinery that ties an `astra.yaml` spec to a tree
 of materialized outputs.
 
-This site has two halves.
+This documentation has two halves.
 
-## I'm a researcher and I want to use this thing
+<div class="grid cards" markdown>
 
-Start at the [User Guide](user/index.md). Friendly, step-by-step, with
-worked examples. You will not need to read any Python.
+-   __I want to try this out__
 
-The shortest possible path:
+    ---
 
-=== "uv"
-    ```bash
-    uv tool install lightcone-cli
-    lc init my-analysis && cd my-analysis
-    claude                                # then, inside Claude Code: /lc-new
-    ```
+    Start with a short installation guide followed by a step-by-step tutorial. Continue with instructions to continue on a computer cluster. Learn about the agentic framework a short, step-by-step, with
+    worked examples. You will not need to read any Python.
 
-=== "pip"
-    ```bash
-    pip install lightcone-cli
-    lc init my-analysis && cd my-analysis
-    claude                               # then, inside Claude Code: /lc-new
-    ```
+    [:lucide-rocket: User Guide](user/index.md){ .md-button .md-button--primary }
 
-## I work on lightcone-cli
+-   __I want to contribute to lightcone-cli__
 
-Welcome — keep reading. The rest of this page is a fast tour for
-contributors and maintainers; deep dives live in the sub-trees of the
-nav.
+    ---
+
+    Welcome — keep reading. The rest of this page is a fast tour for
+    contributors and maintainers; deep dives live in the sub-trees of the
+    nav.
+
+    [:lucide-cog: Developer corner](maintainer.md){ .md-button .md-button--primary }
+
+</div>
 
 ---
 
 ## Two packages, one toolchain
 
-| Layer | Package | Role |
-|-------|---------|------|
-| **ASTRA** | `astra-tools` | Pure specification: schema, validation, prior insights & findings, evidence verification helpers, the `astra` CLI. |
-| **lightcone-cli** | `lightcone-cli` | Agentic layer: project scaffolding, Snakemake-based execution, Dask cluster management, container builds, Claude Code skills. |
+**lightcone-cli** depends on [**astra-tools**][astra-tools], the SDK for working with ASTRA analysis specifications.
 
-`lightcone-cli` depends on `astra-tools`. The `astra` CLI handles the
-spec itself (validation, paper management, evidence verification); the
-`lc` CLI handles execution and the agent surface.
+[**astra-tools**][astra-tools] provides the `astra` CLI which handles the
+whole ASTRA lifecycle and validation process (schema, validation, prior insights & findings, evidence verification helpers).
 
-## What every materialized output gets
+**lightcone-cli** provides the `lc` CLI which handle the agent surface (skills, plugins, guardrails) as well as the workflow execution layer.
 
-A sidecar `.lightcone-manifest.json` next to its data, recording:
-
-- `code_version` = `sha256(recipe + container_image + decisions)`
-- `data_version` = `sha256_dir(output_dir)` excluding the manifest itself
-- `input_versions` for each declared input (chained data_version when the
-  input is another materialized output, `mtime-size` or `sha256` for
-  external files)
-- `container_image`, `recipe`, `decisions`, `git_sha`, `lc_version`,
-  `host`, `slurm_job_id`, `finished_at`
-
-`lc verify` recomputes `data_version` and walks the chain. Failures
-surface as `tampered_data`, `broken_chain`, or `missing_manifest`. `lc
-status` reads only manifests — works offline, no Snakemake or DB needed.
-
-## Development setup
-
-```bash
-just install        # uv sync --all-groups
-just test           # uv run pytest
-just lint           # ruff + mypy
-just docs-serve     # live docs preview
-```
+[:lucide-book-open: Read more on the ASTRA specification](https://astra-spec.org/latest/){ .md-button }
 
 ## Where to read next
 
@@ -80,3 +51,5 @@ just docs-serve     # live docs preview
 - [Python API](api/index.md) — the engine modules
 - [Skills](skills/index.md) — what each `/lc-*` skill does (including the `/lc-from-*` family)
 - [Contributing](contributing/setup.md) — getting the dev loop running
+
+[astra-tools]: https://github.com/LightconeResearch/astra-tools
