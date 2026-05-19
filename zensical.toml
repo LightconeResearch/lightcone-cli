@@ -3,8 +3,10 @@ site_name = "lightcone-cli"
 site_description = "Agentic execution layer for ASTRA research pipelines"
 site_author = "Lightcone Research Team"
 repo_url = "https://github.com/LightconeResearch/lightcone-cli"
+repo_name = "LightconeResearch/lightcone-cli"
 copyright = "&copy; 2026 Lightcone Research"
 docs_dir = "docs"
+extra_css = ["stylesheets/extra.css"]
 
 nav = [
   {"Home" = "index.md"},
@@ -13,14 +15,12 @@ nav = [
     {"Install" = "user/install.md"},
     {"Getting Started" = "user/getting-started.md"},
     {"The Agent Workflow" = "user/agent-workflow.md"},
-    {"Tutorial: Your First Analysis" = "user/tutorial.md"},
-    {"Multiverse Analyses" = "user/multiverse.md"},
     {"Running on a Cluster" = "user/cluster.md"},
-    {"NERSC (Perlmutter)" = "user/nersc.md"},
     {"Troubleshooting" = "user/troubleshooting.md"},
     {"Glossary" = "user/glossary.md"},
   ]},
-  {"Maintainer Docs" = [
+  {"Developer Corner" = [
+    {"Welcome" = "maintainer.md"},
     {"Architecture" = "architecture.md"},
     {"CLI Reference" = [
       {"Overview" = "cli/index.md"},
@@ -62,15 +62,31 @@ nav = [
       {"Testing" = "contributing/testing.md"},
     ]},
   ]},
+  {"ASTRA docs" = "https://astra-spec.org/latest/"},
 ]
 
 [project.theme]
 variant = "modern"
+logo = "assets/logo.svg"
+favicon = "assets/favicon.svg"
 features = [
   "navigation.tabs",
   "navigation.sections",
-  "navigation.expand",
   "navigation.top",
   "search.highlight",
   "content.code.copy",
 ]
+
+[[project.theme.palette]]
+scheme      = "default"
+primary     = "custom"
+accent      = "custom"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme      = "slate"
+primary     = "custom"
+accent      = "custom"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"

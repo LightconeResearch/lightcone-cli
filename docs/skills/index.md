@@ -8,8 +8,8 @@ structured, phase-by-phase workflow for the most common research
 operations.
 
 If you're a researcher trying to *use* these, the
-[Claude Code Workflow](../user/claude-workflow.md) page in the user
-guide is the friendly version. This page is for maintainers.
+[Agent Workflow](../user/agent-workflow.md) page in the user guide is the
+friendly version. This page is for maintainers.
 
 ## Available skills
 

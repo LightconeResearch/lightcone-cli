@@ -1,155 +1,59 @@
 # lightcone-cli
 
-**lightcone-cli** is Lightcone Research's agentic execution layer for
-**ASTRA** (Agentic Schema for Transparent Research Analysis). It ships
-the `lc` executable, a small set of Claude Code skills, and the
-provenance/integrity machinery that ties an `astra.yaml` spec to a tree
-of materialized outputs.
+**lightcone-cli** is [Lightcone Research][lr]'s agentic execution layer for
+[**ASTRA**][astra] (Agentic Schema for Transparent Research Analysis).
+It serves as the machinery that ties an analysis `astra.yaml` specification to a tree
+of materialized outputs, whether you drive it from Claude Code, Codex, or Pi.
 
-This site has two halves.
+## Choose your path to the documentation
 
-## I'm a researcher and I want to use this thing
+<div class="grid cards" markdown>
 
-Start at the [User Guide](user/index.md). Friendly, step-by-step, with
-worked examples. You will not need to read any Python.
+-   __I want to try it out__ – :lucide-rocket:
 
-The shortest possible path:
+    ---
 
-=== "uv"
-    ```bash
-    uv tool install lightcone-cli
-    lc init my-analysis && cd my-analysis
-    claude                                # then, inside Claude Code: /lc-new
-    ```
+    Installation instructions, step-by-step tutorial, and fast tour of the lightcone framework and its agentic and workflow capabilities.
 
-=== "pip"
-    ```bash
-    pip install lightcone-cli
-    lc init my-analysis && cd my-analysis
-    claude                               # then, inside Claude Code: /lc-new
-    ```
+    [User Guide](user/index.md){ .md-button .md-button--primary }
 
-## I work on lightcone-cli
+-   __I want to contribute__ – :lucide-cog:
 
-Welcome — keep reading. The rest of this page is a fast tour for
-contributors and maintainers; deep dives live in the sub-trees of the
-nav.
+    ---
+
+    In depth tour of the software architecture, agentic skills and API docs, as well as contribution instructions, aimed for
+    contributors and maintainers.
+
+    [Developer corner](maintainer.md){ .md-button .md-button--primary }
+
+</div>
 
 ---
 
-## Two packages, one toolchain
+## Two libraries, one toolchain
 
-| Layer | Package | Role |
-|-------|---------|------|
-| **ASTRA** | `astra-tools` | Pure specification: schema, validation, prior insights & findings, evidence verification helpers, the `astra` CLI. |
-| **lightcone-cli** | `lightcone-cli` | Agentic layer: project scaffolding, Snakemake-based execution, Dask cluster management, container builds, Claude Code skills. |
+<div class="grid cards" markdown>
 
-`lightcone-cli` depends on `astra-tools`. The `astra` CLI handles the
-spec itself (validation, paper management, evidence verification); the
-`lc` CLI handles execution and the agent surface.
+-   __lightcone-cli__
 
-## Repository at a glance
+    The library that ships the `lc` CLI plus the shared agent bundle for Claude Code,
+    Codex, and Pi. It owns the agent surface (skills, plugins/extensions, guardrails)
+    as well as the workflow execution layer. Depends on [**astra-tools**][astra-tools],
+    the SDK for working with ASTRA analysis specifications.
 
-```text
-src/lightcone/                  # PEP 420 namespace package — NO __init__.py
-├── cli/                        # Click surface
-│   ├── __init__.py             # exposes main()
-│   ├── commands.py             # init, run, status, verify, build, export
-│   └── plugin.py               # plugin source-dir discovery
-├── engine/                     # execution substrate
-│   ├── manifest.py             # write_manifest, sha256_dir, code_version
-│   ├── snakefile.py            # generate .lightcone/Snakefile from astra.yaml
-│   ├── container.py            # docker/podman/podman-hpc build + recipe wrap
-│   ├── dask_cluster.py         # cluster lifecycle (local/SLURM/external)
-│   ├── status.py               # manifest-driven status walker (no Snakemake)
-│   ├── verify.py               # recompute hashes, walk the chain
-│   ├── tree.py                 # sub-analysis tree helpers
-│   ├── validation.py           # post-recipe output sanity checks
-│   └── site_registry.py        # vestigial; not imported by active code
-└── eval/                       # evaluation harness for the agent loop
-    ├── cli.py harness.py sandbox.py graders.py build.py report.py models.py
+    [:fontawesome-brands-github: Repository](https://github.com/LightconeResearch/lightcone-cli){ .md-button }
 
-src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
+-   __astra-tools__
 
-.claude-plugin/                 # marketplace manifest (force-included into the wheel)
-└── marketplace.json            # declares the `lightcone` plugin sourced from ./claude/lightcone
+    The SDK for working with [**ASTRA**][astra] analysis specifications. This library
+    provides the `astra` CLI which handles the [**ASTRA**][astra] lifecycle and
+    validation process (schema, prior insights & findings, evidence verification
+    helpers).
 
-claude/lightcone/               # Claude Code plugin (force-included into the wheel)
-├── .claude-plugin/plugin.json  # plugin manifest
-├── skills/                     # lc-new, lc-from-code, lc-from-paper,
-│                                # lc-feedback, ralph (+ bundle siblings);
-│                                # reference skills: astra, lc-cli
-├── agents/                     # lc-extractor (literature subagent)
-├── hooks/hooks.json            # hook config (${CLAUDE_PLUGIN_ROOT}-rooted commands)
-├── scripts/                    # hook scripts: venv, validate-on-save, session-start primer
-└── templates/                  # project CLAUDE.md template
+    [:fontawesome-brands-github: Repository][astra-tools]{ .md-button }
 
-tests/                          # pytest, mirrors src/
-pyproject.toml                  # hatchling + hatch-vcs; ASTRA + Snakemake as deps
-```
+</div>
 
-The `lightcone.*` namespace is a PEP 420 implicit namespace package.
-**Do not add `src/lightcone/__init__.py`** — that would turn it into a
-regular package and break coexistence with future sibling distributions
-(`lightcone-ui`, etc.). Any new `lightcone-*` package must live under
-`src/lightcone/<name>/` and ship only its own subpackage.
-
-## Execution flow
-
-```text
-astra.yaml ── snakefile.generate() ──► .lightcone/Snakefile + .lightcone/snakefile-config.json
-                                              │
-                                       snakemake -s … -d … --executor dask
-                                              │
-                       ┌──────────────────────┼──────────────────────┐
-                       │                      │                      │
-                  DAG resolution         per-rule run:           dask scheduler
-                  (Snakemake)            shell(recipe)           (LocalCluster /
-                                         + write_manifest()       SLURM-srun /
-                                                                  external)
-                       │
-                       └─► results/<u>/<o>/data
-                           results/<u>/<o>/.lightcone-manifest.json
-```
-
-What Snakemake owns (we don't write it): DAG construction, topological
-execution, parallelism, dry-run, locking, retry, log capture,
-per-rule resources, `--rerun-triggers` for staleness detection.
-
-What we own: a Snakefile generator, the manifest layer (write/read/verify),
-a status walker, a verify routine, the Dask cluster manager, the
-container-runtime layer, and a Snakemake executor plugin that submits
-each rule to a Dask scheduler.
-
-## What every materialized output gets
-
-A sidecar `.lightcone-manifest.json` next to its data, recording:
-
-- `code_version` = `sha256(recipe + container_image + decisions)`
-- `data_version` = `sha256_dir(output_dir)` excluding the manifest itself
-- `input_versions` for each declared input (chained data_version when the
-  input is another materialized output, `mtime-size` or `sha256` for
-  external files)
-- `container_image`, `recipe`, `decisions`, `git_sha`, `lc_version`,
-  `host`, `slurm_job_id`, `finished_at`
-
-`lc verify` recomputes `data_version` and walks the chain. Failures
-surface as `tampered_data`, `broken_chain`, or `missing_manifest`. `lc
-status` reads only manifests — works offline, no Snakemake or DB needed.
-
-## Development setup
-
-```bash
-just install        # uv sync --all-groups
-just test           # uv run pytest
-just lint           # ruff + mypy
-just docs-serve     # live docs preview
-```
-
-## Where to read next
-
-- [Architecture](architecture.md) — the full execution and integrity story
-- [CLI Reference](cli/index.md) — every command currently shipped
-- [Python API](api/index.md) — the engine modules
-- [Skills](skills/index.md) — what each `/lc-*` skill does (including the `/lc-from-*` family)
-- [Contributing](contributing/setup.md) — getting the dev loop running
+[lr]: https://lightconeresearch.org/
+[astra]: https://astra-spec.org/latest/
+[astra-tools]: https://github.com/LightconeResearch/astra-tools

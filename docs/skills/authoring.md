@@ -107,4 +107,4 @@ Restart Claude Code; the plugin now loads from your checkout's
 `claude/lightcone/` directly. Edits to `SKILL.md` files take effect on
 the next session start.
 
-(See [`lc update`](../cli/update.md) for the upgrade-from-PyPI story.)
+(See [Install](../user/install.md#updating) for the upgrade-from-PyPI story.)
