@@ -1,8 +1,11 @@
 # Skills
 
-Skills are Claude Code slash commands bundled in the lightcone-cli
-plugin. They give the agent a structured, phase-by-phase workflow for
-the most common research operations.
+Skills are bundled in the shared lightcone-cli agent bundle.
+Claude Code and Codex expose them through the plugin manifests; Pi
+installs the same bundle as a local package and aliases the top-level
+`/lc-*` entry points through its extension. They give the agent a
+structured, phase-by-phase workflow for the most common research
+operations.
 
 If you're a researcher trying to *use* these, the
 [Claude Code Workflow](../user/claude-workflow.md) page in the user
@@ -78,8 +81,11 @@ files, anti-patterns. The skill bundles its own helper scripts under
 ```
 .claude-plugin/marketplace.json         # marketplace manifest at repo root
 
-claude/lightcone/                        # plugin root
-├── .claude-plugin/plugin.json           # plugin manifest (name, version, …)
+claude/lightcone/                        # shared agent-bundle root
+├── .claude-plugin/plugin.json           # Claude plugin manifest
+├── .codex-plugin/plugin.json            # Codex plugin manifest
+├── package.json                         # Pi package manifest (skills + extension)
+├── extensions/lightcone.ts              # Pi extension (hooks + /lc-* aliases)
 ├── skills/
 │   ├── lc-new/{SKILL.md, references/*.md}
 │   ├── lc-from-code/SKILL.md
@@ -101,8 +107,9 @@ claude/lightcone/                        # plugin root
 Both `.claude-plugin/marketplace.json` and `claude/lightcone/` are
 force-included into the wheel via
 `pyproject.toml::tool.hatch.build.targets.wheel.force-include`, so
-`lc init` can run `claude plugin marketplace add` against the wheel's
-install directory whether you're working from source or PyPI.
+`lc init` can run `claude plugin marketplace add`, `codex plugin
+marketplace add`, or `pi install` against the wheel's install
+directory whether you're working from source or PyPI.
 
 ## Other plugin files
 

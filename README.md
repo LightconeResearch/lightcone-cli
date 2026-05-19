@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-green.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-**lightcone-cli** (`lc`) is the agentic layer for [ASTRA](https://github.com/LightconeResearch/ASTRA) (Agentic Schema for Transparent Research Analysis). You interact with lightcone-cli through Claude Code: describe what you want, and the agent handles the implementation.
+**lightcone-cli** (`lc`) is the agentic layer for [ASTRA](https://github.com/LightconeResearch/ASTRA) (Agentic Schema for Transparent Research Analysis). You interact with lightcone-cli through Claude Code, Codex, or Pi: describe what you want, and the agent handles the implementation.
 
 > **Note on the `lc` executable.** `lc` is not a standard Unix tool, but some users have a personal shell alias `lc='ls --color'`. If that's you, installing lightcone-cli will shadow that alias — rebind it if needed.
 
@@ -15,7 +15,7 @@
 pip install lightcone-cli
 lc init my-analysis
 cd my-analysis
-claude
+claude  # or: codex / pi
 ```
 
 Then tell the agent what you have to start from — a research question (`/lc-new`), existing code (`/lc-from-code`), or a paper to reproduce (`/lc-from-paper`). After the spec exists, work with the agent however suits you; the substrate (`astra.yaml`, `lc run`, `lc status`, `lc verify`) keeps things in sync.
@@ -61,7 +61,7 @@ The first `lc` invocation auto-creates `~/.lightcone/config.yaml` with `containe
 ### Project scaffolding
 
 ```bash
-lc init my-analysis                          # full scaffolding with Claude Code config
+lc init my-analysis                          # full scaffolding with Claude/Codex/Pi integration
 lc init my-analysis --no-git --no-venv       # skip git/venv creation
 lc init my-analysis --permissions yolo       # Claude Code permission tier (yolo|recommended|minimal)
 lc init my-analysis --scratch '$SCRATCH/lc'  # override scratch root for snakemake state and dask spill

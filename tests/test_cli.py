@@ -31,18 +31,18 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _no_real_agent_plugin_install(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent tests from shelling out to real agent plugin installers.
 
-    ``lc init`` calls ``shutil.which("claude")`` to decide whether to register
-    the marketplace and install the plugin via the Claude Code CLI. In CI and
-    on dev machines that have ``claude`` on PATH, the unmocked behavior would
-    write to the user's actual ``~/.claude/`` config. It now does the same
-    check for ``codex``, which writes under ``~/.codex/``. We default to the
-    soft-fail branch (print a hint, continue); tests that want to exercise
-    the install path override ``shutil.which`` and ``subprocess.run`` locally.
+    ``lc init`` calls ``shutil.which(...)`` for Claude, Codex, and Pi to decide
+    whether to install the bundled agent integrations. In CI and on dev
+    machines that have those CLIs on PATH, the unmocked behavior would write to
+    the user's actual ``~/.claude/``, ``~/.codex/``, or ``~/.pi/`` config. We
+    default to the soft-fail branch (print hints, continue); tests that want to
+    exercise the install path override ``shutil.which`` and ``subprocess.run``
+    locally.
     """
     real_which = shutil.which
 
     def fake_which(name: str, *args: object, **kwargs: object) -> str | None:
-        if name in {"claude", "codex"}:
+        if name in {"claude", "codex", "pi"}:
             return None
         return real_which(name, *args, **kwargs)  # type: ignore[arg-type]
 
@@ -259,6 +259,41 @@ def test_init_prints_codex_hint_when_codex_missing(
     assert '[plugins."lightcone@lightcone-cli"]' in result.output
 
 
+def test_init_invokes_pi_install_when_available(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.cli.plugin import get_agent_bundle_root
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/pi" if name == "pi" else None)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+
+    bundle_root = get_agent_bundle_root()
+    assert bundle_root is not None, "agent bundle root not found"
+    assert ["pi", "install", str(bundle_root)] in calls
+
+
+def test_init_prints_pi_hint_when_pi_missing(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+    assert "pi CLI not found" in result.output
+    assert "pi install" in result.output
+    assert "bundled lightcone skills" in result.output
+    assert "ASTRA status" in result.output
+
+
 def test_codex_plugin_manifest_has_required_fields() -> None:
     import json
 
@@ -276,6 +311,23 @@ def test_codex_plugin_manifest_has_required_fields() -> None:
     assert data["name"] == "lightcone"
     assert data["skills"] == "./skills/"
     assert data["hooks"] == "./hooks/hooks.json"
+
+
+def test_pi_package_manifest_lists_extension_and_skills() -> None:
+    import json
+
+    from lightcone.cli.plugin import get_agent_bundle_root
+
+    bundle_root = get_agent_bundle_root()
+    assert bundle_root is not None, "agent bundle root not found"
+
+    manifest_path = bundle_root / "package.json"
+    assert manifest_path.exists(), f"Pi package manifest not found at {manifest_path}"
+
+    data = json.loads(manifest_path.read_text())
+    assert data["pi"]["extensions"] == ["./extensions/lightcone.ts"]
+    assert data["pi"]["skills"] == ["./skills/**/SKILL.md"]
+    assert (bundle_root / "extensions" / "lightcone.ts").exists()
 
 
 def test_plugin_hooks_json_uses_wrapped_format() -> None:

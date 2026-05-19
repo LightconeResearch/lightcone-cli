@@ -1,14 +1,11 @@
-"""Plugin marketplace discovery — finds the agent plugin marketplace shipped with lightcone-cli.
+"""Agent-bundle discovery for the lightcone-cli Claude/Codex/Pi integrations.
 
-The marketplace manifest lives at ``<root>/.claude-plugin/marketplace.json`` and
-points at the actual plugin under ``<root>/claude/lightcone/``. ``lc init``
-shells out to ``claude plugin marketplace add <root>`` followed by ``claude
-plugin install lightcone@lightcone-cli``; this module returns the right
-``<root>`` to pass to the CLI.
-
-Kept deliberately leaf (no imports from :mod:`lightcone.cli.commands` or
-:mod:`lightcone.eval`) so it can be used by both the CLI and the eval harness
-without introducing an import cycle.
+The Claude marketplace manifest lives at ``<root>/.claude-plugin/marketplace.json``
+and points at the shared bundle under ``<root>/claude/lightcone/``. Claude and
+Codex install from that marketplace root; Pi installs the bundle directory
+itself as a local package. This module returns the paths ``lc init`` needs
+without importing the CLI command module, so both the CLI and eval harness can
+reuse it without an import cycle.
 """
 
 from __future__ import annotations
@@ -16,20 +13,21 @@ from __future__ import annotations
 from pathlib import Path
 
 # Names declared in .claude-plugin/marketplace.json (the marketplace name) and
-# claude/lightcone/.claude-plugin/plugin.json (the plugin name). The install
-# reference passed to Claude/Codex is ``PLUGIN@MARKETPLACE``.
+# claude/lightcone/.claude-plugin + .codex-plugin/plugin.json (the plugin name).
+# The install reference passed to Claude/Codex is ``PLUGIN@MARKETPLACE``.
 MARKETPLACE_NAME = "lightcone-cli"
 PLUGIN_NAME = "lightcone"
 CODEX_MARKETPLACE_NAME = MARKETPLACE_NAME
 CODEX_PLUGIN_NAME = PLUGIN_NAME
+BUNDLE_RELATIVE_PATH = Path("claude") / "lightcone"
 
 
 def get_marketplace_root() -> Path | None:
     """Find the directory containing ``.claude-plugin/marketplace.json``.
 
-    The returned path is what ``claude plugin marketplace add`` registers; the
-    Claude CLI then reads ``marketplace.json`` from that root and discovers
-    the plugin at ``./claude/lightcone``.
+    The returned path is what ``claude plugin marketplace add`` and
+    ``codex plugin marketplace add`` register. The marketplace then points at
+    the shared agent bundle in ``./claude/lightcone``.
 
     Looks in two locations, in order:
 
@@ -53,3 +51,18 @@ def get_marketplace_root() -> Path | None:
         return repo_root
 
     return None
+
+
+def get_agent_bundle_root() -> Path | None:
+    """Return the shared Claude/Codex/Pi bundle directory.
+
+    The bundle lives under ``claude/lightcone`` in both source checkouts and
+    wheel installs. Claude/Codex treat it as a plugin source; Pi installs the
+    same directory as a local package.
+    """
+    marketplace_root = get_marketplace_root()
+    if marketplace_root is None:
+        return None
+
+    bundle_root = marketplace_root / BUNDLE_RELATIVE_PATH
+    return bundle_root if bundle_root.is_dir() else None

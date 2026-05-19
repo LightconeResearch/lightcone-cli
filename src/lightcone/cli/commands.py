@@ -37,6 +37,7 @@ from lightcone.cli.plugin import (
     CODEX_PLUGIN_NAME,
     MARKETPLACE_NAME,
     PLUGIN_NAME,
+    get_agent_bundle_root,
     get_marketplace_root,
 )
 
@@ -174,13 +175,14 @@ def init(
     permissions: str,
     scratch_override: str | None,
 ) -> None:
-    """Scaffold a new ASTRA project with Claude Code integration.
+    """Scaffold a new ASTRA project with agent integration.
 
     Delegates the spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
     base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
     lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
-    ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
-    and an optional Python venv.
+    ``.lightcone/`` project state, Claude permission settings, the shared
+    Claude/Codex/Pi agent bundle install hints, ``CLAUDE.md``, and an optional
+    Python venv.
     """
     console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
 
@@ -231,11 +233,13 @@ def init(
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
 
-    # Agent plugins: write the project's Claude permission tier, then shell
-    # out to agent CLIs so the plugin (skills, agents, hooks) lives in each
-    # user's global agent config — not duplicated into every project.
+    # Agent integrations: write the project's Claude permission tier, then
+    # shell out to each agent CLI so the shared lightcone bundle (skills,
+    # hooks, Pi extension) lives in the user's global agent config rather than
+    # duplicated into every project.
     _install_claude_plugin(directory, permissions)
     _install_codex_plugin()
+    _install_pi_bundle()
 
     # Project CLAUDE.md (a stub)
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
@@ -308,7 +312,7 @@ def init(
 
     console.print("\nNext steps:")
     console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
-    console.print("  • Start [cyan]claude[/cyan]")
+    console.print("  • Start [cyan]claude[/cyan], [cyan]codex[/cyan], or [cyan]pi[/cyan]")
     console.print(
         "  • Run [cyan]/lc-new[/cyan] to scope a new analysis, "
         "[cyan]/lc-from-code[/cyan] to port existing code, "
@@ -456,7 +460,8 @@ def _install_codex_plugin() -> None:
     layout, so we mirror the bundled lightcone plugin there.
     """
     marketplace_root = get_marketplace_root()
-    if marketplace_root is None:
+    bundle_root = get_agent_bundle_root()
+    if marketplace_root is None or bundle_root is None:
         console.print(
             "[yellow]⚠ Could not locate the lightcone Codex plugin marketplace "
             "manifest. Codex plugin install skipped.[/yellow]"
@@ -484,7 +489,7 @@ def _install_codex_plugin() -> None:
             check=False,
         )
         _enable_codex_plugin_config(plugin_ref)
-        _install_codex_plugin_cache(marketplace_root / "claude" / "lightcone")
+        _install_codex_plugin_cache(bundle_root)
     except OSError as e:
         console.print(
             f"[yellow]⚠ Could not invoke `codex plugin marketplace add`: {e}[/yellow]\n"
@@ -492,6 +497,41 @@ def _install_codex_plugin() -> None:
         )
     except Exception as e:
         console.print(f"[yellow]⚠ Could not finish Codex plugin install: {e}[/yellow]")
+
+
+def _install_pi_bundle() -> None:
+    """Wire up the Pi bundle for this user.
+
+    Pi installs local packages rather than Claude/Codex-style plugins. The
+    shared ``claude/lightcone`` bundle now ships a ``package.json`` manifest
+    selecting the Pi extension and skill files, so ``lc init`` can register the
+    same bundle root with ``pi install``.
+    """
+    bundle_root = get_agent_bundle_root()
+    if bundle_root is None:
+        console.print(
+            "[yellow]⚠ Could not locate the lightcone Pi bundle. Pi install skipped.[/yellow]"
+        )
+        return
+
+    if shutil.which("pi") is None:
+        console.print(
+            "[yellow]pi CLI not found on PATH — skipping Pi bundle install.[/yellow]\n"
+            "  To install manually once Pi is available, run:\n"
+            f"    [cyan]pi install {bundle_root}[/cyan]\n"
+            "  This installs the bundled lightcone skills plus the Pi extension that "
+            "primes ASTRA status, prepends the project venv to bash commands, and "
+            "re-validates astra.yaml edits."
+        )
+        return
+
+    try:
+        subprocess.run(["pi", "install", str(bundle_root)], check=False)
+    except OSError as e:
+        console.print(
+            f"[yellow]⚠ Could not invoke `pi install`: {e}[/yellow]\n"
+            f"  Install manually: pi install {bundle_root}"
+        )
 
 
 def _codex_config_path() -> Path:

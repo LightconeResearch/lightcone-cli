@@ -1,0 +1,12 @@
+{
+  "name": "lightcone-agent-bundle",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./extensions/lightcone.ts"
+    ],
+    "skills": [
+      "./skills/**/SKILL.md"
+    ]
+  }
+}
