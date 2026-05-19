@@ -204,6 +204,35 @@ def test_init_prints_hint_when_claude_missing(
     assert "claude plugin install lightcone@lightcone-cli" in result.output
 
 
+def test_plugin_hooks_json_uses_wrapped_format() -> None:
+    """``hooks/hooks.json`` must use the plugin-standard format: top-level
+    ``"hooks"`` key wrapping the event map.
+
+    Every working Claude Code plugin (felt, aria, …) uses this shape. The
+    flat format ``{ "SessionStart": [...] }`` is silently ignored by the
+    Claude Code runtime — hooks never fire if the wrapper is absent.
+    """
+    import json
+
+    from lightcone.cli.plugin import get_marketplace_root
+
+    marketplace_root = get_marketplace_root()
+    assert marketplace_root is not None, "marketplace root not found"
+
+    hooks_path = marketplace_root / "claude" / "lightcone" / "hooks" / "hooks.json"
+    assert hooks_path.exists(), f"hooks.json not found at {hooks_path}"
+
+    data = json.loads(hooks_path.read_text())
+    assert "hooks" in data, (
+        "hooks.json must have a top-level 'hooks' key — "
+        "Claude Code plugins require { \"hooks\": { \"EventName\": [...] } }; "
+        "the flat format silently fails."
+    )
+    assert isinstance(data["hooks"], dict), "'hooks' value must be a dict of event → matchers"
+    assert "SessionStart" in data["hooks"], "SessionStart hook must be present"
+    assert "PostToolUse" in data["hooks"], "PostToolUse hook must be present"
+
+
 def test_init_venv_falls_back_to_python_when_uv_missing(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
