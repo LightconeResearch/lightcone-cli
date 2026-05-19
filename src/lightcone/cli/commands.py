@@ -24,6 +24,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import click
@@ -31,6 +33,8 @@ import yaml
 from rich.console import Console
 
 from lightcone.cli.plugin import (
+    CODEX_MARKETPLACE_NAME,
+    CODEX_PLUGIN_NAME,
     MARKETPLACE_NAME,
     PLUGIN_NAME,
     get_marketplace_root,
@@ -227,13 +231,11 @@ def init(
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
 
-    # Claude Code plugin: write the project's permission tier into
-    # .claude/settings.json, then shell out to the claude CLI so the plugin
-    # (skills, agents, hooks) lives in the user's global Claude Code config —
-    # not duplicated into every project. Soft-fails when claude isn't on PATH
-    # so users on other agents (codex, …) get a clear pointer rather than a
-    # hard error from `lc init`.
+    # Agent plugins: write the project's Claude permission tier, then shell
+    # out to agent CLIs so the plugin (skills, agents, hooks) lives in each
+    # user's global agent config — not duplicated into every project.
     _install_claude_plugin(directory, permissions)
+    _install_codex_plugin()
 
     # Project CLAUDE.md (a stub)
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
@@ -442,6 +444,137 @@ def _install_claude_plugin(project_dir: Path, permissions: str) -> None:
             f"  Install manually: claude plugin marketplace add {marketplace_root} && "
             f"claude plugin install {plugin_ref}"
         )
+
+
+def _install_codex_plugin() -> None:
+    """Wire up the Codex plugin for this user.
+
+    Codex does not currently expose a ``codex plugin install`` command. The
+    marketplace is registered through the CLI, then the enabled plugin and
+    plugin-hooks feature are written directly to ``~/.codex/config.toml``.
+    Current Codex builds also expect installed plugin files under the cache
+    layout, so we mirror the bundled lightcone plugin there.
+    """
+    marketplace_root = get_marketplace_root()
+    if marketplace_root is None:
+        console.print(
+            "[yellow]⚠ Could not locate the lightcone Codex plugin marketplace "
+            "manifest. Codex plugin install skipped.[/yellow]"
+        )
+        return
+
+    plugin_ref = f"{CODEX_PLUGIN_NAME}@{CODEX_MARKETPLACE_NAME}"
+
+    if shutil.which("codex") is None:
+        console.print(
+            "[yellow]codex CLI not found on PATH — skipping Codex plugin install.[/yellow]"
+        )
+        console.print(
+            "  To install manually once Codex is available, run:\n"
+            f"    codex plugin marketplace add {marketplace_root}\n"
+            f"    set [plugins.\"{plugin_ref}\"].enabled = true "
+            "and [features].plugin_hooks = true in ~/.codex/config.toml",
+            markup=False,
+        )
+        return
+
+    try:
+        subprocess.run(
+            ["codex", "plugin", "marketplace", "add", str(marketplace_root)],
+            check=False,
+        )
+        _enable_codex_plugin_config(plugin_ref)
+        _install_codex_plugin_cache(marketplace_root / "claude" / "lightcone")
+    except OSError as e:
+        console.print(
+            f"[yellow]⚠ Could not invoke `codex plugin marketplace add`: {e}[/yellow]\n"
+            f"  Install manually: codex plugin marketplace add {marketplace_root}"
+        )
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not finish Codex plugin install: {e}[/yellow]")
+
+
+def _codex_config_path() -> Path:
+    return Path.home() / ".codex" / "config.toml"
+
+
+def _enable_codex_plugin_config(plugin_ref: str) -> None:
+    """Set the two Codex TOML booleans needed for plugin hooks.
+
+    The stdlib can read TOML but not write it. This deliberately small writer
+    preserves unrelated text and only manages the two sections ``lc init`` owns.
+    """
+    config_path = _codex_config_path()
+    text = config_path.read_text() if config_path.exists() else ""
+    parsed = tomllib.loads(text) if text.strip() else {}
+
+    if (
+        parsed.get("features", {}).get("plugin_hooks") is True
+        and parsed.get("plugins", {}).get(plugin_ref, {}).get("enabled") is True
+    ):
+        return
+
+    text = _set_toml_bool(text, "features", "plugin_hooks", True)
+    text = _set_toml_bool(text, f'plugins."{plugin_ref}"', "enabled", True)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(text)
+    console.print(f"[green]✓[/green] Enabled Codex plugin [cyan]{plugin_ref}[/cyan]")
+
+
+def _set_toml_bool(text: str, section: str, key: str, value: bool) -> str:
+    lines = text.splitlines()
+    desired = "true" if value else "false"
+    header = f"[{section}]"
+    section_start = next((i for i, line in enumerate(lines) if line.strip() == header), None)
+
+    if section_start is None:
+        prefix = [""] if lines and lines[-1].strip() else []
+        return "\n".join([*lines, *prefix, header, f"{key} = {desired}", ""])
+
+    section_end = next(
+        (i for i in range(section_start + 1, len(lines)) if lines[i].lstrip().startswith("[")),
+        len(lines),
+    )
+    for i in range(section_start + 1, section_end):
+        if lines[i].split("=", 1)[0].strip() == key:
+            lines[i] = f"{key} = {desired}"
+            return "\n".join([*lines, ""])
+
+    lines.insert(section_end, f"{key} = {desired}")
+    return "\n".join([*lines, ""])
+
+
+def _codex_plugin_cache_version() -> str:
+    try:
+        package_version = version("lightcone-cli")
+    except PackageNotFoundError:
+        return "dev"
+    return package_version if package_version.startswith("v") else f"v{package_version}"
+
+
+def _install_codex_plugin_cache(plugin_dir: Path) -> None:
+    manifest = plugin_dir / ".codex-plugin" / "plugin.json"
+    if not manifest.is_file():
+        raise FileNotFoundError(f"Codex plugin manifest missing at {manifest}")
+
+    cache_root = (
+        Path.home()
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / CODEX_MARKETPLACE_NAME
+        / CODEX_PLUGIN_NAME
+    )
+    version_dir = cache_root / _codex_plugin_cache_version()
+    tmp_root = cache_root.with_name(f"{cache_root.name}.tmp")
+    tmp_version_dir = tmp_root / version_dir.name
+
+    shutil.rmtree(tmp_root, ignore_errors=True)
+    shutil.copytree(plugin_dir, tmp_version_dir, ignore=shutil.ignore_patterns(".DS_Store"))
+    shutil.rmtree(cache_root, ignore_errors=True)
+    cache_root.parent.mkdir(parents=True, exist_ok=True)
+    tmp_root.rename(cache_root)
+    console.print(f"[green]✓[/green] Installed Codex plugin cache at [cyan]{version_dir}[/cyan]")
 
 
 # =============================================================================

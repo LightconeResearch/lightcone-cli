@@ -1,0 +1,15 @@
+{
+  "name": "lightcone",
+  "version": "0.1.0",
+  "description": "Lightcone Research's agentic layer for ASTRA. Bundles the lc-* skills, ASTRA and lc-cli reference skills, and hooks that integrate Codex sessions with the lc workflow.",
+  "author": {
+    "name": "Lightcone Research",
+    "url": "https://github.com/LightconeResearch"
+  },
+  "homepage": "https://lightconeresearch.github.io/lightcone-cli/",
+  "repository": "https://github.com/LightconeResearch/lightcone-cli",
+  "license": "BSD-3-Clause",
+  "keywords": ["astra", "lightcone", "research", "reproducibility", "snakemake"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

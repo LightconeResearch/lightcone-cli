@@ -1,4 +1,4 @@
-"""Plugin marketplace discovery — finds the Claude Code marketplace shipped with lightcone-cli.
+"""Plugin marketplace discovery — finds the agent plugin marketplace shipped with lightcone-cli.
 
 The marketplace manifest lives at ``<root>/.claude-plugin/marketplace.json`` and
 points at the actual plugin under ``<root>/claude/lightcone/``. ``lc init``
@@ -17,9 +17,11 @@ from pathlib import Path
 
 # Names declared in .claude-plugin/marketplace.json (the marketplace name) and
 # claude/lightcone/.claude-plugin/plugin.json (the plugin name). The install
-# reference passed to ``claude plugin install`` is ``PLUGIN@MARKETPLACE``.
+# reference passed to Claude/Codex is ``PLUGIN@MARKETPLACE``.
 MARKETPLACE_NAME = "lightcone-cli"
 PLUGIN_NAME = "lightcone"
+CODEX_MARKETPLACE_NAME = MARKETPLACE_NAME
+CODEX_PLUGIN_NAME = PLUGIN_NAME
 
 
 def get_marketplace_root() -> Path | None:
