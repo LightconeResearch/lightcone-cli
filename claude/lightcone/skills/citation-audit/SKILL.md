@@ -3,13 +3,15 @@ name: citation-audit
 description: >
   Audit every citation in a manuscript by verifying that the cited paper
   actually supports the manuscript statement that cites it. Consumes
-  paper-extraction's `work/reference/index.json` for the
-  citation surface, then partitions the cited papers into 5–8-per-Haiku
-  batches and fans out parallel Haiku workers that return verbatim-quote-
-  anchored verdicts per claim (supported / weak / unsupported /
-  wrong-paper / unverifiable). Verdicts merge back into the ledger,
-  materialize as `prior_insights:` on `astra.yaml`, and validate
-  end-to-end with `astra validate --verify-evidence`. Produces a
+  paper-extraction's `work/reference/index.json` for the citation
+  surface, fetches each cited paper's **arXiv LaTeX source** (not PDF),
+  then partitions the cited papers into 5–8-per-worker batches and fans
+  out parallel verifier workers (claude-sonnet) that read the source and
+  return verbatim-quote-anchored verdicts per claim (supported / weak /
+  unsupported / wrong-paper / unverifiable_pre_arxiv / unverifiable).
+  Every quote is checked against the source (`source_match.py`) — the
+  gate that makes the skill trustworthy. Verdicts merge into the ledger,
+  materialize as `prior_insights:` on `astra.yaml`, and produce a
   self-contained HTML report. Mirrors `lc-from-paper`'s LITERATURE-phase
   fan-out shape. Triggers on: "audit citations", "check citations",
   "verify references", "due diligence", "arxiv compliance", or
@@ -24,6 +26,17 @@ paper that supports the manuscript statement — or report that none
 exists. The verdict per citation use-site is the unit; the aggregate is
 a report saying which citations are clean, which need rewording, and
 which need to be replaced.
+
+**Verification runs against arXiv LaTeX source, not PDF.** This is the
+central design choice (the "arXiv-source pivot"). PDF text extraction is
+lossy — collapsed math, ligatures, captcha pages saved as `.pdf`,
+ISO-8859 encodings — and that lossiness pushes verifiers to quote
+topical title fragments because the real evidence (a measured value with
+its uncertainty) is unreadable in extracted text. The arXiv e-print
+source is the author's actual words: `$S_8 = 0.776\pm0.017$` is right
+there and quotable. So the skill fetches each cited paper's source
+tarball and the verifiers read `.tex`; PDF is a last-resort fallback only
+when no arXiv source exists.
 
 ## Why this exists
 
@@ -57,8 +70,10 @@ extract local context.
 **Output:**
 
 1. `prior_insights:` populated on `work/reference/astra.yaml`, one
-   entry per citation use-site with verdict tags and quote-anchored
-   evidence. Validates with `astra validate --verify-evidence`.
+   entry per `supported`/`weak` use-site with verdict tags and a
+   source-quote anchor. The evidence gate is the skill's strict source
+   check (`verify_and_downgrade.py`); `astra validate astra.yaml`
+   confirms the entries are structurally valid.
 2. `work/citation-audit/ledger.json` — the structural ledger: every
    `(citation_key, file, line, sentence, doi)` tuple plus the verifier
    verdict. Machine-friendly.
@@ -66,9 +81,12 @@ extract local context.
    per-citation status, drill-down on each verdict, an "action list"
    surfacing wrong-paper and unsupported items first. Phone-renderable.
 
-Side effects: every cited paper with a resolved DOI is fetched into
-ASTRA's paper cache via `astra paper add <doi>` so verifiers can read
-the PDF and `astra validate --verify-evidence` can confirm quotes.
+Side effects: every cited paper with a resolvable arXiv eprint is
+fetched as a **source tarball** into
+`work/citation-audit/papers/<doi-slug>/source/` (UTF-8-normalized
+`.tex`) so verifiers read the author's LaTeX. Genuinely pre-arXiv cites
+are confirmed via ADS metadata only. The fetch outcome per DOI is
+recorded in `work/citation-audit/fetch_state.json`.
 
 ## When to use
 
@@ -137,85 +155,110 @@ claim sentence (each key gets its own verdict).
 The ledger also marks citations with no resolved DOI as
 `verdict: "unverifiable_no_doi"`; the fan-out below skips them.
 
-### Step 2 — Mechanical fetch (batched-parallel, no agent fan-out)
+### Step 2 — Fetch arXiv source for every cited paper (mechanical, no agent fan-out)
 
-For each unique DOI in the ledger, register the cited paper with
-ASTRA's evidence cache. Batched-parallel via shell, exactly like
-[`lc-from-paper`'s LITERATURE phase](../lc-from-paper/references/literature.md):
+`scripts/fetch_sources.py` walks the unique DOIs in the ledger and
+fetches each cited paper's **arXiv e-print source tarball**:
 
 ```bash
-astra paper add "<DOI>"          # caches PDF; run up to 5 in parallel
+python3 .claude/skills/citation-audit/scripts/fetch_sources.py \
+  --ledger work/citation-audit/ledger.json \
+  --state  work/citation-audit/fetch_state.json
 ```
 
-Resume-by-existence: `astra paper get <DOI>` returning a cached entry
-means skip that fetch. The fetch is plumbing — no agent involvement.
+Per DOI it resolves the eprint id (from the DOI itself when it's an
+arXiv DOI, else via `resolve_arxiv.py` — ADS `identifier[]` then Crossref
+`relation.has-preprint`, **verifiable metadata only, no title-guessing**),
+downloads `https://arxiv.org/e-print/<id>`, extracts to
+`papers/<doi-slug>/source/`, and normalizes every `.tex` to UTF-8 (the
+Heymans 1210.0032 trap: ISO-8859-1 with very long lines). Each DOI lands
+in `fetch_state.json` with one of:
 
-### Step 3 — Quote-finding (orchestrator partitions; Haiku fan-out)
+| status | meaning | verifier reads |
+|---|---|---|
+| `source_fetched` | eprint source extracted | the `.tex` under `source_dir` |
+| `pre_arxiv` | no eprint exists (genuinely pre-arXiv); ADS metadata recorded | ADS metadata only — confirm identity, never quote-fake |
+| `pdf_fallback` | eprint exists but arXiv has only a PDF (rare) | the local `paper.pdf` (lossy; flagged) |
+| `unresolvable` | no eprint and no ADS record | nothing — surfaced in the report |
+
+Idempotent — re-runs skip DOIs already recorded unless `--refresh`. The
+fetch is plumbing; no agent involvement, and no PDF cache / Unpaywall
+dependency (source comes straight from arXiv, sidestepping the A&A 403s
+that plagued the PDF path).
+
+### Step 3 — Quote-finding (orchestrator partitions; verifier fan-out)
 
 Mirrors `literature.md`'s Stage 2. The orchestrator (this skill, in
-its main session) does the partition and merge; Haiku workers do the
-per-paper read + per-claim verdict.
+its main session) does the partition and merge; verifier workers do the
+per-paper **source read** + per-claim verdict.
 
 **Sizing:**
 
-- **≤10 pending rows total:** the orchestrator does it inline. Walk
-  each row, read the cached PDF, write the verdict directly to the
-  ledger. Single agent, low overhead.
+- **≤10 pending rows total:** the orchestrator does it inline — read
+  each paper's source, write the verdict to the ledger. Single agent.
 - **>10 pending rows:** **partition by cited paper**, ~5–8 papers
-  per Haiku, ideally **clustered by topic** (e.g. all "foundations"
-  papers in one batch, all "survey results" in another). Clustering
-  by section of the manuscript (using `index.json`'s `outline` to
-  map cite-line → section) is a sensible default; an orchestrator
-  with more context may cluster smarter.
+  per worker (≤500 KiB source per partition), ideally **clustered by
+  topic** (all "foundations" papers in one batch, all "survey results"
+  in another). Clustering by manuscript section (using `index.json`'s
+  `outline` to map cite-line → section) is a sensible default.
 
-Each Haiku spawn is a `Task` with `subagent_type="citation-verifier"`
-and `model="sonnet"`. The agent definition ships at
+Each spawn is a `Task` with `subagent_type="citation-verifier"` and
+`model="sonnet"`. (Sonnet, not Haiku: finding the substantive
+supporting quote rather than a topical scrap is judgment a weaker model
+reward-hacks.) The agent definition ships at
 `.claude/agents/citation-verifier.md` and carries the full verifier
-contract — verdict taxonomy, self-validation loop, output schema. The
-orchestrator's `Task` prompt just carries the partition data:
+contract — read-source procedure, verdict taxonomy, self-validation
+loop, output schema. The orchestrator's `Task` prompt carries the
+partition data joined from the ledger and `fetch_state.json`:
 
-- `output_path`: where this Haiku writes —
-  `work/citation-audit/haiku-<N>.yaml`
+- `output_path`: where this worker writes —
+  `work/citation-audit/verifier-<N>.yaml`
 - `partition`: a YAML list of bundles. Each bundle is `(citation_key,
-  doi, pdf_path, citation_text, rows[])` where `rows[]` is every
-  ledger row for that paper (a paper cited 5 times gets 5 rows in its
-  bundle)
+  doi, status, source_dir, main_tex, tex_files, ads_metadata, pdf_path,
+  citation_text, rows[])` — the per-paper fields come straight from
+  `fetch_state.json`; `rows[]` is every ledger row for that paper.
 
-The Haiku returns **one verdict per row** per this taxonomy:
+The worker returns **one verdict per row** per this taxonomy:
 
 | Verdict | Meaning | Action |
 |---|---|---|
-| `supported` | Verbatim quote in the cited paper supports the claim. | Pass; quote populates the evidence. |
-| `weak` | Cited paper partially supports; the manuscript wording is stronger than the source. | Suggested rewording in `notes:`. |
+| `supported` | Verbatim quote in the cited paper's source supports the claim. | Pass; quote populates the evidence. |
+| `weak` | Source partially supports; the manuscript wording is stronger. | Suggested rewording in `notes:`. |
 | `unsupported` | No relevant support in the cited paper. | Flag for human; cite likely wrong or speculative. |
 | `wrong_paper` | The bibkey resolves to a paper whose topic doesn't match the claim. | Replace the cite. |
-| `unverifiable` | Quote-extraction or PDF access failed after retries; not necessarily wrong. | Manual review. |
+| `unverifiable_pre_arxiv` | Genuinely pre-arXiv (no eprint); identity confirmed via ADS metadata, full text not quotable. | No action — correct cite, just not quotable. |
+| `unverifiable` | Could not anchor a verbatim quote despite apparent support. | Manual review. |
 
-`supported` and `weak` verdicts carry an exact-quote
-`TextQuoteSelector` (prefix + exact + suffix per W3C convention).
-Each Haiku self-validates its quotes in-loop with `astra paper
-verify-quotes <doi>` before writing the YAML; quotes that fail after
-3 self-correction iterations get downgraded to `unverifiable` with a
-note.
+`supported` and `weak` verdicts carry a verbatim-source-quote
+`TextQuoteSelector` (prefix + exact + suffix, copied contiguously from
+the `.tex`) plus a `section` locator. **Each worker self-validates its
+quotes in-loop with `source_match.py`** before writing the YAML — the
+quote's `prefix+exact+suffix` must appear contiguously in the source.
+Quotes that fail after 3 self-correction iterations get downgraded to
+`unverifiable`. A 2-word title scrap cannot satisfy the contiguous
+context check, which is exactly the reward-hack the source gate closes.
 
-Fan out all Haikus in a **single message** (parallel `Task` calls).
-Each writes to a disjoint `haiku-<N>.yaml`; merge happens in Step 4.
+Fan out all workers in a **single message** (parallel `Task` calls).
+Each writes to a disjoint `verifier-<N>.yaml`; merge happens in Step 4.
 
-> Partition strategy is an orchestrator-discretion choice and an
-> active design surface. Topic-clustering is heuristic; the right
-> partition may end up being section-by-section, similarity-by-bib-
-> entry-text, or something else. Iterate on what produces tight
-> Haiku context per worker.
+> Partition strategy is an orchestrator-discretion choice. Topic-
+> clustering is heuristic; the right partition may be section-by-section
+> or similarity-by-bib-entry. Iterate on what produces tight per-worker
+> context.
 
-### Step 4 — Merge Haiku outputs into the ledger, then materialize as `prior_insights:` on `astra.yaml`
+### Step 4 — Merge verifier outputs into the ledger, then materialize as `prior_insights:` on `astra.yaml`
 
-Read every `haiku-<N>.yaml`, merge verdicts into `ledger.json` keyed
-on `use_id`, then materialize as `prior_insights:` on
-`work/reference/astra.yaml`. Per `lc-from-paper`'s LITERATURE: single
-writer (the orchestrator), no merge conflicts even when many Haikus
-ran in parallel.
+```bash
+python3 .claude/skills/citation-audit/scripts/build_audit_yaml.py \
+  --ledger work/citation-audit/ledger.json \
+  --astra-yaml work/reference/astra.yaml
+```
 
-For each ledger row with a verdict:
+Reads every `verifier-<N>.yaml`, merges verdicts into `ledger.json`
+keyed on `use_id`, then materializes `supported`/`weak` rows as
+`prior_insights:` on `work/reference/astra.yaml`. Single writer (the
+orchestrator), no merge conflicts even when many workers ran in
+parallel. For each materialized row:
 
 ```yaml
 prior_insights:
@@ -228,32 +271,61 @@ prior_insights:
       - id: ev1
         doi: "10.1051/0004-6361:20020626"
         quote:
-          type: TextQuoteSelector
-          exact: "B-modes in fact are produced by lensing itself. The effect comes about through the clustering of source galaxies."
-          prefix: "<~30 chars before>"
-          suffix: "<~30 chars after>"
+          exact: "B-modes in fact are produced by lensing itself, through the clustering of source galaxies"
+          prefix: "<~30 chars of source before>"
+          suffix: "<~30 chars of source after>"
         location:
-          type: FragmentSelector
-          page: 3
+          value: "Sect. 2 (B modes from source clustering)"   # source section, not a PDF page
     notes: |
       <verifier rationale, if weak/unsupported/wrong_paper>
 ```
 
-`scripts/build_audit_yaml.py` merges new entries into the subject's
-`astra.yaml` non-destructively (preserves any prior `prior_insights:`
-authored by hand or by paper-extraction).
+The quote is copied verbatim from the cited paper's `.tex`; the
+`location.value` records the source section instead of a PDF page.
+`build_audit_yaml.py` is non-destructive (preserves any prior
+`prior_insights:` authored by hand or by paper-extraction) and purges
+its own previous audit-tagged entries on re-run.
 
-### Step 5 — Validate
+### Step 5 — The gate: strict source verification (blocking)
 
 ```bash
-cd work/reference && astra validate astra.yaml --verify-evidence
+python3 .claude/skills/citation-audit/scripts/verify_and_downgrade.py \
+  --ledger work/citation-audit/ledger.json \
+  --state  work/citation-audit/fetch_state.json
+# then re-merge so astra.yaml drops any downgraded rows:
+python3 .claude/skills/citation-audit/scripts/build_audit_yaml.py \
+  --ledger work/citation-audit/ledger.json \
+  --astra-yaml work/reference/astra.yaml
 ```
 
-Every `supported` and `weak` quote must verify against the cached PDF
-of the cited paper. A failure here means either a Haiku fabricated
-the quote (severe — should never happen if the Haiku ran its
-self-check) or the cited paper's cached version differs (e.g.
-v1 vs v2). Investigate before accepting.
+This is the trust anchor. For every `supported`/`weak` row,
+`verify_and_downgrade.py` re-checks the quote against the cited paper's
+arXiv source via `source_match.py` — `prefix+exact+suffix` must appear
+contiguously (whitespace-normalized) in the `.tex`. Any quote that fails
+is downgraded to `unverifiable` and its evidence dropped. Run it
+**after** the Step-4 merge (the merge re-reads the worker YAMLs and would
+otherwise overwrite downgrades), then re-merge so `astra.yaml` reflects
+the result.
+
+**Why the gate moved off `astra paper verify-quotes` / `astra validate
+--verify-evidence`.** Those are PDF-based: they extract text from a
+cached PDF and fuzzy-match. A quote copied from `.tex` carries the
+author's markup (`$S_8=0.776\pm0.017$`, `\citep{}`) that the PDF text
+layer mangles — so the PDF gate would *reject correct source quotes*.
+Source and PDF are incompatible substrates; the pivot chose source, so
+verification lives on source too. The skill owns its gate
+(`source_match.py` + `verify_and_downgrade.py`); the PDF path is retired
+from the pipeline. `astra validate astra.yaml` (without
+`--verify-evidence`) still runs for **structural** schema validation of
+the materialized insights — but it is not the evidence gate.
+
+> **Upstream gap (filed, not blocking):** ASTRA's `--verify-evidence`
+> is PDF-only. A source-aware verify mode (verify a quote against a
+> cited paper's arXiv `.tex`, not just its PDF) would let `astra
+> validate --verify-evidence` re-become the gate. Tracked alongside the
+> [[gate-hardening]] work, which tightens the source matcher (degenerate-
+> quote rejection, claim-bearing vs identity distinction) on top of the
+> substrate this pivot establishes.
 
 ### Step 6 — Generate the report
 
@@ -266,38 +338,39 @@ python3 .claude/skills/citation-audit/scripts/render_report.py \
 
 The report has three sections:
 
-1. **Action list.** All `wrong_paper`, `unsupported`, and
-   `unverifiable_no_doi` verdicts at the top. This is what to act on
-   before submission.
+1. **Action list.** All `wrong_paper`, `unsupported`,
+   `unverifiable_pre_arxiv`, and `unverifiable` verdicts at the top.
+   This is what to act on before submission.
 2. **Weak claims.** All `weak` verdicts with the cited paper's actual
    support and the verifier's suggested rewording.
 3. **Clean ledger.** All `supported` verdicts in citation order, with
-   the quote and link to the cited paper's PDF page. The bulk of the
-   report; collapsed by default via `<details>`.
+   the source quote and its section locator. The bulk of the report;
+   collapsed by default via `<details>`.
 
-The HTML is self-contained (base64-embedded styling) — phone-renderable
-via `SendUserFile`.
+The HTML is self-contained (inline styling) — phone-renderable via
+`SendUserFile`.
 
-## What the orchestrator does vs what the Haiku workers do
+## What the orchestrator does vs what the verifier workers do
 
-**Orchestrator (this skill, main session, Sonnet):** runs the
-deterministic ledger script (Step 1), runs the batched-parallel fetch
-(Step 2), partitions the ledger and fans out Haikus (Step 3), reads
-every `haiku-<N>.yaml` and merges into `ledger.json` + `astra.yaml`
-(Step 4), calls `astra validate` (Step 5), renders the report (Step
-6). **Never reads cited PDFs in the main context** — that's a Haiku's
-job, and reading PDFs in the main session would defeat the
+**Orchestrator (this skill, main session):** runs the deterministic
+ledger script (Step 1), runs the source fetch (Step 2), partitions the
+ledger and fans out verifiers (Step 3), reads every `verifier-<N>.yaml`
+and merges into `ledger.json` + `astra.yaml` (Step 4), runs the strict
+source gate and re-merges (Step 5), renders the report (Step 6).
+**Never reads cited papers in the main context** — that's a worker's
+job, and reading them in the main session would defeat the
 bounded-worker property.
 
-**Haiku workers (`Task` with `model="sonnet"`, one per partition):**
-each Haiku is given 5–8 cited papers and the manuscript claim rows
-that cite them. Reads each cited PDF, classifies every row per the
-verdict taxonomy, extracts verbatim quotes for `supported`/`weak`,
-self-validates with `astra paper verify-quotes`, writes the YAML, and
-exits. Bounded to its partition — never reads outside-partition
-papers, never edits `astra.yaml`. The agent is
-[`citation-verifier`](../../agents/citation-verifier.md), shipped as
-part of this bundle; the orchestrator invokes it via `Task` with
+**Verifier workers (`Task` with `model="sonnet"`, one per partition):**
+each is given 5–8 cited papers and the manuscript claim rows that cite
+them. Reads each paper's **arXiv source** (targeted: abstract → grep
+keywords → read the matching section), classifies every row per the
+verdict taxonomy, extracts verbatim source quotes for `supported`/`weak`,
+self-validates with `source_match.py`, writes the YAML, and exits.
+Bounded to its partition — never reads outside-partition papers, never
+edits `astra.yaml`. The agent is
+[`citation-verifier`](../../agents/citation-verifier.md); the
+orchestrator invokes it via `Task` with
 `subagent_type="citation-verifier"` and `model="sonnet"`.
 
 This is the same separation paper-extraction makes between
@@ -308,64 +381,75 @@ across many cited papers.
 
 ## Discipline
 
-- **Verbatim quotes only.** Never paraphrase. Copy from the cached
-  PDF as-is, including LaTeX math, ligatures, line breaks. The
-  `astra validate --verify-evidence` gate is what makes this skill
-  trustworthy; paraphrasing breaks the gate.
-- **One verdict per use-site, not per key.** The same paper cited
-  three times for three different claims gets three verdicts. Some
-  may pass while others don't.
+- **Verbatim quotes from source only.** Never paraphrase. Copy from the
+  cited paper's `.tex` as-is, including LaTeX math and markup. The
+  `source_match.py` gate is what makes this skill trustworthy;
+  paraphrasing or macro-expanding breaks the contiguous-context check.
+- **Quote the substance, not the topic.** For a quantitative claim, the
+  supporting quote is the measured value with its uncertainty as written
+  in the source — never a title fragment or survey middle-name. The
+  source makes the value directly quotable; there is no excuse to grab a
+  scrap.
+- **One verdict per use-site, not per key.** The same paper cited three
+  times for three different claims gets three verdicts. Some may pass
+  while others don't.
 - **`unsupported` is a verdict, not a failure.** It's a finding the
   human acts on. The skill flags it loudly; it does not silently drop
   the citation.
-- **Companion papers and in-prep work.** Papers I/III/IV/V of the
-  UNIONS series and similar companion citations resolve to arXiv DOIs
-  once posted; treat them like any cited paper. If a companion has no
-  DOI yet (in-prep), the ledger records `verdict: "unverifiable_no_doi"`
-  and the report calls it out — the skill does not attempt local-tex
-  evidence in v1.
-- **Software citations.** Some bibkeys point to method papers
-  (TreeCorr → Jarvis et al. 2004 algorithm paper) rather than software
-  records. Haikus accept a method-paper anchor as `supported` when the
-  manuscript statement is about the method; flag as `wrong_paper` only
-  when the topic genuinely doesn't match.
-- **Idempotent.** Re-running on the same subject only re-verifies
-  rows missing a verdict. To force re-verification of a specific
-  citation, delete its row from `ledger.json` and re-run.
+- **Pre-arXiv cites are confirmed, never faked.** Genuinely pre-arXiv
+  papers (no eprint exists — Kaiser 1992, Blandford+91) get
+  `unverifiable_pre_arxiv`: identity confirmed via ADS metadata, full
+  text not quotable. Never manufacture a quote for them.
+- **Companion / in-prep papers.** UNIONS Papers I/III/IV/V resolve to
+  arXiv DOIs once posted; treat them like any cited paper. A companion
+  with no DOI yet (in-prep) records `verdict: "unverifiable_no_doi"` and
+  the report calls it out.
+- **Method/software citations.** A bibkey pointing to a method's
+  foundational paper (TreeCorr → Jarvis, Bernstein & Jain 2004) counts
+  as `supported` when the statement is about the method — even if the
+  title sounds unrelated, so long as the source describes the method.
+  Flag `wrong_paper` only when the topic genuinely doesn't match.
+- **Idempotent.** Re-running on the same subject only re-verifies rows
+  missing a verdict. To force re-verification of a specific citation,
+  delete its row from `ledger.json` and re-run.
 
 ## Anti-patterns
 
-- **One Haiku per cited paper, or one per use-site.** Wrong unit of
-  partition. Aim for 5–8 cited papers per Haiku so the per-worker
+- **One worker per cited paper, or one per use-site.** Wrong unit of
+  partition. Aim for 5–8 cited papers per worker so the per-worker
   context covers a useful slice and the orchestration overhead stays
   small. Mirror `lc-from-paper`'s LITERATURE sizing.
-- **Reading cited PDFs in the orchestrator's context.** That defeats
+- **Reading cited papers in the orchestrator's context.** That defeats
   the bounded-worker safety property. If you find yourself opening
-  PDFs in the main session, spawn a Haiku.
+  cited `.tex` or PDFs in the main session, spawn a verifier.
+- **Reading PDFs at all when source exists.** The whole pivot is *away*
+  from PDF. PDF is the `pdf_fallback` last resort only; if a paper has
+  arXiv source, the verifier reads source.
 - **Reaching for `lc-extractor`.** That agent is for `/lc-new`'s
-  decision-extraction framing — analysis context + target decisions
-  → prior insights about decisions. Different problem space. The
-  citation-audit verifier agent is `citation-verifier` (this skill's
-  bundled agent).
-- **Paraphrasing in `quote.exact`.** Breaks `astra validate
-  --verify-evidence`. Each Haiku's self-check should prevent this; if
-  a quote arrives back unverified, treat it as fabricated and drop
-  the verdict.
-- **Auto-rewriting the manuscript.** This skill produces *evidence*
-  for the human author to act on. It does not edit the `.tex`. The
-  human decides whether to reword, replace the cite, or accept the
-  finding.
-- **Silently skipping `unverifiable_no_doi`.** Surface those
-  prominently in the report — they are the cases where the manuscript
-  cited something the system literally cannot check, which is exactly
-  the arxiv-policy concern.
+  decision-extraction framing — different problem space. The
+  citation-audit verifier agent is `citation-verifier`.
+- **Paraphrasing in `quote.exact`.** Breaks `source_match.py`. The
+  worker's self-check should prevent this; if a quote arrives unverified,
+  treat it as fabricated and drop the verdict.
+- **Auto-rewriting the manuscript.** This skill produces *evidence* for
+  the human author to act on. It does not edit the `.tex`.
+- **Silently skipping unverifiable cites.** Surface `unverifiable_no_doi`
+  and `unverifiable_pre_arxiv` prominently in the report — they are the
+  cases the system literally cannot quote-check, which is exactly the
+  arxiv-policy concern.
 
 ## See also
 
 - [`paper-extraction`](../paper-extraction/SKILL.md) — the upstream
-  skill producing the citation surface this skill consumes.
-- [`astra paper add`](https://github.com/LightconeResearch/ASTRA) and
-  `astra validate --verify-evidence` — the verification primitives.
+  skill producing the citation surface this skill consumes; its
+  [`references/arxiv-source.md`](../paper-extraction/references/arxiv-source.md)
+  is the source-fetch machinery `fetch_sources.py` extends from the
+  subject paper to every cited paper.
+- `scripts/source_match.py` — the quote-against-source matcher; the
+  verifier's self-check CLI and the orchestrator gate's import.
+- `astra validate astra.yaml` — structural schema validation of the
+  materialized `prior_insights`. (The PDF-based `--verify-evidence` is
+  *not* the gate here; see Step 5.)
 - The hand-audit precedent: `ai-futures/felt/citation-audit` (April 2
   audit of the UNIONS B-modes manuscript) and
   `ai-futures/process/citation-provenance-workflow` (related: bib

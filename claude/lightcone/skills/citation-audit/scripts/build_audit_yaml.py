@@ -61,16 +61,14 @@ def _row_to_insight(
     """Translate a single ledger row into an ASTRA prior_insight entry.
 
     Returns None for rows whose verdict is missing or `pending`
-    (Haikus haven't run, or this row is unverifiable_no_doi and we're
-    holding it for the report only — astra.yaml only carries rows the
-    Haikus have addressed with a verdict).
+    (workers haven't run, or this row is unverifiable_* and we're
+    holding it for the report only — astra.yaml only carries
+    `supported`/`weak` rows with a verified source quote).
 
     `fetch_state` (optional): the `fetch_state.json` produced by
-    `fetch_papers.py`. When present, the row's `doi` (the manuscript
-    DOI) is resolved to the **effective DOI** (the form ASTRA cached
-    under — arxiv form for papers resolved via the shim). Without this
-    resolution, `astra validate --verify-evidence` fails with "Paper
-    not in cache" on any non-arxiv DOI that needed the shim.
+    `fetch_sources.py`. Carried through for the (now legacy) DOI
+    resolution below; with source verification the evidence keeps the
+    manuscript (.bib) DOI for provenance.
     """
     verdict = row.get("verdict")
     if not verdict or verdict == "pending":
@@ -130,9 +128,15 @@ def _row_to_insight(
             "quote": quote,
         }
         if row.get("location"):
-            ev["location"] = {
-                k: v for k, v in row["location"].items() if k != "type"
-            }
+            loc = {k: v for k, v in row["location"].items() if k != "type"}
+            # The source-based verifier locates a quote by its `section`
+            # (title or \label) rather than a PDF page. ASTRA's
+            # FragmentSelector has no `section` slot, so fold it into the
+            # free-string `value` field. A `page` (pdf_fallback rows) is
+            # kept as-is.
+            if "section" in loc:
+                loc.setdefault("value", loc.pop("section"))
+            ev["location"] = loc
         if row.get("version"):
             ev["version"] = row["version"]
         insight["evidence"] = [ev]
@@ -154,7 +158,10 @@ def merge_haiku_outputs_into_ledger(
     by_id = {r["use_id"]: r for r in rows}
 
     applied = 0
-    for haiku_path in sorted(haiku_dir.glob("haiku-*.yaml")):
+    worker_files = sorted(
+        {*haiku_dir.glob("verifier-*.yaml"), *haiku_dir.glob("haiku-*.yaml")}
+    )
+    for haiku_path in worker_files:
         try:
             haiku = yaml.safe_load(haiku_path.read_text()) or {}
         except yaml.YAMLError as exc:
@@ -305,9 +312,8 @@ def main() -> int:
         type=Path,
         default=Path("work/citation-audit/fetch_state.json"),
         help=(
-            "Path to fetch_state.json from fetch_papers.py. Used to "
-            "resolve evidence DOIs to the effective form ASTRA cached "
-            "under (default: %(default)s)."
+            "Path to fetch_state.json from fetch_sources.py "
+            "(default: %(default)s)."
         ),
     )
     args = parser.parse_args()

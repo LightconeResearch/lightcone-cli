@@ -117,6 +117,18 @@ def _normalize_eprint(raw: str) -> str | None:
     return m.group("id") if m else None
 
 
+def _ads_query(doi: str, api_key: str, fields: str) -> dict | None:
+    """Run one ADS query by DOI; return the first doc, or None."""
+    params = {"q": f'doi:"{doi}"', "fl": fields, "rows": "1"}
+    url = f"{ADS_API}?{urllib.parse.urlencode(params)}"
+    try:
+        data = _http_get_json(url, headers={"Authorization": f"Bearer {api_key}"})
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+    docs = ((data or {}).get("response", {}) or {}).get("docs", []) or []
+    return docs[0] if docs else None
+
+
 def resolve_via_ads(doi: str, api_key: str) -> str | None:
     """Look up the arXiv eprint via NASA ADS, given a journal DOI.
 
@@ -124,16 +136,10 @@ def resolve_via_ads(doi: str, api_key: str) -> str | None:
     containing both the journal DOI and the arXiv eprint (in `arXiv:...`
     and `10.48550/arXiv....` forms) when the cross-link is known.
     """
-    params = {"q": f'doi:"{doi}"', "fl": "identifier,bibcode", "rows": "1"}
-    url = f"{ADS_API}?{urllib.parse.urlencode(params)}"
-    try:
-        data = _http_get_json(url, headers={"Authorization": f"Bearer {api_key}"})
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+    doc = _ads_query(doi, api_key, "identifier,bibcode")
+    if not doc:
         return None
-    docs = ((data or {}).get("response", {}) or {}).get("docs", []) or []
-    if not docs:
-        return None
-    identifiers = docs[0].get("identifier") or []
+    identifiers = doc.get("identifier") or []
     # Scan for arXiv-flavored entries. ADS surfaces them in two forms:
     #   "arXiv:<id>" and "10.48550/arXiv.<id>". Either is fine — both
     #   normalize to the canonical eprint.
@@ -175,6 +181,49 @@ def resolve_via_crossref(doi: str) -> str | None:
     return None
 
 
+def resolve_metadata(doi: str) -> dict | None:
+    """Return ADS metadata for a DOI, or None if ADS doesn't have it.
+
+    Used for **pre-arXiv confirmation**: a citation with no arXiv eprint
+    (genuinely pre-arXiv — Kaiser 1992, Blandford+91) is verified by
+    confirming the cited paper *is* the right paper via ADS metadata,
+    never by faking a quote. The returned dict carries the fields the
+    report and verifier need to confirm identity:
+
+        {
+          "bibcode": "1992ApJ...388..272K",
+          "title":   "Weak gravitational lensing of distant galaxies",
+          "authors": ["Kaiser, N."],
+          "year":    1992,
+          "doi":     "<as queried>",
+        }
+
+    Returns None if ADS has no record (or no API key is configured) —
+    the caller then records the cite as unresolvable.
+    """
+    api_key = _load_ads_key()
+    if not api_key:
+        return None
+    doc = _ads_query(doi, api_key, "bibcode,title,author,year,identifier")
+    if not doc:
+        return None
+    title = doc.get("title")
+    if isinstance(title, list):
+        title = title[0] if title else None
+    year = doc.get("year")
+    try:
+        year = int(year) if year is not None else None
+    except (TypeError, ValueError):
+        pass
+    return {
+        "bibcode": doc.get("bibcode"),
+        "title": title,
+        "authors": doc.get("author") or [],
+        "year": year,
+        "doi": doi,
+    }
+
+
 def resolve(doi: str) -> tuple[str | None, Literal["ads", "crossref", "unresolved"]]:
     """Return `(arxiv_id_or_none, source_tag)` for the given journal DOI.
 
@@ -205,7 +254,28 @@ def main() -> int:
         action="store_true",
         help="Emit JSON instead of plaintext (machine-friendly).",
     )
+    parser.add_argument(
+        "--metadata",
+        action="store_true",
+        help=(
+            "Instead of resolving an eprint, fetch ADS metadata "
+            "(bibcode/title/authors/year) for pre-arXiv confirmation."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.metadata:
+        meta = resolve_metadata(args.doi)
+        if args.json:
+            print(json.dumps({"doi": args.doi, "metadata": meta}))
+        elif meta:
+            authors = ", ".join(meta["authors"][:3]) + (
+                " et al." if len(meta["authors"]) > 3 else ""
+            )
+            print(f"{meta['bibcode']}  {meta['year']}  {authors}\n  {meta['title']}")
+        else:
+            print(f"no ADS metadata found for {args.doi}", file=sys.stderr)
+        return 0 if meta else 1
 
     eprint, source = resolve(args.doi)
 

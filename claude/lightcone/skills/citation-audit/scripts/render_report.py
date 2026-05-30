@@ -37,8 +37,9 @@ _VERDICT_SEVERITY = {
     "extraction_error": 3,
     "unverifiable_fetch_failed": 3,
     "unverifiable_no_pdf": 2,
+    "unverifiable": 2,
+    "unverifiable_pre_arxiv": 1,  # right paper, genuinely pre-arXiv (not quotable)
     "unverifiable_no_doi": 1,
-    "unverifiable": 1,
     "weak": 0,
     "supported": -1,
     "pending": -2,
@@ -77,6 +78,7 @@ h3 { margin-top: 1.5rem; font-size: 1.1rem; }
 .summary .v-supported { border-color: var(--ok); color: var(--ok); }
 .summary .v-unverifiable_no_doi,
 .summary .v-unverifiable_no_pdf,
+.summary .v-unverifiable_pre_arxiv,
 .summary .v-unverifiable_fetch_failed,
 .summary .v-unverifiable { border-color: var(--muted); color: var(--muted); }
 .row { background: var(--code-bg); border-left: 4px solid var(--rule);
@@ -86,6 +88,7 @@ h3 { margin-top: 1.5rem; font-size: 1.1rem; }
 .row.v-supported { border-color: var(--ok); }
 .row.v-unverifiable_no_doi,
 .row.v-unverifiable_no_pdf,
+.row.v-unverifiable_pre_arxiv,
 .row.v-unverifiable_fetch_failed,
 .row.v-unverifiable { border-color: var(--muted); }
 .tag { display: inline-block; padding: .05rem .4rem; margin-right: .3rem;
@@ -137,11 +140,19 @@ def _render_row(row: dict[str, Any]) -> str:
         )
     if row.get("quote") and isinstance(row["quote"], dict):
         q = row["quote"]
+        loc = row.get("location") or {}
+        # Source-based locator (§section) is primary; page only for
+        # pdf_fallback rows.
+        where = loc.get("value") or loc.get("section")
+        if where:
+            locstr = f"§ {_esc(where)}"
+        elif loc.get("page"):
+            locstr = f"p. {_esc(loc.get('page'))}"
+        else:
+            locstr = "source"
         parts.append(
             f'<div class="quote">{_esc(q.get("exact", ""))}'
-            f' <span class="cite-loc">'
-            f'(p. {_esc((row.get("location") or {}).get("page", "?"))})'
-            f"</span></div>"
+            f' <span class="cite-loc">({locstr})</span></div>'
         )
     if row.get("verdict_notes"):
         parts.append(f'<div class="notes">{_esc(row["verdict_notes"])}</div>')
@@ -197,6 +208,7 @@ def render(ledger_path: Path, reference_dir: Path, out_path: Path) -> None:
         "unverifiable_fetch_failed",
         "unverifiable_no_doi",
         "unverifiable_no_pdf",
+        "unverifiable_pre_arxiv",
         "unverifiable",
         "extraction_error",
     }

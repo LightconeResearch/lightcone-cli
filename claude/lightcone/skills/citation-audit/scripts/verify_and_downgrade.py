@@ -1,28 +1,38 @@
 #!/usr/bin/env python3
-"""verify_and_downgrade.py — close the self-validation gate.
+"""verify_and_downgrade.py — the strict per-quote gate (arXiv source).
 
-Step 5a of the citation-audit pipeline (runs between merge and the
-final `astra validate --verify-evidence` check).
+Step 5 of the citation-audit pipeline, run **after** the merge
+(`build_audit_yaml.py`) and **as the blocking gate** — it is what makes
+the skill trustworthy now that verification lives on arXiv source rather
+than PDF.
 
-The verifier-Haiku contract demands that every `supported`/`weak`
-verdict pass `astra paper verify-quotes` in the Haiku's own self-check.
-In practice, Haikus sometimes return quotes that look verbatim but fail
-verification — typically paper-title fragments that PDF extractors
-don't preserve in body text. The Haiku should have caught these and
-downgraded to `unverifiable`; this script catches the ones that
-slipped through.
+The fan-out verifier's contract demands every `supported`/`weak` verdict
+self-validate via `source_match.py` before it returns. This script is the
+orchestrator-side re-check that no unverified quote slipped through: for
+every `supported`/`weak` ledger row, it re-checks the quote against the
+cited paper's arXiv source (the `source_dir` recorded in
+`fetch_state.json`). A quote that fails — `exact` not in source, or the
+`prefix`/`suffix` context not contiguous — is **downgraded to
+`unverifiable`** with a diagnostic note, and its quote/location are
+dropped.
 
-Logic:
+Why source, not `astra paper verify-quotes`
+-------------------------------------------
+The pivot moved quote-finding and verification to arXiv LaTeX source.
+A source-derived quote carries the author's markup (`$S_8=0.776\\pm
+0.017$`, `\\citep{...}`) which the PDF text layer mangles — so
+`astra paper verify-quotes` (PDF-based) and `astra validate
+--verify-evidence` (PDF-based) would *reject* a correct source quote.
+This source check supersedes them as the gate. The astra-side PDF path
+is retired from the pipeline; an upstream enhancement (source-aware
+`verify-evidence`) is noted for `astra-tools`. `pdf_fallback` papers
+(arXiv has a PDF but no source — rare) are the one exception: their
+quotes are re-checked against the local PDF text via PyMuPDF, with the
+lossiness flagged in the note.
 
-1. Iterate through `supported`/`weak` rows in the ledger.
-2. For each, run `astra paper verify-quotes <effective_doi>` with the
-   row's quote.
-3. If verification fails (`not_found` or PDF-extraction error),
-   downgrade the row to `unverifiable` with diagnostic `verdict_notes`.
-4. Re-emit the ledger and re-run `build_audit_yaml.py` so `astra.yaml`
-   reflects the downgrades.
-
-The final `astra validate --verify-evidence` should now succeed end-to-end.
+After this gate runs, re-run `build_audit_yaml.py` so `astra.yaml`'s
+`prior_insights` reflect the downgrades (downgraded rows no longer carry
+evidence and would otherwise fail structural validation).
 
 Usage:
 
@@ -35,63 +45,35 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
-from datetime import datetime, timezone
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+import source_match
 
 
-def _verify_quote(doi: str, row: dict[str, Any]) -> tuple[bool, str]:
-    """Run `astra paper verify-quotes` for one quote. Return (ok, reason)."""
-    quote = row.get("quote") or {}
-    location = row.get("location") or {}
-    payload = {
-        "quotes": [
-            {
-                "text": quote.get("exact", ""),
-                "prefix": quote.get("prefix", ""),
-                "suffix": quote.get("suffix", ""),
-                "page": location.get("page"),
-            }
-        ]
-    }
-    # Drop None page (verify-quotes treats missing as "any page").
-    if payload["quotes"][0]["page"] is None:
-        del payload["quotes"][0]["page"]
+def _check_against_pdf(pdf_path: Path, exact: str, prefix: str, suffix: str) -> tuple[bool, str]:
+    """Last-resort: whitespace-normalized substring check on PyMuPDF text.
 
-    proc = subprocess.run(
-        ["astra", "paper", "verify-quotes", doi],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    if proc.returncode != 0:
-        return False, f"verify-quotes failed: {(proc.stderr or '').strip()}"
-
+    Only reached for `pdf_fallback` papers (arXiv source PDF-only). The
+    lossiness is flagged so the report can mark these specially.
+    """
     try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return False, f"unparseable response: {proc.stdout[:200]}"
-
-    summary = data.get("summary") or {}
-    if summary.get("errors", 0) > 0:
-        # PDF-extraction-level failure.
-        msg = (data.get("results") or [{}])[0].get("message") or "extraction error"
-        return False, f"pdf extraction error: {msg}"
-    results = data.get("results") or []
-    if not results:
-        return False, "no results returned"
-    status = results[0].get("status")
-    if status == "verified":
-        return True, ""
-    return False, f"{status}: {results[0].get('message', '')}".strip()
+        import pymupdf  # type: ignore[import-not-found]
+    except ImportError:
+        try:
+            import fitz as pymupdf  # type: ignore[import-not-found, no-redef]
+        except ImportError:
+            return False, "pdf_fallback paper but PyMuPDF unavailable to verify"
+    try:
+        doc = pymupdf.open(pdf_path)
+        text = source_match._norm(" ".join(page.get_text() for page in doc))
+        doc.close()
+    except Exception as exc:  # noqa: BLE001
+        return False, f"pdf_fallback text extraction failed: {exc}"
+    ok, reason = source_match.quote_in_source(text, exact, prefix, suffix)
+    return ok, f"[pdf_fallback, lossy] {reason}"
 
 
 def main() -> int:
@@ -115,56 +97,79 @@ def main() -> int:
     if args.state.is_file():
         fetch_state = json.loads(args.state.read_text())
 
+    # Cache normalized source per DOI so a heavily-cited paper is read once.
+    source_cache: dict[str, str | None] = {}
+
+    def source_for(doi: str) -> str | None:
+        if doi not in source_cache:
+            entry = fetch_state.get(doi) or {}
+            sd = entry.get("source_dir")
+            source_cache[doi] = (
+                source_match.load_source(Path(sd)) if sd and Path(sd).is_dir() else None
+            )
+        return source_cache[doi]
+
     checked = 0
     downgraded = 0
     for row in rows:
         if row.get("verdict") not in {"supported", "weak"}:
             continue
-        if not row.get("quote"):
+        quote = row.get("quote") or {}
+        exact = quote.get("exact")
+        if not exact:
             continue
-        manuscript_doi = row.get("doi")
-        if not manuscript_doi:
+        doi = row.get("doi")
+        if not doi:
             continue
-        effective_doi = (
-            (fetch_state.get(manuscript_doi) or {}).get("effective_doi")
-            or manuscript_doi
-        )
         checked += 1
-        ok, reason = _verify_quote(effective_doi, row)
+        prefix = quote.get("prefix", "")
+        suffix = quote.get("suffix", "")
+
+        entry = fetch_state.get(doi) or {}
+        status = entry.get("status")
+        if status == "pdf_fallback" and entry.get("pdf_path"):
+            ok, reason = _check_against_pdf(
+                Path(entry["pdf_path"]), exact, prefix, suffix
+            )
+        else:
+            source = source_for(doi)
+            if source is None:
+                ok, reason = False, (
+                    f"no arXiv source available for {doi} "
+                    f"(fetch status: {status}); cannot verify quote"
+                )
+            else:
+                ok, reason = source_match.quote_in_source(source, exact, prefix, suffix)
+
         if not ok:
             prior = row["verdict"]
             row["verdict"] = "unverifiable"
             existing_notes = row.get("verdict_notes") or ""
             row["verdict_notes"] = (
-                f"verifier-self-validation gap: original verdict `{prior}`, "
-                f"but `astra paper verify-quotes {effective_doi}` returned: "
-                f"{reason}. The Haiku should have caught this and downgraded "
-                f"on its own; this is a fallback gate.\n\n"
-                f"Original Haiku notes:\n{existing_notes}"
+                f"strict source gate: original verdict `{prior}`, but the quote "
+                f"did not verify against arXiv source — {reason}. The verifier "
+                f"should have caught this in its self-check; this is the "
+                f"orchestrator-side fallback gate.\n\n"
+                f"Original verifier notes:\n{existing_notes}"
             ).strip()
             row["quote"] = None
             row["location"] = None
-            print(
-                f"  ✗ {row['use_id']:<45} {prior:>10} → unverifiable "
-                f"({reason[:60]})"
-            )
+            print(f"  ✗ {row['use_id']:<45} {prior:>10} → unverifiable ({reason[:70]})")
             downgraded += 1
-
-    # Re-summarize
-    from collections import Counter
 
     counts = Counter(r.get("verdict") or "pending" for r in rows)
     ledger.setdefault("summary", {})["verdicts"] = dict(counts)
-
     args.ledger.write_text(json.dumps(ledger, indent=2, ensure_ascii=False) + "\n")
+
     print(
-        f"\nchecked {checked} supported/weak rows; "
-        f"downgraded {downgraded} that failed astra paper verify-quotes."
+        f"\nchecked {checked} supported/weak rows against arXiv source; "
+        f"downgraded {downgraded} that failed."
     )
-    print(
-        "Now re-run build_audit_yaml.py to drop those entries from astra.yaml's "
-        "prior_insights (they no longer have evidence)."
-    )
+    if downgraded:
+        print(
+            "Now re-run build_audit_yaml.py to drop the downgraded entries from "
+            "astra.yaml's prior_insights (they no longer carry evidence)."
+        )
     return 0
 
 
