@@ -9,7 +9,10 @@ description: >
   Self-validates quotes with `astra paper verify-quotes` before
   returning. Spawned by the citation-audit skill in parallel batches;
   bounded to its partition (never reads outside-partition papers, never
-  edits astra.yaml). Use with model="haiku".
+  edits astra.yaml). Use with model="sonnet" — the verifier's judgment
+  (finding the substantive supporting quote, not a topical fragment) needs
+  more than Haiku, which reward-hacks a weak gate. "Haiku worker" naming
+  below is legacy; read it as "verifier worker".
 tools: Read, Bash
 ---
 

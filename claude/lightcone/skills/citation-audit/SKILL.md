@@ -169,7 +169,7 @@ per-paper read + per-claim verdict.
   with more context may cluster smarter.
 
 Each Haiku spawn is a `Task` with `subagent_type="citation-verifier"`
-and `model="haiku"`. The agent definition ships at
+and `model="sonnet"`. The agent definition ships at
 `.claude/agents/citation-verifier.md` and carries the full verifier
 contract — verdict taxonomy, self-validation loop, output schema. The
 orchestrator's `Task` prompt just carries the partition data:
@@ -289,7 +289,7 @@ every `haiku-<N>.yaml` and merges into `ledger.json` + `astra.yaml`
 job, and reading PDFs in the main session would defeat the
 bounded-worker property.
 
-**Haiku workers (`Task` with `model="haiku"`, one per partition):**
+**Haiku workers (`Task` with `model="sonnet"`, one per partition):**
 each Haiku is given 5–8 cited papers and the manuscript claim rows
 that cite them. Reads each cited PDF, classifies every row per the
 verdict taxonomy, extracts verbatim quotes for `supported`/`weak`,
@@ -298,7 +298,7 @@ exits. Bounded to its partition — never reads outside-partition
 papers, never edits `astra.yaml`. The agent is
 [`citation-verifier`](../../agents/citation-verifier.md), shipped as
 part of this bundle; the orchestrator invokes it via `Task` with
-`subagent_type="citation-verifier"` and `model="haiku"`.
+`subagent_type="citation-verifier"` and `model="sonnet"`.
 
 This is the same separation paper-extraction makes between
 `extract-paper-substrate.py` (deterministic, structural) and the
