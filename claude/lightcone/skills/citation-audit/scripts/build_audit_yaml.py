@@ -298,13 +298,25 @@ def main() -> int:
         help="Target astra.yaml (default: %(default)s)",
     )
     parser.add_argument(
+        "--worker-dir",
         "--haiku-dir",
+        dest="worker_dir",
         type=Path,
         default=None,
         help=(
-            "Directory containing `haiku-*.yaml` worker outputs to merge "
-            "into the ledger before materializing. Default: the ledger's "
-            "parent directory."
+            "Directory containing `verifier-*.yaml` / `haiku-*.yaml` worker "
+            "outputs to merge into the ledger before materializing. Default: "
+            "the ledger's parent directory."
+        ),
+    )
+    parser.add_argument(
+        "--materialize-only",
+        action="store_true",
+        help=(
+            "Skip re-merging worker YAMLs; materialize astra.yaml from the "
+            "ledger as-is. Use this for the post-gate re-materialize so the "
+            "strict-source-gate downgrades in the ledger are NOT clobbered by "
+            "re-reading the (pre-downgrade) worker verdicts."
         ),
     )
     parser.add_argument(
@@ -328,10 +340,15 @@ def main() -> int:
         )
         return 2
 
-    haiku_dir = args.haiku_dir or args.ledger.parent
-    if haiku_dir.exists():
-        applied = merge_haiku_outputs_into_ledger(args.ledger, haiku_dir)
-        print(f"merged {applied} verdict(s) from {haiku_dir}/haiku-*.yaml into ledger")
+    worker_dir = args.worker_dir or args.ledger.parent
+    if args.materialize_only:
+        print("materialize-only: skipping worker-YAML merge (ledger is authoritative)")
+    elif worker_dir.exists():
+        applied = merge_haiku_outputs_into_ledger(args.ledger, worker_dir)
+        print(
+            f"merged {applied} verdict(s) from "
+            f"{worker_dir}/verifier-*.yaml into ledger"
+        )
 
     added, updated, untouched = merge_ledger_into_astra(
         args.ledger, args.astra_yaml, fetch_state_path=args.fetch_state
@@ -340,7 +357,7 @@ def main() -> int:
         f"materialized: {added} new prior_insight(s), {updated} updated; "
         f"{untouched} non-audit insight(s) left untouched"
     )
-    print("next: cd work/reference && astra validate astra.yaml --verify-evidence")
+    print("next: cd work/reference && astra validate astra.yaml")
     return 0
 
 

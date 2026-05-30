@@ -292,10 +292,13 @@ its own previous audit-tagged entries on re-run.
 python3 .claude/skills/citation-audit/scripts/verify_and_downgrade.py \
   --ledger work/citation-audit/ledger.json \
   --state  work/citation-audit/fetch_state.json
-# then re-merge so astra.yaml drops any downgraded rows:
+# then re-materialize so astra.yaml drops any downgraded rows.
+# --materialize-only is REQUIRED here: a plain re-run would re-read the
+# worker YAMLs and clobber the downgrades the gate just wrote.
 python3 .claude/skills/citation-audit/scripts/build_audit_yaml.py \
   --ledger work/citation-audit/ledger.json \
-  --astra-yaml work/reference/astra.yaml
+  --astra-yaml work/reference/astra.yaml \
+  --materialize-only
 ```
 
 This is the trust anchor. For every `supported`/`weak` row,
@@ -303,9 +306,10 @@ This is the trust anchor. For every `supported`/`weak` row,
 arXiv source via `source_match.py` — `prefix+exact+suffix` must appear
 contiguously (whitespace-normalized) in the `.tex`. Any quote that fails
 is downgraded to `unverifiable` and its evidence dropped. Run it
-**after** the Step-4 merge (the merge re-reads the worker YAMLs and would
-otherwise overwrite downgrades), then re-merge so `astra.yaml` reflects
-the result.
+**after** the Step-4 merge; then re-materialize with `--materialize-only`
+so `astra.yaml` reflects the downgrades. (Without that flag,
+`build_audit_yaml` re-reads the pre-downgrade worker YAMLs and overwrites
+the gate's work — the ordering bug the flag exists to prevent.)
 
 **Why the gate moved off `astra paper verify-quotes` / `astra validate
 --verify-evidence`.** Those are PDF-based: they extract text from a
