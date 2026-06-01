@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""build_audit_yaml.py — merge Haiku verdicts into the subject's
+"""build_audit_yaml.py — merge verifier verdicts into the subject's
 astra.yaml as `insights:`.
 
 Reads:
   - `work/citation-audit/ledger.json` — the per-use-site ledger built
     by `build_citation_ledger.py`, with verdicts now populated from
-    the Haiku fan-out.
+    the verifier fan-out.
   - `work/reference/astra.yaml` — the stub astra.yaml paper-extraction
     wrote for the subject paper.
 
@@ -75,11 +75,13 @@ def _row_to_insight(
         return None
 
     # Only insights with verifiable evidence become astra.yaml entries —
-    # the schema requires `evidence:` on every insight. unverifiable_*
-    # / unsupported / wrong_paper verdicts stay in the ledger and the
-    # report, but don't materialize as ASTRA insights (there is no
-    # quote anchor to verify). The audit report is the authoritative
-    # surface for those; astra.yaml only carries clean evidence.
+    # the schema requires `evidence:` on every insight. identity /
+    # unverifiable_* / unsupported / wrong_paper verdicts stay in the
+    # ledger and the report, but don't materialize as ASTRA insights
+    # (there is no quote anchor to verify — `identity` cites are
+    # metadata-confirmed by design, not quote-backed). The audit report
+    # is the authoritative surface for those; astra.yaml only carries
+    # clean evidence.
     if verdict not in {"supported", "weak"}:
         return None
 
@@ -100,15 +102,15 @@ def _row_to_insight(
     if row.get("verdict_notes"):
         insight["notes"] = row["verdict_notes"]
 
-    # Evidence — only populated when the Haiku returned a verified
-    # quote. unsupported / wrong_paper / unverifiable_* verdicts have
-    # no quote: the cite is still flagged, but there's no Evidence
-    # entry to validate.
+    # Evidence — only populated when the verifier returned a verified
+    # quote. identity / unsupported / wrong_paper / unverifiable_*
+    # verdicts have no quote: the cite is still flagged, but there's no
+    # Evidence entry to validate.
     if verdict in {"supported", "weak"} and row.get("quote"):
         # Strip the JSON-LD `type:` field — ASTRA's LinkML schema
         # infers TextQuoteSelector / FragmentSelector from position
         # and rejects an explicit `type:` as "extra inputs not
-        # permitted." Haikus emit `type:` because the verifier
+        # permitted." Verifiers emit `type:` because the verifier
         # contract uses W3C Annotation conventions; we normalize on
         # the way out.
         quote = {k: v for k, v in (row.get("quote") or {}).items() if k != "type"}
@@ -143,36 +145,38 @@ def _row_to_insight(
     return insight
 
 
-def merge_haiku_outputs_into_ledger(
-    ledger_path: Path, haiku_dir: Path
+def merge_worker_outputs_into_ledger(
+    ledger_path: Path, worker_dir: Path
 ) -> int:
-    """Read every `haiku-*.yaml` in `haiku_dir`, patch verdicts into the
-    ledger at `ledger_path`, write the updated ledger back.
+    """Read every `verifier-*.yaml` in `worker_dir`, patch verdicts into
+    the ledger at `ledger_path`, write the updated ledger back.
 
     Returns the number of verdicts applied. Idempotent: re-running over
-    the same files overwrites with the latest verdict (Haikus are the
-    source of truth for verdict content).
+    the same files overwrites with the latest verdict (the verifier
+    workers are the source of truth for verdict content).
     """
     ledger = json.loads(ledger_path.read_text())
     rows: list[dict[str, Any]] = ledger.get("rows", [])
     by_id = {r["use_id"]: r for r in rows}
 
     applied = 0
+    # Accept the legacy `haiku-*.yaml` filename alongside `verifier-*.yaml`
+    # so old work dirs still merge.
     worker_files = sorted(
-        {*haiku_dir.glob("verifier-*.yaml"), *haiku_dir.glob("haiku-*.yaml")}
+        {*worker_dir.glob("verifier-*.yaml"), *worker_dir.glob("haiku-*.yaml")}
     )
-    for haiku_path in worker_files:
+    for worker_path in worker_files:
         try:
-            haiku = yaml.safe_load(haiku_path.read_text()) or {}
+            worker_out = yaml.safe_load(worker_path.read_text()) or {}
         except yaml.YAMLError as exc:
-            print(f"warn: skipping {haiku_path}: {exc}", file=sys.stderr)
+            print(f"warn: skipping {worker_path}: {exc}", file=sys.stderr)
             continue
-        verdicts = haiku.get("verdicts") or {}
+        verdicts = worker_out.get("verdicts") or {}
         for use_id, v in verdicts.items():
             row = by_id.get(use_id)
             if row is None:
                 print(
-                    f"warn: {haiku_path.name} carries verdict for unknown "
+                    f"warn: {worker_path.name} carries verdict for unknown "
                     f"use_id {use_id} (not in ledger); skipping",
                     file=sys.stderr,
                 )
@@ -299,14 +303,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--worker-dir",
-        "--haiku-dir",
+        "--haiku-dir",  # legacy alias
         dest="worker_dir",
         type=Path,
         default=None,
         help=(
-            "Directory containing `verifier-*.yaml` / `haiku-*.yaml` worker "
-            "outputs to merge into the ledger before materializing. Default: "
-            "the ledger's parent directory."
+            "Directory containing `verifier-*.yaml` worker outputs (legacy "
+            "`haiku-*.yaml` still accepted) to merge into the ledger before "
+            "materializing. Default: the ledger's parent directory."
         ),
     )
     parser.add_argument(
@@ -344,7 +348,7 @@ def main() -> int:
     if args.materialize_only:
         print("materialize-only: skipping worker-YAML merge (ledger is authoritative)")
     elif worker_dir.exists():
-        applied = merge_haiku_outputs_into_ledger(args.ledger, worker_dir)
+        applied = merge_worker_outputs_into_ledger(args.ledger, worker_dir)
         print(
             f"merged {applied} verdict(s) from "
             f"{worker_dir}/verifier-*.yaml into ledger"

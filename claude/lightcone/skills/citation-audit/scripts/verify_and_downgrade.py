@@ -11,10 +11,17 @@ self-validate via `source_match.py` before it returns. This script is the
 orchestrator-side re-check that no unverified quote slipped through: for
 every `supported`/`weak` ledger row, it re-checks the quote against the
 cited paper's arXiv source (the `source_dir` recorded in
-`fetch_state.json`). A quote that fails — `exact` not in source, or the
-`prefix`/`suffix` context not contiguous — is **downgraded to
-`unverifiable`** with a diagnostic note, and its quote/location are
-dropped.
+`fetch_state.json`). A quote that fails — `exact` not in source, the
+`prefix`/`suffix` context not contiguous, or a degenerate scrap quote
+(`source_match.is_substantive`) — is **downgraded to `unverifiable`**
+with a diagnostic note, and its quote/location are dropped.
+
+A second pass guards the other face of the reward-hack: an `identity`
+verdict (metadata-confirmed, no quote) whose claim sentence carries a
+measured-value signal is **flagged for human review** (`identity_review_flag`)
+— it likely attributes a proposition and should have been quoted. This is a
+flag, not a downgrade: the claim-bearing/identity triage is a judgment call
+the gate surfaces but does not adjudicate.
 
 Why source, not `astra paper verify-quotes`
 -------------------------------------------
@@ -24,8 +31,9 @@ A source-derived quote carries the author's markup (`$S_8=0.776\\pm
 `astra paper verify-quotes` (PDF-based) and `astra validate
 --verify-evidence` (PDF-based) would *reject* a correct source quote.
 This source check supersedes them as the gate. The astra-side PDF path
-is retired from the pipeline; an upstream enhancement (source-aware
-`verify-evidence`) is noted for `astra-tools`. `pdf_fallback` papers
+is retired from the pipeline; the upstream gaps are filed as
+astra-tools #91 (the PDF cache silently skips the prefix/suffix context
+check on hits) and #92 (a source-aware `verify-evidence` mode). `pdf_fallback` papers
 (arXiv has a PDF but no source — rare) are the one exception: their
 quotes are re-checked against the local PDF text via PyMuPDF, with the
 lossiness flagged in the note.
@@ -157,6 +165,34 @@ def main() -> int:
             print(f"  ✗ {row['use_id']:<45} {prior:>10} → unverifiable ({reason[:70]})")
             downgraded += 1
 
+    # Second pass: catch the *other* face of the reward-hack. Introducing the
+    # `identity` verdict (metadata-confirmed, no quote) creates an escape
+    # hatch — a verifier could mislabel a claim-bearing cite as `identity` to
+    # dodge the quote. We can't adjudicate the triage mechanically, but we can
+    # flag the loud cases: an `identity` row whose claim sentence carries a
+    # measured-value signal (a decimal, `\pm`, a σ significance) almost
+    # certainly attributes a proposition and should have been quoted. Flag for
+    # human review (not a downgrade — the triage is a judgment call).
+    flagged = 0
+    for row in rows:
+        if row.get("verdict") != "identity":
+            continue
+        if source_match._QUANT.search(row.get("claim") or ""):
+            row["identity_review_flag"] = True
+            note = (
+                "identity review flag: this cite was called identity/exemplar, "
+                "but its claim sentence carries a measured-value signal — it "
+                "likely attributes a proposition and should carry a substantive "
+                "quote. Confirm the triage."
+            )
+            existing = row.get("verdict_notes") or ""
+            row["verdict_notes"] = f"{note}\n\n{existing}".strip()
+            print(f"  ⚠ {row['use_id']:<45} {'identity':>10} → review (quantitative claim)")
+            flagged += 1
+        elif row.get("identity_review_flag"):
+            # Stale flag from a prior run whose claim no longer trips; clear it.
+            row.pop("identity_review_flag", None)
+
     counts = Counter(r.get("verdict") or "pending" for r in rows)
     ledger.setdefault("summary", {})["verdicts"] = dict(counts)
     args.ledger.write_text(json.dumps(ledger, indent=2, ensure_ascii=False) + "\n")
@@ -165,6 +201,11 @@ def main() -> int:
         f"\nchecked {checked} supported/weak rows against arXiv source; "
         f"downgraded {downgraded} that failed."
     )
+    if flagged:
+        print(
+            f"flagged {flagged} identity/exemplar row(s) whose claim looks "
+            f"quantitative — review whether they should be claim-bearing."
+        )
     if downgraded:
         print(
             "Now re-run build_audit_yaml.py to drop the downgraded entries from "

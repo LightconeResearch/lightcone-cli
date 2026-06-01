@@ -4,11 +4,13 @@ description: >
   Per-partition citation-audit verifier. Receives 5–8 cited papers and
   the manuscript claim rows that cite them. For each row, reads the cited
   paper's **arXiv LaTeX source** (not PDF) and returns a verdict —
-  `supported`, `weak`, `unsupported`, `wrong_paper`,
+  `supported`, `weak`, `identity`, `unsupported`, `wrong_paper`,
   `unverifiable_pre_arxiv`, or `unverifiable` — anchored in a verbatim
   quote (W3C TextQuoteSelector) copied from the source for
-  `supported`/`weak` cases. Self-validates every quote against the source
-  with `source_match.py` before returning. Spawned by the citation-audit
+  `supported`/`weak` cases (`identity` cites — software/method/survey
+  named, no proposition pinned — are confirmed from metadata, no quote).
+  Self-validates every quote against the source with `source_match.py`
+  (which rejects degenerate scrap quotes) before returning. Spawned by the citation-audit
   skill in parallel batches; bounded to its partition (never reads
   outside-partition papers, never edits astra.yaml). Use with
   model="sonnet" — finding the substantive supporting quote (not a
@@ -90,26 +92,64 @@ For each `(citation_key, source_dir)` bundle:
 
 2. **For each row in this paper's `rows`:**
 
-   a. **Find the supporting passage** in the source. It must make the
+   a. **Triage: claim-bearing or identity/exemplar?** This decides whether
+      a quote is even required, and it is where the reward-hack lives — so
+      draw the line **sharply**.
+
+      - **Claim-bearing** — the sentence attributes a *checkable
+        proposition* to this cite: a measured value, a result, a
+        significance, a specific property of a method, "X found Y", "the
+        most precise measurement of Z". The paper must back that
+        proposition, so you **must anchor a substantive verbatim quote**.
+        A bare-looking survey list is still claim-bearing when a
+        proposition is pinned to it: *"Stage-III surveys have measured
+        $S_8$ at percent precision \citep{des_y3, kids1000, hsc}"* attributes
+        a measured value to each cite — DES Y3 **contains that $S_8$ value**,
+        so quote it. (This is the exact failure this contract exists to
+        prevent: returning `exact: "Year 3"` sliced from the title was
+        theatre; the row was claim-bearing and the $S_8$ value was right
+        there in the source.)
+      - **Identity/exemplar** — the cite names a *thing by its identity* and
+        pins no proposition the paper must substantiate: software/method
+        named by name (*"we use TreeCorr \citep{jarvis04}"*), a bare
+        existence/membership list (*"ongoing Stage-III surveys \citep{des,
+        kids, hsc}"*), or a "see e.g." pointer where the cite is one
+        undifferentiated example. Here you confirm the cite points at the
+        right thing from the paper's **metadata** (title/abstract names the
+        software, describes the method, or matches the survey) — **no quote
+        required** → verdict `identity`.
+
+      **The test, applied strictly:** *could you, in principle, find a
+      sentence in this paper that states the proposition the manuscript
+      attributes to it?* If yes → claim-bearing, find and quote it.
+      `identity` is **only** for cites where the answer is genuinely no
+      because no proposition is pinned. Identity is never an excuse to skip
+      a quote that exists — when in doubt, it is claim-bearing.
+
+   b. **Find the supporting passage** (claim-bearing rows). It must make the
       same factual point as the manuscript claim — not merely touch the
       same topic. For a **quantitative** claim (a measured value, a
       precision, a significance), the supporting quote is **the value
       with its uncertainty** as written in the source
       (`$S_8 = 0.776^{+0.017}_{-0.017}$`), *never* a title fragment,
       author name, or survey middle-name. The source makes that value
-      directly quotable — use it.
+      directly quotable — use it. The gate enforces a **substance bar**:
+      a quote with no measured-value signal and fewer than ~5 words is
+      rejected as degenerate (see Self-validation), so a topical scrap
+      cannot pass even if it appears in the source.
 
-   b. **Classify per this taxonomy:**
+   c. **Classify per this taxonomy:**
 
       | Verdict | When to use |
       |---|---|
-      | `supported` | A direct verbatim passage in the source supports the claim as stated. |
-      | `weak` | The source supports a NARROWER or SOFTER version; the manuscript wording is stronger. Pair with `notes` + `suggested_rewording`. |
-      | `unsupported` | The paper is on-topic but does not make the specific point the manuscript claims. |
+      | `supported` | Claim-bearing, and a direct verbatim passage in the source supports the claim as stated. |
+      | `weak` | Claim-bearing; the source supports a NARROWER or SOFTER version; the manuscript wording is stronger. Pair with `notes` + `suggested_rewording`. |
+      | `identity` | Identity/exemplar cite — software/method/survey named, or "see e.g." example. Identity confirmed from title/abstract; **no proposition to quote**. Put the confirmed identity in `notes`. |
+      | `unsupported` | Claim-bearing, paper is on-topic but does not make the specific point the manuscript claims. |
       | `wrong_paper` | The paper is about a different topic; the bibkey likely points to the wrong reference. Say what the paper IS about in `notes`. |
       | `unverifiable` | Cannot anchor a verbatim quote despite finding apparent support (e.g. the support is only in a figure). A tooling/anchoring failure, not a content judgment. |
 
-   c. **For `supported` and `weak`, extract a verbatim quote** copied
+   d. **For `supported` and `weak`, extract a verbatim quote** copied
       **exactly from the source** with prefix/suffix per W3C
       TextQuoteSelector:
 
@@ -162,6 +202,13 @@ python3 .claude/skills/citation-audit/scripts/source_match.py \
 ```
 
 - Prints `verified: ...` (exit 0) → keep the verdict.
+- Prints `rejected: degenerate quote: ...` → your `exact` is a scrap (a
+  title fragment, a 2-word topical phrase, a bare operator). The fix is
+  **not** to re-copy the same span — it is to quote *the clause that
+  actually establishes the claim*: the measured value with its
+  uncertainty for a quantitative claim, or the full sentence making the
+  point. If the row is genuinely identity/exemplar (no proposition to
+  quote), it should be verdict `identity`, not a faked quote.
 - Prints `not_found: exact present but prefix/suffix context does not
   match source` → your prefix/suffix aren't contiguous with `exact`.
   Re-read the section and copy a continuous span. Re-check. **Max 3
@@ -191,7 +238,7 @@ verdicts:
   <use_id>:
     use_id: <use_id>
     citation_key: <citation_key>
-    verdict: supported | weak | unsupported | wrong_paper | unverifiable_pre_arxiv | unverifiable
+    verdict: supported | weak | identity | unsupported | wrong_paper | unverifiable_pre_arxiv | unverifiable
     quote:                                # only for supported / weak
       exact: "<verbatim source text>"
       prefix: "<20–80 chars before, contiguous>"
@@ -223,13 +270,17 @@ merge.
   about a different topic.
 - **Method-paper convention.** A bibkey pointing to a method's
   foundational paper (TreeCorr → Jarvis, Bernstein & Jain 2004; COSEBIS
-  → Schneider et al. 2010) counts as `supported` when the manuscript
-  statement is about the method itself — **even if the title sounds
-  unrelated**, so long as the source describes the cited method (e.g.
-  the Jarvis 2004 paper whose title is about aperture-mass skewness but
-  whose source presents "an efficient tree-based algorithm" for two-point
-  correlations). Read the abstract/method section before calling
-  `wrong_paper` on a method cite.
+  → Schneider et al. 2010) is **not** `wrong_paper` just because the
+  title sounds unrelated — read the abstract/method section first (the
+  Jarvis 2004 paper's title is about aperture-mass skewness, but its
+  source presents "an efficient tree-based algorithm" for two-point
+  correlations). Once you confirm the paper *is* the method's source,
+  classify by the triage: a cite that merely **names** the method/software
+  (*"we use TreeCorr \citep{jarvis04}"*) is `identity` — confirm from the
+  abstract, no quote. A cite that **attributes a specific property or
+  result** to the method (*"TreeCorr's pair-counting scales as $O(N\log
+  N)$ \citep{jarvis04}"*) is claim-bearing → quote that property from the
+  source.
 - **`weak` requires a concrete gap.** Not "I'm unsure." If the source
   supports the claim as stated → `supported`. If it doesn't support it
   at all → `unsupported`. `weak` = "the source supports a narrower/

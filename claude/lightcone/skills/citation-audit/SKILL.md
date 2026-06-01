@@ -8,8 +8,9 @@ description: >
   then partitions the cited papers into 5–8-per-worker batches and fans
   out parallel verifier workers (claude-sonnet) that read the source and
   return verbatim-quote-anchored verdicts per claim (supported / weak /
-  unsupported / wrong-paper / unverifiable_pre_arxiv / unverifiable).
-  Every quote is checked against the source (`source_match.py`) — the
+  identity / unsupported / wrong-paper / unverifiable_pre_arxiv /
+  unverifiable). Every quote is checked against the source
+  (`source_match.py`, which rejects degenerate scrap quotes) — the
   gate that makes the skill trustworthy. Verdicts merge into the ledger,
   materialize as `prior_insights:` on `astra.yaml`, and produce a
   self-contained HTML report. Mirrors `lc-from-paper`'s LITERATURE-phase
@@ -218,13 +219,27 @@ partition data joined from the ledger and `fetch_state.json`:
   citation_text, rows[])` — the per-paper fields come straight from
   `fetch_state.json`; `rows[]` is every ledger row for that paper.
 
+**The triage that gates everything: claim-bearing vs identity/exemplar.**
+The worker first decides, per row, whether the cite *asserts a checkable
+proposition the paper must back* (claim-bearing → a substantive quote is
+required) or merely *names a thing by identity* (software/method/survey,
+or a "see e.g." example → confirmed from metadata, no quote). The boundary
+is drawn **sharply**, because "identity, no quote possible" is the easiest
+place to hide a skipped quote: a survey list is still claim-bearing when a
+proposition is pinned to it. *"Stage-III surveys measured $S_8$ at percent
+precision \citep{des_y3, kids1000, ...}"* attributes a measured value — DES
+Y3 contains that value, so it must be quoted; calling it "exemplar" was the
+original reward-hack. The test: *could you find a sentence stating the
+attributed proposition?* If yes → claim-bearing.
+
 The worker returns **one verdict per row** per this taxonomy:
 
 | Verdict | Meaning | Action |
 |---|---|---|
-| `supported` | Verbatim quote in the cited paper's source supports the claim. | Pass; quote populates the evidence. |
-| `weak` | Source partially supports; the manuscript wording is stronger. | Suggested rewording in `notes:`. |
-| `unsupported` | No relevant support in the cited paper. | Flag for human; cite likely wrong or speculative. |
+| `supported` | Claim-bearing; a verbatim quote in the source supports the claim. | Pass; quote populates the evidence. |
+| `weak` | Claim-bearing; source partially supports; the manuscript wording is stronger. | Suggested rewording in `notes:`. |
+| `identity` | Identity/exemplar cite — software/method/survey named, or "see e.g." example; no proposition pinned. Identity confirmed from title/abstract. | No action — correct cite, no quote needed. |
+| `unsupported` | Claim-bearing; no relevant support in the cited paper. | Flag for human; cite likely wrong or speculative. |
 | `wrong_paper` | The bibkey resolves to a paper whose topic doesn't match the claim. | Replace the cite. |
 | `unverifiable_pre_arxiv` | Genuinely pre-arXiv (no eprint); identity confirmed via ADS metadata, full text not quotable. | No action — correct cite, just not quotable. |
 | `unverifiable` | Could not anchor a verbatim quote despite apparent support. | Manual review. |
@@ -233,10 +248,13 @@ The worker returns **one verdict per row** per this taxonomy:
 `TextQuoteSelector` (prefix + exact + suffix, copied contiguously from
 the `.tex`) plus a `section` locator. **Each worker self-validates its
 quotes in-loop with `source_match.py`** before writing the YAML — the
-quote's `prefix+exact+suffix` must appear contiguously in the source.
+quote's `prefix+exact+suffix` must appear contiguously in the source,
+*and* the `exact` must clear a **substance bar** (a measured-value signal,
+or ≥5 words and ≥25 chars). A 2-word title scrap like `Year 3` is rejected
+as degenerate even when it appears in the source; that, plus the
+claim-bearing/identity triage above, is what closes the reward-hack.
 Quotes that fail after 3 self-correction iterations get downgraded to
-`unverifiable`. A 2-word title scrap cannot satisfy the contiguous
-context check, which is exactly the reward-hack the source gate closes.
+`unverifiable`.
 
 Fan out all workers in a **single message** (parallel `Task` calls).
 Each writes to a disjoint `verifier-<N>.yaml`; merge happens in Step 4.
@@ -323,13 +341,19 @@ from the pipeline. `astra validate astra.yaml` (without
 `--verify-evidence`) still runs for **structural** schema validation of
 the materialized insights — but it is not the evidence gate.
 
-> **Upstream gap (filed, not blocking):** ASTRA's `--verify-evidence`
-> is PDF-only. A source-aware verify mode (verify a quote against a
-> cited paper's arXiv `.tex`, not just its PDF) would let `astra
-> validate --verify-evidence` re-become the gate. Tracked alongside the
-> [[gate-hardening]] work, which tightens the source matcher (degenerate-
-> quote rejection, claim-bearing vs identity distinction) on top of the
-> substrate this pivot establishes.
+> **Upstream gaps (filed, not blocking):** two issues on
+> `LightconeResearch/astra-tools`, both found while hardening this gate:
+> [#91](https://github.com/LightconeResearch/astra-tools/issues/91) — the
+> PDF `--verify-evidence` cache key excludes `prefix`/`suffix`, so the
+> context check is silently skipped on cache hits (a correctness bug for
+> any `--verify-evidence` consumer); and
+> [#92](https://github.com/LightconeResearch/astra-tools/issues/92) — a
+> source-aware verify mode (verify a quote against a cited paper's arXiv
+> `.tex`, not just its PDF) would let `astra validate --verify-evidence`
+> re-become the gate, with `source_match.py` as the reference
+> implementation. The gate-hardening work tightened the source matcher
+> (degenerate-quote rejection, claim-bearing vs identity distinction) on
+> top of the substrate the arXiv-source pivot established.
 
 ### Step 6 — Generate the report
 
@@ -393,7 +417,15 @@ across many cited papers.
   supporting quote is the measured value with its uncertainty as written
   in the source — never a title fragment or survey middle-name. The
   source makes the value directly quotable; there is no excuse to grab a
-  scrap.
+  scrap. `source_match.py` enforces this with a substance bar: a quote
+  with no measured-value signal and fewer than ~5 words is rejected.
+- **Claim-bearing vs identity is a sharp line, not an escape hatch.** A
+  cite is `identity` only when it names a thing (software/method/survey)
+  or stands as an undifferentiated "see e.g." example — *no proposition
+  pinned to the paper*. The moment the sentence attributes a measured
+  value, result, or specific property to the cite, it is claim-bearing and
+  needs a substantive quote, even inside a multi-cite survey list. "No
+  quote possible" is never a reason to skip a quote that exists.
 - **One verdict per use-site, not per key.** The same paper cited three
   times for three different claims gets three verdicts. Some may pass
   while others don't.

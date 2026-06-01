@@ -24,10 +24,15 @@ collapse away. The check is then a plain substring test:
     contiguous (the strong check; trustworthy against clean source);
   - else → require `exact` alone.
 
-Whitespace normalization is the *only* normalization applied here.
-Macro expansion and degenerate-quote rejection (minimum substance,
-clause-not-fragment) are deliberately left to the gate-hardening layer —
-this module establishes the substrate, not the strictness policy.
+Before the substring check, `exact` must clear a **substance bar**
+(`is_substantive`): a quote either carries a measured-value signal (a
+decimal, `\\pm`, an (in)equality against a number, a σ significance) or
+it is a clause of real length (≥ 5 words and ≥ 25 chars). A 2-word title
+scrap like `Year 3` clears neither and is rejected as degenerate — this
+is the gate-hardening layer that closes the reward-hack where a verifier
+"supports" a claim with a topical fragment that happens to appear in the
+source. Whitespace normalization plus the substance bar are the only
+policies applied here; macro expansion is still out of scope.
 
 Encoding note: `fetch_sources.py` already rewrites every `.tex` to
 UTF-8, so this reader assumes UTF-8 (with a replace fallback for safety).
@@ -42,10 +47,56 @@ from pathlib import Path
 
 _WS = re.compile(r"\s+")
 
+# Substance bar for `exact` (degenerate-quote rejection).
+_MIN_WORDS = 5
+_MIN_CHARS = 25
+_QUANT_FLOOR = 8  # a measured-value quote must still be more than a bare operator
+
+# A measurement-like signal: a decimal value, plus-minus, an (in)equality
+# against a number, a σ significance, scientific notation. A *bare integer*
+# (the `3` in "Year 3") deliberately does NOT match — that is the reward-hack
+# this bar exists to reject.
+_QUANT = re.compile(
+    r"\d+\.\d+"            # decimal value (0.776)
+    r"|\\pm|±"             # plus-minus
+    r"|\\sigma|σ"          # sigma significance
+    r"|\\times|×"          # times (scientific notation)
+    r"|[=<>]\s*[-+]?\d"    # (in)equality against a number (S_8 = 0.7, > 3)
+    r"|10\^\{?-?\d"        # powers of ten (10^{-3})
+)
+
 
 def _norm(s: str) -> str:
     """Collapse all whitespace to single spaces and strip."""
     return _WS.sub(" ", s).strip()
+
+
+def is_substantive(exact: str) -> tuple[bool, str]:
+    """Reject degenerate `exact` quotes. Return (ok, reason).
+
+    A quote clears the bar if it carries a measured-value signal (decimal,
+    `\\pm`, an (in)equality against a number, σ) — in which case even a terse
+    `$S_8 = 0.776\\pm0.017$` is fine — or if it is a clause of real length
+    (≥ `_MIN_WORDS` words and ≥ `_MIN_CHARS` chars). A title scrap like
+    `Year 3` (2 words, integer only) clears neither and is rejected.
+    """
+    s = _norm(exact)
+    if _QUANT.search(s):
+        if len(s) >= _QUANT_FLOOR:
+            return True, "substantive (measured-value signal)"
+        return False, (
+            f"degenerate quote: measured-value signal but only {len(s)} chars "
+            f"— quote the value with its uncertainty, not a bare operator"
+        )
+    words = s.split()
+    if len(words) >= _MIN_WORDS and len(s) >= _MIN_CHARS:
+        return True, "substantive (clause-length prose)"
+    return False, (
+        f"degenerate quote: {len(words)} words / {len(s)} chars is below the "
+        f"substance bar (need a measured value, or ≥{_MIN_WORDS} words and "
+        f"≥{_MIN_CHARS} chars). Quote the clause that establishes the claim — "
+        f"never a title fragment, author name, or topical scrap."
+    )
 
 
 def load_source(source_dir: Path) -> str:
@@ -73,6 +124,12 @@ def quote_in_source(
     exact_n = _norm(exact)
     if not exact_n:
         return False, "empty exact quote"
+
+    # The substance bar is a property of `exact` alone — context padding in
+    # prefix/suffix cannot rescue a scrap quote.
+    ok_sub, reason_sub = is_substantive(exact_n)
+    if not ok_sub:
+        return False, reason_sub
 
     prefix_n = _norm(prefix) if prefix else ""
     suffix_n = _norm(suffix) if suffix else ""
@@ -105,8 +162,14 @@ def main() -> int:
 
     source = load_source(args.source_dir)
     ok, reason = quote_in_source(source, args.exact, args.prefix, args.suffix)
-    print(("verified: " if ok else "not_found: ") + reason)
-    return 0 if ok else 1
+    if ok:
+        print("verified: " + reason)
+        return 0
+    # A degenerate quote is a different failure than a missing one: the fix is
+    # "find a substantive quote", not "re-copy the span". Label it distinctly.
+    label = "rejected" if reason.startswith("degenerate") else "not_found"
+    print(f"{label}: {reason}")
+    return 1
 
 
 if __name__ == "__main__":

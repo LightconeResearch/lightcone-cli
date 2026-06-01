@@ -11,6 +11,10 @@ on a phone via `SendUserFile`. Three sections, action-first:
      suggested a rewording.
   3. **Clean ledger.** All `supported` rows, collapsed by default
      under `<details>` so the report opens with the bad news.
+  4. **Identity / exemplar.** All `identity` rows (software/method/survey
+     named, metadata-confirmed, no quote needed), collapsed — kept
+     separate from `supported` so a mis-classified identity stays
+     auditable.
 
 Usage:
 
@@ -42,6 +46,7 @@ _VERDICT_SEVERITY = {
     "unverifiable_no_doi": 1,
     "weak": 0,
     "supported": -1,
+    "identity": -1,  # identity/exemplar cite, metadata-confirmed (no quote needed)
     "pending": -2,
 }
 
@@ -56,6 +61,7 @@ _CSS = """
   --cinnabar: #b03a2e;
   --weak: #c97a2e;
   --ok: #5a7a3a;
+  --identity: #4a6a7a;
   --muted: #6f5e4a;
   --code-bg: #ece1cd;
 }
@@ -76,6 +82,7 @@ h3 { margin-top: 1.5rem; font-size: 1.1rem; }
 .summary .v-unsupported { border-color: var(--cinnabar); color: var(--cinnabar); }
 .summary .v-weak { border-color: var(--weak); color: var(--weak); }
 .summary .v-supported { border-color: var(--ok); color: var(--ok); }
+.summary .v-identity { border-color: var(--identity); color: var(--identity); }
 .summary .v-unverifiable_no_doi,
 .summary .v-unverifiable_no_pdf,
 .summary .v-unverifiable_pre_arxiv,
@@ -86,6 +93,7 @@ h3 { margin-top: 1.5rem; font-size: 1.1rem; }
 .row.v-wrong_paper, .row.v-unsupported { border-color: var(--cinnabar); }
 .row.v-weak { border-color: var(--weak); }
 .row.v-supported { border-color: var(--ok); }
+.row.v-identity { border-color: var(--identity); }
 .row.v-unverifiable_no_doi,
 .row.v-unverifiable_no_pdf,
 .row.v-unverifiable_pre_arxiv,
@@ -97,6 +105,7 @@ h3 { margin-top: 1.5rem; font-size: 1.1rem; }
 .tag.v-wrong_paper, .tag.v-unsupported { background: var(--cinnabar); color: var(--bg); border-color: var(--cinnabar); }
 .tag.v-weak { background: var(--weak); color: var(--bg); border-color: var(--weak); }
 .tag.v-supported { background: var(--ok); color: var(--bg); border-color: var(--ok); }
+.tag.v-identity { background: var(--identity); color: var(--bg); border-color: var(--identity); }
 .cite-loc { font-family: monospace; font-size: .85rem; color: var(--muted); }
 .claim { margin: .4rem 0; }
 .quote { margin: .4rem 0; padding: .4rem .8rem;
@@ -212,14 +221,29 @@ def render(ledger_path: Path, reference_dir: Path, out_path: Path) -> None:
         "unverifiable",
         "extraction_error",
     }
+    # An `identity` row the gate flagged as quantitative-looking belongs in the
+    # action list (verify the triage), not the collapsed identity section.
+    def _is_action(r: dict[str, Any]) -> bool:
+        v = r.get("verdict") or ""
+        return v in action_verdicts or (v == "identity" and r.get("identity_review_flag"))
+
     action_rows = sorted(
-        (r for r in rows if (r.get("verdict") or "") in action_verdicts),
+        (r for r in rows if _is_action(r)),
         key=lambda r: (-_VERDICT_SEVERITY.get(r.get("verdict") or "", 0),
                        r.get("citation_key") or ""),
     )
     weak_rows = [r for r in rows if (r.get("verdict") or "") == "weak"]
     clean_rows = sorted(
         (r for r in rows if (r.get("verdict") or "") == "supported"),
+        key=lambda r: (r.get("citation_key") or "", r.get("line") or 0),
+    )
+    identity_rows = sorted(
+        (
+            r
+            for r in rows
+            if (r.get("verdict") or "") == "identity"
+            and not r.get("identity_review_flag")  # flagged ones go to the action list
+        ),
         key=lambda r: (r.get("citation_key") or "", r.get("line") or 0),
     )
     pending_rows = [r for r in rows if (r.get("verdict") or "") in {"pending", "", None}]
@@ -232,6 +256,13 @@ def render(ledger_path: Path, reference_dir: Path, out_path: Path) -> None:
     body.append(_section("Action list", action_rows))
     body.append(_section("Weak claims (consider rewording)", weak_rows))
     body.append(_section("Clean — supported", clean_rows, collapsed=True))
+    body.append(
+        _section(
+            "Identity / exemplar — metadata-confirmed (no quote)",
+            identity_rows,
+            collapsed=True,
+        )
+    )
     if pending_rows:
         body.append(_section("Still pending", pending_rows, collapsed=True))
 
