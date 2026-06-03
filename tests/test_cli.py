@@ -53,7 +53,7 @@ def test_first_invocation_auto_creates_global_config(
     # without a pre-existing project.
     project = tmp_path / "proj"
     result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv"]
+        main, ["init", str(project), "--no-git", "--no-venv", "--harness", "claude"]
     )
     assert result.exit_code == 0, result.output
     assert config.exists()
@@ -65,10 +65,12 @@ def test_first_invocation_auto_creates_global_config(
 
 def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--harness", "claude"]
+    )
     assert result.exit_code == 0, result.output
     assert (project / "astra.yaml").exists()
-    assert (project / "CLAUDE.md").exists()
+    assert (project / "AGENTS.md").exists()
     assert (project / ".gitignore").exists()
     assert (project / ".lightcone").is_dir()
     assert (project / "results").is_dir()
@@ -81,7 +83,9 @@ def test_init_refuses_when_astra_yaml_exists(
     project = tmp_path / "proj"
     project.mkdir()
     (project / "astra.yaml").write_text("# already here\n")
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--harness", "claude"]
+    )
     assert result.exit_code != 0
     assert "already exists" in result.output
 
@@ -99,7 +103,7 @@ def test_init_venv_uses_uv_when_available(
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--harness", "claude"])
     assert result.exit_code == 0, result.output
 
     assert ["uv", "venv", "--python", "3.12", ".venv"] in calls
@@ -119,7 +123,7 @@ def test_init_venv_falls_back_to_python_when_uv_missing(
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--harness", "claude"])
     assert result.exit_code == 0, result.output
 
     assert ["python", "-m", "venv", ".venv"] in calls

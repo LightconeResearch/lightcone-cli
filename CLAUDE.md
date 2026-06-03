@@ -51,7 +51,8 @@ src/lightcone/              # namespace — NO __init__.py
 │   ├── __init__.py         # exposes main()
 │   ├── commands.py         # init, run, status, verify, build
 │   ├── plugin.py           # get_plugin_source_dir
-│   └── claude/             # force-included Claude plugin bundle (in installed wheel only)
+│   ├── harness.py          # HARNESS_REGISTRY, HarnessConfig — add new harnesses here
+│   └── plugin/             # force-included harness plugin bundle (in installed wheel only)
 ├── engine/                 # execution substrate — Snakemake-based
 │   ├── __init__.py
 │   ├── manifest.py         # write_manifest, sha256_dir, code_version — the integrity layer
@@ -66,7 +67,7 @@ src/lightcone/              # namespace — NO __init__.py
     ├── cli.py              # `lc eval` subcommand group
     ├── harness.py, sandbox.py, graders.py, build.py, report.py, models.py
 
-claude/lightcone/           # Claude plugin source — force-included into the wheel
+plugin/lightcone/           # Harness-agnostic plugin source — force-included into the wheel
 ├── skills/                 # lc-new, lc-from-code, lc-from-paper,
 │                            # lc-feedback, ralph;
 │                            # paper-reproduction bundle: lc-from-paper (entry),
@@ -75,7 +76,7 @@ claude/lightcone/           # Claude plugin source — force-included into the w
 │                            # check-sentence-by-sentence
 │                            # (see skills/README.md for the full bundle map)
 ├── agents/                 # lc-extractor
-├── templates/              # Project CLAUDE.md template
+├── templates/              # Project AGENTS.md template
 └── scripts/                # Session hooks (bash): venv activation, validate-on-save, session-start primer
 
 tests/                      # pytest — mirrors src/ structure
@@ -136,7 +137,7 @@ astra.yaml ── snakefile.generate() ──> .lightcone/Snakefile + .lightcone
 - `lc status` reads only manifests — works offline, no Snakemake or DB needed
 
 **CLI surface:**
-- `lc init` — scaffold project with .claude/, CLAUDE.md, .gitignore, .lightcone/, results/, universes/
+- `lc init` — scaffold project with .claude/, AGENTS.md, CLAUDE.md, .gitignore, .lightcone/, results/, universes/
 - `lc run [outputs...]` — generate Snakefile, invoke snakemake
 - `lc status` — manifest-driven status report
 - `lc verify` — chain integrity check
@@ -152,7 +153,8 @@ Global config (`~/.lightcone/config.yaml`) is auto-created with defaults on firs
 | Change manifest semantics | `src/lightcone/engine/manifest.py` + `tests/test_manifest.py` | Bump `SCHEMA_VERSION`; add a test |
 | Change Snakefile shape | `src/lightcone/engine/snakefile.py` + `tests/test_snakefile.py` | Includes a `snakemake -n` parse test |
 | Add container features | `src/lightcone/engine/container.py` | `compute_image_tag()`, build/resolve functions |
-| Create a skill | `claude/lightcone/skills/` | SKILL.md with YAML frontmatter (`name`, `description`, `allowed-tools`) |
+| Create a skill | `plugin/lightcone/skills/` | SKILL.md with YAML frontmatter (`name`, `description`, `allowed-tools`) |
+| Add a harness | `src/lightcone/cli/harness.py` | Add entry to `HARNESS_REGISTRY`; one PR per harness |
 
 ## Test Patterns
 

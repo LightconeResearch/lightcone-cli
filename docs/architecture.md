@@ -234,19 +234,38 @@ the qualified `<analysis_id>.<output_id>` form.
 
 ---
 
-## Claude Code plugin
+## Agent harness plugin
 
-The plugin lives at `claude/lightcone/`. It is force-included into the
+The plugin lives at `plugin/lightcone/`. It is force-included into the
 installed wheel via `pyproject.toml` so `lc init` can find it whether
 you're running from source or from PyPI:
 
 ```toml
 [tool.hatch.build.targets.wheel.force-include]
-"claude/lightcone" = "lightcone/cli/claude/lightcone"
+"plugin/lightcone" = "lightcone/cli/plugin/lightcone"
 ```
 
 `lightcone.cli.plugin.get_plugin_source_dir()` does the lookup: bundled
 location first, dev location (relative to the repo root) second.
+
+### Harness registry
+
+`lc init` asks which AI coding harness to install skills for (e.g. `claude`).
+The registry lives in `lightcone.cli.harness.HARNESS_REGISTRY` — one entry per
+supported tool, with `prefix` (target directory), `has_hooks`, and
+`has_settings` flags.
+
+Currently only `claude` (Claude Code, `.claude/`) is registered. Future
+harnesses are added one PR at a time so skill performance can be verified per
+tool before the next is added.
+
+- **Harness-neutral content** (skills, agents) is copied to `.<prefix>/` for
+  every selected harness.
+- **Claude-specific content** (hooks, scripts, `settings.json`) is only
+  installed when `harness.has_hooks` / `harness.has_settings` are set.
+- **`AGENTS.md`** (the project documentation file) is always written to the
+  project root. For the Claude harness a lightweight `CLAUDE.md` shim is
+  also written pointing to `AGENTS.md`.
 
 ### Permission tiers
 
@@ -287,12 +306,12 @@ src/lightcone/                  # PEP 420 namespace package — NO __init__.py
 
 src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
 
-claude/lightcone/               # Claude Code plugin (force-included into the wheel)
+plugin/lightcone/               # Claude Code plugin (force-included into the wheel)
 ├── skills/                     # lc-new, lc-from-code, lc-from-paper,
 │                                # lc-feedback, ralph (+ bundle siblings);
 │                                # reference skills: astra, lc-cli
 ├── agents/                     # lc-extractor (literature subagent)
-├── templates/                  # project CLAUDE.md template
+├── templates/                  # project AGENTS.md template
 └── scripts/                    # session hooks (bash): venv, validate-on-save, session-start primer
 
 tests/                          # pytest, mirrors src/

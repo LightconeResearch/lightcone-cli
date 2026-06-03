@@ -6,7 +6,7 @@ Author the reader-facing prose in an `astra.yaml`: analysis-level
 `notes:` on individual entities. Always written against an existing
 spec — the structure must exist when the prose lands.
 
-Source: [`claude/lightcone/skills/narrative/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/narrative/SKILL.md).
+Source: [`plugin/lightcone/skills/narrative/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/narrative/SKILL.md).
 
 ## Modes
 
@@ -98,7 +98,7 @@ astra validate astra.yaml
   `notes`.
 
 Mode-specific anti-patterns live in each mode's reference under
-`claude/lightcone/skills/narrative/references/`.
+`plugin/lightcone/skills/narrative/references/`.
 
 ## Related
 

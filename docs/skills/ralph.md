@@ -13,7 +13,7 @@ COMPARE). Standalone for any other long-running work where adaptation
 matters more than a fixed plan: refactors, exploratory analyses,
 research narratives that keep growing.
 
-Source: [`claude/lightcone/skills/ralph/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/SKILL.md).
+Source: [`plugin/lightcone/skills/ralph/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/ralph/SKILL.md).
 
 ## Three modes
 
@@ -21,9 +21,9 @@ One mode applies at a time.
 
 - **Authoring** — drafting a constitution from scratch (Study → Draft
   → Refine → Launch). Reference depth in
-  [`references/constitution.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/references/constitution.md)
+  [`references/constitution.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/ralph/references/constitution.md)
   and the careful-thinking rhythm in
-  [`references/crafting.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/references/crafting.md).
+  [`references/crafting.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/ralph/references/crafting.md).
 - **Launching** — outside any active loop, invoking the bundled script
   to start one on an existing constitution.
 - **Inside a loop** — the constitution is in the system prompt; the
@@ -66,7 +66,7 @@ Common sections — use what fits, skip what doesn't:
   loops.
 
 See the SKILL's *What goes in a constitution* and
-[`references/constitution.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/references/constitution.md)
+[`references/constitution.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/ralph/references/constitution.md)
 for the discipline that keeps a constitution from sliding into a plan.
 
 ## Authoring principles
@@ -99,4 +99,4 @@ decision.
 
 - [`/lc-from-paper`](lc-from-paper.md) — uses `/ralph` for the long
   middle of a reproduction.
-- [Bundle README](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md).
+- [Bundle README](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/README.md).

@@ -1,6 +1,6 @@
 # lc init
 
-Scaffold a new ASTRA project with Claude Code integration.
+Scaffold a new ASTRA project with agent harness integration.
 
 ## Synopsis
 
@@ -16,14 +16,15 @@ Inside `DIRECTORY` (creating it if needed):
 
 ```text
 astra.yaml                    # tiny boilerplate spec with one example output
-CLAUDE.md                     # short note pointing future agents at the project
+AGENTS.md                     # harness-neutral project doc (all harnesses)
+CLAUDE.md                     # lightweight shim pointing to AGENTS.md (Claude harness only)
 .gitignore                    # Python + lightcone state
 .lightcone/
   lightcone.yaml              # currently a stub: { target: local }
 results/                      # placeholder; populated by `lc run`
 universes/                    # placeholder; populate via `astra universe generate -n …`
-.claude/                      # bundled Claude Code plugin
-  skills/, agents/, hooks/, scripts/, templates/
+.claude/                      # Claude Code plugin (when harness is 'claude')
+  skills/, agents/, scripts/, templates/
   settings.json               # the chosen permission tier
 .venv/                        # Python venv (skipped with --no-venv)
 ```
@@ -36,12 +37,12 @@ universes/                    # placeholder; populate via `astra universe genera
 |--------|---------|--------|
 | `--no-git` | off | Skip `git init`. |
 | `--no-venv` | off | Skip `python -m venv .venv`. |
-| `--permissions {yolo,recommended,minimal}` | `recommended` | Which `.claude/settings.json` permission tier to install. |
+| `--harness {claude}` | prompted | AI coding harness to install skills for. |
+| `--permissions {yolo,recommended,minimal}` | `recommended` | Which `.claude/settings.json` permission tier to install (Claude harness only). |
 
 > The historical `--target`, `--existing-project`, and `--sub-analysis`
-> flags have been removed; today's `lc init` only knows the three flags
-> above. For migrating an existing project, run `lc init` in a fresh
-> directory and use the `/lc-from-code` skill from inside Claude Code.
+> flags have been removed. For migrating an existing project, run `lc init` in
+> a fresh directory and use the `/lc-from-code` skill.
 
 ## Permission tiers
 
@@ -58,10 +59,10 @@ or change defaults.
 ## Examples
 
 ```bash
-lc init                                # scaffold in cwd, recommended tier
-lc init my-analysis                    # scaffold in ./my-analysis
-lc init my-analysis --no-git --no-venv # bare bones
-lc init . --permissions yolo           # for autonomous loops you trust
+lc init                                     # scaffold in cwd; prompts for harness
+lc init my-analysis --harness claude        # scaffold with Claude Code
+lc init my-analysis --no-git --no-venv      # bare bones
+lc init . --harness claude --permissions yolo  # for autonomous loops you trust
 ```
 
 ## Next steps

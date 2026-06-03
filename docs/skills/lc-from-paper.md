@@ -10,13 +10,13 @@ the same constitution. REVIEW returns to the user's main session once
 the loop closes.
 
 `/lc-from-paper` is the entry point of the paper-reproduction bundle.
-Sibling skills ([`ralph`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/SKILL.md)
+Sibling skills ([`ralph`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/ralph/SKILL.md)
 for the loop, [`paper-extraction`](paper-extraction.md),
 [`narrative`](narrative.md), [`figure-comparison`](figure-comparison.md),
 [`check-sentence-by-sentence`](check-sentence-by-sentence.md)) live in
 the same plugin and are invoked by role across the phases.
 
-Source: [`claude/lightcone/skills/lc-from-paper/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-from-paper/SKILL.md).
+Source: [`plugin/lightcone/skills/lc-from-paper/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/lc-from-paper/SKILL.md).
 
 ## Architecture
 
@@ -27,7 +27,7 @@ Two pieces.
    ask for the paper, run `/paper-extraction` inline, interview
    (grounded in the paper), clone the code and run `/lc-from-code`
    scan-only (if a repo exists), optionally follow up, then draft
-   `constitution.md` + `CLAUDE.md` from the full paper-plus-code
+   `constitution.md` + `AGENTS.md` from the full paper-plus-code
    context for user review.
 
 2. **A ralph loop for the long middle.** Once ORIENT lands —
@@ -50,7 +50,7 @@ session; phases 1–6 run as ralph iterations.
 
 | # | Phase | Where | Primary outputs |
 |---|-------|-------|------------------|
-| 0 | ORIENT | user's main session | per-paper `constitution.md` + `CLAUDE.md` + paper substrate at `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml}` (from inline `/paper-extraction`) + code substrate at `work/reference/{code/, code-status.yaml, code-index.md}` (from inline `/lc-from-code` scan-only, when a repo exists) |
+| 0 | ORIENT | user's main session | per-paper `constitution.md` + `AGENTS.md` + paper substrate at `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml}` (from inline `/paper-extraction`) + code substrate at `work/reference/{code/, code-status.yaml, code-index.md}` (from inline `/lc-from-code` scan-only, when a repo exists) |
 | 1 | ARCHITECT | ralph iteration | stub `astra.yaml` (sub-analyses, inputs, outputs, narrative) |
 | 2 | SPECIFY | ralph iteration | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
 | 3 | LITERATURE | ralph iteration | `prior_insights:` Evidence entries each carry resolved `quote:` + `location:` selectors; per-paper PDFs cached via `astra paper add` |
@@ -81,14 +81,14 @@ the earlier stages produced:
 5. **Optional follow-up questions** if the code-index surfaced
    something that affects scope or constitution shape. Usually
    skipped.
-6. **Draft `constitution.md` + `CLAUDE.md`** — both files now
+6. **Draft `constitution.md` + `AGENTS.md`** — both files now
    informed by paper *and* code substrate. The constitution's Scope
    and sub-analysis decomposition can lean on the actual pipeline.
 7. **User reviews drafts → refine → single first commit (constitution
    + CLAUDE + paper substrate + code substrate) → launch the ralph
    loop.**
 
-## Per-paper substrate: constitution + CLAUDE.md
+## Per-paper substrate: constitution + AGENTS.md
 
 ORIENT drafts two files in the reproduction workdir; every iteration
 picks them up on launch.
@@ -101,7 +101,7 @@ picks them up on launch.
   dimensions (decisions worth user ratification, updated each
   iteration). The body sharpens slowly. Archivable once the
   reproduction closes.
-- **`CLAUDE.md`** — the auto-loading walk-up, *durable*. Paper identity
+- **`AGENTS.md`** — the auto-loading walk-up, *durable*. Paper identity
   at the top; Rules (code-as-canonical, no blocking on `AskUserQuestion`
   mid-iteration, arXiv-LaTeX-first, `astra validate --verify-evidence`
   as the fidelity gate); Disagreements log (running); Open opportunities
@@ -115,16 +115,16 @@ Pointers, not snapshots.
 - **Workdir is the state.** File existence, `git log`, and `astra
   validate` answer "what phase am I on" deterministically — no
   separate state machine.
-- **Constitution is task-bound; CLAUDE.md is durable.** The constitution
+- **Constitution is task-bound; AGENTS.md is durable.** The constitution
   carries what *this reproduction* is trying to achieve and how it's
-  progressing — archivable once the reproduction closes. CLAUDE.md carries
+  progressing — archivable once the reproduction closes. AGENTS.md carries
   what stays useful past the reproduction: paper identity, rules,
   paper-vs-code disagreements, pointers to substrate. Keep both current
   so the next cold survey reads them as fact.
 - **Code-as-canonical, with disagreements recorded.** Where paper
   and code disagree on something material, code wins for numerics,
   but the disagreement is preserved as a decision option and noted
-  in CLAUDE.md.
+  in AGENTS.md.
 - **Rigor is a trajectory toward the user's intent.** Fidelity
   intent is partly aesthetic ("how good does this need to be?") and
   partly pragmatic ("what's feasible given the compute, tokens, and
@@ -134,7 +134,7 @@ Pointers, not snapshots.
   fixes what needs fixing or advances if nothing does. The fresh-context
   property at iteration boundaries makes the next iteration the
   review. Gaps the intent wants pushed further than the loop has
-  time to deliver become Open opportunities in CLAUDE.md for a future
+  time to deliver become Open opportunities in AGENTS.md for a future
   loop.
 - **arXiv LaTeX first.** PDF + Docling is the non-arXiv fallback only.
 - **No synthetic data.** Unless the paper itself uses synthetic data,
@@ -159,9 +159,9 @@ Pointers, not snapshots.
 
 ## Related
 
-- [Bundle README](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md)
+- [Bundle README](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/README.md)
   — why the bundle is co-located rather than a separate plugin install.
-- [`/ralph`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/SKILL.md)
+- [`/ralph`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/ralph/SKILL.md)
   — the loop substrate (authoring + launching + iterating).
 - [`/paper-extraction`](paper-extraction.md) — ORIENT Stage 2's
   acquisition path; also invoked per cited paper by LITERATURE.

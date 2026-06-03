@@ -25,7 +25,7 @@ layout and stops; it doesn't ask any questions.
 ```
 r2-decision-demo/
 ├── astra.yaml          # the spec — this is where everything lives
-├── CLAUDE.md           # short note for the agent (resumes context across sessions)
+├── AGENTS.md           # short note for the agent (resumes context across sessions)
 ├── .gitignore
 ├── .git                # initialized git repository (skip with --no-git)
 ├── .venv/              # Python virtual env (skip with --no-venv)
@@ -46,7 +46,7 @@ is downstream of this file. The boilerplate from `lc init` has one example
 output and an empty decisions block — enough to run `lc run` and see something
 materialize, but not yet a real analysis.
 
-**`CLAUDE.md`** — a short note that tells Claude Code about the project. The
+**`AGENTS.md`** — a short note that tells Claude Code about the project. The
 skills will update this as you go (filling in working notes, design context).
 You can edit it by hand whenever you want.
 
@@ -57,7 +57,7 @@ claude
 ```
 
 This opens an interactive session inside the project directory. Claude Code
-reads `astra.yaml` and `CLAUDE.md` so it has context from the start.
+reads `astra.yaml` and `AGENTS.md` so it has context from the start.
 
 ## 3. The slash commands
 

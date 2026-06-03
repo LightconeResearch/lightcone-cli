@@ -7,7 +7,7 @@ with line numbers, deduplicated citation keys with resolved DOIs, the
 abstract, and a stub `astra.yaml` that treats the paper as an ASTRA
 artifact.
 
-Source: [`claude/lightcone/skills/paper-extraction/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/paper-extraction/SKILL.md).
+Source: [`plugin/lightcone/skills/paper-extraction/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/paper-extraction/SKILL.md).
 
 Argument hint: `<arxiv-id-or-doi>` — invoked as `/paper-extraction
 2503.19441` or `/paper-extraction 10.48550/arXiv.2503.19441`.

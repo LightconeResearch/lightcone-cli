@@ -61,14 +61,14 @@ just build              # uv build
 just version            # current version (from git tags via hatch-vcs)
 ```
 
-The plugin (`claude/lightcone/`) is force-included into the wheel:
+The plugin (`plugin/lightcone/`) is force-included into the wheel:
 
 ```toml
 [tool.hatch.build.targets.wheel]
 packages = ["src/lightcone", "src/snakemake_executor_plugin_dask"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"claude/lightcone" = "lightcone/cli/claude/lightcone"
+"plugin/lightcone" = "lightcone/cli/plugin/lightcone"
 ```
 
 That layout is what `lightcone.cli.plugin.get_plugin_source_dir()`
@@ -80,7 +80,7 @@ relative to the repo root.
 ```text
 src/lightcone/                       # main namespace (PEP 420; no __init__.py at the package root)
 src/snakemake_executor_plugin_dask/  # Snakemake → Dask executor plugin
-claude/lightcone/                    # Claude Code plugin (force-included into the wheel)
+plugin/lightcone/                    # Claude Code plugin (force-included into the wheel)
 tests/                               # pytest tree, mirrors src/
 evals/                               # eval task fixtures (tasks/snae/)
 docs/                                # docs site

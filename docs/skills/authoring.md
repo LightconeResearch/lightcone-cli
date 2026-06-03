@@ -1,14 +1,14 @@
 # Authoring Skills
 
 Skills are markdown files with YAML frontmatter. Each one lives in
-`claude/lightcone/skills/<name>/SKILL.md`. Add helper scripts under
+`plugin/lightcone/skills/<name>/SKILL.md`. Add helper scripts under
 `scripts/` and any longer prompts under `assets/` next to the
 `SKILL.md`.
 
 ## File layout
 
 ```text
-claude/lightcone/skills/
+plugin/lightcone/skills/
 └── my-skill/
     ├── SKILL.md
     ├── assets/                # optional — long prompt fragments, templates

@@ -43,14 +43,14 @@ The skill walks you through four phases:
    valid; `astra universe generate -n baseline` to seed a baseline
    universe; the `narrative:` block in `astra.yaml` gets filled in
    (`summary`, `methods`, `inputs`, `outputs` — `findings` stays TODO
-   until results exist); the `## Working Notes` section of `CLAUDE.md`
+   until results exist); the `## Working Notes` section of `AGENTS.md`
    gets the conversational context that wouldn't otherwise survive a
    `/clear`.
 
 You don't write any code or YAML during `/lc-new`. By the
 time it finishes, you have a precise specification. The agent enforces
 this: the skill is *only allowed* to edit `astra.yaml`, files in
-`universes/`, and `CLAUDE.md`.
+`universes/`, and `AGENTS.md`.
 
 ## `/lc-from-code` — wrap existing code
 
@@ -92,10 +92,10 @@ conventions, prior familiarity, external context), clone the
 reference code and run `/lc-from-code` scan-only (when a repo exists),
 optionally follow up, then draft **two files** at the workdir root:
 `constitution.md` (the ralph loop's driving document — Goal, fidelity
-intent, scope, quality bar, evidence) and `CLAUDE.md` (the auto-loading
+intent, scope, quality bar, evidence) and `AGENTS.md` (the auto-loading
 walk-up with rules, the paper-vs-code disagreements log, open
 opportunities). You review the drafts, then a single first commit
-captures `constitution.md` + `CLAUDE.md` + the full `work/reference/`
+captures `constitution.md` + `AGENTS.md` + the full `work/reference/`
 substrate.
 
 After ORIENT lands, the skill launches a **ralph loop** in a detached
@@ -118,13 +118,13 @@ session: `/figure-comparison` against the targets, optional
 questions, a `REPRODUCTION-SUMMARY.md`. COMPARE's opportunity
 assessment — where the gaps are, how much they likely matter, and how
 they sit relative to your fidelity intent — propagates into
-CLAUDE.md's *Open opportunities* list as the trajectory of what could
+AGENTS.md's *Open opportunities* list as the trajectory of what could
 be tightened on a return visit.
 
 The bundle composes sibling skills: `ralph` (the loop substrate),
 `paper-extraction`, `narrative`, `figure-comparison`, and
 `check-sentence-by-sentence`. See
-[`claude/lightcone/skills/README.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md)
+[`plugin/lightcone/skills/README.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/README.md)
 for the full bundle map.
 
 ## `/lc-feedback` — file an issue without context-switching

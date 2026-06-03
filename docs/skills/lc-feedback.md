@@ -4,7 +4,7 @@ File a GitHub issue against the right Lightcone repo from inside a
 session, with version info and error context auto-collected. Be fast —
 the user is in the middle of work.
 
-Source: [`claude/lightcone/skills/lc-feedback/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-feedback/SKILL.md).
+Source: [`plugin/lightcone/skills/lc-feedback/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/lc-feedback/SKILL.md).
 
 Argument hint: `<what went wrong>`.
 

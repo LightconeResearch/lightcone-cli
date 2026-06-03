@@ -40,7 +40,7 @@ dispatches them by role during the reproduction.
 | [figure-comparison](figure-comparison.md) | `/figure-comparison` | Build a self-contained HTML side-by-side: paper figures, tables, and numerics vs reproduced artifacts. |
 | [check-sentence-by-sentence](check-sentence-by-sentence.md) | `/check-sentence-by-sentence` | Static audit of paper claims against code locations (`file:line` or `NOT FOUND`). |
 
-See the [bundle README](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md) for the rationale behind co-location vs plugin install.
+See the [bundle README](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/README.md) for the rationale behind co-location vs plugin install.
 
 ### Reference skills (auto-primed via session-start)
 
@@ -55,7 +55,7 @@ These intentionally stay out of the top-level README. Researchers use the projec
 
 ## How a skill is wired
 
-Each skill is a `claude/lightcone/skills/<name>/SKILL.md` file with
+Each skill is a `plugin/lightcone/skills/<name>/SKILL.md` file with
 YAML frontmatter:
 
 ```yaml
@@ -77,11 +77,11 @@ and longer prompt fragments under `assets/` when relevant.
 ## Plugin layout
 
 ```text
-claude/lightcone/
+plugin/lightcone/
 ├── skills/
 │   ├── lc-new/{SKILL.md, references/*.md}
 │   ├── lc-from-code/SKILL.md
-│   ├── lc-from-paper/{SKILL.md, references/*.md, templates/{constitution.md, CLAUDE.md}}
+│   ├── lc-from-paper/{SKILL.md, references/*.md, templates/{constitution.md, AGENTS.md}}
 │   ├── lc-feedback/SKILL.md
 │   ├── ralph/{SKILL.md, references/*.md, scripts/ralph}
 │   ├── paper-extraction/{SKILL.md, scripts/*.py}
@@ -91,7 +91,7 @@ claude/lightcone/
 │   ├── astra/SKILL.md                  # reference: astra.yaml spec
 │   └── lc-cli/SKILL.md                 # reference: lc workflow
 ├── agents/lc-extractor.md             # literature subagent for /lc-new
-├── templates/CLAUDE.md                # the project CLAUDE.md template
+├── templates/AGENTS.md                # the project AGENTS.md template
 └── scripts/*.sh                       # session lifecycle hooks (incl. session-start primer)
 ```
 
@@ -105,8 +105,8 @@ The two reference *skills* (`/astra` and `/lc-cli`) live under `skills/` and are
 
 | File | Purpose |
 |------|---------|
-| `claude/lightcone/agents/lc-extractor.md` | Literature extraction subagent invoked by `/lc-new`. |
-| `claude/lightcone/scripts/session-start.sh` | Session-start hook — surfaces validation + materialization status and primes Claude with the substrate CLIs and reference skill names. |
+| `plugin/lightcone/agents/lc-extractor.md` | Literature extraction subagent invoked by `/lc-new`. |
+| `plugin/lightcone/scripts/session-start.sh` | Session-start hook — surfaces validation + materialization status and primes Claude with the substrate CLIs and reference skill names. |
 
 ## Authoring a new skill
 

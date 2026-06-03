@@ -6,7 +6,7 @@ on the right, with red flags wherever a counterpart is missing. Images
 are base64-embedded so the HTML is portable. Run from a project folder
 containing `astra.yaml`.
 
-Source: [`claude/lightcone/skills/figure-comparison/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/figure-comparison/SKILL.md).
+Source: [`plugin/lightcone/skills/figure-comparison/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/figure-comparison/SKILL.md).
 
 Argument hint: `[path to paper reference dir, e.g. work/reference/]`.
 

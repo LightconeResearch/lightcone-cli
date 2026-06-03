@@ -6,7 +6,7 @@ from pathlib import Path
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1]
-    / "claude"
+    / "plugin"
     / "lightcone"
     / "skills"
     / "paper-extraction"

@@ -76,13 +76,13 @@ packages = [
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"claude/lightcone" = "lightcone/cli/claude/lightcone"
+"plugin/lightcone" = "lightcone/cli/plugin/lightcone"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "src/lightcone",
     "src/snakemake_executor_plugin_dask",
-    "claude/lightcone",
+    "plugin/lightcone",
 ]
 
 [tool.ruff]

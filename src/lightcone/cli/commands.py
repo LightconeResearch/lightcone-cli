@@ -6,7 +6,7 @@ The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 ``astra.yaml`` and shells out to ``snakemake``.
 
 Commands:
-- ``lc init``   — scaffold a project (CLAUDE.md, .claude/, venv, gitignore).
+- ``lc init``   — scaffold a project (AGENTS.md, .claude/ or other harness dir, venv, gitignore).
 - ``lc run``    — generate Snakefile and run snakemake.
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
@@ -30,6 +30,11 @@ import click
 import yaml
 from rich.console import Console
 
+from lightcone.cli.harness import (
+    HarnessConfig,
+    available_harnesses,
+    resolve_harness,
+)
 from lightcone.cli.plugin import get_plugin_source_dir
 
 console = Console()
@@ -146,7 +151,14 @@ _____|_________________
     "--permissions",
     type=click.Choice(["yolo", "recommended", "minimal"]),
     default="recommended",
-    help="Claude Code permission tier",
+    help="Claude Code permission tier (only used when harness is 'claude')",
+)
+@click.option(
+    "--harness",
+    "harness_id",
+    default=None,
+    type=click.Choice(available_harnesses()),
+    help="AI coding harness to install skills for (e.g. 'claude'). Prompted if omitted.",
 )
 @click.option(
     "--scratch",
@@ -164,14 +176,15 @@ def init(
     no_git: bool,
     no_venv: bool,
     permissions: str,
+    harness_id: str | None,
     scratch_override: str | None,
 ) -> None:
-    """Scaffold a new ASTRA project with Claude Code integration.
+    """Scaffold a new ASTRA project with agent harness integration.
 
     Delegates the spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
     base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
     lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
-    ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
+    ``.lightcone/`` project state, harness plugin bundle, ``AGENTS.md``,
     and an optional Python venv.
     """
     console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
@@ -184,6 +197,17 @@ def init(
 
     if (directory / "astra.yaml").exists():
         raise click.ClickException(f"{directory}/astra.yaml already exists.")
+
+    # Resolve harness — prompt if not supplied on the command line.
+    if harness_id is None:
+        choices_str = "/".join(available_harnesses())
+        harness_id = click.prompt(
+            f"Which AI coding harness? ({choices_str})",
+            default="claude",
+            type=click.Choice(available_harnesses()),
+            show_choices=False,
+        )
+    harness = resolve_harness(harness_id)
 
     # Spec scaffold: astra.yaml, universes/baseline.yaml, base .gitignore,
     # src/. We hold off on git init until our own files are in place so
@@ -223,13 +247,10 @@ def init(
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
 
-    # Claude Code plugin bundle
+    # Harness plugin bundle + AGENTS.md
     plugin_source = get_plugin_source_dir()
     if plugin_source is not None and plugin_source.exists():
-        _install_claude_plugin(directory, plugin_source, permissions)
-
-    # Project CLAUDE.md (a stub)
-    (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
+        _install_harness(directory, plugin_source, harness, permissions)
 
     # git init last so the initial commit captures every scaffolded file.
     no_git = no_git or (directory / ".git").exists()
@@ -299,12 +320,18 @@ def init(
 
     console.print("\nNext steps:")
     console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
-    console.print("  • Start [cyan]claude[/cyan]")
-    console.print(
-        "  • Run [cyan]/lc-new[/cyan] to scope a new analysis, "
-        "[cyan]/lc-from-code[/cyan] to port existing code, "
-        "or [cyan]/lc-from-paper[/cyan] to reproduce a paper"
-    )
+    if harness.tool_id == "claude":
+        console.print("  • Start [cyan]claude[/cyan]")
+        console.print(
+            "  • Run [cyan]/lc-new[/cyan] to scope a new analysis, "
+            "[cyan]/lc-from-code[/cyan] to port existing code, "
+            "or [cyan]/lc-from-paper[/cyan] to reproduce a paper"
+        )
+    else:
+        console.print(f"  • Start [cyan]{harness.tool_name}[/cyan]")
+        console.print(
+            f"  • Skills are installed in [cyan]{directory / harness.prefix / 'skills'}[/cyan]"
+        )
 
 
 _CONTAINERFILE = """\
@@ -343,7 +370,7 @@ _GITIGNORE_APPEND = """
 results/
 """
 
-_PROJECT_CLAUDE_MD = """# Project Notes for Claude
+_PROJECT_AGENTS_MD = """# AGENTS.md
 
 This is an ASTRA project orchestrated by `lightcone-cli`. It was just
 scaffolded by `lc init` and has not been scoped yet — `astra.yaml` holds
@@ -369,33 +396,67 @@ Outputs land in `results/<universe>/<output_id>/` along with a sidecar
 input hashes, and output hash.
 """
 
+_CLAUDE_MD_SHIM = """# Claude Code — Project Notes
 
-def _install_claude_plugin(
+See [AGENTS.md](AGENTS.md) for the full project documentation.
+"""
+
+
+def _install_harness(
     project_dir: Path,
     plugin_source: Path,
+    harness: HarnessConfig,
     permissions: str,
 ) -> None:
-    """Copy the bundled Claude Code plugin into the project's ``.claude/``.
+    """Install the plugin bundle into the project for *harness*.
 
-    The hook configuration ships with the plugin as ``hooks.json`` so
-    that hook entries live next to the scripts they reference. The CLI
-    only owns the ``--permissions`` tier selection.
+    Skills and agents are harness-neutral and go into ``.<prefix>/``.
+    Hooks, scripts, and settings are Claude-specific and only installed
+    when ``harness.has_hooks`` / ``harness.has_settings`` are set.
+
+    Also writes ``AGENTS.md`` (harness-neutral project doc) and, for the
+    Claude harness, a lightweight ``CLAUDE.md`` shim that points to it.
     """
-    claude_dir = project_dir / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    for sub in ("skills", "agents", "scripts", "guides", "templates"):
+    harness_dir = project_dir / harness.prefix
+    harness_dir.mkdir(exist_ok=True)
+
+    for sub in ("skills", "agents", "guides"):
         src = plugin_source / sub
         if src.exists():
-            dest = claude_dir / sub
+            dest = harness_dir / sub
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(src, dest)
-    hooks = json.loads((plugin_source / "hooks.json").read_text())
-    settings = {
-        "permissions": PERMISSION_TIERS[permissions],
-        "hooks": hooks,
-    }
-    (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
+
+    if harness.has_hooks:
+        for sub in ("scripts", "templates"):
+            src = plugin_source / sub
+            if src.exists():
+                dest = harness_dir / sub
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(src, dest)
+        hooks = json.loads((plugin_source / "hooks.json").read_text())
+    else:
+        hooks = None
+
+    if harness.has_settings and hooks is not None:
+        settings: dict[str, object] = {
+            "permissions": PERMISSION_TIERS[permissions],
+            "hooks": hooks,
+        }
+        (harness_dir / "settings.json").write_text(json.dumps(settings, indent=2))
+
+    # Project documentation: harness-neutral AGENTS.md is always written;
+    # Claude gets a lightweight CLAUDE.md shim that delegates to it.
+    agents_template = plugin_source / "templates" / "AGENTS.md"
+    if agents_template.exists():
+        (project_dir / "AGENTS.md").write_text(agents_template.read_text())
+    else:
+        (project_dir / "AGENTS.md").write_text(_PROJECT_AGENTS_MD)
+
+    if harness.tool_id == "claude":
+        (project_dir / "CLAUDE.md").write_text(_CLAUDE_MD_SHIM)
 
 
 # =============================================================================

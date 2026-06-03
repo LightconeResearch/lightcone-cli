@@ -6,7 +6,7 @@ results, discussion, and appendices, locate the corresponding code
 (`file:line`) or mark `NOT FOUND`. The agent does **not** run any
 code — this is a static reading audit.
 
-Source: [`claude/lightcone/skills/check-sentence-by-sentence/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/check-sentence-by-sentence/SKILL.md).
+Source: [`plugin/lightcone/skills/check-sentence-by-sentence/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/check-sentence-by-sentence/SKILL.md).
 
 Argument hint: `[path to paper source, e.g. work/reference/source/main.tex or work/reference/document.md]`.
 

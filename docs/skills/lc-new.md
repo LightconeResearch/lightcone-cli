@@ -5,13 +5,13 @@ conversation. The output is a complete `astra.yaml` and (optionally) a
 literature evidence trail. Implementation comes later — `/lc-new`
 writes spec, not code.
 
-Source: [`claude/lightcone/skills/lc-new/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/lc-new/SKILL.md).
+Source: [`plugin/lightcone/skills/lc-new/SKILL.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/skills/lc-new/SKILL.md).
 
 ## Allowed tools
 
 ```text
-Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md),
-Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md),
+Read, Write(astra.yaml), Write(universes/*), Write(AGENTS.md),
+Edit(astra.yaml), Edit(universes/*), Edit(AGENTS.md),
 Glob, Grep, Bash(astra:*), Bash(lc:*),
 WebSearch, WebFetch, AskUserQuestion, Agent
 ```
@@ -39,7 +39,7 @@ files. The `lc-extractor` subagent is dispatched via `Agent`.
    --verify-evidence` if quotes exist; `astra universe generate -n
    baseline`. Populate the `narrative:` block (`summary`, `methods`,
    `inputs`, `outputs` — `findings` stays TODO until results exist),
-   then fill the `## Working Notes` section of `CLAUDE.md` with
+   then fill the `## Working Notes` section of `AGENTS.md` with
    conversational context the spec doesn't carry.
 
 Writes happen at the end of each phase, not in bulk — the user always
@@ -48,7 +48,7 @@ has something visible to review.
 ## Hard restrictions (from the SKILL.md)
 
 - Specification agent only. No Python, no R, no implementation code.
-- Touchable files: `astra.yaml`, `universes/*.yaml`, and `CLAUDE.md`
+- Touchable files: `astra.yaml`, `universes/*.yaml`, and `AGENTS.md`
   (Finalize only).
 - Quotes are never fabricated; every evidence entry must pass
   `astra validate --verify-evidence`.
@@ -69,4 +69,4 @@ has something visible to review.
 - After `/lc-new`, ask the agent to implement the spec through the
   normal Claude Code workflow.
 - [`/astra`](index.md#reference-skills-auto-primed-via-session-start) — `astra.yaml` schema, decision criteria, prior insights / findings, universe management.
-- [`claude/lightcone/agents/lc-extractor.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/agents/lc-extractor.md) — the literature extraction subagent definition.
+- [`plugin/lightcone/agents/lc-extractor.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/plugin/lightcone/agents/lc-extractor.md) — the literature extraction subagent definition.
