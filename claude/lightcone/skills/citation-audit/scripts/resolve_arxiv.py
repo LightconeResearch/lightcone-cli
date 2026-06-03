@@ -184,11 +184,11 @@ def resolve_via_crossref(doi: str) -> str | None:
 def resolve_metadata(doi: str) -> dict | None:
     """Return ADS metadata for a DOI, or None if ADS doesn't have it.
 
-    Used for **pre-arXiv confirmation**: a citation with no arXiv eprint
-    (genuinely pre-arXiv — Kaiser 1992, Blandford+91) is verified by
-    confirming the cited paper *is* the right paper via ADS metadata,
-    never by faking a quote. The returned dict carries the fields the
-    report and verifier need to confirm identity:
+    Used by `fetch_sources.py` for the **PDF backend** when a citation has
+    no arXiv eprint (Kaiser 1992, Blandford+91): the `bibcode` keys the ADS
+    link gateway (`.../link_gateway/<bibcode>/ADS_PDF`) to fetch the PDF the
+    verifier reads, and confirms the cited paper's identity. The returned
+    dict carries the fields the report, the gateway, and the verifier need:
 
         {
           "bibcode": "1992ApJ...388..272K",
@@ -259,7 +259,8 @@ def main() -> int:
         action="store_true",
         help=(
             "Instead of resolving an eprint, fetch ADS metadata "
-            "(bibcode/title/authors/year) for pre-arXiv confirmation."
+            "(bibcode/title/authors/year) — the bibcode keys the ADS-gateway "
+            "PDF fetch for papers with no arXiv eprint."
         ),
     )
     args = parser.parse_args()

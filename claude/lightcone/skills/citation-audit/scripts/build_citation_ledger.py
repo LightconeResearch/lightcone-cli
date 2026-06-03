@@ -4,7 +4,8 @@ per-citation-use-site ledger ready for verification.
 
 Reads `work/reference/index.json` plus the `.tex` source under
 `work/reference/source/`, and writes a `ledger.json` whose rows are
-`(citation_key, file, line, claim_sentence, prefix, suffix, doi)` —
+`(citation_key, file, line, claim_sentence, manuscript_prefix,
+manuscript_suffix, doi)` —
 one row per `\\cite{}` use-site.
 
 The orchestrator (the citation-audit skill) fans these rows out to
@@ -78,8 +79,8 @@ class LedgerRow:
     line: int
     cite_command: str  # e.g. "citep" or "citet"
     claim: str  # the manuscript sentence containing the cite
-    prefix: str  # ~80 chars before the claim
-    suffix: str  # ~80 chars after the claim
+    manuscript_prefix: str  # the FULL sentence before the claim (context)
+    manuscript_suffix: str  # the FULL sentence after the claim (context)
     citation_text: str | None  # from index.json (full bib entry text)
     verdict: str | None  # populated by the verifier in later steps
     verdict_notes: str | None  # rationale for non-`supported` verdicts
@@ -123,14 +124,17 @@ def _locate_cite(text: str, citation_key: str) -> "re.Match[str] | None":
 
 
 def extract_claim(tex: str, line: int, citation_key: str) -> tuple[str, str, str, str]:
-    """Return `(claim, prefix, suffix, cite_command)` for `citation_key`'s cite
-    at the given 1-indexed line of the `tex` string.
+    """Return `(claim, manuscript_prefix, manuscript_suffix, cite_command)` for
+    `citation_key`'s cite at the given 1-indexed line of the `tex` string.
 
     Anchors on the specific `\\cite` whose key-list contains `citation_key` —
     NOT merely the first cite on the line — then walks outward to the nearest
-    sentence boundary in either direction. Multi-line claims are returned with
-    internal whitespace collapsed to single spaces; verification needs the
-    textual content, not layout fidelity.
+    sentence boundary in either direction for the claim. `manuscript_prefix`
+    and `manuscript_suffix` are the **full surrounding sentences** (the one
+    before and the one after the claim), captured here so the verifier and the
+    report both get real sentence context, not a char-window snippet. Multi-line
+    spans are returned with internal whitespace collapsed to single spaces;
+    verification needs the textual content, not layout fidelity.
     """
     # offsets[i] = byte position of the start of line (i+1).
     offsets = [0]
@@ -182,12 +186,24 @@ def extract_claim(tex: str, line: int, citation_key: str) -> tuple[str, str, str
     claim = tex[claim_start:claim_end].strip()
     claim = re.sub(r"\s+", " ", claim)
 
-    prefix_raw = tex[max(0, claim_start - _CONTEXT_CHARS) : claim_start]
-    suffix_raw = tex[claim_end : claim_end + _CONTEXT_CHARS]
-    prefix = re.sub(r"\s+", " ", prefix_raw).strip()
-    suffix = re.sub(r"\s+", " ", suffix_raw).strip()
+    # Full previous sentence: the span between the second-to-last and last
+    # boundary before the cite (claim_start sits just after the last one).
+    prev_start = ends_back[-2].end() if len(ends_back) >= 2 else 0
+    manuscript_prefix = re.sub(r"\s+", " ", tex[prev_start:claim_start]).strip()
 
-    return (claim, prefix, suffix, cite_cmd)
+    # Full next sentence: from claim_end to the next boundary after it.
+    tail = tex[claim_end:]
+    nxt_match = _END_RE.search(tail)
+    if nxt_match:
+        nxt_end = claim_end + nxt_match.start()
+        if tail[nxt_match.start()] in ".!?":
+            nxt_end += 1
+        manuscript_suffix = tex[claim_end:nxt_end]
+    else:
+        manuscript_suffix = tail[: 4 * _CONTEXT_CHARS]
+    manuscript_suffix = re.sub(r"\s+", " ", manuscript_suffix).strip()
+
+    return (claim, manuscript_prefix, manuscript_suffix, cite_cmd)
 
 
 def build_ledger(reference_dir: Path, existing: dict[str, LedgerRow]) -> list[LedgerRow]:
@@ -245,8 +261,8 @@ def build_ledger(reference_dir: Path, existing: dict[str, LedgerRow]) -> list[Le
                     line=0,
                     cite_command="",
                     claim="",
-                    prefix="",
-                    suffix="",
+                    manuscript_prefix="",
+                    manuscript_suffix="",
                     citation_text=citation_text,
                     verdict="unverifiable_no_doi",
                     verdict_notes="no DOI resolved and no source location captured",
@@ -258,7 +274,7 @@ def build_ledger(reference_dir: Path, existing: dict[str, LedgerRow]) -> list[Le
             line = loc["line"]
             uid = make_use_id(key, line)
             try:
-                claim, prefix, suffix, cmd = extract_claim(get_tex(fname), line, key)
+                claim, m_prefix, m_suffix, cmd = extract_claim(get_tex(fname), line, key)
             except (FileNotFoundError, IndexError) as exc:
                 rows.append(
                     LedgerRow(
@@ -269,8 +285,8 @@ def build_ledger(reference_dir: Path, existing: dict[str, LedgerRow]) -> list[Le
                         line=line,
                         cite_command="",
                         claim="",
-                        prefix="",
-                        suffix="",
+                        manuscript_prefix="",
+                        manuscript_suffix="",
                         citation_text=citation_text,
                         verdict="extraction_error",
                         verdict_notes=str(exc),
@@ -294,8 +310,8 @@ def build_ledger(reference_dir: Path, existing: dict[str, LedgerRow]) -> list[Le
                     line=line,
                     cite_command=cmd,
                     claim=claim,
-                    prefix=prefix,
-                    suffix=suffix,
+                    manuscript_prefix=m_prefix,
+                    manuscript_suffix=m_suffix,
                     citation_text=citation_text,
                     verdict=verdict,
                     verdict_notes=verdict_notes,

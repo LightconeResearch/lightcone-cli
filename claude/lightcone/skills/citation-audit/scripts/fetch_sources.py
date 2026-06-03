@@ -34,12 +34,18 @@ The resolve chain (per DOI)
   3. With an eprint id: `curl -L https://arxiv.org/e-print/<id>` and
      extract. arXiv "source" can be a gzipped tar, a single gzipped
      `.tex`, or — when the author only submitted a PDF — a PDF. The
-     first two are `source_fetched`; a PDF is `pdf_fallback`.
-  4. No eprint id: the paper is **genuinely pre-arXiv**. Confirm its
-     identity via ADS metadata (`resolve_arxiv.resolve_metadata`) and
-     record `pre_arxiv` — the verifier confirms identity from this
-     metadata and never quote-fakes. If ADS has nothing either, the
-     cite is `unresolvable`.
+     first two are `source_fetched` (`backend: tex`); a PDF is `pdf`
+     (`backend: pdf`, `pdf_source: arxiv`).
+  4. No eprint id: fetch the **PDF from the ADS link gateway by bibcode**
+     (`resolve_arxiv.resolve_metadata` → bibcode → ADS_PDF route) and
+     record `pdf` (`backend: pdf`, `pdf_source: ads`). The verifier
+     anchors English-narrative quotes flagged `substrate: pdf`; the gate
+     re-checks them with a fuzzy/normalized match. If ADS has no bibcode
+     (or the gateway fetch fails), the cite is `unresolvable`. PDF is a
+     fetch **backend**, never a verdict — there is no `pre_arxiv` mode.
+
+A user-pre-placed `papers/<slug>/paper.pdf` is honored as a `pdf` backend
+(for paywalled papers fetched by hand).
 
 All `.tex` files are normalized to UTF-8 on extraction (the Heymans
 1210.0032 trap: ISO-8859-1 with very long single lines — a naive
@@ -49,15 +55,17 @@ about encoding.
 fetch_state.json entry shape
 ----------------------------
     {
-      "status": "source_fetched" | "pre_arxiv" | "pdf_fallback"
-                | "unresolvable",
+      "status": "source_fetched" | "pdf" | "unresolvable",
+      "backend": "tex" | "pdf" | "none",  # the axis the verifier reads
       "arxiv_id": "1210.0032" | null,
-      "resolved_source": "doi" | "ads" | "crossref" | null,
+      "resolved_source": "doi" | "ads" | "crossref" | "arxiv"
+                | "preplaced" | null,
       "source_dir": "<rel path to papers/<slug>/source>" | null,
       "main_tex": "<filename of \\documentclass file>" | null,
       "tex_files": ["a.tex", "sec/b.tex", ...],
-      "pdf_path": "<path>" | null,        # only for pdf_fallback
-      "ads_metadata": {...} | null,        # only for pre_arxiv
+      "pdf_path": "<path>" | null,         # backend: pdf
+      "pdf_source": "arxiv" | "ads" | "preplaced" | null,  # backend: pdf
+      "ads_metadata": {...} | null,        # the ADS-gateway / pre-arXiv path
       "error": "<string>" | null,          # only for unresolvable
       "fetched_at": "<iso8601 utc>"
     }
@@ -83,7 +91,12 @@ import resolve_arxiv  # sibling module
 
 ARXIV_EPRINT_URL = "https://arxiv.org/e-print/{id}"
 ARXIV_PDF_URL = "https://arxiv.org/pdf/{id}"
+# The ADS link gateway resolves a bibcode to the publisher/ADS-hosted PDF. The
+# `ADS_PDF` route is the one that works headless; the publisher direct links
+# (OUP, journal) 403 behind Cloudflare. Used for papers with no arXiv eprint.
+ADS_GATEWAY_PDF_URL = "https://ui.adsabs.harvard.edu/link_gateway/{bibcode}/ADS_PDF"
 HTTP_TIMEOUT = 90
+PDF_RETRIES = 3  # the ADS gateway 504s transiently; retry a couple of times
 
 
 def _now_iso() -> str:
@@ -104,16 +117,27 @@ def _arxiv_id_from_doi(doi: str) -> str | None:
     return None
 
 
-def _curl(url: str, dest: Path) -> bool:
-    """Download `url` to `dest` with curl. Return True on success."""
-    proc = subprocess.run(
-        ["curl", "-sL", "--fail", "-o", str(dest), url],
-        capture_output=True,
-        text=True,
-        timeout=HTTP_TIMEOUT,
-        check=False,
-    )
-    return proc.returncode == 0 and dest.is_file() and dest.stat().st_size > 0
+def _curl(url: str, dest: Path, retries: int = 1) -> bool:
+    """Download `url` to `dest` with curl. Return True on success.
+
+    `retries` > 1 re-attempts on failure (the ADS gateway 504s transiently).
+    A browser-ish User-Agent keeps Cloudflare-fronted hosts from 403-ing.
+    """
+    for attempt in range(1, retries + 1):
+        proc = subprocess.run(
+            [
+                "curl", "-sL", "--fail", "--retry", "2",
+                "-A", "Mozilla/5.0 (lightcone-citation-audit)",
+                "-o", str(dest), url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=HTTP_TIMEOUT,
+            check=False,
+        )
+        if proc.returncode == 0 and dest.is_file() and dest.stat().st_size > 0:
+            return True
+    return False
 
 
 def _normalize_tex_to_utf8(path: Path) -> None:
@@ -194,10 +218,45 @@ def _index_tex(source_dir: Path) -> tuple[list[str], str | None]:
     return rel, main
 
 
+def _entry(**kw: object) -> dict[str, object]:
+    """A fetch_state entry with every key present and a derived `backend`.
+
+    `backend` is the axis the verifier reads: `tex` (arXiv LaTeX source),
+    `pdf` (a fetched PDF — arXiv-PDF-only or ADS-gateway), or `none`
+    (unresolvable). Pass `status` and the relevant fields; the rest default.
+    """
+    status = kw.get("status")
+    backend = {"source_fetched": "tex", "pdf": "pdf"}.get(str(status), "none")
+    base: dict[str, object] = {
+        "status": status,
+        "backend": backend,
+        "arxiv_id": None,
+        "resolved_source": None,
+        "source_dir": None,
+        "main_tex": None,
+        "tex_files": [],
+        "pdf_path": None,
+        "pdf_source": None,   # "arxiv" | "ads" for backend: pdf
+        "ads_metadata": None,
+        "error": None,
+        "fetched_at": _now_iso(),
+    }
+    base.update(kw)
+    return base
+
+
 def fetch_one(doi: str, papers_dir: Path) -> dict[str, object]:
-    """Resolve and fetch the arXiv source for one manuscript DOI."""
+    """Resolve and fetch the cited paper's source for one manuscript DOI.
+
+    One read substrate per paper, chosen mechanically: arXiv LaTeX when an
+    eprint exists (`backend: tex`), otherwise a PDF (`backend: pdf`) — the
+    arXiv PDF when the submission is PDF-only, or the ADS-gateway PDF by
+    bibcode when no eprint exists at all. A user-pre-placed
+    `papers/<slug>/paper.pdf` is honored as a `pdf` backend.
+    """
     slug = _doi_slug(doi)
     source_dir = papers_dir / slug / "source"
+    preplaced_pdf = papers_dir / slug / "paper.pdf"
 
     # 1–2. Determine the eprint id.
     arxiv_id = _arxiv_id_from_doi(doi)
@@ -206,34 +265,28 @@ def fetch_one(doi: str, papers_dir: Path) -> dict[str, object]:
         arxiv_id, src = resolve_arxiv.resolve(doi)
         resolved_source = src if arxiv_id else None
 
-    # 4. No eprint → genuinely pre-arXiv. Confirm identity via ADS.
+    # 4. No eprint → fetch the PDF from the ADS link gateway by bibcode.
+    # ADS metadata gives us the bibcode (and confirms the paper's identity);
+    # the verifier then anchors English-narrative quotes flagged `substrate: pdf`.
     if not arxiv_id:
         meta = resolve_arxiv.resolve_metadata(doi)
-        if meta:
-            return {
-                "status": "pre_arxiv",
-                "arxiv_id": None,
-                "resolved_source": "ads",
-                "source_dir": None,
-                "main_tex": None,
-                "tex_files": [],
-                "pdf_path": None,
-                "ads_metadata": meta,
-                "error": None,
-                "fetched_at": _now_iso(),
-            }
-        return {
-            "status": "unresolvable",
-            "arxiv_id": None,
-            "resolved_source": None,
-            "source_dir": None,
-            "main_tex": None,
-            "tex_files": [],
-            "pdf_path": None,
-            "ads_metadata": None,
-            "error": "no arXiv eprint and no ADS metadata for this DOI",
-            "fetched_at": _now_iso(),
-        }
+        bibcode = (meta or {}).get("bibcode")
+        # Honor a user-pre-placed PDF first.
+        if preplaced_pdf.is_file() and preplaced_pdf.stat().st_size > 0:
+            return _entry(status="pdf", resolved_source="preplaced",
+                          pdf_path=str(preplaced_pdf), pdf_source="preplaced",
+                          ads_metadata=meta)
+        if bibcode:
+            preplaced_pdf.parent.mkdir(parents=True, exist_ok=True)
+            if _curl(ADS_GATEWAY_PDF_URL.format(bibcode=bibcode), preplaced_pdf,
+                     retries=PDF_RETRIES) and preplaced_pdf.read_bytes()[:5].startswith(b"%PDF"):
+                return _entry(status="pdf", resolved_source="ads",
+                              pdf_path=str(preplaced_pdf), pdf_source="ads",
+                              ads_metadata=meta)
+            return _entry(status="unresolvable", resolved_source="ads", ads_metadata=meta,
+                          error=f"no arXiv eprint; ADS-gateway PDF fetch failed for {bibcode}")
+        return _entry(status="unresolvable",
+                      error="no arXiv eprint and no ADS metadata for this DOI")
 
     # 3. Fetch the e-print tarball.
     if source_dir.exists():
@@ -241,79 +294,31 @@ def fetch_one(doi: str, papers_dir: Path) -> dict[str, object]:
     with tempfile.TemporaryDirectory() as tmp:
         blob = Path(tmp) / "eprint"
         if not _curl(ARXIV_EPRINT_URL.format(id=arxiv_id), blob):
-            return {
-                "status": "unresolvable",
-                "arxiv_id": arxiv_id,
-                "resolved_source": resolved_source,
-                "source_dir": None,
-                "main_tex": None,
-                "tex_files": [],
-                "pdf_path": None,
-                "ads_metadata": None,
-                "error": f"arXiv e-print download failed for {arxiv_id}",
-                "fetched_at": _now_iso(),
-            }
+            return _entry(status="unresolvable", arxiv_id=arxiv_id,
+                          resolved_source=resolved_source,
+                          error=f"arXiv e-print download failed for {arxiv_id}")
         kind = _extract_source(blob, source_dir, arxiv_id)
 
     if kind == "pdf":
-        # arXiv has only a PDF for this submission — last-resort fallback.
+        # arXiv has only a PDF for this submission — read it as a pdf backend.
         shutil.rmtree(source_dir, ignore_errors=True)
-        pdf_dir = papers_dir / slug
-        pdf_dir.mkdir(parents=True, exist_ok=True)
-        pdf_path = pdf_dir / "paper.pdf"
-        if not _curl(ARXIV_PDF_URL.format(id=arxiv_id), pdf_path):
-            return {
-                "status": "unresolvable",
-                "arxiv_id": arxiv_id,
-                "resolved_source": resolved_source,
-                "source_dir": None,
-                "main_tex": None,
-                "tex_files": [],
-                "pdf_path": None,
-                "ads_metadata": None,
-                "error": f"arXiv source is PDF-only and PDF download failed ({arxiv_id})",
-                "fetched_at": _now_iso(),
-            }
-        return {
-            "status": "pdf_fallback",
-            "arxiv_id": arxiv_id,
-            "resolved_source": resolved_source,
-            "source_dir": None,
-            "main_tex": None,
-            "tex_files": [],
-            "pdf_path": str(pdf_path),
-            "ads_metadata": None,
-            "error": None,
-            "fetched_at": _now_iso(),
-        }
+        preplaced_pdf.parent.mkdir(parents=True, exist_ok=True)
+        if not _curl(ARXIV_PDF_URL.format(id=arxiv_id), preplaced_pdf):
+            return _entry(status="unresolvable", arxiv_id=arxiv_id,
+                          resolved_source=resolved_source,
+                          error=f"arXiv source is PDF-only and PDF download failed ({arxiv_id})")
+        return _entry(status="pdf", arxiv_id=arxiv_id, resolved_source=resolved_source,
+                      pdf_path=str(preplaced_pdf), pdf_source="arxiv")
 
     tex_files, main_tex = _index_tex(source_dir)
     if not tex_files:
-        return {
-            "status": "unresolvable",
-            "arxiv_id": arxiv_id,
-            "resolved_source": resolved_source,
-            "source_dir": str(source_dir),
-            "main_tex": None,
-            "tex_files": [],
-            "pdf_path": None,
-            "ads_metadata": None,
-            "error": f"source tarball for {arxiv_id} contained no .tex files",
-            "fetched_at": _now_iso(),
-        }
+        return _entry(status="unresolvable", arxiv_id=arxiv_id,
+                      resolved_source=resolved_source, source_dir=str(source_dir),
+                      error=f"source tarball for {arxiv_id} contained no .tex files")
 
-    return {
-        "status": "source_fetched",
-        "arxiv_id": arxiv_id,
-        "resolved_source": resolved_source,
-        "source_dir": str(source_dir),
-        "main_tex": main_tex,
-        "tex_files": tex_files,
-        "pdf_path": None,
-        "ads_metadata": None,
-        "error": None,
-        "fetched_at": _now_iso(),
-    }
+    return _entry(status="source_fetched", arxiv_id=arxiv_id,
+                  resolved_source=resolved_source, source_dir=str(source_dir),
+                  main_tex=main_tex, tex_files=tex_files)
 
 
 def main() -> int:
@@ -398,10 +403,8 @@ def main() -> int:
                 f"✓ source via {result['resolved_source']} "
                 f"({result['arxiv_id']}, {len(result['tex_files'])} .tex)"
             )
-        elif status == "pre_arxiv":
-            print(f"⊘ pre_arxiv (ADS: {(result['ads_metadata'] or {}).get('bibcode')})")
-        elif status == "pdf_fallback":
-            print(f"→ pdf_fallback ({result['arxiv_id']}, source PDF-only)")
+        elif status == "pdf":
+            print(f"→ pdf via {result['pdf_source']} ({result.get('arxiv_id') or (result['ads_metadata'] or {}).get('bibcode')})")
         else:
             print(f"✗ {status} — {result.get('error')}")
         args.state.parent.mkdir(parents=True, exist_ok=True)

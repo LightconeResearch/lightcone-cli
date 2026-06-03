@@ -1,46 +1,31 @@
 #!/usr/bin/env python3
-"""verify_and_downgrade.py — the strict per-quote gate (arXiv source).
+"""verify_and_downgrade.py — the strict per-anchor gate (cited-paper source).
 
-Step 5 of the citation-audit pipeline, run **after** the merge
-(`build_audit_yaml.py`) and **as the blocking gate** — it is what makes
-the skill trustworthy now that verification lives on arXiv source rather
-than PDF.
+Run **after** the verifier fan-out merges into the ledger and **as the blocking
+gate** — it is what makes the skill trustworthy. The verifier's contract demands
+every anchor self-validate via `source_match.py` before it returns; this script
+is the merge-side re-check that no unverified quote slipped through.
 
-The fan-out verifier's contract demands every `supported`/`weak` verdict
-self-validate via `source_match.py` before it returns. This script is the
-orchestrator-side re-check that no unverified quote slipped through: for
-every `supported`/`weak` ledger row, it re-checks the quote against the
-cited paper's arXiv source (the `source_dir` recorded in
-`fetch_state.json`). A quote that fails — `exact` not in source, the
-`prefix`/`suffix` context not contiguous, or a degenerate scrap quote
-(`source_match.is_substantive`) — is **downgraded to `unverifiable`**
-with a diagnostic note, and its quote/location are dropped.
+For every `supported`/`weak` ledger row it re-checks **each anchor** against the
+cited paper's source (the `source_dir` recorded in `fetch_state.json`, keyed by
+DOI), using:
+  - `source_match.quote_in_source` for `substrate: tex` anchors (contiguous
+    prefix+exact+suffix, whitespace-normalized, substance bar);
+  - a whitespace/OCR-tolerant fuzzy match on the PyMuPDF text for
+    `substrate: pdf` anchors (no `.tex` exists for these).
 
-A second pass guards the other face of the reward-hack: an `identity`
-verdict (metadata-confirmed, no quote) whose claim sentence carries a
-measured-value signal is **flagged for human review** (`identity_review_flag`)
-— it likely attributes a proposition and should have been quoted. This is a
-flag, not a downgrade: the claim-bearing/identity triage is a judgment call
-the gate surfaces but does not adjudicate.
+An anchor that fails is dropped. A row is **downgraded to `unverifiable`** (with
+a diagnostic note) **only when every one of its anchors fails** — partial support
+keeps the row (its surviving anchors), since "some facets backed" is the
+verifier's `weak`, not a gate failure.
 
-Why source, not `astra paper verify-quotes`
--------------------------------------------
-The pivot moved quote-finding and verification to arXiv LaTeX source.
-A source-derived quote carries the author's markup (`$S_8=0.776\\pm
-0.017$`, `\\citep{...}`) which the PDF text layer mangles — so
-`astra paper verify-quotes` (PDF-based) and `astra validate
---verify-evidence` (PDF-based) would *reject* a correct source quote.
-This source check supersedes them as the gate. The astra-side PDF path
-is retired from the pipeline; the upstream gaps are filed as
-astra-tools #91 (the PDF cache silently skips the prefix/suffix context
-check on hits) and #92 (a source-aware `verify-evidence` mode). `pdf_fallback` papers
-(arXiv has a PDF but no source — rare) are the one exception: their
-quotes are re-checked against the local PDF text via PyMuPDF, with the
-lossiness flagged in the note.
+There is no `identity` pass: the verdict vocabulary has no `identity` (a cite that
+names a thing anchors the cited paper's self-introducing sentence like any claim),
+so the only thing the gate adjudicates is "does each quote actually appear in the
+source."
 
 After this gate runs, re-run `build_audit_yaml.py` so `astra.yaml`'s
-`prior_insights` reflect the downgrades (downgraded rows no longer carry
-evidence and would otherwise fail structural validation).
+`prior_insights` reflect the downgrades.
 
 Usage:
 
@@ -62,36 +47,34 @@ import source_match
 
 
 def _check_against_pdf(pdf_path: Path, exact: str, prefix: str, suffix: str) -> tuple[bool, str]:
-    """Last-resort: whitespace-normalized substring check on PyMuPDF text.
-
-    Only reached for `pdf_fallback` papers (arXiv source PDF-only). The
-    lossiness is flagged so the report can mark these specially.
-    """
+    """Whitespace/OCR-tolerant substring check on PyMuPDF text, for `pdf` anchors."""
     try:
         import pymupdf  # type: ignore[import-not-found]
     except ImportError:
         try:
             import fitz as pymupdf  # type: ignore[import-not-found, no-redef]
         except ImportError:
-            return False, "pdf_fallback paper but PyMuPDF unavailable to verify"
+            return False, "pdf anchor but PyMuPDF unavailable to verify"
     try:
         doc = pymupdf.open(pdf_path)
         text = source_match._norm(" ".join(page.get_text() for page in doc))
         doc.close()
     except Exception as exc:  # noqa: BLE001
-        return False, f"pdf_fallback text extraction failed: {exc}"
-    ok, reason = source_match.quote_in_source(text, exact, prefix, suffix)
-    return ok, f"[pdf_fallback, lossy] {reason}"
+        return False, f"pdf text extraction failed: {exc}"
+    # PDF anchors are English-narrative; require a normalized contiguous substring
+    # (no substance bar — the narrative sentence is the substance).
+    needle = source_match._norm(f"{prefix} {exact} {suffix}".strip())
+    if source_match._norm(exact) in text:
+        return True, "[pdf, fuzzy] exact present in normalized PDF text"
+    if needle and needle in text:
+        return True, "[pdf, fuzzy] prefix+exact+suffix present in normalized PDF text"
+    return False, "[pdf, fuzzy] quote not found in normalized PDF text"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument(
-        "--ledger", type=Path, default=Path("work/citation-audit/ledger.json")
-    )
-    parser.add_argument(
-        "--state", type=Path, default=Path("work/citation-audit/fetch_state.json")
-    )
+    parser.add_argument("--ledger", type=Path, default=Path("work/citation-audit/ledger.json"))
+    parser.add_argument("--state", type=Path, default=Path("work/citation-audit/fetch_state.json"))
     args = parser.parse_args()
 
     if not args.ledger.exists():
@@ -105,7 +88,6 @@ def main() -> int:
     if args.state.is_file():
         fetch_state = json.loads(args.state.read_text())
 
-    # Cache normalized source per DOI so a heavily-cited paper is read once.
     source_cache: dict[str, str | None] = {}
 
     def source_for(doi: str) -> str | None:
@@ -117,100 +99,75 @@ def main() -> int:
             )
         return source_cache[doi]
 
+    def check_anchor(doi: str, anchor: dict[str, Any]) -> tuple[bool, str]:
+        exact = anchor.get("exact", "")
+        prefix = anchor.get("prefix", "")
+        suffix = anchor.get("suffix", "")
+        if not exact:
+            return False, "empty exact"
+        entry = fetch_state.get(doi) or {}
+        substrate = anchor.get("substrate") or (
+            "pdf" if entry.get("status") in {"pdf", "pdf_fallback"} else "tex"
+        )
+        if substrate == "pdf":
+            pdf_path = entry.get("pdf_path")
+            if not pdf_path:
+                return False, f"pdf anchor but no pdf_path for {doi}"
+            return _check_against_pdf(Path(pdf_path), exact, prefix, suffix)
+        source = source_for(doi)
+        if source is None:
+            return False, f"no source available for {doi} (fetch: {entry.get('status')})"
+        return source_match.quote_in_source(source, exact, prefix, suffix)
+
     checked = 0
+    dropped_anchors = 0
     downgraded = 0
     for row in rows:
         if row.get("verdict") not in {"supported", "weak"}:
             continue
-        quote = row.get("quote") or {}
-        exact = quote.get("exact")
-        if not exact:
-            continue
         doi = row.get("doi")
-        if not doi:
+        anchors = row.get("anchors") or []
+        if not anchors or not doi:
             continue
         checked += 1
-        prefix = quote.get("prefix", "")
-        suffix = quote.get("suffix", "")
-
-        entry = fetch_state.get(doi) or {}
-        status = entry.get("status")
-        if status == "pdf_fallback" and entry.get("pdf_path"):
-            ok, reason = _check_against_pdf(
-                Path(entry["pdf_path"]), exact, prefix, suffix
-            )
-        else:
-            source = source_for(doi)
-            if source is None:
-                ok, reason = False, (
-                    f"no arXiv source available for {doi} "
-                    f"(fetch status: {status}); cannot verify quote"
-                )
+        survivors: list[dict[str, Any]] = []
+        failures: list[str] = []
+        for anchor in anchors:
+            ok, reason = check_anchor(doi, anchor)
+            if ok:
+                survivors.append(anchor)
             else:
-                ok, reason = source_match.quote_in_source(source, exact, prefix, suffix)
+                failures.append(f"{anchor.get('facet', '?')}: {reason}")
+                dropped_anchors += 1
 
-        if not ok:
+        if survivors:
+            row["anchors"] = survivors
+            if failures:  # partial — keep verdict, note the dropped facets
+                note = "strict gate dropped unverifiable anchor(s): " + "; ".join(failures)
+                row["verdict_notes"] = f"{note}\n\n{row.get('verdict_notes') or ''}".strip()
+        else:  # every anchor failed → downgrade
             prior = row["verdict"]
             row["verdict"] = "unverifiable"
-            existing_notes = row.get("verdict_notes") or ""
+            row["anchors"] = []
             row["verdict_notes"] = (
-                f"strict source gate: original verdict `{prior}`, but the quote "
-                f"did not verify against arXiv source — {reason}. The verifier "
-                f"should have caught this in its self-check; this is the "
-                f"orchestrator-side fallback gate.\n\n"
-                f"Original verifier notes:\n{existing_notes}"
+                f"strict source gate: original verdict `{prior}`, but every anchor "
+                f"failed to verify against source — {'; '.join(failures)}. The verifier "
+                f"should have caught this in its self-check; this is the merge-side "
+                f"fallback gate.\n\nOriginal verifier notes:\n{row.get('verdict_notes') or ''}"
             ).strip()
-            row["quote"] = None
-            row["location"] = None
-            print(f"  ✗ {row['use_id']:<45} {prior:>10} → unverifiable ({reason[:70]})")
+            print(f"  ✗ {row['use_id']:<45} {prior:>10} → unverifiable ({'; '.join(failures)[:70]})")
             downgraded += 1
-
-    # Second pass: catch the *other* face of the reward-hack. Introducing the
-    # `identity` verdict (metadata-confirmed, no quote) creates an escape
-    # hatch — a verifier could mislabel a claim-bearing cite as `identity` to
-    # dodge the quote. We can't adjudicate the triage mechanically, but we can
-    # flag the loud cases: an `identity` row whose claim sentence carries a
-    # measured-value signal (a decimal, `\pm`, a σ significance) almost
-    # certainly attributes a proposition and should have been quoted. Flag for
-    # human review (not a downgrade — the triage is a judgment call).
-    flagged = 0
-    for row in rows:
-        if row.get("verdict") != "identity":
-            continue
-        if source_match._QUANT.search(row.get("claim") or ""):
-            row["identity_review_flag"] = True
-            note = (
-                "identity review flag: this cite was called identity/exemplar, "
-                "but its claim sentence carries a measured-value signal — it "
-                "likely attributes a proposition and should carry a substantive "
-                "quote. Confirm the triage."
-            )
-            existing = row.get("verdict_notes") or ""
-            row["verdict_notes"] = f"{note}\n\n{existing}".strip()
-            print(f"  ⚠ {row['use_id']:<45} {'identity':>10} → review (quantitative claim)")
-            flagged += 1
-        elif row.get("identity_review_flag"):
-            # Stale flag from a prior run whose claim no longer trips; clear it.
-            row.pop("identity_review_flag", None)
 
     counts = Counter(r.get("verdict") or "pending" for r in rows)
     ledger.setdefault("summary", {})["verdicts"] = dict(counts)
     args.ledger.write_text(json.dumps(ledger, indent=2, ensure_ascii=False) + "\n")
 
     print(
-        f"\nchecked {checked} supported/weak rows against arXiv source; "
-        f"downgraded {downgraded} that failed."
+        f"\nchecked {checked} supported/weak rows; dropped {dropped_anchors} failed anchor(s); "
+        f"downgraded {downgraded} row(s) whose every anchor failed."
     )
-    if flagged:
-        print(
-            f"flagged {flagged} identity/exemplar row(s) whose claim looks "
-            f"quantitative — review whether they should be claim-bearing."
-        )
     if downgraded:
-        print(
-            "Now re-run build_audit_yaml.py to drop the downgraded entries from "
-            "astra.yaml's prior_insights (they no longer carry evidence)."
-        )
+        print("Now re-run build_audit_yaml.py to drop downgraded entries from astra.yaml.")
     return 0
 
 
