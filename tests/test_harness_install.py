@@ -115,3 +115,21 @@ def test_unknown_harness_rejected(runner: CliRunner, tmp_path: Path) -> None:
         main, ["init", str(project), "--no-git", "--no-venv", "--harness", "nonexistent"]
     )
     assert result.exit_code != 0
+
+
+def test_agents_md_written_even_when_plugin_source_absent(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AGENTS.md and CLAUDE.md must be written even if the plugin bundle is missing."""
+    from lightcone.cli import plugin as plugin_mod
+
+    monkeypatch.setattr(plugin_mod, "get_plugin_source_dir", lambda: None)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--harness", "claude"]
+    )
+    assert result.exit_code == 0, result.output
+    assert (project / "AGENTS.md").exists()
+    assert (project / "CLAUDE.md").exists()
+    assert "AGENTS.md" in (project / "CLAUDE.md").read_text()

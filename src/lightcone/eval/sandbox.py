@@ -191,7 +191,7 @@ class EvalSandbox:
         # overlay, so the seed commit captures the task files too.
         result = self.exec(
             f"mkdir -p {self.WORK_DIR}"
-            f" && lc init {self.WORK_DIR} --no-git --no-venv",
+            f" && lc init {self.WORK_DIR} --no-git --no-venv --harness claude",
             timeout=120,
         )
         if result.exit_code != 0:

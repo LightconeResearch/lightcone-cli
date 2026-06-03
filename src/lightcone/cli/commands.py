@@ -247,10 +247,18 @@ def init(
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
 
-    # Harness plugin bundle + AGENTS.md
+    # Harness plugin bundle (skills, agents, hooks, settings).
     plugin_source = get_plugin_source_dir()
     if plugin_source is not None and plugin_source.exists():
         _install_harness(directory, plugin_source, harness, permissions)
+
+    # Project documentation — always written; _install_harness may already have
+    # done this from the bundled template, but if plugin_source was absent we
+    # fall back to the inline constants so the project is never left without docs.
+    if not (directory / "AGENTS.md").exists():
+        (directory / "AGENTS.md").write_text(_PROJECT_AGENTS_MD)
+    if harness.tool_id == "claude" and not (directory / "CLAUDE.md").exists():
+        (directory / "CLAUDE.md").write_text(_CLAUDE_MD_SHIM)
 
     # git init last so the initial commit captures every scaffolded file.
     no_git = no_git or (directory / ".git").exists()
@@ -440,11 +448,10 @@ def _install_harness(
     else:
         hooks = None
 
-    if harness.has_settings and hooks is not None:
-        settings: dict[str, object] = {
-            "permissions": PERMISSION_TIERS[permissions],
-            "hooks": hooks,
-        }
+    if harness.has_settings:
+        settings: dict[str, object] = {"permissions": PERMISSION_TIERS[permissions]}
+        if hooks is not None:
+            settings["hooks"] = hooks
         (harness_dir / "settings.json").write_text(json.dumps(settings, indent=2))
 
     # Project documentation: harness-neutral AGENTS.md is always written;

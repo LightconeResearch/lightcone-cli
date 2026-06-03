@@ -190,7 +190,12 @@ Open both templates side-by-side:
 
 4. **When the user approves:**
    - `git init` the workdir if it isn't one already (per SKILL.md's *Setup: git-tracked workdir* discipline).
-   - Commit `constitution.md` + `AGENTS.md` + the full `work/reference/` substrate (paper + code, when code present) as the first commit. A single commit captures the full ORIENT deliverable.
+   - If running inside Claude Code, write a one-line `CLAUDE.md` shim in the workdir root that delegates to `AGENTS.md`:
+     ```
+     # Claude Code — Reproduction Notes\n\nSee [AGENTS.md](AGENTS.md) for the full reproduction documentation.
+     ```
+     This ensures Claude Code's walk-up auto-load picks up the reproduction context for every iteration.
+   - Commit `constitution.md` + `AGENTS.md` + `CLAUDE.md` (when written) + the full `work/reference/` substrate (paper + code, when code present) as the first commit. A single commit captures the full ORIENT deliverable.
    - The `work/reference/code/` clone itself can be `.gitignore`d for large monorepos; `code-index.md` is what downstream iterations actually consult. The clone is reproducible from `code-status.yaml`'s URL.
    - Launch the ralph loop per SKILL.md's *Launching the loop* section.
 
