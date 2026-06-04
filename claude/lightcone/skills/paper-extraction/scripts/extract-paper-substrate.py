@@ -1128,8 +1128,11 @@ class DOIResolver:
         if not candidate_doi:
             return None, "unresolved"
         # Title-similarity gate: drop noisy hits where the top result clearly isn't
-        # the paper we asked about.
-        if candidate_titles and _title_similarity(title, candidate_titles[0]) < 0.55:
+        # the paper we asked about. A bare-title match with no author corroboration
+        # is exactly how phantom DOIs slipped in, so require both.
+        if not candidate_titles or _title_similarity(title, candidate_titles[0]) < TITLE_MATCH_MIN:
+            return None, "unresolved"
+        if not _author_matches(first_author, top.get("author")):
             return None, "unresolved"
         return self._normalize_doi(candidate_doi), "crossref"
 
@@ -1139,7 +1142,7 @@ class DOIResolver:
         q = f'title:"{title}"'
         if first_author:
             q += f' author:"{first_author}"'
-        params = {"q": q, "fl": "doi,title", "rows": "1"}
+        params = {"q": q, "fl": "doi,title,author", "rows": "1"}
         url = f"{ADS_API}?{urllib.parse.urlencode(params)}"
         try:
             data = self._http_get_json(
@@ -1151,8 +1154,17 @@ class DOIResolver:
         docs = ((data or {}).get("response", {}) or {}).get("docs", []) or []
         if not docs:
             return None, "unresolved"
-        doi_list = docs[0].get("doi") or []
+        doc = docs[0]
+        doi_list = doc.get("doi") or []
         if not doi_list:
+            return None, "unresolved"
+        # ADS's quoted title/author query is fuzzy too — apply the same
+        # title-similarity + first-author gate the Crossref path uses, so the
+        # ADS fallback can't reintroduce a wrong DOI.
+        candidate_titles = doc.get("title") or []
+        if not candidate_titles or _title_similarity(title, candidate_titles[0]) < TITLE_MATCH_MIN:
+            return None, "unresolved"
+        if not _author_matches(first_author, doc.get("author")):
             return None, "unresolved"
         return self._normalize_doi(doi_list[0]), "ads"
 
@@ -1182,6 +1194,93 @@ def _title_similarity(a: str, b: str) -> float:
     if not a_norm or not b_norm:
         return 0.0
     return SequenceMatcher(None, a_norm, b_norm).ratio()
+
+
+# Minimum title-similarity for a fuzzy DOI match to be accepted. Raised from a
+# historical 0.55 (too permissive — it let a 1978 DOE report whose subtitle was
+# "[Two-point correlation functions]" match a "TreeCorr: Two-point correlation
+# functions" software entry) to 0.80, paired with a first-author check. A miss
+# is cheaper than a wrong DOI: an unresolved entry is flagged for human review;
+# a wrong DOI silently points evidence verification at the wrong paper.
+TITLE_MATCH_MIN = 0.80
+
+# Markers that a bibliography entry is not yet published — there is no DOI to
+# find, so fuzzy title resolution can only produce a false positive.
+_IN_PREP_RE = re.compile(
+    r"\b(in[\s_-]*prep(?:aration)?|submitted|to[\s_-]+appear|in[\s_-]+press|forthcoming)\b",
+    re.IGNORECASE,
+)
+
+
+def classify_unresolvable(fields: dict[str, str]) -> str | None:
+    """Return a non-resolvable status tag for a parsed `.bib` entry, or None.
+
+    Entries that carry a real DOI or arXiv eprint are always resolvable (None).
+    Otherwise we refuse to fuzzy-resolve, and flag for human review, when:
+
+      - 'software_ascl'       — an ASCL software record (archivePrefix=ascl or an
+                                `ascl:` eprint). Software cites verify by existence
+                                (ASCL id / bibcode), not a journal DOI.
+      - 'in_preparation'      — journal/note marks it unpublished (in prep,
+                                submitted, to appear, in press, forthcoming).
+      - 'no_publication_info' — no doi, no eprint, and no journal/booktitle at all,
+                                so we can't even form a trustworthy query.
+
+    Priority: a missed resolution (doi=None, flagged) is strictly preferable to a
+    fabricated one. Traceability over coverage.
+    """
+    if fields.get("doi"):
+        return None
+    archive = (fields.get("archiveprefix") or "").strip().lower()
+    eprint = (fields.get("eprint") or "").strip()
+    if archive == "ascl" or eprint.lower().startswith("ascl:"):
+        return "software_ascl"
+    # A genuine arXiv eprint (YYMM.NNNNN or old archive/NNNNNNN) is resolvable.
+    if eprint and re.match(
+        r"^(?:\d{4}\.\d{4,5}|[a-z\-]+/\d{7})(?:v\d+)?$", eprint, re.IGNORECASE
+    ):
+        return None
+    blob = " ".join(
+        v
+        for v in (fields.get("journal"), fields.get("note"), fields.get("howpublished"))
+        if v
+    )
+    if _IN_PREP_RE.search(blob):
+        return "in_preparation"
+    if not (fields.get("journal") or fields.get("booktitle") or fields.get("howpublished")):
+        return "no_publication_info"
+    return None
+
+
+def _candidate_surname(author_entry) -> str:
+    """First-author surname from a Crossref author dict or an ADS/bib author string."""
+    if isinstance(author_entry, dict):
+        return (author_entry.get("family") or "").strip().lower()
+    if isinstance(author_entry, str):
+        # ADS / BibTeX comma form "Last, First"; else take the whole token.
+        head = author_entry.split(",")[0].strip()
+        return (head or author_entry).strip().lower()
+    return ""
+
+
+def _author_matches(surname: str, candidate_authors) -> bool:
+    """True if `surname` plausibly matches the candidate's first-author family name.
+
+    Conservative on missing metadata: if no candidate author can be extracted we
+    return True and lean on the title gate. We only *block* on a positive
+    mismatch — two real surnames that don't overlap.
+    """
+    if not surname:
+        return True
+    fam = ""
+    if isinstance(candidate_authors, list) and candidate_authors:
+        fam = _candidate_surname(candidate_authors[0])
+    elif isinstance(candidate_authors, str):
+        fam = _candidate_surname(candidate_authors)
+    if not fam:
+        return True
+    s = surname.strip().lower()
+    return s in fam or fam in s
 
 
 # ---------------------------------------------------------------------------
@@ -1224,6 +1323,7 @@ def resolve_bibliography(
                 "title": _clean_bib_text(fields.get("title", "")).strip(),
                 "first_author": _first_author_from_bib_field(fields.get("author", "")).split(",")[0],
                 "source": "bib",
+                "unresolvable": classify_unresolvable(fields),
             }
 
     if bbl_path and bbl_path.is_file() and not bib_entries:
@@ -1282,18 +1382,35 @@ def resolve_bibliography(
             )
             enriched[key] = {"locations": locations, "citation": None, "doi": None}
             continue
+        status = entry.get("unresolvable")
+        if status:
+            # No DOI exists (in-prep / software / no publication info). Refuse to
+            # fuzzy-resolve — that is exactly how a wrong DOI gets attached. Leave
+            # doi=null and surface for human attention.
+            warnings.append(
+                f"citation {key}: NO DOI — {status.replace('_', ' ')}; left unresolved for "
+                f"human review (not fuzzy-matched). [{(entry['citation'] or '')[:70]}]"
+            )
+            enriched[key] = {
+                "locations": locations,
+                "citation": entry["citation"],
+                "doi": None,
+                "needs_human": status,
+            }
+            continue
         doi, _source = resolver.resolve(
             entry["title"], entry["first_author"], entry["doi_hint"], entry["arxiv_hint"]
         )
         if doi is None:
             warnings.append(
                 f"citation {key}: could not resolve DOI; tried doi-field, eprint-field, "
-                f"Crossref{', ADS' if resolver.ads_key else ''}"
+                f"Crossref{', ADS' if resolver.ads_key else ''}. Flagged for human review."
             )
         enriched[key] = {
             "locations": locations,
             "citation": entry["citation"],
             "doi": doi,
+            **({} if doi else {"needs_human": "unresolved"}),
         }
 
     # Path B: every parsed entry lands in the citations block with empty locations.
