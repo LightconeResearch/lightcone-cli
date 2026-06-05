@@ -43,9 +43,12 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 
 _WS = re.compile(r"\s+")
+_PDF_PUNCT = re.compile(r"[^a-z0-9]+")
 
 # Substance bar for `exact` (degenerate-quote rejection).
 _MIN_WORDS = 5
@@ -69,6 +72,46 @@ _QUANT = re.compile(
 def _norm(s: str) -> str:
     """Collapse all whitespace to single spaces and strip."""
     return _WS.sub(" ", s).strip()
+
+
+def norm_pdf(s: str) -> str:
+    """Aggressive normalization for matching against PDF-extracted text.
+
+    PDF text (and worse, OCR of an image scan) loses LaTeX markup and gains
+    ligatures, de-hyphenation breaks, and symbol mis-reads (a Greek µ extracted
+    as ``fi``). The contiguous `.tex`-grade check is far too strict here, so we
+    NFKD-fold ligatures to ASCII, lowercase, join words split across a hyphenated
+    line break, and strip all punctuation/math to spaces — leaving an
+    alphanumeric word-stream to fuzzy-match against."""
+    s = unicodedata.normalize("NFKD", s).lower()
+    s = re.sub(r"-\s+", "", s)          # de-hyphenate line breaks: "de- blended" -> "deblended"
+    s = _PDF_PUNCT.sub(" ", s)          # punctuation/math -> spaces
+    return _WS.sub(" ", s).strip()
+
+
+def partial_ratio(needle: str, haystack: str) -> float:
+    """Best contiguous-window similarity of `needle` within `haystack`, in [0, 1].
+
+    ORDER-SENSITIVE — unlike token-set overlap, a quote whose words are scattered
+    across the document (not present as a contiguous span) scores low. This is the
+    property that keeps the fuzzy PDF path trustworthy: on the bench, true quotes
+    against clean text PDFs score ~0.9 while topically-related fabrications sit
+    ~0.5. Both arguments should already be `norm_pdf`'d. Slides a quote-length
+    window across the haystack and returns the max `SequenceMatcher` ratio."""
+    if not needle:
+        return 0.0
+    lq = len(needle)
+    if len(haystack) <= lq:
+        return SequenceMatcher(None, needle, haystack).ratio()
+    best = 0.0
+    step = max(1, lq // 8)
+    for i in range(0, len(haystack) - lq + 1, step):
+        r = SequenceMatcher(None, needle, haystack[i : i + lq]).ratio()
+        if r > best:
+            best = r
+            if best >= 0.99:
+                break
+    return best
 
 
 def is_substantive(exact: str) -> tuple[bool, str]:

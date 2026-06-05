@@ -263,10 +263,21 @@ judges; here the "vote" is the **deterministic** `source_match.py` gate — a
 quote either appears contiguously in the source (whitespace-normalized, and
 clearing a substance bar) or it doesn't. For every `supported`/`weak` row,
 `verify_and_downgrade.py` re-checks each anchor; a `.tex` anchor must match
-contiguously, a `pdf` anchor by fuzzy/normalized match. An anchor that fails
-is dropped; a row whose **every** anchor fails is downgraded to
-`unverifiable`. This is stronger than a model judge and never a model judge.
-It is what makes the verdict trustworthy.
+contiguously, a `pdf` anchor by an order-sensitive fuzzy `partial_ratio`
+(≥ 0.80) over the extracted text. An anchor that fails is dropped; a row whose
+**every** anchor fails is downgraded to `unverifiable`. This is stronger than a
+model judge and never a model judge. It is what makes the verdict trustworthy.
+
+**PDF tools — ask the user to install if missing.** The gate reads `pdf`-backend
+papers with **PyMuPDF** (`pip install pymupdf`), OCR-ing image pages via
+**Tesseract** (`brew install tesseract`) — pre-arXiv papers (Bertin 1996,
+Landy-Szalay 1993, …) are very often image scans, and without OCR the gate sees
+~200 chars and can't confirm anything. If `verify_and_downgrade.py` prints the
+`⚠ PDF tools missing` banner, **ask the user to install them** (don't leave pdf
+cites silently `unverifiable`). Even with OCR, an image scan's text is noisy:
+a genuine quote may fall below the fuzzy bar and be reported honestly as
+"source is an image scan … gate cannot deterministically confirm" — a tooling
+limit, distinct from a quote that isn't there.
 
 `astra validate astra.yaml` (without `--verify-evidence`) runs for
 **structural** schema validation of the materialized insights; the source gate
