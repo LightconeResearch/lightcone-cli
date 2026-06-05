@@ -18,11 +18,18 @@ Matching model
 Both the source (all `.tex` concatenated) and the candidate string are
 **whitespace-normalized** (every run of whitespace → one space). LaTeX
 line-wrapping, indentation, and the `\\input` split across files all
-collapse away. The check is then a plain substring test:
+collapse away. The check is then a plain substring test, with the
+W3C TextQuoteSelector roles respected — `exact` is the evidence,
+`prefix`/`suffix` only disambiguate *which occurrence*:
 
-  - if prefix/suffix are given → require `prefix exact suffix`
-    contiguous (the strong check; trustworthy against clean source);
-  - else → require `exact` alone.
+  - `exact` present **uniquely** → verified (context is redundant);
+  - `exact` **repeats** → require `prefix`/`suffix` to pin one occurrence;
+  - `exact` absent → not found.
+
+Demanding `prefix exact suffix` contiguous even for a unique quote was too
+brittle: a `\\footnotemark[1]`, a `\\citep{...}`, or a comment boundary in
+the cited author's source sits between the quote and the verifier's
+approximate context without weakening the quote itself.
 
 Before the substring check, `exact` must clear a **substance bar**
 (`is_substantive`): a quote either carries a measured-value signal (a
@@ -163,7 +170,16 @@ def quote_in_source(
     """Check a quote against normalized `source`. Return (ok, reason).
 
     `source` must already be normalized via `_norm`/`load_source`.
-    """
+
+    Verification model (W3C TextQuoteSelector): `exact` is the evidence;
+    `prefix`/`suffix` exist only to **disambiguate which occurrence** when `exact`
+    is ambiguous. So a substantive `exact` that appears **uniquely** and verbatim
+    in the source is verified on its own — the surrounding context is redundant,
+    and demanding it match contiguously is brittle (the cited author's `.tex` may
+    have a `\\footnotemark[1]`, a `\\citep{...}`, or a comment boundary sitting
+    between the quote and the verifier's approximate context, none of which weaken
+    the quote). Prefix/suffix become a gate only when `exact` repeats — then we
+    need them to pin the right occurrence."""
     exact_n = _norm(exact)
     if not exact_n:
         return False, "empty exact quote"
@@ -174,21 +190,27 @@ def quote_in_source(
     if not ok_sub:
         return False, reason_sub
 
+    occurrences = source.count(exact_n)
+    if occurrences == 0:
+        return False, "exact quote not found in source"
+    if occurrences == 1:
+        # Unique + substantive + verbatim → unambiguous. Context not needed.
+        return True, "verified (substantive exact appears verbatim and uniquely in source)"
+
+    # `exact` repeats — use prefix/suffix to pin the occurrence the verifier meant.
     prefix_n = _norm(prefix) if prefix else ""
     suffix_n = _norm(suffix) if suffix else ""
-
+    if prefix_n and _norm(f"{prefix_n} {exact_n}") in source:
+        return True, f"verified (exact appears {occurrences}×; prefix pins the occurrence)"
+    if suffix_n and _norm(f"{exact_n} {suffix_n}") in source:
+        return True, f"verified (exact appears {occurrences}×; suffix pins the occurrence)"
     if prefix_n or suffix_n:
-        contiguous = _norm(f"{prefix_n} {exact_n} {suffix_n}")
-        if contiguous in source:
-            return True, "verified (prefix+exact+suffix contiguous in source)"
-        # Distinguish the failure: is `exact` itself present at all?
-        if exact_n in source:
-            return False, "exact present but prefix/suffix context does not match source"
-        return False, "exact quote not found in source"
-
-    if exact_n in source:
-        return True, "verified (exact found in source; no context provided)"
-    return False, "exact quote not found in source"
+        return False, (
+            f"exact appears {occurrences}× and neither prefix nor suffix matches an "
+            f"occurrence — cannot pin which the claim relies on"
+        )
+    # Repeats, but no context given: the statement is demonstrably in the paper.
+    return True, f"verified (substantive exact appears verbatim in source, {occurrences}×; no context to pin)"
 
 
 def main() -> int:
