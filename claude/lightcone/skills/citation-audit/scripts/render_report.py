@@ -134,19 +134,59 @@ def _unit(u: str) -> str:
     return u.replace(r"\square\deg", "deg²").replace(r"\deg", "deg").replace(r"\square", "").strip()
 
 
-def latex_clean(s: str, keep_citet: bool = True) -> str:
+# Any natbib cite command: \citep \citet \citealt \citealp \citeauthor \cite … ,
+# with an optional `*`, 0–2 optional `[pre][post]` note groups, and a comma-list
+# of keys. Citations name *what is cited*; the citing sentence must show them.
+_CITE_CMD = re.compile(r"\\(cite[a-zA-Z]*)\*?((?:\[[^\]]*\])*)\{([^}]*)\}")
+_CITE_TEXTUAL = ("citet", "citealt", "citeauthor", "citetalias")  # rendered inline, no parens
+
+
+def _stash_citations(s: str, highlight: str | None, sink: list[str]) -> str:
+    """Replace each cite command with an indexed sentinel, pushing pre-built HTML
+    into `sink`. The \\citep family renders parenthetically, the \\citet family
+    inline; every key becomes an author-year, and the audited key (`highlight`) is
+    marked so each card visibly declares which cite it audits. natbib note
+    semantics: one bracket = post-note, two = [pre][post]."""
+    def repl(m: "re.Match[str]") -> str:
+        cmd = m.group(1).lower()
+        brackets = re.findall(r"\[([^\]]*)\]", m.group(2) or "")
+        pre = brackets[0].strip() if len(brackets) >= 2 else ""
+        post = (brackets[1] if len(brackets) >= 2 else brackets[0]).strip() if brackets else ""
+        keys = [k.strip() for k in m.group(3).split(",") if k.strip()]
+
+        def name(k: str) -> str:
+            ay = html.escape(author_year(k))
+            return f"<mark class='auditcite'>{ay}</mark>" if highlight and k == highlight else ay
+
+        body = ", ".join(name(k) for k in keys)
+        pre_s = f"{html.escape(pre)} " if pre else ""
+        post_s = f", {html.escape(post)}" if post else ""
+        inner = f"{pre_s}{body}{post_s}"
+        if not any(cmd.startswith(t) for t in _CITE_TEXTUAL):
+            inner = f"({inner})"
+        idx = len(sink)
+        sink.append(f"<span class='cit'>{inner}</span>")
+        return f"§§H§§{idx}§§/H§§"
+
+    return _CITE_CMD.sub(repl, s)
+
+
+def latex_clean(s: str, keep_citet: bool = True, highlight: str | None = None) -> str:
     """Render a LaTeX prose fragment to safe display HTML.
 
-    Resolves \\citet to author-year, drops \\citep, lifts \\texttt to <code>,
-    and converts inline math to unicode super/subscripts. Lossy by design —
-    this is for human reading, not re-verification.
+    Renders every natbib cite to visible author-year (parenthetical for the
+    \\citep family, inline for \\citet), highlighting the audited key so the
+    citing sentence shows *what is cited* — never silently dropped. Lifts
+    \\texttt to <code> and converts inline math to unicode super/subscripts.
+    Lossy by design — this is for human reading, not re-verification.
+    `keep_citet=False` (titles, notes) strips cites instead.
     """
     if not s:
         return ""
+    cite_html: list[str] = []
     if keep_citet:
-        s = re.sub(r"\\cite[a-z]*t\{([^}]*)\}", lambda m: author_year(m.group(1).split(",")[0]), s)
-        s = re.sub(r"\\citealt\{([^}]*)\}", lambda m: author_year(m.group(1).split(",")[0]), s)
-    s = re.sub(r"\\cite[a-z]*\{[^}]*\}", "", s)
+        s = _stash_citations(s, highlight, cite_html)
+    s = re.sub(r"\\cite[a-zA-Z]*\*?(?:\[[^\]]*\])*\{[^}]*\}", "", s)  # drop any leftover / keep_citet=False
     s = re.sub(r"\\(cref|ref|label|eqref)\{[^}]*\}", "", s)
     s = re.sub(r"\\paper[a-z]*\{?\}?", "", s)
     s = re.sub(r"\\texttt\{([^}]*)\}", r"⟦\1⟧", s)
@@ -175,9 +215,11 @@ def latex_clean(s: str, keep_citet: bool = True) -> str:
     s = re.sub(r"\s+([.,;])", r"\1", s)
     s = re.sub(r"\s+", " ", s).strip()
     out = []
-    for t in re.split(r"(§§M§§.*?§§/M§§|⟦[^⟧]*⟧)", s):
+    for t in re.split(r"(§§M§§.*?§§/M§§|⟦[^⟧]*⟧|§§H§§\d+§§/H§§)", s):
         if t.startswith("§§M§§"):
             out.append(f"<span class='m'>{html.escape(t[5:-6])}</span>")
+        elif t.startswith("§§H§§"):
+            out.append(cite_html[int(t[5:-6])])  # pre-built, already-safe citation HTML
         elif t.startswith("⟦"):
             out.append(f"<code>{html.escape(t[1:-1])}</code>")
         else:
@@ -229,9 +271,9 @@ def _entry_html(row: dict[str, Any], app_index: int) -> str:
     line = row.get("line", "?")
     anchors = _anchors(row)
 
-    cur = latex_clean(row.get("claim") or "")
-    prev = latex_clean(row.get("manuscript_prefix") or "")
-    nxt = latex_clean(row.get("manuscript_suffix") or "")
+    cur = latex_clean(row.get("claim") or "", highlight=ck)
+    prev = latex_clean(row.get("manuscript_prefix") or "", highlight=ck)
+    nxt = latex_clean(row.get("manuscript_suffix") or "", highlight=ck)
 
     facets = []
     lede_html = ""  # first supporting quote, shown collapsed so the evidence is visible up front
@@ -361,6 +403,8 @@ h1{font-family:var(--display);font-weight:500;font-size:46px;line-height:1.04;le
 .flag{margin-bottom:12px;font-size:16px;background:rgba(188,69,56,.1);border-radius:5px;padding:11px 14px;color:var(--cinnabar)}
 .flag::before{content:'resolver flag';display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px}
 .m{font-variant-numeric:tabular-nums}
+.cit{color:var(--muted);font-size:.92em}
+mark.auditcite{background:rgba(188,69,56,.13);color:var(--cinnabar);font-weight:600;padding:0 2px;border-radius:2px}
 code{font-family:var(--mono);font-size:.82em;background:rgba(185,132,43,.15);padding:1px 4px;border-radius:2px}
 """
 

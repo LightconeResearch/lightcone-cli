@@ -130,3 +130,52 @@ def test_author_year_concatenated_keys():
 
 def test_author_year_dotted_keys_unchanged():
     assert rr.author_year("asgari.etal19a") == "Asgari et al. 2019"
+
+
+# --- citations stay visible in the citing sentence -------------------------
+
+
+def test_citep_is_rendered_not_dropped():
+    # The regression: \citep{} was silently dropped, so the reader could not tell
+    # what was being cited. It must now render parenthetically.
+    out = rr.latex_clean(r"a signal may exist \citep{Chisari15,Kraljic2020}.")
+    assert "Chisari 2015" in out
+    assert "Kraljic 2020" in out
+    assert "(" in out and ")" in out  # parenthetical form
+
+
+def test_citet_renders_all_keys_not_just_first():
+    # \citet{A,B} previously kept only the first key.
+    out = rr.latex_clean(r"following \citet{Heymans2012,HervasPeters2024}.")
+    assert "Heymans 2012" in out
+    assert "Hervas-Peters 2024" in out
+
+
+def test_audited_cite_is_highlighted():
+    out = rr.latex_clean(r"as defined in \citet{Heymans2012}.", highlight="Heymans2012")
+    assert "<mark class='auditcite'>Heymans 2012</mark>" in out
+    # a non-audited sibling is rendered but not highlighted
+    out2 = rr.latex_clean(r"\citep{Chisari15,Kraljic2020}", highlight="Kraljic2020")
+    assert "<mark class='auditcite'>Kraljic 2020</mark>" in out2
+    assert "Chisari 2015" in out2 and "<mark class='auditcite'>Chisari" not in out2
+
+
+def test_citep_optional_prenote_preserved():
+    # \citep[DES;][]{...} — the survey prenote carries meaning; keep it.
+    out = rr.latex_clean(r"the survey \citep[DES;][]{DES21,Amon21}.")
+    assert "DES;" in out
+    assert "Amon 2021" in out
+
+
+def test_citet_inline_citep_parenthetical():
+    inline = rr.latex_clean(r"\citet{Gwyn2008} showed")
+    assert "(" not in inline  # textual form has no parentheses
+    paren = rr.latex_clean(r"\citep{Gwyn2008}")
+    assert paren.strip().startswith("<span class='cit'>(")
+
+
+def test_keep_citet_false_strips_citations():
+    # Notes / titles drop cites entirely.
+    out = rr.latex_clean(r"see \citet{Heymans2012} for details", keep_citet=False)
+    assert "Heymans" not in out
+    assert "mark" not in out

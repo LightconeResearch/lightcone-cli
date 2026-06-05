@@ -311,6 +311,16 @@ header carries the manuscript title and a one-line health summary. The HTML is
 self-contained (Google-Fonts `<link>`s with serif fallback) — phone-renderable
 via `SendUserFile`.
 
+**The citing sentence must show its citations.** A cite is hard to judge if you
+can't see *which* reference the sentence points at — especially in a multi-cite
+sentence (`\citep{A,B,Kraljic2020}`) where only one key is the card's subject.
+`latex_clean` renders every natbib cite to visible author-year (parenthetical
+for the `\citep` family, inline for `\citet`), preserving pre/post notes
+(`\citep[DES;][]{…}` → "(DES; …)") and **highlighting the audited key** so each
+card declares what it audits. Never drop `\citep` — that was the bug that made
+unsupported/misattribution verdicts read as "the agent quoted something
+irrelevant" when the quote was a careful negative result.
+
 ## The verdict taxonomy
 
 | Verdict | When |
