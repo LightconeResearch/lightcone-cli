@@ -132,50 +132,47 @@ def test_author_year_dotted_keys_unchanged():
     assert rr.author_year("asgari.etal19a") == "Asgari et al. 2019"
 
 
-# --- citations stay visible in the citing sentence -------------------------
+# --- raw_tex: quote the verbatim LaTeX, no rendering ----------------------
 
 
-def test_citep_is_rendered_not_dropped():
-    # The regression: \citep{} was silently dropped, so the reader could not tell
-    # what was being cited. It must now render parenthetically.
-    out = rr.latex_clean(r"a signal may exist \citep{Chisari15,Kraljic2020}.")
-    assert "Chisari 2015" in out
-    assert "Kraljic 2020" in out
-    assert "(" in out and ")" in out  # parenthetical form
+def test_raw_tex_shows_citations_verbatim():
+    # The audit shows the exact LaTeX — \citep is NEVER dropped (that was the bug
+    # that hid what a card audits), and it is not rewritten to author-year.
+    out = rr.raw_tex(r"a signal may exist \citep{Chisari15,Kraljic2020}.")
+    assert r"\citep{Chisari15,Kraljic2020}" in out
+    assert "Chisari 2015" not in out  # no author-year rewrite
 
 
-def test_citet_renders_all_keys_not_just_first():
-    # \citet{A,B} previously kept only the first key.
-    out = rr.latex_clean(r"following \citet{Heymans2012,HervasPeters2024}.")
-    assert "Heymans 2012" in out
-    assert "Hervas-Peters 2024" in out
+def test_raw_tex_math_is_not_rendered():
+    # Verbatim: the byte-for-byte source the gate matched, not a lossy unicode form.
+    out = rr.raw_tex(r"$\sigma_\epsilon^{\rm int}$ is the dispersion")
+    assert r"\sigma_\epsilon" in out
+    assert "σ" not in out
 
 
-def test_audited_cite_is_highlighted():
-    out = rr.latex_clean(r"as defined in \citet{Heymans2012}.", highlight="Heymans2012")
-    assert "<mark class='auditcite'>Heymans 2012</mark>" in out
-    # a non-audited sibling is rendered but not highlighted
-    out2 = rr.latex_clean(r"\citep{Chisari15,Kraljic2020}", highlight="Kraljic2020")
-    assert "<mark class='auditcite'>Kraljic 2020</mark>" in out2
-    assert "Chisari 2015" in out2 and "<mark class='auditcite'>Chisari" not in out2
+def test_raw_tex_highlights_audited_key_inside_cite():
+    out = rr.raw_tex(r"as in \citep{Chisari15,Kraljic2020}.", highlight="Kraljic2020")
+    assert "<mark class='auditcite'>Kraljic2020</mark>" in out
+    # the sibling key is shown but not highlighted
+    assert "Chisari15" in out and "<mark class='auditcite'>Chisari15" not in out
+    # and the rest of the \citep wrapper is still verbatim
+    assert r"\citep{Chisari15," in out
 
 
-def test_citep_optional_prenote_preserved():
-    # \citep[DES;][]{...} — the survey prenote carries meaning; keep it.
-    out = rr.latex_clean(r"the survey \citep[DES;][]{DES21,Amon21}.")
-    assert "DES;" in out
-    assert "Amon 2021" in out
+def test_raw_tex_highlight_only_inside_cite():
+    # A bare textual occurrence of the key (not inside \cite{}) must NOT be marked —
+    # highlighting is a citation affordance, not a find-and-replace.
+    out = rr.raw_tex(r"the Kraljic2020 result was confirmed", highlight="Kraljic2020")
+    assert "<mark" not in out
 
 
-def test_citet_inline_citep_parenthetical():
-    inline = rr.latex_clean(r"\citet{Gwyn2008} showed")
-    assert "(" not in inline  # textual form has no parentheses
-    paren = rr.latex_clean(r"\citep{Gwyn2008}")
-    assert paren.strip().startswith("<span class='cit'>(")
+def test_raw_tex_escapes_html():
+    out = rr.raw_tex(r"$a < b$ & $c > d$")
+    assert "&lt;" in out and "&gt;" in out and "&amp;" in out
+    assert "<b" not in out  # the literal '<' did not become a tag
 
 
-def test_keep_citet_false_strips_citations():
-    # Notes / titles drop cites entirely.
-    out = rr.latex_clean(r"see \citet{Heymans2012} for details", keep_citet=False)
-    assert "Heymans" not in out
-    assert "mark" not in out
+def test_raw_tex_collapse_toggle():
+    multi = "line one\n\nline two"
+    assert "\n" not in rr.raw_tex(multi, collapse=True)
+    assert "\n" in rr.raw_tex(multi, collapse=False)

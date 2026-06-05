@@ -80,10 +80,6 @@ _FLAGGED = {
     "extraction_error",
 }
 
-_SUPS = str.maketrans("0123456789+-=()n", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿ")
-_SUBS = str.maketrans("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎")
-
-
 def _sev(v: str) -> int:
     return _SEV.get(v, 3)
 
@@ -130,101 +126,36 @@ def author_year(key: str) -> str:
     return f"{name} {_yr4(m.group(2))}".strip()
 
 
-def _unit(u: str) -> str:
-    return u.replace(r"\square\deg", "deg²").replace(r"\deg", "deg").replace(r"\square", "").strip()
+# Any natbib cite command (\citep \citet \citealt \citeauthor \cite …), with an
+# optional `*`, 0–2 optional `[pre][post]` note groups, and a comma-list of keys.
+# We don't *render* cites — we locate them so the audited key can be highlighted
+# in place inside the verbatim source.
+_CITE_CMD = re.compile(r"\\cite[a-zA-Z]*\*?(?:\[[^\]]*\])*\{[^}]*\}")
 
 
-# Any natbib cite command: \citep \citet \citealt \citealp \citeauthor \cite … ,
-# with an optional `*`, 0–2 optional `[pre][post]` note groups, and a comma-list
-# of keys. Citations name *what is cited*; the citing sentence must show them.
-_CITE_CMD = re.compile(r"\\(cite[a-zA-Z]*)\*?((?:\[[^\]]*\])*)\{([^}]*)\}")
-_CITE_TEXTUAL = ("citet", "citealt", "citeauthor", "citetalias")  # rendered inline, no parens
+def raw_tex(s: str, highlight: str | None = None, collapse: bool = True) -> str:
+    """Escape a verbatim LaTeX (or PDF-extracted) fragment for display — no rendering.
 
-
-def _stash_citations(s: str, highlight: str | None, sink: list[str]) -> str:
-    """Replace each cite command with an indexed sentinel, pushing pre-built HTML
-    into `sink`. The \\citep family renders parenthetically, the \\citet family
-    inline; every key becomes an author-year, and the audited key (`highlight`) is
-    marked so each card visibly declares which cite it audits. natbib note
-    semantics: one bracket = post-note, two = [pre][post]."""
-    def repl(m: "re.Match[str]") -> str:
-        cmd = m.group(1).lower()
-        brackets = re.findall(r"\[([^\]]*)\]", m.group(2) or "")
-        pre = brackets[0].strip() if len(brackets) >= 2 else ""
-        post = (brackets[1] if len(brackets) >= 2 else brackets[0]).strip() if brackets else ""
-        keys = [k.strip() for k in m.group(3).split(",") if k.strip()]
-
-        def name(k: str) -> str:
-            ay = html.escape(author_year(k))
-            return f"<mark class='auditcite'>{ay}</mark>" if highlight and k == highlight else ay
-
-        body = ", ".join(name(k) for k in keys)
-        pre_s = f"{html.escape(pre)} " if pre else ""
-        post_s = f", {html.escape(post)}" if post else ""
-        inner = f"{pre_s}{body}{post_s}"
-        if not any(cmd.startswith(t) for t in _CITE_TEXTUAL):
-            inner = f"({inner})"
-        idx = len(sink)
-        sink.append(f"<span class='cit'>{inner}</span>")
-        return f"§§H§§{idx}§§/H§§"
-
-    return _CITE_CMD.sub(repl, s)
-
-
-def latex_clean(s: str, keep_citet: bool = True, highlight: str | None = None) -> str:
-    """Render a LaTeX prose fragment to safe display HTML.
-
-    Renders every natbib cite to visible author-year (parenthetical for the
-    \\citep family, inline for \\citet), highlighting the audited key so the
-    citing sentence shows *what is cited* — never silently dropped. Lifts
-    \\texttt to <code> and converts inline math to unicode super/subscripts.
-    Lossy by design — this is for human reading, not re-verification.
-    `keep_citet=False` (titles, notes) strips cites instead.
-    """
+    The audit's trust story is that what Romain reads is byte-for-byte what the
+    deterministic gate matched. A lossy LaTeX→HTML renderer would break that, and
+    can't win the edge cases (variable TeX distributions, bibcode keys, custom
+    macros) anyway — so we quote the source exactly, only HTML-escaped. The single
+    concession is `highlight`: the audited bibkey is wrapped in <mark>, but *only
+    where it occurs inside a* `\\cite{...}`, so a multi-cite sentence shows which
+    key the card audits without touching the rest of the text. `collapse` folds
+    whitespace to one line (turn off for multi-paragraph notes)."""
     if not s:
         return ""
-    cite_html: list[str] = []
-    if keep_citet:
-        s = _stash_citations(s, highlight, cite_html)
-    s = re.sub(r"\\cite[a-zA-Z]*\*?(?:\[[^\]]*\])*\{[^}]*\}", "", s)  # drop any leftover / keep_citet=False
-    s = re.sub(r"\\(cref|ref|label|eqref)\{[^}]*\}", "", s)
-    s = re.sub(r"\\paper[a-z]*\{?\}?", "", s)
-    s = re.sub(r"\\texttt\{([^}]*)\}", r"⟦\1⟧", s)
-    s = re.sub(r"\\SI\{([^}]*)\}\{([^}]*)\}", lambda m: m.group(1) + " " + _unit(m.group(2)), s)
-    s = re.sub(r"\\num\{([^}]*)\}", r"\1", s)
-
-    def math(m: "re.Match[str]") -> str:
-        x = m.group(1)
-        for a, b in [
-            (r"\lcdm", "ΛCDM"), (r"\Lambda", "Λ"), (r"\Omega_{\rm m}", "Ωₘ"), (r"\Om", "Ωₘ"),
-            (r"\Omega", "Ω"), (r"\sigma_8", "σ₈"), (r"\sigma", "σ"), (r"\sim", "∼"), (r"\equiv", "≡"),
-            (r"\sqrt", "√"), (r"\%", "%"), (r"\,", ""), (r"\rm", ""), (r"\ell", "ℓ"), (r"\times", "×"),
-        ]:
-            x = x.replace(a, b)
-        x = x.replace("~", " ")
-        x = re.sub(r"\^\{([0-9+\-=()n]+)\}", lambda g: g.group(1).translate(_SUPS), x)
-        x = re.sub(r"_\{([0-9+\-=()]+)\}", lambda g: g.group(1).translate(_SUBS), x)
-        x = re.sub(r"\^([0-9])", lambda g: g.group(1).translate(_SUPS), x)
-        x = re.sub(r"_([0-9])", lambda g: g.group(1).translate(_SUBS), x)
-        return f"§§M§§{re.sub(r'[{}]', '', x)}§§/M§§"
-
-    s = re.sub(r"\$([^$]*)\$", math, s)
-    s = s.replace(r"\%", "%").replace(r"\,", "").replace("~", " ").replace(r"\&", "&")
-    s = re.sub(r"\\[a-zA-Z]+", "", s)
-    s = re.sub(r"[{}]", "", s)
-    s = re.sub(r"\s+([.,;])", r"\1", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    out = []
-    for t in re.split(r"(§§M§§.*?§§/M§§|⟦[^⟧]*⟧|§§H§§\d+§§/H§§)", s):
-        if t.startswith("§§M§§"):
-            out.append(f"<span class='m'>{html.escape(t[5:-6])}</span>")
-        elif t.startswith("§§H§§"):
-            out.append(cite_html[int(t[5:-6])])  # pre-built, already-safe citation HTML
-        elif t.startswith("⟦"):
-            out.append(f"<code>{html.escape(t[1:-1])}</code>")
-        else:
-            out.append(html.escape(t))
-    return "".join(out)
+    s = re.sub(r"\s+", " ", s).strip() if collapse else s.strip()
+    if highlight:
+        key = re.compile(r"(?<![\w.\-])" + re.escape(highlight) + r"(?![\w.\-])")
+        s = _CITE_CMD.sub(
+            lambda m: key.sub("\x00M\x00" + highlight + "\x00/M\x00", m.group(0), count=1), s
+        )
+    s = html.escape(s)
+    if highlight:
+        s = s.replace("\x00M\x00", "<mark class='auditcite'>").replace("\x00/M\x00", "</mark>")
+    return s
 
 
 def _anchors(row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -252,7 +183,7 @@ def _paper_title(reference_dir: Path) -> str:
             meta = {}
         title = meta.get("title")
         if title:
-            return latex_clean(str(title), keep_citet=False)
+            return raw_tex(str(title))
     return ""
 
 
@@ -271,14 +202,14 @@ def _entry_html(row: dict[str, Any], app_index: int) -> str:
     line = row.get("line", "?")
     anchors = _anchors(row)
 
-    cur = latex_clean(row.get("claim") or "", highlight=ck)
-    prev = latex_clean(row.get("manuscript_prefix") or "", highlight=ck)
-    nxt = latex_clean(row.get("manuscript_suffix") or "", highlight=ck)
+    cur = raw_tex(row.get("claim") or "", highlight=ck)
+    prev = raw_tex(row.get("manuscript_prefix") or "", highlight=ck)
+    nxt = raw_tex(row.get("manuscript_suffix") or "", highlight=ck)
 
     facets = []
     lede_html = ""  # first supporting quote, shown collapsed so the evidence is visible up front
     for a in anchors:
-        q = latex_clean(a.get("exact", ""))
+        q = raw_tex(a.get("exact", ""))
         if not q:
             continue
         sec = a.get("section") or ""
@@ -299,11 +230,11 @@ def _entry_html(row: dict[str, Any], app_index: int) -> str:
         ev = "<p class='none'>No quotable support in the cited source.</p>"
 
     notes = row.get("verdict_notes")
-    notes_html = f"<div class='notes'>{latex_clean(str(notes), keep_citet=False)}</div>" if notes else ""
+    notes_html = f"<div class='notes'>{raw_tex(str(notes), collapse=False)}</div>" if notes else ""
     rew = row.get("suggested_rewording")
-    rew_html = f"<div class='rew'>{latex_clean(str(rew), keep_citet=False)}</div>" if rew else ""
+    rew_html = f"<div class='rew'>{raw_tex(str(rew), collapse=False)}</div>" if rew else ""
     flag = row.get("doi_flag")
-    flag_html = f"<div class='flag'>{latex_clean(str(flag), keep_citet=False)}</div>" if flag else ""
+    flag_html = f"<div class='flag'>{raw_tex(str(flag))}</div>" if flag else ""
 
     before = f"<span class='ctx'>{prev} </span>" if prev else ""
     after = f"<span class='ctx'> {nxt}</span>" if nxt else ""
@@ -385,14 +316,14 @@ h1{font-family:var(--display);font-weight:500;font-size:46px;line-height:1.04;le
 
 .body{padding:0 22px 6px}
 .ev{padding:16px 0 18px;margin-top:6px;border-top:1px solid var(--rule)}
-.ev blockquote{margin:0 0 15px;font-size:18px;line-height:1.5;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre)}
+.ev blockquote{margin:0 0 15px;font-family:var(--mono);font-size:14.5px;line-height:1.6;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre);white-space:pre-wrap;word-break:break-word}
 .bad .ev blockquote,.warn .ev blockquote{border-left-color:var(--rule)}
 .ev blockquote:last-child{margin-bottom:0}
 .ev cite,.lede cite{display:block;font-family:var(--mono);font-style:normal;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:5px}
 .fl{display:block;font-family:var(--mono);font-style:normal;font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--teal);margin-bottom:3px}
 .bad .fl,.warn .fl{color:var(--muted)}
 /* lede: the first supporting quote, shown collapsed so evidence is visible up front; hidden when expanded (the full facet list takes over) */
-.lede{margin:11px 0 0;font-size:18px;line-height:1.45;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre)}
+.lede{margin:11px 0 0;font-family:var(--mono);font-size:14.5px;line-height:1.6;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre);white-space:pre-wrap;word-break:break-word}
 .bad .lede,.warn .lede{border-left-color:var(--rule)}
 .entry[open] .lede{display:none}
 .ev cite{display:block;font-style:normal;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:5px;letter-spacing:.02em}
@@ -402,8 +333,6 @@ h1{font-family:var(--display);font-weight:500;font-size:46px;line-height:1.04;le
 .rew::before{content:'suggested rewording';display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--ochre);margin-bottom:4px}
 .flag{margin-bottom:12px;font-size:16px;background:rgba(188,69,56,.1);border-radius:5px;padding:11px 14px;color:var(--cinnabar)}
 .flag::before{content:'resolver flag';display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px}
-.m{font-variant-numeric:tabular-nums}
-.cit{color:var(--muted);font-size:.92em}
 mark.auditcite{background:rgba(188,69,56,.13);color:var(--cinnabar);font-weight:600;padding:0 2px;border-radius:2px}
 code{font-family:var(--mono);font-size:.82em;background:rgba(185,132,43,.15);padding:1px 4px;border-radius:2px}
 """

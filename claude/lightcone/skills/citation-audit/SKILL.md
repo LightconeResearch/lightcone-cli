@@ -311,15 +311,20 @@ header carries the manuscript title and a one-line health summary. The HTML is
 self-contained (Google-Fonts `<link>`s with serif fallback) — phone-renderable
 via `SendUserFile`.
 
-**The citing sentence must show its citations.** A cite is hard to judge if you
-can't see *which* reference the sentence points at — especially in a multi-cite
-sentence (`\citep{A,B,Kraljic2020}`) where only one key is the card's subject.
-`latex_clean` renders every natbib cite to visible author-year (parenthetical
-for the `\citep` family, inline for `\citet`), preserving pre/post notes
-(`\citep[DES;][]{…}` → "(DES; …)") and **highlighting the audited key** so each
-card declares what it audits. Never drop `\citep` — that was the bug that made
+**Quote the verbatim LaTeX — don't render it.** The citing sentence and every
+evidence quote are shown as the **exact source** (`raw_tex`: HTML-escaped, no
+rendering). Two reasons: (1) *fidelity* — what the reader sees is byte-for-byte
+what the deterministic gate matched; a lossy LaTeX→unicode renderer would put a
+transform between verification and display. (2) *robustness* — TeX distributions,
+custom macros, and bibcode keys are too variable to render reliably, and the
+audience writes LaTeX, so `$\sigma_\epsilon^{\rm int}$` is *more* precise to them
+than a best-effort glyph. The one affordance on top of verbatim: the audited
+bibkey is wrapped in `<mark>` **only where it occurs inside a `\cite{…}`**, so a
+multi-cite sentence (`\citep{A,B,Kraljic2020}`) shows which key the card audits.
+Never strip `\citep` — that hid *what* was cited and made correct
 unsupported/misattribution verdicts read as "the agent quoted something
-irrelevant" when the quote was a careful negative result.
+irrelevant" when the quote was a careful negative result. (Evidence quotes render
+in monospace; the citing sentence stays serif as the manuscript prose.)
 
 ## The verdict taxonomy
 
