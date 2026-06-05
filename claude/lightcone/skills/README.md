@@ -10,7 +10,6 @@ Each subdirectory is one Claude Code skill: `SKILL.md` plus optional `references
 | `lc-from-code` | Bring an existing codebase into ASTRA — scan, spec, parameterize. |
 | `lc-from-paper` | Reproduce a published paper in ASTRA (paper-reproduction bundle entry point — see below). |
 | `lc-feedback` | Report bugs and feature requests upstream. |
-| `ralph` | Author a constitution and run a ralph loop against it (authoring + launching + iterating in one skill). The substrate for open-ended long-running work. (No longer used by `lc-from-paper`, which now drives its middle with the reproduce-paper Workflow.) |
 
 ## Reference skills
 

@@ -78,52 +78,57 @@ parameter plumbing.
 
 ## `/lc-from-paper` — reproduce a published paper
 
-**You have a DOI or arXiv ID. You end with a reproduction project
-driven by an ORIENT-first agent that hands off to a long-running
-ralph loop for the heavy middle.**
+**You have a DOI or arXiv ID. You end with a reproduction project: two
+interactive bookends in your main session wrapping one autonomous
+Workflow that carries the heavy middle.**
 
 `/lc-from-paper` is the entry point of the paper-reproduction bundle.
-It opens with **ORIENT** — one pre-loop phase in your main session
-that runs in seven stages: ask for the paper, run `/paper-extraction`
-inline (so subsequent questions are grounded in the actual paper),
-interview you (scope, fidelity intent — your prose answer to "when is
-this good enough" — code repo confirmation, paper-specific
-conventions, prior familiarity, external context), clone the
-reference code and run `/lc-from-code` scan-only (when a repo exists),
-optionally follow up, then draft **two files** at the workdir root:
-`constitution.md` (the ralph loop's driving document — Goal, fidelity
-intent, scope, quality bar, evidence) and `CLAUDE.md` (the auto-loading
-walk-up with rules, the paper-vs-code disagreements log, open
-opportunities). You review the drafts, then a single first commit
-captures `constitution.md` + `CLAUDE.md` + the full `work/reference/`
-substrate.
+It opens with **ORIENT → PLAN** — the first bookend, in your main
+session — which runs in stages: ask for the paper, run
+`/paper-extraction` inline (so subsequent questions are grounded in the
+actual paper), interview you (scope, fidelity intent — your prose answer
+to "when is this good enough," which becomes the Workflow's *stopping
+criterion* — code repo confirmation, paper-specific conventions, prior
+familiarity, external context), clone the reference code and run
+`/lc-from-code` scan-only (when a repo exists), then draft **two files**
+at the workdir root: a prose `PLAN.md` (Goal, fidelity intent + stopping
+criterion, scope, a Targets sketch, a Decomposition sketch, evidence)
+and `CLAUDE.md` (the auto-loading walk-up with rules, the paper-vs-code
+disagreements log, pointers). You approve the plan in **plan mode** —
+the single gate before the autonomous middle takes over — then a single
+first commit captures `PLAN.md` + `CLAUDE.md` + the full
+`work/reference/` substrate.
 
-After ORIENT lands, the skill launches a **ralph loop** in a detached
-tmux session against `constitution.md`. Each iteration starts a fresh
-worker that surveys the workdir, picks the next valuable move
-(typically one of ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN
-→ COMPARE), does it, commits, exits. The fresh-context property
-between iterations is what makes per-phase review work: iteration N
-writes, iteration N+1 reads N's work without bias. You attach to the
-loop with `tmux attach` to watch or steer; iterations are detached so
-they can't ask you questions interactively — they log open questions
-to `open-questions.md` with a best-judgment default and the loop
-keeps moving.
+On approval, the skill launches the reproduce-paper **Workflow**
+(`reproduce_workflow.js`) from the workdir. It's the multi-agent
+Workflow primitive — deterministic `agent()` / `parallel()` /
+`pipeline()` orchestration over fresh subagent contexts — that carries
+the middle: **ARCHITECT** (realize the plan into the `astra.yaml`
+skeleton + a `targets/targets.md` ledger) → **SPECIFY ∥ LITERATURE**
+(pipeline per sub-analysis) → **IMPLEMENT** (parallel per output) →
+**RUN** (`lc run` over the Snakemake DAG) → **VERIFY** → **REVIEW**.
+Workers return schema-validated structured output; a single barrier
+merge folds each phase's results into `astra.yaml`. The Workflow runs in
+the background and can't ask you questions, so it logs anything it can't
+resolve to `open-questions.md` with a best-judgment default and keeps
+moving.
 
-When the loop closes (constitution `status: closed` after COMPARE
-returns `pass` and a cold-survey iteration finds nothing left to
-improve), come back and the agent runs **REVIEW close-out** in your
-session: `/figure-comparison` against the targets, optional
-`/check-sentence-by-sentence`, a walk through the accumulated open
-questions, a `REPRODUCTION-SUMMARY.md`. COMPARE's opportunity
-assessment — where the gaps are, how much they likely matter, and how
-they sit relative to your fidelity intent — propagates into
-CLAUDE.md's *Open opportunities* list as the trajectory of what could
-be tightened on a return visit.
+**VERIFY** is the convergence engine. We can't pre-write a gate for a
+specific paper's claims — the claims *are* the paper — so the Workflow
+*generates* it: for each replication target it writes a test encoding
+the claim, then iterates `run → fix the implementation → rerun` until
+the tests pass *or* your fidelity intent says stop. TDD for a paper, and
+the intent bounds the fix loop so a reproduction asked for "an
+afternoon" doesn't burn a day.
 
-The bundle composes sibling skills: `ralph` (the loop substrate),
-`paper-extraction`, `narrative`, `figure-comparison`, and
-`check-sentence-by-sentence`. See
+When the Workflow returns — with a review summary, a `report.html`, and
+per-target verify results — the agent runs **CLOSE-OUT** (the second
+bookend) back in your session: `/figure-comparison` against the targets,
+optional `/check-sentence-by-sentence`, and a walk through the
+accumulated `open-questions.md`. You resolve, finalize, and commit.
+
+The bundle composes sibling skills: `paper-extraction`, `narrative`,
+`figure-comparison`, and `check-sentence-by-sentence`. See
 [`claude/lightcone/skills/README.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md)
 for the full bundle map.
 

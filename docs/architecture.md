@@ -289,7 +289,7 @@ src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
 
 claude/lightcone/               # Claude Code plugin (force-included into the wheel)
 ├── skills/                     # lc-new, lc-from-code, lc-from-paper,
-│                                # lc-feedback, ralph (+ bundle siblings);
+│                                # lc-feedback (+ bundle siblings);
 │                                # reference skills: astra, lc-cli
 ├── agents/                     # lc-extractor (literature subagent)
 ├── templates/                  # project CLAUDE.md template

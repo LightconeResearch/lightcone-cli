@@ -12,8 +12,8 @@ This page is for maintainers.
 ## Available skills
 
 The `/lc-from-*` family is parallel in what you start from: a question,
-code, or a paper. `/lc-from-paper` is the entry point of a six-skill
-paper-reproduction bundle; the five siblings stand alone and are
+code, or a paper. `/lc-from-paper` is the entry point of a five-skill
+paper-reproduction bundle; the four siblings stand alone and are
 user-invokable directly.
 
 ### Project lifecycle
@@ -22,9 +22,8 @@ user-invokable directly.
 |-------|---------|---------|
 | [lc-new](lc-new.md) | `/lc-new` | Scope a research question into an `astra.yaml`, with optional literature extraction. |
 | [lc-from-code](lc-from-code.md) | `/lc-from-code` | Wrap an existing codebase in ASTRA: scan, generate spec, parameterize, run. |
-| [lc-from-paper](lc-from-paper.md) | `/lc-from-paper` | Reproduce a published paper in ASTRA — ORIENT-first driver that hands off to a ralph loop for the long middle. |
+| [lc-from-paper](lc-from-paper.md) | `/lc-from-paper` | Reproduce a published paper in ASTRA — two interactive bookends in your main session wrapping one autonomous Workflow that carries the heavy middle. |
 | [lc-feedback](lc-feedback.md) | `/lc-feedback` | File a GitHub issue against the right Lightcone repo with auto-collected context. |
-| [ralph](ralph.md) | `/ralph` | Author a constitution and run a ralph loop against it. Used by `lc-from-paper` for the long middle; standalone for any other long-running work. |
 
 ### Paper-reproduction bundle (sibling skills)
 
@@ -34,7 +33,6 @@ dispatches them by role during the reproduction.
 
 | Skill | Command | Purpose |
 |-------|---------|---------|
-| [ralph](ralph.md) | `/ralph` | Loop substrate. `lc-from-paper`'s ORIENT invokes ralph's Authoring mode to draft the per-paper constitution; the loop launcher hands off after ORIENT lands; each iteration runs ralph's Loop protocol. Also user-invokable standalone (see the Project lifecycle row above). |
 | [paper-extraction](paper-extraction.md) | `/paper-extraction` | Turn an arXiv ID or DOI into a standardized `work/reference/` directory: substrate, figures, tables, citations (with resolved DOIs), and a stub `astra.yaml`. |
 | [narrative](narrative.md) | `/narrative` | Author the `narrative:` prose and decision `rationale:` against an existing `astra.yaml`, in paper-reproduction, retrofit, or co-drafting mode. |
 | [figure-comparison](figure-comparison.md) | `/figure-comparison` | Build a self-contained HTML side-by-side: paper figures, tables, and numerics vs reproduced artifacts. |
@@ -81,9 +79,8 @@ claude/lightcone/
 ├── skills/
 │   ├── lc-new/{SKILL.md, references/*.md}
 │   ├── lc-from-code/SKILL.md
-│   ├── lc-from-paper/{SKILL.md, references/*.md, templates/{constitution.md, CLAUDE.md}}
+│   ├── lc-from-paper/{SKILL.md, reproduce_workflow.js, references/*.md, templates/{plan.md, CLAUDE.md}}
 │   ├── lc-feedback/SKILL.md
-│   ├── ralph/{SKILL.md, references/*.md, scripts/ralph}
 │   ├── paper-extraction/{SKILL.md, scripts/*.py}
 │   ├── narrative/{SKILL.md, references/*.md}
 │   ├── figure-comparison/{SKILL.md, scripts/*.py}

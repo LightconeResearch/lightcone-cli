@@ -40,9 +40,7 @@ The human is in the loop at the **two bookends only** — approving the plan, th
 
 ## Why a Workflow, not a loop
 
-This skill used to drive the middle with a ralph loop — a detached tmux session spawning a fresh agent per phase. **That is retired.** A paper reproduction is structurally a *fan-out with per-claim verification* — per sub-analysis, per output, per cited paper, per replication target — which is exactly the **Workflow primitive**'s home shape: deterministic `agent()` / `parallel()` / `pipeline()` orchestration over fresh subagent contexts, with schema-validated structured output and explicit verify phases. The Workflow gives both things the loop gave — context management (the orchestration script holds no work product; every `agent()` is a fresh context; results return compact) and review (explicit, adversarial verify phases instead of review-by-accident) — and gives them better. The repo's [`citation-audit`](../citation-audit/SKILL.md) skill is the precedent: the LITERATURE phase here *is* that fan-out → verify → synthesize spine.
-
-The ralph skill itself stays — it remains the right substrate for genuinely open-ended long-running work. It is just no longer how `lc-from-paper` drives a reproduction.
+This skill used to drive the middle with a detached per-phase loop — a tmux session spawning a fresh agent per phase, each system-prompted with a markdown spec. **That is retired.** A paper reproduction is structurally a *fan-out with per-claim verification* — per sub-analysis, per output, per cited paper, per replication target — which is exactly the **Workflow primitive**'s home shape: deterministic `agent()` / `parallel()` / `pipeline()` orchestration over fresh subagent contexts, with schema-validated structured output and explicit verify phases. The Workflow gives both things the loop gave — context management (the orchestration script holds no work product; every `agent()` is a fresh context; results return compact) and review (explicit, adversarial verify phases instead of review-by-accident) — and gives them better. The repo's [`citation-audit`](../citation-audit/SKILL.md) skill is the precedent: the LITERATURE phase here *is* that fan-out → verify → synthesize spine.
 
 ## Setup: git-tracked workdir
 
@@ -130,7 +128,7 @@ Workdir state is the resume mechanic — no separate state machine. On re-entry:
 
 ## Anti-patterns
 
-- **Resurrecting the ralph loop.** The middle is a Workflow now. No detached tmux loop, no per-phase fresh-session iteration, no "loop manager" sub-agent.
+- **Resurrecting the detached per-phase loop.** The middle is a Workflow now. No detached tmux loop, no per-phase fresh-session iteration, no "loop manager" sub-agent.
 - **Reading papers in the orchestrator's context.** The fan-out's whole value is bounded workers. Spawn an agent to read a cited paper; don't open it in the main session or the workflow script.
 - **Pre-writing a paper-specific gate.** You can't — the claims are the paper. VERIFY *generates* the tests per target. The skill ships the loop, not the gate.
 - **Skipping plan mode.** Plan approval is the one human gate before the autonomous middle. "Drafts written → launch" skips the editorial pass that shapes everything.

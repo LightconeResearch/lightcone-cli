@@ -190,16 +190,17 @@ The three labels `lc verify` produces when something's wrong:
 - `missing_manifest` — output directory exists but the manifest is
   missing or unparseable.
 
-## Ralph loop
+## Reproduce-paper Workflow
 
-A reusable autonomous iteration pattern for long-running agent work.
-Each iteration surveys state, decides what to do next, writes or runs
-code, commits, and exits. A bundled tmux runner spawns a fresh worker
-per iteration with the *constitution* — a markdown file describing what
-"done" looks like — as system prompt; the constitution stays editable
-across iterations. Stop the loop by setting `status: closed` in the
-constitution's frontmatter (the next iteration sees it and exits) or by
-killing the tmux session.
+The autonomous middle of `/lc-from-paper`, launched from
+`reproduce_workflow.js`. A multi-agent Workflow — deterministic
+`agent()` / `parallel()` / `pipeline()` orchestration over fresh
+subagent contexts — that fans out per sub-analysis, per output, per
+cited paper, and per replication target. Workers return
+schema-validated structured output; a single barrier merge folds each
+phase's results into `astra.yaml`. Its phases run ARCHITECT → SPECIFY ∥
+LITERATURE → IMPLEMENT → RUN → VERIFY → REVIEW, bounded by the fidelity
+intent captured at ORIENT.
 
 ## Permission tier
 
