@@ -1,10 +1,10 @@
 # ORIENT — the pre-workflow bookend (main session)
 
-The opening interactive phase, run in the user's **main session** before the reproduce-paper Workflow launches. Its job: figure out what the user wants to reproduce, stand up the reference substrate (paper + code), **architect the decomposition**, and write the reproduction **PLAN** — then gate it through plan mode and, on approval, launch the workflow that carries the autonomous middle.
+The opening interactive phase, run in the user's **main session** before the reproduce-paper Workflow launches. Its job: figure out what the user wants to reproduce, stand up the reference substrate (paper + code), and write the reproduction **PLAN** — then gate it through plan mode and, on approval, launch the workflow that carries the autonomous middle.
 
-ORIENT is allowed to be *large*. It is the rich main-context that **designs the workflow** — everything it acquires (the paper, the code scan, the user's intent) wants to be held here, where the plan is architected, because the workflow's bounded workers never see this context again. The decomposition that a separate phase used to own now happens here, in the main session, as part of building the plan.
+ORIENT is a **conversation that produces a plan**, not a spec-authoring phase. It acquires the paper, interviews the user, scans the code, and drafts a human-readable plan — scope, fidelity intent, a *prose* decomposition sketch. It does **not** write the `astra.yaml` skeleton or the targets ledger; that is the Workflow's first phase (ARCHITECT), which realizes the approved plan into the formal scaffolding. Keeping the YAML out of ORIENT is deliberate — the user approves intent and the rough decomposition (the parts they have an opinion on), and the autonomous middle does the structural authoring.
 
-It runs in stages so each later decision is grounded in what was acquired earlier: the paper is read before the interview questions land (so questions name actual figures and numbers); the code is scanned before the decomposition is drafted (so Scope and sub-analyses lean on the actual pipeline); the user reviews and approves the plan before anything commits or launches.
+It runs in stages so each later decision is grounded in what was acquired earlier: the paper is read before the interview questions land (so questions name actual figures and numbers); the code is scanned before the decomposition is sketched (so the sketch leans on the actual pipeline); the user reviews and approves the plan before anything commits or launches.
 
 ORIENT is the pre-workflow bookend; **CLOSE-OUT** is the post-workflow one. The middle is the Workflow.
 
@@ -12,11 +12,9 @@ ORIENT is the pre-workflow bookend; **CLOSE-OUT** is the post-workflow one. The 
 
 ## What ORIENT produces
 
-Four artifacts in the reproduction workdir, committed together as the first commit at the launch gate:
+Two artifacts in the reproduction workdir, plus the substrate, committed together as the first commit at the launch gate:
 
-- **`PLAN.md`** — the human-readable reproduction contract, drafted from [`../templates/plan.md`](../templates/plan.md). Goal, **Fidelity intent + stopping criterion**, Scope (in / out), Targets, Decomposition, Evidence. This is what the user approves in plan mode and what VERIFY reads (via `args.intent`) to size its fix-loop.
-- **`astra.yaml` skeleton** — structure only: sub-analyses named, inputs/outputs declared at the sub-analysis level, high-level `narrative:` prose per analysis. **No `decisions:` / `findings:` / `prior_insights:` / `recipes:` yet** — the workflow's SPECIFY and IMPLEMENT phases fill those. Architected here per [`architect.md`](architect.md).
-- **`targets/targets.md`** — the replication-target ledger: every target with priority + expected value (the paper's actual number, with stated uncertainty) + comparison guidance. **This is what VERIFY writes tests against** — one test per target. Get the numbers right here; the whole convergence engine reads them.
+- **`PLAN.md`** — the human-readable reproduction contract, drafted from [`../templates/plan.md`](../templates/plan.md). Goal, **Fidelity intent + stopping criterion**, Scope (in / out), a one-line-per-target **Targets sketch**, a prose **Decomposition sketch**, Evidence. This is what the user approves in plan mode and what VERIFY reads (via `args.intent`) to size its fix-loop. The Workflow's ARCHITECT turns its Targets + Decomposition sketches into the formal `targets/targets.md` ledger and `astra.yaml` skeleton.
 - **`CLAUDE.md`** — the lean auto-loading walk-up, from [`../templates/CLAUDE.md`](../templates/CLAUDE.md). Paper identity, Rules (universal — leave the template defaults), Fidelity intent, Pointers, an empty disagreements log the workflow appends to.
 
 Alongside these, the full **`work/reference/` substrate** is on disk: paper substrate from `/paper-extraction` (`paper.pdf`, `source/` or `document.md`, `index.json`, `astra.yaml`, `figures/`, `tables/`, `bibliography-source.{bib,bbl}`) plus, when a reference repo exists, code substrate from `/lc-from-code` scan-only (`code/`, `code-status.yaml`, `code-index.md`).
@@ -44,7 +42,7 @@ With the identifier in hand, invoke paper-extraction directly:
 This writes the paper substrate under `work/reference/`. **Read it before Stage 3** so the next questions are grounded — minimal, just enough to ground the interview, not an end-to-end read:
 
 - **`work/reference/index.json`** — title, abstract, figure/table inventory with captions, section outline, citations with resolved DOIs. The structural surface.
-- **Abstract + conclusions** — the claimed headline results, with the actual numbers. These become the concrete anchors for the fidelity-intent question and the seeds of `targets/targets.md`.
+- **Abstract + conclusions** — the claimed headline results, with the actual numbers. These become the concrete anchors for the fidelity-intent question and the seeds of the Targets sketch.
 - **Data / Code availability sections** — the canonical place for repo URLs and dataset locations. If neither exists, grep `work/reference/source/*.tex` (Path A) or `document.md` (Path B) for `github.com`, `gitlab`, `zenodo`, `softwarex`, `\url{}`.
 - **Acknowledgements** — sometimes carries software repos, dataset attributions, cluster hints about the execution environment.
 
@@ -64,7 +62,7 @@ Present the paper's actual primary outputs as a menu:
 > - Targeted — specific figures / tables / numbers (you'll list which)
 > - Use the paper's natural primary-result set (default)
 
-When the user picks "targeted," follow up with the paper's figure/table list (from `index.json`) so they pick the subset directly rather than recalling from memory. These answers fence `PLAN.md`'s **Scope** and drive the decomposition in Stage 5.
+When the user picks "targeted," follow up with the paper's figure/table list (from `index.json`) so they pick the subset directly rather than recalling from memory. These answers fence `PLAN.md`'s **Scope** and the Targets sketch.
 
 #### Fidelity intent — the stopping criterion
 
@@ -126,7 +124,7 @@ The real probe: *is there context outside the paper substrate + codebase that sh
 
 > *"Beyond the paper and any code repo, is there context the reproduction should know about — co-author / referee feedback, internal notes, a sibling paper still in prep, decisions documented elsewhere? If yes, point at the path(s). Otherwise the paper substrate + code are the source of truth."*
 
-Capture paths into `CLAUDE.md`'s **Pointers**. Don't proactively read them in the interview — that's the decomposition's job in Stage 5.
+Capture paths into `CLAUDE.md`'s **Pointers**. Don't proactively read them in the interview — that's ARCHITECT's job in the workflow.
 
 ### Stage 4 — Clone the code (if any) and run `/lc-from-code` scan-only
 
@@ -160,40 +158,34 @@ When no public code repo exists, write `code-status.yaml` with `found: false` an
 
 If the scan reveals something the user should weigh in on — an unexpected dependency, a clear pipeline boundary suggesting a decomposition different from the paper's, an unusual container requirement, a data-availability gate invisible in the paper — ask before drafting the plan. Usually light or skipped: the code-index is the workflow's surface, not the user's, and most of what it reveals doesn't need user adjudication. Surface only what genuinely affects scope or plan shape.
 
-### Stage 5 — Architect the decomposition
+### Stage 5 — Draft `PLAN.md` + `CLAUDE.md`
 
-Read [`architect.md`](architect.md). This is the structural seam — the work the autonomous middle would otherwise have to design blind, done here in the main context where the full paper + code + interview is loaded. Produce three artifacts:
+With the paper, the interview answers, and the code scan in hand, write the two plan artifacts. **You are sketching, not authoring the spec** — the prose plan the user approves, not the `astra.yaml` skeleton (that is ARCHITECT's job, the Workflow's first phase).
 
-- **The `astra.yaml` skeleton.** Reconcile the sub-analysis decomposition (code's stage boundaries are canonical where paper and code disagree; the paper compresses, the code reveals real seams). Name sub-analyses (noun phrases — `reconstruction`, `clustering`, `bao_fit` — avoiding reserved names). Wire `inputs:` and `outputs:` at the sub-analysis level; tag each output's `priority:` from the paper's emphasis, honoring the Scope from Stage 3. Author root + per-analysis `narrative:` prose via `/narrative` (the root narrative needs a top-down data-flow paragraph when sub-analyses exist). **Leave `decisions:` / `findings:` / `prior_insights:` / `recipes:` empty** — the workflow fills them. `astra validate astra.yaml` must return clean even with the empty blocks.
-- **`targets/targets.md`.** For every in-scope replication target: an id (maps to an output), `priority:` (primary / secondary), the **expected value** (the paper's actual number with its stated uncertainty, or the table cells / figure structural features), and **comparison guidance** (within stated uncertainty? key cells? shape/ranges/ordering for a figure?). This ledger is the spec VERIFY tests against — its precision sets the ceiling on how meaningful "reproduced" can be.
-- **The lean `CLAUDE.md`.** From [`../templates/CLAUDE.md`](../templates/CLAUDE.md): paper identity (title + arXiv ID + DOI + one-line subject), Fidelity intent, any Pointers from Stage 3, Rules left at the template defaults, empty disagreements log.
-
-### Stage 6 — Draft `PLAN.md`
-
-From [`../templates/plan.md`](../templates/plan.md). The plan is the human-readable contract for *what* gets reproduced and *how hard*:
+**`PLAN.md`** from [`../templates/plan.md`](../templates/plan.md) — the human-readable contract for *what* gets reproduced and *how hard*:
 
 - **Goal** — what "done" looks like: which targets, what verdict, what validation passes.
-- **Fidelity intent + stopping criterion** — the user's prose from Stage 3, verbatim or close paraphrase. This is the governing parameter; it is also what becomes `args.intent`.
+- **Fidelity intent + stopping criterion** — the user's prose from Stage 3, verbatim or close paraphrase. The governing parameter; also what becomes `args.intent`.
 - **Scope** — in / out, from Stage 3.
-- **Targets** — pointer to `targets/targets.md` plus a one-line-per-target summary the user can skim in plan mode.
-- **Decomposition** — the sub-analyses and their data flow, mirroring the skeleton.
+- **Targets sketch** — one line per in-scope replication target: what it is, the paper's claimed value with its stated uncertainty, primary/secondary. A skimmable list the user ratifies in plan mode; ARCHITECT turns it into the formal `targets/targets.md` ledger.
+- **Decomposition sketch** — *prose*, grounded in the code scan: is this one analysis or staged (e.g. `reconstruction → clustering → bao_fit`)? Name the rough sub-analyses and how data flows. This is the part of the structure the user has an opinion on; ARCHITECT realizes it into the `astra.yaml` skeleton, taking the code's stage boundaries as canonical where they differ.
 - **Evidence** — paper DOI / arXiv ID, code repo URL, where each substrate lives on disk.
 
-The plan is what the user reads and approves; the skeleton + targets are the machine-readable half of the same contract.
+**`CLAUDE.md`** from [`../templates/CLAUDE.md`](../templates/CLAUDE.md): paper identity (title + arXiv ID + DOI + one-line subject), Fidelity intent, any Pointers from Stage 3, Rules left at the template defaults, empty disagreements log.
 
-### Stage 7 — Plan mode is the launch gate
+### Stage 6 — Plan mode is the launch gate
 
 **Plan mode is the single gate before the autonomous middle takes over.** Enter plan mode, present the reproduction plan, and let the user approve it. Treat this as the one editorial pass that shapes the entire reproduction — the workflow runs without the user after this, so anything that needs their judgment is raised here or not at all.
 
-1. **Present the plan.** Walk the user through `PLAN.md` (Goal / Fidelity intent + stopping criterion / Scope / Targets / Decomposition / Evidence) and point at `targets/targets.md`, `astra.yaml`, `CLAUDE.md` by path. The user reads the actual files; summarize inline, don't paste full bodies.
+1. **Present the plan.** Walk the user through `PLAN.md` (Goal / Fidelity intent + stopping criterion / Scope / Targets sketch / Decomposition sketch / Evidence) and point at `CLAUDE.md` by path. The user reads the actual files; summarize inline, don't paste full bodies.
 
-2. **Surface your own open questions here.** If a paper detail is ambiguous, a scope choice didn't fully resolve, a sub-analysis boundary is uncertain, or the fidelity intent is implicit but not pinned — raise it *now*, before launch. The workflow's bounded workers run detached; a question held back here is much harder to surface later (it becomes a best-judgment default and a line in `open-questions.md` the user only sees at CLOSE-OUT).
+2. **Surface your own open questions here.** If a paper detail is ambiguous, a scope choice didn't fully resolve, a decomposition boundary is uncertain, or the fidelity intent is implicit but not pinned — raise it *now*, before launch. The workflow's bounded workers run detached; a question held back here is much harder to surface later (it becomes a best-judgment default and a line in `open-questions.md` the user only sees at CLOSE-OUT).
 
 3. **Gate on approval.** Plan-mode approval is the launch decision. Silence is not approval; "looks good" with edits means refine, re-present, gate again.
 
 4. **On approval:**
    - `git init` the workdir if it isn't a repo already (per SKILL.md's *Setup: git-tracked workdir* discipline).
-   - Commit `PLAN.md` + the `astra.yaml` skeleton + `targets/targets.md` + `CLAUDE.md` + the full `work/reference/` substrate as **the first commit** — the complete ORIENT deliverable in one commit.
+   - Commit `PLAN.md` + `CLAUDE.md` + the full `work/reference/` substrate as **the first commit** — the complete ORIENT deliverable in one commit.
    - The `work/reference/code/` clone can be `.gitignore`d for large monorepos; `code-index.md` is what the workflow actually consults, and the clone is reproducible from `code-status.yaml`'s URL.
    - **Launch the workflow:**
      ```js
@@ -203,18 +195,19 @@ The plan is what the user reads and approves; the skeleton + targets are the mac
      })
      ```
 
-The workflow runs in the background and notifies on completion. Tell the user you'll be ready for the CLOSE-OUT bookend when it returns — its return value (verify verdict, `report.html` path, open questions) is the input to close-out.
+The workflow runs in the background and notifies on completion. Its first phase (ARCHITECT) builds the `astra.yaml` skeleton + `targets/targets.md` from your plan, then SPECIFY → … carry it forward. Tell the user you'll be ready for the CLOSE-OUT bookend when it returns — its return value (verify verdict, `report.html` path, open questions) is the input to close-out.
 
 ---
 
 ## Discipline
 
 - **Fidelity intent is the stopping criterion.** It is the spine of the whole autonomy model: the user says how hard to push, so the middle doesn't need them. Pin it concretely against the paper's actual headline numbers; carry it into `PLAN.md` and `args.intent` unchanged.
+- **ORIENT sketches; the Workflow authors.** You write the prose plan (scope, intent, Targets + Decomposition sketches) — not the `astra.yaml` skeleton or the formal targets ledger. Keeping the YAML in the Workflow is what keeps ORIENT a conversation and the spec-authoring consistent.
 - **No `AskUserQuestion` before paper-extraction has run.** Stage 1 collects the identifier in prose; everything else waits until Stage 3, after the paper is on disk and questions can name actual content.
 - **The paper-identifier question is prose.** It's the one question that doesn't fit `AskUserQuestion`'s multiple-choice shape.
 - **Three to six `AskUserQuestion` rounds total** — scope, fidelity, code repo, conventions, familiarity, external context, plus any Stage 4 follow-up. Batch independent ones into a single multi-question call.
-- **One commit at the launch gate, with everything.** `PLAN.md` + skeleton + targets + `CLAUDE.md` + substrate go in together. No intermediate "paper landed but unapproved" commits.
-- **Defaults are the path.** When the user says "you choose," take the defaults — full reproduction, the paper's natural sub-analysis structure. The defaults reflect what the architecture has learned about which seams matter.
+- **One commit at the launch gate, with everything.** `PLAN.md` + `CLAUDE.md` + substrate go in together. No intermediate "paper landed but unapproved" commits.
+- **Defaults are the path.** When the user says "you choose," take the defaults — full reproduction, the paper's natural decomposition. The defaults reflect what the architecture has learned about which seams matter.
 - **One paper per workdir.** A single PLAN covers one paper. Two papers → run ORIENT twice, two reproduction directories.
 - **No code repo is a valid outcome.** When `code-status.yaml` records `found: false`, the reproduction runs paper-only — methodology lives in the paper's prose, no code-as-canonical adjudication. `CLAUDE.md`'s code-as-canonical Rule self-disables.
 
@@ -242,4 +235,4 @@ If the user walks into a workdir mid-flow, read what's on disk before re-running
 - **`work/reference/{paper.pdf, source/ or document.md, index.json, astra.yaml}` present, no `PLAN.md`** → the paper substrate from Stage 2 exists but the plan isn't built. `/paper-extraction` is idempotent — re-invoke if anything looks partial; it skips done work. Resume from the earliest incomplete stage.
 - **`work/reference/code/` present, or `code-status.yaml` `found: false` + `code-index.md` present** → the code substrate from Stage 4 exists. `/lc-from-code` scan-only skips done work too.
 
-Identify the earliest missing piece and resume from there. ORIENT is done — and the workflow takes over — only once `PLAN.md`, the `astra.yaml` skeleton, `targets/targets.md`, and `CLAUDE.md` are all committed.
+Identify the earliest missing piece and resume from there. ORIENT is done — and the workflow takes over — only once `PLAN.md`, `CLAUDE.md`, and the substrate are all committed.

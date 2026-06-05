@@ -28,8 +28,8 @@ Material disagreements between paper and code, logged as they are found. Code is
 
 - [`PLAN.md`](PLAN.md) — Goal, Fidelity intent, Scope, Targets, Decomposition, Evidence. The human-approved reproduction contract.
 - [`targets/targets.md`](targets/targets.md) — the replication-target ledger (priority, expected value + stated uncertainty, comparison guidance). VERIFY writes a test per row.
-- `astra.yaml` — the spec: sub-analyses, inputs, outputs, decisions, findings, prior_insights, recipes. Filled by the workflow from the ORIENT skeleton; the single source of truth for execution.
-- [`reproduce_workflow.js`](.claude/skills/lc-from-paper/reproduce_workflow.js) — the autonomous middle: SPECIFY ∥ LITERATURE → IMPLEMENT → RUN → VERIFY → REVIEW. Phase contracts live in `references/<phase>.md`.
+- `astra.yaml` — the spec: sub-analyses, inputs, outputs, decisions, findings, prior_insights, recipes. The skeleton is built by the workflow's ARCHITECT phase from `PLAN.md`, then filled by SPECIFY/IMPLEMENT; the single source of truth for execution.
+- [`reproduce_workflow.js`](.claude/skills/lc-from-paper/reproduce_workflow.js) — the autonomous middle: ARCHITECT → SPECIFY ∥ LITERATURE → IMPLEMENT → RUN → VERIFY → REVIEW. Phase contracts live in `references/<phase>.md`.
 - `work/reference/index.json` — paper structural index (figures, tables, outline, citations with resolved DOIs); the starting surface for any "where in the paper does X happen" lookup.
 - `work/reference/code-index.md` — code inventory (when code present): module map, candidate decisions with file:line, entry-points, gotchas. The sub-analysis → code mapping every phase consults.
 - `open-questions.md` — accumulated questions the workflow couldn't resolve; walked with the user at close-out.

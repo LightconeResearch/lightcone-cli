@@ -2,10 +2,12 @@
 
 <!-- The human-readable contract for what gets reproduced and how hard. Drafted in
      ORIENT (main session), presented in plan mode, and committed as PLAN.md on
-     approval — alongside the astra.yaml skeleton, targets/targets.md, and CLAUDE.md.
-     This is a STATIC RECORD of what we agreed to: the workflow reads it for intent and
-     scope, but does not rewrite it. If the agreement itself changes, a later session
-     amends this file in the main session, not the workflow. -->
+     approval — alongside CLAUDE.md and the work/reference/ substrate. The plan carries
+     PROSE SKETCHES of the targets and the decomposition; the Workflow's first phase
+     (ARCHITECT) realizes those into the formal targets/targets.md ledger and astra.yaml
+     skeleton. This is a STATIC RECORD of what we agreed to: the workflow reads it for
+     intent and scope, but does not rewrite it. If the agreement itself changes, a later
+     session amends this file in the main session, not the workflow. -->
 
 Reproduce **<paper title>** (<arXiv ID>, DOI <doi>) — <one-line subject, e.g. "BAO scale measurement from DESI DR1">.
 
@@ -42,18 +44,19 @@ Reproduce **<paper title>** (<arXiv ID>, DOI <doi>) — <one-line subject, e.g. 
 
 **Out:** <explicit exclusions, fenced from drift — sub-analyses, ablations, or extensions we are deliberately not reproducing this pass.>
 
-## Targets
+## Targets (sketch)
 
-The replication-target ledger lives in [`targets/targets.md`](targets/targets.md) — every target with its priority, expected value + stated uncertainty, and comparison guidance. That ledger is what VERIFY writes a test against, one test per target; this section is the prose summary.
+A one-line-per-target sketch the user ratifies in plan mode. The Workflow's ARCHITECT turns this into the formal [`targets/targets.md`](targets/targets.md) ledger — every target with its priority, expected value + stated uncertainty, and comparison guidance — and VERIFY writes one test per ledger row.
 
-<2–4 lines naming the primary targets and what carries the headline. E.g.: "Primary:
- the BAO scale α = 0.987 ± 0.012 (Table 3) and its posterior (Fig 4). Secondary: the
- reconstructed correlation function (Fig 2). See the ledger for the full list and
- tolerances.">
+<One line per in-scope replication target: what it is, the paper's claimed value with its
+ stated uncertainty, primary/secondary. E.g.:
+ - Primary · BAO scale α = 0.987 ± 0.012 (Table 3) — metric, within stated 1σ
+ - Primary · α posterior (Fig 4) — figure, shape + peak location
+ - Secondary · reconstructed ξ(s) (Fig 2) — figure, trend + zero-crossing>
 
-## Decomposition
+## Decomposition (sketch)
 
-The reproduction is split into the sub-analyses below (skeleton in [`astra.yaml`](astra.yaml) — structure only at plan time: inputs, outputs, narrative; no decisions/findings/recipes yet, the workflow fills those). Each sub-analysis is a coherent unit the workflow specifies, implements, and verifies.
+The rough carving of the paper into sub-analyses — *prose*, grounded in the code scan. ARCHITECT realizes this into the [`astra.yaml`](astra.yaml) skeleton (inputs, outputs, narrative; the later phases fill decisions/findings/recipes), taking the code's stage boundaries as canonical where they differ from the paper. Each sub-analysis is a coherent unit the workflow specifies, implements, and verifies.
 
 | Sub-analysis | What it produces | Why it's its own unit |
 |---|---|---|

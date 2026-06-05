@@ -1,34 +1,31 @@
 // reproduce-paper workflow — TEMPLATE, not a script to run verbatim.
 //
-// The autonomous middle of /lc-from-paper. The interactive ORIENT bookend (in
-// the user's main session) has already produced, on disk in the workdir:
-//   - astra.yaml          SKELETON: sub-analyses, inputs, outputs, narrative;
-//                         no decisions:/findings:/recipes: yet
-//   - targets/targets.md  the replication-target ledger VERIFY writes tests against
-//   - PLAN.md             Goal + Fidelity intent (the STOPPING CRITERION) + Scope
+// The autonomous middle of /lc-from-paper. The interactive ORIENT bookend (in the
+// user's main session) has already produced, on disk in the workdir, and gated
+// through plan mode:
+//   - PLAN.md             the approved reproduction plan: Goal + Fidelity intent
+//                         (the STOPPING CRITERION) + Scope + decomposition sketch
 //   - CLAUDE.md           paper identity, rules, pointers, disagreements log
 //   - work/reference/     paper substrate (+ code/ + code-index.md when a repo exists)
-// ...and the plan has been approved in plan mode. This workflow fills the spec,
-// implements it, runs it, verifies it against the paper's claims, and reviews it.
+// This workflow builds the spec from that plan and carries it to a verified result.
 //
-// The shape is fixed; the SURFACES to tune per paper are the schemas, the model
-// tier, and the per-phase contract files under references/. Each phase points its
-// agents at references/<phase>.md rather than inlining a giant prompt — edit the
-// reference, not this file, to change a phase's discipline.
+// Each phase points its agents at references/<phase>.md — the contract lives in the
+// reference (read it to change a phase's discipline), and the prompt here only
+// carries the per-invocation specifics (which item, where to write notes, the schema).
 //
-// Spine: SPECIFY ∥ LITERATURE (pipeline, no barrier) → merge → IMPLEMENT (parallel)
-// → merge → RUN → VERIFY (a test per claim; run→fix→rerun, bounded by intent)
-// → REVIEW (report.html + structured summary returned to the main agent).
+// Spine: ARCHITECT (skeleton + targets) → SPECIFY ∥ LITERATURE (pipeline, no barrier)
+// → merge → IMPLEMENT (parallel) → merge → RUN → VERIFY (a test per claim;
+// run→fix→rerun, bounded by intent) → REVIEW (report.html + summary to the main agent).
 //
 // Sibling of citation_audit_workflow.js: same fan-out → verify → synthesize
-// philosophy, but here the work-list is discovered (sub-analyses, outputs,
-// targets) and the "vote" is the per-paper test suite VERIFY generates, not a
-// pre-written gate.
+// philosophy, but here the work-list is discovered (sub-analyses, outputs, targets)
+// and the "vote" is the per-paper test suite VERIFY generates, not a pre-written gate.
 
 export const meta = {
   name: 'reproduce-paper',
-  description: 'Reproduce a paper in ASTRA: specify ∥ literature → implement → run → verify-by-claim-tests → review',
+  description: 'Reproduce a paper in ASTRA: architect → specify ∥ literature → implement → run → verify-by-claim-tests → review',
   phases: [
+    { title: 'Architect', detail: 'realize the approved plan into the astra.yaml skeleton + targets ledger' },
     { title: 'Specify',   detail: 'fill decisions/findings per sub-analysis; resolve cited-paper quotes (pipelined)' },
     { title: 'Implement', detail: 'one worker per output, parallel; scripts + recipes' },
     { title: 'Run',       detail: 'lc run over the Snakemake DAG' },
@@ -41,6 +38,7 @@ const REF = '.claude/skills/lc-from-paper/references'
 const ASTRA = 'astra.yaml'
 const TARGETS = 'targets/targets.md'
 const INTENT = args?.intent || 'read PLAN.md "Fidelity intent" — the stopping criterion'
+const strip = s => s.trim().replace(/^```json?|```$/g, '')
 
 // ───────────────────────── schemas ─────────────────────────
 // One structured return per worker; a single merge step writes astra.yaml so two
@@ -110,38 +108,44 @@ const VERDICT_SCHEMA = {
   },
 }
 
-// ───────────── Phase 1+2: SPECIFY ∥ LITERATURE (pipeline) ─────────────
-// Each sub-analysis is specified, then its citations resolved, as a pipeline:
-// sub A's literature runs while sub B is still being specified. Workers RETURN
-// structured output; a single barrier merge folds everything into astra.yaml.
+// ───────────── Phase 1: ARCHITECT — realize the approved plan into the spec scaffolding ─────────────
+// One agent (the decomposition is a holistic call, not a fan-out). Turns the approved
+// PLAN.md + substrate into the astra.yaml SKELETON + the targets ledger VERIFY tests against.
+phase('Architect')
+await agent(
+  `ARCHITECT. Read ${REF}/architect.md — that is your contract. From the approved PLAN.md and the substrate under ` +
+  `work/reference/ (paper + code-index.md when present), write the ${ASTRA} SKELETON (sub-analyses, inputs, outputs, ` +
+  `narrative — no decisions/findings/recipes yet) and ${TARGETS} (the replication-target ledger: each target with ` +
+  `priority + expected value + stated uncertainty + comparison guidance). Then: astra validate ${ASTRA}. Commit.`,
+  { label: 'architect', phase: 'Architect' }
+)
+
+// ───────────── Phase 2+3: SPECIFY ∥ LITERATURE (pipeline, no barrier) ─────────────
+// Each sub-analysis is specified, then its citations resolved, as a pipeline: sub A's
+// literature runs while sub B is still being specified. Workers WRITE structured output
+// to work/notes/<phase>/<sub>.json (and return it); the merge reads the notes dirs — so
+// it sees BOTH stages (a pipeline only returns its final stage) and is resume-safe.
 phase('Specify')
-const subs = JSON.parse((await agent(
-  `Read ${ASTRA}. Return ONLY a JSON array of the sub-analysis ids (keys under analyses:, or ["root"] if the spec is monolithic).`,
+const subs = JSON.parse(strip(await agent(
+  `Read ${ASTRA}. Return ONLY a JSON array of the sub-analysis ids (keys under analyses:, or ["root"] if monolithic).`,
   { label: 'list-subanalyses', phase: 'Specify' }
-)).trim().replace(/^```json?|```$/g, ''))
+)))
 log(`specifying ${subs.length} sub-analysis(es): ${subs.join(', ')}`)
 
-// Each worker WRITES its structured output to work/notes/<phase>/<sub>.json and also
-// returns it. The merge reads the notes dirs — so it sees BOTH stages (a pipeline only
-// returns its final stage), and it's resume-safe (notes survive a re-run).
 const specced = (await pipeline(
   subs,
   sub => agent(
-    `SPECIFY sub-analysis "${sub}". Read ${REF}/specify.md for your full contract, then read the relevant ` +
-    `paper text under work/reference/ and (if present) the code at the path code-index.md maps for "${sub}". ` +
-    `Fidelity intent (governs how exhaustively to specify): ${INTENT}. Code is canonical where it disagrees ` +
-    `materially with the paper; record such conflicts in disagreements[]. Do NOT edit ${ASTRA}. ` +
-    `Write your structured output to work/notes/specify/${sub}.json (mkdir -p first) AND return it (SPEC_SCHEMA) — ` +
-    `the merge reads the notes file; the return threads to LITERATURE.`,
+    `You are the SPECIFY worker for sub-analysis "${sub}". Read ${REF}/specify.md — that is your full contract ` +
+    `(what to read, the two-pass paper→code discipline, code-as-canonical, the citation-placeholder shape). ` +
+    `Fidelity intent (how exhaustively to specify): ${INTENT}. ` +
+    `Write your output to work/notes/specify/${sub}.json (mkdir -p first) AND return it (SPEC_SCHEMA) — the merge ` +
+    `reads the notes file; the return threads to LITERATURE.`,
     { label: `specify:${sub}`, phase: 'Specify', schema: SPEC_SCHEMA }
   ),
   (spec, sub) => agent(
-    `LITERATURE for sub-analysis "${sub}". Read ${REF}/literature.md for your full contract. ` +
-    `Resolve every prior_insights placeholder this sub-analysis just produced: fetch each cited paper's substrate ` +
-    `(paper-extraction's deterministic script, batched), then find the verbatim quote in the cited paper that ` +
-    `justifies the placeholder's claim — quote:{exact,prefix,suffix}+location:{page} per evidence entry. ` +
-    `Placeholders: ${JSON.stringify(spec?.insight_placeholders ?? [])}. A placeholder with no supporting quote goes ` +
-    `in unresolved[] — do NOT fabricate evidence. Do NOT edit ${ASTRA}. ` +
+    `You are the LITERATURE worker for sub-analysis "${sub}". Read ${REF}/literature.md — that is your full contract ` +
+    `(fetch each cited paper's substrate, find the verbatim quote that justifies each placeholder, never fabricate). ` +
+    `Placeholders to resolve: ${JSON.stringify(spec?.insight_placeholders ?? [])}. ` +
     `Write your output to work/notes/literature/${sub}.json (mkdir -p first) AND return it (LIT_SCHEMA).`,
     { label: `literature:${sub}`, phase: 'Literature', schema: LIT_SCHEMA }
   )
@@ -159,21 +163,18 @@ await agent(
   { label: 'merge:spec', phase: 'Specify' }
 )
 
-// ───────────────────── Phase 3: IMPLEMENT (parallel per output) ─────────────────────
+// ───────────────────── Phase 4: IMPLEMENT (parallel per output) ─────────────────────
 phase('Implement')
-const outputs = JSON.parse((await agent(
-  `Read ${ASTRA}. Return ONLY a JSON array of output ids that need a recipe (every declared output across all ` +
-  `sub-analyses that has no recipe yet).`,
+const outputs = JSON.parse(strip(await agent(
+  `Read ${ASTRA}. Return ONLY a JSON array of output ids that still need a recipe (declared, no recipe yet).`,
   { label: 'list-outputs', phase: 'Implement' }
-)).trim().replace(/^```json?|```$/g, ''))
+)))
 log(`implementing ${outputs.length} output(s)`)
 
 const implemented = (await parallel(outputs.map(out => () => agent(
-  `IMPLEMENT output "${out}". Read ${REF}/implement.md for your full contract, the output's spec entry in ${ASTRA}, ` +
-  `implementation-notes.md, and (canonical) the reference code at the path code-index.md maps for it. Write ` +
-  `scripts/${out}.py (a DISJOINT file — do not touch other outputs' scripts or ${ASTRA}), parameterized from the ` +
-  `decisions it consumes. Real data only. Write your recipe+requirements to work/notes/implement/${out}.json ` +
-  `(mkdir -p first) AND return it (IMPL_SCHEMA) — the merge reads the notes files.`,
+  `You are the IMPLEMENT worker for output "${out}". Read ${REF}/implement.md — that is your full contract ` +
+  `(write scripts/${out}.py as a DISJOINT file parameterized from its decisions, code-as-canonical, REAL DATA ONLY). ` +
+  `Write your recipe+requirements to work/notes/implement/${out}.json (mkdir -p first) AND return it (IMPL_SCHEMA).`,
   { label: `implement:${out}`, phase: 'Implement', schema: IMPL_SCHEMA }
 )))).filter(Boolean)
 log(`${implemented.length} output(s) implemented`)
@@ -187,82 +188,73 @@ await agent(
   { label: 'merge:implement', phase: 'Implement' }
 )
 
-// ───────────────────────────── Phase 4: RUN ─────────────────────────────
+// ───────────────────────────── Phase 5: RUN ─────────────────────────────
 phase('Run')
 await agent(
-  `RUN. Read ${REF}/run.md. Execute: lc run --universe baseline — this drives the Snakemake DAG; cluster jobs may ` +
-  `be long, so Monitor the logs rather than polling. Iterate on run-failures (read the .log, fix the script/recipe/` +
-  `requirements, re-run) until lc status --universe baseline shows every output ok. Then commit. Report the final ` +
-  `lc status.`,
+  `RUN. Read ${REF}/run.md — that is your contract. Drive lc run --universe baseline to all-ok (Monitor long/cluster ` +
+  `jobs rather than polling), iterate on failures, commit, and report the final lc status.`,
   { label: 'run:baseline', phase: 'Run' }
 )
 
-// ───────────── Phase 5: VERIFY — a test per claim, then a fix-loop bounded by intent ─────────────
-// We cannot pre-write a gate for THIS paper's claims; we GENERATE one. Write a test
-// per replication target, run the suite, and where a test fails diagnose+fix+rerun —
-// looping until green or until the fidelity intent says "reasonable-ish, stop."
+// ───────────── Phase 6: VERIFY — a test per claim, then a fix-loop bounded by intent ─────────────
+// We cannot pre-write a gate for THIS paper's claims; we GENERATE one. Write a test per
+// target, run the suite, and where a test fails diagnose+fix+rerun — until green or the
+// fidelity intent says "reasonable-ish, stop." Full contract in references/verify.md.
 phase('Verify')
 
 // how hard to push is the interview's job: derive a fix-round budget from the intent.
-const budgetInfo = JSON.parse((await agent(
+const budgetInfo = JSON.parse(strip(await agent(
   `Read PLAN.md's "Fidelity intent" and ${TARGETS}. The intent is the stopping criterion: ${INTENT}. ` +
   `Return ONLY JSON {"max_fix_rounds": <int>, "posture": "<one line on how close is close enough per target priority>"}. ` +
   `Rough calibration: "afternoon/sanity" → 1-2; "overnight/headline" → 3-4; "a day or two" → 5-6; "no deadline" → 8+.`,
   { label: 'verify:budget', phase: 'Verify' }
-)).trim().replace(/^```json?|```$/g, ''))
+)))
 const MAX_ROUNDS = budgetInfo.max_fix_rounds ?? 3
 log(`verify: ${MAX_ROUNDS} max fix rounds — ${budgetInfo.posture}`)
 
-const targets = JSON.parse((await agent(
+const targets = JSON.parse(strip(await agent(
   `Read ${TARGETS}. Return ONLY a JSON array of replication-target ids (each maps to an output).`,
   { label: 'list-targets', phase: 'Verify' }
-)).trim().replace(/^```json?|```$/g, ''))
+)))
 
 // write a test per target — disjoint files, so parallel is safe.
 await parallel(targets.map(t => () => agent(
-  `WRITE A TEST for replication target "${t}". Read ${REF}/verify.md for the contract, the target's row in ${TARGETS} ` +
-  `(priority, expected value + stated uncertainty, comparison guidance), the matching result in ` +
-  `results/baseline/<output>/, and the paper text for what the claim actually is. Write tests/test_${t}.py: a metric ` +
-  `test asserts the reproduced value is within the paper's stated uncertainty; a table test checks the key cells; a ` +
-  `figure test asserts structural features (shape, ranges, peaks/ordering), NOT pixels. The test reads the result ` +
-  `from results/baseline/ and the expected value from ${TARGETS}. Commit the test.`,
+  `You are the VERIFY test-writer for target "${t}". Read ${REF}/verify.md Part 1 — that is your contract ` +
+  `(encode the paper's claim as tests/test_${t}.py; the metric/table/figure bars). Read the target's row in ` +
+  `${TARGETS} and the matching result in results/baseline/. Commit the test.`,
   { label: `test:${t}`, phase: 'Verify', schema: TEST_SCHEMA }
 )))
 
-// the fix-loop: run the suite; while failing && budget remains, fix the failing
-// outputs and re-run the FULL suite (interdependence — a fix can regress a sibling).
+// the fix-loop: run the suite; while failing && budget remains, fix the failing outputs
+// and re-run the FULL suite (interdependence — a fix can regress a passing sibling).
 let verdict = null
 for (let round = 0; round <= MAX_ROUNDS; round++) {
   verdict = await agent(
-    `Run the claim-test suite: lc run --universe baseline (re-materialize any stale outputs), then run ` +
-    `tests/ (pytest). Return per-target pass/fail with reproduced vs expected and a one-line diagnosis for each ` +
-    `failure. Do NOT fix anything in this step — just report.`,
+    `Read ${REF}/verify.md Part 2. Run lc run --universe baseline (re-materialize stale outputs) then pytest tests/. ` +
+    `Return the VERDICT_SCHEMA (per-target pass/fail + reproduced/expected + one-line diagnosis; all_pass; failing[]). ` +
+    `Report only — fix nothing.`,
     { label: `verify:run#${round}`, phase: 'Verify', schema: VERDICT_SCHEMA }
   )
   if (verdict.all_pass || round === MAX_ROUNDS) break
   log(`round ${round}: ${verdict.failing.length} failing — ${verdict.failing.join(', ')}`)
   // fix the failing targets (parallel where the failures are in disjoint outputs).
   await parallel(verdict.failing.map(t => () => agent(
-    `FIX failing target "${t}". Read ${REF}/verify.md, the test tests/test_${t}.py, its diagnosis, the script that ` +
-    `produces it, and the canonical reference code. Code is canonical where it disagrees with the paper. Make the ` +
-    `smallest correct change to the implementation (script, recipe, or a decision's baseline value) so the claim ` +
-    `holds — do NOT weaken the test to pass. If the gap is genuinely in the paper (under-specified, or our reading ` +
-    `of intent says stop here), log it to open-questions.md instead. Commit the fix.`,
+    `You are a VERIFY fix worker for failing target "${t}". Read ${REF}/verify.md Part 2 — that is your contract ` +
+    `(smallest correct change to the IMPLEMENTATION so the claim holds; NEVER weaken the test; code-as-canonical; ` +
+    `a genuine paper gap goes to open-questions.md). The diagnosis is in the verdict. Commit the fix.`,
     { label: `fix:${t}#${round}`, phase: 'Verify' }
   )))
 }
 log(`verify done: ${verdict.all_pass ? 'all targets pass' : verdict.failing.length + ' below intent — logged'}`)
 
-// ───────────── Phase 6: REVIEW — synthesize, fix obvious gaps, emit report + summary ─────────────
+// ───────────── Phase 7: REVIEW — synthesize, fix obvious gaps, emit report + summary ─────────────
 phase('Review')
 const summary = await agent(
-  `REVIEW (in-workflow). Read ${REF}/review.md for the in-workflow contract. Survey the whole reproduction: ${ASTRA}, ` +
-  `the verify verdict (${JSON.stringify(verdict)}), results/baseline/, open-questions.md, PLAN.md's fidelity intent. ` +
-  `Fix any obvious remaining problems (a mislabeled output, a recipe typo) but do NOT start a new fix campaign — the ` +
-  `intent has been honored. Write report.html (a self-contained side-by-side of paper claims vs reproduced values, ` +
-  `parchment palette, phone-renderable) summarizing where the reproduction landed against intent. Commit. Return a ` +
-  `structured summary: targets passed/total, which landed below intent and why, open questions for the human, and the ` +
-  `report.html path.`,
+  `REVIEW (in-workflow). Read ${REF}/review.md Part A — that is your contract. Survey the reproduction against ` +
+  `PLAN.md's fidelity intent, fix only obvious remaining gaps (no new fix campaign), write report.html (a ` +
+  `self-contained claims-vs-values side-by-side, parchment palette, phone-renderable), commit, and return the ` +
+  `structured summary (targets passed/total, which landed below intent + why, open questions, report.html path). ` +
+  `The verify verdict: ${JSON.stringify(verdict)}.`,
   { label: 'review:synthesize', phase: 'Review' }
 )
 

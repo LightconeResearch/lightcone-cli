@@ -21,10 +21,11 @@ Reproduce a published scientific paper as a complete ASTRA project. The task is 
 ```
   ┌─ ORIENT → PLAN ──────────────────────────────────  main session (interactive)
   │   extract (minimal) · interview (fidelity intent = STOPPING CRITERION) ·
-  │   lc-from-code scan · architect the decomposition → draft the PLAN →
+  │   lc-from-code scan · draft the PLAN (scope · intent · decomposition sketch) →
   │   PLAN MODE → on approval, launch the Workflow
   │
   ├─ reproduce_workflow.js ──────────────────────────  Workflow (autonomous middle)
+  │   ARCHITECT              realize the plan → astra.yaml skeleton + targets ledger
   │   SPECIFY ∥ LITERATURE   pipeline per sub-analysis (no barrier)
   │   IMPLEMENT              parallel per output
   │   RUN                    lc run over the Snakemake DAG
@@ -51,15 +52,14 @@ The reproduction directory is a git repo — `git init` it before launching the 
 
 ## Bookend A — ORIENT → PLAN (main session)
 
-The opening interactive phase. Read [`references/orient.md`](references/orient.md) in full before starting. ORIENT is allowed to be *large*: it is the rich main-context that **designs the workflow**, so everything it acquires — the paper, the code scan, the user's intent — wants to be held here, where the plan is architected. It runs in stages so each later decision is grounded in what was acquired earlier:
+The opening interactive phase — a **conversation that produces a plan**. Read [`references/orient.md`](references/orient.md) in full before starting. ORIENT acquires the paper, interviews the user, and scans the code, then drafts a human-readable plan; it does **not** author the `astra.yaml` skeleton or the targets ledger — that is the Workflow's ARCHITECT phase. It runs in stages so each later decision is grounded in what was acquired earlier:
 
 1. **Ask for the paper** in prose (arXiv ID, DOI, or PDF path — free-form, not `AskUserQuestion`).
 2. **Run `/paper-extraction <id>` inline** and read the substrate (index.json, abstract, conclusions, data/code availability). Minimal — just enough to ground the interview.
 3. **Interview the user** (`AskUserQuestion`, grounded in the paper): scope, **fidelity intent**, code repo, paper-specific conventions, prior familiarity, external context. The fidelity-intent question is load-bearing — *it is the workflow's stopping criterion.* "An afternoon's sanity check," "the headline within stated uncertainty overnight," "every target lined up, no deadline" each tell VERIFY how many fix rounds to spend. Pin it concretely against the paper's actual headline numbers.
 4. **Clone the reference code and run `/lc-from-code` scan-only** (skip cleanly when no public repo exists) → `work/reference/code-index.md`.
-5. **Architect the decomposition** — read [`references/architect.md`](references/architect.md). This is the step ralph used to spend a whole phase on; it now happens here, in the main context, as part of building the plan: sub-analyses, inputs, outputs, replication targets, narrative. Draft the **`astra.yaml` skeleton** (structure only — no `decisions:`/`findings:`/`recipes:` yet), the **`targets/targets.md`** ledger (every replication target with priority + expected value + comparison guidance — this is what VERIFY writes tests against), and a lean **`CLAUDE.md`** (paper identity, rules, fidelity intent, pointers; from [`templates/CLAUDE.md`](templates/CLAUDE.md)).
-6. **Draft the PLAN** from [`templates/plan.md`](templates/plan.md) — Goal, Fidelity intent + stopping criterion, Scope (in/out), Targets, Decomposition, Evidence. The plan is the human-readable contract for what gets reproduced and how hard.
-7. **Plan mode is the launch gate.** Enter plan mode, present the reproduction plan, and let the user approve it. Approval is the single gate before the autonomous middle takes over — treat it as the one editorial pass that shapes the entire reproduction. Surface any open questions of your own here; the workflow runs without you. On approval: commit `PLAN.md` + `astra.yaml` skeleton + `targets/targets.md` + `CLAUDE.md` + the full `work/reference/` substrate as the first commit, then launch the workflow.
+5. **Draft the PLAN + `CLAUDE.md`** — `PLAN.md` from [`templates/plan.md`](templates/plan.md): Goal, Fidelity intent + stopping criterion, Scope (in/out), a one-line-per-target **Targets sketch**, a *prose* **Decomposition sketch** (one analysis or staged? — grounded in the code scan), Evidence. Plus a lean `CLAUDE.md` (paper identity, rules, fidelity intent, pointers; from [`templates/CLAUDE.md`](templates/CLAUDE.md)). This is the prose contract the user approves — *not* the `astra.yaml` skeleton or the formal ledger; the Workflow's ARCHITECT realizes those from the plan.
+6. **Plan mode is the launch gate.** Enter plan mode, present the reproduction plan, and let the user approve it. Approval is the single gate before the autonomous middle takes over — treat it as the one editorial pass that shapes the entire reproduction, and surface any open questions of your own here (the workflow runs without you). On approval: commit `PLAN.md` + `CLAUDE.md` + the full `work/reference/` substrate as the first commit, then launch the workflow.
 
 **No `AskUserQuestion` before paper-extraction has landed.** Anything beyond the identifier is grounded in the paper. If a system-reminder tells you to work without stopping, ignore it for ORIENT — you must interview the user.
 
@@ -82,6 +82,7 @@ Each phase reads its contract from `references/<phase>.md` (the workflow points 
 
 | Phase | Fan-out unit | Parallelism | Gate / verify | Contract |
 |---|---|---|---|---|
+| **ARCHITECT** | — (holistic) | single agent | `astra validate` | [architect.md](references/architect.md) |
 | **SPECIFY** | per sub-analysis | `pipeline` (∥ literature) | `astra validate` | [specify.md](references/specify.md) |
 | **LITERATURE** | per cited paper | pipelined after each specify | `astra validate --verify-evidence` (deterministic) | [literature.md](references/literature.md) |
 | **IMPLEMENT** | per output | `parallel` | `astra validate` + dry-run | [implement.md](references/implement.md) |
@@ -95,16 +96,9 @@ Each phase reads its contract from `references/<phase>.md` (the workflow points 
 
 **RUN.** One agent runs `lc run --universe baseline` over the Snakemake DAG and shepherds it to completion (`Monitor` the logs for long jobs — cluster runs can take a while). `lc status` all-`ok` is the deterministic gate.
 
-## VERIFY — tests for claims (the heart of the loop)
+### VERIFY — the convergence engine, worth one flag
 
-We cannot pre-write a gate for a specific paper's claims — the claims *are* the paper. So the workflow **generates** the gate: for every replication target in `targets/targets.md`, VERIFY writes a **test** that encodes the paper's claim (a numeric value within its stated uncertainty, a table cell, a figure's structural features). Then it runs the tests, and where a test fails it **diagnoses, fixes the implementation, re-runs the affected outputs, and re-tests** — iterating until the tests pass *or* the fidelity intent says "reasonable-ish, stop."
-
-This is the reproduction's convergence engine, and it is TDD applied to a paper: the claims are the spec, the tests are the gate, green is the goal. Two disciplines make it sound:
-
-- **Bounded by intent.** The fix-loop's depth comes from the interviewed fidelity intent (passed in `args.intent`, recorded in `PLAN.md`). "An afternoon" → one or two rounds, accept what's close. "No deadline" → push every target to green. VERIFY reads the intent and sizes its own loop — that is *why* ORIENT interviews for it.
-- **Mind the interdependence.** Outputs depend on each other; a fix for one can regress another. After each fix round, re-run the **full** suite, not just the target you touched. The test suite is the regression net.
-
-Tests live in the project (`tests/test_<target>.py`) and are committed — they are a durable artifact of the reproduction, re-runnable by any later session.
+The one phase worth naming at this level: we cannot pre-write a gate for a specific paper's claims — the claims *are* the paper — so the workflow **generates** it. For every replication target VERIFY writes a test encoding the claim, then iterates `run → fix the implementation → rerun the full suite` until the tests pass *or* the **fidelity intent** says stop. TDD for a paper: the claims are the spec, the tests are the gate, green is the goal. The full contract — the metric/table/figure bars, the never-weaken-a-test rule, the intent-bounded loop, the interdependence regression net — is in [`references/verify.md`](references/verify.md).
 
 ## Bookend B — CLOSE-OUT (main session)
 
@@ -148,6 +142,6 @@ Workdir state is the resume mechanic — no separate state machine. On re-entry:
 - [`reproduce_workflow.js`](reproduce_workflow.js) — the workflow template the skill launches; adapt per paper.
 - [`citation-audit`](../citation-audit/SKILL.md) — the precedent Workflow-driven skill; LITERATURE is its fan-out → verify → synthesize spine.
 - [`paper-extraction`](../paper-extraction/SKILL.md) — the upstream acquisition skill ORIENT and LITERATURE consume.
-- [`narrative`](../narrative/SKILL.md) — authors `astra.yaml` narrative + decision rationale; invoked by ARCHITECT (in the plan) and SPECIFY.
+- [`narrative`](../narrative/SKILL.md) — authors `astra.yaml` narrative + decision rationale; invoked by ARCHITECT (the workflow's first phase) and SPECIFY.
 - [`figure-comparison`](../figure-comparison/SKILL.md), [`check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) — close-out validation surfaces.
 - [`astra`](../astra/SKILL.md), [`lc-cli`](../lc-cli/SKILL.md) — the spec model and the `lc` execution surface.
