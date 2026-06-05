@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,24 @@ _AUDIT_TAG = "citation_audit"
 def _now_iso() -> str:
     """Stable ISO-8601 UTC timestamp."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _astra_id(use_id: str) -> str:
+    """Coerce a ledger `use_id` into a valid ASTRA insight id.
+
+    ASTRA's id grammar is `^[a-z][a-z0-9_]*$` (lowercase, must start with
+    a letter). Most use_ids already satisfy it, but bibcode-derived keys
+    begin with the publication year (e.g. `2015mnras_448_3391c__line_9`,
+    `2024ojap____7e__14l__line_6`), which fails `^[a-z]`. Lowercase the
+    string, replace any char outside `[a-z0-9_]` with `_`, and prefix a
+    stable `c` (for *citation*) when it does not already start with a
+    letter. Deterministic and idempotent, so re-materialization keeps the
+    same id.
+    """
+    s = re.sub(r"[^a-z0-9_]", "_", use_id.lower())
+    if not s or not s[0].isalpha():
+        s = "c" + s if s.startswith("_") else "c_" + s
+    return s
 
 
 def _anchors_of(row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -124,7 +143,7 @@ def _row_to_insight(
     tags = [_AUDIT_TAG, f"verdict:{verdict}", f"cite_key:{citation_key}"]
 
     insight: dict[str, Any] = {
-        "id": use_id,
+        "id": _astra_id(use_id),
         "claim": claim,
         "created_at": _now_iso(),
         "tags": tags,

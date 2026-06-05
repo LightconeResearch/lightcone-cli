@@ -77,16 +77,14 @@ const SCHEMA = {
 }
 
 // The verifier contract. Canonical spec lives in agents/citation-verifier.md;
-// this is the inline form the workflow spawns. Keep the two in sync.
-const contract = (stream, extra) => `You are a citation-audit verifier (Opus). For each manuscript statement that
+// this is the inline form the workflow spawns. Keep the two in sync. The shared
+// body (rules + gate + verdicts) is parameterized by the work ASSIGNMENT so the
+// same contract drives both the partition fan-out and the coverage redispatch.
+const verifierBody = (assignment) => `You are a citation-audit verifier (Opus). For each manuscript statement that
 cites a paper, decide whether the cited paper's OWN SOURCE supports it, and anchor that judgment in
 verbatim source quotes — ONE QUOTE PER FACET of the claim.
 
-**Your partition.** Read \`${PARTITIONS}\` and take the \`${stream}\` key — a list of paper bundles.
-Each bundle: citation_key, doi, backend (tex|pdf), source_dir/main_tex/tex_files (tex) or pdf_path +
-ads_metadata (pdf), citation_text, and rows[] (use_id, claim, manuscript_prefix, manuscript_suffix,
-cite_command). The claim is the manuscript sentence; prefix/suffix are the full surrounding sentences.
-Evaluate EVERY row.
+${assignment}
 
 **One job, every cite.** Does this paper, in its own words, support this claim — and where? No
 "identity" escape: a cite that merely NAMES a tool/method/survey still anchors the cited paper's own
@@ -120,9 +118,19 @@ suggested_rewording) | unsupported (on-topic, no support) | wrong_paper (differe
 fetched source looks like the WRONG paper, set doi_flag and judge against the cite's intent) |
 unverifiable (no anchorable quote despite genuine attempt — figure-only, or no fetchable source).
 
-${extra}
-
 Return structured output: one verdict object per row, with its anchors[]. notes required on every row.`
+
+const contract = (stream) => verifierBody(`**Your partition.** Read \`${PARTITIONS}\` and take the \`${stream}\` key — a list of paper bundles.
+Each bundle: citation_key, doi, backend (tex|pdf), source_dir/main_tex/tex_files (tex) or pdf_path +
+ads_metadata (pdf), citation_text, and rows[] (use_id, claim, manuscript_prefix, manuscript_suffix,
+cite_command). The claim is the manuscript sentence; prefix/suffix are the full surrounding sentences.
+Evaluate EVERY row.`)
+
+const redispatchContract = (bundles) => verifierBody(`**Your work.** These citation rows were dropped by the first verify pass — re-verify ONLY these.
+Bundles (JSON, same shape as a partition stream): ${JSON.stringify(bundles)}
+Each bundle: citation_key, doi, backend (tex|pdf), source_dir/main_tex/tex_files (tex) or pdf_path +
+ads_metadata (pdf), citation_text, rows[] (use_id, claim, manuscript_prefix, manuscript_suffix,
+cite_command). Evaluate EVERY row.`)
 
 // ---- Verify: fan a verifier over each partition stream --------------------
 phase('Verify')
@@ -132,10 +140,38 @@ const streams = JSON.parse(await agent(
 ).then(s => s.trim().replace(/^```json?|```$/g, '')))
 
 const results = await parallel(streams.map(stream => () =>
-  agent(contract(stream, ''), { label: `verify:${stream}`, phase: 'Verify', model: 'opus', schema: SCHEMA })
+  agent(contract(stream), { label: `verify:${stream}`, phase: 'Verify', model: 'opus', schema: SCHEMA })
 ))
 const verdicts = results.filter(Boolean).flatMap(r => r.verdicts || [])
 log(`collected ${verdicts.length} verdicts across ${streams.length} streams`)
+
+// ---- Coverage guard: every partition row must get a verdict ----------------
+// A stream carrying many use-sites can exhaust a single verifier, which then
+// silently drops the tail (returns verdicts for the first papers only). Find the
+// dropped rows and redispatch them in small bundles until covered or 2 rounds
+// pass — the fan-out self-heals instead of quietly coming up short.
+let redispatchRounds = 0
+for (let round = 1; round <= 2; round++) {
+  const have = new Set(verdicts.map(v => v.use_id))
+  const missing = JSON.parse(await agent(
+    `Read ${PARTITIONS} (stream → bundles; each bundle has citation_key, doi, backend, the source fields, citation_text, and rows[] with use_id). ` +
+    `Return ONLY a JSON array of bundles — one per citation_key — keeping ONLY the rows[] whose use_id is NOT in this covered set, and dropping any bundle left with no rows: ${JSON.stringify([...have])}. ` +
+    `Return [] if every partition row is already covered. No prose.`,
+    { label: `coverage-check-r${round}`, phase: 'Verify' }
+  ).then(s => s.trim().replace(/^```json?|```$/g, '')))
+  const missRows = missing.reduce((n, b) => n + ((b.rows && b.rows.length) || 0), 0)
+  if (!missRows) break
+  redispatchRounds = round
+  log(`coverage round ${round}: ${missRows} row(s) un-verdicted across ${missing.length} paper(s); redispatching`)
+  const batches = []
+  for (let i = 0; i < missing.length; i += 4) batches.push(missing.slice(i, i + 4))  // ≤4 papers/verifier so it can't re-overflow
+  const recovered = (await parallel(batches.map(bundles => () =>
+    agent(redispatchContract(bundles), { label: `verify:redispatch-r${round}`, phase: 'Verify', model: 'opus', schema: SCHEMA })
+  ))).filter(Boolean).flatMap(r => r.verdicts || [])
+  const seen = new Set(verdicts.map(v => v.use_id))
+  verdicts.push(...recovered.filter(v => v.use_id && !seen.has(v.use_id)))
+}
+log(`final: ${verdicts.length} verdicts (${redispatchRounds} redispatch round(s))`)
 
 // ---- Synthesize: barrier — merge, gate, materialize, validate, render -----
 // The ledger (${LEDGER}) is the durable spine: verdicts.json is merged into it
@@ -160,4 +196,4 @@ ${JSON.stringify({ verdicts })}
   { label: 'synthesize', phase: 'Synthesize' }
 )
 
-return { verdicts: verdicts.length, streams: streams.length }
+return { verdicts: verdicts.length, streams: streams.length, redispatchRounds }

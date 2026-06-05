@@ -39,6 +39,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -1103,6 +1104,11 @@ class DOIResolver:
 
     @staticmethod
     def _load_ads_key() -> str | None:
+        """ADS token: env var → ~/.ads/dev_key → login-shell env var.
+
+        The token is commonly exported only in an interactive rc (~/.zshrc) that
+        non-interactive pipeline shells never source; the login-shell fallback
+        recovers it so the env var stays the canonical home."""
         env = os.environ.get("ADS_API_TOKEN") or os.environ.get("ADS_DEV_KEY")
         if env:
             return env.strip()
@@ -1112,6 +1118,18 @@ class DOIResolver:
                     return path.read_text().strip() or None
                 except OSError:
                     pass
+        shell = os.environ.get("SHELL")
+        if shell:
+            try:
+                proc = subprocess.run(
+                    [shell, "-ic", 'printf "ADSK<%s>ADSK" "${ADS_API_TOKEN:-${ADS_DEV_KEY:-}}"'],
+                    capture_output=True, text=True, timeout=8, check=False,
+                )
+                m = re.search(r"ADSK<([^>]*)>ADSK", proc.stdout)
+                if m and m.group(1).strip():
+                    return m.group(1).strip()
+            except (OSError, subprocess.SubprocessError):
+                pass
         return None
 
     def resolve(

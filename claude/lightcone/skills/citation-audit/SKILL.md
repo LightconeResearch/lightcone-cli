@@ -183,12 +183,29 @@ A user-pre-placed `papers/<slug>/paper.pdf` is honored as a `pdf` backend.
 PDF is a fetch backend, never a verdict. Idempotent — re-runs skip recorded
 DOIs unless `--refresh`.
 
+**ADS token.** The DOI→eprint/bibcode resolver (`resolve_arxiv.py`) needs a NASA
+ADS API token — but only as a *fallback*: `fetch_sources.py` first uses the
+eprint/bibcode the `.bib` already carries (the common case needs no ADS at all).
+The token is loaded, in order, from `$ADS_API_TOKEN` / `$ADS_DEV_KEY`, then
+`~/.ads/dev_key`, then **the user's login shell** (it is commonly exported only in
+an interactive `~/.zshrc`/`~/.bashrc`, which the non-interactive pipeline shell
+never sources — the loader sources `$SHELL -ic` to recover it). **If no token is
+found and cites remain unresolved, ask the user** (via `AskUserQuestion`) to
+generate one at <https://ui.adsabs.harvard.edu/user/settings/token> and either
+`export ADS_API_TOKEN=…` in their shell rc or save it to `~/.ads/dev_key` — don't
+silently degrade a third of the bibliography to `unverifiable`.
+
 ### Step 3 — Verify (the workflow fan-out)
 
 Build the partition file (`partitions.json`): group the cited papers ~5–8 per
 stream — ideally clustered by topic — joining each ledger row to its
 `fetch_state` backend. Partitioning is orchestrator discretion; tight
-per-stream context is the goal.
+per-stream context is the goal. **Balance streams by use-site (row) count, not
+paper count:** a paper cited at many use-sites makes a stream much heavier than
+its paper-count suggests, and a single verifier handed too many rows can exhaust
+its budget and silently drop the tail. (The workflow's coverage guard catches and
+redispatches any rows a verifier drops — see below — but a balanced partition
+avoids the round-trip.)
 
 The workflow then fans one **citation-verifier** (Opus) over each stream. The
 agent reads the paper's own source, splits each composite claim into its
@@ -199,6 +216,12 @@ Run the template with the `Workflow` tool:
 ```js
 Workflow({ scriptPath: '.claude/skills/citation-audit/citation_audit_workflow.js' })
 ```
+
+After the fan-out, a **coverage guard** compares the returned verdicts against the
+partition rows, and **redispatches any dropped rows** (small bundles, ≤2 rounds)
+before synthesize — so a verifier that ran out of room on a heavy stream can't
+leave use-sites silently un-verdicted. Adapt the template's paths per manuscript
+(`BASE`/`SKILL`/`WORKDIR`/`REFDIR`); the coverage guard and contract are fixed.
 
 For a small manuscript (≤10 pending rows) you can skip the workflow and spawn
 one `citation-verifier` inline via `Task` (`subagent_type="citation-verifier"`,
