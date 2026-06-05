@@ -212,18 +212,21 @@ agent reads the paper's own source, splits each composite claim into its
 **facets**, and anchors **each facet separately** — one quote per facet. It
 self-validates every `.tex` anchor with `source_match.py` before returning.
 
-**Co-cited references split the claim.** A sentence that cites several papers
-distributes its facets across them, and each cite is one ledger row judged on its
-own **share** — not the whole sentence. A *distributive/parallel* construction
-pairs facet to cite ("a description of the catalogue and its systematics
-validation, see `\citet{Guinot}` and `\citet{HervasPeters}`" → catalogue↔Guinot,
-systematics↔HervasPeters); a *redundant/list* construction makes each co-cite back
-the same claim ("strong IA for red galaxies `\citep{A,B,C}`"). A cite that fully
-anchors its share is `supported` — it must **not** be downgraded to `weak` for
-deferring (e.g. "see `\citet{X}`") on a facet a co-cite carries. (This was a real
-mis-call on the fresh paper: HervasPeters2024 was marked `weak` for not being the
-primary *catalogue-description* source when the parallel construction assigned that
-facet to Guinot2022 and HervasPeters only ever carried *systematics validation*.)
+**Scope each claim to its cite first.** The verifier's first move is to read
+*precisely what the citing sentence says and what part of it this citation is being
+used to justify* — then anchor that. In a single-cite sentence that's the whole
+claim; a sentence that co-cites several papers usually **distributes** its
+propositions across them, and each cite (one ledger row) is judged on its own
+**share**. A *distributive/parallel* construction pairs proposition to cite ("a
+description of the catalogue and its systematics validation, see `\citet{Guinot}`
+and `\citet{HervasPeters}`" → catalogue↔Guinot, systematics↔HervasPeters); a
+*redundant/list* construction makes each co-cite back the same claim ("strong IA
+for red galaxies `\citep{A,B,C}`"). A cite that fully anchors its share is
+`supported` — it must **not** be downgraded to `weak` for deferring (e.g. "see
+`\citet{X}`") on a part a co-cite carries. (This was a real mis-call on the fresh
+paper: HervasPeters2024 was marked `weak` for not being the primary
+*catalogue-description* source when the parallel construction assigned that part to
+Guinot2022 and HervasPeters only ever carried *systematics validation*.)
 Run the template with the `Workflow` tool:
 
 ```js

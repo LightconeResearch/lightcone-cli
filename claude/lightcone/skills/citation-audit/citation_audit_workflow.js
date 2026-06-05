@@ -102,17 +102,19 @@ additive shear bias, PSF leakage, and photometric selection" = FOUR facets. If t
 some, that is \`weak\` — name the unbacked facets in \`notes\` (the report shows your notes prominently;
 no separate reworded sentence needed).
 
-**CO-CITED references — judge THIS cite's SHARE, not the whole sentence.** A sentence often cites several
-papers, and the facets may be SPLIT across them. Before assigning facets, decide which the manuscript
-attributes to THIS cite:
-  • *Distributive / parallel* — a construction that pairs facets with cites: "a detailed description of
-    the catalogue and its systematics validation, we refer to \\citet{Guinot} and \\citet{HervasPeters}"
-    pairs catalogue→Guinot, systematics→HervasPeters. Verify THIS cite ONLY against its paired facet.
+**FIRST scope the claim to THIS cite — read precisely what the sentence says and what part THIS citation
+is being used to justify.** Before decomposing facets, parse the sentence's actual meaning and pin down the
+proposition this cite is responsible for. In a single-cite sentence that is the whole claim. But a sentence
+often co-cites several papers, and the propositions are usually SPLIT across them — this cite owns only its
+part. Decide which:
+  • *Distributive / parallel* — a construction that pairs propositions with cites: "a detailed description
+    of the catalogue and its systematics validation, we refer to \\citet{Guinot} and \\citet{HervasPeters}"
+    pairs catalogue→Guinot, systematics→HervasPeters. Verify THIS cite ONLY against its paired proposition.
   • *Redundant / list* — co-cites that each independently back the SAME claim: "a strong IA signal for
     red galaxies \\citep{A,B,C}". Each cite must back that one shared claim on its own.
 A cite that fully anchors its share is \`supported\`. Do NOT downgrade to \`weak\` because it defers
-(e.g. "see \\citet{X}") on a facet a CO-CITE carries — that facet was never this cite's to support.
-In notes, state which facet(s) you assigned to this cite and why (esp. for a parallel construction).
+(e.g. "see \\citet{X}") on a part a CO-CITE carries — that part was never this cite's to support. In notes,
+state in one line what proposition you scoped to this cite and why (esp. for a parallel construction).
 
 **Anchor format (W3C TextQuoteSelector, verbatim from source):** exact (incl. LaTeX markup for tex —
 never paraphrase/expand macros; for a quantitative facet the quote is THE VALUE WITH UNCERTAINTY,
