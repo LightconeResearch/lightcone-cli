@@ -273,8 +273,10 @@ papers with **PyMuPDF** (`pip install pymupdf`), OCR-ing image pages via
 **Tesseract** (`brew install tesseract`) — pre-arXiv papers (Bertin 1996,
 Landy-Szalay 1993, …) are very often image scans, and without OCR the gate sees
 ~200 chars and can't confirm anything. If `verify_and_downgrade.py` prints the
-`⚠ PDF tools missing` banner, **ask the user to install them** (don't leave pdf
-cites silently `unverifiable`). Even with OCR, an image scan's text is noisy:
+`⚠ PDF tools missing` banner, **stop and ask the user (`AskUserQuestion`) to
+install them** — and surface the same ask when presenting the report, since
+missing tools are *why* those cites read `unverifiable`. Don't leave pdf cites
+silently unverifiable. Even with OCR, an image scan's text is noisy:
 a genuine quote may fall below the fuzzy bar and be reported honestly as
 "source is an image scan … gate cannot deterministically confirm" — a tooling
 limit, distinct from a quote that isn't there.
