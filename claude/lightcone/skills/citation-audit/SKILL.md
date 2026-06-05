@@ -263,23 +263,35 @@ judges; here the "vote" is the **deterministic** `source_match.py` gate — a
 quote either appears contiguously in the source (whitespace-normalized, and
 clearing a substance bar) or it doesn't. For every `supported`/`weak` row,
 `verify_and_downgrade.py` re-checks each anchor; a `.tex` anchor must match
-contiguously, a `pdf` anchor by an order-sensitive fuzzy `partial_ratio`
-(≥ 0.80) over the extracted text. An anchor that fails is dropped; a row whose
-**every** anchor fails is downgraded to `unverifiable`. This is stronger than a
-model judge and never a model judge. It is what makes the verdict trustworthy.
+contiguously, a `pdf` anchor through three escalating checks over the extracted
+text — normalized substring, order-sensitive `partial_ratio` (≥ 0.80), then an
+insertion-tolerant `ordered_recall` (≥ 0.85). An anchor that fails all three is
+dropped; a row whose **every** anchor fails is downgraded to `unverifiable`.
+This is stronger than a model judge and never a model judge. It is what makes
+the verdict trustworthy.
 
-**PDF tools — ask the user to install if missing.** The gate reads `pdf`-backend
-papers with **PyMuPDF** (`pip install pymupdf`), OCR-ing image pages via
-**Tesseract** (`brew install tesseract`) — pre-arXiv papers (Bertin 1996,
-Landy-Szalay 1993, …) are very often image scans, and without OCR the gate sees
-~200 chars and can't confirm anything. If `verify_and_downgrade.py` prints the
-`⚠ PDF tools missing` banner, **stop and ask the user (`AskUserQuestion`) to
-install them** — and surface the same ask when presenting the report, since
-missing tools are *why* those cites read `unverifiable`. Don't leave pdf cites
-silently unverifiable. Even with OCR, an image scan's text is noisy:
-a genuine quote may fall below the fuzzy bar and be reported honestly as
-"source is an image scan … gate cannot deterministically confirm" — a tooling
-limit, distinct from a quote that isn't there.
+**Image scans ARE verifiable — don't accept "unverifiable" for them.** The gate
+reads `pdf`-backend papers with **PyMuPDF** (`pip install pymupdf`), OCR-ing
+image pages via **Tesseract** (`brew install tesseract`) — pre-arXiv papers
+(Bertin 1996, Landy-Szalay 1993, …) are very often pure image scans (a 19-char
+text layer holding only the ADS bibcode stamp). Two things make them verifiable
+where a naïve OCR pass fails, both hard-won on the fresh-paper run:
+  - **OCR at 300 DPI, not PyMuPDF's 72-DPI default.** `get_textpage_ocr` defaults
+    to screen resolution; a scanned journal page at 72 dpi gives word-soup (true
+    quotes scored ~0.5). At 300 dpi the same quotes score ~1.0. If a scan reads
+    "too noisy," suspect the DPI before declaring it unverifiable.
+  - **`ordered_recall` for reading-order splices.** A multi-column scan's OCR
+    routinely splices a table or column-gutter into the middle of a sentence;
+    the words are all present and in order but not contiguous, so `partial_ratio`
+    collapses. `ordered_recall` measures in-order needle coverage within a bounded
+    window — tolerant of the splice, still order-sensitive (scrambled/cross-paper
+    controls top out ~0.66, well under the 0.85 bar).
+
+If `verify_and_downgrade.py` prints the `⚠ PDF tools missing` banner, **stop and
+ask the user (`AskUserQuestion`) to install them** — and surface the same ask
+when presenting the report. A genuine `unverifiable` on a scan now means the OCR
+text really doesn't contain the quote in order (with 300-dpi OCR confirmed), not
+a resolution artifact — a rare true tooling limit, not the default fate of a scan.
 
 `astra validate astra.yaml` (without `--verify-evidence`) runs for
 **structural** schema validation of the materialized insights; the source gate

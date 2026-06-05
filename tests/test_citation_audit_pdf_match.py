@@ -64,6 +64,59 @@ def test_partial_ratio_empty_needle():
     assert sm.partial_ratio("", "anything") == 0.0
 
 
+# --- ordered_recall: insertion-tolerant scan rescue -----------------------
+
+
+def test_ordered_recall_tolerates_spliced_table():
+    # The Bertin96 case: a multi-column scan's OCR splices a parameter table
+    # ("mode 2.5x median 1.5x mean") into the middle of the sentence, between
+    # "one-" and "pass". The quote's words are all present and in order; only
+    # contiguity is broken. ordered_recall recovers it where partial_ratio cannot.
+    needle = sm.norm_pdf(
+        "SExtractor uses Lutz's one-pass algorithm to extract 8-connected contiguous pixels"
+    )
+    spliced = sm.norm_pdf(
+        "SExtractor uses Lutz's one mode 2.5 x median 1.5 x mean 1 "
+        "pass algorithm to extract 8-connected contiguous pixels"
+    )
+    assert sm.ordered_recall(needle, spliced) >= 0.95
+    # the symmetric metric is fooled by the splice — this is *why* recall exists
+    assert sm.partial_ratio(needle, spliced) < sm.ordered_recall(needle, spliced)
+
+
+def test_ordered_recall_rejects_scrambled_words():
+    # Word-order scrambling (the reward-hack shape) must stay well below the
+    # 0.85 gate bar even though every word is individually present.
+    hay = sm.norm_pdf(
+        "objects are detected and deblended with source extractor using a one-pass algorithm "
+        "and then measured and classified with care across the survey image"
+    )
+    scrambled = sm.norm_pdf("pixels extractor source one detected pass objects deblended algorithm")
+    assert sm.ordered_recall(scrambled, hay) < 0.85
+
+
+def test_ordered_recall_window_bounds_scattered_subsequence():
+    # All needle tokens appear in order, but spread across far more than the
+    # 2x window — the bounded window forbids unlimited insertion, so a genuine
+    # contiguous quote is required, not a document-spanning subsequence.
+    needle = sm.norm_pdf("alpha beta gamma delta epsilon zeta")
+    filler = " " + "lorem ipsum dolor sit amet " * 6
+    scattered = sm.norm_pdf(
+        "alpha" + filler + "beta" + filler + "gamma" + filler + "delta" + filler + "epsilon" + filler + "zeta"
+    )
+    assert sm.ordered_recall(needle, scattered) < 0.85
+
+
+def test_ordered_recall_perfect_for_contiguous_quote():
+    hay = sm.norm_pdf("we introduce and recommend an improved estimator whose variance is nearly Poisson")
+    needle = sm.norm_pdf("an improved estimator whose variance is nearly Poisson")
+    assert sm.ordered_recall(needle, hay) >= 0.99
+
+
+def test_ordered_recall_empty_needle():
+    assert sm.ordered_recall("", "anything") == 0.0
+
+
 # --- author_year across bibkey conventions --------------------------------
 
 

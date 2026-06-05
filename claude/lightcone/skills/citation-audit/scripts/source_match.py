@@ -121,6 +121,44 @@ def partial_ratio(needle: str, haystack: str) -> float:
     return best
 
 
+def ordered_recall(needle: str, haystack: str, slack: float = 1.0) -> float:
+    """Fraction of `needle` found **in order** within a bounded window, in [0, 1].
+
+    Where `partial_ratio` is symmetric (it penalizes any character the haystack
+    window holds that the needle does not), this is **asymmetric**: it measures
+    only how much of the needle is recoverable as an in-order character
+    subsequence, and is therefore *tolerant of insertions in the haystack*. That
+    is the property image-scan OCR needs: a multi-column scan routinely splices
+    foreign text (a table of parameters, a column gutter, a footnote) into the
+    middle of a sentence, so the quote's words are all present and in order but a
+    symmetric quote-length window cannot hold the sentence *plus* the splice.
+
+    Order-sensitivity and false-positive safety are preserved by **bounding the
+    window** to `(1 + slack)` × the needle length: the entire needle must be
+    coverable within that span, so total inserted noise is capped at `slack` ×
+    needle (a widely-scattered subsequence cannot fit). On the fresh-paper scans,
+    true quotes score 1.0 and scrambled / cross-paper controls top out ~0.66.
+    Both arguments should already be `norm_pdf`'d."""
+    if not needle:
+        return 0.0
+    lq = len(needle)
+    win = int(lq * (1 + slack))
+    if len(haystack) <= win:
+        m = sum(b.size for b in SequenceMatcher(None, needle, haystack, autojunk=False).get_matching_blocks())
+        return m / lq
+    best = 0.0
+    step = max(1, lq // 8)
+    for i in range(0, len(haystack) - win + 1, step):
+        seg = haystack[i : i + win]
+        m = sum(b.size for b in SequenceMatcher(None, needle, seg, autojunk=False).get_matching_blocks())
+        r = m / lq
+        if r > best:
+            best = r
+            if best >= 0.995:
+                break
+    return best
+
+
 def is_substantive(exact: str) -> tuple[bool, str]:
     """Reject degenerate `exact` quotes. Return (ok, reason).
 
