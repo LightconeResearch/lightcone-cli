@@ -84,6 +84,8 @@ class LedgerRow:
     citation_text: str | None  # from index.json (full bib entry text)
     verdict: str | None  # populated by the verifier in later steps
     verdict_notes: str | None  # rationale for non-`supported` verdicts
+    eprint: str | None = None  # arXiv id straight from the .bib (preferred fetch key)
+    bibcode: str | None = None  # ADS bibcode from the .bib (ADS-gateway PDF fallback)
 
 
 def make_use_id(citation_key: str, line: int) -> str:
@@ -246,6 +248,8 @@ def build_ledger(reference_dir: Path, existing: dict[str, LedgerRow]) -> list[Le
     citations = index.get("citations") or {}
     for key, entry in citations.items():
         doi = entry.get("doi")
+        eprint = entry.get("eprint")
+        bibcode = entry.get("bibcode")
         citation_text = entry.get("citation")
         locations = entry.get("locations") or []
         if not locations and doi is None:
@@ -315,6 +319,8 @@ def build_ledger(reference_dir: Path, existing: dict[str, LedgerRow]) -> list[Le
                     citation_text=citation_text,
                     verdict=verdict,
                     verdict_notes=verdict_notes,
+                    eprint=eprint,
+                    bibcode=bibcode,
                 )
             )
     return rows

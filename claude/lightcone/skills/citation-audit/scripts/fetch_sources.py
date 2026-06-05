@@ -245,7 +245,12 @@ def _entry(**kw: object) -> dict[str, object]:
     return base
 
 
-def fetch_one(doi: str, papers_dir: Path) -> dict[str, object]:
+def fetch_one(
+    doi: str,
+    papers_dir: Path,
+    eprint_hint: str | None = None,
+    bibcode_hint: str | None = None,
+) -> dict[str, object]:
     """Resolve and fetch the cited paper's source for one manuscript DOI.
 
     One read substrate per paper, chosen mechanically: arXiv LaTeX when an
@@ -253,14 +258,22 @@ def fetch_one(doi: str, papers_dir: Path) -> dict[str, object]:
     arXiv PDF when the submission is PDF-only, or the ADS-gateway PDF by
     bibcode when no eprint exists at all. A user-pre-placed
     `papers/<slug>/paper.pdf` is honored as a `pdf` backend.
+
+    `eprint_hint` / `bibcode_hint` come from the manuscript `.bib` (ADS exports
+    carry `eprint` + `adsurl`). They are tried FIRST — the skill's contract is to
+    trust the `.bib`'s own eprint, and it avoids a fragile DOI->ADS round-trip
+    (and the need for an ADS API token) for the common case.
     """
     slug = _doi_slug(doi)
     source_dir = papers_dir / slug / "source"
     preplaced_pdf = papers_dir / slug / "paper.pdf"
 
-    # 1–2. Determine the eprint id.
+    # 1–2. Determine the eprint id: arXiv-DOI, then the .bib's own eprint, then
+    # verifiable-metadata resolution (ADS identifier[] / Crossref has-preprint).
     arxiv_id = _arxiv_id_from_doi(doi)
     resolved_source = "doi" if arxiv_id else None
+    if not arxiv_id and eprint_hint:
+        arxiv_id, resolved_source = eprint_hint, "bib_eprint"
     if not arxiv_id:
         arxiv_id, src = resolve_arxiv.resolve(doi)
         resolved_source = src if arxiv_id else None
@@ -269,8 +282,15 @@ def fetch_one(doi: str, papers_dir: Path) -> dict[str, object]:
     # ADS metadata gives us the bibcode (and confirms the paper's identity);
     # the verifier then anchors English-narrative quotes flagged `substrate: pdf`.
     if not arxiv_id:
-        meta = resolve_arxiv.resolve_metadata(doi)
-        bibcode = (meta or {}).get("bibcode")
+        # Prefer the .bib's own bibcode (from adsurl); only hit the ADS API when
+        # the bib didn't supply one.
+        meta = None
+        bibcode = bibcode_hint
+        bibcode_source = "bib_bibcode" if bibcode_hint else None
+        if not bibcode:
+            meta = resolve_arxiv.resolve_metadata(doi)
+            bibcode = (meta or {}).get("bibcode")
+            bibcode_source = "ads" if bibcode else None
         # Honor a user-pre-placed PDF first.
         if preplaced_pdf.is_file() and preplaced_pdf.stat().st_size > 0:
             return _entry(status="pdf", resolved_source="preplaced",
@@ -280,10 +300,10 @@ def fetch_one(doi: str, papers_dir: Path) -> dict[str, object]:
             preplaced_pdf.parent.mkdir(parents=True, exist_ok=True)
             if _curl(ADS_GATEWAY_PDF_URL.format(bibcode=bibcode), preplaced_pdf,
                      retries=PDF_RETRIES) and preplaced_pdf.read_bytes()[:5].startswith(b"%PDF"):
-                return _entry(status="pdf", resolved_source="ads",
+                return _entry(status="pdf", resolved_source=bibcode_source,
                               pdf_path=str(preplaced_pdf), pdf_source="ads",
                               ads_metadata=meta)
-            return _entry(status="unresolvable", resolved_source="ads", ads_metadata=meta,
+            return _entry(status="unresolvable", resolved_source=bibcode_source, ads_metadata=meta,
                           error=f"no arXiv eprint; ADS-gateway PDF fetch failed for {bibcode}")
         return _entry(status="unresolvable",
                       error="no arXiv eprint and no ADS metadata for this DOI")
@@ -370,6 +390,13 @@ def main() -> int:
     ledger = json.loads(args.ledger.read_text())
     rows = ledger.get("rows", [])
     unique_dois = sorted({r["doi"] for r in rows if r.get("doi")})
+    # Per-DOI fetch hints straight from the .bib (eprint, bibcode), tried before
+    # any DOI->ADS resolution. First row per DOI wins (all rows share the entry).
+    hints: dict[str, dict[str, str | None]] = {}
+    for r in rows:
+        d = r.get("doi")
+        if d and d not in hints:
+            hints[d] = {"eprint": r.get("eprint"), "bibcode": r.get("bibcode")}
 
     state: dict[str, dict[str, object]] = {}
     if args.state.exists():
@@ -394,7 +421,9 @@ def main() -> int:
     counts: dict[str, int] = {}
     for i, doi in enumerate(to_fetch, 1):
         print(f"[{i}/{len(to_fetch)}] {doi} ...", end=" ", flush=True)
-        result = fetch_one(doi, args.papers_dir)
+        hint = hints.get(doi, {})
+        result = fetch_one(doi, args.papers_dir,
+                           eprint_hint=hint.get("eprint"), bibcode_hint=hint.get("bibcode"))
         state[doi] = result
         status = str(result["status"])
         counts[status] = counts.get(status, 0) + 1
