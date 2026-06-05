@@ -99,7 +99,20 @@ section(s). Targeted reads only. For backend=pdf: Read pdf_path; quote ENGLISH N
 **MULTI-ANCHOR — the core capability.** A composite claim has several facets; give ONE quote per facet,
 each its own anchors[] entry with a \`facet\` label. "detected B modes at 2–5σ, linked to repeating
 additive shear bias, PSF leakage, and photometric selection" = FOUR facets. If the source backs only
-some, that is \`weak\` — name the unbacked facets and give suggested_rewording dropping them.
+some, that is \`weak\` — name the unbacked facets in \`notes\` (the report shows your notes prominently;
+no separate reworded sentence needed).
+
+**CO-CITED references — judge THIS cite's SHARE, not the whole sentence.** A sentence often cites several
+papers, and the facets may be SPLIT across them. Before assigning facets, decide which the manuscript
+attributes to THIS cite:
+  • *Distributive / parallel* — a construction that pairs facets with cites: "a detailed description of
+    the catalogue and its systematics validation, we refer to \\citet{Guinot} and \\citet{HervasPeters}"
+    pairs catalogue→Guinot, systematics→HervasPeters. Verify THIS cite ONLY against its paired facet.
+  • *Redundant / list* — co-cites that each independently back the SAME claim: "a strong IA signal for
+    red galaxies \\citep{A,B,C}". Each cite must back that one shared claim on its own.
+A cite that fully anchors its share is \`supported\`. Do NOT downgrade to \`weak\` because it defers
+(e.g. "see \\citet{X}") on a facet a CO-CITE carries — that facet was never this cite's to support.
+In notes, state which facet(s) you assigned to this cite and why (esp. for a parallel construction).
 
 **Anchor format (W3C TextQuoteSelector, verbatim from source):** exact (incl. LaTeX markup for tex —
 never paraphrase/expand macros; for a quantitative facet the quote is THE VALUE WITH UNCERTAINTY,
@@ -113,8 +126,9 @@ section; substrate (tex|pdf).
 result line in self_check. For pdf anchors, set self_check "fuzzy-ok" (the synthesize step re-checks
 pdf anchors with a fuzzy match). A row whose EVERY facet-anchor fails → verdict \`unverifiable\`.
 
-**Verdicts:** supported (every facet anchored) | weak (some facets / softer source — give
-suggested_rewording) | unsupported (on-topic, no support) | wrong_paper (different topic; if the
+**Verdicts:** supported (every facet ATTRIBUTED TO THIS CITE anchored) | weak (some of this cite's
+facets / softer source — explain in notes) | unsupported (on-topic, no support) | wrong_paper
+(different topic; if the
 fetched source looks like the WRONG paper, set doi_flag and judge against the cite's intent) |
 unverifiable (no anchorable quote despite genuine attempt — figure-only, or no fetchable source).
 

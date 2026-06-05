@@ -211,6 +211,19 @@ The workflow then fans one **citation-verifier** (Opus) over each stream. The
 agent reads the paper's own source, splits each composite claim into its
 **facets**, and anchors **each facet separately** — one quote per facet. It
 self-validates every `.tex` anchor with `source_match.py` before returning.
+
+**Co-cited references split the claim.** A sentence that cites several papers
+distributes its facets across them, and each cite is one ledger row judged on its
+own **share** — not the whole sentence. A *distributive/parallel* construction
+pairs facet to cite ("a description of the catalogue and its systematics
+validation, see `\citet{Guinot}` and `\citet{HervasPeters}`" → catalogue↔Guinot,
+systematics↔HervasPeters); a *redundant/list* construction makes each co-cite back
+the same claim ("strong IA for red galaxies `\citep{A,B,C}`"). A cite that fully
+anchors its share is `supported` — it must **not** be downgraded to `weak` for
+deferring (e.g. "see `\citet{X}`") on a facet a co-cite carries. (This was a real
+mis-call on the fresh paper: HervasPeters2024 was marked `weak` for not being the
+primary *catalogue-description* source when the parallel construction assigned that
+facet to Guinot2022 and HervasPeters only ever carried *systematics validation*.)
 Run the template with the `Workflow` tool:
 
 ```js
@@ -330,8 +343,8 @@ in monospace; the citing sentence stays serif as the manuscript prose.)
 
 | Verdict | When |
 |---|---|
-| `supported` | Every checkable facet of the claim is anchored by a substantive verbatim quote. |
-| `weak` | Some facets anchored, others not, **or** the source supports a narrower/softer version. Names the unbacked facets; gives `suggested_rewording`. |
+| `supported` | Every checkable facet **attributed to this cite** is anchored by a substantive verbatim quote. In a co-cited sentence, that means this cite's *share* (its facet in a parallel construction), not the whole sentence — deferring to a co-cite on the other half is not a downgrade. |
+| `weak` | Some of **this cite's** facets anchored, others not, **or** the source supports a narrower/softer version. Names the unbacked facets; gives `suggested_rewording`. Not for facets a co-cite legitimately carries. |
 | `unsupported` | On-topic, but the source does not make the specific point(s) the manuscript claims. |
 | `wrong_paper` | The paper is about a different topic; the bibkey likely points at the wrong reference. (If the *fetched source* looks wrong — a phantom/mis-resolved DOI — the verifier sets `doi_flag` and judges against the cite's intent.) |
 | `unverifiable` | No anchorable quote despite a genuine attempt — apparent support that lives only in a figure, or (rare) a cite with no fetchable source at all. A tooling limit, not a content judgment; never used to dodge a quote that exists. |
