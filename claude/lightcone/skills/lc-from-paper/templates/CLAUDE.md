@@ -2,35 +2,35 @@
 
 Reproduction of **<paper title>** (<arXiv ID>). DOI: <doi>. One-line subject: <e.g. "BAO scale measurement from DESI DR1">.
 
-The driving document for this reproduction is [`constitution.md`](constitution.md) — Goal, Fidelity intent, Scope, Quality bar, Evidence, Open dimensions. Every ralph iteration reads it on entry. This file (`CLAUDE.md`) is the auto-loading walk-up: rules + durable findings that stay useful past the reproduction (Open opportunities for future tightening, Paper-vs-code disagreements, pointers).
+This file is the durable auto-loading walk-up for the reproduction workdir — the rules every phase runs under, the running paper-vs-code disagreements log, and the pointers into the substrate. It is *not* the contract for what gets reproduced: that is [`PLAN.md`](PLAN.md) (Goal, Fidelity intent, Scope, Targets, Decomposition, Evidence), the human-approved spec the workflow runs against. Read this for *how we work here*; read `PLAN.md` for *what done means*.
+
+**Fidelity intent:** <one line, mirrors PLAN.md — the stopping criterion. E.g. "Figure 3 must be right; the rest can stay rough — overnight." VERIFY reads this (via the workflow's `args.intent`) to size its fix-loop; it is why we push as hard as we do and no harder.>
 
 ## Rules
 
-- **Code-as-canonical when `work/reference/code/` exists.** Every iteration that touches a sub-analysis reads the relevant code first. Where paper and code disagree, code is canonical for numerics, plotting, and method. When `work/reference/code/` is absent, paper is the only anchor — implement fresh from the spec, expect slower convergence, surface gaps honestly to the user rather than dressing them up.
-- **Never block on `AskUserQuestion` mid-iteration.** Each ralph iteration runs in a fresh detached session; the user isn't reachable interactively. Append questions to `open-questions.md` and continue with the best-judgment default. The user resolves accumulated questions at REVIEW close-out (which runs in the user's main session).
-- **arXiv-LaTeX-first acquisition.** PDF + Docling is a fallback for non-arXiv only.
-- **`astra validate --verify-evidence`** is the fidelity gate; evidence quotes must match source PDFs.
-- **No synthetic data.** Unless the paper itself uses synthetic data as input, every input dataset must be downloaded or queried from its real source.
-- **Commit as you go.** Small, descriptive commits per significant change. The git log is the chronological trail of the reproduction; the next iteration reads it to know what landed.
-- **Updates go in code, files, and the accumulators in `constitution.md` and below — not progress notes scattered in the body.** Discoverable updates; the next iteration finds what changed by inspecting the system.
+Universal across reproductions — they hold in every phase, the workflow's and the close-out's alike.
+
+- **Code-as-canonical when `work/reference/code/` exists.** Every phase that touches a sub-analysis reads the relevant code first (`code-index.md` maps sub-analysis → file). Where paper and code disagree materially, code is canonical for numerics, plotting, and method — and the disagreement is recorded (both options in `astra.yaml`, a line in the log below). When `work/reference/code/` is absent, the paper is the only anchor: implement fresh from the spec, expect slower convergence, and surface gaps honestly rather than dressing them up.
+- **Real data only.** Unless the paper itself uses synthetic input, every input dataset is downloaded, queried, or fetched from its real archive — never fabricated.
+- **arXiv-LaTeX-first acquisition.** The arXiv source tarball is the substrate for the paper and every cited paper; equations, captions, and tables come through clean. PDF + Docling is the non-arXiv fallback only.
+- **Single-writer merge for `astra.yaml`.** Per-phase workers are bounded and stateless: they read their inputs, do their job, and *return structured output* — they never edit `astra.yaml`. A single barrier merge step folds every worker's result into the spec. Two agents editing it at once corrupts it.
+- **Fidelity intent is the stopping criterion.** The intent above (and in `PLAN.md`) bounds the work — most sharply VERIFY's fix-loop. "An afternoon" accepts what's close after a round or two; "no deadline" pushes every target to green. Don't burn rounds the intent didn't ask for.
+- **Commit as you go.** Small, descriptive commits per significant change. The git log is the chronological trail; a resuming session reads `git log --oneline` + `git diff` to know what landed.
+- **Open questions go to `open-questions.md`.** The workflow runs detached from the user, so a question it can't resolve gets a best-judgment default applied and a line in `open-questions.md` — resolved by the user at close-out.
 
 ## Paper-vs-code disagreements
 
-Material disagreements between paper and code, logged here as iterations find them. Code is canonical for numerics, plotting, and method (per the rule above); both options are preserved in `astra.yaml` as decision alternatives. Each entry summarizes the disagreement and points to the corresponding decision so any iteration can see them at a glance. Surfaced to the user at REVIEW close-out (or earlier if they're around).
-
-- (none yet)
-
-## Open opportunities
-
-Gaps that could be tightened in a future pass, surfaced by COMPARE iterations and persisted past close-out. Each carries a sense of leverage. Format: `<area> — <what could be tightened> — <leverage>`. A future Claude Code session walking into this directory reads this list and knows where another loop would have the most return. Empty until a COMPARE iteration surfaces one:
+Material disagreements between paper and code, logged as they are found. Code is canonical for numerics, plotting, and method (per the rule above); both options are preserved in `astra.yaml` as decision alternatives. The workflow's SPECIFY, IMPLEMENT, and VERIFY workers return any conflict they adjudicated code-canonical, and the merge/fix step appends it here — one line each, pointing at the corresponding decision so any later session sees them at a glance. Surfaced to the user at close-out (or earlier if they're around).
 
 - (none yet)
 
 ## Pointers
 
-- [`constitution.md`](constitution.md) — Goal, Fidelity intent, Scope, Quality bar, Evidence, Open dimensions. The ralph loop's driving document.
-- `open-questions.md` — accumulated questions from iterations, resolved in REVIEW.
-- `work/reference/index.json` — paper structural index (figures, tables, outline, citations with DOIs); the starting surface for any "where in the paper does X happen" lookup.
-- `work/reference/code-index.md` — code inventory (when code present): module map, candidate decisions with file:line, entry-points, gotchas.
-- `work/cited/<doi-slug>/` — per-cited-paper substrate produced by LITERATURE for `prior_insights:` resolution.
+- [`PLAN.md`](PLAN.md) — Goal, Fidelity intent, Scope, Targets, Decomposition, Evidence. The human-approved reproduction contract.
+- [`targets/targets.md`](targets/targets.md) — the replication-target ledger (priority, expected value + stated uncertainty, comparison guidance). VERIFY writes a test per row.
+- `astra.yaml` — the spec: sub-analyses, inputs, outputs, decisions, findings, prior_insights, recipes. Filled by the workflow from the ORIENT skeleton; the single source of truth for execution.
+- [`reproduce_workflow.js`](.claude/skills/lc-from-paper/reproduce_workflow.js) — the autonomous middle: SPECIFY ∥ LITERATURE → IMPLEMENT → RUN → VERIFY → REVIEW. Phase contracts live in `references/<phase>.md`.
+- `work/reference/index.json` — paper structural index (figures, tables, outline, citations with resolved DOIs); the starting surface for any "where in the paper does X happen" lookup.
+- `work/reference/code-index.md` — code inventory (when code present): module map, candidate decisions with file:line, entry-points, gotchas. The sub-analysis → code mapping every phase consults.
+- `open-questions.md` — accumulated questions the workflow couldn't resolve; walked with the user at close-out.
 - <any paper-specific conventions or warnings the user surfaced during the interview>

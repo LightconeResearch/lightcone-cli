@@ -5,160 +5,149 @@ description: >
   scientific paper in ASTRA — has a DOI, arXiv ID, or PDF — or asks to
   "reproduce <paper>", "set up reproduction", or "import a paper". Also
   use when continuing or resuming an existing reproduction workdir. The
-  skill instructs Claude to run ORIENT in the user's main session
-  (paper-extraction + interview + code scan, all grounded), then hand
-  the reproduction off to a ralph loop whose iterations carry the
-  remaining phases (ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN
-  → COMPARE) until the constitution closes, at which point REVIEW
-  close-out runs back in the user's main session.
+  skill runs an interactive ORIENT in the user's main session (paper
+  extraction + grounded interview + code scan) that builds a reproduction
+  PLAN, gates it through plan mode, and on approval launches the
+  reproduce-paper Workflow — a multi-agent fan-out (specify ∥ literature →
+  implement → run → verify-by-claim-tests → review) that carries the
+  autonomous middle and hands a review back for an interactive close-out.
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Task, Workflow, AskUserQuestion
 ---
 
 # lc-from-paper
 
-You are helping the user reproduce a published scientific paper as a complete ASTRA project. This is a long, complex task that won't fit in a single context window — it spans discrete phases: orient (figure out what the user wants, acquire paper + code), architect the spec, specify decisions and findings, resolve cited literature, implement, run, compare, review.
+Reproduce a published scientific paper as a complete ASTRA project. The task is too large for one context window, so it is split into **two interactive bookends in the user's main session** and **one autonomous Workflow in between**:
 
-The architecture is two-piece:
+```
+  ┌─ ORIENT → PLAN ──────────────────────────────────  main session (interactive)
+  │   extract (minimal) · interview (fidelity intent = STOPPING CRITERION) ·
+  │   lc-from-code scan · architect the decomposition → draft the PLAN →
+  │   PLAN MODE → on approval, launch the Workflow
+  │
+  ├─ reproduce_workflow.js ──────────────────────────  Workflow (autonomous middle)
+  │   SPECIFY ∥ LITERATURE   pipeline per sub-analysis (no barrier)
+  │   IMPLEMENT              parallel per output
+  │   RUN                    lc run over the Snakemake DAG
+  │   VERIFY                 a test per claim; run → fix → rerun until pass-or-intent
+  │   REVIEW                 synthesize, fix obvious gaps → report.html + summary back
+  │
+  └─ CLOSE-OUT ──────────────────────────────────────  main session (interactive)
+      figure-comparison · check-sentence-by-sentence · walk open-questions · finalize
+```
 
-1. **Interactive bookends in the user's main session.** ORIENT and REVIEW are conversations with the user. ORIENT runs in stages: ask for the paper, run `/paper-extraction` inline, interview the user (grounded in the paper), clone the code and run `/lc-from-code` scan-only (if a repo exists), possibly ask follow-up questions, then draft `constitution.md` + `CLAUDE.md` from the full paper-plus-code context for user review.
+The human is in the loop at the **two bookends only** — approving the plan, then reviewing the result. The middle runs autonomously because the interview already established *how hard to push and when to stop*. That intent is the workflow's governing parameter; the human does not babysit the fan-out.
 
-2. **A ralph loop for the long middle.** Once ORIENT lands — `constitution.md` + `CLAUDE.md` drafted, paper and code substrate on disk — you launch a ralph loop against the constitution. Each iteration starts a fresh session with the constitution loaded into its system prompt, surveys the workdir, picks the next valuable move (typically one phase's worth of work), does it, commits, and exits. Iteration N+1 reads N's work cold, so per-phase review collapses into "the next iteration is the review."
+## Why a Workflow, not a loop
 
-The whole thing is driven by **the per-paper `constitution.md`** at the reproduction workdir root, plus the auto-loading `CLAUDE.md` walk-up. The split is intentional: the constitution is *task-bound* (what this reproduction is trying to achieve — Goal, fidelity intent, scope, quality bar, Open dimensions) and can be archived once the reproduction lands. CLAUDE.md is *durable* (rules, paper-vs-code disagreements, Open opportunities, pointers to substrate) — it stays useful when the user comes back to do follow-on work in this directory. Every iteration picks up both on launch.
+This skill used to drive the middle with a ralph loop — a detached tmux session spawning a fresh agent per phase. **That is retired.** A paper reproduction is structurally a *fan-out with per-claim verification* — per sub-analysis, per output, per cited paper, per replication target — which is exactly the **Workflow primitive**'s home shape: deterministic `agent()` / `parallel()` / `pipeline()` orchestration over fresh subagent contexts, with schema-validated structured output and explicit verify phases. The Workflow gives both things the loop gave — context management (the orchestration script holds no work product; every `agent()` is a fresh context; results return compact) and review (explicit, adversarial verify phases instead of review-by-accident) — and gives them better. The repo's [`citation-audit`](../citation-audit/SKILL.md) skill is the precedent: the LITERATURE phase here *is* that fan-out → verify → synthesize spine.
+
+The ralph skill itself stays — it remains the right substrate for genuinely open-ended long-running work. It is just no longer how `lc-from-paper` drives a reproduction.
 
 ## Setup: git-tracked workdir
 
-The reproduction's directory should be a git repo — if not already, `git init` it before launching the ralph loop. Every iteration commits its work as it goes — small, descriptive commits per significant change. The git log is the chronological trail of the reproduction; `git diff` is how the next iteration reads what landed.
+The reproduction directory is a git repo — `git init` it before launching the workflow if it isn't one. Every phase commits as it goes; the git log is the chronological trail and `git diff` is how a resuming session reads what landed.
 
-## The phases
+---
 
-Eight phases (zero-indexed). ORIENT runs before the loop, in the user's main session; the loop's iterations carry phases 1–6; REVIEW runs after the loop closes, back in the user's main session.
+## Bookend A — ORIENT → PLAN (main session)
 
-| # | Phase | Where it runs | Reference | Primary outputs |
-|---|---|---|---|---|
-| 0 | ORIENT | user's main session | [`references/orient.md`](references/orient.md) | per-paper `constitution.md` + `CLAUDE.md` + paper substrate at `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml}` (from inline `/paper-extraction`) + code substrate at `work/reference/{code/, code-status.yaml, code-index.md}` (from inline `/lc-from-code` scan-only, when a repo exists) |
-| 1 | ARCHITECT | ralph iteration | [`references/architect.md`](references/architect.md) | stub `astra.yaml` at project root (sub-analyses, inputs, outputs, narrative) |
-| 2 | SPECIFY | ralph iteration | [`references/specify.md`](references/specify.md) | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
-| 3 | LITERATURE | ralph iteration | [`references/literature.md`](references/literature.md) | `astra.yaml`'s `prior_insights:` Evidence entries each carry resolved `quote:` + `location:` selectors; per-paper PDFs cached via `astra paper add` |
-| 4 | IMPLEMENT | ralph iteration | [`references/implement.md`](references/implement.md) | `scripts/`, `requirements.txt`, recipes in `astra.yaml` |
-| 5 | RUN | ralph iteration | [`references/run.md`](references/run.md) | `results/<universe>/<output>/` |
-| 6 | COMPARE | ralph iteration | [`references/compare.md`](references/compare.md) | `comparison-report.{yaml,md}` |
-| 7 | REVIEW | user's main session | [`references/review.md`](references/review.md) | `REPRODUCTION-SUMMARY.md`, `/figure-comparison` HTML, resolved `open-questions.md`, finalized reproduction outcome |
+The opening interactive phase. Read [`references/orient.md`](references/orient.md) in full before starting. ORIENT is allowed to be *large*: it is the rich main-context that **designs the workflow**, so everything it acquires — the paper, the code scan, the user's intent — wants to be held here, where the plan is architected. It runs in stages so each later decision is grounded in what was acquired earlier:
 
-COMPARE produces a verdict plus an opportunity assessment — not just pass / fail, but where the gaps are, how much they likely matter, and how they sit relative to the constitution's fidelity intent. A subsequent iteration decides whether to spend another IMPLEMENT round (close a gap that sits below intent) or land the reproduction at its current trajectory and log the gap into CLAUDE.md's Open opportunities. Once the COMPARE → IMPLEMENT loop terminates (verdict `pass`, or `partial` with the un-acted opportunities logged), a subsequent cold-survey iteration finds nothing left to do and flips the constitution's `status:` to `closed`. The loop terminates; REVIEW runs in the user's main session.
+1. **Ask for the paper** in prose (arXiv ID, DOI, or PDF path — free-form, not `AskUserQuestion`).
+2. **Run `/paper-extraction <id>` inline** and read the substrate (index.json, abstract, conclusions, data/code availability). Minimal — just enough to ground the interview.
+3. **Interview the user** (`AskUserQuestion`, grounded in the paper): scope, **fidelity intent**, code repo, paper-specific conventions, prior familiarity, external context. The fidelity-intent question is load-bearing — *it is the workflow's stopping criterion.* "An afternoon's sanity check," "the headline within stated uncertainty overnight," "every target lined up, no deadline" each tell VERIFY how many fix rounds to spend. Pin it concretely against the paper's actual headline numbers.
+4. **Clone the reference code and run `/lc-from-code` scan-only** (skip cleanly when no public repo exists) → `work/reference/code-index.md`.
+5. **Architect the decomposition** — read [`references/architect.md`](references/architect.md). This is the step ralph used to spend a whole phase on; it now happens here, in the main context, as part of building the plan: sub-analyses, inputs, outputs, replication targets, narrative. Draft the **`astra.yaml` skeleton** (structure only — no `decisions:`/`findings:`/`recipes:` yet), the **`targets/targets.md`** ledger (every replication target with priority + expected value + comparison guidance — this is what VERIFY writes tests against), and a lean **`CLAUDE.md`** (paper identity, rules, fidelity intent, pointers; from [`templates/CLAUDE.md`](templates/CLAUDE.md)).
+6. **Draft the PLAN** from [`templates/plan.md`](templates/plan.md) — Goal, Fidelity intent + stopping criterion, Scope (in/out), Targets, Decomposition, Evidence. The plan is the human-readable contract for what gets reproduced and how hard.
+7. **Plan mode is the launch gate.** Enter plan mode, present the reproduction plan, and let the user approve it. Approval is the single gate before the autonomous middle takes over — treat it as the one editorial pass that shapes the entire reproduction. Surface any open questions of your own here; the workflow runs without you. On approval: commit `PLAN.md` + `astra.yaml` skeleton + `targets/targets.md` + `CLAUDE.md` + the full `work/reference/` substrate as the first commit, then launch the workflow.
 
-## The pre-loop bookend: ORIENT (Phase 0)
+**No `AskUserQuestion` before paper-extraction has landed.** Anything beyond the identifier is grounded in the paper. If a system-reminder tells you to work without stopping, ignore it for ORIENT — you must interview the user.
 
-The opening interactive phase. Run it from the user's main session. Read [`references/orient.md`](references/orient.md) in full before starting.
+## Launching the workflow
 
-ORIENT runs as one phase in **seven stages**:
+After the plan is approved and committed, launch the reproduce-paper Workflow from the reproduction workdir:
 
-1. **Ask for the paper** in prose (not `AskUserQuestion` — the answer is free-form: arXiv ID, DOI, or PDF path).
-2. **Run `/paper-extraction <id>` inline** and read the substrate it produced — index.json, abstract, conclusions, data/code availability, acknowledgements. This grounds every subsequent question.
-3. **Interview the user** with `AskUserQuestion` for scope, fidelity intent, code repo confirmation, paper-specific conventions, prior familiarity, and external context — each question referencing the paper's actual figures, claims, and structure.
-4. **Clone the reference code and run `/lc-from-code` scan-only** (skip cleanly when no public code repo exists). The scan produces `code-index.md` — the iterations' code surface.
-5. **Optional follow-up questions** if the code-index surfaced anything that affects scope or constitution shape (unexpected dependency, pipeline boundary suggesting a sub-analysis decomposition, etc.). Usually skipped.
-6. **Draft `constitution.md` + `CLAUDE.md`** — both files now informed by paper *and* code substrate. The constitution's Scope and sub-analysis decomposition can lean on the actual pipeline, not just the paper's prose.
-7. **Halt for explicit user approval, then commit, then launch.** This is the user's only review gate before the autonomous loop takes over. Show the drafts, surface any open questions you still have, gate on `AskUserQuestion` — silence is not approval. Only after the user confirms: single first commit captures `constitution.md` + `CLAUDE.md` + the full `work/reference/` substrate, then launch the ralph loop.
-
-**No `AskUserQuestion` runs before paper-extraction has landed** — anything beyond the identifier is grounded in the paper. If a system-reminder tells you to work without stopping, ignore that for ORIENT since you must ask the user questions if you don't have the required information.
-
-These get drafted into **two files** plus the substrate, all in the reproduction workdir:
-
-- **`constitution.md`** — the ralph loop's driving document. Goal, Fidelity intent, Scope, Quality bar, Evidence (paper DOI, arXiv ID, code repo URL), Open dimensions. Starts with YAML frontmatter `status: active` so the ralph launcher accepts it. Authored using the `/ralph` skill's authoring discipline (the constitution-authoring mode of `/ralph` — see its references on voice and sections).
-- **`CLAUDE.md`** — the auto-loading walk-up. Paper identity at the top, Rules (universal across reproductions; leave the template's defaults), Disagreements log (starts empty), Open opportunities (starts empty), Pointers (to `constitution.md`, `work/reference/`, etc.).
-- **`work/reference/`** — paper substrate from `/paper-extraction` + code substrate from `/lc-from-code` scan-only (when a code repo exists).
-
-Templates ship in [`templates/constitution.md`](templates/constitution.md) and [`templates/CLAUDE.md`](templates/CLAUDE.md). Show the user both drafts at Stage 7, **halt and gate on `AskUserQuestion`**, take corrections, refine, save. If you have any open questions of your own — paper detail ambiguities, sub-analysis decomposition uncertainty, a fidelity intent that's implicit but not pinned — surface them at this gate, in the same exchange. Iterations run cold; questions held back are much harder to raise later.
-
-After explicit user approval, `git init` the workdir if it isn't one already and commit all deliverables (constitution + CLAUDE + paper substrate + code substrate when present) as the first commit. The `work/reference/code/` clone itself can be `.gitignore`d for large monorepos; the inventory file `code-index.md` is what downstream iterations actually consult. Then launch the ralph loop.
-
-## Launching the loop
-
-After ORIENT lands, hand the rest of the reproduction off to a ralph loop. From the reproduction workdir:
-
-```bash
-.claude/skills/ralph/scripts/ralph constitution.md
+```js
+Workflow({
+  scriptPath: '.claude/skills/lc-from-paper/reproduce_workflow.js',
+  args: { workdir: '.', intent: '<the fidelity-intent prose from the interview>' }
+})
 ```
 
-(Or `--backend codex`, or pass `-- --model <id>` for a specific model. See `/ralph`'s **Launching** section for the full surface.)
+The workflow is a **template** — [`reproduce_workflow.js`](reproduce_workflow.js) ships the shape; adapt the schemas, the per-phase contracts, and the model tier per paper, exactly as `citation-audit` ships its workflow as a template. It runs in the background and notifies on completion; its return value carries the review summary, the `report.html` path, the per-target verify results, and any open questions. Read that return — it is the input to the close-out.
 
-The launcher detaches a tmux session named `ralph-<workdir>-constitution`. The user attaches with `tmux attach -t <session>`. Iterations start firing immediately; each runs in a fresh Claude (or Codex) session with `constitution.md` loaded into the system prompt and the workdir's `CLAUDE.md` auto-loading.
+## The workflow phases
 
-The loop runs until an iteration flips `constitution.md`'s frontmatter `status:` to `closed` — typically after COMPARE returns `pass` (or `partial` with the un-acted opportunities logged) and the iteration that runs after that survey finds nothing left to do.
+Each phase reads its contract from `references/<phase>.md` (the workflow points its agents at the file rather than inlining a giant prompt). The shapes:
 
-Tell the user explicitly: "Launching the ralph loop in tmux session `<name>`. Attach with `tmux attach -t <name>`. Detach with the usual tmux prefix + `d`. The loop will run until the constitution closes (typically after COMPARE returns `pass`); at that point come back here and I'll run REVIEW close-out."
+| Phase | Fan-out unit | Parallelism | Gate / verify | Contract |
+|---|---|---|---|---|
+| **SPECIFY** | per sub-analysis | `pipeline` (∥ literature) | `astra validate` | [specify.md](references/specify.md) |
+| **LITERATURE** | per cited paper | pipelined after each specify | `astra validate --verify-evidence` (deterministic) | [literature.md](references/literature.md) |
+| **IMPLEMENT** | per output | `parallel` | `astra validate` + dry-run | [implement.md](references/implement.md) |
+| **RUN** | — (shared DAG) | sequential | `lc status` (deterministic) | [run.md](references/run.md) |
+| **VERIFY** | per replication target | tests ∥, fix-loop careful | the tests themselves (per-paper) | [verify.md](references/verify.md) |
+| **REVIEW** | — | single synthesizer | — | [review.md](references/review.md) |
 
-## Per-iteration discipline
+**SPECIFY ∥ LITERATURE pipeline.** Each sub-analysis is specified (decisions, findings, citation placeholders), then its citations are resolved — as a `pipeline`, so sub-analysis A's literature runs while B is still being specified. SPECIFY and LITERATURE agents *return structured output*; a single barrier merge folds every sub-analysis's result into `astra.yaml` (one writer, no concurrent-edit conflict) and runs `astra validate --verify-evidence`.
 
-Iterations follow the `/ralph` skill's Loop protocol — Survey → Work → Update → Exit. The per-paper specifics layered on top:
+**IMPLEMENT.** One worker per output, in `parallel` — scripts are disjoint files (`scripts/<output>.py`), so they write without conflict; each returns its `recipe`, and a barrier merge folds the recipes into `astra.yaml`. (Reach for `isolation: 'worktree'` only if outputs genuinely share a file.)
 
-- **Survey starts with the constitution + CLAUDE.md, then the workdir.** Read the constitution for Goal, Fidelity intent, Scope, Quality bar. Skim CLAUDE.md for rules, paper-vs-code disagreements, Open opportunities, and pointers. Then survey the workdir against the **Workdir-as-state** table below to identify the next phase that needs work — and read the most recent artifact critically before extending it.
-- **One phase per iteration is the typical shape.** Don't try to do ARCHITECT *and* SPECIFY in one iteration; the fresh-context property of the next iteration is what makes review work, and conflating phases collapses the seam. (Exceptions: small targeted fixes after COMPARE may touch multiple phases in one iteration if they're tightly coupled.)
-- **Phase reference is your working spec for the iteration.** Whichever phase is next, read its `references/<phase>.md` on entry. That file carries the discipline for that phase's work (what to produce, code-as-canonical, evidence shape, etc.).
-- **Read the most recent artifact critically as part of survey.** Every iteration enters fresh and reads the last phase's work cold. If you see real issues, fix them and commit before adding more — that's the review. If nothing needs fixing, advance to the next valuable move. Termination of any phase is implicit: a fresh-context iteration finds nothing to critique in the prior work and moves forward. The iteration that just landed fixes can't also be the iteration that judges the work clean — by construction, it found something to fix.
-- **Parallel fan-out lives inside an iteration.** LITERATURE Haiku quote-finders, SPECIFY per-sub-analysis work, IMPLEMENT per-output work — these fan out as one-level-deep `Agent(...)` spawns inside the iteration's main session. Sub-agents can't spawn sub-agents, but an iteration *is* the main session, so it can spawn freely.
-- **`AskUserQuestion` is not available inside an iteration.** Each iteration runs in a detached tmux session; the user isn't reachable interactively. Iterations append questions to `open-questions.md` with their best-judgment default applied, and the user resolves them at REVIEW close-out (back in their main session).
-- **Update the accumulators** before exit: in `CLAUDE.md`, the Paper-vs-code disagreements log for any material conflict the iteration surfaced and Open opportunities for any COMPARE-surfaced gap the iteration didn't act on; in `constitution.md`, Open dimensions for anything material that warrants user ratification at REVIEW.
-- **Sharpen the constitution body itself** if something fundamental shifted — the user's fidelity intent reframed, a sub-analysis decomposition rethought, a quality-bar item that's now more concrete. Don't accrete amendment sections; rewrite the affected prose.
+**RUN.** One agent runs `lc run --universe baseline` over the Snakemake DAG and shepherds it to completion (`Monitor` the logs for long jobs — cluster runs can take a while). `lc status` all-`ok` is the deterministic gate.
 
-## Workdir-as-state
+## VERIFY — tests for claims (the heart of the loop)
 
-Each iteration's survey reads the workdir to determine what phase is next. File existence implies the phase has been done:
+We cannot pre-write a gate for a specific paper's claims — the claims *are* the paper. So the workflow **generates** the gate: for every replication target in `targets/targets.md`, VERIFY writes a **test** that encodes the paper's claim (a numeric value within its stated uncertainty, a table cell, a figure's structural features). Then it runs the tests, and where a test fails it **diagnoses, fixes the implementation, re-runs the affected outputs, and re-tests** — iterating until the tests pass *or* the fidelity intent says "reasonable-ish, stop."
 
-| Signal | Phase done |
-|---|---|
-| `constitution.md` + `CLAUDE.md` at workdir root, both committed, **and** `work/reference/{paper.pdf, source/ or document.md, index.json, astra.yaml}` present, **and** (`work/reference/code/` present **or** `code-status.yaml` records `found: false`) | ORIENT |
-| `astra.yaml` at project root validates with empty `decisions:` / `prior_insights:` / `findings:` blocks | ARCHITECT (stub) |
-| `astra.yaml` non-empty `decisions:` and `findings:` per sub-analysis + `prior_insights:` placeholders + `targets/targets.md` + `implementation-notes.md` | SPECIFY |
-| `astra.yaml`'s `prior_insights:` Evidence entries each carry resolved `quote:` + `location:` selectors; `work/cited/<doi-slug>/` populated per cited paper | LITERATURE |
-| recipes present in `astra.yaml` + `scripts/` + `requirements.txt` | IMPLEMENT |
-| `results/<universe>/<output>/` for every output | RUN |
-| `comparison-report.yaml` | COMPARE |
-| `REPRODUCTION-SUMMARY.md` + `.lightcone/comparison.html` + resolved `open-questions.md` | REVIEW |
+This is the reproduction's convergence engine, and it is TDD applied to a paper: the claims are the spec, the tests are the gate, green is the goal. Two disciplines make it sound:
 
-`git log --oneline` complements this — phase commits are the chronological view of what landed when, and iteration boundaries are visible in the log.
+- **Bounded by intent.** The fix-loop's depth comes from the interviewed fidelity intent (passed in `args.intent`, recorded in `PLAN.md`). "An afternoon" → one or two rounds, accept what's close. "No deadline" → push every target to green. VERIFY reads the intent and sizes its own loop — that is *why* ORIENT interviews for it.
+- **Mind the interdependence.** Outputs depend on each other; a fix for one can regress another. After each fix round, re-run the **full** suite, not just the target you touched. The test suite is the regression net.
 
-## REVIEW close-out (after the loop)
+Tests live in the project (`tests/test_<target>.py`) and are committed — they are a durable artifact of the reproduction, re-runnable by any later session.
 
-When the loop closes (the user reports back that the tmux session has exited, or `constitution.md`'s `status:` is `closed`), run REVIEW from the user's main session. See [`references/review.md`](references/review.md) for the full close-out: invoke `/figure-comparison` (mandatory) and optionally `/check-sentence-by-sentence`, walk `open-questions.md` with the user, draft `REPRODUCTION-SUMMARY.md`, propagate un-acted opportunities into CLAUDE.md, commit.
+## Bookend B — CLOSE-OUT (main session)
 
-REVIEW runs in your main session because `/figure-comparison` and `/check-sentence-by-sentence` both use `AskUserQuestion`, which isn't available inside ralph iterations.
+When the workflow returns, run the close-out from the user's main session — read [`references/review.md`](references/review.md). It uses skills that need `AskUserQuestion` (so they cannot run inside the workflow):
 
-## Disciplines
-
-**Workdir is the state.** No state machine, no resume mechanic — file existence + `git log` + `astra validate` answer "what phase am I on" deterministically. Each iteration's first move is to survey the workdir on entry against the table above.
-
-**Constitution is task-bound; CLAUDE.md is durable.** The constitution describes what *this reproduction* is trying to achieve — Goal, Fidelity intent, Scope, Quality bar, Evidence, Open dimensions. Once the reproduction lands, the constitution can be archived. CLAUDE.md carries what stays useful past the reproduction — paper identity, rules, paper-vs-code disagreements, open opportunities for future tightening, pointers to substrate — so a user returning to this directory for follow-on work inherits it. When deciding where to put something new, ask: does it stay useful once the task is done?
-
-**Code-as-canonical, with disagreements recorded.** When the original codebase is at `work/reference/code/`, every iteration that touches a sub-analysis reads relevant code on entry. Where paper and code disagree on something material (a different choice would plausibly change a numeric result the paper reports), **code is canonical** for numerics, plotting, and method — but the disagreement is recorded: as a decision option in `astra.yaml` with both alternatives preserved, and as an entry in CLAUDE.md's *Paper-vs-code disagreements* section so it's visible to every iteration and to the user at REVIEW. Stylistic / cosmetic / pure-tooling differences aren't material — note them in `implementation-notes.md` and move on. Without this discipline, iterations drift to "looks right" rather than "matches" and material disagreements get silently absorbed.
-
-**Rigor is a trajectory toward the user's intent.** A reproduction isn't one-shot — it reaches a baseline, then accumulates. The anchor is the user's **fidelity intent**, captured in `constitution.md`'s Goal section at ORIENT as prose. Intent is partly aesthetic ("how good does this need to be?") and partly pragmatic ("what's feasible given the compute, tokens, and wall-clock available?"). Both dimensions belong in the prose — *"just checking the analysis is tractable — an afternoon"*, *"Figure 3 must be right; the rest can stay rough — overnight"*, *"every primary and secondary target lining up within stated tolerance, a few days"*.
-
-There's no explicit review state machine. Each iteration reads the prior phase's artifact critically as part of survey, fixes what needs fixing or advances if nothing does, commits, exits. The fresh-context property at iteration boundaries makes the next iteration the review. Gaps that the intent wants pushed further than the loop has time to deliver become Open opportunities in CLAUDE.md; a future loop relaunch closes them. (Work fan-out for the artifact-producing phases is separate; see "Parallel fan-out lives inside an iteration" above.)
-
-**arXiv-LaTeX-first acquisition.** When the paper is on arXiv, the source tarball is the substrate; equations, ligatures, captions, tables come through clean. PDF + Docling is a fallback for non-arXiv only.
-
-**Use the up-to-date `astra` CLI surfaces.** When `astra validate` already does the job, call it directly. Specifically: `astra validate <file>`, `astra validate --verify-evidence`, `astra paper add`. Use whatever the current `astra --help` surfaces — don't write skill-specific wrappers.
-
-**No synthetic data.** Unless the paper itself uses synthetic data as input, every input dataset must be real (downloaded, queried, or fetched from a real archive). The implement reference repeats this; treat it as load-bearing.
-
-**Open-questions accumulator.** Iterations run detached and can't reach the user interactively, so questions go to `<workdir>/open-questions.md` with the iteration's best-judgment default applied. The user resolves the accumulated questions at REVIEW close-out before the reproduction closes.
+- **`/figure-comparison`** (mandatory) — side-by-side original vs. reproduced figures/tables/numerics, building on the workflow's `report.html`.
+- **`/check-sentence-by-sentence`** (opt-in) — audit paper claims against code locations.
+- **Walk `open-questions.md`** with the user — the workflow's unresolved decisions (paper-vs-code disagreements it adjudicated code-canonical, citations with no supporting quote, targets that landed below intent). Resolve, finalize, commit.
 
 ## Resuming an in-flight reproduction
 
-When the user walks back into a workdir that already has artifacts:
+Workdir state is the resume mechanic — no separate state machine. On re-entry:
 
-1. **Skip ORIENT** unless the user explicitly wants to revise scope (in which case edit `constitution.md` together, no re-draft from scratch).
-2. **If `constitution.md`'s `status:` is `active` and the tmux session isn't running**, re-launch the ralph loop: `.claude/skills/ralph/scripts/ralph constitution.md`. The next iteration surveys the workdir and picks up wherever the prior loop left off.
-3. **If `constitution.md`'s `status:` is `closed`**, the reproduction is at REVIEW. Run REVIEW close-out in your main session.
-4. **If ORIENT substrate is incomplete** — paper-extraction errored mid-flight, or the code clone / scan didn't land — finish the missing stages in your main session before launching the loop. Both `/paper-extraction` and `/lc-from-code` are survey-first and skip done work; re-invoking against partial state is safe.
+1. **No `PLAN.md`** → ORIENT hasn't run; start at Bookend A. (`/paper-extraction` and `/lc-from-code` are survey-first and skip done work, so a partial `work/reference/` resumes cleanly.)
+2. **`PLAN.md` committed, the workflow hasn't finished** → re-launch the workflow; it is journal-resumable (`resumeFromRunId`) and its phases are idempotent against on-disk state (filled `astra.yaml`, materialized `results/`, written tests). Same script + args → cached prefix, live tail.
+3. **Workflow returned, no close-out yet** → run Bookend B.
+
+`git log --oneline` + `astra validate` + `lc status` answer "where are we" deterministically.
+
+## Disciplines
+
+- **Fidelity intent is the stopping criterion.** Captured at interview, carried in `args.intent` + `PLAN.md`, read by VERIFY to size its fix-loop. This is the spine of the autonomy model — the human said how hard to push, so the middle doesn't need them.
+- **Code-as-canonical, with disagreements recorded.** When `work/reference/code/` exists, every phase that touches a sub-analysis reads the relevant code. Where paper and code disagree materially, code is canonical for numerics/method — but the disagreement is preserved (both options in `astra.yaml`, a note in `CLAUDE.md`'s disagreements log, surfaced at close-out).
+- **No synthetic data.** Unless the paper itself uses synthetic input, every input is real — downloaded, queried, or fetched from a real archive.
+- **arXiv-LaTeX-first acquisition.** When the paper (or a cited paper) is on arXiv, the source tarball is the substrate; equations, captions, tables come through clean. PDF + Docling is the non-arXiv fallback. `/paper-extraction` owns this.
+- **Single-writer merge.** Parallel phase workers return structured output; a barrier step folds it into `astra.yaml`. Never have two agents edit `astra.yaml` concurrently.
+- **Use the current `astra` CLI.** `astra validate`, `astra validate --verify-evidence`, `astra paper add` — don't reimplement what they do.
+- **Open questions go to `open-questions.md`.** The workflow runs detached from the user; questions it can't resolve get a best-judgment default applied and a line in `open-questions.md`, resolved by the user at close-out.
 
 ## Anti-patterns
 
-- **Auto-launching the ralph loop without an explicit user-approval gate.** Stage 7 halts. The user only sees the constitution + CLAUDE.md once before they go into a fresh iteration's system prompt; "drafts written → launch" skips the one editorial pass that gets to shape the entire reproduction. Gate on `AskUserQuestion`; treat silence as not-yet-approved.
-- **Spawning a "loop manager" sub-agent inside your main session.** The whole point of the ralph loop is fresh per-iteration context; you launch the loop, the loop runs detached, you come back when it's done. No nested orchestrator.
-- **Doing the long middle in your main session instead of launching the loop.** ORIENT belongs in your session; ARCHITECT through COMPARE belong in the loop. Doing phase work in your main session burns context that doesn't get reset; the loop exists precisely to give each phase fresh context.
-- **Asking an iteration to use `AskUserQuestion`.** Iterations run detached. Surface questions to `open-questions.md` with a default applied; the user resolves at REVIEW.
-- **Re-implementing what `astra` already does.** If `astra validate` returns clean, don't write a separate validator. If `astra paper add` caches the PDF, don't write a separate cache.
-- **Bundling phases into one iteration.** Each iteration does one phase's worth of work. Conflating phases re-creates the failure mode the loop exists to avoid: no fresh-context review between phases.
-- **Accreting amendment sections in `constitution.md`.** When something fundamental shifts, *reshape* the affected prose. The chronology lives in commits; the body lives in *now*.
+- **Resurrecting the ralph loop.** The middle is a Workflow now. No detached tmux loop, no per-phase fresh-session iteration, no "loop manager" sub-agent.
+- **Reading papers in the orchestrator's context.** The fan-out's whole value is bounded workers. Spawn an agent to read a cited paper; don't open it in the main session or the workflow script.
+- **Pre-writing a paper-specific gate.** You can't — the claims are the paper. VERIFY *generates* the tests per target. The skill ships the loop, not the gate.
+- **Skipping plan mode.** Plan approval is the one human gate before the autonomous middle. "Drafts written → launch" skips the editorial pass that shapes everything.
+- **An unbounded VERIFY loop.** The fidelity intent bounds it. A reproduction asked for "an afternoon" that burns a day of fix rounds has ignored its governing parameter.
+- **Concurrent `astra.yaml` writes.** Workers return structured output; one merge step writes. Two agents editing the spec at once corrupts it.
+
+## See also
+
+- [`reproduce_workflow.js`](reproduce_workflow.js) — the workflow template the skill launches; adapt per paper.
+- [`citation-audit`](../citation-audit/SKILL.md) — the precedent Workflow-driven skill; LITERATURE is its fan-out → verify → synthesize spine.
+- [`paper-extraction`](../paper-extraction/SKILL.md) — the upstream acquisition skill ORIENT and LITERATURE consume.
+- [`narrative`](../narrative/SKILL.md) — authors `astra.yaml` narrative + decision rationale; invoked by ARCHITECT (in the plan) and SPECIFY.
+- [`figure-comparison`](../figure-comparison/SKILL.md), [`check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) — close-out validation surfaces.
+- [`astra`](../astra/SKILL.md), [`lc-cli`](../lc-cli/SKILL.md) — the spec model and the `lc` execution surface.

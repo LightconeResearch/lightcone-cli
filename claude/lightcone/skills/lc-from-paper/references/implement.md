@@ -1,109 +1,61 @@
-# IMPLEMENT — write scripts and recipes
+# IMPLEMENT — one worker, one output's script + recipe
 
-Read `astra.yaml` (the filled spec) and `implementation-notes.md` (practical guidance). Write scripts in `scripts/` that produce each output, then add recipes to `astra.yaml` so the asset graph is wired end to end. After the first-pass implementation lands, the next fresh-context iteration reads it critically against paper + code; if it sees issues it fixes them and exits, otherwise it advances to RUN. Same shape ARCHITECT and SPECIFY use.
+You are **one IMPLEMENT worker**, spawned by the workflow's `parallel` fan-out over the outputs that still need a recipe. Your output id is in your prompt. You write **one script** — `scripts/<output>.py` — that produces that output, parameterized from the decisions it consumes, and you **return your recipe + requirements as structured output** ([`IMPL_SCHEMA`](../reproduce_workflow.js)) for the merge step to fold in. You are bounded and stateless: read your inputs, write your one script, return. You do not see the other workers; you do not edit `astra.yaml`.
 
-IMPLEMENT is what a ralph iteration does when the workdir signals "SPECIFY done + scripts/ absent (first pass) or comparison-report.yaml shows partial/fail (retry pass)". Most implementation is mechanical (translate spec → script). Where parallelization is feasible (multiple independent outputs from different scripts), the iteration fans out to one-level-deep sub-agents per output (inside its own main session) and merges.
+**The hard boundary: you write only your own script file.** `scripts/<output>.py` is a *disjoint* file — that is what makes the fan-out safe to run in parallel. Do **not** touch another output's script, `astra.yaml`, `requirements.txt`, or the container. The merge step is the single writer for all of those: it folds every worker's recipe into `astra.yaml`, unions every worker's `requirements` into `requirements.txt`, sets `container:`, and runs `astra validate`. Your recipe and your requirements reach it through your structured return, not through an edit.
 
-## Inputs
+## Inputs (read these, nothing more)
 
-- `astra.yaml` — the filled spec (sub-analyses, decisions, prior_insights, findings, narrative — all populated by SPECIFY)
-- `implementation-notes.md` — tricky algorithms, numerical gotchas, data-format quirks
-- `work/reference/index.json` — paper-side structural index (figures, tables, outline, citations); useful when the spec compresses or you need to find where in the paper a behavior is described.
-- `work/reference/code-index.md` (when code present) — code inventory: module map, candidate decisions with file:line, entry-points, data dependencies, gotchas (the canonical map of where each sub-analysis's logic lives in `work/reference/code/`).
-- `work/reference/code/` (if present) — **canonical reference. Read it when implementing each output.** Where paper and code disagree, code wins for numerics, plotting, and method.
-- `constitution.md` — Fidelity intent.
-- `CLAUDE.md` — **Paper-vs-code disagreements** for prior conflicts already logged.
+- **The output's spec entry in `astra.yaml`** — your output's declaration plus its sub-analysis's `decisions:` / `findings:` for the method and parameter values. This is your spec; you implement what it describes.
+- **`implementation-notes.md`** — the practical-guidance bullets SPECIFY left: tricky algorithms, numerical gotchas, data-format quirks, anything the spec couldn't carry. Read the part relevant to your output.
+- **`work/reference/code-index.md`** (when code present) — the code inventory. Its natural-decomposition / entry-points block is the pointer back to the canonical code location for the sub-analysis your output lives in.
+- **`work/reference/code/`** (when present) — **canonical reference. Read the modules `code-index.md` maps for your output.** Where paper and code disagree on numerics, plotting, or method, code wins.
+- **`CLAUDE.md`** — the **Paper-vs-code disagreements** log for conflicts already adjudicated, and the **fidelity intent** (how exhaustively to push). `work/reference/index.json` when you need to find where in the paper a behavior is described — Grep, don't re-read whole.
 
-## Outputs
+Targeted reads only. The spec entry + the notes + the one code module your output maps to is the working set. Don't absorb the paper or the codebase.
 
-- `scripts/<output>.py` (or `.sh`, or whatever fits) — one script per output (or shared scripts for tightly-coupled outputs)
-- `requirements.txt` — Python dependencies
-- Recipes in `astra.yaml` — each output gets a `recipe:` block with `command:` and `inputs:`
-- `CLAUDE.md` updates — append to **Paper-vs-code disagreements** for any new conflict surfaced during implementation
+## Output
 
-## Step 1: write recipes + scripts
+- **`scripts/<output>.py`** (or `.sh`, or whatever fits) — the one script that produces your output. Disjoint file. Yours alone.
+- **Structured return** ([`IMPL_SCHEMA`](../reproduce_workflow.js)): `output_id`, `script_path`, `recipe: {command, inputs}`, `requirements: [...]` (the pip deps your script needs), `disagreements: [...]` (any material paper-vs-code conflict you surfaced), `notes`.
 
-Read `astra.yaml` and `implementation-notes.md`. For each output, write a script in `scripts/` that produces it, and add a `recipe:` block to the output's entry in `astra.yaml` with `command:` and `inputs:`.
+You do **not** write the recipe into `astra.yaml` and you do **not** edit `requirements.txt` — those are in the return; the merge step writes them. You do **not** run the script — RUN does that via `lc run`.
 
-### With a code reference (`work/reference/code/` exists)
+## Writing the script
 
-**Read the relevant code when implementing each output** — not just to resolve ambiguities but as the canonical source of truth for numerics + method. Write clean scripts following ASTRA conventions (not verbatim copies), but treat the code's behavior as authoritative when it disagrees with the paper. When you encounter a paper-vs-code disagreement that SPECIFY's code pass missed: continue with the code's behavior (per the canonical-resolution default; the iteration runs detached, no interactive ratification), append the disagreement to CLAUDE.md's **Paper-vs-code disagreements** AND `open-questions.md`, and note it in `implementation-notes.md` so REVIEW close-out can ratify or override.
+For your output, write a script in `scripts/` that produces it, then describe its recipe in your return.
 
-Without this discipline, the implementation drifts to "looks right" rather than "matches" — the failure mode the first-paper test surfaced.
+### Code-as-canonical (when `work/reference/code/` exists)
 
-When the reference code is substantial enough that implementation is really a migration of an existing codebase, follow `/lc-from-code`'s migration workflow in **augment existing ASTRA** mode. Use its code scan, minimal parameter-plumbing, dependency/container, and baseline-preservation strategies, but apply them to this reproduction's existing `astra.yaml`. Do not create a second ASTRA project or duplicate the spec; add recipes, code-backed options, implementation notes, and missing structure to the current reproduction artifact.
+**Read the relevant code as you implement — it is the source of truth for numerics and method, not just an ambiguity-breaker.** Write a clean script that follows ASTRA conventions (not a verbatim copy of the reference), but treat the code's behavior as authoritative wherever it disagrees with the paper. Without this, the implementation drifts to "looks right" instead of "matches" — the failure mode the whole code-canonical discipline exists to prevent.
 
-### Without a code reference (`work/reference/code/` is absent)
+When you surface a **material** paper-vs-code disagreement the SPECIFY pass missed (one where a different choice would plausibly move a number the paper reports): implement the code's behavior (canonical-resolution default — the workflow runs detached, no interactive ratification), and return it in `disagreements[]` so the merge step can append it to `CLAUDE.md`'s disagreements log and `open-questions.md` for the user to ratify or override at close-out. Note it in your script's comments too, by `path:line` of the reference + the paper §/eq.
 
-When `code-status.yaml` records `found: false` or the cloned repo turned out to be unusable, there is no canonical code substrate to anchor against. **Write the implementation fresh from the spec** — `astra.yaml`'s decisions, findings, and prior_insights are now the only source of method-level truth, and the paper's prose (Grep into `work/reference/source/` or `document.md` for specific facts) is the source of numerics-level truth. Don't pretend a code reference exists; don't try to find a similar paper's code as a stand-in. Implement what the spec describes, read targeted paper sections when the spec compresses something you need clarified, and rely on COMPARE to surface anywhere the implementation has drifted from the paper's claims.
+When the reference is substantial enough that implementing your output is really a *migration* of an existing codebase, follow `/lc-from-code`'s migration discipline in **augment-existing-ASTRA** mode — its minimal parameter-plumbing and baseline-preservation strategies — but scoped to your one output. Do not create a second ASTRA project or duplicate the spec.
 
-The code-as-canonical rule does not apply here — there is no code to be canonical. The paper is the only anchor. This is the harder path; reproductions on it converge slower and have more open questions for REVIEW close-out. Surface that honestly to the user as you go; don't dress up paper-only implementations as if they had a code anchor.
+### Without a code reference (`work/reference/code/` absent)
 
-### Parallelize where feasible
+When the scan recorded no usable repo, there is no canonical code substrate. **Write the implementation fresh from the spec** — your output's `decisions:` / `findings:` in `astra.yaml` are the only method-level truth, and the paper's prose (Grep into `work/reference/source/` or `document.md`) is the numerics-level truth. Don't pretend a code reference exists; don't substitute a similar paper's code. This is the harder path: paper-only outputs converge slower and produce more open questions for close-out. The code-as-canonical rule simply doesn't apply — the paper is the only anchor.
 
-When outputs are produced by independent scripts (no shared expensive computation), the iteration spawns one-level-deep sub-agents per output (inside its own main session). Each sub-agent gets:
+## REAL DATA ONLY
 
-- The output's spec entry from `astra.yaml` (including its sub-analysis's `decisions:` / `findings:` for context)
-- The relevant section of `implementation-notes.md`
-- The matching entry in `work/reference/code-index.md`'s natural-decomposition / entry-points block — that's the pointer back to the canonical code location for the sub-analysis the output lives in
-- The relevant code path(s) under `work/reference/code/`
+**NEVER generate synthetic, mock, or fake data.** Every input dataset your script consumes must be downloaded or queried from its real source — the archive URL, database query, or API named in `astra.yaml`'s inputs. Write the script to fetch the actual data.
 
-The iteration merges scripts and recipes after the per-output sub-agents finish. Tightly-coupled outputs (e.g. an MCMC producing both a chain and a summary statistic) stay in one sub-agent and one script.
+The only exception is a paper whose *own* input is synthetic (N-body sims, Monte Carlo samples). Then you reproduce the paper's data-generation procedure exactly — that is reproducing the methodology, not substituting fakes for real data.
 
-### Rules for the first pass
+If a dataset is paywalled, registration-gated, or "available upon request," write the download with a clear error message telling the user what to do manually. **Do NOT substitute synthetic data as a workaround** — return a `notes` entry flagging the gap instead.
 
-1. **One script per output** (or a shared script for tightly-coupled outputs).
-2. **Parameterize by decisions.** Each decision is a CLI argument; scripts also receive `--universe <universe_id>`. See lightcone-cli's `CLAUDE.md` for the full convention.
-3. **Add recipes** to each output in `astra.yaml` with `command:` and `inputs:` (dependencies). Recipe inputs use the same `<analysis>.<output>` form the narrative skill's data-flow rules require.
-4. **Create `requirements.txt`** with needed packages. Do not install them — the RUN phase manages environments.
-5. **Do not execute scripts** — the RUN phase handles execution via `lc run`.
-6. **Validate** with `astra validate astra.yaml` after adding recipes.
+## Rules for the script
 
-## Step 2: reviewing prior IMPLEMENT work as part of survey
-
-There is no separate review phase. Every iteration that enters and finds `scripts/` + recipes on disk reads them critically against paper + code before doing anything else. If you see real issues — wrong constant, missing recipe, paper-vs-code drift, synthetic-data shortcut — fix them inline, commit (`implement: fix <what>`), exit. When a fresh-context read finds nothing to fix, the iteration advances to RUN.
-
-The cross-check question on entry: is the implementation consistent with the paper and the code?
-
-### What to look at
-
-1. **Recipe coverage.** Every output in `astra.yaml` has a recipe; every recipe runs a script that exists in `scripts/`.
-2. **Method fidelity.** For each output, the script implements the method described by the relevant sub-analysis's `decisions:` and `findings:` in `astra.yaml`. Where SPECIFY's code pass surfaced a material disagreement, the script follows the code's method (canonical-resolution rule), unless the spec recorded a different override in `decisions:` and `universes/baseline.yaml`.
-3. **Numerical correctness.** Constants, hyperparameters, threshold values match the paper (or the code, where the canonical-resolution rule applied). Flag mismatches with `path:line` of the script and the paper §/eq + the relevant `astra.yaml#analyses.<sub-id>.decisions.<key>` entry.
-4. **Data acquisition.** Scripts that fetch data use the real acquisition path from `astra.yaml`'s inputs — no synthetic / mock substitutes.
-5. **Determinism.** Scripts set random seeds where the paper's method is stochastic. Library versions in `requirements.txt` are pinned where reproducibility requires it.
-6. **Recipe wiring.** Recipe `inputs:` references match the data-flow the scripts actually consume; no orphan dependencies, no missing dependencies.
-
-Apply fixes inline as you find them — `scripts/`, `astra.yaml` recipes, `requirements.txt`, `implementation-notes.md`, the disagreements log in CLAUDE.md when a new material conflict surfaces. After any change to `astra.yaml`, run `astra validate astra.yaml`. Commit the diff and exit.
-
-Don't re-read the entire paper; grep into `work/reference/index.json`, `work/reference/code-index.md`, and `work/reference/source/` (or `document.md`) for specific items. Don't declare the implementation done in the same iteration where you landed fixes — the next fresh-context iteration reads it cold; if nothing needs fixing, it advances to RUN, which is the "done" signal.
-
-The post-RUN COMPARE → IMPLEMENT retry loop is separate from this critical-read pattern — that loop handles result-matching after the pipeline executes, not spec/implementation alignment before it.
-
-## Data: REAL DATA ONLY
-
-**NEVER generate synthetic, mock, or fake data.** Every input dataset must be downloaded or queried from its real source (archive URL, database query, API, etc.). The methodology notes and `astra.yaml` inputs describe where each dataset comes from — write scripts that fetch the actual data.
-
-The only exception is if the paper itself uses synthetic / simulated data as its input (e.g., N-body simulations, Monte Carlo samples). In that case, reproduce the paper's data generation procedure exactly as described — but this is reproducing the paper's methodology, not substituting real data with fakes.
-
-If a dataset is behind a paywall, requires registration, or is "available upon request," write the download script with a clear error message explaining what the user needs to do manually. **Do NOT substitute synthetic data as a workaround.**
-
-## Retry attempts (post-COMPARE)
-
-If `comparison-report.yaml` exists from a prior COMPARE that returned `partial` or `fail`, a subsequent iteration may take on a **retry attempt**. Read `comparison-report.yaml` to understand what went wrong; focus on the outputs marked as non-matching. Default attempt budget is 5; the iteration's first move is to check whether `attempt` in the report has reached the budget. If it has, accept partial, log the failure as an Open opportunity in CLAUDE.md (so REVIEW close-out can decide whether to push further or accept the trajectory), and exit; subsequent iterations either accept the verdict via a cold close or pivot scope based on REVIEW's input.
-
-A retry attempt restarts the critical-read pattern on the changed scripts before the next iteration advances to RUN.
-
-## Survey signals (entry into IMPLEMENT)
-
-- `astra.yaml` validates and `implementation-notes.md` exists ⇒ ready to implement first pass
-- `scripts/` has one entry per output id; `requirements.txt` exists; recipes appear in `astra.yaml` ⇒ IMPLEMENT's output is on disk; read it critically. Fix anything wrong; otherwise the iteration advances to RUN.
-- `comparison-report.yaml` returns `pass` ⇒ COMPARE → IMPLEMENT loop terminated; the constitution can close after a cold survey, and REVIEW close-out runs in the user's main session
+1. **One script for your one output** — unless your output is tightly coupled to a sibling (e.g. an MCMC that produces both a chain *and* a summary statistic from one expensive run). Tight coupling earns a shared script with multiple output paths; if your prompt assigns you such a coupled set, write the one script. Otherwise stay in your lane.
+2. **Parameterize by decisions.** Each decision your output consumes is a CLI argument; the script also takes `--universe <universe_id>`. See lightcone-cli's `CLAUDE.md` for the full convention. The values come from the decisions in your spec entry — read them, don't invent them.
+3. **Recipe wiring.** Your returned `recipe` is `{command, inputs}`. Wire it with the recipe-template placeholders: `{inputs.<dep>}` for an upstream dependency, `{decisions.<key>}` for a decision value, `{output}` for your output path. Recipe `inputs:` use the `<analysis>.<output>` form the narrative skill's data-flow rules require — every dependency your script actually reads, no orphans, no omissions.
+4. **List requirements, don't install them.** Return the pip deps in `requirements[]`; the merge step unions them into `requirements.txt` and RUN manages the environment.
+5. **Determinism.** Set random seeds where the method is stochastic; the goal is "reproducibly produces output across runs," not "produces output once." Note any version pin reproducibility requires in `requirements[]`.
+6. **Minimal changes.** Implement what your spec entry describes — nothing more. Don't add outputs, refactor a sibling's concern, or design for a target that isn't yours. The fan-out is sound only if each worker stays inside its output.
 
 ## Notes
 
-- **`lc run` is the canonical execution surface.** Scripts assume they will be invoked via the lightcone-cli runner. Do not hard-code working directories or assume environment activation.
-- **Determinism where possible.** Set random seeds, fix library versions, prefer reproducible installations. The IMPLEMENT goal is not just "produces output once" but "reproducibly produces output across runs."
-- **Tight coupling earns shared scripts.** When two outputs come from the same expensive computation (e.g. an MCMC produces both a parameter chain and a summary statistic), one script with multiple output paths is cleaner than two scripts that each re-do the work.
-- **The iteration that fixed the artifact can't also be the iteration that judges it clean.** That's the fresh-context-no-bias property at iteration boundaries; conflating fix-iteration with done-judgment defeats it.
-- **Commit as you go.** One commit per script + recipe wiring; one commit per fix. The next iteration reads `git log` to track progress.
+- **`lc run` is the canonical execution surface.** Your script assumes it is invoked via the lightcone-cli runner — no hard-coded working directories, no assumed environment activation.
+- **The merge step closes the loop.** It folds every recipe into `astra.yaml`, reconciles `requirements.txt`, sets `container:`, runs `astra validate`, and commits. A recipe you describe cleanly and completely in your return is a recipe that merges without a second pass — so be precise about `command`, `inputs`, and the decision/output placeholders.
+- **Disagreements travel in the return, not the spec.** You don't edit `CLAUDE.md` or `open-questions.md`; you put the conflict in `disagreements[]` and the merge step routes it. Same for anything that needs the user's eye at close-out — surface it, don't resolve it silently.

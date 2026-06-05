@@ -1,0 +1,74 @@
+# <paper title> — Reproduction Plan
+
+<!-- The human-readable contract for what gets reproduced and how hard. Drafted in
+     ORIENT (main session), presented in plan mode, and committed as PLAN.md on
+     approval — alongside the astra.yaml skeleton, targets/targets.md, and CLAUDE.md.
+     This is a STATIC RECORD of what we agreed to: the workflow reads it for intent and
+     scope, but does not rewrite it. If the agreement itself changes, a later session
+     amends this file in the main session, not the workflow. -->
+
+Reproduce **<paper title>** (<arXiv ID>, DOI <doi>) — <one-line subject, e.g. "BAO scale measurement from DESI DR1">.
+
+## Goal
+
+<The headline, then what "done" means at the chosen fidelity. Concrete: which targets
+ reproduced, what verdict against them, what validation passes. E.g.: "A complete
+ astra.yaml whose recipes produce reproduced versions of <list of targets>, with the
+ VERIFY phase's per-target tests green (each reproduced value within the paper's stated
+ uncertainty) under `astra validate astra.yaml --verify-evidence` and an all-`ok`
+ `lc status --universe baseline`." Pin "done" to the fidelity intent below — a sanity
+ check and a no-deadline reproduction have different finish lines.> 
+
+## Fidelity intent
+
+<!-- THE STOPPING CRITERION. The workflow's VERIFY phase reads this (carried in
+     args.intent) to size its fix-loop: how many rounds to spend, how close is close
+     enough per target. Capture the user's prose answer from the ORIENT interview
+     verbatim or in close paraphrase, including the time/compute/token budget — both the
+     aesthetic dimension (what "good enough" looks like) and the pragmatic one (what we
+     have to spend). Pin it against the paper's actual headline numbers. -->
+
+<The user's prose answer. E.g.: "Just checking the analysis is tractable — an afternoon
+ of compute, one or two fix rounds, accept what's close." / "Figure 3 must land within
+ its stated 1σ; the rest can stay rough — overnight." / "Full fidelity on the BAO fit,
+ baseline elsewhere — a few days." / "Every primary and secondary target within stated
+ tolerance, no hard deadline.">
+
+**Budget:** <wall-clock + compute/token envelope, e.g. "~4 h, single workstation, no cluster" or "overnight on the cluster, ~2 GPU-h">.
+
+## Scope
+
+**In:** <the figures / tables / numbers being reproduced, and the methodological span — name them, these are what Targets enumerates.>
+
+**Out:** <explicit exclusions, fenced from drift — sub-analyses, ablations, or extensions we are deliberately not reproducing this pass.>
+
+## Targets
+
+The replication-target ledger lives in [`targets/targets.md`](targets/targets.md) — every target with its priority, expected value + stated uncertainty, and comparison guidance. That ledger is what VERIFY writes a test against, one test per target; this section is the prose summary.
+
+<2–4 lines naming the primary targets and what carries the headline. E.g.: "Primary:
+ the BAO scale α = 0.987 ± 0.012 (Table 3) and its posterior (Fig 4). Secondary: the
+ reconstructed correlation function (Fig 2). See the ledger for the full list and
+ tolerances.">
+
+## Decomposition
+
+The reproduction is split into the sub-analyses below (skeleton in [`astra.yaml`](astra.yaml) — structure only at plan time: inputs, outputs, narrative; no decisions/findings/recipes yet, the workflow fills those). Each sub-analysis is a coherent unit the workflow specifies, implements, and verifies.
+
+| Sub-analysis | What it produces | Why it's its own unit |
+|---|---|---|
+| `<sub_id>` | <outputs> | <why split here — distinct data stage, distinct method, distinct target> |
+| `<sub_id>` | <outputs> | <…> |
+
+<One or two lines on the data-flow spine if it isn't obvious from the table — what feeds
+ what. If the paper is monolithic, say so: a single `root` analysis, no split.>
+
+## Evidence
+
+The canonical sources this reproduction is built against:
+
+- **Paper:** `work/reference/{paper.pdf, source/ or document.md, index.json, astra.yaml}` — the substrate `/paper-extraction` landed during ORIENT. `index.json#citations` carries each cited paper's resolved DOI for the LITERATURE phase.
+- **Code:** `work/reference/code/` — the reference repo cloned during ORIENT; scan inventory at `work/reference/code-index.md`. **Code is canonical where it disagrees materially with the paper.** <Omit this bullet if no public repo exists — implement fresh from the spec, paper is the only anchor.>
+- **Paper DOI:** <doi>
+- **arXiv ID:** <id> (if applicable)
+- **Code repo URL:** <url, or "none — no public repository">
