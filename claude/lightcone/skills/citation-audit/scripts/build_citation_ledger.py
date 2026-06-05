@@ -323,7 +323,20 @@ def build_ledger(reference_dir: Path, existing: dict[str, LedgerRow]) -> list[Le
                     bibcode=bibcode,
                 )
             )
-    return rows
+    # Collapse rows that share a use_id. A key cited several times on the SAME
+    # physical .tex line (a paragraph written as one line) yields key+line-
+    # identical use_ids with an identical extracted claim — indistinguishable.
+    # use_id is the ledger's stable unique identifier (one verdict per use_id);
+    # leaving duplicates would split a single verdict across un-mergeable rows.
+    # (Per-occurrence claim splitting within one line is a separate enhancement.)
+    seen: set[str] = set()
+    deduped: list[LedgerRow] = []
+    for r in rows:
+        if r.use_id in seen:
+            continue
+        seen.add(r.use_id)
+        deduped.append(r)
+    return deduped
 
 
 def main() -> int:
