@@ -231,8 +231,6 @@ def _entry_html(row: dict[str, Any], app_index: int) -> str:
 
     notes = row.get("verdict_notes")
     notes_html = f"<div class='notes'>{raw_tex(str(notes), collapse=False)}</div>" if notes else ""
-    rew = row.get("suggested_rewording")
-    rew_html = f"<div class='rew'>{raw_tex(str(rew), collapse=False)}</div>" if rew else ""
     flag = row.get("doi_flag")
     flag_html = f"<div class='flag'>{raw_tex(str(flag))}</div>" if flag else ""
 
@@ -256,7 +254,7 @@ def _entry_html(row: dict[str, Any], app_index: int) -> str:
     <p class="sentence">{before}<span class="cited">{sentence}</span>{after}</p>
     {lede_html}
   </summary>
-  <div class="body"><div class="ev">{flag_html}{ev}{notes_html}{rew_html}</div></div>
+  <div class="body"><div class="ev">{flag_html}{ev}{notes_html}</div></div>
 </details>"""
 
 
@@ -269,7 +267,7 @@ _CSS = """
 }
 *{box-sizing:border-box} html,body{margin:0;padding:0}
 body{background:var(--parchment);color:var(--ink);font-family:var(--serif);font-size:21px;line-height:1.55;-webkit-font-smoothing:antialiased}
-.page{max-width:740px;margin:0 auto;padding:58px 26px 90px}
+.page{max-width:820px;margin:0 auto;padding:58px 26px 90px}
 .kicker{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:14px}
 h1{font-family:var(--display);font-weight:500;font-size:46px;line-height:1.04;letter-spacing:-.015em;margin:0 0 6px}
 .subtitle{color:var(--muted);font-style:italic;font-size:18px;margin:0 0 22px}
@@ -307,7 +305,7 @@ h1{font-family:var(--display);font-weight:500;font-size:46px;line-height:1.04;le
 .loc{color:var(--muted)}
 .chev{font-size:18px;line-height:1;color:var(--muted);transform:rotate(90deg);transition:transform .2s ease}
 .entry[open] .chev{transform:rotate(-90deg)}
-.sentence{margin:0;font-size:21px;line-height:1.5;color:var(--ink)}
+.sentence{margin:0;font-family:var(--mono);font-size:15.5px;line-height:1.6;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}
 .ctx{display:none;color:var(--muted)}
 .entry[open] .ctx{display:inline;animation:ctxin .4s both}
 @keyframes ctxin{from{opacity:0}to{opacity:1}}
@@ -316,21 +314,22 @@ h1{font-family:var(--display);font-weight:500;font-size:46px;line-height:1.04;le
 
 .body{padding:0 22px 6px}
 .ev{padding:16px 0 18px;margin-top:6px;border-top:1px solid var(--rule)}
-.ev blockquote{margin:0 0 15px;font-family:var(--mono);font-size:14.5px;line-height:1.6;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre);white-space:pre-wrap;word-break:break-word}
+.ev blockquote{margin:0 0 15px;font-family:var(--mono);font-size:14.5px;line-height:1.6;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre);white-space:pre-wrap;overflow-wrap:anywhere}
 .bad .ev blockquote,.warn .ev blockquote{border-left-color:var(--rule)}
 .ev blockquote:last-child{margin-bottom:0}
 .ev cite,.lede cite{display:block;font-family:var(--mono);font-style:normal;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:5px}
 .fl{display:block;font-family:var(--mono);font-style:normal;font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--teal);margin-bottom:3px}
 .bad .fl,.warn .fl{color:var(--muted)}
 /* lede: the first supporting quote, shown collapsed so evidence is visible up front; hidden when expanded (the full facet list takes over) */
-.lede{margin:11px 0 0;font-family:var(--mono);font-size:14.5px;line-height:1.6;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre);white-space:pre-wrap;word-break:break-word}
+.lede{margin:11px 0 0;font-family:var(--mono);font-size:14.5px;line-height:1.6;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre);white-space:pre-wrap;overflow-wrap:anywhere}
 .bad .lede,.warn .lede{border-left-color:var(--rule)}
 .entry[open] .lede{display:none}
 .ev cite{display:block;font-style:normal;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:5px;letter-spacing:.02em}
 .none{font-style:italic;color:var(--cinnabar);margin:0}
-.notes{margin-top:10px;font-size:16px;color:var(--muted);white-space:pre-line}
-.rew{margin-top:8px;font-size:17px;background:rgba(185,132,43,.12);border-radius:5px;padding:11px 14px}
-.rew::before{content:'suggested rewording';display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--ochre);margin-bottom:4px}
+.notes{margin-top:16px;font-family:var(--serif);font-size:17.5px;line-height:1.52;color:var(--ink);white-space:pre-line;background:rgba(255,255,255,.5);border:1px solid var(--rule);border-left:3px solid var(--teal);border-radius:6px;padding:13px 16px}
+.notes::before{content:'analysis';display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--teal);margin-bottom:6px}
+.bad .notes::before,.warn .notes::before{content:'analysis';color:var(--cinnabar)}
+.bad .notes,.warn .notes{border-left-color:var(--cinnabar)}
 .flag{margin-bottom:12px;font-size:16px;background:rgba(188,69,56,.1);border-radius:5px;padding:11px 14px;color:var(--cinnabar)}
 .flag::before{content:'resolver flag';display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px}
 mark.auditcite{background:rgba(188,69,56,.13);color:var(--cinnabar);font-weight:600;padding:0 2px;border-radius:2px}
