@@ -236,17 +236,27 @@ the qualified `<analysis_id>.<output_id>` form.
 
 ## Claude Code plugin
 
-The plugin lives at `claude/lightcone/`. It is force-included into the
-installed wheel via `pyproject.toml` so `lc init` can find it whether
-you're running from source or from PyPI:
+The bundle at `claude/lightcone/` is a proper Claude Code plugin: manifest at
+`claude/lightcone/.claude-plugin/plugin.json`, hooks at
+`claude/lightcone/hooks/hooks.json` (with command paths rooted at
+`${CLAUDE_PLUGIN_ROOT}`), plus the skill / agent / script subdirectories.
+The repo root carries a `.claude-plugin/marketplace.json` declaring one
+plugin (`lightcone`) sourced from `./claude/lightcone`.
+
+Both directories are force-included into the wheel so `lc init` finds the
+marketplace whether you're running from source or from PyPI:
 
 ```toml
 [tool.hatch.build.targets.wheel.force-include]
 "claude/lightcone" = "lightcone/cli/claude/lightcone"
+".claude-plugin/marketplace.json" = "lightcone/cli/.claude-plugin/marketplace.json"
 ```
 
-`lightcone.cli.plugin.get_plugin_source_dir()` does the lookup: bundled
-location first, dev location (relative to the repo root) second.
+`lightcone.cli.plugin.get_marketplace_root()` does the lookup — it returns
+the directory containing `.claude-plugin/marketplace.json` (the wheel-
+installed package root, or in dev the repo root). `lc init` shells out to
+`claude plugin marketplace add <root>` then `claude plugin install
+lightcone@lightcone-cli`. Both Claude CLI calls are idempotent.
 
 ### Permission tiers
 
@@ -254,13 +264,16 @@ location first, dev location (relative to the repo root) second.
 `.claude/settings.json` from the matching tier in
 `PERMISSION_TIERS`. `recommended` (the default) allows the agent to
 edit, write, and shell out, but blocks edits to dotfiles, scratch
-paths, and `git push`.
+paths, and `git push`. This is the only thing `lc init` writes into
+the project's `.claude/` — the plugin (skills, agents, hooks) lives
+user-scoped under `~/.claude/plugins/`, not duplicated per project.
 
 ### Hooks
 
 The plugin registers Claude Code hooks for venv activation,
-auto-validation on save, and integrity-aware "did you forget `lc run`?"
-warnings.
+auto-validation on save, and surfacing materialization status at session
+start. Hook scripts live at `${CLAUDE_PLUGIN_ROOT}/scripts/` and the
+matchers/timeouts are declared in `claude/lightcone/hooks/hooks.json`.
 
 ---
 
@@ -334,7 +347,7 @@ a status walker, a verify routine, the Dask cluster manager, the
 container-runtime layer, and a Snakemake executor plugin that submits
 each rule to a Dask scheduler.
 
---- 
+---
 
 ## Configuration files
 

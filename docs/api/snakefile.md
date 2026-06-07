@@ -22,9 +22,10 @@ Reads `astra.yaml`, resolves the analysis tree, and writes:
 Returns the two paths.
 
 `runtime` is one of `docker | podman | podman-hpc | none` and is used to
-wrap each recipe at generation time (see
-[engine.container.wrap_recipe](container.md#wrap_recipe)). Resolution is
-done once here, not per rule, so all rules use a consistent runtime.
+wrap each recipe at generation time (see the
+[run-time wrap section in `engine.container`](container.md#run-time-wrap)).
+Resolution is done once here, not per rule, so all rules use a consistent
+runtime.
 
 ## `discover_universes(project_path) → list[str]`
 

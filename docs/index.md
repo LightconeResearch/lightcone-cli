@@ -1,9 +1,9 @@
 # lightcone-cli
 
 **lightcone-cli** is [Lightcone Research][lr]'s agentic execution layer for
-[**ASTRA**][astra] (Agentic Schema for Transparent Research Analysis).  
+[**ASTRA**][astra] (Agentic Schema for Transparent Research Analysis).
 It serves as the machinery that ties an analysis `astra.yaml` specification to a tree
-of materialized outputs.
+of materialized outputs, whether you drive it from Claude Code, Codex, or Pi.
 
 ## Choose your path to the documentation
 
@@ -36,13 +36,19 @@ of materialized outputs.
 
 -   __lightcone-cli__
 
-    The library that ships the `lc` CLI which handle the agent surface (skills, plugins, guardrails) as well as the workflow execution layer. Depends on [**astra-tools**][astra-tools], the SDK for working with ASTRA analysis specifications.
+    The library that ships the `lc` CLI plus the shared agent bundle for Claude Code,
+    Codex, and Pi. It owns the agent surface (skills, plugins/extensions, guardrails)
+    as well as the workflow execution layer. Depends on [**astra-tools**][astra-tools],
+    the SDK for working with ASTRA analysis specifications.
 
-    [:fontawesome-brands-github: Repository][cli]{ .md-button }
+    [:fontawesome-brands-github: Repository](https://github.com/LightconeResearch/lightcone-cli){ .md-button }
 
 -   __astra-tools__
 
-    The SDK for working with [**ASTRA**][astra] analysis specifications. This library provides the `astra` CLI which handles the [**ASTRA**][astra] lifecycle and validation process (schema, prior insights & findings, evidence verification helpers).
+    The SDK for working with [**ASTRA**][astra] analysis specifications. This library
+    provides the `astra` CLI which handles the [**ASTRA**][astra] lifecycle and
+    validation process (schema, prior insights & findings, evidence verification
+    helpers).
 
     [:fontawesome-brands-github: Repository][astra-tools]{ .md-button }
 
@@ -51,4 +57,3 @@ of materialized outputs.
 [lr]: https://lightconeresearch.org/
 [astra]: https://astra-spec.org/latest/
 [astra-tools]: https://github.com/LightconeResearch/astra-tools
-[cli]: https://github.com/LightconeResearch/lightcone-cli

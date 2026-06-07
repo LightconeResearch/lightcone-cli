@@ -22,11 +22,24 @@ CLAUDE.md                     # short note pointing future agents at the project
   lightcone.yaml              # currently a stub: { target: local }
 results/                      # placeholder; populated by `lc run`
 universes/                    # placeholder; populate via `astra universe generate -n …`
-.claude/                      # bundled Claude Code plugin
-  skills/, agents/, hooks/, scripts/, templates/
-  settings.json               # the chosen permission tier
+.claude/
+  settings.json               # the chosen permission tier (project-scoped)
 .venv/                        # Python venv (skipped with --no-venv)
 ```
+
+`lc init` then shells out to the `claude` CLI (if found on PATH) to install
+the `lightcone` plugin into the user's Claude Code config:
+
+```
+claude plugin marketplace add <wheel-installed marketplace root>
+claude plugin install lightcone@lightcone-cli
+```
+
+The plugin (skills, agents, hooks) lives user-scoped under `~/.claude/`, not
+per-project. Both commands are idempotent, so subsequent `lc init` calls are
+no-ops for the plugin. When `claude` isn't on PATH (Codex users, etc.), the
+plugin install is skipped and the manual commands above are printed — `lc init`
+still succeeds.
 
 `lc init` refuses to run if `DIRECTORY/astra.yaml` already exists.
 

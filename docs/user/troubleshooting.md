@@ -123,21 +123,39 @@ invoke `lc init … --permissions yolo` next time.
 
 ## I deleted `.claude/` by accident
 
-`lc init` won't recreate it because `astra.yaml` exists. You can copy
-the plugin in by hand:
+The lightcone plugin (skills, agents, hooks) lives user-scoped under
+`~/.claude/plugins/`, not in the project's `.claude/`. So deleting the
+project-local `.claude/` only loses the project's permissions tier — the
+plugin itself keeps working in every Claude Code session.
+
+To regenerate the permissions tier:
 
 ```bash
 python - <<'PY'
-import shutil
+import json
 from pathlib import Path
-from lightcone.cli.plugin import get_plugin_source_dir
-src = get_plugin_source_dir()
-dst = Path(".claude")
-for sub in ("skills", "agents", "scripts", "guides", "templates"):
-    s, d = src / sub, dst / sub
-    if d.exists(): shutil.rmtree(d)
-    if s.exists(): shutil.copytree(s, d)
+from lightcone.cli.commands import PERMISSION_TIERS
+Path(".claude").mkdir(exist_ok=True)
+Path(".claude/settings.json").write_text(
+    json.dumps({"permissions": PERMISSION_TIERS["recommended"]}, indent=2)
+)
 PY
+```
+
+If the plugin itself is gone (e.g. you removed it via `claude plugin uninstall`),
+re-install it from any directory:
+
+```bash
+claude plugin install lightcone@lightcone-cli
+```
+
+The marketplace registration usually persists; if it doesn't, point it at the
+installed wheel:
+
+```bash
+python -c "from lightcone.cli.plugin import get_marketplace_root; print(get_marketplace_root())" \
+    | xargs claude plugin marketplace add
+claude plugin install lightcone@lightcone-cli
 ```
 
 ## I want to start the spec over

@@ -24,13 +24,22 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import click
 import yaml
 from rich.console import Console
 
-from lightcone.cli.plugin import get_plugin_source_dir
+from lightcone.cli.plugin import (
+    CODEX_MARKETPLACE_NAME,
+    CODEX_PLUGIN_NAME,
+    MARKETPLACE_NAME,
+    PLUGIN_NAME,
+    get_agent_bundle_root,
+    get_marketplace_root,
+)
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -166,13 +175,14 @@ def init(
     permissions: str,
     scratch_override: str | None,
 ) -> None:
-    """Scaffold a new ASTRA project with Claude Code integration.
+    """Scaffold a new ASTRA project with agent integration.
 
     Delegates the spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
     base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
     lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
-    ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
-    and an optional Python venv.
+    ``.lightcone/`` project state, Claude permission settings, the shared
+    Claude/Codex/Pi agent bundle install hints, ``CLAUDE.md``, and an optional
+    Python venv.
     """
     console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
 
@@ -223,10 +233,13 @@ def init(
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
 
-    # Claude Code plugin bundle
-    plugin_source = get_plugin_source_dir()
-    if plugin_source is not None and plugin_source.exists():
-        _install_claude_plugin(directory, plugin_source, permissions)
+    # Agent integrations: write the project's Claude permission tier, then
+    # shell out to each agent CLI so the shared lightcone bundle (skills,
+    # hooks, Pi extension) lives in the user's global agent config rather than
+    # duplicated into every project.
+    _install_claude_plugin(directory, permissions)
+    _install_codex_plugin()
+    _install_pi_bundle()
 
     # Project CLAUDE.md (a stub)
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
@@ -299,7 +312,7 @@ def init(
 
     console.print("\nNext steps:")
     console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
-    console.print("  • Start [cyan]claude[/cyan]")
+    console.print("  • Start [cyan]claude[/cyan], [cyan]codex[/cyan], or [cyan]pi[/cyan]")
     console.print(
         "  • Run [cyan]/lc-new[/cyan] to scope a new analysis, "
         "[cyan]/lc-from-code[/cyan] to port existing code, "
@@ -370,32 +383,244 @@ input hashes, and output hash.
 """
 
 
-def _install_claude_plugin(
-    project_dir: Path,
-    plugin_source: Path,
-    permissions: str,
-) -> None:
-    """Copy the bundled Claude Code plugin into the project's ``.claude/``.
+def _install_claude_plugin(project_dir: Path, permissions: str) -> None:
+    """Wire up the Claude Code plugin for this project.
 
-    The hook configuration ships with the plugin as ``hooks.json`` so
-    that hook entries live next to the scripts they reference. The CLI
-    only owns the ``--permissions`` tier selection.
+    Two things happen here, in this order:
+
+    1. Write ``.claude/settings.json`` with the chosen ``--permissions`` tier.
+       This file is project-scoped — it lives next to ``astra.yaml`` and only
+       controls what tools the agent may invoke in *this* project.
+
+    2. Shell out to the ``claude`` CLI to register the marketplace and
+       install the lightcone plugin. The plugin (skills, agents, hooks) is
+       *user-scoped* — Claude Code installs it under ``~/.claude/`` and
+       activates it in every session, including this one. Idempotent: a
+       second ``lc init`` (in a different project) is a no-op for the plugin.
+
+    Both ``claude plugin marketplace add`` and ``claude plugin install`` are
+    idempotent, mirroring the felt setup pattern that this lift models on.
+    When the ``claude`` CLI isn't on PATH we print a manual-install hint and
+    continue — Codex users (and anyone consuming the plugin via a future
+    npx-skills bridge) shouldn't have ``lc init`` hard-fail on them.
     """
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
-    for sub in ("skills", "agents", "scripts", "guides", "templates"):
-        src = plugin_source / sub
-        if src.exists():
-            dest = claude_dir / sub
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest)
-    hooks = json.loads((plugin_source / "hooks.json").read_text())
-    settings = {
-        "permissions": PERMISSION_TIERS[permissions],
-        "hooks": hooks,
-    }
-    (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"permissions": PERMISSION_TIERS[permissions]}, indent=2)
+    )
+
+    marketplace_root = get_marketplace_root()
+    if marketplace_root is None:
+        # Shouldn't happen for a normal install — the wheel force-includes
+        # marketplace.json and the dev path resolves from the repo root. Log
+        # loudly and continue so the rest of init still completes.
+        console.print(
+            "[yellow]⚠ Could not locate the lightcone Claude plugin marketplace "
+            "manifest. Plugin install skipped.[/yellow]"
+        )
+        return
+
+    plugin_ref = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
+
+    if shutil.which("claude") is None:
+        console.print(
+            "[yellow]claude CLI not found on PATH — skipping plugin install.[/yellow]\n"
+            "  To install manually once Claude Code is available, run:\n"
+            f"    [cyan]claude plugin marketplace add {marketplace_root}[/cyan]\n"
+            f"    [cyan]claude plugin install {plugin_ref}[/cyan]\n"
+            "  (Codex / other-agent users can ignore this — the bundle still ships in the wheel.)"
+        )
+        return
+
+    # Surface the CLI's own stdout/stderr so the user sees the same status
+    # output Claude Code prints natively. Both commands are idempotent, so
+    # re-running `lc init` on subsequent projects (or after manual claude
+    # plugin work) doesn't double-install.
+    try:
+        subprocess.run(
+            ["claude", "plugin", "marketplace", "add", str(marketplace_root)],
+            check=False,
+        )
+        subprocess.run(
+            ["claude", "plugin", "install", plugin_ref],
+            check=False,
+        )
+    except OSError as e:
+        # Defensive: shutil.which found `claude` but exec failed (broken
+        # symlink, permission flip, race with an upgrade). Don't crash init.
+        console.print(
+            f"[yellow]⚠ Could not invoke `claude plugin install`: {e}[/yellow]\n"
+            f"  Install manually: claude plugin marketplace add {marketplace_root} && "
+            f"claude plugin install {plugin_ref}"
+        )
+
+
+def _install_codex_plugin() -> None:
+    """Wire up the Codex plugin for this user.
+
+    Codex does not currently expose a ``codex plugin install`` command. The
+    marketplace is registered through the CLI, then the enabled plugin and
+    plugin-hooks feature are written directly to ``~/.codex/config.toml``.
+    Current Codex builds also expect installed plugin files under the cache
+    layout, so we mirror the bundled lightcone plugin there.
+    """
+    marketplace_root = get_marketplace_root()
+    bundle_root = get_agent_bundle_root()
+    if marketplace_root is None or bundle_root is None:
+        console.print(
+            "[yellow]⚠ Could not locate the lightcone Codex plugin marketplace "
+            "manifest. Codex plugin install skipped.[/yellow]"
+        )
+        return
+
+    plugin_ref = f"{CODEX_PLUGIN_NAME}@{CODEX_MARKETPLACE_NAME}"
+
+    if shutil.which("codex") is None:
+        console.print(
+            "[yellow]codex CLI not found on PATH — skipping Codex plugin install.[/yellow]"
+        )
+        console.print(
+            "  To install manually once Codex is available, run:\n"
+            f"    codex plugin marketplace add {marketplace_root}\n"
+            f"    set [plugins.\"{plugin_ref}\"].enabled = true "
+            "and [features].plugin_hooks = true in ~/.codex/config.toml",
+            markup=False,
+        )
+        return
+
+    try:
+        subprocess.run(
+            ["codex", "plugin", "marketplace", "add", str(marketplace_root)],
+            check=False,
+        )
+        _enable_codex_plugin_config(plugin_ref)
+        _install_codex_plugin_cache(bundle_root)
+    except OSError as e:
+        console.print(
+            f"[yellow]⚠ Could not invoke `codex plugin marketplace add`: {e}[/yellow]\n"
+            f"  Install manually: codex plugin marketplace add {marketplace_root}"
+        )
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not finish Codex plugin install: {e}[/yellow]")
+
+
+def _install_pi_bundle() -> None:
+    """Wire up the Pi bundle for this user.
+
+    Pi installs local packages rather than Claude/Codex-style plugins. The
+    shared ``claude/lightcone`` bundle now ships a ``package.json`` manifest
+    selecting the Pi extension and skill files, so ``lc init`` can register the
+    same bundle root with ``pi install``.
+    """
+    bundle_root = get_agent_bundle_root()
+    if bundle_root is None:
+        console.print(
+            "[yellow]⚠ Could not locate the lightcone Pi bundle. Pi install skipped.[/yellow]"
+        )
+        return
+
+    if shutil.which("pi") is None:
+        console.print(
+            "[yellow]pi CLI not found on PATH — skipping Pi bundle install.[/yellow]\n"
+            "  To install manually once Pi is available, run:\n"
+            f"    [cyan]pi install {bundle_root}[/cyan]\n"
+            "  This installs the bundled lightcone skills plus the Pi extension that "
+            "primes ASTRA status, prepends the project venv to bash commands, and "
+            "re-validates astra.yaml edits."
+        )
+        return
+
+    try:
+        subprocess.run(["pi", "install", str(bundle_root)], check=False)
+    except OSError as e:
+        console.print(
+            f"[yellow]⚠ Could not invoke `pi install`: {e}[/yellow]\n"
+            f"  Install manually: pi install {bundle_root}"
+        )
+
+
+def _codex_config_path() -> Path:
+    return Path.home() / ".codex" / "config.toml"
+
+
+def _enable_codex_plugin_config(plugin_ref: str) -> None:
+    """Set the two Codex TOML booleans needed for plugin hooks.
+
+    The stdlib can read TOML but not write it. This deliberately small writer
+    preserves unrelated text and only manages the two sections ``lc init`` owns.
+    """
+    config_path = _codex_config_path()
+    text = config_path.read_text() if config_path.exists() else ""
+    parsed = tomllib.loads(text) if text.strip() else {}
+
+    if (
+        parsed.get("features", {}).get("plugin_hooks") is True
+        and parsed.get("plugins", {}).get(plugin_ref, {}).get("enabled") is True
+    ):
+        return
+
+    text = _set_toml_bool(text, "features", "plugin_hooks", True)
+    text = _set_toml_bool(text, f'plugins."{plugin_ref}"', "enabled", True)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(text)
+    console.print(f"[green]✓[/green] Enabled Codex plugin [cyan]{plugin_ref}[/cyan]")
+
+
+def _set_toml_bool(text: str, section: str, key: str, value: bool) -> str:
+    lines = text.splitlines()
+    desired = "true" if value else "false"
+    header = f"[{section}]"
+    section_start = next((i for i, line in enumerate(lines) if line.strip() == header), None)
+
+    if section_start is None:
+        prefix = [""] if lines and lines[-1].strip() else []
+        return "\n".join([*lines, *prefix, header, f"{key} = {desired}", ""])
+
+    section_end = next(
+        (i for i in range(section_start + 1, len(lines)) if lines[i].lstrip().startswith("[")),
+        len(lines),
+    )
+    for i in range(section_start + 1, section_end):
+        if lines[i].split("=", 1)[0].strip() == key:
+            lines[i] = f"{key} = {desired}"
+            return "\n".join([*lines, ""])
+
+    lines.insert(section_end, f"{key} = {desired}")
+    return "\n".join([*lines, ""])
+
+
+def _codex_plugin_cache_version() -> str:
+    try:
+        package_version = version("lightcone-cli")
+    except PackageNotFoundError:
+        return "dev"
+    return package_version if package_version.startswith("v") else f"v{package_version}"
+
+
+def _install_codex_plugin_cache(plugin_dir: Path) -> None:
+    manifest = plugin_dir / ".codex-plugin" / "plugin.json"
+    if not manifest.is_file():
+        raise FileNotFoundError(f"Codex plugin manifest missing at {manifest}")
+
+    cache_root = (
+        Path.home()
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / CODEX_MARKETPLACE_NAME
+        / CODEX_PLUGIN_NAME
+    )
+    version_dir = cache_root / _codex_plugin_cache_version()
+    tmp_root = cache_root.with_name(f"{cache_root.name}.tmp")
+    tmp_version_dir = tmp_root / version_dir.name
+
+    shutil.rmtree(tmp_root, ignore_errors=True)
+    shutil.copytree(plugin_dir, tmp_version_dir, ignore=shutil.ignore_patterns(".DS_Store"))
+    shutil.rmtree(cache_root, ignore_errors=True)
+    cache_root.parent.mkdir(parents=True, exist_ok=True)
+    tmp_root.rename(cache_root)
+    console.print(f"[green]✓[/green] Installed Codex plugin cache at [cyan]{version_dir}[/cyan]")
 
 
 # =============================================================================

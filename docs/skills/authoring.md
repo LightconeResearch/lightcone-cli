@@ -7,7 +7,7 @@ Skills are markdown files with YAML frontmatter. Each one lives in
 
 ## File layout
 
-```text
+```
 claude/lightcone/skills/
 └── my-skill/
     ├── SKILL.md
@@ -40,9 +40,9 @@ argument-hint: "[OPTIONAL ARG] [--flag VALUE]"
 
 - `##` for phase headings; lead with a "Stage banner" line that the
   skill prints to the chat.
-- `✓ / ○ / ✗` for status. Skip emoji elsewhere — they belong only
-  inside the agent's own branded banner output.
-- Action prompts in blockquotes (`> "What are you trying to learn?"`).
+- `✓ / ○ / ✗` for status; never emojis except inside the agent's own
+  branded output.
+- Action prompts in bold sentences (`> "What are you trying to learn?"`).
 - A `## Restrictions` (or `## Hard rules`) section at the end listing
   invariants Claude must not break.
 
@@ -62,7 +62,7 @@ call when a specific section is load-bearing for that skill's work.
 
 ## Spawning subagents
 
-Use `Agent` with `subagent_type` to delegate work. The
+Use `Task` with `subagent_type` to delegate work. The
 `lc-extractor` subagent in `agents/` is the canonical example:
 
 ```python
@@ -90,9 +90,21 @@ from lightcone.eval.cli import run_cmd
 # or invoke `lightcone.eval.harness.run_eval(...)` directly
 ```
 
-## Installing changes into an existing project
+## Picking up edits during development
 
-`lc init` copies the plugin once and refuses to run a second time on
-the same directory. See [Updating an existing project](../cli/update.md)
-for the Python heredoc that resyncs all the plugin subdirs (`skills`,
-`agents`, `scripts`, `guides`, `templates`) into an existing project.
+The `lightcone` plugin lives user-scoped under `~/.claude/plugins/`, installed
+via `claude plugin install lightcone@lightcone-cli`. When you're working
+inside a `lightcone-cli` checkout and want Claude Code to pick up your
+edits, register the marketplace from the repo root (it takes precedence
+over any other registration of the same name):
+
+```bash
+claude plugin marketplace add /path/to/lightcone-cli
+claude plugin install lightcone@lightcone-cli
+```
+
+Restart Claude Code; the plugin now loads from your checkout's
+`claude/lightcone/` directly. Edits to `SKILL.md` files take effect on
+the next session start.
+
+(See [Install](../user/install.md#updating) for the upgrade-from-PyPI story.)

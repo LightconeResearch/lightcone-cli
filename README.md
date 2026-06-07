@@ -9,8 +9,9 @@
 
 **lightcone-cli** (`lc`) is the agentic execution layer for
 [ASTRA](https://astra-spec.org/latest/) (Agentic Schema for Transparent
-Research Analysis). Describe your analysis to an AI agent and `lc` takes
-care of the rest — specification, execution, and provenance.
+Research Analysis). Use it from Claude Code, Codex, or Pi: describe the
+analysis you want, and `lc` keeps the specification, execution, and provenance
+in sync.
 
 ## Quick Start
 
@@ -18,8 +19,11 @@ care of the rest — specification, execution, and provenance.
 uv tool install lightcone-cli
 lc init my-analysis
 cd my-analysis
-claude
+claude  # or: codex / pi
 ```
+
+`lc init` scaffolds the project and, when those CLIs are on your `PATH`,
+installs the shared Lightcone bundle for Claude, Codex, and Pi.
 
 Then tell the agent what you have to start from — a research question
 (`/lc-new`), existing code (`/lc-from-code`), or a paper to reproduce

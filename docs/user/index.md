@@ -40,7 +40,7 @@ No need to write code by hand, **you stay in charge of the scientific choices**,
         ```bash
         pip install lightcone-cli
         lc init my-analysis && cd my-analysis
-        claude 
+        claude
         # then, inside Claude Code: /lc-new
         ```
 

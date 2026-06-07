@@ -20,23 +20,34 @@ cd r2-decision-demo
 ```
 
 `lc init` is a one-shot setup. It creates a small, opinionated directory
-layout and stops; it doesn't ask any questions.
+layout and, when Claude Code, Codex, or Pi are on your `PATH`, installs the
+shared lightcone bundle into the corresponding user-scoped agent config.
 
-```
+## 2. What you got
+
+```text
 r2-decision-demo/
-├── astra.yaml          # the spec — this is where everything lives
-├── CLAUDE.md           # short note for the agent (resumes context across sessions)
+├── astra.yaml
+├── CLAUDE.md
 ├── .gitignore
-├── .git                # initialized git repository (skip with --no-git)
-├── .venv/              # Python virtual env (skip with --no-venv)
-├── .claude/            # Claude Code plugin — skills, agents, hooks
-├── .lightcone/         # internal scratchpad — don't edit by hand
-├── Containerfile       # build instructions for a local testing container
-├── requirements.txt    # software dependencies
+├── .git
+├── .venv
+├── .claude/
+│   └── settings.json          # Claude permissions tier only
+├── .lightcone/
+│   └── lightcone.yaml
+├── Containerfile
+├── requirements.txt
 ├── universes/
+│   └── baseline.yaml
 ├── src/
 └── results/
 ```
+
+The shared lightcone bundle — skills, hooks, Codex manifest, and Pi extension —
+installs *user-scoped* outside the project. `lc init` does not copy those assets
+into `.claude/`; the only project-local Claude file is `settings.json`, which
+holds the permissions tier for this repo.
 
 The two files you'll actually look at:
 
@@ -46,24 +57,25 @@ is downstream of this file. The boilerplate from `lc init` has one example
 output and an empty decisions block — enough to run `lc run` and see something
 materialize, but not yet a real analysis.
 
-**`CLAUDE.md`** — a short note that tells Claude Code about the project. The
-skills will update this as you go (filling in working notes, design context).
-You can edit it by hand whenever you want.
+**`CLAUDE.md`** — a short project note for the agent. Claude Code reads it
+automatically; the same note is still useful when you're driving the project
+from Codex or Pi.
 
-## 2. Open Claude Code
+## 3. Open an agent CLI
 
 ```bash
-claude
+claude   # or: codex / pi
 ```
 
-This opens an interactive session inside the project directory. Claude Code
-reads `astra.yaml` and `CLAUDE.md` so it has context from the start.
+Run that command inside the project directory. `lc init` already installed
+whichever agent integrations it could, so the lightcone entry points should be
+available on first launch.
 
-## 3. The slash commands
+## 4. The slash commands
 
-Inside Claude Code, the `/lc-from-*` family is organized by what you're
-starting from. We'll use `/lc-new` in this guide; the others work the same
-way.
+Inside Claude Code, Codex, or Pi, the `/lc-from-*` family is organized by what
+you're starting from. We'll use `/lc-new` in this guide; the others work the
+same way.
 
 | Command | Use it when… |
 |---------|--------------|
@@ -73,11 +85,11 @@ way.
 | `/lc-feedback` | Something broke and you want to file a GitHub issue without leaving the session. |
 
 These are structured entry points for common starting situations. Once inside a
-project you can also just describe what you're trying to do to Claude —
+project you can also just describe what you're trying to do to the agent —
 `astra.yaml`, `lc run`, and `lc verify` keep things tracked regardless of how
 you got there.
 
-## 4. Scope the analysis with `/lc-new`
+## 5. Scope the analysis with `/lc-new`
 
 Type:
 
@@ -147,7 +159,7 @@ back a short summary table — two outputs, one decision, zero prior insights.
 
 The agent may suggest `/clear` to free up context. Take its advice.
 
-## 5. Implement the spec
+## 6. Implement the spec
 
 ```text
 /clear
@@ -177,7 +189,7 @@ lc status
 
 Expected `lc status` output:
 
-```
+```text
 Universe baseline
   ✓ ok    r2
   ✓ ok    fit_plot
@@ -189,7 +201,7 @@ chains. If anything fails, ask the agent to fix the concrete error and rerun.
 The agent commits after each successful output, so your `git log` is a clean
 record of the build.
 
-## 6. Verify integrity
+## 7. Verify integrity
 
 ```bash
 lc verify
@@ -217,7 +229,7 @@ and run `lc run`, you'll get bit-identical results.
 
 ## Where to next
 
-- [The Agentic Workflow](agent-workflow.md) — what each slash command does in
+- [The Agentic Workflow](agent-workflow.md) — what each entry command does in
   detail.
 - [Running on a Cluster](cluster.md) — take the same project to SLURM.
 - [Troubleshooting](troubleshooting.md) — when something goes sideways.
