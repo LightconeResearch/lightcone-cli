@@ -187,11 +187,11 @@ With the paper, the interview answers, and the code scan in hand, write the two 
    - `git init` the workdir if it isn't a repo already (per SKILL.md's *Setup: git-tracked workdir* discipline).
    - Commit `PLAN.md` + `CLAUDE.md` + the full `work/reference/` substrate as **the first commit** — the complete ORIENT deliverable in one commit.
    - The `work/reference/code/` clone can be `.gitignore`d for large monorepos; `code-index.md` is what the workflow actually consults, and the clone is reproducible from `code-status.yaml`'s URL.
-   - **Launch the workflow:**
+   - **Launch the workflow.** The skill ships as a plugin, so resolve its absolute root first (`echo "$CLAUDE_PLUGIN_ROOT/skills/lc-from-paper"`) and pass it as `scriptPath` + `args.skillRoot`:
      ```js
      Workflow({
-       scriptPath: '.claude/skills/lc-from-paper/reproduce_workflow.js',
-       args: { workdir: '.', intent: '<the fidelity-intent prose from Stage 3>' }
+       scriptPath: '<SKILL_ROOT>/reproduce_workflow.js',          // <SKILL_ROOT> = resolved $CLAUDE_PLUGIN_ROOT/skills/lc-from-paper
+       args: { workdir: '.', skillRoot: '<SKILL_ROOT>', intent: '<the fidelity-intent prose from Stage 3>' }
      })
      ```
 

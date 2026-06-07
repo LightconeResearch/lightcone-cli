@@ -63,12 +63,12 @@ The opening interactive phase — a **conversation that produces a plan**. Read 
 
 ## Launching the workflow
 
-After the plan is approved and committed, launch the reproduce-paper Workflow from the reproduction workdir:
+After the plan is approved and committed, launch the reproduce-paper Workflow from the reproduction workdir. This skill ships as a Claude plugin, so its files live under `$CLAUDE_PLUGIN_ROOT`, not the project — **resolve that to an absolute path first** (`echo "$CLAUDE_PLUGIN_ROOT/skills/lc-from-paper"`), then pass it as both the script location and `args.skillRoot` (so the workflow can find its phase contracts under `references/`):
 
 ```js
 Workflow({
-  scriptPath: '.claude/skills/lc-from-paper/reproduce_workflow.js',
-  args: { workdir: '.', intent: '<the fidelity-intent prose from the interview>' }
+  scriptPath: '<SKILL_ROOT>/reproduce_workflow.js',          // <SKILL_ROOT> = resolved $CLAUDE_PLUGIN_ROOT/skills/lc-from-paper
+  args: { workdir: '.', skillRoot: '<SKILL_ROOT>', intent: '<the fidelity-intent prose from the interview>' }
 })
 ```
 

@@ -34,7 +34,12 @@ export const meta = {
   ],
 }
 
-const REF = '.claude/skills/lc-from-paper/references'
+// SKILL_ROOT: absolute path to this skill's directory, passed by the launcher
+// (which resolves $CLAUDE_PLUGIN_ROOT — the skill ships as a plugin, so its files
+// live under the plugin root, not the project). Falls back to the project-relative
+// path for the legacy per-project copy layout.
+const SKILL_ROOT = args?.skillRoot || '.claude/skills/lc-from-paper'
+const REF = `${SKILL_ROOT}/references`
 const ASTRA = 'astra.yaml'
 const TARGETS = 'targets/targets.md'
 const INTENT = args?.intent || 'read PLAN.md "Fidelity intent" — the stopping criterion'
