@@ -47,6 +47,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -68,21 +69,59 @@ _ARXIV_ID_RE = re.compile(
 )
 
 
+def _ads_key_from_login_shell() -> str | None:
+    """Read ADS_API_TOKEN/ADS_DEV_KEY from the user's *login* shell.
+
+    The env var is the canonical home for the token, but it is commonly exported
+    from an interactive rc (~/.zshrc, ~/.bashrc) that NON-interactive shells — like
+    the one a pipeline subprocess runs in — never source. So when env + key-file
+    both miss, source the login shell and read the variable back. A sentinel
+    brackets the value so any banner the rc prints to stdout can't corrupt it.
+    """
+    shell = os.environ.get("SHELL")
+    if not shell:
+        return None
+    try:
+        proc = subprocess.run(
+            [shell, "-ic", 'printf "ADSK<%s>ADSK" "${ADS_API_TOKEN:-${ADS_DEV_KEY:-}}"'],
+            capture_output=True, text=True, timeout=8, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"ADSK<([^>]*)>ADSK", proc.stdout)
+    return (m.group(1).strip() or None) if m else None
+
+
+_ADS_KEY_UNSET = object()
+_ADS_KEY_CACHE: object | str | None = _ADS_KEY_UNSET
+
+
 def _load_ads_key() -> str | None:
-    """Mirror paper-extraction's ADS key loading."""
-    env = os.environ.get("ADS_API_TOKEN") or os.environ.get("ADS_DEV_KEY")
-    if env:
-        return env.strip()
-    for path in (
-        Path.home() / ".ads" / "dev_key",
-        Path.home() / ".config" / "ads" / "dev_key",
-    ):
-        if path.is_file():
-            try:
-                return path.read_text().strip() or None
-            except OSError:
-                pass
-    return None
+    """Load the ADS token: env var → key file → login-shell env var (cached).
+
+    Order reflects preference: an explicitly-exported variable in the current
+    process wins; a ~/.ads/dev_key file is the conventional persistent home; the
+    login-shell fallback recovers a token exported only in an interactive rc.
+    Returns None if none is found — the caller then degrades gracefully (and the
+    skill prompts the user to generate one)."""
+    global _ADS_KEY_CACHE
+    if _ADS_KEY_CACHE is not _ADS_KEY_UNSET:
+        return _ADS_KEY_CACHE  # type: ignore[return-value]
+    key = os.environ.get("ADS_API_TOKEN") or os.environ.get("ADS_DEV_KEY")
+    if key:
+        key = key.strip()
+    if not key:
+        for path in (Path.home() / ".ads" / "dev_key", Path.home() / ".config" / "ads" / "dev_key"):
+            if path.is_file():
+                try:
+                    key = path.read_text().strip()
+                    break
+                except OSError:
+                    pass
+    if not key:
+        key = _ads_key_from_login_shell()
+    _ADS_KEY_CACHE = key or None
+    return _ADS_KEY_CACHE  # type: ignore[return-value]
 
 
 def _http_get_json(url: str, headers: dict[str, str] | None = None) -> dict | None:

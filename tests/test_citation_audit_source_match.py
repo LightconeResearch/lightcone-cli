@@ -89,3 +89,47 @@ def test_quote_in_source_accepts_real_quote() -> None:
         suffix="from the cosmic shear",
     )
     assert ok
+
+
+def test_unique_exact_verifies_despite_approximate_context() -> None:
+    # The Hartlap/Liaudat/Singh case: the substantive exact is verbatim and
+    # UNIQUE, but the verifier's suffix is approximate — a \footnotemark[1] sits
+    # where the verifier wrote \footnotemark. A unique exact needs no context, so
+    # the brittle prefix+exact+suffix contiguity must NOT fail it.
+    source = source_match._norm(
+        r"From (\ref{eq}) it follows that an unbiased estimator of "
+        r"$\tens{\Sigma}^{-1}$ is given by \footnotemark[1] \begin{equation}"
+    )
+    ok, reason = source_match.quote_in_source(
+        source,
+        exact=r"an unbiased estimator of $\tens{\Sigma}^{-1}$ is given by",
+        prefix="it follows that",
+        suffix=r"\footnotemark",  # source has \footnotemark[1] — does not match contiguously
+    )
+    assert ok
+    assert "unique" in reason
+
+
+def test_repeated_exact_needs_context_to_disambiguate() -> None:
+    # When the exact repeats, prefix/suffix must pin an occurrence.
+    source = source_match._norm(
+        "the signal is detected at high significance in the red sample "
+        "and the signal is detected at high significance in the blue sample"
+    )
+    exact = "the signal is detected at high significance"
+    # Matching suffix pins the right occurrence → verified.
+    ok, _ = source_match.quote_in_source(source, exact=exact, suffix="in the blue sample")
+    assert ok
+    # Context that matches no occurrence → cannot pin → fail.
+    bad, reason = source_match.quote_in_source(source, exact=exact, suffix="in the green sample")
+    assert not bad
+    assert "pin" in reason
+
+
+def test_absent_exact_still_fails() -> None:
+    source = source_match._norm("a sentence that does not contain the claimed quote at all")
+    ok, reason = source_match.quote_in_source(
+        source, exact="we measure a strong intrinsic alignment signal for red galaxies"
+    )
+    assert not ok
+    assert "not found" in reason

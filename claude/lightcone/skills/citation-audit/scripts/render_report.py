@@ -80,10 +80,6 @@ _FLAGGED = {
     "extraction_error",
 }
 
-_SUPS = str.maketrans("0123456789+-=()n", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿ")
-_SUBS = str.maketrans("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎")
-
-
 def _sev(v: str) -> int:
     return _SEV.get(v, 3)
 
@@ -100,72 +96,66 @@ def _cls(v: str) -> str:
     return _CLS.get(v, "mute")
 
 
+def _yr4(digits: str) -> str:
+    """2- or 4-digit year string → 4-digit (`93`→`1993`, `08`→`2008`, pivot 50)."""
+    if len(digits) == 4:
+        return digits
+    y = int(digits)
+    return f"20{y:02d}" if y < 50 else f"19{y:02d}"
+
+
 def author_year(key: str) -> str:
-    """`asgari.etal19a` → `Asgari et al. 2019`; best-effort from the bibkey."""
-    parts = key.split(".")
-    name = parts[0].replace("_", " ").title()
-    etal = any(p.startswith("etal") for p in parts)
-    yr = ""
-    m = re.search(r"(\d{2})[a-z]?$", parts[-1])
-    if m:
-        y = int(m.group(1))
-        yr = f"20{y:02d}" if y < 50 else f"19{y:02d}"
-    return f"{name}{' et al.' if etal else ''} {yr}".strip()
+    """Best-effort `Author Year` from a bibkey, across naming conventions.
+
+    Dotted (`asgari.etal19a` → `Asgari et al. 2019`) and concatenated
+    (`Gwyn2008` → `Gwyn 2008`, `Bertin96` → `Bertin 1996`, `LandySzalay1993`
+    → `Landy-Szalay 1993`, `HervasPeters2024` → `Hervas-Peters 2024`). The
+    concatenated forms are what hand-built `.bib` files (and ADS exports) use;
+    the original dotted-only parser mangled them into `Gwyn2008 2008`."""
+    if "." in key:  # dotted convention: lastname.etalYY[a]
+        parts = key.split(".")
+        name = parts[0].replace("_", " ").title()
+        etal = any(p.startswith("etal") for p in parts)
+        m = re.search(r"(\d{2})[a-z]?$", parts[-1])
+        yr = _yr4(m.group(1)) if m else ""
+        return f"{name}{' et al.' if etal else ''} {yr}".strip()
+    m = re.match(r"^(.*?)(\d{4}|\d{2})[a-z]?$", key)  # concatenated: Name + year
+    if not m or not m.group(1):
+        return key
+    name = re.sub(r"(?<=[a-z])(?=[A-Z])", "-", m.group(1).replace("_", " "))  # LandySzalay → Landy-Szalay
+    return f"{name} {_yr4(m.group(2))}".strip()
 
 
-def _unit(u: str) -> str:
-    return u.replace(r"\square\deg", "deg²").replace(r"\deg", "deg").replace(r"\square", "").strip()
+# Any natbib cite command (\citep \citet \citealt \citeauthor \cite …), with an
+# optional `*`, 0–2 optional `[pre][post]` note groups, and a comma-list of keys.
+# We don't *render* cites — we locate them so the audited key can be highlighted
+# in place inside the verbatim source.
+_CITE_CMD = re.compile(r"\\cite[a-zA-Z]*\*?(?:\[[^\]]*\])*\{[^}]*\}")
 
 
-def latex_clean(s: str, keep_citet: bool = True) -> str:
-    """Render a LaTeX prose fragment to safe display HTML.
+def raw_tex(s: str, highlight: str | None = None, collapse: bool = True) -> str:
+    """Escape a verbatim LaTeX (or PDF-extracted) fragment for display — no rendering.
 
-    Resolves \\citet to author-year, drops \\citep, lifts \\texttt to <code>,
-    and converts inline math to unicode super/subscripts. Lossy by design —
-    this is for human reading, not re-verification.
-    """
+    The audit's trust story is that what Romain reads is byte-for-byte what the
+    deterministic gate matched. A lossy LaTeX→HTML renderer would break that, and
+    can't win the edge cases (variable TeX distributions, bibcode keys, custom
+    macros) anyway — so we quote the source exactly, only HTML-escaped. The single
+    concession is `highlight`: the audited bibkey is wrapped in <mark>, but *only
+    where it occurs inside a* `\\cite{...}`, so a multi-cite sentence shows which
+    key the card audits without touching the rest of the text. `collapse` folds
+    whitespace to one line (turn off for multi-paragraph notes)."""
     if not s:
         return ""
-    if keep_citet:
-        s = re.sub(r"\\cite[a-z]*t\{([^}]*)\}", lambda m: author_year(m.group(1).split(",")[0]), s)
-        s = re.sub(r"\\citealt\{([^}]*)\}", lambda m: author_year(m.group(1).split(",")[0]), s)
-    s = re.sub(r"\\cite[a-z]*\{[^}]*\}", "", s)
-    s = re.sub(r"\\(cref|ref|label|eqref)\{[^}]*\}", "", s)
-    s = re.sub(r"\\paper[a-z]*\{?\}?", "", s)
-    s = re.sub(r"\\texttt\{([^}]*)\}", r"⟦\1⟧", s)
-    s = re.sub(r"\\SI\{([^}]*)\}\{([^}]*)\}", lambda m: m.group(1) + " " + _unit(m.group(2)), s)
-    s = re.sub(r"\\num\{([^}]*)\}", r"\1", s)
-
-    def math(m: "re.Match[str]") -> str:
-        x = m.group(1)
-        for a, b in [
-            (r"\lcdm", "ΛCDM"), (r"\Lambda", "Λ"), (r"\Omega_{\rm m}", "Ωₘ"), (r"\Om", "Ωₘ"),
-            (r"\Omega", "Ω"), (r"\sigma_8", "σ₈"), (r"\sigma", "σ"), (r"\sim", "∼"), (r"\equiv", "≡"),
-            (r"\sqrt", "√"), (r"\%", "%"), (r"\,", ""), (r"\rm", ""), (r"\ell", "ℓ"), (r"\times", "×"),
-        ]:
-            x = x.replace(a, b)
-        x = x.replace("~", " ")
-        x = re.sub(r"\^\{([0-9+\-=()n]+)\}", lambda g: g.group(1).translate(_SUPS), x)
-        x = re.sub(r"_\{([0-9+\-=()]+)\}", lambda g: g.group(1).translate(_SUBS), x)
-        x = re.sub(r"\^([0-9])", lambda g: g.group(1).translate(_SUPS), x)
-        x = re.sub(r"_([0-9])", lambda g: g.group(1).translate(_SUBS), x)
-        return f"§§M§§{re.sub(r'[{}]', '', x)}§§/M§§"
-
-    s = re.sub(r"\$([^$]*)\$", math, s)
-    s = s.replace(r"\%", "%").replace(r"\,", "").replace("~", " ").replace(r"\&", "&")
-    s = re.sub(r"\\[a-zA-Z]+", "", s)
-    s = re.sub(r"[{}]", "", s)
-    s = re.sub(r"\s+([.,;])", r"\1", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    out = []
-    for t in re.split(r"(§§M§§.*?§§/M§§|⟦[^⟧]*⟧)", s):
-        if t.startswith("§§M§§"):
-            out.append(f"<span class='m'>{html.escape(t[5:-6])}</span>")
-        elif t.startswith("⟦"):
-            out.append(f"<code>{html.escape(t[1:-1])}</code>")
-        else:
-            out.append(html.escape(t))
-    return "".join(out)
+    s = re.sub(r"\s+", " ", s).strip() if collapse else s.strip()
+    if highlight:
+        key = re.compile(r"(?<![\w.\-])" + re.escape(highlight) + r"(?![\w.\-])")
+        s = _CITE_CMD.sub(
+            lambda m: key.sub("\x00M\x00" + highlight + "\x00/M\x00", m.group(0), count=1), s
+        )
+    s = html.escape(s)
+    if highlight:
+        s = s.replace("\x00M\x00", "<mark class='auditcite'>").replace("\x00/M\x00", "</mark>")
+    return s
 
 
 def _anchors(row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -193,7 +183,7 @@ def _paper_title(reference_dir: Path) -> str:
             meta = {}
         title = meta.get("title")
         if title:
-            return latex_clean(str(title), keep_citet=False)
+            return raw_tex(str(title))
     return ""
 
 
@@ -212,13 +202,14 @@ def _entry_html(row: dict[str, Any], app_index: int) -> str:
     line = row.get("line", "?")
     anchors = _anchors(row)
 
-    cur = latex_clean(row.get("claim") or "")
-    prev = latex_clean(row.get("manuscript_prefix") or "")
-    nxt = latex_clean(row.get("manuscript_suffix") or "")
+    cur = raw_tex(row.get("claim") or "", highlight=ck)
+    prev = raw_tex(row.get("manuscript_prefix") or "", highlight=ck)
+    nxt = raw_tex(row.get("manuscript_suffix") or "", highlight=ck)
 
     facets = []
+    lede_html = ""  # first supporting quote, shown collapsed so the evidence is visible up front
     for a in anchors:
-        q = latex_clean(a.get("exact", ""))
+        q = raw_tex(a.get("exact", ""))
         if not q:
             continue
         sec = a.get("section") or ""
@@ -227,6 +218,8 @@ def _entry_html(row: dict[str, Any], app_index: int) -> str:
         attrib = author_year(ck) + (f" · §&#8202;{html.escape(str(sec))}" if sec else "") + pdf
         flh = f"<span class='fl'>{html.escape(str(facet))}</span>" if facet else ""
         facets.append(f"<blockquote>{flh}“{q}”<cite>{attrib}</cite></blockquote>")
+        if not lede_html:
+            lede_html = f"<blockquote class='lede'>“{q}”<cite>{html.escape(author_year(ck))}</cite></blockquote>"
     if facets:
         ev = "\n".join(facets)
     elif verdict in {"supported", "weak"}:
@@ -237,11 +230,9 @@ def _entry_html(row: dict[str, Any], app_index: int) -> str:
         ev = "<p class='none'>No quotable support in the cited source.</p>"
 
     notes = row.get("verdict_notes")
-    notes_html = f"<div class='notes'>{latex_clean(str(notes), keep_citet=False)}</div>" if notes else ""
-    rew = row.get("suggested_rewording")
-    rew_html = f"<div class='rew'>{latex_clean(str(rew), keep_citet=False)}</div>" if rew else ""
+    notes_html = f"<div class='notes'>{raw_tex(str(notes), collapse=False)}</div>" if notes else ""
     flag = row.get("doi_flag")
-    flag_html = f"<div class='flag'>{latex_clean(str(flag), keep_citet=False)}</div>" if flag else ""
+    flag_html = f"<div class='flag'>{raw_tex(str(flag))}</div>" if flag else ""
 
     before = f"<span class='ctx'>{prev} </span>" if prev else ""
     after = f"<span class='ctx'> {nxt}</span>" if nxt else ""
@@ -256,12 +247,14 @@ def _entry_html(row: dict[str, Any], app_index: int) -> str:
       <span class="left"><span class="ic">{_icon(verdict)}</span>
         <span class="vw">{html.escape(_word(verdict))}</span>
         <span class="src">{_vbadge(verdict, len(facets))}</span>{pdfb}</span>
-      <span class="right"><span class="key">{html.escape(ck)} · L{html.escape(str(line))}</span>
+      <span class="right"><span class="citekey">{html.escape(author_year(ck))}</span>
+        <span class="loc">{html.escape(ck)} · L{html.escape(str(line))}</span>
         <span class="chev">›</span></span>
     </div>
     <p class="sentence">{before}<span class="cited">{sentence}</span>{after}</p>
+    {lede_html}
   </summary>
-  <div class="body"><div class="ev">{flag_html}{ev}{notes_html}{rew_html}</div></div>
+  <div class="body"><div class="ev">{flag_html}{ev}{notes_html}</div></div>
 </details>"""
 
 
@@ -274,7 +267,7 @@ _CSS = """
 }
 *{box-sizing:border-box} html,body{margin:0;padding:0}
 body{background:var(--parchment);color:var(--ink);font-family:var(--serif);font-size:21px;line-height:1.55;-webkit-font-smoothing:antialiased}
-.page{max-width:740px;margin:0 auto;padding:58px 26px 90px}
+.page{max-width:820px;margin:0 auto;padding:58px 26px 90px}
 .kicker{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:14px}
 h1{font-family:var(--display);font-weight:500;font-size:46px;line-height:1.04;letter-spacing:-.015em;margin:0 0 6px}
 .subtitle{color:var(--muted);font-style:italic;font-size:18px;margin:0 0 22px}
@@ -308,10 +301,11 @@ h1{font-family:var(--display);font-weight:500;font-size:46px;line-height:1.04;le
 .ok .vw{color:var(--teal)} .warn .vw{color:var(--ochre)} .bad .vw{color:var(--cinnabar)} .mute .vw{color:var(--muted)}
 .src{color:var(--muted)}
 .pdf{font-size:9px;letter-spacing:.05em;text-transform:uppercase;border:1px solid var(--rule);border-radius:3px;padding:1px 5px}
-.key{color:var(--muted)}
+.citekey{color:var(--ink);font-weight:600;letter-spacing:.02em}
+.loc{color:var(--muted)}
 .chev{font-size:18px;line-height:1;color:var(--muted);transform:rotate(90deg);transition:transform .2s ease}
 .entry[open] .chev{transform:rotate(-90deg)}
-.sentence{margin:0;font-size:21px;line-height:1.5;color:var(--ink)}
+.sentence{margin:0;font-family:var(--mono);font-size:15.5px;line-height:1.6;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}
 .ctx{display:none;color:var(--muted)}
 .entry[open] .ctx{display:inline;animation:ctxin .4s both}
 @keyframes ctxin{from{opacity:0}to{opacity:1}}
@@ -320,19 +314,25 @@ h1{font-family:var(--display);font-weight:500;font-size:46px;line-height:1.04;le
 
 .body{padding:0 22px 6px}
 .ev{padding:16px 0 18px;margin-top:6px;border-top:1px solid var(--rule)}
-.ev blockquote{margin:0 0 15px;font-style:italic;font-size:18px;line-height:1.5;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre)}
+.ev blockquote{margin:0 0 15px;font-family:var(--mono);font-size:14.5px;line-height:1.6;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre);white-space:pre-wrap;overflow-wrap:anywhere}
 .bad .ev blockquote,.warn .ev blockquote{border-left-color:var(--rule)}
 .ev blockquote:last-child{margin-bottom:0}
+.ev cite,.lede cite{display:block;font-family:var(--mono);font-style:normal;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:5px}
 .fl{display:block;font-family:var(--mono);font-style:normal;font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--teal);margin-bottom:3px}
 .bad .fl,.warn .fl{color:var(--muted)}
+/* lede: the first supporting quote, shown collapsed so evidence is visible up front; hidden when expanded (the full facet list takes over) */
+.lede{margin:11px 0 0;font-family:var(--mono);font-size:14.5px;line-height:1.6;color:var(--ink);padding-left:15px;border-left:2px solid var(--ochre);white-space:pre-wrap;overflow-wrap:anywhere}
+.bad .lede,.warn .lede{border-left-color:var(--rule)}
+.entry[open] .lede{display:none}
 .ev cite{display:block;font-style:normal;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:5px;letter-spacing:.02em}
 .none{font-style:italic;color:var(--cinnabar);margin:0}
-.notes{margin-top:10px;font-size:16px;color:var(--muted);white-space:pre-line}
-.rew{margin-top:8px;font-size:17px;background:rgba(185,132,43,.12);border-radius:5px;padding:11px 14px}
-.rew::before{content:'suggested rewording';display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--ochre);margin-bottom:4px}
+.notes{margin-top:16px;font-family:var(--serif);font-size:17.5px;line-height:1.52;color:var(--ink);white-space:pre-line;background:rgba(255,255,255,.5);border:1px solid var(--rule);border-left:3px solid var(--teal);border-radius:6px;padding:13px 16px}
+.notes::before{content:'analysis';display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--teal);margin-bottom:6px}
+.bad .notes::before,.warn .notes::before{content:'analysis';color:var(--cinnabar)}
+.bad .notes,.warn .notes{border-left-color:var(--cinnabar)}
 .flag{margin-bottom:12px;font-size:16px;background:rgba(188,69,56,.1);border-radius:5px;padding:11px 14px;color:var(--cinnabar)}
 .flag::before{content:'resolver flag';display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px}
-.m{font-variant-numeric:tabular-nums}
+mark.auditcite{background:rgba(188,69,56,.13);color:var(--cinnabar);font-weight:600;padding:0 2px;border-radius:2px}
 code{font-family:var(--mono);font-size:.82em;background:rgba(185,132,43,.15);padding:1px 4px;border-radius:2px}
 """
 

@@ -39,6 +39,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -601,18 +602,63 @@ findings: {{}}
     return "astra.yaml"
 
 
+def _declared_bib_files(source_dir: Path) -> list[Path]:
+    """The .bib files the manuscript actually uses, in declared order.
+
+    Honors ``\\bibliography{a,b}`` (natbib/BibTeX) and ``\\addbibresource{a.bib}``
+    (biblatex) across the whole .tex tree. A build dir can carry several stray
+    .bib files (vendored copies, an old export); selecting an arbitrary one
+    resolves cites against the wrong key namespace. Returns [] when no
+    declaration is found, so the caller can fall back."""
+    stems: list[str] = []
+    for tex in sorted(source_dir.rglob("*.tex")):
+        try:
+            text = tex.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in re.finditer(r"\\bibliography\{([^}]*)\}", text):
+            stems += [s.strip() for s in m.group(1).split(",") if s.strip()]
+        for m in re.finditer(r"\\addbibresource\{([^}]*)\}", text):
+            stems += [s.strip() for s in m.group(1).split(",") if s.strip()]
+
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for stem in stems:
+        cand = stem if stem.endswith(".bib") else stem + ".bib"
+        p = source_dir / cand
+        if not p.is_file():  # declared path may not match tree layout — match by basename
+            p = next(iter(sorted(source_dir.rglob(Path(cand).name))), None)
+        if p and p.is_file() and p not in seen:
+            out.append(p)
+            seen.add(p)
+    return out
+
+
 def copy_embedded_bibliography(reference_dir: Path, source_dir: Path) -> tuple[str | None, str | None]:
-    """Copy any .bib / .bbl files from source/ into work/reference/."""
-    bib_src = next(iter(source_dir.rglob("*.bib")), None)
-    bbl_src = next(iter(source_dir.rglob("*.bbl")), None)
+    """Copy the manuscript's bibliography (.bib / .bbl) into work/reference/.
+
+    Prefers the .bib(s) the manuscript declares via ``\\bibliography`` /
+    ``\\addbibresource``; concatenates them in declared order. Falls back to the
+    first .bib (sorted, deterministic) only when no declaration is found."""
+    declared = _declared_bib_files(source_dir)
+    bbl_src = next(iter(sorted(source_dir.rglob("*.bbl"))), None)
 
     bib_rel = None
     bbl_rel = None
-    if bib_src:
-        dest = reference_dir / "bibliography-source.bib"
+    dest = reference_dir / "bibliography-source.bib"
+    if declared:
         if not dest.exists():
-            shutil.copy2(bib_src, dest)
+            dest.write_text(
+                "\n\n".join(p.read_text(encoding="utf-8", errors="replace") for p in declared),
+                encoding="utf-8",
+            )
         bib_rel = "bibliography-source.bib"
+    else:
+        bib_src = next(iter(sorted(source_dir.rglob("*.bib"))), None)
+        if bib_src:
+            if not dest.exists():
+                shutil.copy2(bib_src, dest)
+            bib_rel = "bibliography-source.bib"
     if bbl_src:
         dest = reference_dir / "bibliography-source.bbl"
         if not dest.exists():
@@ -1058,6 +1104,11 @@ class DOIResolver:
 
     @staticmethod
     def _load_ads_key() -> str | None:
+        """ADS token: env var → ~/.ads/dev_key → login-shell env var.
+
+        The token is commonly exported only in an interactive rc (~/.zshrc) that
+        non-interactive pipeline shells never source; the login-shell fallback
+        recovers it so the env var stays the canonical home."""
         env = os.environ.get("ADS_API_TOKEN") or os.environ.get("ADS_DEV_KEY")
         if env:
             return env.strip()
@@ -1067,6 +1118,18 @@ class DOIResolver:
                     return path.read_text().strip() or None
                 except OSError:
                     pass
+        shell = os.environ.get("SHELL")
+        if shell:
+            try:
+                proc = subprocess.run(
+                    [shell, "-ic", 'printf "ADSK<%s>ADSK" "${ADS_API_TOKEN:-${ADS_DEV_KEY:-}}"'],
+                    capture_output=True, text=True, timeout=8, check=False,
+                )
+                m = re.search(r"ADSK<([^>]*)>ADSK", proc.stdout)
+                if m and m.group(1).strip():
+                    return m.group(1).strip()
+            except (OSError, subprocess.SubprocessError):
+                pass
         return None
 
     def resolve(
@@ -1287,6 +1350,20 @@ def _author_matches(surname: str, candidate_authors) -> bool:
 # Top-level bibliography pipeline
 
 
+def _bibcode_from_fields(fields: dict[str, str]) -> str | None:
+    """ADS bibcode from a parsed .bib entry: explicit `bibcode`, else `adsurl`.
+
+    ADS exports carry `adsurl = {https://ui.adsabs.harvard.edu/abs/<bibcode>}`.
+    Surfacing the bibcode lets `fetch_sources` reach the ADS link gateway for a
+    paper with no arXiv eprint *without* a DOI->ADS round-trip (and without a
+    token, since the gateway is the public web redirect)."""
+    bc = (fields.get("bibcode") or "").strip()
+    if bc:
+        return bc
+    m = re.search(r"/abs/([^/\s]+)", (fields.get("adsurl") or "").strip())
+    return urllib.parse.unquote(m.group(1)) if m else None
+
+
 def resolve_bibliography(
     reference_dir: Path,
     bib_path: Path | None,
@@ -1320,6 +1397,7 @@ def resolve_bibliography(
                 "citation": citation or None,
                 "doi_hint": doi_hint,
                 "arxiv_hint": arxiv_hint,
+                "bibcode": _bibcode_from_fields(fields),
                 "title": _clean_bib_text(fields.get("title", "")).strip(),
                 "first_author": _first_author_from_bib_field(fields.get("author", "")).split(",")[0],
                 "source": "bib",
@@ -1410,6 +1488,11 @@ def resolve_bibliography(
             "locations": locations,
             "citation": entry["citation"],
             "doi": doi,
+            # Carry the eprint/bibcode the .bib already supplies, so fetch_sources
+            # fetches arXiv source directly instead of re-deriving the eprint from
+            # the DOI (the skill's stated contract: trust the .bib's own eprint).
+            **({"eprint": entry["arxiv_hint"]} if entry.get("arxiv_hint") else {}),
+            **({"bibcode": entry["bibcode"]} if entry.get("bibcode") else {}),
             **({} if doi else {"needs_human": "unresolved"}),
         }
 

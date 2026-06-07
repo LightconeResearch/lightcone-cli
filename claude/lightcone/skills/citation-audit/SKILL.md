@@ -183,22 +183,61 @@ A user-pre-placed `papers/<slug>/paper.pdf` is honored as a `pdf` backend.
 PDF is a fetch backend, never a verdict. Idempotent — re-runs skip recorded
 DOIs unless `--refresh`.
 
+**ADS token.** The DOI→eprint/bibcode resolver (`resolve_arxiv.py`) needs a NASA
+ADS API token — but only as a *fallback*: `fetch_sources.py` first uses the
+eprint/bibcode the `.bib` already carries (the common case needs no ADS at all).
+The token is loaded, in order, from `$ADS_API_TOKEN` / `$ADS_DEV_KEY`, then
+`~/.ads/dev_key`, then **the user's login shell** (it is commonly exported only in
+an interactive `~/.zshrc`/`~/.bashrc`, which the non-interactive pipeline shell
+never sources — the loader sources `$SHELL -ic` to recover it). **If no token is
+found and cites remain unresolved, ask the user** (via `AskUserQuestion`) to
+generate one at <https://ui.adsabs.harvard.edu/user/settings/token> and either
+`export ADS_API_TOKEN=…` in their shell rc or save it to `~/.ads/dev_key` — don't
+silently degrade a third of the bibliography to `unverifiable`.
+
 ### Step 3 — Verify (the workflow fan-out)
 
 Build the partition file (`partitions.json`): group the cited papers ~5–8 per
 stream — ideally clustered by topic — joining each ledger row to its
 `fetch_state` backend. Partitioning is orchestrator discretion; tight
-per-stream context is the goal.
+per-stream context is the goal. **Balance streams by use-site (row) count, not
+paper count:** a paper cited at many use-sites makes a stream much heavier than
+its paper-count suggests, and a single verifier handed too many rows can exhaust
+its budget and silently drop the tail. (The workflow's coverage guard catches and
+redispatches any rows a verifier drops — see below — but a balanced partition
+avoids the round-trip.)
 
 The workflow then fans one **citation-verifier** (Opus) over each stream. The
 agent reads the paper's own source, splits each composite claim into its
 **facets**, and anchors **each facet separately** — one quote per facet. It
 self-validates every `.tex` anchor with `source_match.py` before returning.
+
+**Scope each claim to its cite first.** The verifier's first move is to read
+*precisely what the citing sentence says and what part of it this citation is being
+used to justify* — then anchor that. In a single-cite sentence that's the whole
+claim; a sentence that co-cites several papers usually **distributes** its
+propositions across them, and each cite (one ledger row) is judged on its own
+**share**. A *distributive/parallel* construction pairs proposition to cite ("a
+description of the catalogue and its systematics validation, see `\citet{Guinot}`
+and `\citet{HervasPeters}`" → catalogue↔Guinot, systematics↔HervasPeters); a
+*redundant/list* construction makes each co-cite back the same claim ("strong IA
+for red galaxies `\citep{A,B,C}`"). A cite that fully anchors its share is
+`supported` — it must **not** be downgraded to `weak` for deferring (e.g. "see
+`\citet{X}`") on a part a co-cite carries. (This was a real mis-call on the fresh
+paper: HervasPeters2024 was marked `weak` for not being the primary
+*catalogue-description* source when the parallel construction assigned that part to
+Guinot2022 and HervasPeters only ever carried *systematics validation*.)
 Run the template with the `Workflow` tool:
 
 ```js
 Workflow({ scriptPath: '.claude/skills/citation-audit/citation_audit_workflow.js' })
 ```
+
+After the fan-out, a **coverage guard** compares the returned verdicts against the
+partition rows, and **redispatches any dropped rows** (small bundles, ≤2 rounds)
+before synthesize — so a verifier that ran out of room on a heavy stream can't
+leave use-sites silently un-verdicted. Adapt the template's paths per manuscript
+(`BASE`/`SKILL`/`WORKDIR`/`REFDIR`); the coverage guard and contract are fixed.
 
 For a small manuscript (≤10 pending rows) you can skip the workflow and spawn
 one `citation-verifier` inline via `Task` (`subagent_type="citation-verifier"`,
@@ -240,10 +279,35 @@ judges; here the "vote" is the **deterministic** `source_match.py` gate — a
 quote either appears contiguously in the source (whitespace-normalized, and
 clearing a substance bar) or it doesn't. For every `supported`/`weak` row,
 `verify_and_downgrade.py` re-checks each anchor; a `.tex` anchor must match
-contiguously, a `pdf` anchor by fuzzy/normalized match. An anchor that fails
-is dropped; a row whose **every** anchor fails is downgraded to
-`unverifiable`. This is stronger than a model judge and never a model judge.
-It is what makes the verdict trustworthy.
+contiguously, a `pdf` anchor through three escalating checks over the extracted
+text — normalized substring, order-sensitive `partial_ratio` (≥ 0.80), then an
+insertion-tolerant `ordered_recall` (≥ 0.85). An anchor that fails all three is
+dropped; a row whose **every** anchor fails is downgraded to `unverifiable`.
+This is stronger than a model judge and never a model judge. It is what makes
+the verdict trustworthy.
+
+**Image scans ARE verifiable — don't accept "unverifiable" for them.** The gate
+reads `pdf`-backend papers with **PyMuPDF** (`pip install pymupdf`), OCR-ing
+image pages via **Tesseract** (`brew install tesseract`) — pre-arXiv papers
+(Bertin 1996, Landy-Szalay 1993, …) are very often pure image scans (a 19-char
+text layer holding only the ADS bibcode stamp). Two things make them verifiable
+where a naïve OCR pass fails, both hard-won on the fresh-paper run:
+  - **OCR at 300 DPI, not PyMuPDF's 72-DPI default.** `get_textpage_ocr` defaults
+    to screen resolution; a scanned journal page at 72 dpi gives word-soup (true
+    quotes scored ~0.5). At 300 dpi the same quotes score ~1.0. If a scan reads
+    "too noisy," suspect the DPI before declaring it unverifiable.
+  - **`ordered_recall` for reading-order splices.** A multi-column scan's OCR
+    routinely splices a table or column-gutter into the middle of a sentence;
+    the words are all present and in order but not contiguous, so `partial_ratio`
+    collapses. `ordered_recall` measures in-order needle coverage within a bounded
+    window — tolerant of the splice, still order-sensitive (scrambled/cross-paper
+    controls top out ~0.66, well under the 0.85 bar).
+
+If `verify_and_downgrade.py` prints the `⚠ PDF tools missing` banner, **stop and
+ask the user (`AskUserQuestion`) to install them** — and surface the same ask
+when presenting the report. A genuine `unverifiable` on a scan now means the OCR
+text really doesn't contain the quote in order (with 300-dpi OCR confirmed), not
+a resolution artifact — a rare true tooling limit, not the default fate of a scan.
 
 `astra validate astra.yaml` (without `--verify-evidence`) runs for
 **structural** schema validation of the materialized insights; the source gate
@@ -263,12 +327,27 @@ header carries the manuscript title and a one-line health summary. The HTML is
 self-contained (Google-Fonts `<link>`s with serif fallback) — phone-renderable
 via `SendUserFile`.
 
+**Quote the verbatim LaTeX — don't render it.** The citing sentence and every
+evidence quote are shown as the **exact source** (`raw_tex`: HTML-escaped, no
+rendering). Two reasons: (1) *fidelity* — what the reader sees is byte-for-byte
+what the deterministic gate matched; a lossy LaTeX→unicode renderer would put a
+transform between verification and display. (2) *robustness* — TeX distributions,
+custom macros, and bibcode keys are too variable to render reliably, and the
+audience writes LaTeX, so `$\sigma_\epsilon^{\rm int}$` is *more* precise to them
+than a best-effort glyph. The one affordance on top of verbatim: the audited
+bibkey is wrapped in `<mark>` **only where it occurs inside a `\cite{…}`**, so a
+multi-cite sentence (`\citep{A,B,Kraljic2020}`) shows which key the card audits.
+Never strip `\citep` — that hid *what* was cited and made correct
+unsupported/misattribution verdicts read as "the agent quoted something
+irrelevant" when the quote was a careful negative result. (Evidence quotes render
+in monospace; the citing sentence stays serif as the manuscript prose.)
+
 ## The verdict taxonomy
 
 | Verdict | When |
 |---|---|
-| `supported` | Every checkable facet of the claim is anchored by a substantive verbatim quote. |
-| `weak` | Some facets anchored, others not, **or** the source supports a narrower/softer version. Names the unbacked facets; gives `suggested_rewording`. |
+| `supported` | Every checkable facet **attributed to this cite** is anchored by a substantive verbatim quote. In a co-cited sentence, that means this cite's *share* (its facet in a parallel construction), not the whole sentence — deferring to a co-cite on the other half is not a downgrade. |
+| `weak` | Some of **this cite's** facets anchored, others not, **or** the source supports a narrower/softer version. Names the unbacked facets; gives `suggested_rewording`. Not for facets a co-cite legitimately carries. |
 | `unsupported` | On-topic, but the source does not make the specific point(s) the manuscript claims. |
 | `wrong_paper` | The paper is about a different topic; the bibkey likely points at the wrong reference. (If the *fetched source* looks wrong — a phantom/mis-resolved DOI — the verifier sets `doi_flag` and judges against the cite's intent.) |
 | `unverifiable` | No anchorable quote despite a genuine attempt — apparent support that lives only in a figure, or (rare) a cite with no fetchable source at all. A tooling limit, not a content judgment; never used to dodge a quote that exists. |

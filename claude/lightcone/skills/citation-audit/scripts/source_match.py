@@ -18,11 +18,18 @@ Matching model
 Both the source (all `.tex` concatenated) and the candidate string are
 **whitespace-normalized** (every run of whitespace → one space). LaTeX
 line-wrapping, indentation, and the `\\input` split across files all
-collapse away. The check is then a plain substring test:
+collapse away. The check is then a plain substring test, with the
+W3C TextQuoteSelector roles respected — `exact` is the evidence,
+`prefix`/`suffix` only disambiguate *which occurrence*:
 
-  - if prefix/suffix are given → require `prefix exact suffix`
-    contiguous (the strong check; trustworthy against clean source);
-  - else → require `exact` alone.
+  - `exact` present **uniquely** → verified (context is redundant);
+  - `exact` **repeats** → require `prefix`/`suffix` to pin one occurrence;
+  - `exact` absent → not found.
+
+Demanding `prefix exact suffix` contiguous even for a unique quote was too
+brittle: a `\\footnotemark[1]`, a `\\citep{...}`, or a comment boundary in
+the cited author's source sits between the quote and the verifier's
+approximate context without weakening the quote itself.
 
 Before the substring check, `exact` must clear a **substance bar**
 (`is_substantive`): a quote either carries a measured-value signal (a
@@ -43,9 +50,12 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 
 _WS = re.compile(r"\s+")
+_PDF_PUNCT = re.compile(r"[^a-z0-9]+")
 
 # Substance bar for `exact` (degenerate-quote rejection).
 _MIN_WORDS = 5
@@ -69,6 +79,84 @@ _QUANT = re.compile(
 def _norm(s: str) -> str:
     """Collapse all whitespace to single spaces and strip."""
     return _WS.sub(" ", s).strip()
+
+
+def norm_pdf(s: str) -> str:
+    """Aggressive normalization for matching against PDF-extracted text.
+
+    PDF text (and worse, OCR of an image scan) loses LaTeX markup and gains
+    ligatures, de-hyphenation breaks, and symbol mis-reads (a Greek µ extracted
+    as ``fi``). The contiguous `.tex`-grade check is far too strict here, so we
+    NFKD-fold ligatures to ASCII, lowercase, join words split across a hyphenated
+    line break, and strip all punctuation/math to spaces — leaving an
+    alphanumeric word-stream to fuzzy-match against."""
+    s = unicodedata.normalize("NFKD", s).lower()
+    s = re.sub(r"-\s+", "", s)          # de-hyphenate line breaks: "de- blended" -> "deblended"
+    s = _PDF_PUNCT.sub(" ", s)          # punctuation/math -> spaces
+    return _WS.sub(" ", s).strip()
+
+
+def partial_ratio(needle: str, haystack: str) -> float:
+    """Best contiguous-window similarity of `needle` within `haystack`, in [0, 1].
+
+    ORDER-SENSITIVE — unlike token-set overlap, a quote whose words are scattered
+    across the document (not present as a contiguous span) scores low. This is the
+    property that keeps the fuzzy PDF path trustworthy: on the bench, true quotes
+    against clean text PDFs score ~0.9 while topically-related fabrications sit
+    ~0.5. Both arguments should already be `norm_pdf`'d. Slides a quote-length
+    window across the haystack and returns the max `SequenceMatcher` ratio."""
+    if not needle:
+        return 0.0
+    lq = len(needle)
+    if len(haystack) <= lq:
+        return SequenceMatcher(None, needle, haystack).ratio()
+    best = 0.0
+    step = max(1, lq // 8)
+    for i in range(0, len(haystack) - lq + 1, step):
+        r = SequenceMatcher(None, needle, haystack[i : i + lq]).ratio()
+        if r > best:
+            best = r
+            if best >= 0.99:
+                break
+    return best
+
+
+def ordered_recall(needle: str, haystack: str, slack: float = 1.0) -> float:
+    """Fraction of `needle` found **in order** within a bounded window, in [0, 1].
+
+    Where `partial_ratio` is symmetric (it penalizes any character the haystack
+    window holds that the needle does not), this is **asymmetric**: it measures
+    only how much of the needle is recoverable as an in-order character
+    subsequence, and is therefore *tolerant of insertions in the haystack*. That
+    is the property image-scan OCR needs: a multi-column scan routinely splices
+    foreign text (a table of parameters, a column gutter, a footnote) into the
+    middle of a sentence, so the quote's words are all present and in order but a
+    symmetric quote-length window cannot hold the sentence *plus* the splice.
+
+    Order-sensitivity and false-positive safety are preserved by **bounding the
+    window** to `(1 + slack)` × the needle length: the entire needle must be
+    coverable within that span, so total inserted noise is capped at `slack` ×
+    needle (a widely-scattered subsequence cannot fit). On the fresh-paper scans,
+    true quotes score 1.0 and scrambled / cross-paper controls top out ~0.66.
+    Both arguments should already be `norm_pdf`'d."""
+    if not needle:
+        return 0.0
+    lq = len(needle)
+    win = int(lq * (1 + slack))
+    if len(haystack) <= win:
+        m = sum(b.size for b in SequenceMatcher(None, needle, haystack, autojunk=False).get_matching_blocks())
+        return m / lq
+    best = 0.0
+    step = max(1, lq // 8)
+    for i in range(0, len(haystack) - win + 1, step):
+        seg = haystack[i : i + win]
+        m = sum(b.size for b in SequenceMatcher(None, needle, seg, autojunk=False).get_matching_blocks())
+        r = m / lq
+        if r > best:
+            best = r
+            if best >= 0.995:
+                break
+    return best
 
 
 def is_substantive(exact: str) -> tuple[bool, str]:
@@ -120,7 +208,16 @@ def quote_in_source(
     """Check a quote against normalized `source`. Return (ok, reason).
 
     `source` must already be normalized via `_norm`/`load_source`.
-    """
+
+    Verification model (W3C TextQuoteSelector): `exact` is the evidence;
+    `prefix`/`suffix` exist only to **disambiguate which occurrence** when `exact`
+    is ambiguous. So a substantive `exact` that appears **uniquely** and verbatim
+    in the source is verified on its own — the surrounding context is redundant,
+    and demanding it match contiguously is brittle (the cited author's `.tex` may
+    have a `\\footnotemark[1]`, a `\\citep{...}`, or a comment boundary sitting
+    between the quote and the verifier's approximate context, none of which weaken
+    the quote). Prefix/suffix become a gate only when `exact` repeats — then we
+    need them to pin the right occurrence."""
     exact_n = _norm(exact)
     if not exact_n:
         return False, "empty exact quote"
@@ -131,21 +228,27 @@ def quote_in_source(
     if not ok_sub:
         return False, reason_sub
 
+    occurrences = source.count(exact_n)
+    if occurrences == 0:
+        return False, "exact quote not found in source"
+    if occurrences == 1:
+        # Unique + substantive + verbatim → unambiguous. Context not needed.
+        return True, "verified (substantive exact appears verbatim and uniquely in source)"
+
+    # `exact` repeats — use prefix/suffix to pin the occurrence the verifier meant.
     prefix_n = _norm(prefix) if prefix else ""
     suffix_n = _norm(suffix) if suffix else ""
-
+    if prefix_n and _norm(f"{prefix_n} {exact_n}") in source:
+        return True, f"verified (exact appears {occurrences}×; prefix pins the occurrence)"
+    if suffix_n and _norm(f"{exact_n} {suffix_n}") in source:
+        return True, f"verified (exact appears {occurrences}×; suffix pins the occurrence)"
     if prefix_n or suffix_n:
-        contiguous = _norm(f"{prefix_n} {exact_n} {suffix_n}")
-        if contiguous in source:
-            return True, "verified (prefix+exact+suffix contiguous in source)"
-        # Distinguish the failure: is `exact` itself present at all?
-        if exact_n in source:
-            return False, "exact present but prefix/suffix context does not match source"
-        return False, "exact quote not found in source"
-
-    if exact_n in source:
-        return True, "verified (exact found in source; no context provided)"
-    return False, "exact quote not found in source"
+        return False, (
+            f"exact appears {occurrences}× and neither prefix nor suffix matches an "
+            f"occurrence — cannot pin which the claim relies on"
+        )
+    # Repeats, but no context given: the statement is demonstrably in the paper.
+    return True, f"verified (substantive exact appears verbatim in source, {occurrences}×; no context to pin)"
 
 
 def main() -> int:

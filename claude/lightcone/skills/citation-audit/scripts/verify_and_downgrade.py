@@ -45,30 +45,129 @@ from typing import Any
 
 import source_match
 
+# A pdf anchor is confirmed if its fuzzy partial-ratio against the (OCR'd) PDF
+# text clears this bar. Calibrated on the bench: true quotes against text PDFs
+# score ~0.9; topically-related fabrications ~0.5.
+PDF_FUZZY_THRESHOLD = 0.80
+# Image-scan rescue: when the contiguous partial-ratio fails, fall back to the
+# insertion-tolerant `ordered_recall` (which absorbs OCR reading-order splices —
+# a table or column gutter spliced mid-sentence on a multi-column scan). Calibrated
+# on the fresh-paper image scans (Bertin96, Landy-Szalay93): true quotes recall 1.0,
+# scrambled/cross-paper controls top out ~0.66. 0.85 sits in the gap with margin.
+PDF_RECALL_THRESHOLD = 0.85
+# DPI for rasterizing an image page before OCR. PyMuPDF's get_textpage_ocr default
+# is 72 (screen res) — far too low for a scanned journal page; at 72 dpi true quotes
+# scored ~0.5 and the scans read as "unverifiable". 300 dpi is the OCR standard and
+# is what makes pre-arXiv image scans verifiable at all.
+OCR_DPI = 300
+# A page whose embedded text layer is thinner than this is treated as an image
+# scan and OCR'd (pre-arXiv papers are very often scans).
+MIN_PAGE_CHARS = 200
+
+# Tools the gate wanted but could not import/run — surfaced at the end so the
+# orchestrator can ask the user to install them (don't silently degrade).
+MISSING_TOOLS: set[str] = set()
+_PDF_TEXT_CACHE: dict[str, tuple[str | None, str]] = {}
+
+
+def _pdf_text(pdf_path: Path) -> tuple[str | None, str]:
+    """Extract normalized PDF text, OCR-ing image pages. Returns (norm_text, method).
+
+    Prefers PyMuPDF (page text, with a per-page OCR fallback via Tesseract for
+    image scans); falls back to pypdf (no OCR) when PyMuPDF is absent. Cached per
+    path — OCR is slow. `norm_text` is `None` when no extractor is available."""
+    key = str(pdf_path)
+    if key in _PDF_TEXT_CACHE:
+        return _PDF_TEXT_CACHE[key]
+    text: str | None = None
+    method = "none"
+    pymupdf = None
+    for modname in ("pymupdf", "fitz"):
+        try:
+            pymupdf = __import__(modname)
+            break
+        except ImportError:
+            continue
+    if pymupdf is None:
+        MISSING_TOOLS.add("pymupdf")
+    else:
+        try:
+            doc = pymupdf.open(str(pdf_path))
+            parts: list[str] = []
+            ocr_pages = 0
+            for page in doc:
+                t = page.get_text()
+                if len(t.strip()) < MIN_PAGE_CHARS:  # image page → OCR
+                    try:
+                        tp = page.get_textpage_ocr(flags=0, full=True, dpi=OCR_DPI)
+                        t_ocr = page.get_text(textpage=tp)
+                        if len(t_ocr.strip()) > len(t.strip()):
+                            t, _ = t_ocr, ocr_pages
+                            ocr_pages += 1
+                    except Exception:  # noqa: BLE001 — OCR needs the tesseract binary
+                        MISSING_TOOLS.add("tesseract (OCR; brew install tesseract)")
+                parts.append(t)
+            doc.close()
+            text = " ".join(parts)
+            method = f"pymupdf+ocr:{ocr_pages}p" if ocr_pages else "pymupdf"
+        except Exception as exc:  # noqa: BLE001
+            method = f"pymupdf-failed:{exc}"
+            text = None
+    if text is None and pymupdf is None:
+        try:
+            from pypdf import PdfReader  # type: ignore[import-not-found]
+
+            text = " ".join((p.extract_text() or "") for p in PdfReader(str(pdf_path)).pages)
+            method = "pypdf (no OCR)"
+        except Exception:  # noqa: BLE001
+            text = None
+    norm = source_match.norm_pdf(text) if text else None
+    _PDF_TEXT_CACHE[key] = (norm, method)
+    return _PDF_TEXT_CACHE[key]
+
 
 def _check_against_pdf(pdf_path: Path, exact: str, prefix: str, suffix: str) -> tuple[bool, str]:
-    """Whitespace/OCR-tolerant substring check on PyMuPDF text, for `pdf` anchors."""
-    try:
-        import pymupdf  # type: ignore[import-not-found]
-    except ImportError:
-        try:
-            import fitz as pymupdf  # type: ignore[import-not-found, no-redef]
-        except ImportError:
-            return False, "pdf anchor but PyMuPDF unavailable to verify"
-    try:
-        doc = pymupdf.open(pdf_path)
-        text = source_match._norm(" ".join(page.get_text() for page in doc))
-        doc.close()
-    except Exception as exc:  # noqa: BLE001
-        return False, f"pdf text extraction failed: {exc}"
-    # PDF anchors are English-narrative; require a normalized contiguous substring
-    # (no substance bar — the narrative sentence is the substance).
-    needle = source_match._norm(f"{prefix} {exact} {suffix}".strip())
-    if source_match._norm(exact) in text:
-        return True, "[pdf, fuzzy] exact present in normalized PDF text"
-    if needle and needle in text:
-        return True, "[pdf, fuzzy] prefix+exact+suffix present in normalized PDF text"
-    return False, "[pdf, fuzzy] quote not found in normalized PDF text"
+    """Fuzzy, OCR-tolerant check of a `pdf` anchor against the cited PDF.
+
+    PDF anchors are English narrative (the verifier contract forbids quoting math
+    from a PDF). Three escalating checks:
+      1. normalized substring (clean text PDFs);
+      2. order-sensitive `partial_ratio` (tolerates ligature/OCR symbol noise like
+         a Greek µ extracted as ``fi`` — a contiguous match with a few bad chars);
+      3. insertion-tolerant `ordered_recall` (rescues image scans whose OCR splices
+         a table/column-gutter mid-sentence, breaking contiguity but not order).
+    Only when all three fail is the anchor reported unverifiable — and on a scan
+    that means a genuine extraction gap, no longer the default fate of a scan."""
+    text, method = _pdf_text(pdf_path)
+    if not text:
+        return False, f"pdf anchor unverifiable: no PDF text extractor available ({method})"
+    needle = source_match.norm_pdf(exact)
+    if not needle:
+        return False, "empty exact"
+    if needle in text:
+        return True, f"[pdf:{method}] exact present in normalized PDF text"
+    ctx = source_match.norm_pdf(f"{prefix} {exact} {suffix}")
+    if ctx and ctx in text:
+        return True, f"[pdf:{method}] prefix+exact+suffix present"
+    ratio = source_match.partial_ratio(needle, text)
+    if ratio >= PDF_FUZZY_THRESHOLD:
+        return True, f"[pdf:{method}] fuzzy partial_ratio={ratio:.2f} ≥ {PDF_FUZZY_THRESHOLD}"
+    recall = source_match.ordered_recall(needle, text)
+    if recall >= PDF_RECALL_THRESHOLD:
+        return True, (
+            f"[pdf:{method}] insertion-tolerant ordered_recall={recall:.2f} ≥ "
+            f"{PDF_RECALL_THRESHOLD} (OCR spliced foreign text mid-quote; words present in order)"
+        )
+    scanned = "ocr" in method
+    detail = (
+        "; source is an image scan and the OCR text genuinely does not contain "
+        "this quote in order — not a resolution artifact (OCR runs at "
+        f"{OCR_DPI} dpi)" if scanned else ""
+    )
+    return False, (
+        f"[pdf:{method}] not confirmable (partial_ratio={ratio:.2f} < {PDF_FUZZY_THRESHOLD}, "
+        f"ordered_recall={recall:.2f} < {PDF_RECALL_THRESHOLD}{detail})"
+    )
 
 
 def main() -> int:
@@ -166,6 +265,16 @@ def main() -> int:
         f"\nchecked {checked} supported/weak rows; dropped {dropped_anchors} failed anchor(s); "
         f"downgraded {downgraded} row(s) whose every anchor failed."
     )
+    if MISSING_TOOLS:
+        print(
+            "\n⚠ PDF tools missing — some pdf-backed anchors could not be verified: "
+            + ", ".join(sorted(MISSING_TOOLS))
+            + ".\n  Install to make pdf cites verifiable, then re-run the gate:\n"
+            "    python3 -m pip install pymupdf      # PDF text + OCR driver\n"
+            "    brew install tesseract              # OCR engine for image-scan PDFs\n"
+            "  (The skill should ASK the user to install these rather than silently "
+            "leaving pdf cites unverifiable.)"
+        )
     if downgraded:
         print("Now re-run build_audit_yaml.py to drop downgraded entries from astra.yaml.")
     return 0

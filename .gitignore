@@ -222,3 +222,6 @@ uv.lock
 
 # macOS
 .DS_Store
+
+# citation-audit working dirs (unpublished manuscripts — never commit)
+audits/
