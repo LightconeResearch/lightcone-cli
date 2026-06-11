@@ -863,8 +863,16 @@ def _build_snakemake_cmd(
     ``--rerun-triggers`` uses ``nargs=+`` in snakemake's argparse, so without
     an explicit ``--`` separator it greedily consumes the first positional
     target path as an extra trigger value, causing an "invalid choice" error.
+
+    Snakemake is invoked as ``sys.executable -m snakemake`` so the run always
+    uses the snakemake pinned in lightcone's own environment (which carries
+    snakemake_executor_plugin_dask).  A bare ``snakemake`` resolves via PATH,
+    and on HPC sites that is typically a site install without the dask
+    executor — ``--executor dask: invalid choice``.
     """
     cmd: list[str] = [
+        sys.executable,
+        "-m",
         "snakemake",
         "-s",
         str(snakefile_path),
