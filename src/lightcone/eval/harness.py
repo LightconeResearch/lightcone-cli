@@ -17,14 +17,43 @@ import yaml
 
 from lightcone.eval.build import build_eval_wheels
 from lightcone.eval.graders import compute_composite_score, run_graders
+from lightcone.eval.harnesses import Harness, get_harness
 from lightcone.eval.models import (
     EvalRun,
     EvalRunConfig,
+    HarnessSpec,
     IterationResult,
     TaskSpec,
     TrialResult,
 )
 from lightcone.eval.sandbox import BUILD_COMPLETE_MARKER, EvalSandbox
+
+
+def _make_sandbox(
+    config: EvalRunConfig,
+    task: TaskSpec,
+    trial_id: str,
+    harness: Harness,
+    env_vars: dict[str, str],
+) -> Any:
+    """Construct the trial's sandbox for the configured backend.
+
+    ``local_docker`` runs the agent in a throwaway local container (the default
+    for local demos); ``daytona`` is the original cloud-sandbox path used in CI.
+    Both satisfy the ``SandboxLike`` protocol the harness drives.
+    """
+    if config.backend == "local_docker":
+        from lightcone.eval.backends.local_docker import LocalDockerSandbox
+
+        return LocalDockerSandbox(
+            task_id=task.id, trial_id=trial_id, harness=harness, env_vars=env_vars
+        )
+    return EvalSandbox(
+        task_id=task.id,
+        trial_id=trial_id,
+        sandbox_image=config.sandbox_image,
+        env_vars=env_vars,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -83,32 +112,33 @@ def run_trial(
     task: TaskSpec,
     trial_number: int,
     *,
+    harness_spec: HarnessSpec,
+    with_skills: bool,
     evals_dir: Path,
     config: EvalRunConfig,
     run_id: str,
     wheels: list[Path],
     sidecar_dir: Path | None = None,
 ) -> TrialResult:
-    """Run a single trial: create sandbox -> run the build prompt -> grade -> teardown."""
-    trial_id = f"{run_id}-{task.id}-{trial_number}"
+    """Run one trial: create sandbox -> prepare -> run the agent -> grade -> teardown."""
+    variant = "skills" if with_skills else "bare"
+    trial_id = f"{run_id}-{task.id}-{harness_spec.name}-{variant}-{trial_number}"
     trial = TrialResult(
         trial_id=trial_id,
         task_id=task.id,
+        harness=harness_spec.name,
+        with_skills=with_skills,
         trial_number=trial_number,
         started_at=datetime.now(UTC),
     )
 
+    harness = get_harness(harness_spec.name)
     env_vars = {
         "LIGHTCONE_EVAL_RUN_ID": run_id,
         "CLAUDE_CODE_SESSION_ID": f"eval-{trial_id}",
     }
 
-    sandbox = EvalSandbox(
-        task_id=task.id,
-        trial_id=trial_id,
-        sandbox_image=config.sandbox_image,
-        env_vars=env_vars,
-    )
+    sandbox = _make_sandbox(config, task, trial_id, harness, env_vars)
 
     try:
         sandbox.create()
@@ -123,13 +153,22 @@ def run_trial(
             wheels=wheels,
         )
 
+        # With/without-Lightcone A/B: prepare strips the scaffold for the bare
+        # arm (or no-ops for harnesses that gate skills via invoke flags).
+        harness.prepare(sandbox, work_dir=sandbox.WORK_DIR, with_skills=with_skills)
+
         # Single invocation with a high max-turns budget — the prompt is
         # self-contained and the agent loops over outputs internally.
         start = time.monotonic()
         try:
-            claude_result = sandbox.exec_claude(
-                max_turns=task.max_turns,
-                timeout=task.trial_timeout,
+            claude_result = harness.invoke(
+                sandbox,
+                prompt_path="/tmp/loop-prompt.md",
+                work_dir=sandbox.WORK_DIR,
+                max_turns=config.max_turns or task.max_turns,
+                timeout=config.trial_timeout or task.trial_timeout,
+                with_skills=with_skills,
+                model=harness_spec.model,
             )
             duration = time.monotonic() - start
 
@@ -198,11 +237,20 @@ def run_eval(
     # Load all tasks
     tasks = [load_task(evals_dir, tid) for tid in config.tasks]
 
-    # Build trial schedule
+    # Build trial schedule: tasks x harnesses x skill_variants x num_trials
     schedule: list[dict[str, Any]] = []
     for task in tasks:
-        for n in range(config.num_trials):
-            schedule.append({"task": task, "trial_number": n})
+        for hspec in config.harnesses:
+            for with_skills in config.skill_variants:
+                for n in range(config.num_trials):
+                    schedule.append(
+                        {
+                            "task": task,
+                            "harness_spec": hspec,
+                            "with_skills": with_skills,
+                            "trial_number": n,
+                        }
+                    )
 
     if dry_run:
         return EvalRun(
@@ -210,7 +258,12 @@ def run_eval(
             started_at=datetime.now(UTC),
             finished_at=datetime.now(UTC),
             summary={"dry_run": True, "total_trials": len(schedule), "schedule": [
-                {"task": s["task"].id, "trial": s["trial_number"]}
+                {
+                    "task": s["task"].id,
+                    "harness": s["harness_spec"].name,
+                    "skills": s["with_skills"],
+                    "trial": s["trial_number"],
+                }
                 for s in schedule
             ]},
         )
@@ -252,6 +305,8 @@ def run_eval(
                     run_trial,
                     s["task"],
                     s["trial_number"],
+                    harness_spec=s["harness_spec"],
+                    with_skills=s["with_skills"],
                     evals_dir=evals_dir,
                     config=config,
                     run_id=run_id,
@@ -272,6 +327,8 @@ def run_eval(
                     trial = TrialResult(
                         trial_id=f"{run_id}-error",
                         task_id=s["task"].id,
+                        harness=s["harness_spec"].name,
+                        with_skills=s["with_skills"],
                         trial_number=s["trial_number"],
                         error=str(exc),
                     )

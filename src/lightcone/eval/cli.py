@@ -53,7 +53,12 @@ def run_cmd(
         lc eval run evals/example-run.yaml --num-trials 1 --concurrency 2
     """
     from lightcone.eval.harness import load_run_config, run_eval
-    from lightcone.eval.report import compute_summary, print_comparison_table, save_results
+    from lightcone.eval.report import (
+        compute_summary,
+        print_comparison_table,
+        print_matrix_table,
+        save_results,
+    )
 
     config = load_run_config(config_path)
 
@@ -99,7 +104,10 @@ def run_cmd(
     if dry_run:
         schedule = eval_run.summary.get("schedule", [])
         for s in schedule:
-            console.print(f"  {s['task']} trial {s['trial']}")
+            skills = "skills" if s.get("skills") else "bare"
+            console.print(
+                f"  {s['task']} · {s.get('harness', '?')} · {skills} · trial {s['trial']}"
+            )
         console.print(f"\n[bold]Total: {eval_run.summary.get('total_trials', 0)} trials[/bold]")
         return
 
@@ -117,6 +125,8 @@ def run_cmd(
     eval_run.summary = compute_summary(eval_run)
     console.print()
     print_comparison_table(eval_run, console=console)
+    console.print()
+    print_matrix_table(eval_run, console=console)
 
     # Save results
     output_path = save_results(eval_run, config.output_dir)

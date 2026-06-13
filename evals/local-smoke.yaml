@@ -1,0 +1,20 @@
+# Cheap plumbing smoke for the local-Docker multi-harness path. `max_turns`
+# caps each trial so it exits fast: the build won't complete (graders score
+# low), but the whole path — container build, auth copy-in, headless invoke,
+# output parse, grading, teardown, scorecard — is exercised end to end across
+# all three harnesses. Run this first to shake out orchestration/auth bugs
+# before spending on a full build.
+id: local-smoke
+backend: local_docker
+tasks:
+  - snae
+harnesses:
+  - claude
+  - { name: codex, model: gpt-5.3-codex-spark }
+  - pi
+skill_variants: [true]
+num_trials: 1
+max_concurrency: 1
+max_turns: 5
+trial_timeout: 900
+output_dir: eval-results

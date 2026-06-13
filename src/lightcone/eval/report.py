@@ -189,6 +189,99 @@ def print_comparison_between(
     console.print(table)
 
 
+def compute_matrix(eval_run: EvalRun) -> dict[tuple[str, str, bool], dict[str, Any]]:
+    """Group trials by ``(task, harness, with_skills)`` — the multi-harness A/B
+    matrix. Keys are tuples; values mirror ``compute_summary``'s per-group stats.
+    """
+    groups: dict[tuple[str, str, bool], list[TrialResult]] = defaultdict(list)
+    for t in eval_run.trials:
+        groups[(t.task_id, t.harness, t.with_skills)].append(t)
+
+    out: dict[tuple[str, str, bool], dict[str, Any]] = {}
+    for key, trials in groups.items():
+        ok = [t for t in trials if t.error is None]
+        n = len(ok)
+        scores = [t.composite_score for t in ok]
+        out[key] = {
+            "task": key[0],
+            "harness": key[1],
+            "with_skills": key[2],
+            "num_trials": len(trials),
+            "num_errors": len(trials) - n,
+            "mean_score": round(sum(scores) / n, 4) if n else 0.0,
+            "pass_at_k": (sum(1 for t in ok if t.build_complete) / len(trials))
+            if trials
+            else 0.0,
+            "mean_cost_usd": round(sum(t.total_cost_usd for t in ok) / n, 4) if n else 0.0,
+            "mean_duration_seconds": round(
+                sum(t.total_duration_seconds for t in ok) / n, 1
+            )
+            if n
+            else 0.0,
+        }
+    return out
+
+
+def _matrix_cell(g: dict[str, Any] | None) -> str:
+    """Render one harness×variant cell: score, pass@k, and cost/errors if any."""
+    if g is None:
+        return "—"
+    cell = f"{g['mean_score']:.2f}  pass@k {g['pass_at_k']:.0%}"
+    extra = []
+    if g["num_errors"]:
+        extra.append(f"[red]{g['num_errors']} err[/red]")
+    if g["mean_cost_usd"]:
+        extra.append(f"${g['mean_cost_usd']:.2f}")
+    return cell + (("\n" + " ".join(extra)) if extra else "")
+
+
+def print_matrix_table(eval_run: EvalRun, console: Console | None = None) -> None:
+    """Print the task × harness × {with,without}-Lightcone matrix.
+
+    The Δ column is the with−without **lift** — the A/B headline: how much the
+    Lightcone layer moved the score on each harness. Shown only when both arms
+    ran for a (task, harness) pair.
+    """
+    if console is None:
+        console = Console()
+
+    matrix = compute_matrix(eval_run)
+    if not matrix:
+        console.print("[yellow]No results to display.[/yellow]")
+        return
+
+    tasks = sorted({k[0] for k in matrix})
+    harnesses = sorted({k[1] for k in matrix})
+    has_both = any((t, h, True) in matrix and (t, h, False) in matrix
+                   for t in tasks for h in harnesses)
+
+    table = Table(title="Eval Matrix: score by harness × Lightcone layer", show_lines=True)
+    table.add_column("Task", style="bold")
+    table.add_column("Harness", style="bold")
+    table.add_column("with skills", justify="center")
+    table.add_column("without skills", justify="center")
+    if has_both:
+        table.add_column("Δ lift", justify="center")
+
+    for task in tasks:
+        for h in harnesses:
+            w = matrix.get((task, h, True))
+            wo = matrix.get((task, h, False))
+            if w is None and wo is None:
+                continue
+            row = [task, h, _matrix_cell(w), _matrix_cell(wo)]
+            if has_both:
+                if w and wo:
+                    delta = w["mean_score"] - wo["mean_score"]
+                    color = "green" if delta > 0 else ("red" if delta < 0 else "white")
+                    row.append(f"[{color}]{delta:+.2f}[/{color}]")
+                else:
+                    row.append("—")
+            table.add_row(*row)
+
+    console.print(table)
+
+
 def save_results(eval_run: EvalRun, output_dir: str | Path) -> Path:
     """Save full EvalRun to JSON inside the run's sidecar directory."""
     output_dir = Path(output_dir)

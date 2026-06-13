@@ -1,0 +1,20 @@
+# Full local demo: the with/without-Lightcone A/B across three harnesses on the
+# snae task, run in local Docker. The matrix is {claude, codex, pi} x
+# {with-skills, without-skills}. The report's "Δ lift" column is the headline —
+# how much the Lightcone layer moved each harness's score.
+#
+# Codex runs on the cheap "spark" model while we shake out orchestration; bump
+# to gpt-5.5 (or drop the model line to use codex's default) for real eval
+# signal. pi uses its default (free) provider/model.
+id: local-demo
+backend: local_docker
+tasks:
+  - snae
+harnesses:
+  - claude
+  - { name: codex, model: gpt-5.3-codex-spark }
+  - pi
+skill_variants: [true, false]
+num_trials: 1
+max_concurrency: 2
+output_dir: eval-results

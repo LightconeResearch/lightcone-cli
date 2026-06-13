@@ -17,6 +17,7 @@ from lightcone.eval.harness import (
 )
 from lightcone.eval.models import (
     EvalRunConfig,
+    HarnessSpec,
     TaskSpec,
 )
 from lightcone.eval.sandbox import (
@@ -99,12 +100,15 @@ class TestGetLoopPrompt:
 
 class TestRunTrial:
     @patch("lightcone.eval.harness.EvalSandbox")
-    def test_successful_trial(self, mock_sandbox_cls: MagicMock, evals_dir: Path):
+    @patch("lightcone.eval.harness.get_harness")
+    def test_successful_trial(
+        self, mock_get_harness: MagicMock, mock_sandbox_cls: MagicMock, evals_dir: Path
+    ):
         """Test a trial that completes successfully."""
         sandbox_instance = mock_sandbox_cls.return_value
         sandbox_instance.WORK_DIR = "/home/user/project"
 
-        sandbox_instance.exec_claude.return_value = ClaudeResult(
+        mock_get_harness.return_value.invoke.return_value = ClaudeResult(
             cost_usd=0.05,
             num_turns=10,
             duration_ms=5000,
@@ -122,7 +126,8 @@ class TestRunTrial:
         config = EvalRunConfig(id="test-run")
 
         trial = run_trial(
-            task, 0, evals_dir=evals_dir, config=config, run_id="r1", wheels=[],
+            task, 0, harness_spec=HarnessSpec(name="claude"), with_skills=True,
+            evals_dir=evals_dir, config=config, run_id="r1", wheels=[],
         )
 
         assert trial.build_complete is True
@@ -141,7 +146,8 @@ class TestRunTrial:
         config = EvalRunConfig(id="test-run")
 
         trial = run_trial(
-            task, 0, evals_dir=evals_dir, config=config, run_id="r1", wheels=[],
+            task, 0, harness_spec=HarnessSpec(name="claude"), with_skills=True,
+            evals_dir=evals_dir, config=config, run_id="r1", wheels=[],
         )
 
         assert trial.error is not None
@@ -149,12 +155,15 @@ class TestRunTrial:
         sandbox_instance.teardown.assert_called_once()
 
     @patch("lightcone.eval.harness.EvalSandbox")
-    def test_trial_incomplete(self, mock_sandbox_cls: MagicMock, evals_dir: Path):
+    @patch("lightcone.eval.harness.get_harness")
+    def test_trial_incomplete(
+        self, mock_get_harness: MagicMock, mock_sandbox_cls: MagicMock, evals_dir: Path
+    ):
         """Test a trial where the build does not complete."""
         sandbox_instance = mock_sandbox_cls.return_value
         sandbox_instance.WORK_DIR = "/home/user/project"
 
-        sandbox_instance.exec_claude.return_value = ClaudeResult(
+        mock_get_harness.return_value.invoke.return_value = ClaudeResult(
             cost_usd=0.02,
             num_turns=5,
             duration_ms=3000,
@@ -171,7 +180,8 @@ class TestRunTrial:
         config = EvalRunConfig(id="test-run")
 
         trial = run_trial(
-            task, 0, evals_dir=evals_dir, config=config, run_id="r1", wheels=[],
+            task, 0, harness_spec=HarnessSpec(name="claude"), with_skills=True,
+            evals_dir=evals_dir, config=config, run_id="r1", wheels=[],
         )
 
         assert trial.build_complete is False
@@ -181,13 +191,20 @@ class TestRunTrial:
 
 class TestSidecarFiles:
     @patch("lightcone.eval.harness.EvalSandbox")
-    def test_sidecar_written(self, mock_sandbox_cls: MagicMock, evals_dir: Path, tmp_path: Path):
+    @patch("lightcone.eval.harness.get_harness")
+    def test_sidecar_written(
+        self,
+        mock_get_harness: MagicMock,
+        mock_sandbox_cls: MagicMock,
+        evals_dir: Path,
+        tmp_path: Path,
+    ):
         """Test that JSONL sidecar files are written when sidecar_dir is provided."""
         sandbox_instance = mock_sandbox_cls.return_value
         sandbox_instance.WORK_DIR = "/home/user/project"
 
         raw_jsonl = '{"type":"assistant","message":"hello"}\n{"type":"result","cost_usd":0.05}\n'
-        sandbox_instance.exec_claude.return_value = ClaudeResult(
+        mock_get_harness.return_value.invoke.return_value = ClaudeResult(
             cost_usd=0.05, num_turns=3, duration_ms=1000,
             result_text=BUILD_COMPLETE_MARKER, is_error=False,
             raw_jsonl=raw_jsonl,
@@ -202,7 +219,8 @@ class TestSidecarFiles:
 
         sidecar_dir = tmp_path / "logs"
         trial = run_trial(
-            task, 0, evals_dir=evals_dir, config=config,
+            task, 0, harness_spec=HarnessSpec(name="claude"), with_skills=True,
+            evals_dir=evals_dir, config=config,
             run_id="r1", wheels=[], sidecar_dir=sidecar_dir,
         )
 
@@ -212,12 +230,15 @@ class TestSidecarFiles:
         assert full_path.read_text() == raw_jsonl
 
     @patch("lightcone.eval.harness.EvalSandbox")
-    def test_no_sidecar_without_dir(self, mock_sandbox_cls: MagicMock, evals_dir: Path):
+    @patch("lightcone.eval.harness.get_harness")
+    def test_no_sidecar_without_dir(
+        self, mock_get_harness: MagicMock, mock_sandbox_cls: MagicMock, evals_dir: Path
+    ):
         """transcript_path stays None when no sidecar_dir is given."""
         sandbox_instance = mock_sandbox_cls.return_value
         sandbox_instance.WORK_DIR = "/home/user/project"
 
-        sandbox_instance.exec_claude.return_value = ClaudeResult(
+        mock_get_harness.return_value.invoke.return_value = ClaudeResult(
             cost_usd=0.01, num_turns=1, duration_ms=100,
             result_text=BUILD_COMPLETE_MARKER, is_error=False,
             raw_jsonl='{"type":"result"}\n',
@@ -231,7 +252,8 @@ class TestSidecarFiles:
         config = EvalRunConfig(id="test-run")
 
         trial = run_trial(
-            task, 0, evals_dir=evals_dir, config=config, run_id="r1", wheels=[],
+            task, 0, harness_spec=HarnessSpec(name="claude"), with_skills=True,
+            evals_dir=evals_dir, config=config, run_id="r1", wheels=[],
         )
         assert trial.iterations[0].transcript_path is None
 
