@@ -53,9 +53,11 @@ Substrate CLIs (use --help on any):
   lc init / lc run / lc status / lc verify / lc build / lc export wrroc
   astra validate / astra paper add / astra universe generate
 
-Reference skills (invoke when the surface above isn't enough):
-  /astra   — astra.yaml spec: decisions, prior_insights, findings, evidence, sub-analyses, narrative anchors
-  /lc-cli  — lc workflow: spec-code invariant, status interpretation, failure diagnosis"
+ACTIVATE THE /lightcone SKILL before running commands or editing files. It is
+the entry point — the lay of the land, the references you almost always need
+(the astra.yaml spec and the lc workflow, bundled with it), and a router to
+task skills like /lc-from-paper. Loading the skill is not the same as reading
+this context. You'll be reminded on your first action if you skip it."
 
 if [ "$validation_ok" -ne 0 ]; then
     # tail rather than head -- the leading lines are success markers

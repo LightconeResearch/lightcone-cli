@@ -32,6 +32,7 @@ import click
 import yaml
 from rich.console import Console
 
+from lightcone.cli.hooks import hook_group
 from lightcone.cli.plugin import (
     CODEX_MARKETPLACE_NAME,
     CODEX_PLUGIN_NAME,
@@ -1236,6 +1237,9 @@ def export_wrroc_cmd(
             f"universes: [cyan]{u_list}[/cyan]"
         )
 
+
+# Register hook subgroup (agent-harness integration glue; no optional deps)
+main.add_command(hook_group, "hook")
 
 # Register eval subgroup (requires optional 'eval' extra)
 try:

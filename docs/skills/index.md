@@ -11,10 +11,18 @@ This page is for maintainers.
 
 ## Available skills
 
+`/lightcone` is the entry point — activate it first whenever an
+`astra.yaml` project is in play (see [Entry point](#entry-point) below).
 The `/lc-from-*` family is parallel in what you start from: a question,
 code, or a paper. `/lc-from-paper` is the entry point of a five-skill
 paper-reproduction bundle; the four siblings stand alone and are
 user-invokable directly.
+
+### Entry point
+
+| Skill | Command | Purpose |
+|-------|---------|---------|
+| [lightcone](#references-bundled-under-lightcone) | `/lightcone` | **Start here.** Carries the lay of the land (what ASTRA is, the Spec-Code Invariant, the core `lc` loop), bundles the two references at `references/{astra,lc-cli}.md`, and routes to the task skill for the job. The PreToolUse skill-gate opens once it's activated. |
 
 ### Project lifecycle
 
@@ -40,16 +48,16 @@ dispatches them by role during the reproduction.
 
 See the [bundle README](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md) for the rationale behind co-location vs plugin install.
 
-### Reference skills (auto-primed via session-start)
+### References (bundled under `/lightcone`)
 
-Not entry points. Other skills invoke them — or Claude does, when a deeper reference would help — to load reference content into the working session. The session-start hook names both in its primer, so Claude knows they exist from the first turn.
+Not skills. These are reference documents bundled with the `/lightcone` entry point at `lightcone/references/`. Activating `/lightcone` is enough — read the section you need when you need it; the references stay available throughout the session.
 
-| Skill | Command | Purpose |
-|-------|---------|---------|
-| `astra` | `/astra` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, narrative anchors, composition mechanics. |
-| `lc-cli` | `/lc-cli` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, publishing via WRROC. |
+| Reference | Path | Purpose |
+|-----------|------|---------|
+| `astra` | `references/astra.md` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, narrative anchors, composition mechanics. |
+| `lc-cli` | `references/lc-cli.md` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, publishing via WRROC. |
 
-These intentionally stay out of the top-level README. Researchers use the project-lifecycle skills directly; the reference skills are infrastructure.
+These intentionally stay out of the top-level README. Researchers use the project-lifecycle skills directly; the references are infrastructure carried by `/lightcone`.
 
 ## How a skill is wired
 
@@ -77,6 +85,7 @@ and longer prompt fragments under `assets/` when relevant.
 ```text
 claude/lightcone/
 ├── skills/
+│   ├── lightcone/{SKILL.md, references/{astra,lc-cli}.md}  # entry point + bundled references
 │   ├── lc-new/{SKILL.md, references/*.md}
 │   ├── lc-from-code/SKILL.md
 │   ├── lc-from-paper/{SKILL.md, reproduce_workflow.js, references/*.md, templates/{plan.md, CLAUDE.md}}
@@ -84,9 +93,7 @@ claude/lightcone/
 │   ├── paper-extraction/{SKILL.md, scripts/*.py}
 │   ├── narrative/{SKILL.md, references/*.md}
 │   ├── figure-comparison/{SKILL.md, scripts/*.py}
-│   ├── check-sentence-by-sentence/SKILL.md
-│   ├── astra/SKILL.md                  # reference: astra.yaml spec
-│   └── lc-cli/SKILL.md                 # reference: lc workflow
+│   └── check-sentence-by-sentence/SKILL.md
 ├── agents/lc-extractor.md             # literature subagent for /lc-new
 ├── templates/CLAUDE.md                # the project CLAUDE.md template
 └── scripts/*.sh                       # session lifecycle hooks (incl. session-start primer)
@@ -98,12 +105,12 @@ The plugin is force-included into the wheel via
 
 ## Other plugin files
 
-The two reference *skills* (`/astra` and `/lc-cli`) live under `skills/` and are listed in the [Reference skills](#reference-skills-auto-primed-via-session-start) section above. Remaining plugin files:
+The two references (`astra` and `lc-cli`) are now bundled under `/lightcone` at `lightcone/references/{astra,lc-cli}.md` and are listed in the [References (bundled under `/lightcone`)](#references-bundled-under-lightcone) section above. Remaining plugin files:
 
 | File | Purpose |
 |------|---------|
 | `claude/lightcone/agents/lc-extractor.md` | Literature extraction subagent invoked by `/lc-new`. |
-| `claude/lightcone/scripts/session-start.sh` | Session-start hook — surfaces validation + materialization status and primes Claude with the substrate CLIs and reference skill names. |
+| `claude/lightcone/scripts/session-start.sh` | Session-start hook — surfaces validation + materialization status and primes Claude with the substrate CLIs and the `/lightcone` entry point. |
 
 ## Authoring a new skill
 

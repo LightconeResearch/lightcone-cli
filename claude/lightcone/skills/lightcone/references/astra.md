@@ -1,18 +1,19 @@
----
-name: astra
-description: >
-  Comprehensive reference for the `astra.yaml` specification — top-level
-  structure, sub-analyses, inputs/outputs, decisions and options, prior
-  insights and findings, evidence and quote verification, narrative
-  anchors, and composition mechanics. Invoke whenever reading, writing,
-  validating, or debugging an `astra.yaml` spec; whenever working with
-  decisions, options, prior_insights, findings, or evidence; or whenever
-  the user asks about ASTRA schema, spec syntax, or sub-analysis
-  composition.
-allowed-tools: Read, Glob, Grep, Bash(astra:*)
----
+# ASTRA spec reference (`astra.yaml`)
 
-# ASTRA Reference
+The full `astra.yaml` specification. Read this when reading, writing, validating, or debugging a spec — decisions, options, inputs/outputs, prior insights, findings, evidence, sub-analyses, narrative, composition. This is a reference bundled with the `/lightcone` skill; you don't activate it separately, you read the section you need.
+
+## Contents
+
+- [What an ASTRA Analysis Is](#what-an-astra-analysis-is)
+- [astra.yaml Structure](#astrayaml-structure) — fields, cross-analysis inputs
+- [Decisions](#decisions) — what counts as one, options, parameterization, constraints
+- [Recipe Format](#recipe-format) — command-template substitution, conditional outputs
+- [Universe Management](#universe-management)
+- [Prior Insights and Findings](#prior-insights-and-findings) — evidence model, adding a paper
+- [Sub-Analyses](#sub-analyses) — when to split, composition mechanics, path grammar
+- [Narrative](#narrative) — the prose field, anchors, conditional coverage
+- [CLI Reference (astra)](#cli-reference-astra)
+- [Validation](#validation)
 
 ## What an ASTRA Analysis Is
 

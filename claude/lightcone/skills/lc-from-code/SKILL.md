@@ -15,7 +15,7 @@ The second is **scan-only**, used when `/lc-from-paper`'s ORIENT Stage 4 invokes
 
 ## Phase 1: Scan & Spec
 
-First, invoke `/astra` and read its Decisions section, then decide which mode applies:
+First, read the Decisions section of the ASTRA reference (`references/astra.md`, bundled with `/lightcone`), then decide which mode applies:
 
 - **Fresh migration:** no meaningful `astra.yaml` exists yet. Use the code scan to draft `astra.yaml` and `universes/baseline.yaml`.
 - **Augment existing ASTRA:** `astra.yaml` already exists from a paper, user interview, or prior ASTRA work. Use the code scan to add to the current spec — recipes, dependencies, containers, code-backed decision options, baseline selections, implementation notes, and missing inputs / outputs where they naturally belong. Do not create a second `astra.yaml`, do not replace the existing structure wholesale, and surface major structure conflicts to the user before reshaping the spec.
@@ -52,14 +52,14 @@ be an analytical choice. The caller will filter down later.
 
 For reference, here are the decision criteria for classifying candidates:
 <decision-criteria>
-{paste Decisions section from `/astra` here}
+{paste Decisions section from the ASTRA reference (`references/astra.md`) here}
 </decision-criteria>
 """)
 ```
 
 When the codebase is large enough that one Explore pass risks missing depth (a multi-project monorepo, a workflow folder plus a notebooks tree plus a `src/` package), spawn Explores in parallel against the named subtrees — one Explore per coherent region. Aggregate their inventories into the final scan output.
 
-Write the scan results to `CLAUDE.md` under `## Project Notes` (fresh migration) or to the path the invocation prompt specifies (scan-only — typically `work/reference/code-index.md`) as a script inventory, then in fresh migration mode draft or add to `astra.yaml` from the scan results following the spec structure documented in `/astra`. In scan-only mode, stop after the inventory file lands; do not touch `astra.yaml`. Use the decision criteria from `/astra` (Decisions section) to filter candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
+Write the scan results to `CLAUDE.md` under `## Project Notes` (fresh migration) or to the path the invocation prompt specifies (scan-only — typically `work/reference/code-index.md`) as a script inventory, then in fresh migration mode draft or add to `astra.yaml` from the scan results following the spec structure documented in the ASTRA reference (`references/astra.md`, bundled with `/lightcone`). In scan-only mode, stop after the inventory file lands; do not touch `astra.yaml`. Use the decision criteria from that reference (Decisions section) to filter candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
 
 In augment mode, preserve the existing paper-derived or user-derived `inputs`, `outputs`, `decisions`, `findings`, and `narrative` unless the code scan shows a real conflict. Attach code evidence to the nearest existing home first. Create new ASTRA structure only when the code reveals a real analysis object that has no suitable home in the current spec.
 

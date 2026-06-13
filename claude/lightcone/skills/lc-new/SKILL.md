@@ -35,7 +35,7 @@ Stage banner: ANALYSIS STRUCTURE
 
 > "Walk me through your analysis step by step. What goes in, what comes out at the end?"
 
-**Guidance on sub-analyses:** Analyses should only be split into multiple sub-analyses if each sub analysis genuinely has materially different inputs and outputs, and if the scope may be too broad if there is just one analysis; we overall want a sub-analysis to feel like it should genuinely be a self-contained product. For example, training + evaluation would typically be one analysis, because the product would be the trained and validated neural network estimator. When in doubt, opt for a single analysis at this stage. If it does need to be multi-stage, ask the user for confirmation and how to split it. For multi-stage analyses, make sure you confirm stage boundaries. Invoke `/astra` for YAML structure and sub-analysis guidance.
+**Guidance on sub-analyses:** Analyses should only be split into multiple sub-analyses if each sub analysis genuinely has materially different inputs and outputs, and if the scope may be too broad if there is just one analysis; we overall want a sub-analysis to feel like it should genuinely be a self-contained product. For example, training + evaluation would typically be one analysis, because the product would be the trained and validated neural network estimator. When in doubt, opt for a single analysis at this stage. If it does need to be multi-stage, ask the user for confirmation and how to split it. For multi-stage analyses, make sure you confirm stage boundaries. See the ASTRA reference (`references/astra.md`, bundled with `/lightcone`) for YAML structure and sub-analysis guidance.
 
 **One output per output.** Each output should be a single metric, a single plot, or a single artifact. Do not bundle multiple metrics into one output (e.g., "performance_metrics" containing accuracy, F1, and AUC). Each of those is its own output. Same for plots -- one figure per output.
 
@@ -74,7 +74,7 @@ Write extracted prior insights to astra.yaml immediately. Synthesize them by top
 
 ### Decision Identification
 
-Use the conversation and literature to identify decisions. Apply the decision criteria from `/astra` (Decisions section):
+Use the conversation and literature to identify decisions. Apply the decision criteria from the ASTRA reference (`references/astra.md`, bundled with `/lightcone`) — Decisions section:
 
 - What could be done differently and still be defensible?
 - Where did papers disagree or compare alternatives?

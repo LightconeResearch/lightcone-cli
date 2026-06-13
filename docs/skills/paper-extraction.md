@@ -128,4 +128,4 @@ cached PDF — paraphrasing breaks the gate.
   during ORIENT Stage 2 for the target paper, and again from the
   Workflow's LITERATURE phase for each cited paper; each invocation
   reads `index.json` and the substrate directly.
-- [`/astra`](index.md#reference-skills-auto-primed-via-session-start) — Insight + Evidence shape, `quote.exact` rules.
+- [ASTRA reference](index.md#references-bundled-under-lightcone) (`references/astra.md`, bundled with `/lightcone`) — Insight + Evidence shape, `quote.exact` rules.

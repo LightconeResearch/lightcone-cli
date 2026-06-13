@@ -301,9 +301,10 @@ src/lightcone/                  # PEP 420 namespace package — NO __init__.py
 src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
 
 claude/lightcone/               # Claude Code plugin (force-included into the wheel)
-├── skills/                     # lc-new, lc-from-code, lc-from-paper,
-│                                # lc-feedback (+ bundle siblings);
-│                                # reference skills: astra, lc-cli
+├── skills/                     # lightcone (entry point, bundles
+│                                # references/{astra,lc-cli}.md); lc-new,
+│                                # lc-from-code, lc-from-paper, lc-feedback
+│                                # (+ bundle siblings)
 ├── agents/                     # lc-extractor (literature subagent)
 ├── templates/                  # project CLAUDE.md template
 └── scripts/                    # session hooks (bash): venv, validate-on-save, session-start primer

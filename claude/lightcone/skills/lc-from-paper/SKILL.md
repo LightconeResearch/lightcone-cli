@@ -142,4 +142,4 @@ Workdir state is the resume mechanic — no separate state machine. On re-entry:
 - [`paper-extraction`](../paper-extraction/SKILL.md) — the upstream acquisition skill ORIENT and LITERATURE consume.
 - [`narrative`](../narrative/SKILL.md) — authors `astra.yaml` narrative + decision rationale; invoked by ARCHITECT (the workflow's first phase) and SPECIFY.
 - [`figure-comparison`](../figure-comparison/SKILL.md), [`check-sentence-by-sentence`](../check-sentence-by-sentence/SKILL.md) — close-out validation surfaces.
-- [`astra`](../astra/SKILL.md), [`lc-cli`](../lc-cli/SKILL.md) — the spec model and the `lc` execution surface.
+- the [`astra`](../lightcone/references/astra.md) and [`lc-cli`](../lightcone/references/lc-cli.md) references (bundled with `/lightcone`) — the spec model and the `lc` execution surface.

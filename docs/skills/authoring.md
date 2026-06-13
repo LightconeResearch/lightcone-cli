@@ -46,19 +46,23 @@ argument-hint: "[OPTIONAL ARG] [--flag VALUE]"
 - A `## Restrictions` (or `## Hard rules`) section at the end listing
   invariants Claude must not break.
 
-## Referencing reference skills
+## Referencing the bundled references
 
-Spec and CLI reference content live in their own skills — `/astra` and
-`/lc-cli` — so any skill needing depth can invoke them directly:
+Spec and CLI reference content are bundled under the `/lightcone` entry
+point as `references/astra.md` (the `astra.yaml` spec) and
+`references/lc-cli.md` (the `lc` workflow), so any skill needing depth
+can point the agent at them directly:
 
 ```markdown
-Invoke `/astra` and read the Decisions section before classifying
-candidate decisions, and `/lc-cli` for the Spec-Code Invariant rules.
+Read the Decisions section of the ASTRA reference (`references/astra.md`,
+bundled with `/lightcone`) before classifying candidate decisions, and the
+lc-cli reference (`references/lc-cli.md`) for the Spec-Code Invariant rules.
 ```
 
-Both are named in the session-start primer so they're discoverable
-from the first turn; explicit invocation in a skill body is the right
-call when a specific section is load-bearing for that skill's work.
+`/lightcone` is named in the session-start primer so it's discoverable
+from the first turn; pointing at a specific reference section in a skill
+body is the right call when that section is load-bearing for the skill's
+work.
 
 ## Spawning subagents
 

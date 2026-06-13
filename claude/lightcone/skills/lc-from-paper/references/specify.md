@@ -47,7 +47,7 @@ The two passes are the cross-check: the paper pass authors what the paper *says*
 
 Read the paper section(s) covering your sub-analysis. Build:
 
-**1. `decisions[]`** — every choice where a different defensible option could plausibly shift a numerical result the paper reports: algorithmic methods, thresholds, statistical approaches, data-selection criteria, calibration choices. Only exclude pure tooling (language, library, file format) and fixed constraints. A typical sub-analysis has 2–6; if you find fewer than 2, revisit `index.json` and reconsider. Invoke the `/astra` skill and read its **Decisions** section for the full definition of what counts (the same criteria `/lc-from-code` uses to filter candidates).
+**1. `decisions[]`** — every choice where a different defensible option could plausibly shift a numerical result the paper reports: algorithmic methods, thresholds, statistical approaches, data-selection criteria, calibration choices. Only exclude pure tooling (language, library, file format) and fixed constraints. A typical sub-analysis has 2–6; if you find fewer than 2, revisit `index.json` and reconsider. Read the **Decisions** section of the ASTRA reference (`references/astra.md`, bundled with `/lightcone`) for the full definition of what counts (the same criteria `/lc-from-code` uses to filter candidates).
 
 Each decision:
 

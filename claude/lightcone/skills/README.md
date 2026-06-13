@@ -2,6 +2,12 @@
 
 Each subdirectory is one Claude Code skill: `SKILL.md` plus optional `references/`, `assets/`, and `scripts/`. These ship as the `lightcone` Claude Code plugin (manifest at `claude/lightcone/.claude-plugin/plugin.json`). `lc init` shells out to `claude plugin marketplace add` + `claude plugin install lightcone@lightcone-cli` so the skills register user-scoped — discoverable in every Claude Code session, not duplicated into each project's `.claude/`.
 
+## Entry point
+
+| Skill | Role |
+|---|---|
+| `lightcone` | **Start here.** The `/lightcone` skill carries the lay of the land (what ASTRA is, the Spec-Code Invariant, the core `lc` loop), bundles the two references you reach for in almost every session at `references/astra.md` (the `astra.yaml` spec) and `references/lc-cli.md` (the `lc` workflow), and routes you to the task skill for whatever you're doing. The PreToolUse skill-gate opens once it's activated, so invoke it first whenever an `astra.yaml` project is in play. |
+
 ## Project lifecycle skills
 
 | Skill | Role |
@@ -11,14 +17,14 @@ Each subdirectory is one Claude Code skill: `SKILL.md` plus optional `references
 | `lc-from-paper` | Reproduce a published paper in ASTRA (paper-reproduction bundle entry point — see below). |
 | `lc-feedback` | Report bugs and feature requests upstream. |
 
-## Reference skills
+## References (bundled under `/lightcone`)
 
-Not direct entry points — Claude invokes these (or other skills invoke them) to load reference content into the session. The session-start hook primes their names so they're discoverable from turn one.
+Not skills — these are reference documents bundled with the `/lightcone` entry point at `lightcone/references/`. Activate `/lightcone` and read the section you need; the references stay available throughout the session.
 
-| Skill | Role |
+| Reference | Role |
 |---|---|
-| `astra` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, narrative anchors, composition mechanics. |
-| `lc-cli` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, WRROC export. |
+| `references/astra.md` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, narrative anchors, composition mechanics. |
+| `references/lc-cli.md` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, WRROC export. |
 
 ## Paper-reproduction bundle
 
