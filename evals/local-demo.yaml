@@ -17,5 +17,8 @@ harnesses:
   - pi
 skill_variants: [true, false]
 num_trials: 1
-max_concurrency: 2
+max_concurrency: 3
+# No turn cap — agents run to completion (claude uses the task's max_turns=200).
+# trial_timeout is just a safety ceiling against a hung agent, not a turn cap.
+trial_timeout: 1800
 output_dir: eval-results

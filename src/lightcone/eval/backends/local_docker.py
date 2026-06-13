@@ -48,7 +48,11 @@ DEPS = (
 #: Missing host files are skipped (a harness without credentials is *skipped*,
 #: not failed — mirrors ``credential_env_keys`` semantics).
 CREDENTIAL_FILES: dict[str, list[tuple[str, str]]] = {
-    "claude": [("~/.claude.json", "/home/evaluser/.claude.json")],
+    # claude authenticates purely via CLAUDE_CODE_OAUTH_TOKEN (forwarded env) on
+    # top of the image's onboarding file. We deliberately do NOT copy the host
+    # ~/.claude.json: on macOS it lacks the token anyway (keychain holds it), and
+    # it drags Cail's MCP/project state into every trial container.
+    "claude": [],
     "codex": [("~/.codex/auth.json", "/home/evaluser/.codex/auth.json")],
     "pi": [
         ("~/.pi/agent/auth.json", "/home/evaluser/.pi/agent/auth.json"),
