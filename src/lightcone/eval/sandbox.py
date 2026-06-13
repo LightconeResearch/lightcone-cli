@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shlex
@@ -10,6 +9,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from lightcone.eval.harnesses.base import AgentResult
+from lightcone.eval.harnesses.claude import parse_claude_output
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +36,11 @@ class ExecuteResult:
     output: str
 
 
-@dataclass
-class ClaudeResult:
-    """Parsed result from a claude -p invocation."""
-
-    cost_usd: float = 0.0
-    num_turns: int = 0
-    duration_ms: int = 0
-    result_text: str = ""
-    is_error: bool = False
-    raw_jsonl: str = ""
+# Back-compat alias: the harness layer now owns the normalized agent-result
+# type. `_parse_claude_output` is re-exported from the Claude harness so callers
+# (and tests) that imported it from here keep working.
+ClaudeResult = AgentResult
+_parse_claude_output = parse_claude_output
 
 
 @dataclass
@@ -255,31 +252,26 @@ class EvalSandbox:
         max_turns: int = 25,
         timeout: int = 600,
         model: str | None = None,
-    ) -> ClaudeResult:
-        """Run claude -p with the loop prompt and parse JSON output.
+    ) -> AgentResult:
+        """Run Claude Code headless against the staged loop prompt.
 
-        Uses Daytona's session API with async execution + polling to avoid
-        HTTP connection timeouts on long-running Claude Code invocations.
+        Thin back-compat wrapper over :class:`ClaudeHarness`. The multi-harness
+        trial loop calls ``harness.invoke(sandbox, ...)`` directly; this stays so
+        existing callers and tests keep working.
         """
-        assert self._sandbox is not None, "Call create() first"
+        from lightcone.eval.harnesses.claude import ClaudeHarness
 
-        model_flag = f"--model {shlex.quote(model)}" if model else ""
-        cmd = (
-            f"cd {self.WORK_DIR} && "
-            f"claude -p \"$(cat /tmp/loop-prompt.md)\" "
-            f"--output-format stream-json --verbose "
-            f"--dangerously-skip-permissions "
-            f"--max-turns {max_turns} "
-            f"{model_flag}"
-        ).strip()
+        return ClaudeHarness().invoke(
+            self,
+            prompt_path="/tmp/loop-prompt.md",
+            work_dir=self.WORK_DIR,
+            max_turns=max_turns,
+            timeout=timeout,
+            with_skills=True,
+            model=model,
+        )
 
-        start = time.monotonic()
-        result = self._exec_async_poll(cmd, timeout=timeout)
-        duration_ms = int((time.monotonic() - start) * 1000)
-
-        return _parse_claude_output(result.output, result.exit_code, duration_ms)
-
-    def _exec_async_poll(
+    def exec_async_poll(
         self, cmd: str, timeout: int = 600, poll_interval: int = 10
     ) -> ExecuteResult:
         """Execute a command asynchronously via Daytona sessions and poll for completion.
@@ -377,42 +369,3 @@ class EvalSandbox:
                 rel = local_path.relative_to(local_dir)
                 remote_path = f"{remote_dir}/{rel}"
                 self.upload_file(remote_path, local_path.read_bytes())
-
-
-def _parse_claude_output(
-    raw_output: str, exit_code: int, duration_ms: int
-) -> ClaudeResult:
-    """Parse JSONL output from claude -p --output-format stream-json.
-
-    The stream-json format emits one JSON object per line. The final line
-    with ``{"type": "result", ...}`` contains the aggregate metrics.
-    """
-    result = ClaudeResult(duration_ms=duration_ms, raw_jsonl=raw_output)
-
-    if exit_code != 0:
-        result.is_error = True
-        result.result_text = raw_output
-        return result
-
-    for raw_line in reversed(raw_output.strip().splitlines()):
-        stripped = raw_line.strip()
-        if not stripped or not stripped.startswith("{"):
-            continue
-        try:
-            data = json.loads(stripped)
-            if data.get("type") == "result":
-                result.cost_usd = float(
-                    data.get("cost_usd", data.get("total_cost_usd", 0.0))
-                )
-                result.num_turns = int(data.get("num_turns", 0))
-                result.duration_ms = int(data.get("duration_ms", duration_ms))
-                result.result_text = str(data.get("result", ""))
-                result.is_error = bool(data.get("is_error", False))
-                return result
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-    # No result line found
-    result.result_text = raw_output
-    result.is_error = True
-    return result
