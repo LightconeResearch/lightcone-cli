@@ -15,6 +15,16 @@ logger = logging.getLogger(__name__)
 
 BUILD_COMPLETE_MARKER = "BUILD_COMPLETE"
 
+# Idle-minutes backstop before Daytona auto-stops a sandbox. Teardown is the
+# primary cleanup path (``teardown()`` deletes the sandbox), but any path where
+# teardown does NOT run — an unhandled exception, the eval process being killed,
+# a cancelled CI job — would otherwise leak a sandbox that runs forever and
+# burns the compute budget (LCR-131). A non-zero auto-stop is the safety net:
+# an active trial polls Daytona every ~10s so it never goes idle, while an
+# orphaned sandbox stops after this many idle minutes. NOT zero — zero disables
+# the net entirely, which is the bug.
+AUTO_STOP_BACKSTOP_MINUTES = 30
+
 
 @dataclass
 class ExecuteResult:
@@ -140,7 +150,9 @@ class EvalSandbox:
             image=image,
             labels=labels,
             env_vars=sandbox_env,
-            auto_stop_interval=0,  # disable auto-stop; sandbox is deleted in teardown
+            # Backstop against leaked sandboxes (see AUTO_STOP_BACKSTOP_MINUTES);
+            # teardown() still deletes the sandbox on the normal path.
+            auto_stop_interval=AUTO_STOP_BACKSTOP_MINUTES,
         )
 
         def _on_build_log(line: str) -> None:
