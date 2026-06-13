@@ -14,9 +14,13 @@ from lightcone.eval.harnesses.base import (
     SandboxLike,
 )
 from lightcone.eval.harnesses.claude import ClaudeHarness
+from lightcone.eval.harnesses.codex import CodexHarness
+from lightcone.eval.harnesses.pi import PiHarness
 
 _REGISTRY: dict[str, type[Harness]] = {
     ClaudeHarness.name: ClaudeHarness,
+    CodexHarness.name: CodexHarness,
+    PiHarness.name: PiHarness,
 }
 
 
