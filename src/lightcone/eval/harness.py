@@ -133,8 +133,13 @@ def run_trial(
     )
 
     harness = get_harness(harness_spec.name)
+    # The local-Docker backend only forwards what we pass here (it doesn't
+    # inject eval metadata the way EvalSandbox does), so set it explicitly.
     env_vars = {
+        "LIGHTCONE_EVAL": "true",
         "LIGHTCONE_EVAL_RUN_ID": run_id,
+        "LIGHTCONE_EVAL_TRIAL_ID": trial_id,
+        "LIGHTCONE_EVAL_TASK_ID": task.id,
         "CLAUDE_CODE_SESSION_ID": f"eval-{trial_id}",
     }
 
