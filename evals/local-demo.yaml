@@ -3,16 +3,17 @@
 # {with-skills, without-skills}. The report's "Δ lift" column is the headline —
 # how much the Lightcone layer moved each harness's score.
 #
-# Codex runs on the cheap "spark" model while we shake out orchestration; bump
-# to gpt-5.5 (or drop the model line to use codex's default) for real eval
-# signal. pi uses its default (free) provider/model.
+# Codex runs on its default model — the "spark" model needs API-key auth and is
+# rejected on a ChatGPT-account login (see first-smoke-findings). To use spark,
+# add an OPENAI_API_KEY and set `model: gpt-5.3-codex-spark`. pi uses its default
+# (free) provider/model. claude needs CLAUDE_CODE_OAUTH_TOKEN in the host env.
 id: local-demo
 backend: local_docker
 tasks:
   - snae
 harnesses:
   - claude
-  - { name: codex, model: gpt-5.3-codex-spark }
+  - codex
   - pi
 skill_variants: [true, false]
 num_trials: 1

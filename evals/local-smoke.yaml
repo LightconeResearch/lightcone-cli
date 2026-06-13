@@ -10,11 +10,13 @@ tasks:
   - snae
 harnesses:
   - claude
-  - { name: codex, model: gpt-5.3-codex-spark }
+  - codex
   - pi
 skill_variants: [true]
 num_trials: 1
 max_concurrency: 1
+# max_turns only bounds claude; codex and pi have no max-turns flag, so a SHORT
+# trial_timeout is what keeps a smoke cheap for them.
 max_turns: 5
-trial_timeout: 900
+trial_timeout: 180
 output_dir: eval-results

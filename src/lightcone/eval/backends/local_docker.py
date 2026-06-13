@@ -103,7 +103,7 @@ def _build_dockerfile() -> str:
     # runtime (`webidl.util.markAsUncloneable is not a function`). codex and
     # claude are unaffected, but we install one modern Node for all npm globals.
     return f"""FROM python:3.12-slim
-RUN apt-get update && apt-get install -y git curl bash sudo \\
+RUN apt-get update && apt-get install -y git curl bash sudo jq \\
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \\
     && apt-get install -y nodejs \\
     && rm -rf /var/lib/apt/lists/*
