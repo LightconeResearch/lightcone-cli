@@ -38,7 +38,13 @@ export const meta = {
 // (which resolves $CLAUDE_PLUGIN_ROOT — the skill ships as a plugin, so its files
 // live under the plugin root, not the project). Falls back to the project-relative
 // path for the legacy per-project copy layout.
-const SKILL_ROOT = args?.skillRoot || '.claude/skills/lc-from-paper'
+// args may arrive JSON-ENCODED (the Workflow harness can deliver the `args` input as a
+// string, not a parsed object). Normalize once so destructuring works either way — without
+// this, args?.workdir / args?.skillRoot / args?.intent are all undefined on a string and the
+// whole workflow silently falls back to the session cwd + default skill root.
+const ARGS = typeof args === 'string' ? JSON.parse(args) : (args ?? {})
+
+const SKILL_ROOT = ARGS.skillRoot || '.claude/skills/lc-from-paper'
 const REF = `${SKILL_ROOT}/references`
 
 // WORKDIR. Every relative path below (PLAN.md, astra.yaml, work/, targets/, results/,
@@ -52,7 +58,7 @@ const REF = `${SKILL_ROOT}/references`
 // A preflight (below) hard-fails if the workdir doesn't actually hold the ORIENT
 // deliverable — so a wrong-directory launch dies loud instead of silently authoring
 // against whatever astra.yaml happens to sit in the session cwd.
-const WD = args?.workdir || '.'
+const WD = ARGS.workdir || '.'
 const CTX = WD === '.' ? '' :
   `Your working directory for this task is \`${WD}\`. Run \`cd ${WD}\` at the start of every shell command, ` +
   `and prefix every Read/Write/relative path (PLAN.md, work/, targets/, results/, tests/, scripts/, ` +
@@ -61,7 +67,7 @@ const CTX = WD === '.' ? '' :
 const P = rel => WD === '.' ? rel : `${WD}/${rel}`
 const ASTRA = P('astra.yaml')
 const TARGETS = P('targets/targets.md')
-const INTENT = args?.intent || 'read PLAN.md "Fidelity intent" — the stopping criterion'
+const INTENT = ARGS.intent || 'read PLAN.md "Fidelity intent" — the stopping criterion'
 const strip = s => s.trim().replace(/^```json?|```$/g, '')
 // every agent prompt is workdir-scoped: CTX pins the cwd, then the per-invocation prompt.
 const base = agent
