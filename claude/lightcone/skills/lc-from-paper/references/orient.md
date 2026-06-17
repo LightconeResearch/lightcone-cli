@@ -191,9 +191,10 @@ With the paper, the interview answers, and the code scan in hand, write the two 
      ```js
      Workflow({
        scriptPath: '<SKILL_ROOT>/reproduce_workflow.js',          // <SKILL_ROOT> = resolved $CLAUDE_PLUGIN_ROOT/skills/lc-from-paper
-       args: { workdir: '.', skillRoot: '<SKILL_ROOT>', intent: '<the fidelity-intent prose from Stage 3>' }
+       args: { workdir: '<WORKDIR>', skillRoot: '<SKILL_ROOT>', intent: '<the fidelity-intent prose from Stage 3>' }
      })
      ```
+     `args.workdir` **must** be the reproduction workdir: `'.'` only if the session cwd already is it, otherwise its **absolute path**. The workflow's paths resolve against the launching session's cwd (not guaranteed to be the workdir); a preflight hard-fails if `PLAN.md` / `work/reference/` aren't there, so a wrong-directory launch dies loud rather than authoring against a foreign `astra.yaml`.
 
 The workflow runs in the background and notifies on completion. Its first phase (ARCHITECT) builds the `astra.yaml` skeleton + `targets/targets.md` from your plan, then SPECIFY → … carry it forward. Tell the user you'll be ready for the CLOSE-OUT bookend when it returns — its return value (verify verdict, `report.html` path, open questions) is the input to close-out.
 

@@ -68,9 +68,11 @@ After the plan is approved and committed, launch the reproduce-paper Workflow fr
 ```js
 Workflow({
   scriptPath: '<SKILL_ROOT>/reproduce_workflow.js',          // <SKILL_ROOT> = resolved $CLAUDE_PLUGIN_ROOT/skills/lc-from-paper
-  args: { workdir: '.', skillRoot: '<SKILL_ROOT>', intent: '<the fidelity-intent prose from the interview>' }
+  args: { workdir: '<WORKDIR>', skillRoot: '<SKILL_ROOT>', intent: '<the fidelity-intent prose from the interview>' }
 })
 ```
+
+**`args.workdir` must be the reproduction workdir.** The workflow's relative paths (`PLAN.md`, `astra.yaml`, `work/`, `targets/`, …) resolve against the *launching session's* cwd — which is **not** guaranteed to be the workdir (a session rooted at a parent project, say). Pass `workdir: '.'` only when the session cwd already *is* the reproduction workdir; otherwise pass the **absolute path** to it. The workflow threads this through every agent (cd-ing there first) and runs a **preflight** that hard-fails if `PLAN.md` / `work/reference/` aren't found there — so a wrong-directory launch dies loud instead of silently authoring against a foreign `astra.yaml` that happens to sit in the session cwd.
 
 The workflow is a **template** — [`reproduce_workflow.js`](reproduce_workflow.js) ships the shape; adapt the schemas, the per-phase contracts, and the model tier per paper, exactly as `citation-audit` ships its workflow as a template. It runs in the background and notifies on completion; its return value carries the review summary, the `report.html` path, the per-target verify results, and any open questions. Read that return — it is the input to the close-out.
 
