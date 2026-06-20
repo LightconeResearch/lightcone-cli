@@ -66,6 +66,22 @@ move, explaining only as much as actually helps them.
   directly is for debugging only; final results must come from `lc run` so
   they're reproducible.
 
+**The whole point is reproducible, traceable science — and that is broader than
+the "official" outputs.** Any result you will *lean on* — a number that goes in
+the paper, a finding that settles a decision, a verdict you'll cite — must be
+produced by `lc run` from the spec, so it can be regenerated and trusted. This
+includes *investigations and diagnostics*, not just the headline pipeline: a
+convergence study, a noise calibration, a bias characterization — if it yields a
+finding, it **graduates into `astra.yaml`** (as an output, or its own *diagnostic
+sub-analysis*), it does not stay an ad-hoc script. When you catch yourself about
+to lean on a result from a script that `lc` doesn't manage, that's the signal to
+bring it into the spec. The exception is genuinely lightweight inspection —
+"what's the max S/N in this catalog?", loading a data product for a quick look —
+which is fine to run directly and never needs ASTRA. The test: *will I cite this,
+or decide something based on it?* If yes → it belongs in ASTRA. (And heavy compute
+always goes to the scheduler — `lc run` dispatches to SLURM/Dask, `sbatch` for
+anything not yet in the spec — never the shared login node.)
+
 Core loop — enough to orient; the `lc` reference below carries the depth:
 
 ```bash
