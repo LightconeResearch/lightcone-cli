@@ -31,7 +31,7 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 
 ## Prose discipline
 
-Per-element prose lives directly on the entries SPECIFY authors: each decision's `rationale:` carries the paper's stated reasoning (or the code's, where canonical-resolution applies); findings and prior_insights carry their `claim:` and optional `notes:`. Keep the paper's hedges and qualifiers intact and don't add editorial commentary beyond what the paper supports. A richer write-up — figures, citations, live numbers — is authored later as an external report that references analysis elements by their tree-path, outside `astra.yaml`; SPECIFY is not responsible for it.
+Per-element prose lives directly on the entries SPECIFY authors: each decision's `rationale:` carries the paper's stated reasoning (or the code's, where canonical-resolution applies); findings and prior_insights carry their `claim:` and optional `notes:`. Keep the paper's hedges and qualifiers intact and don't add editorial commentary beyond what the paper supports.
 
 Your responsibility in this phase is the **content**: build out the `decisions:` / `prior_insights:` / `findings:` for each sub-analysis (each with its own evidence shape — detailed below). ARCHITECT already settled the structure and the orienting `description:` blocks.
 

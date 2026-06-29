@@ -3,8 +3,8 @@ name: astra
 description: >
   Comprehensive reference for the `astra.yaml` specification — top-level
   structure, sub-analyses, inputs/outputs, decisions and options, prior
-  insights and findings, evidence and quote verification, element
-  addressing, and composition mechanics. Invoke whenever reading, writing,
+  insights and findings, evidence and quote verification, and
+  composition mechanics. Invoke whenever reading, writing,
   validating, or debugging an `astra.yaml` spec; whenever working with
   decisions, options, prior_insights, findings, or evidence; or whenever
   the user asks about ASTRA schema, spec syntax, or sub-analysis
@@ -24,7 +24,7 @@ An `astra.yaml` spec captures this for a single unit of work. The structure is *
 
 Fields: `id`, `version`, `name`, `description`, `tags`, `inputs`, `outputs`, `decisions`, `prior_insights`, `findings`, `analyses`, `container`. `description` is the analysis-level free-prose field -- see [Description](#description) (the same optional field every element carries).
 
-**Reserved IDs.** No analysis entity (input, output, decision, option, finding, prior insight, evidence, sub-analysis) may use any of these names as its `id` -- they collide with the tree-path reference grammar (used by `from:`, `when`, `requires`, `incompatible_with`, and external report references):
+**Reserved IDs.** No analysis entity (input, output, decision, option, finding, prior insight, evidence, sub-analysis) may use any of these names as its `id` -- they collide with the tree-path reference grammar (used by `from:`, `when`, `requires`, and `incompatible_with`):
 
 ```
 inputs   outputs   decisions   findings   prior_insights
@@ -354,7 +354,6 @@ The **`universe:` field** in universe files selects which sub-analysis universe 
 ## Description
 
 `description` is a single optional free-prose field on any Analysis (root or sub) -- the same field every other element carries (`Input`, `Output`, `Option`, `Universe`). It holds a short human orientation to the analysis (a paragraph or two), nothing more.
-
 
 Per-element prose (what each Input, Output, Decision, Option, or Insight is and why) belongs on the elements themselves via `description`/`rationale`/`notes` -- those can be written from day one. The analysis-level `description` can be filled in at any time and is safe to leave short.
 
