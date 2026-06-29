@@ -366,7 +366,6 @@ description: |
   pipeline-summary report.
 ```
 
-**Element addressing.** Every analysis element is addressable by a stable tree-path -- the same grammar `from:` uses (`decisions.scaling`, `decisions.scaling.options.standard`, `findings.best_model`, `analyses.preprocessing`, `analyses.preprocessing.outputs.features`, `../decisions.method` to escape upward). This is the identity an external report references; ASTRA owns the addressing, not the rendering.
 
 ## CLI Reference (astra)
 
