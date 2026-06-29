@@ -18,7 +18,7 @@ Not direct entry points — Claude invokes these (or other skills invoke them) t
 
 | Skill | Role |
 |---|---|
-| `astra` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, narrative anchors, composition mechanics. |
+| `astra` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, composition mechanics. |
 | `lc-cli` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, WRROC export. |
 
 ## Paper-reproduction bundle
@@ -29,7 +29,6 @@ A self-contained toolkit for reproducing published papers in ASTRA. The bundle i
 |---|---|
 | [`lc-from-paper`](lc-from-paper/SKILL.md) | **Reproduction driver.** ORIENT-first; one pre-loop phase in the user's main session that asks for the paper, runs `/paper-extraction` inline, interviews the user (grounded in the paper), clones the reference code and runs `/lc-from-code` scan-only (when a repo exists), and drafts the per-paper `constitution.md` + `CLAUDE.md`. Then hands off to a ralph loop whose iterations carry the long middle: ARCHITECT → SPECIFY → LITERATURE → IMPLEMENT → RUN → COMPARE. When the loop closes (constitution `status: closed` after COMPARE returns `pass`), REVIEW runs back in the user's main session. Fidelity intent — captured as prose at ORIENT — is what every iteration reads when sizing its next move, and what COMPARE grades opportunities against. |
 | [`ralph`](ralph/SKILL.md) | The loop substrate. `lc-from-paper`'s ORIENT invokes `/ralph`'s Authoring mode to draft the per-paper constitution; the loop launcher hands off after ORIENT lands. Each iteration runs `/ralph`'s Loop protocol against the constitution. |
-| [`narrative`](narrative/SKILL.md) | Author the `narrative:` prose and decision `rationale:` in `astra.yaml`. Invoked by `lc-from-paper`'s ARCHITECT (for the structural narrative) and SPECIFY (for anchored content narrative). |
 | [`paper-extraction`](paper-extraction/SKILL.md) | Turn an arXiv ID or DOI into a standardized `work/reference/` directory: structural index (figures, tables, outline, citations with resolved DOIs) plus a stub `astra.yaml` for the paper. Primary acquisition path for `lc-from-paper`'s ORIENT (Stage 2); also invoked per cited paper by LITERATURE. |
 | [`check-sentence-by-sentence`](check-sentence-by-sentence/SKILL.md) | Audit paper claims against code locations (`file:line` or `NOT FOUND`). Invoked from `lc-from-paper`'s REVIEW close-out (opt-in); also user-invokable directly. |
 | [`figure-comparison`](figure-comparison/SKILL.md) | Build a self-contained HTML side-by-side: original figures/tables/numerics vs replicated. Invoked from `lc-from-paper`'s REVIEW close-out (mandatory); also user-invokable directly. |

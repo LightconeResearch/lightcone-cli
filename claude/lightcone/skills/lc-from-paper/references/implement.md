@@ -6,7 +6,7 @@ IMPLEMENT is what a ralph iteration does when the workdir signals "SPECIFY done 
 
 ## Inputs
 
-- `astra.yaml` — the filled spec (sub-analyses, decisions, prior_insights, findings, narrative — all populated by SPECIFY)
+- `astra.yaml` — the filled spec (sub-analyses, decisions, prior_insights, findings — all populated by SPECIFY; per-analysis `description` from ARCHITECT)
 - `implementation-notes.md` — tricky algorithms, numerical gotchas, data-format quirks
 - `work/reference/index.json` — paper-side structural index (figures, tables, outline, citations); useful when the spec compresses or you need to find where in the paper a behavior is described.
 - `work/reference/code-index.md` (when code present) — code inventory: module map, candidate decisions with file:line, entry-points, data dependencies, gotchas (the canonical map of where each sub-analysis's logic lives in `work/reference/code/`).
@@ -54,7 +54,7 @@ The iteration merges scripts and recipes after the per-output sub-agents finish.
 
 1. **One script per output** (or a shared script for tightly-coupled outputs).
 2. **Parameterize by decisions.** Each decision is a CLI argument; scripts also receive `--universe <universe_id>`. See lightcone-cli's `CLAUDE.md` for the full convention.
-3. **Add recipes** to each output in `astra.yaml` with `command:` and `inputs:` (dependencies). Recipe inputs use the same `<analysis>.<output>` form the narrative skill's data-flow rules require.
+3. **Add recipes** to each output in `astra.yaml` with `command:` and `inputs:` (dependencies). Recipe inputs use the `<analysis>.<output>` tree-path form that wires outputs to downstream inputs.
 4. **Create `requirements.txt`** with needed packages. Do not install them — the RUN phase manages environments.
 5. **Do not execute scripts** — the RUN phase handles execution via `lc run`.
 6. **Validate** with `astra validate astra.yaml` after adding recipes.

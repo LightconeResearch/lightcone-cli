@@ -47,8 +47,8 @@ The skill picks its target set in priority order:
 2. **`targets/targets.md`** — the SPECIFY-phase scope ledger, used
    when COMPARE hasn't run yet.
 3. **Default paper-driven flow** — when neither scope file exists,
-   builds a best-effort report from `astra.yaml`'s narrative and
-   findings plus `work/reference/`.
+   builds a best-effort report from `astra.yaml`'s `description` and
+   `findings:` plus `work/reference/`.
 
 ## Output
 

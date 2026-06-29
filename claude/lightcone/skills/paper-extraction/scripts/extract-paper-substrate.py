@@ -545,10 +545,10 @@ def write_astra_yaml_stub(
 ) -> str:
     """Emit a stub `work/reference/astra.yaml` that the agent fills in.
 
-    The script populates: id, version, name, narrative.summary (from abstract),
+    The script populates: id, version, name, description (from abstract),
     inputs/outputs as empty lists, and an empty findings map. The agent's job
     (Step 5 in SKILL.md) is to walk the paper and append findings entries with
-    quote evidence, plus a `narrative.findings:` cross-link. Once that's in,
+    quote evidence. Once that's in,
     `astra validate work/reference/astra.yaml` should pass.
 
     If the file already exists, leave it alone — it may have agent edits.
@@ -562,21 +562,19 @@ def write_astra_yaml_stub(
     summary_str = abstract or "TODO: one-paragraph summary of the paper (no abstract extracted)"
 
     # Indent the summary as a block scalar so multi-line abstracts round-trip
-    summary_indented = "\n".join("    " + line for line in summary_str.splitlines())
+    summary_indented = "\n".join("  " + line for line in summary_str.splitlines())
 
     content = f"""# Stub ASTRA representation of the source paper.
 #
-# Populated by paper-extraction's script: id, version, name, narrative.summary.
+# Populated by paper-extraction's script: id, version, name, description.
 # The agent (paper-extraction Step 5) fills in `findings:` with the paper's
-# claimed numerical results plus a `narrative.findings:` cross-link, then runs
-# `astra validate astra.yaml` to confirm.
+# claimed numerical results, then runs `astra validate astra.yaml` to confirm.
 
 id: {astra_id}
 version: "{ASTRA_SCHEMA_VERSION}"
 name: {json.dumps(title_str)}
 
-narrative:
-  summary: |
+description: |
 {summary_indented}
 
 inputs: []

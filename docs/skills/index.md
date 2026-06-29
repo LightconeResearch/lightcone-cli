@@ -12,8 +12,8 @@ This page is for maintainers.
 ## Available skills
 
 The `/lc-from-*` family is parallel in what you start from: a question,
-code, or a paper. `/lc-from-paper` is the entry point of a six-skill
-paper-reproduction bundle; the five siblings stand alone and are
+code, or a paper. `/lc-from-paper` is the entry point of a five-skill
+paper-reproduction bundle; the four siblings stand alone and are
 user-invokable directly.
 
 ### Project lifecycle
@@ -36,7 +36,6 @@ dispatches them by role during the reproduction.
 |-------|---------|---------|
 | [ralph](ralph.md) | `/ralph` | Loop substrate. `lc-from-paper`'s ORIENT invokes ralph's Authoring mode to draft the per-paper constitution; the loop launcher hands off after ORIENT lands; each iteration runs ralph's Loop protocol. Also user-invokable standalone (see the Project lifecycle row above). |
 | [paper-extraction](paper-extraction.md) | `/paper-extraction` | Turn an arXiv ID or DOI into a standardized `work/reference/` directory: substrate, figures, tables, citations (with resolved DOIs), and a stub `astra.yaml`. |
-| [narrative](narrative.md) | `/narrative` | Author the `narrative:` prose and decision `rationale:` against an existing `astra.yaml`, in paper-reproduction, retrofit, or co-drafting mode. |
 | [figure-comparison](figure-comparison.md) | `/figure-comparison` | Build a self-contained HTML side-by-side: paper figures, tables, and numerics vs reproduced artifacts. |
 | [check-sentence-by-sentence](check-sentence-by-sentence.md) | `/check-sentence-by-sentence` | Static audit of paper claims against code locations (`file:line` or `NOT FOUND`). |
 
@@ -48,7 +47,7 @@ Not entry points. Other skills invoke them — or Claude does, when a deeper ref
 
 | Skill | Command | Purpose |
 |-------|---------|---------|
-| `astra` | `/astra` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, narrative anchors, composition mechanics. |
+| `astra` | `/astra` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, composition mechanics. |
 | `lc-cli` | `/lc-cli` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, publishing via WRROC. |
 
 These intentionally stay out of the top-level README. Researchers use the project-lifecycle skills directly; the reference skills are infrastructure.
@@ -85,7 +84,6 @@ claude/lightcone/
 │   ├── lc-feedback/SKILL.md
 │   ├── ralph/{SKILL.md, references/*.md, scripts/ralph}
 │   ├── paper-extraction/{SKILL.md, scripts/*.py}
-│   ├── narrative/{SKILL.md, references/*.md}
 │   ├── figure-comparison/{SKILL.md, scripts/*.py}
 │   ├── check-sentence-by-sentence/SKILL.md
 │   ├── astra/SKILL.md                  # reference: astra.yaml spec

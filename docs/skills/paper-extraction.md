@@ -56,7 +56,8 @@ this when you want "what's in this paper, where do I find it." DOI
 resolution covers ~96% of typical-paper bibliographies.
 
 **`astra.yaml` is semantic and ASTRA-validating.** Treats the paper as
-an ASTRA artifact: `id`, `name`, `narrative.summary`, and `findings:`
+an ASTRA artifact: `id`, `name`, a `description:` (from the abstract),
+and `findings:`
 carrying the paper's claimed numerical results in the Insight +
 Evidence shape. The verbosity of the shape *is* the back-pressure
 against hallucinated claims — the agent has to find and quote actual

@@ -26,7 +26,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "astra-tools>=0.2.5",
+    "astra-tools>=0.2.10",
     "click>=8.0",
     "pyyaml>=6.0",
     "rich>=13.0",

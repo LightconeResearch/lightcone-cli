@@ -37,10 +37,10 @@ files. The `lc-extractor` subagent is dispatched via `Agent`.
    literature together.
 4. **Finalize.** `astra validate astra.yaml`; `astra validate
    --verify-evidence` if quotes exist; `astra universe generate -n
-   baseline`. Populate the `narrative:` block (`summary`, `methods`,
-   `inputs`, `outputs` — `findings` stays TODO until results exist),
-   then fill the `## Working Notes` section of `CLAUDE.md` with
-   conversational context the spec doesn't carry.
+   baseline`. Author a short `description:` on the root analysis (one or
+   two paragraphs orienting a reader), then fill the `## Working Notes`
+   section of `CLAUDE.md` with conversational context the spec doesn't
+   carry.
 
 Writes happen at the end of each phase, not in bulk — the user always
 has something visible to review.

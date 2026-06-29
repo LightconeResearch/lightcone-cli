@@ -149,9 +149,10 @@ PROCEDURE
    or generic framing -- skip it.
 3. Before searching, **read `astra.yaml` once** -- it is a pre-built
    paper↔code map maintained by the project. Harvest specifically:
-     - `narrative.methods` — links paper methodology concepts to decision
-       IDs (e.g. paper prose "the chosen <method>" → `#decisions.<id>`)
-     - `narrative.findings` — links paper claims/values to result anchors
+     - `decisions` — each decision's `label` / `rationale` links paper
+       methodology concepts to a decision ID (e.g. paper prose "the chosen
+       <method>" → `decisions.<id>`)
+     - `findings` — links paper claims/values to result entries
      - `prior_insights` (if present) — extracted paper quotes already tied
        to decisions
      - per-decision `evidence` quotes and `description` fields
