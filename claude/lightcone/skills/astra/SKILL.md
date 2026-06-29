@@ -355,7 +355,6 @@ The **`universe:` field** in universe files selects which sub-analysis universe 
 
 `description` is a single optional free-prose field on any Analysis (root or sub) -- the same field every other element carries (`Input`, `Output`, `Option`, `Universe`). It holds a short human orientation to the analysis (a paragraph or two), nothing more.
 
-ASTRA deliberately keeps this lightweight. A **richer write-up** -- figures, citations, live numbers interpolated from results, multi-page structure -- is authored *outside* `astra.yaml` as a report that **references** analysis elements by their stable tree-path instead of restating them. ASTRA owns that addressing (the reserved-ID rule above); it is not prescriptive about the report framework (MyST/MySTRA is one example). So the spec stays the source of truth and the prose never goes stale.
 
 Per-element prose (what each Input, Output, Decision, Option, or Insight is and why) belongs on the elements themselves via `description`/`rationale`/`notes` -- those can be written from day one. The analysis-level `description` can be filled in at any time and is safe to leave short.
 
