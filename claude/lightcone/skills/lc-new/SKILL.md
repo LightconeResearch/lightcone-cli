@@ -117,7 +117,7 @@ Generate only `baseline` unless the user explicitly asks for additional universe
 
 ### Populate Description
 
-Replace the TODO `description:` in `astra.yaml` with a short one-or-two-paragraph orientation now that structure is stable — what the analysis is and how its pieces fit together. Keep it brief; per-element prose lives on each Input/Output/Decision/Option via `description`/`rationale`. A richer write-up (figures, citations, live numbers) is authored separately as an external report that references analysis elements — it is not part of `astra.yaml`.
+Replace the TODO `description:` in `astra.yaml` with a short one-or-two-paragraph orientation now that structure is stable — what the analysis is and how its pieces fit together. Keep it brief; per-element prose lives on each Input/Output/Decision/Option via `description`/`rationale`. 
 
 ### Populate CLAUDE.md
 
