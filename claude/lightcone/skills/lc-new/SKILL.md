@@ -25,7 +25,7 @@ Then sharpen:
 - "What would a clear answer look like?" (sharpens the description)
 - "Why does this matter?" (context for decisions)
 
-**Update astra.yaml** — set `name`. (`astra init` scaffolded a placeholder example decision/input/output plus a TODO `narrative` skeleton; the placeholder structure is replaced in Phases 2–3, and narrative prose is filled in Finalize once structure has settled — written too early it goes stale.)
+**Update astra.yaml** — set `name`. (`astra init` scaffolded a placeholder example decision/input/output plus a TODO `description`; the placeholder structure is replaced in Phases 2–3, and the `description` is filled in Finalize once structure has settled — written too early it goes stale.)
 
 ---
 
@@ -115,9 +115,9 @@ astra universe generate -n baseline
 
 Generate only `baseline` unless the user explicitly asks for additional universes.
 
-### Populate Narrative
+### Populate Description
 
-Replace the TODO entries in `astra.yaml`'s `narrative:` block now that structure is stable: `summary` (one-paragraph framing), `methods` (decisions and sub-analyses), `inputs`, `outputs`. Use `#path.to.element` anchors for cross-references. Leave `findings` as TODO until results exist.
+Replace the TODO `description:` in `astra.yaml` with a short one-or-two-paragraph orientation now that structure is stable — what the analysis is and how its pieces fit together. Keep it brief; per-element prose lives on each Input/Output/Decision/Option via `description`/`rationale`. 
 
 ### Populate CLAUDE.md
 

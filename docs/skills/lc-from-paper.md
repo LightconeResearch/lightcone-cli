@@ -12,7 +12,7 @@ the loop closes.
 `/lc-from-paper` is the entry point of the paper-reproduction bundle.
 Sibling skills ([`ralph`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/ralph/SKILL.md)
 for the loop, [`paper-extraction`](paper-extraction.md),
-[`narrative`](narrative.md), [`figure-comparison`](figure-comparison.md),
+[`figure-comparison`](figure-comparison.md),
 [`check-sentence-by-sentence`](check-sentence-by-sentence.md)) live in
 the same plugin and are invoked by role across the phases.
 
@@ -51,8 +51,8 @@ session; phases 1–6 run as ralph iterations.
 | # | Phase | Where | Primary outputs |
 |---|-------|-------|------------------|
 | 0 | ORIENT | user's main session | per-paper `constitution.md` + `CLAUDE.md` + paper substrate at `work/reference/{paper.pdf, source/ or document.md, figures/, tables/, index.json, astra.yaml}` (from inline `/paper-extraction`) + code substrate at `work/reference/{code/, code-status.yaml, code-index.md}` (from inline `/lc-from-code` scan-only, when a repo exists) |
-| 1 | ARCHITECT | ralph iteration | stub `astra.yaml` (sub-analyses, inputs, outputs, narrative) |
-| 2 | SPECIFY | ralph iteration | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders, anchored narrative); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
+| 1 | ARCHITECT | ralph iteration | stub `astra.yaml` (sub-analyses, inputs, outputs, per-analysis `description`) |
+| 2 | SPECIFY | ralph iteration | filled `astra.yaml` (`decisions:`, `findings:`, `prior_insights:` placeholders); `targets/targets.md`; `implementation-notes.md`; `universes/baseline.yaml` |
 | 3 | LITERATURE | ralph iteration | `prior_insights:` Evidence entries each carry resolved `quote:` + `location:` selectors; per-paper PDFs cached via `astra paper add` |
 | 4 | IMPLEMENT | ralph iteration | `scripts/`, `requirements.txt`, recipes in `astra.yaml` |
 | 5 | RUN | ralph iteration | `results/<universe>/<output>/` |
@@ -165,8 +165,6 @@ Pointers, not snapshots.
   — the loop substrate (authoring + launching + iterating).
 - [`/paper-extraction`](paper-extraction.md) — ORIENT Stage 2's
   acquisition path; also invoked per cited paper by LITERATURE.
-- [`/narrative`](narrative.md) — ARCHITECT's structural narrative and
-  SPECIFY's anchored content narrative.
 - [`/figure-comparison`](figure-comparison.md) — REVIEW (mandatory) and
   also user-invokable.
 - [`/check-sentence-by-sentence`](check-sentence-by-sentence.md) —

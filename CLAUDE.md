@@ -70,7 +70,7 @@ claude/lightcone/           # Claude plugin source — force-included into the w
 ├── skills/                 # lc-new, lc-from-code, lc-from-paper,
 │                            # lc-feedback, ralph;
 │                            # paper-reproduction bundle: lc-from-paper (entry),
-│                            # ralph (loop substrate), narrative,
+│                            # ralph (loop substrate),
 │                            # paper-extraction, figure-comparison,
 │                            # check-sentence-by-sentence
 │                            # (see skills/README.md for the full bundle map)

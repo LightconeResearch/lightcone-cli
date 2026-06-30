@@ -41,11 +41,10 @@ The skill walks you through four phases:
    (methodological choices that could shift results). `→ astra.yaml`.
 4. **Finalize.** `astra validate astra.yaml` to make sure the spec is
    valid; `astra universe generate -n baseline` to seed a baseline
-   universe; the `narrative:` block in `astra.yaml` gets filled in
-   (`summary`, `methods`, `inputs`, `outputs` — `findings` stays TODO
-   until results exist); the `## Working Notes` section of `CLAUDE.md`
-   gets the conversational context that wouldn't otherwise survive a
-   `/clear`.
+   universe; a short `description:` gets authored on the root analysis
+   (one or two paragraphs orienting a reader); the `## Working Notes`
+   section of `CLAUDE.md` gets the conversational context that wouldn't
+   otherwise survive a `/clear`.
 
 You don't write any code or YAML during `/lc-new`. By the
 time it finishes, you have a precise specification. The agent enforces
@@ -122,7 +121,7 @@ CLAUDE.md's *Open opportunities* list as the trajectory of what could
 be tightened on a return visit.
 
 The bundle composes sibling skills: `ralph` (the loop substrate),
-`paper-extraction`, `narrative`, `figure-comparison`, and
+`paper-extraction`, `figure-comparison`, and
 `check-sentence-by-sentence`. See
 [`claude/lightcone/skills/README.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md)
 for the full bundle map.

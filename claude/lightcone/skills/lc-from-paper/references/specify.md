@@ -1,6 +1,6 @@
 # SPECIFY — fill the stub `astra.yaml`, two passes per sub-analysis
 
-Read the stub `astra.yaml` from ARCHITECT and fill in `decisions:`, `prior_insights:`, `findings:` per sub-analysis, weaving the existing narrative with `astra-anchor:` references as entries land. SPECIFY is the **first material-disagreement seam** — paper-vs-code conflicts surface here, and they're often the highest-value moments for the user to weigh in on at REVIEW.
+Read the stub `astra.yaml` from ARCHITECT and fill in `decisions:`, `prior_insights:`, `findings:` per sub-analysis. SPECIFY is the **first material-disagreement seam** — paper-vs-code conflicts surface here, and they're often the highest-value moments for the user to weigh in on at REVIEW.
 
 SPECIFY is what a ralph iteration does when the workdir signals "stub `astra.yaml` present + sub-analyses' `decisions:` / `prior_insights:` / `findings:` blocks still empty." Iterations run detached in tmux; the user isn't reachable interactively, so the canonical-resolution default (code wins where paper and code disagree on a material choice) applies and disagreements are logged to CLAUDE.md's **Paper-vs-code disagreements** section plus `open-questions.md` for REVIEW close-out.
 
@@ -10,7 +10,7 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 
 ## Inputs
 
-- `astra.yaml` — the stub from ARCHITECT (sub-analyses, inputs, outputs, narrative; empty `decisions:` / `prior_insights:` / `findings:` blocks)
+- `astra.yaml` — the stub from ARCHITECT (sub-analyses, inputs, outputs, per-analysis `description`; empty `decisions:` / `prior_insights:` / `findings:` blocks)
 - `constitution.md` — Goal (scope), Fidelity intent, Quality bar
 - `CLAUDE.md` — Rules; **Paper-vs-code disagreements** for prior-iteration entries
 - `work/reference/index.json` — paper-extraction's structural index: figures, tables, section outline, citations. The `citations:` block maps each cited paper's BibTeX key (Path A) or synthetic `<lastname>_<year>` key (Path B) to `{locations, citation, doi}`. SPECIFY uses this to write each `prior_insights:` placeholder's `doi:` so LITERATURE knows which paper to fetch.
@@ -22,18 +22,18 @@ Per-sub-analysis work is parallelizable when sub-analyses are independent. Each 
 
 ## Outputs
 
-- `astra.yaml` — **filled form**: each sub-analysis's `decisions:` populated with decision-level `rationale:` prose plus options (the paper's choice is identified by `default:`); `findings:` populated as full `Insight` blocks with paper-anchored `evidence:` (the target paper's DOI + `quote: {exact, prefix, suffix}` + `location: {page: N}`); `prior_insights:` populated as citation **placeholders** — each a syntactically-complete `Insight` (`id`, `claim`, `created_at`, `evidence: [{id, doi}]`) whose placeholder Evidence carries the cited paper's DOI looked up from `work/reference/index.json#citations[<cite-key>].doi` **but no `quote:` selector yet** — LITERATURE fills those in. Each option that draws on a placeholder cites it via `Option.insights: [<insight_id>, ...]` (the back-reference that links options to prior_insights in the ASTRA grammar). `narrative:` keys updated to weave `astra-anchor:` references into prose as entries land. `astra validate astra.yaml` returns clean (Evidence with `doi:` and no `quote:` is structurally valid at this stage); `astra validate astra.yaml --verify-evidence` runs after LITERATURE has authored the quotes.
+- `astra.yaml` — **filled form**: each sub-analysis's `decisions:` populated with decision-level `rationale:` prose plus options (the paper's choice is identified by `default:`); `findings:` populated as full `Insight` blocks with paper-anchored `evidence:` (the target paper's DOI + `quote: {exact, prefix, suffix}` + `location: {page: N}`); `prior_insights:` populated as citation **placeholders** — each a syntactically-complete `Insight` (`id`, `claim`, `created_at`, `evidence: [{id, doi}]`) whose placeholder Evidence carries the cited paper's DOI looked up from `work/reference/index.json#citations[<cite-key>].doi` **but no `quote:` selector yet** — LITERATURE fills those in. Each option that draws on a placeholder cites it via `Option.insights: [<insight_id>, ...]` (the back-reference that links options to prior_insights in the ASTRA grammar). `astra validate astra.yaml` returns clean (Evidence with `doi:` and no `quote:` is structurally valid at this stage); `astra validate astra.yaml --verify-evidence` runs after LITERATURE has authored the quotes.
 - `universes/baseline.yaml` — selects the paper's choices (where paper and code disagree per the canonical-resolution rule, see "Material conflicts" below)
 - `implementation-notes.md` — concise practical guidance for the IMPLEMENT phase: tricky algorithms, numerical gotchas, data-format quirks, things the spec can't capture. Bullets, not essays.
 - `targets/targets.md` — small target ledger COMPARE consumes: per output (already declared by ARCHITECT), a brief entry with type, priority, paper value, expected match criteria, and the path to the reference figure / table / metric (when applicable, copy the reference file into `targets/` so the directory is self-contained)
 - `CLAUDE.md` updates — append entries to **Paper-vs-code disagreements** for each material conflict surfaced
 - `constitution.md` updates — Open dimensions when something material warrants user ratification at REVIEW
 
-## Substrate skills to invoke
+## Prose discipline
 
-- **`/narrative`** — narrative authoring (any of the five `narrative.{summary,inputs,methods,findings,outputs}` keys, plus decision `rationale:` fields) is owned by the narrative skill. Invoke it during the **paper pass** when authoring or extending narrative prose. The narrative skill teaches reserved entity names, the tree-path anchor grammar, the conditional-narrative requirement (which keys are required when), the five-key authoring order, paper-reproduction fidelity discipline, and the new downstream-consumer discipline (lightcone-cli#108). Do not duplicate that content.
+Per-element prose lives directly on the entries SPECIFY authors: each decision's `rationale:` carries the paper's stated reasoning (or the code's, where canonical-resolution applies); findings and prior_insights carry their `claim:` and optional `notes:`. Keep the paper's hedges and qualifiers intact and don't add editorial commentary beyond what the paper supports.
 
-Your responsibility in this phase is the **content**: build out the `decisions:` / `prior_insights:` / `findings:` for each sub-analysis (each with its own evidence shape — detailed below), and weave `astra-anchor:` references back into the narrative as entries land. ARCHITECT already settled the structure.
+Your responsibility in this phase is the **content**: build out the `decisions:` / `prior_insights:` / `findings:` for each sub-analysis (each with its own evidence shape — detailed below). ARCHITECT already settled the structure and the orienting `description:` blocks.
 
 ## The two-pass-per-sub-analysis structure
 
@@ -46,7 +46,7 @@ Read the paper's section(s) covering this sub-analysis. Author:
 1. **`decisions:`** — every choice in this sub-analysis where a different defensible option could plausibly shift a numerical result: algorithmic methods, thresholds, statistical approaches, data selection criteria, calibration choices. Use `when`, `incompatible_with`, and `requires` constraints for non-independent decisions.
 
    For each decision, the paper-pass authors:
-   - **Decision-level fields:** `label:` (short human-readable name), `rationale:` (the paper's stated reasoning — use `/narrative` for the prose), `default:` (the option the paper actually selects), and `options:` (the map of option entries below).
+   - **Decision-level fields:** `label:` (short human-readable name), `rationale:` (the paper's stated reasoning, authored as prose), `default:` (the option the paper actually selects), and `options:` (the map of option entries below).
    - **Options:** the chosen option plus any sibling alternatives the paper discusses. Each option carries `label:` (required) and an optional `description:`. Per the 0.0.10 grammar, options do **not** carry their own `rationale:` or `evidence:` block — the decision's `rationale:` covers the reasoning; paper-text evidence flows through `findings:` (for the paper's own quantitative claims) or via `Option.insights` back-references into `prior_insights:` (for citation-backed support).
    - **Option ↔ prior_insights linkage:** when the option's support derives from cited literature, list the relevant `prior_insights:` ids in `Option.insights: [<insight_id>, ...]`. The placeholder block under `prior_insights:` (authored in step 2 below) is the back-end of this link — LITERATURE fills in the verbatim cited-paper quote later. **Scope rules** (astra-tools ≥ 0.2.9): bare ids resolve **node-locally only** — the prior_insight must be declared in the same sub-analysis as the option. For a citation declared at an ancestor scope, use explicit upward refs: `[../id]` for the parent, `[../../id]` for the grandparent, etc. (same `../` grammar as `Input.from` and `Decision.from`). The natural shape — declare each cited paper at the sub-analysis that uses it, reference with a bare id from same-scope options — keeps everything node-local and needs no `../`.
 
@@ -56,7 +56,7 @@ Read the paper's section(s) covering this sub-analysis. Author:
    decisions:
      <decision_id>:
        label: "<short human-readable name>"
-       rationale: "<the paper's stated reasoning, weaving astra-anchors into prose>"
+       rationale: "<the paper's stated reasoning, as prose>"
        default: <chosen_option_id>
        options:
          <option_id>:
@@ -101,9 +101,7 @@ Read the paper's section(s) covering this sub-analysis. Author:
            location: { page: <N> }
    ```
 
-4. **Weave `astra-anchor:` references into the existing narrative.** ARCHITECT wrote `narrative:` prose without anchors because the entries didn't exist. Now they do — extend the narrative to point at the new `decisions:` / `prior_insights:` / `findings:` entries via the tree-path anchor grammar. Use `/narrative` for this pass; it carries the discipline.
-
-5. **Verify finding quotes against the paper source by Grep.** For each `findings:` Evidence entry with a `quote:`, Grep the paper source to confirm the `exact:` text is verbatim and the `prefix:` / `suffix:` are real surrounding text. `astra validate --verify-evidence` will run the deterministic check across every quote later (after LITERATURE resolves the `prior_insights:` placeholders); a manual Grep now catches typos and paraphrases before the code pass.
+4. **Verify finding quotes against the paper source by Grep.** For each `findings:` Evidence entry with a `quote:`, Grep the paper source to confirm the `exact:` text is verbatim and the `prefix:` / `suffix:` are real surrounding text. `astra validate --verify-evidence` will run the deterministic check across every quote later (after LITERATURE resolves the `prior_insights:` placeholders); a manual Grep now catches typos and paraphrases before the code pass.
 
 ### Pass B — code pass (when `work/reference/code/` exists)
 
@@ -132,9 +130,8 @@ The cross-check questions on entry: are the decisions covering everything materi
 3. **Evidence verification.** Every `findings:` Evidence entry uses `TextQuoteSelector` with a verbatim `exact:` quote, real surrounding-text `prefix:` / `suffix:`, and a `location: {page: N}` (1-indexed). Quotes that are paraphrased or whose `prefix:` / `suffix:` are editorial parentheticals will fail `--verify-evidence`. `prior_insights:` placeholders intentionally have `evidence: [{id, doi}]` without a `quote:` at this stage — LITERATURE authors the quotes — so do not flag a missing quote on placeholder entries. After LITERATURE resolves the placeholders, run `astra validate astra.yaml --verify-evidence`.
 4. **Findings traceability.** Each `findings:` Insight's `evidence:` resolves either to a real paper claim (target-paper DOI + verbatim `quote:` + page) or to a real declared output via `artifact: <output_id>` (with optional `source_commit:` and `snapshot:`).
 5. **Material-disagreement surfacing.** Where paper and code disagree on a material choice, the spec records both options under the relevant `decisions:` entry, `universes/baseline.yaml` selects the code's option (canonical-resolution default), and the conflict is appended to CLAUDE.md's *Paper-vs-code disagreements* section plus `open-questions.md` for the user to resolve at REVIEW close-out. Flag any material disagreement that got silently dropped, that didn't make it into the disagreements log, or where the baseline picked the paper without the canonical-resolution rule applying.
-6. **Narrative anchors.** The sub-analysis's `narrative:` weaves `astra-anchor:` references to the new `decisions:` / `prior_insights:` / `findings:` entries — the tree-path grammar must be valid, and entries actually exist at the referenced paths.
-7. **`narrative:` voice fidelity.** Hedges and qualifiers from the paper survive (per the narrative skill's discipline). Editorial commentary added beyond what the paper supports gets flagged.
-8. **No synthetic data.** Unless the paper itself uses synthetic data, every input has a real acquisition source — no mock / synthetic substitutes anywhere in the sub-analysis's inputs, decisions, or implementation-notes.
+6. **Prose voice fidelity.** Hedges and qualifiers from the paper survive in the decisions' `rationale:` and the findings' `claim:` / `notes:`. Editorial commentary added beyond what the paper supports gets flagged.
+7. **No synthetic data.** Unless the paper itself uses synthetic data, every input has a real acquisition source — no mock / synthetic substitutes anywhere in the sub-analysis's inputs, decisions, or implementation-notes.
 
 Apply fixes inline as you find them — `astra.yaml`, `universes/baseline.yaml`, `implementation-notes.md`, the disagreements log in CLAUDE.md as needed. The diff against the prior commit is the record of what changed. After any change to `astra.yaml`:
 
@@ -175,11 +172,11 @@ Out-of-scope targets stay in `targets/targets.md` with an explicit reason and sh
 - **Equation and section numbers must match the rendered paper / PDF**, not a naïve count of TeX blocks or markdown headings. When citing "eq. N" or "§N", find the equation or heading by content in the rendered paper and use the printed number.
 - **Validate** with `astra validate astra.yaml` after each pass.
 - **Targeted reads, not whole-paper absorption.** Use `work/reference/index.json` and `work/reference/code-index.md` for structural lookups; Grep into `work/reference/source/` (Path A) or `work/reference/document.md` (Path B) for specific verbatim quotes; read targeted code modules under `work/reference/code/` for canonical method details. Don't re-read the whole paper or whole code base.
-- **The narrative skill is the prose author, not the structure author.** SPECIFY weaves anchors into the prose ARCHITECT wrote — the structural surface is fixed, the anchored references are SPECIFY's contribution.
+- **Content correctness, not structure.** ARCHITECT settled the structure and the orienting `description:` blocks; SPECIFY's contribution is the `decisions:` / `prior_insights:` / `findings:` content and the prose on those entries.
 
 ## Survey signals (entry into SPECIFY)
 
-- `astra.yaml` exists with stub form (sub-analyses + inputs + outputs + narrative; empty decisions / prior_insights / findings) ⇒ ready to specify
+- `astra.yaml` exists with stub form (sub-analyses + inputs + outputs + per-analysis `description`; empty decisions / prior_insights / findings) ⇒ ready to specify
 - For each sub-analysis: `decisions:` populated with decision-level `rationale:` + options (paper's choice at `default:`); `findings:` populated as full Insight blocks with paper-anchored Evidence (DOI + `quote: {exact, prefix, suffix}` + `location: {page}`); `prior_insights:` populated as citation placeholders (`id`, `claim`, `created_at`, `evidence: [{id, doi}]` with `quote:` omitted — LITERATURE fills the quotes next); `Option.insights` back-references wired up where options draw on placeholders ⇒ paper pass done
 - For each sub-analysis: when `work/reference/code/` exists, code-pass material-disagreement entries land in `decisions:` (with both options) and `universes/baseline.yaml` selects the canonical-resolution choice; `implementation-notes.md` carries non-material gotchas ⇒ code pass done
 - For each sub-analysis: a fresh-context iteration reads the slice and finds nothing to fix ⇒ that sub-analysis is done; the next iteration moves on
@@ -191,7 +188,7 @@ Out-of-scope targets stay in `targets/targets.md` with an explicit reason and sh
 ## Notes
 
 - **Material disagreements** are appended to CLAUDE.md's **Paper-vs-code disagreements** section AND `open-questions.md`. CLAUDE.md is the at-a-glance summary every iteration sees; `open-questions.md` is the user-resolution accumulator. Both lead to the same place: the user resolves at REVIEW close-out.
-- **The narrative skill is the prose author, not the structure author.** SPECIFY's job is content correctness; `/narrative` invocation comes during the paper pass when authoring or extending the narrative prose to weave in anchor references.
+- **SPECIFY owns content, not structure.** Its job is content correctness — the `decisions:` / `prior_insights:` / `findings:` and the `rationale:` / `claim:` / `notes:` prose on them. The orienting `description:` blocks were ARCHITECT's; the structural surface is fixed.
 - **The target ledger is a derivation, not a separate phase's output.** Treat `targets/targets.md` as a small index produced alongside the filled `astra.yaml`, not a heavyweight artifact. The depth lives in `astra.yaml`'s `outputs:` / `findings:` / `decisions:`.
 - **Two-pass discipline is the cross-check.** Skipping the code pass (when code exists) loses the canonical-resolution surface and lets paper-vs-code material disagreements slip through. The fresh-context review can recover *some* of these but not all — the disciplined sequence (paper → code → review) catches more.
 - **Per-sub-analysis parallelism is opt-in.** When sub-analyses are independent (no shared decision blocks, no cross-sub-analysis findings), the iteration can fan out one-level-deep sub-agents (one per sub-analysis from inside its main session) to run their passes in parallel. When they share material decisions or findings (rare), serialize across iterations.

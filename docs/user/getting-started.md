@@ -142,7 +142,8 @@ container: Containerfile
 ```
 
 Phase 4 (**FINALIZE**) runs `astra validate astra.yaml`, writes
-`universes/baseline.yaml`, and fills in the `narrative:` block. You're handed
+`universes/baseline.yaml`, and authors a short `description:` on the root
+analysis. You're handed
 back a short summary table — two outputs, one decision, zero prior insights.
 
 The agent may suggest `/clear` to free up context. Take its advice.

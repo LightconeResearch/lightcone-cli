@@ -98,7 +98,7 @@ The skill produces only the paper's own reading materials. Anything not containe
 
 The `citations:` block maps each cited paper's BibTeX key (Path A) or synthetic `<lastname>_<year>` key (Path B) to `{locations, citation, doi}`. Downstream consumers (e.g. lc-from-paper's SPECIFY when authoring `prior_insights:` placeholders, LITERATURE when discovering which DOIs to fetch) read the DOI directly from `citations[key].doi`. Unresolvable entries keep `citation: null` and/or `doi: null` and are flagged in `extraction_warnings`.
 
-**`astra.yaml` is semantic and ASTRA-validating.** Treats the paper as an ASTRA artifact: `id`, `version`, `name`, `narrative.summary`, and `findings:` carrying the paper's claimed numerical results in ASTRA's Insight + Evidence shape. Read this when you want to know "what does this paper claim, with quote evidence anchored to the source." The script writes a stub (id, version, name, narrative.summary from abstract, empty findings); Step 5 fills in `findings:`.
+**`astra.yaml` is semantic and ASTRA-validating.** Treats the paper as an ASTRA artifact: `id`, `version`, `name`, a top-level `description:` (from the abstract), and `findings:` carrying the paper's claimed numerical results in ASTRA's Insight + Evidence shape. Read this when you want to know "what does this paper claim, with quote evidence anchored to the source." The script writes a stub (id, version, name, `description` from abstract, empty findings); Step 5 fills in `findings:`.
 
 Why both: the structural index is queryable by any consumer (`grep`, `jq`, agent code) without needing to know about ASTRA. The ASTRA file composes directly into reproductions, MySTRA, and any other ASTRA-aware tool — and the verbosity of the Insight + Evidence shape *is* the back-pressure against hallucinated numerical claims (the agent has to find and quote the actual text).
 
@@ -113,7 +113,7 @@ Always start with `ls work/reference/` and read `index.json` if present. Skip th
 | `source/` (Path A) or `document.md` (Path B) + `paper.pdf` | Substrate acquired (Step 2) |
 | `index.json` with non-empty figures/tables/outline | Structural extraction done (Step 3) |
 | `astra.yaml` exists | Stub written; never overwritten on re-run (preserves agent edits) |
-| `astra.yaml` has non-empty `findings:` and `narrative.findings:` populated | Findings step done (Step 5, optional) |
+| `astra.yaml` has non-empty `findings:` populated | Findings step done (Step 5, optional) |
 
 If nothing is present, run the full workflow.
 
@@ -142,7 +142,7 @@ The script detects the path automatically and produces:
 - `tables/<label-slug>.tex` — one file per `\begin{table}` block (Path A only)
 - `bibliography-source.{bib,bbl}` if present in the source tarball (Path A only)
 - `index.json` — the unified structural index, including the enriched `citations:` block (each cited key carries `{locations, citation, doi}`; DOI resolution covers ~96% of typical-paper bibliographies)
-- `astra.yaml` — stub ASTRA representation: id, version, name (from `\title{}`), narrative.summary (from abstract), empty `findings: {}` for Step 5
+- `astra.yaml` — stub ASTRA representation: id, version, name (from `\title{}`), `description` (from abstract), empty `findings: {}` for Step 5
 - `.doi-cache.json` — Crossref/ADS lookup cache; re-runs skip the network for already-seen entries
 
 The `--arxiv-id` / `--doi` argument populates the `id` and the evidence `doi:` field in `astra.yaml`. If neither is provided, the script writes placeholder text the agent can fix.
@@ -160,7 +160,7 @@ The script is purely deterministic. It walks the structural surface but does not
 - **`citation <key>: cited in source but no matching entry in bibliography-source.{bib,bbl}`** — a `\cite{<key>}` invocation has no corresponding bib record. Usually a typo in the LaTeX source; flag it and move on. The entry stays in `citations:` with `citation: null, doi: null`, locations preserved.
 - **Path B caveat** — outline extraction is not yet implemented for the Docling fallback. Bibliography resolution works on Path B by parsing the references section at the tail of `document.md` and synthesizing keys (`<lastname>_<year>`), but citation *invocations* from rendered prose aren't yet extracted — Path B citations carry empty `locations: []`. The warnings list flags this.
 
-Also eyeball `astra.yaml`'s `name:` and `narrative.summary:`. The title or abstract may contain unresolved custom `\newcommand` macros (defined elsewhere in the source); the script doesn't expand macros, so they pass through verbatim. Clean them up if you need pretty rendering downstream — none of this blocks validation.
+Also eyeball `astra.yaml`'s `name:` and `description:`. The title or abstract may contain unresolved custom `\newcommand` macros (defined elsewhere in the source); the script doesn't expand macros, so they pass through verbatim. Clean them up if you need pretty rendering downstream — none of this blocks validation.
 
 ### Step 5 — *(Optional)* Walk the paper for findings, append to `astra.yaml`
 
@@ -181,10 +181,6 @@ findings:
         quote:
           exact: "we find $S_8 = 0.795 \\pm 0.014$"
 ```
-
-When `findings:` is non-empty, `narrative.findings:` must reference at least one finding — e.g. `narrative: { findings: "The fiducial analysis yields the [S_8 constraint](#findings.s8_constraint)." }`.
-
-See `examples/unions-bmodes-astra.yaml` for a fully populated `astra.yaml` (six findings, narrative, evidence anchored to the published version).
 
 **Discipline:**
 
@@ -208,7 +204,7 @@ The slash-command form is `/paper-extraction <arxiv-id-or-doi>`.
 **Script (`extract-paper-substrate.py`):** walks LaTeX (Path A) or Docling output (Path B) and emits two things:
 
 1. `index.json` — figures (with copied files + line numbers + multi-graphic panels), tables (one `.tex` per block, including AAS `deluxetable`), section outline (with line numbers, in paper-reading order), citation keys (with every file+line they appear on, including biblatex commands, *plus the cited paper's full citation text and resolved DOI*), abstract, title, paths.
-2. `astra.yaml` — a stub ASTRA artifact: `id` (derived from arxiv-id/DOI), `version`, `name` (from `\title{}`), `narrative.summary` (from abstract), empty `inputs:`/`outputs:`/`findings:`. Validates as-is.
+2. `astra.yaml` — a stub ASTRA artifact: `id` (derived from arxiv-id/DOI), `version`, `name` (from `\title{}`), `description` (from abstract), empty `inputs:`/`outputs:`/`findings:`. Validates as-is.
 
 The script handles a few realities of LaTeX papers automatically:
 

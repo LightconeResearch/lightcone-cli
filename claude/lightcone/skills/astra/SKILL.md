@@ -3,8 +3,8 @@ name: astra
 description: >
   Comprehensive reference for the `astra.yaml` specification — top-level
   structure, sub-analyses, inputs/outputs, decisions and options, prior
-  insights and findings, evidence and quote verification, narrative
-  anchors, and composition mechanics. Invoke whenever reading, writing,
+  insights and findings, evidence and quote verification, and
+  composition mechanics. Invoke whenever reading, writing,
   validating, or debugging an `astra.yaml` spec; whenever working with
   decisions, options, prior_insights, findings, or evidence; or whenever
   the user asks about ASTRA schema, spec syntax, or sub-analysis
@@ -22,13 +22,13 @@ An `astra.yaml` spec captures this for a single unit of work. The structure is *
 
 ## astra.yaml Structure
 
-Fields: `id`, `version`, `name`, `narrative`, `authors`, `tags`, `inputs`, `outputs`, `decisions`, `prior_insights`, `findings`, `analyses`, `container`. `narrative` is the analysis-level prose field -- see [Narrative](#narrative) (typically filled in later, once the structural pieces have settled).
+Fields: `id`, `version`, `name`, `description`, `tags`, `inputs`, `outputs`, `decisions`, `prior_insights`, `findings`, `analyses`, `container`. `description` is the analysis-level free-prose field -- see [Description](#description) (the same optional field every element carries).
 
-**Reserved IDs.** No analysis entity (input, output, decision, option, finding, prior insight, evidence, sub-analysis) may use any of these names as its `id` -- they collide with the narrative anchor grammar:
+**Reserved IDs.** No analysis entity (input, output, decision, option, finding, prior insight, evidence, sub-analysis) may use any of these names as its `id` -- they collide with the tree-path reference grammar (used by `from:`, `when`, `requires`, and `incompatible_with`):
 
 ```
 inputs   outputs   decisions   findings   prior_insights
-analyses options   content     narrative
+analyses options   content
 ```
 
 **`label` field.** Inputs, Outputs, Decisions, Options, and Insights all accept an optional `label:` -- a short human-readable name for compact rendering (margin glyphs, breadcrumbs, card titles). Tooling falls back to `id` when absent. `label` is required only on Options.
@@ -37,7 +37,7 @@ analyses options   content     narrative
 # Simple analysis -- everything at top level
 version: "1.0"
 name: "My Analysis"
-# narrative: { ... }  # see Narrative section; typically added later
+# description: "One-paragraph orientation (optional)"  # see Description section
 inputs:
   - id: training_data
     type: data
@@ -351,45 +351,20 @@ decisions:
 
 The **`universe:` field** in universe files selects which sub-analysis universe to load: `build_mocks: { universe: baseline }` loads `./analyses/build_mocks/universes/baseline.yaml`.
 
-## Narrative
+## Description
 
-`narrative` is the analysis-level prose field on any Analysis (root or sub). It's structured as five Markdown sections: `summary`, `findings`, `methods`, `inputs`, `outputs`. The schema is closed (`additionalProperties: false`) -- no other keys are allowed.
+`description` is a single optional free-prose field on any Analysis (root or sub) -- the same field every other element carries (`Input`, `Output`, `Option`, `Universe`). It holds a short human orientation to the analysis (a paragraph or two), nothing more.
 
-**Recommendation:** fill `narrative` in *later*, once the structural pieces of the analysis (decisions, outputs, sub-analyses) have settled. Prose written too early goes stale fast and tends to describe what no longer exists. Per-element prose (what each Input, Output, Decision, Option, or Insight is and why) belongs on the elements themselves via `description`/`rationale`/`notes` -- those can be written from day one.
-
-**Conditional coverage.** All five sections are schema-optional, but `astra validate` enforces:
-
-| Section | Required when |
-|---|---|
-| `findings` | the analysis has entries under `findings:` |
-| `methods` | the analysis has entries under `decisions:` or `analyses:` |
-| `inputs` | the analysis has entries under `inputs:` |
-| `outputs` | the analysis has entries under `outputs:` |
-| `summary` | always optional |
-
-Authors narrate what they declare; stub analyses with only a summary stay clean.
-
-**Anchor references.** Inside any section, link to other elements with Markdown anchor links (`[text](#path.to.element)`) using the same tree-path grammar as `from:` -- `#decisions.scaling`, `#decisions.scaling.options.standard`, `#findings.best_model`, `#analyses.preprocessing` (whole sub-analysis), `#analyses.preprocessing.outputs.features` (element inside a sub-analysis), `#../decisions.method` to escape to a parent scope.
-
-**Inline images.** Standard Markdown image syntax inside any section -- `![alt](path/to/img.png)` for repo-relative paths or `![alt](https://...)` for URLs. Renderers like lightcone-ui pick them up the same way they pick up text.
+Per-element prose (what each Input, Output, Decision, Option, or Insight is and why) belongs on the elements themselves via `description`/`rationale`/`notes` -- those can be written from day one. The analysis-level `description` can be filled in at any time and is safe to leave short.
 
 ```yaml
-narrative:
-  summary: |
-    A two-stage pipeline for Iris classification that demonstrates
-    sub-analyses.
-  methods: |
-    The [feature_extraction sub-analysis](#analyses.feature_extraction)
-    produces encoded features, which feed
-    [classification](#analyses.classification). A
-    [test_split](#decisions.test_split) decision controls the holdout.
-  inputs: |
-    [iris_data](#inputs.iris_data) is Fisher's 150-sample, 4-feature,
-    3-class dataset.
-  outputs: |
-    The top level exposes [accuracy](#outputs.accuracy) and a
-    [pipeline_summary](#outputs.pipeline_summary) report.
+description: |
+  A two-stage pipeline for Iris classification that demonstrates
+  sub-analyses: a feature-extraction stage feeds a classification
+  stage. The top level exposes the classifier accuracy and a
+  pipeline-summary report.
 ```
+
 
 ## CLI Reference (astra)
 

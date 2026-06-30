@@ -93,8 +93,8 @@ Read, in this order:
    - If neither file exists, use the default paper-driven flow below and
      build a best-effort report from `astra.yaml` plus `work/reference/`.
 
-2. **`astra.yaml`** -- specifically `narrative.summary`, `narrative.outputs`,
-   `narrative.findings`, `outputs:`, and `findings:` if present. Use it to
+2. **`astra.yaml`** -- specifically the top-level `description`, `outputs:`,
+   and `findings:` if present. Use it to
    map scoped targets to output IDs and to harvest declared findings. Do not
    assume ASTRA outputs have a dedicated filename-hint field; result paths
    come from the output ID and the result resolver in Phase 2.
@@ -200,7 +200,7 @@ paper asserts and the project tracks. Concretely, harvest from:
   reported sample size after a specific cut, every bin width or step
   used as a result-defining choice, every reported accuracy / score /
   metric.
-- Any explicit reproduction targets in `astra.yaml`'s `narrative.findings`.
+- Any explicit reproduction targets in `astra.yaml`'s `findings:`.
 
 It is fine to repeat one quantity in multiple manifest entries when the
 paper reports it under different conditions (preliminary vs. final,

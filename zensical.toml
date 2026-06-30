@@ -52,7 +52,6 @@ nav = [
       {"lc-feedback" = "skills/lc-feedback.md"},
       {"ralph" = "skills/ralph.md"},
       {"paper-extraction" = "skills/paper-extraction.md"},
-      {"narrative" = "skills/narrative.md"},
       {"figure-comparison" = "skills/figure-comparison.md"},
       {"check-sentence-by-sentence" = "skills/check-sentence-by-sentence.md"},
       {"Authoring Skills" = "skills/authoring.md"},
