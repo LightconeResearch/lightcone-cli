@@ -182,8 +182,6 @@ findings:
           exact: "we find $S_8 = 0.795 \\pm 0.014$"
 ```
 
-See `examples/unions-bmodes-astra.yaml` for a fully populated `astra.yaml` (six findings, a top-level `description`, evidence anchored to the published version).
-
 **Discipline:**
 
 - **Read the abstract and conclusions first.** Most central findings can be quoted from one of those two surfaces.
