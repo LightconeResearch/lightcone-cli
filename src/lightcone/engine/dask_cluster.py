@@ -7,8 +7,10 @@ One context manager, three branches:
   the cluster, so we don't tear it down.
 - ``SLURM_JOB_ID`` is set → start an in-process scheduler via
   ``LocalCluster(n_workers=0)``, then ``srun`` one ``dask worker`` per node
-  across the allocation. Workers advertise the node's full resources;
-  per-rule ``threads`` / ``mem_mb`` / ``gpus`` map to per-task constraints.
+  across the allocation, ``--chdir``'d to the project dir so relative
+  ``output:`` paths resolve the same way on every node. Workers advertise
+  the node's full resources; per-rule ``threads`` / ``mem_mb`` / ``gpus``
+  map to per-task constraints.
 - Neither → ``LocalCluster()`` sized to the local machine.
 
 The scheduler is always in-process (driven by ``lc run`` itself) so its
@@ -26,6 +28,7 @@ import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 # Resource keys advertised by workers and requested per-task. These strings
 # form a contract between the worker bootstrap (here) and the executor plugin
@@ -87,10 +90,16 @@ def _resources_arg(shape: _NodeShape) -> str:
 @contextmanager
 def cluster_for_run(
     *,
+    project_dir: Path,
     verbose: bool = False,
     local_directory: str | None = None,
 ) -> Iterator[str]:
     """Yield a Dask scheduler address valid for the duration of `lc run`.
+
+    *project_dir* is the project root (the directory containing
+    ``astra.yaml``). It is only consumed by the SLURM-backed branch,
+    which needs it to pin remote workers' cwd — see
+    :func:`_slurm_backed_cluster`.
 
     *local_directory*, when given, is where dask workers stage their
     spilled task data and internal state files. ``lc run`` resolves it
@@ -106,7 +115,9 @@ def cluster_for_run(
 
     if "SLURM_JOB_ID" in os.environ:
         with _slurm_backed_cluster(
-            verbose=verbose, local_directory=local_directory
+            verbose=verbose,
+            local_directory=local_directory,
+            project_dir=project_dir,
         ) as addr:
             yield addr
         return
@@ -148,7 +159,7 @@ def _local_cluster(
 
 @contextmanager
 def _slurm_backed_cluster(
-    *, verbose: bool, local_directory: str | None
+    *, verbose: bool, local_directory: str | None, project_dir: Path
 ) -> Iterator[str]:
     from dask.distributed import LocalCluster
 
@@ -187,6 +198,16 @@ def _slurm_backed_cluster(
         "srun",
         f"--ntasks={nnodes}",
         "--ntasks-per-node=1",
+        # Rules render `{output}` (and every relative Snakemake `output:`
+        # path) against the process cwd. The in-process LocalCluster path
+        # gets this for free — its worker is forked from `lc run`'s own
+        # process, which shares the driver's cwd. An srun-launched worker
+        # is a brand-new process on a remote node; without an explicit
+        # `--chdir` its cwd is whatever that node's task launch defaults
+        # to (not reliably the project dir), so relative output paths
+        # resolve into the wrong directory and the driver's own
+        # output-exists check then raises MissingOutputException.
+        f"--chdir={project_dir}",
         "dask",
         "worker",
         addr,

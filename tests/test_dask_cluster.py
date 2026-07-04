@@ -9,6 +9,7 @@ multi-node testing requires SLURM.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -69,7 +70,7 @@ def test_existing_scheduler_address_yields_unchanged(
 ) -> None:
     monkeypatch.setenv("DASK_SCHEDULER_ADDRESS", "tcp://example:8786")
 
-    with cluster_for_run() as addr:
+    with cluster_for_run(project_dir=Path("/tmp/project")) as addr:
         assert addr == "tcp://example:8786"
 
 
@@ -83,7 +84,7 @@ def test_no_env_uses_local_cluster() -> None:
         yield "tcp://stub:9999"
 
     with patch("lightcone.engine.dask_cluster._local_cluster", _fake_local):
-        with cluster_for_run() as addr:
+        with cluster_for_run(project_dir=Path("/tmp/project")) as addr:
             assert addr == "tcp://stub:9999"
             assert sentinel["called"] == "local"
 
@@ -93,12 +94,14 @@ def test_slurm_env_takes_slurm_path(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel: dict[str, str] = {}
 
     @contextmanager
-    def _fake_slurm(*, verbose: bool, local_directory: str | None = None):
+    def _fake_slurm(
+        *, verbose: bool, local_directory: str | None = None, project_dir: Path
+    ):
         sentinel["called"] = "slurm"
         yield "tcp://stub:9999"
 
     with patch("lightcone.engine.dask_cluster._slurm_backed_cluster", _fake_slurm):
-        with cluster_for_run() as addr:
+        with cluster_for_run(project_dir=Path("/tmp/project")) as addr:
             assert addr == "tcp://stub:9999"
             assert sentinel["called"] == "slurm"
 
@@ -111,12 +114,14 @@ def test_existing_scheduler_address_wins_over_slurm(
     monkeypatch.setenv("SLURM_JOB_ID", "12345")
 
     @contextmanager
-    def _should_not_run(*, verbose: bool, local_directory: str | None = None):
+    def _should_not_run(
+        *, verbose: bool, local_directory: str | None = None, project_dir: Path
+    ):
         raise AssertionError("slurm path should not have been taken")
         yield  # pragma: no cover
 
     with patch("lightcone.engine.dask_cluster._slurm_backed_cluster", _should_not_run):
-        with cluster_for_run() as addr:
+        with cluster_for_run(project_dir=Path("/tmp/project")) as addr:
             assert addr == "tcp://existing:8786"
 
 
@@ -174,12 +179,21 @@ def test_slurm_backed_cluster_binds_to_routable_host(
 
     from lightcone.engine.dask_cluster import _slurm_backed_cluster
 
-    with _slurm_backed_cluster(verbose=False, local_directory=None) as addr:
+    with _slurm_backed_cluster(
+        verbose=False, local_directory=None, project_dir=Path("/n17data/project")
+    ) as addr:
         assert addr == "tcp://nid001234:8786"
 
     assert captured.get("host") == "nid001234", (
         f"LocalCluster must be told to bind to the SLURM nodename so remote "
         f"workers can connect; got host={captured.get('host')!r}"
+    )
+
+    worker_cmd = captured["worker_cmd"]
+    assert "--chdir=/n17data/project" in worker_cmd, (
+        "srun-launched workers must be pinned to the project dir via "
+        "--chdir — otherwise relative `output:` paths resolve against "
+        f"whatever cwd the remote node's task launch defaults to; got {worker_cmd!r}"
     )
 
 
@@ -236,7 +250,9 @@ def test_slurm_backed_cluster_falls_back_to_gethostname(
 
     from lightcone.engine.dask_cluster import _slurm_backed_cluster
 
-    with _slurm_backed_cluster(verbose=False, local_directory=None):
+    with _slurm_backed_cluster(
+        verbose=False, local_directory=None, project_dir=Path("/n17data/project")
+    ):
         pass
 
     assert captured.get("host") == "host-fallback"

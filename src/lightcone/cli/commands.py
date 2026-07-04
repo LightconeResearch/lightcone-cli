@@ -783,7 +783,7 @@ def run(
         raise click.ClickException(str(e))
 
     with cluster_for_run(
-        verbose=verbose, local_directory=str(rundirs.dask_local)
+        project_dir=project, verbose=verbose, local_directory=str(rundirs.dask_local)
     ) as scheduler_addr:
         env = {
             **os.environ,
