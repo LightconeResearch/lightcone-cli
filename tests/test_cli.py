@@ -75,6 +75,24 @@ def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     assert (project / "universes").is_dir()
 
 
+def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+
+    myst_yml = (project / "myst.yml").read_text()
+    assert "mystra.mjs" in myst_yml
+    assert "index.md" in myst_yml
+
+    index_md = (project / "index.md").read_text()
+    assert index_md.startswith("# proj\n")
+    # References must track the astra init boilerplate element ids.
+    assert "{astra}`decisions.example_method`" in index_md
+    assert "{astra:value}`outputs.main_result`" in index_md
+
+    assert "_build/" in (project / ".gitignore").read_text()
+
+
 def test_init_refuses_when_astra_yaml_exists(
     runner: CliRunner, tmp_path: Path
 ) -> None:

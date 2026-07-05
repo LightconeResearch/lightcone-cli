@@ -6,7 +6,8 @@ The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 ``astra.yaml`` and shells out to ``snakemake``.
 
 Commands:
-- ``lc init``   — scaffold a project (CLAUDE.md, .claude/, venv, gitignore).
+- ``lc init``   — scaffold a project (CLAUDE.md, .claude/, venv, gitignore,
+  MyST report template).
 - ``lc run``    — generate Snakefile and run snakemake.
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
@@ -172,7 +173,8 @@ def init(
     base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
     lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
     ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
-    and an optional Python venv.
+    a template MyST report (``myst.yml`` + ``index.md``), and an optional
+    Python venv.
     """
     console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
 
@@ -230,6 +232,11 @@ def init(
 
     # Project CLAUDE.md (a stub)
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
+
+    # Template MyST report. MyST support is a recommended add-on on top of
+    # the spec, not part of it — which is why the report scaffold lives here
+    # and not in `astra init`.
+    _create_report_template(directory)
 
     # git init last so the initial commit captures every scaffolded file.
     no_git = no_git or (directory / ".git").exists()
@@ -305,6 +312,10 @@ def init(
         "[cyan]/lc-from-code[/cyan] to port existing code, "
         "or [cyan]/lc-from-paper[/cyan] to reproduce a paper"
     )
+    console.print(
+        "  • Preview the report with [cyan]myst start[/cyan] "
+        "(requires the MyST CLI: [cyan]npm i -g mystmd[/cyan])"
+    )
 
 
 _CONTAINERFILE = """\
@@ -341,6 +352,68 @@ _GITIGNORE_APPEND = """
 .snakemake/
 .snakemake.legacy/
 results/
+
+# MyST build output
+_build/
+"""
+
+
+def _create_report_template(directory: Path) -> None:
+    """Write ``myst.yml`` + ``index.md`` — a starter report for the analysis.
+
+    The report references the boilerplate ``astra.yaml`` elements by path via
+    the MySTRA plugin, so the ids used below must track the ``astra init``
+    boilerplate (``example_method``, ``main_result``).
+    """
+    name = directory.name or "My Analysis"
+    (directory / "myst.yml").write_text(_MYST_YML)
+    (directory / "index.md").write_text(f"# {name}\n" + _INDEX_MD_BODY)
+
+
+_MYST_YML = """\
+# MyST configuration for the analysis report (https://mystmd.org/).
+# The MySTRA plugin resolves {astra}`...` references against astra.yaml.
+# `latest` always tracks the newest MySTRA release; for a reproducible
+# build, pin a tag instead, e.g. .../releases/download/v0.0.1/mystra.mjs
+version: 1
+project:
+  plugins:
+    - https://github.com/LightconeResearch/MySTRA/releases/latest/download/mystra.mjs
+  toc:
+    - file: index.md
+site:
+  template: book-theme
+"""
+
+
+_INDEX_MD_BODY = """
+> **TODO:** this report was scaffolded by `lc init`. It references the
+> analysis elements declared in `astra.yaml` *by path* — figures, decisions,
+> and numbers stay single-sourced in the analysis, so never hard-type a
+> measured value here. Preview with `myst start` (requires the MyST CLI).
+
+## Introduction
+
+TODO: the research question, its context, and why it matters.
+
+## Methods
+
+TODO: describe the approach. Reference the decisions the analysis exposes
+rather than restating them — for example, we adopt the
+{astra}`decisions.example_method` for this analysis:
+
+:::{astra} decisions.example_method
+:::
+
+## Results
+
+TODO: present the outputs. Once `lc run` has materialized results, pull
+numbers in live, e.g.:
+
+% The analysis yields {astra:value}`outputs.main_result`.
+
+:::{astra} outputs
+:::
 """
 
 _PROJECT_CLAUDE_MD = """# Project Notes for Claude
@@ -367,6 +440,14 @@ lc verify                 # validate the provenance chain
 Outputs land in `results/<universe>/<output_id>/` along with a sidecar
 `.lightcone-manifest.json` recording the recipe, container, decisions,
 input hashes, and output hash.
+
+## Report
+
+`index.md` + `myst.yml` are a template MyST report wired to the MySTRA
+plugin. The report references analysis elements by path — inline mentions
+with the `{astra}` role, block embeds with the `{astra}` directive, live
+numbers with `{astra:value}` — so never hard-type a measured value in the
+prose. Preview with `myst start` (requires the MyST CLI, `npm i -g mystmd`).
 """
 
 
