@@ -1,8 +1,9 @@
 # The Agentic Workflow
 
-The agentic surface is three entry slash commands plus feedback. The
-`/lc-from-*` family is parallel by what you start from — a question,
-code, or a paper — and `/lc-feedback` handles bug reports. Each one is
+The agentic surface is three entry slash commands, a report-authoring
+skill, and feedback. The `/lc-from-*` family is parallel by what you
+start from — a question, code, or a paper — `/lc-report` writes up the
+analysis, and `/lc-feedback` handles bug reports. Each one is
 a structured prompt: the agent follows a specific phased flow, not
 free-form chat. This page walks through each of them in the order you'd
 naturally hit them.
@@ -114,7 +115,8 @@ returns `pass` and a cold-survey iteration finds nothing left to
 improve), come back and the agent runs **REVIEW close-out** in your
 session: `/figure-comparison` against the targets, optional
 `/check-sentence-by-sentence`, a walk through the accumulated open
-questions, a `REPRODUCTION-SUMMARY.md`. COMPARE's opportunity
+questions, a `REPRODUCTION-SUMMARY.md`, and the MyST report authored
+via `/lc-report` (see below). COMPARE's opportunity
 assessment — where the gaps are, how much they likely matter, and how
 they sit relative to your fidelity intent — propagates into
 CLAUDE.md's *Open opportunities* list as the trajectory of what could
@@ -125,6 +127,27 @@ The bundle composes sibling skills: `ralph` (the loop substrate),
 `check-sentence-by-sentence`. See
 [`claude/lightcone/skills/README.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md)
 for the full bundle map.
+
+## `/lc-report` — write up the analysis
+
+**You have a specced (and ideally materialized) analysis. You end with
+a MyST report that can't drift from it.**
+
+`lc init` scaffolds a template report (`index.md` + `myst.yml`) wired
+to the [MySTRA](https://github.com/LightconeResearch/MySTRA) plugin,
+which resolves `{astra}` references against `astra.yaml` at build
+time. `/lc-report` drafts and extends that report: prose that mentions
+decisions, embeds figures and findings, and pulls measured numbers in
+live — all *by path*, never hard-typed, so a pipeline re-run updates
+the write-up automatically. The agent validates with `myst build` and
+fixes any broken references before calling it done; you preview with
+`myst start` (requires the MyST CLI, `npm i -g mystmd`).
+
+Ask for it whenever a write-up is the next step — "draft the report",
+"write up the results" — or let the other skills route you: `/lc-new`
+points at it once the spec is stable, `/lc-from-code` offers it after
+outputs materialize, and `/lc-from-paper`'s REVIEW close-out authors
+the reproduction's report with it.
 
 ## `/lc-feedback` — file an issue without context-switching
 

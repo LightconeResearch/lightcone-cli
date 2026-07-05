@@ -9,6 +9,7 @@ Each subdirectory is one Claude Code skill: `SKILL.md` plus optional `references
 | `lc-new` | Scaffold a new ASTRA-shaped project from a research question. |
 | `lc-from-code` | Bring an existing codebase into ASTRA — scan, spec, parameterize. |
 | `lc-from-paper` | Reproduce a published paper in ASTRA (paper-reproduction bundle entry point — see below). |
+| `lc-report` | Author the project's MyST report — the external write-up that references `astra.yaml` elements by tree-path via the MySTRA plugin. Invoked standalone ("write up the results") and from `lc-from-paper`'s REVIEW close-out. |
 | `lc-feedback` | Report bugs and feature requests upstream. |
 | `ralph` | Author a constitution and run a ralph loop against it (authoring + launching + iterating in one skill). `lc-from-paper` uses this for the long middle of a reproduction; standalone for any other long-running work. |
 

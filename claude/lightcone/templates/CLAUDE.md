@@ -15,6 +15,15 @@ lc verify                 # check provenance integrity
 
 `astra.yaml` and the code must never diverge. When you change one, update the other in the same edit and run `astra validate astra.yaml`.
 
+### Report
+
+`index.md` + `myst.yml` are a template MyST report wired to the MySTRA
+plugin. The report references analysis elements by path — inline mentions
+with the `{astra}` role, block embeds with the `{astra}` directive, live
+numbers with `{astra:value}` — so never hard-type a measured value in the
+prose. The `/lc-report` skill drafts and extends it. Preview with
+`myst start` (requires the MyST CLI, `npm i -g mystmd`).
+
 ---
 
 ## Project Notes

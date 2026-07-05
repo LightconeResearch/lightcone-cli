@@ -146,6 +146,8 @@ Show summary table:
 
 Then tell the user the spec is ready and they can begin implementation. Recommend running `/clear` first — the scoping conversation consumes significant context, and everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
 
+Also mention the report: `lc init` scaffolded a template MyST report (`index.md` + `myst.yml`) that references the spec by path. `/lc-report` drafts it — the Introduction and Methods can be written as soon as the spec is stable; Results once `lc run` has materialized outputs.
+
 ---
 
 ## Restrictions

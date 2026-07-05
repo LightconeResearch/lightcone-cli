@@ -390,7 +390,8 @@ _INDEX_MD_BODY = """
 > **TODO:** this report was scaffolded by `lc init`. It references the
 > analysis elements declared in `astra.yaml` *by path* — figures, decisions,
 > and numbers stay single-sourced in the analysis, so never hard-type a
-> measured value here. Preview with `myst start` (requires the MyST CLI).
+> measured value here. The `/lc-report` skill drafts it. Preview with
+> `myst start` (requires the MyST CLI).
 
 ## Introduction
 
@@ -447,7 +448,8 @@ input hashes, and output hash.
 plugin. The report references analysis elements by path — inline mentions
 with the `{astra}` role, block embeds with the `{astra}` directive, live
 numbers with `{astra:value}` — so never hard-type a measured value in the
-prose. Preview with `myst start` (requires the MyST CLI, `npm i -g mystmd`).
+prose. The `/lc-report` skill drafts and extends it. Preview with
+`myst start` (requires the MyST CLI, `npm i -g mystmd`).
 """
 
 

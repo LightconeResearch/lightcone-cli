@@ -49,6 +49,7 @@ nav = [
       {"lc-new" = "skills/lc-new.md"},
       {"lc-from-code" = "skills/lc-from-code.md"},
       {"lc-from-paper" = "skills/lc-from-paper.md"},
+      {"lc-report" = "skills/lc-report.md"},
       {"lc-feedback" = "skills/lc-feedback.md"},
       {"ralph" = "skills/ralph.md"},
       {"paper-extraction" = "skills/paper-extraction.md"},

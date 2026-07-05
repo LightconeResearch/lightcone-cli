@@ -23,6 +23,7 @@ user-invokable directly.
 | [lc-new](lc-new.md) | `/lc-new` | Scope a research question into an `astra.yaml`, with optional literature extraction. |
 | [lc-from-code](lc-from-code.md) | `/lc-from-code` | Wrap an existing codebase in ASTRA: scan, generate spec, parameterize, run. |
 | [lc-from-paper](lc-from-paper.md) | `/lc-from-paper` | Reproduce a published paper in ASTRA — ORIENT-first driver that hands off to a ralph loop for the long middle. |
+| [lc-report](lc-report.md) | `/lc-report` | Author the project's MyST report — prose that references `astra.yaml` elements by path via the MySTRA plugin. |
 | [lc-feedback](lc-feedback.md) | `/lc-feedback` | File a GitHub issue against the right Lightcone repo with auto-collected context. |
 | [ralph](ralph.md) | `/ralph` | Author a constitution and run a ralph loop against it. Used by `lc-from-paper` for the long middle; standalone for any other long-running work. |
 
@@ -81,6 +82,7 @@ claude/lightcone/
 │   ├── lc-new/{SKILL.md, references/*.md}
 │   ├── lc-from-code/SKILL.md
 │   ├── lc-from-paper/{SKILL.md, references/*.md, templates/{constitution.md, CLAUDE.md}}
+│   ├── lc-report/{SKILL.md, references/*.md}
 │   ├── lc-feedback/SKILL.md
 │   ├── ralph/{SKILL.md, references/*.md, scripts/ralph}
 │   ├── paper-extraction/{SKILL.md, scripts/*.py}

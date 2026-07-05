@@ -2,7 +2,7 @@
 
 The reproduction has converged: the constitution's `status:` is `closed` (after COMPARE returned `pass`, or `partial` with the un-acted opportunities logged, and the next cold-survey iteration found nothing left to do). The ralph loop's tmux session has exited. REVIEW runs back in the user's main session — the second of two interactive bookends, the first being ORIENT. It runs in the user's main session (not as an iteration) because both `/figure-comparison` and `/check-sentence-by-sentence` use `AskUserQuestion`, which isn't available inside detached ralph iterations.
 
-Its job is to render the validation surfaces, walk the user through the accumulated open questions, land the resolutions, and draft the final report — in one interactive arc. The Open opportunities list in CLAUDE.md already carries un-acted-on opportunities from the latest COMPARE (those iterations logged them directly); REVIEW just reads them.
+Its job is to render the validation surfaces, walk the user through the accumulated open questions, land the resolutions, and draft the final summary and MyST report — in one interactive arc. The Open opportunities list in CLAUDE.md already carries un-acted-on opportunities from the latest COMPARE (those iterations logged them directly); REVIEW just reads them.
 
 The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding into ARCHITECT, SPECIFY, LITERATURE, and IMPLEMENT as their per-iteration self-review passes. This close-out is what the previous shape called SUMMARIZE_RUN.
 
@@ -24,7 +24,8 @@ The phase name **REVIEW** is freed by the old pre-implement REVIEW phase folding
 - (Optional) `.lightcone/check-sentence-by-sentence.md` — `/check-sentence-by-sentence`'s claim audit (file:line or NOT FOUND per sentence)
 - `open-questions.md` — same file, but with `## Resolutions` section appended capturing what the user said for each entry
 - Edits to `astra.yaml` / `implementation-notes.md` / `universes/baseline.yaml` if any open-question resolution warrants a spec change
-- `REPRODUCTION-SUMMARY.md` — final report; concise (~1–2 pages); the canonical record of what the reproduction landed on
+- `REPRODUCTION-SUMMARY.md` — final summary; concise (~1–2 pages); the canonical record of what the reproduction landed on
+- `index.md` + `myst.yml` — the MyST report, authored via `/lc-report`: the rich, publication-shaped write-up that references `astra.yaml` elements by path
 - CLAUDE.md updates — **Paper-vs-code disagreements** entries reconciled with their resolutions (Open opportunities already there from COMPARE iterations)
 - A commit closing out the reproduction
 
@@ -74,13 +75,21 @@ A single markdown file at the project root, ~1–2 pages. The canonical record o
 
 Brief, not exhaustive. The depth lives in `astra.yaml` and the workdir's notes; the summary is the door into them.
 
-## Step 4: reconcile the Open opportunities list
+## Step 4: author the MyST report with `/lc-report`
+
+`REPRODUCTION-SUMMARY.md` is the concise close-out record; the MyST report is the rich, publication-shaped companion — Introduction / Methods / Results prose that references the spec's decisions, findings, and outputs by path and pulls reproduced numbers in live, so it can never drift from what the pipeline actually produced.
+
+Invoke `/lc-report` in paper-reproduction mode. It reads the spec, `work/reference/`, the comparison verdict, and the open-question resolutions from Step 2 — the divergence passages ("during reproduction we found…") come straight from those resolutions. If `index.md` / `myst.yml` don't exist yet (reproduction workdirs typically weren't scaffolded by `lc init`), the skill creates them. It validates with `myst build --html` before finishing; show the user how to preview (`myst start`).
+
+If the user prefers to skip the report, log it as an Open opportunity in CLAUDE.md instead of silently dropping it.
+
+## Step 5: reconcile the Open opportunities list
 
 COMPARE iterations have been logging un-acted-on opportunities into CLAUDE.md's *Open opportunities* list as they run, so the list is already populated. REVIEW's job here is reconciliation: cross-check that every opportunity in `comparison-report.yaml`'s `opportunities:` block that the user did NOT act on is present in CLAUDE.md's list, and remove any that the user acted on at REVIEW (e.g. authorized one more IMPLEMENT round to close).
 
-## Step 5: commit
+## Step 6: commit
 
-Stage `REPRODUCTION-SUMMARY.md`, `open-questions.md` (with resolutions), the updated CLAUDE.md, the final `astra.yaml`, the comparison artifacts, and any housekeeping changes. Commit with a message that names the verdict and the close-out:
+Stage `REPRODUCTION-SUMMARY.md`, the MyST report (`index.md`, `myst.yml`, any sub-analysis pages), `open-questions.md` (with resolutions), the updated CLAUDE.md, the final `astra.yaml`, the comparison artifacts, and any housekeeping changes. Commit with a message that names the verdict and the close-out:
 
 ```
 review: <paper-short-name> verdict <verdict>, summary at REPRODUCTION-SUMMARY.md
@@ -93,7 +102,8 @@ This commit is the durable mark that the reproduction has reached close-out. Fut
 - `comparison-report.yaml` verdict is `pass` (or `partial` with un-acted opportunities logged) ⇒ ready to close out
 - `.lightcone/comparison.html` exists ⇒ `/figure-comparison` rendered
 - `open-questions.md` has a `## Resolutions` section covering every entry ⇒ open-questions walkthrough done
-- `REPRODUCTION-SUMMARY.md` exists ⇒ final report written
+- `REPRODUCTION-SUMMARY.md` exists ⇒ final summary written
+- `index.md` drafted past the `lc init` TODO stub (or its skip logged as an Open opportunity) ⇒ MyST report authored
 - CLAUDE.md's *Open opportunities* list reflects the un-acted-on opportunities from the latest COMPARE ⇒ reconciliation done
 - A `review:` commit lands ⇒ REVIEW done; reproduction complete
 
@@ -104,5 +114,5 @@ This commit is the durable mark that the reproduction has reached close-out. Fut
 - **The user owns the verdict-acceptance decision.** REVIEW's purpose is to let the user see what the loop's iterations did and decide whether they accept it. The skill renders surfaces and asks; it does not unilaterally close.
 - **Don't confuse with the per-phase reviews inside the loop.** ARCHITECT, SPECIFY, LITERATURE, and IMPLEMENT each have their own fresh-context review discipline that happens by iteration boundary. Those are unrelated to this close-out — same word, different jobs. The phase boundary makes them unambiguous: per-phase reviews live inside their host phase's reference; this one is the post-loop close-out in the user's main session.
 - **Open-question resolutions are durable.** Append to `open-questions.md`'s `## Resolutions` section so the next re-run / future session sees what was decided. Do not delete the original questions.
-- **Keep the report short.** Long reports get skimmed; short reports get read. Two pages is generous.
+- **Keep the summary short.** Long summaries get skimmed; short summaries get read. Two pages is generous. Depth belongs in the MyST report (Step 4), which telescopes into the spec rather than restating it.
 - **Do not invent further work.** If the user has accepted the verdict and the opportunities are propagated, the reproduction is done. The next session, the user, or a future revisit can decide whether tightening any open opportunity still serves them.

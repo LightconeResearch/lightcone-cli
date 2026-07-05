@@ -122,6 +122,8 @@ If the scan found existing results elsewhere in the project, compare them agains
 
 Then validate the spec and the provenance chain: `astra validate astra.yaml` and `lc verify`. Present summary to user.
 
+With outputs materialized, offer to draft the write-up: `/lc-report` authors the project's MyST report (`index.md`), referencing the freshly specced decisions and outputs by path.
+
 ## Rules
 
 - **Minimal changes.** Do not refactor, rename, reorganize, or "improve" existing code.
