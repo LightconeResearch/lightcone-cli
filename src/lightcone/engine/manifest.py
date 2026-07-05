@@ -45,6 +45,7 @@ __all__ = [
     "fingerprint_external",
     "read_manifest",
     "sha256_dir",
+    "statwalk_dir",
     "write_manifest",
 ]
 
@@ -90,17 +91,41 @@ def _sha256_file(path: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
+def statwalk_dir(path: Path) -> str:
+    """Cheap structural fingerprint of a directory.
+
+    Hashes the sorted list of ``(relative path, mtime_ns, size)`` for every
+    file under ``path`` — stat calls only, no file contents. This is the
+    directory analogue of the ``(mtime, size)`` fingerprint used for
+    external files: external inputs can be arbitrarily large (multi-TB
+    image trees), so content-hashing them per rule is not viable.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    h = hashlib.sha256()
+    files = [
+        p for p in path.rglob("*") if p.is_file() and p.name not in _HASH_EXCLUDE
+    ]
+    for p in sorted(files, key=lambda x: x.relative_to(path).as_posix()):
+        rel = p.relative_to(path).as_posix()
+        st = p.stat()
+        h.update(f"{rel}\0{st.st_mtime_ns}-{st.st_size}\0".encode("utf-8"))
+    return f"statwalk:{h.hexdigest()}"
+
+
 def fingerprint_external(path: Path, *, strict: bool = False) -> str:
     """Fingerprint an external input.
 
     For files: ``(mtime, size)`` by default; sha256 when ``strict=True``.
-    For directories: always sha256.
+    For directories: stat-walk by default; content sha256 when
+    ``strict=True``.
     For missing paths: returns the literal string ``"missing"``.
     """
     if not path.exists():
         return "missing"
     if path.is_dir():
-        return sha256_dir(path)
+        return sha256_dir(path) if strict else statwalk_dir(path)
     if strict:
         return _sha256_file(path)
     st = path.stat()

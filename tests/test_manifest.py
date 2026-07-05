@@ -122,6 +122,19 @@ def test_fingerprint_external_directory(tmp_path: Path) -> None:
     d = tmp_path / "input_dir"
     _write(d / "a.txt", b"data")
     fp = fingerprint_external(d)
+    assert fp.startswith("statwalk:")
+    # stable across calls, sensitive to structural change
+    assert fp == fingerprint_external(d)
+    _write(d / "b.txt", b"more")
+    assert fingerprint_external(d) != fp
+
+
+def test_fingerprint_external_directory_strict_uses_sha256(
+    tmp_path: Path,
+) -> None:
+    d = tmp_path / "input_dir"
+    _write(d / "a.txt", b"data")
+    fp = fingerprint_external(d, strict=True)
     assert fp.startswith("sha256:")
 
 
