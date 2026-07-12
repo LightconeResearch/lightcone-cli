@@ -213,6 +213,80 @@ def test_run_cmd_no_separator_when_no_targets() -> None:
     assert "--" not in cmd
 
 
+def test_run_cmd_gateway_scopes_shared_fs_and_latency() -> None:
+    """Gateway workers share only the project volume with the driver, not
+    its HOME (source cache) or install prefix, and see it through NFS.
+    Validated on the lightcone-hub deployment: without --shared-fs-usage
+    the child snakemake mkdir's the driver's ~/.cache path (PermissionError
+    in the worker pod), and without --latency-wait the driver's NFS
+    attribute cache declares freshly written outputs missing."""
+    from lightcone.cli.commands import _build_snakemake_cmd
+
+    cmd = _build_snakemake_cmd(
+        snakefile_path=Path("/shared/proj/.lightcone/Snakefile"),
+        project=Path("/shared/proj"),
+        n="4",
+        rerun_triggers="code,input,mtime,params",
+        targets=[],
+        force=False,
+        has_outputs=False,
+        gateway=True,
+    )
+
+    fs_idx = cmd.index("--shared-fs-usage")
+    values = cmd[fs_idx + 1 : fs_idx + 5]
+    assert set(values) == {
+        "input-output",
+        "persistence",
+        "sources",
+        "storage-local-copies",
+    }
+    assert "source-cache" not in cmd, "driver ~/.cache is not visible to worker pods"
+    assert "software-deployment" not in cmd, "driver interpreter path differs in pods"
+    assert cmd[cmd.index("--latency-wait") + 1] == "60"
+
+
+def test_run_cmd_default_keeps_snakemake_shared_fs_defaults() -> None:
+    """Local/SLURM workers genuinely share the driver's environment —
+    the gateway-only flags must not leak into those paths."""
+    from lightcone.cli.commands import _build_snakemake_cmd
+
+    cmd = _build_snakemake_cmd(
+        snakefile_path=Path("/proj/.lightcone/Snakefile"),
+        project=Path("/proj"),
+        n="4",
+        rerun_triggers="code,input,mtime,params",
+        targets=[],
+        force=False,
+        has_outputs=False,
+    )
+
+    assert "--shared-fs-usage" not in cmd
+    assert "--latency-wait" not in cmd
+
+
+def test_gateway_branch_active_matches_cluster_for_run_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gateway_branch_active must mirror cluster_for_run's branch order:
+    an explicit scheduler address outranks the gateway environment."""
+    from lightcone.engine.dask_cluster import gateway_branch_active
+
+    for var in (
+        "DASK_SCHEDULER_ADDRESS",
+        "DASK_GATEWAY__ADDRESS",
+        "LIGHTCONE_GATEWAY_CLUSTER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    assert gateway_branch_active() is False
+
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
+    assert gateway_branch_active() is True
+
+    monkeypatch.setenv("DASK_SCHEDULER_ADDRESS", "tcp://existing:8786")
+    assert gateway_branch_active() is False
+
+
 def test_run_cmd_multiple_triggers_all_before_separator() -> None:
     """All four trigger tokens must precede the '--' separator."""
     from lightcone.cli.commands import _build_snakemake_cmd

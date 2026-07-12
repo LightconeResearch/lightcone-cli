@@ -545,7 +545,11 @@ def run(
     _abort_on_perlmutter_login()
 
     from lightcone.engine.container import KUBERNETES_RUNTIME, load_runtime
-    from lightcone.engine.dask_cluster import GATEWAY_CLUSTER_ENV, cluster_for_run
+    from lightcone.engine.dask_cluster import (
+        GATEWAY_CLUSTER_ENV,
+        cluster_for_run,
+        gateway_branch_active,
+    )
     from lightcone.engine.scratch import (
         RunLockBusyError,
         acquire_run_lock,
@@ -635,6 +639,7 @@ def run(
         targets=targets,
         force=force,
         has_outputs=bool(outputs),
+        gateway=gateway_branch_active(),
     )
 
     # Hold a project-level flock for the duration of the run. Acquiring
@@ -748,12 +753,23 @@ def _build_snakemake_cmd(
     targets: list[str],
     force: bool,
     has_outputs: bool,
+    gateway: bool = False,
 ) -> list[str]:
     """Build the snakemake argv list for ``lc run``.
 
     ``--rerun-triggers`` uses ``nargs=+`` in snakemake's argparse, so without
     an explicit ``--`` separator it greedily consumes the first positional
     target path as an extra trigger value, causing an "invalid choice" error.
+
+    *gateway* scopes ``--shared-fs-usage``: Gateway worker pods share
+    only the project volume with the driver, not its HOME or install
+    prefix. Snakemake's default (everything shared) makes the child
+    snakemake use driver-local paths — the driver's source-cache under
+    ``~/.cache`` (unwritable/absent in the worker pod) and the driver's
+    ``sys.executable`` (a conda path a slim worker image doesn't have).
+    Declaring what is actually shared keeps the child on worker-local
+    equivalents. Local and SLURM runs keep the default: there the
+    workers genuinely share the driver's environment.
     """
     cmd: list[str] = [
         "snakemake",
@@ -770,6 +786,21 @@ def _build_snakemake_cmd(
         "--rerun-triggers",
         *rerun_triggers.split(","),
     ]
+    if gateway:
+        cmd += [
+            "--shared-fs-usage",
+            "input-output",
+            "persistence",
+            "sources",
+            "storage-local-copies",
+            # Driver and workers see the project through NFS (the hub's
+            # RWX volume); the client-side attribute cache can hide a
+            # worker's freshly written outputs from the driver for tens
+            # of seconds. Snakemake's default 5s declares the rule
+            # failed ("output missing") even though it succeeded.
+            "--latency-wait",
+            "60",
+        ]
     if force:
         # ``--force`` scopes to explicit targets; ``rule all`` itself
         # has no recipe, so force-all is the only useful sense when no

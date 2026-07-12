@@ -17,6 +17,10 @@ from snakemake_interface_executor_plugins.executors.remote import (  # type: ign
 from snakemake_interface_executor_plugins.jobs import (  # type: ignore[import-untyped]
     JobExecutorInterface,
 )
+from snakemake_interface_executor_plugins.utils import (  # type: ignore[import-untyped]
+    format_cli_arg,
+    join_cli_args,
+)
 
 from lightcone.engine.dask_cluster import (
     GATEWAY_CLUSTER_ENV,
@@ -58,6 +62,16 @@ def _run_shell(cmd: str) -> int:
         for line in stream.splitlines():
             if line.startswith(SENTINEL):
                 forwarded.append(line[len(SENTINEL):])
+    if p.returncode != 0:
+        # The child failed: its own diagnostics are the only clue, and
+        # they exist solely in this worker process. Forward a bounded
+        # tail so the failure is debuggable from the driver terminal
+        # (exit 127 with no output is a debugging dead end).
+        tail = (p.stderr.strip() or p.stdout.strip()).splitlines()[-15:]
+        forwarded.append(
+            f"✗ worker-side snakemake exited {p.returncode}; last output:"
+        )
+        forwarded.extend(f"    {line}" for line in tail)
     if forwarded:
         block = "\n".join(forwarded) + "\n"
         lock_path = os.environ.get("LIGHTCONE_OUT_LOCK")
@@ -144,6 +158,45 @@ class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
     def __init__(self, workflow, logger):  # type: ignore[no-untyped-def]
         super().__init__(workflow, logger)
         self._client, self._gateway_cluster = _connect_client()
+
+    def get_python_executable(self) -> str:
+        """Python for the child snakemake command.
+
+        The default (``sys.executable``) is right when driver and
+        workers share an environment — local LocalCluster workers and
+        srun-launched SLURM workers inherit the driver's venv, so the
+        absolute path exists there. On Dask Gateway the driver (e.g. a
+        JupyterLab pod) and the workers run *different images*: the
+        driver's interpreter path need not exist in the worker pod
+        (conda notebook vs pip-slim worker is exactly this), which
+        fails with exit 127 before snakemake even starts. The worker
+        image is the software deployment, so let the worker's own PATH
+        resolve the interpreter.
+        """
+        if self._gateway_cluster is not None:
+            return "python3"
+        return super().get_python_executable()  # type: ignore[no-any-return]
+
+    def additional_general_args(self) -> str:
+        """Pin the child snakemake's working directory explicitly.
+
+        Local and SLURM workers inherit the driver's cwd (LocalCluster
+        forks in place; srun preserves the submit directory), so the
+        child's relative output paths land in the project by accident
+        of process ancestry. Gateway worker pods start in their own
+        HOME — without ``--directory``, a rule "succeeds" while writing
+        results into the pod's ephemeral filesystem. The parent
+        snakemake chdir'd into the project (``lc run`` passes ``-d``),
+        so ``os.getcwd()`` here *is* the project directory — a path
+        valid on every worker because lc requires a shared project
+        filesystem (``implies_no_shared_fs=False``).
+        """
+        return join_cli_args(  # type: ignore[no-any-return]
+            [
+                super().additional_general_args(),
+                format_cli_arg("--directory", os.getcwd()),
+            ]
+        )
 
     def run_job(self, job: JobExecutorInterface) -> None:
         cmd = self.format_job_exec(job)

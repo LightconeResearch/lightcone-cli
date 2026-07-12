@@ -115,6 +115,22 @@ def _resources_arg(shape: _NodeShape) -> str:
     return " ".join(f"{k}={int(v)}" for k, v in _resource_dict(shape).items())
 
 
+def gateway_branch_active() -> bool:
+    """Would :func:`cluster_for_run` take the Gateway branch right now?
+
+    Exposed so ``lc run`` can shape the parent snakemake invocation
+    (``--shared-fs-usage``) before entering the cluster context — the
+    decision is a pure function of the environment, in the same
+    priority order as the branches below.
+    """
+    if os.environ.get("DASK_SCHEDULER_ADDRESS"):
+        return False
+    return (
+        GATEWAY_CLUSTER_ENV in os.environ
+        or "DASK_GATEWAY__ADDRESS" in os.environ
+    )
+
+
 @contextmanager
 def cluster_for_run(
     *,
