@@ -1,19 +1,30 @@
 # mypy: disable-error-code="no-untyped-call"
 """Cluster lifecycle for ``lc run``.
 
-One context manager, three branches:
+One context manager, four branches:
 
 - ``DASK_SCHEDULER_ADDRESS`` is already set → yield it as-is. We don't own
   the cluster, so we don't tear it down.
+- A Dask Gateway environment is detected (``LIGHTCONE_GATEWAY_CLUSTER`` or
+  ``DASK_GATEWAY__ADDRESS`` is set, e.g. on a JupyterHub deployment) →
+  create a Gateway cluster (or attach to a named one) via the
+  ``dask-gateway`` client. Gateway scheduler addresses use a custom
+  ``gateway://`` comm scheme that a bare ``distributed.Client`` cannot
+  dial, so the child snakemake process is told the *cluster name* via
+  ``LIGHTCONE_GATEWAY_CLUSTER`` and rejoins through the Gateway API —
+  the same rendezvous-by-ambient-context pattern the SLURM branch uses.
 - ``SLURM_JOB_ID`` is set → start an in-process scheduler via
   ``LocalCluster(n_workers=0)``, then ``srun`` one ``dask worker`` per node
   across the allocation. Workers advertise the node's full resources;
   per-rule ``threads`` / ``mem_mb`` / ``gpus`` map to per-task constraints.
-- Neither → ``LocalCluster()`` sized to the local machine.
+- None of the above → ``LocalCluster()`` sized to the local machine.
 
-The scheduler is always in-process (driven by ``lc run`` itself) so its
+Except on the Gateway branch (where the Gateway server owns scheduling),
+the scheduler is always in-process (driven by ``lc run`` itself) so its
 lifetime equals the run's lifetime — no service to manage, no orphaned
-schedulers if the driver crashes.
+schedulers if the driver crashes. Owned Gateway clusters are shut down on
+exit; attached ones (named via ``LIGHTCONE_GATEWAY_CLUSTER``) are left
+running, mirroring the ``DASK_SCHEDULER_ADDRESS`` convention.
 """
 
 from __future__ import annotations
@@ -33,6 +44,21 @@ from dataclasses import dataclass
 RESOURCE_CPUS = "cpus"
 RESOURCE_MEMORY = "memory"
 RESOURCE_GPUS = "gpus"
+
+#: Env var carrying a Dask Gateway cluster name. Set by the user to make
+#: ``lc run`` attach to an existing Gateway cluster (e.g. one created from
+#: the JupyterLab Dask sidebar); set by :func:`cluster_for_run` for the
+#: child snakemake process so the executor plugin can rejoin the cluster
+#: through the Gateway API (a bare ``Client`` cannot dial ``gateway://``).
+GATEWAY_CLUSTER_ENV = "LIGHTCONE_GATEWAY_CLUSTER"
+
+#: How long to wait for the first Gateway worker. Generous because a
+#: scale-from-zero pool must provision a node and pull the worker image.
+GATEWAY_WORKER_TIMEOUT = 600
+
+#: Ceiling for adaptive scaling of an owned Gateway cluster when ``lc run``
+#: has no parallelism hint.
+GATEWAY_DEFAULT_MAX_WORKERS = 8
 
 
 @dataclass
@@ -89,32 +115,147 @@ def cluster_for_run(
     *,
     verbose: bool = False,
     local_directory: str | None = None,
-) -> Iterator[str]:
-    """Yield a Dask scheduler address valid for the duration of `lc run`.
+    max_workers: int | None = None,
+) -> Iterator[dict[str, str]]:
+    """Yield the env overlay the child snakemake needs to reach the cluster.
+
+    The parent (``lc run``) and the executor plugin live in different
+    processes, so connection info travels via environment variables.
+    Address-based branches yield ``{"DASK_SCHEDULER_ADDRESS": addr}``;
+    the Gateway branch yields ``{GATEWAY_CLUSTER_ENV: name}`` because
+    Gateway clusters are rejoined by name through the authenticated
+    Gateway API rather than dialled by address.
 
     *local_directory*, when given, is where dask workers stage their
     spilled task data and internal state files. ``lc run`` resolves it
     to a path under :mod:`lightcone.engine.scratch` so on NERSC the
     spill lands on Lustre instead of DVS-mounted home/CFS (where small-
     file I/O is slow and can pressure the gateway nodes).
+
+    *max_workers* bounds adaptive scaling of an owned Gateway cluster;
+    the in-process branches size themselves to the node/allocation.
     """
     if addr := os.environ.get("DASK_SCHEDULER_ADDRESS"):
         if verbose:
             print(f"→ Using existing Dask scheduler at {addr}")
-        yield addr
+        yield {"DASK_SCHEDULER_ADDRESS": addr}
+        return
+
+    if GATEWAY_CLUSTER_ENV in os.environ or "DASK_GATEWAY__ADDRESS" in os.environ:
+        with _gateway_cluster(verbose=verbose, max_workers=max_workers) as name:
+            yield {GATEWAY_CLUSTER_ENV: name}
         return
 
     if "SLURM_JOB_ID" in os.environ:
         with _slurm_backed_cluster(
             verbose=verbose, local_directory=local_directory
         ) as addr:
-            yield addr
+            yield {"DASK_SCHEDULER_ADDRESS": addr}
         return
 
     with _local_cluster(
         verbose=verbose, local_directory=local_directory
     ) as addr:
-        yield addr
+        yield {"DASK_SCHEDULER_ADDRESS": addr}
+
+
+@contextmanager
+def _gateway_cluster(
+    *, verbose: bool, max_workers: int | None
+) -> Iterator[str]:
+    """Create (or attach to) a Dask Gateway cluster; yield its name.
+
+    Ownership follows the same convention as the address branch: a
+    cluster we create is ours to shut down; a cluster named by the user
+    via ``LIGHTCONE_GATEWAY_CLUSTER`` (e.g. created from the JupyterLab
+    Dask sidebar, dashboard already docked) is left running on exit.
+
+    The Gateway client is configured entirely by ambient dask config —
+    on a lightcone JupyterHub deployment the ``DASK_GATEWAY__*`` env
+    vars carry the API address, the JupyterHub auth mode, and the
+    proxy address, so ``Gateway()`` needs no arguments here.
+    """
+    try:
+        from dask_gateway import Gateway
+    except ImportError as exc:
+        raise RuntimeError(
+            "A Dask Gateway environment was detected "
+            f"({GATEWAY_CLUSTER_ENV} or DASK_GATEWAY__ADDRESS is set) but "
+            "the dask-gateway client is not installed. Install it with "
+            "`pip install lightcone-cli[gateway]`."
+        ) from exc
+
+    gateway = Gateway()
+    name = os.environ.get(GATEWAY_CLUSTER_ENV)
+    owned = name is None
+    if owned:
+        cluster = gateway.new_cluster(shutdown_on_close=False)
+        cluster.adapt(
+            minimum=1, maximum=max_workers or GATEWAY_DEFAULT_MAX_WORKERS
+        )
+    else:
+        cluster = gateway.connect(name)
+
+    if verbose:
+        mode = "started" if owned else "attached to"
+        print(
+            f"→ {mode} Dask Gateway cluster {cluster.name} "
+            f"(dashboard: {cluster.dashboard_link})"
+        )
+
+    try:
+        if owned:
+            # A worker is guaranteed to be coming (adaptive minimum=1),
+            # so wait for it and fail fast if the deployment forgot the
+            # resource contract — otherwise every task hangs silently.
+            client = cluster.get_client()
+            try:
+                client.wait_for_workers(1, timeout=GATEWAY_WORKER_TIMEOUT)
+                _assert_worker_resources(client)
+            finally:
+                client.close()
+        else:
+            # Don't touch the user's scaling; verify the contract only
+            # if workers are already up (an adaptive cluster at zero
+            # will scale once the executor submits tasks).
+            client = cluster.get_client()
+            try:
+                workers = client.scheduler_info().get("workers", {})
+                if workers:
+                    _assert_worker_resources(client)
+            finally:
+                client.close()
+        yield cluster.name
+    finally:
+        if owned:
+            cluster.shutdown()
+        else:
+            cluster.close()
+
+
+def _assert_worker_resources(client: object) -> None:
+    """Fail fast when Gateway workers don't advertise the resource contract.
+
+    Dask schedules a task only on workers advertising *every* requested
+    resource key, so a Gateway deployment that forgot to inject
+    ``cpus``/``memory``/``gpus`` (via cluster-options environment, e.g.
+    ``DASK_DISTRIBUTED__WORKER__RESOURCES__CPUS``) makes every rule hang
+    with no error. Better to refuse loudly at startup.
+    """
+    workers = client.scheduler_info().get("workers", {})  # type: ignore[attr-defined]
+    if not workers:
+        return
+    if any(
+        RESOURCE_CPUS in (w.get("resources") or {}) for w in workers.values()
+    ):
+        return
+    raise RuntimeError(
+        "Dask Gateway workers do not advertise the lightcone resource "
+        f"contract ({RESOURCE_CPUS}/{RESOURCE_MEMORY}/{RESOURCE_GPUS}); "
+        "per-rule resource requests would never schedule. Fix the gateway "
+        "deployment to inject DASK_DISTRIBUTED__WORKER__RESOURCES__* into "
+        "worker pods (see the lightcone-hub dask-gateway values)."
+    )
 
 
 @contextmanager

@@ -537,8 +537,9 @@ def run(
     """Materialize outputs declared in astra.yaml.
 
     Always dispatches through a Dask cluster: a ``LocalCluster`` on a
-    workstation, srun-launched workers inside a SLURM allocation, or an
-    existing scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
+    workstation, srun-launched workers inside a SLURM allocation, a
+    Dask Gateway cluster on a JupyterHub deployment, or an existing
+    scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
     """
     _abort_on_perlmutter_login()
 
@@ -638,11 +639,17 @@ def run(
         raise click.ClickException(str(e))
 
     with cluster_for_run(
-        verbose=verbose, local_directory=str(rundirs.dask_local)
-    ) as scheduler_addr:
+        verbose=verbose,
+        local_directory=str(rundirs.dask_local),
+        max_workers=int(n),
+    ) as cluster_env:
         env = {
             **os.environ,
-            "DASK_SCHEDULER_ADDRESS": scheduler_addr,
+            # How the child snakemake's executor reaches the cluster:
+            # DASK_SCHEDULER_ADDRESS for address-dialled clusters, or
+            # LIGHTCONE_GATEWAY_CLUSTER for Dask Gateway (rejoined by
+            # name through the Gateway API).
+            **cluster_env,
             # The dask plugin's worker-side ``_run_shell`` takes this
             # ``flock`` before forwarding a rule's lightcone output, so
             # parallel rules' blocks never interleave at the line level

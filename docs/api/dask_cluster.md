@@ -1,24 +1,38 @@
 # lightcone.engine.dask_cluster
 
 Cluster lifecycle for `lc run`. One context manager (`cluster_for_run`),
-three branches, no service to manage.
+four branches, no service to manage.
 
 Source: `src/lightcone/engine/dask_cluster.py`.
 
-## `cluster_for_run(*, verbose=False) → Iterator[str]`
+## `cluster_for_run(*, verbose=False, local_directory=None, max_workers=None) → Iterator[dict[str, str]]`
 
-Yields a Dask scheduler address valid for the duration of `lc run`.
-Three branches in priority order:
+Yields the **env overlay** the child snakemake process needs to reach
+the cluster — the parent and the executor plugin are separate
+processes, so connection info travels via environment variables.
+Four branches in priority order:
 
-1. **`DASK_SCHEDULER_ADDRESS` already set** → yield as-is. We don't
-   own the cluster, so we don't tear it down.
-2. **`SLURM_JOB_ID` set** → start an in-process scheduler bound to the
+1. **`DASK_SCHEDULER_ADDRESS` already set** → yield
+   `{"DASK_SCHEDULER_ADDRESS": addr}` as-is. We don't own the cluster,
+   so we don't tear it down.
+2. **Dask Gateway detected** (`LIGHTCONE_GATEWAY_CLUSTER` or
+   `DASK_GATEWAY__ADDRESS` set, e.g. a JupyterHub pod) → create an
+   adaptive Gateway cluster bounded by *max_workers*, or attach to the
+   named one; yield `{"LIGHTCONE_GATEWAY_CLUSTER": name}`. Gateway
+   scheduler addresses use a `gateway://` comm scheme a bare `Client`
+   cannot dial, so the child rejoins **by name** through the
+   authenticated Gateway API. Created clusters are shut down on exit;
+   attached ones are left running. Startup fails fast if workers don't
+   advertise the resource contract below. Requires the optional
+   dependency: `pip install lightcone-cli[gateway]`.
+3. **`SLURM_JOB_ID` set** → start an in-process scheduler bound to the
    driver's SLURM hostname (`SLURMD_NODENAME` or `gethostname()`),
    then `srun` one `dask worker` per node across the allocation.
-3. **Neither** → `LocalCluster()` sized to the local machine.
+4. **None of the above** → `LocalCluster()` sized to the local machine.
 
-The scheduler is always in-process, so its lifetime equals the run's
-lifetime: no orphaned schedulers if the driver crashes.
+Outside the Gateway branch the scheduler is always in-process, so its
+lifetime equals the run's lifetime: no orphaned schedulers if the
+driver crashes.
 
 ## Resource keys
 

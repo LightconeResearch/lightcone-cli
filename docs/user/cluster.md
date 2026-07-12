@@ -170,6 +170,31 @@ lc run
 `lc run` notices the env var and connects rather than starting its
 own scheduler. It does *not* tear the scheduler down on exit.
 
+## JupyterHub / Dask Gateway
+
+On a lightcone JupyterHub deployment (where the `DASK_GATEWAY__*` env
+vars are ambient in every pod), `lc run` needs no configuration at
+all: it requests an adaptive Dask Gateway cluster for the run, bounded
+by `--jobs`, and shuts it down afterwards. Workers scale up from zero
+on the compute pool, so the first rule may wait a couple of minutes
+for node provisioning.
+
+To reuse a cluster you already created — for example from the
+JupyterLab Dask sidebar, with its dashboard panels docked — name it:
+
+```bash
+export LIGHTCONE_GATEWAY_CLUSTER=<cluster-name>   # e.g. hub.a1b2c3...
+lc run
+```
+
+`lc run` attaches without changing the cluster's scaling and leaves it
+running on exit, mirroring the `DASK_SCHEDULER_ADDRESS` convention.
+Note that a Gateway scheduler's `gateway://` address cannot be used
+with `DASK_SCHEDULER_ADDRESS` — always attach by name.
+
+Requires the optional gateway extra:
+`pip install lightcone-cli[gateway]` (preinstalled on the hub image).
+
 ## NERSC Perlmutter: site-specific notes
 
 !!! note "Setting up on Perlmutter for the first time?"

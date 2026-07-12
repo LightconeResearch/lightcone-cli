@@ -19,6 +19,7 @@ from snakemake_interface_executor_plugins.jobs import (  # type: ignore[import-u
 )
 
 from lightcone.engine.dask_cluster import (
+    GATEWAY_CLUSTER_ENV,
     RESOURCE_CPUS,
     RESOURCE_GPUS,
     RESOURCE_MEMORY,
@@ -90,25 +91,53 @@ def _build_resources(job: JobExecutorInterface) -> dict[str, float]:
     return res
 
 
+def _connect_client():  # type: ignore[no-untyped-def]
+    """Resolve the Dask client from the environment.
+
+    Mirrors the branches of ``lightcone.engine.dask_cluster.cluster_for_run``
+    from the child process side: a Gateway cluster is rejoined *by name*
+    through the authenticated Gateway API (its ``gateway://`` scheduler
+    address cannot be dialled by a bare ``Client``); anything else is a
+    plain address in ``DASK_SCHEDULER_ADDRESS``.
+
+    Returns ``(client, gateway_cluster_or_None)`` — the cluster handle is
+    kept so ``shutdown()`` can release its local connections. It is never
+    shut down here: cluster lifetime belongs to the parent ``lc run``.
+    """
+    if name := os.environ.get(GATEWAY_CLUSTER_ENV):
+        try:
+            from dask_gateway import Gateway
+        except ImportError as exc:
+            raise WorkflowError(
+                f"{GATEWAY_CLUSTER_ENV} is set but the dask-gateway client "
+                "is not installed (`pip install lightcone-cli[gateway]`)."
+            ) from exc
+        cluster = Gateway().connect(name)
+        return cluster.get_client(), cluster
+
+    try:
+        from dask.distributed import Client
+    except ImportError as exc:
+        raise WorkflowError(
+            "dask.distributed is required for the dask executor "
+            "(`pip install distributed`)."
+        ) from exc
+
+    addr = os.environ.get("DASK_SCHEDULER_ADDRESS")
+    if not addr:
+        raise WorkflowError(
+            f"Neither DASK_SCHEDULER_ADDRESS nor {GATEWAY_CLUSTER_ENV} is "
+            "set. `lc run` should set one before invoking snakemake; if "
+            "you're calling snakemake directly, point it at a running dask "
+            "scheduler."
+        )
+    return Client(addr), None
+
+
 class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
     def __init__(self, workflow, logger):  # type: ignore[no-untyped-def]
         super().__init__(workflow, logger)
-        try:
-            from dask.distributed import Client
-        except ImportError as exc:
-            raise WorkflowError(
-                "dask.distributed is required for the dask executor "
-                "(`pip install distributed`)."
-            ) from exc
-
-        addr = os.environ.get("DASK_SCHEDULER_ADDRESS")
-        if not addr:
-            raise WorkflowError(
-                "DASK_SCHEDULER_ADDRESS is not set. `lc run` should set this "
-                "before invoking snakemake; if you're calling snakemake "
-                "directly, point it at a running dask scheduler."
-            )
-        self._client = Client(addr)
+        self._client, self._gateway_cluster = _connect_client()
 
     def run_job(self, job: JobExecutorInterface) -> None:
         cmd = self.format_job_exec(job)
@@ -169,5 +198,9 @@ class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
     def shutdown(self) -> None:
         try:
             self._client.close()
+            if self._gateway_cluster is not None:
+                # Releases this process's connections only; the cluster
+                # itself is owned (and shut down) by the parent lc run.
+                self._gateway_cluster.close()
         finally:
             super().shutdown()

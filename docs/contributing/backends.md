@@ -23,8 +23,9 @@ The supported runtimes are `docker`, `podman`, and `podman-hpc` (plus the
 
 ## Adding a Dask cluster shape
 
-Today the cluster manager has three branches: existing scheduler, SLURM
-allocation, local. To add a fourth (for example, a custom GPU farm):
+Today the cluster manager has four branches: existing scheduler, Dask
+Gateway (JupyterHub), SLURM allocation, local. To add another (for
+example, a custom GPU farm):
 
 1. Add a branch to `cluster_for_run()` in
    `src/lightcone/engine/dask_cluster.py`.
