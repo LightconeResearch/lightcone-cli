@@ -110,7 +110,9 @@ class TestDetectCurrentSite:
         )
         site = detect_current_site()
         assert site.key == "lightcone-hub"
-        assert site.get("container_runtime") == "none"
+        # Kubernetes (the worker pod) is the container runtime on the
+        # hub — recipes run unwrapped but are still containerized.
+        assert site.get("container_runtime") == "kubernetes"
         assert site.get("backend") == "dask-gateway"
 
     def test_partial_env_markers_do_not_match(

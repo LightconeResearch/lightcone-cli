@@ -95,15 +95,32 @@ def _connect_client():  # type: ignore[no-untyped-def]
     """Resolve the Dask client from the environment.
 
     Mirrors the branches of ``lightcone.engine.dask_cluster.cluster_for_run``
-    from the child process side: a Gateway cluster is rejoined *by name*
-    through the authenticated Gateway API (its ``gateway://`` scheduler
-    address cannot be dialled by a bare ``Client``); anything else is a
-    plain address in ``DASK_SCHEDULER_ADDRESS``.
+    from the child process side, **in the same priority order**: a plain
+    address in ``DASK_SCHEDULER_ADDRESS`` wins first (matching the parent,
+    where an explicit address outranks a Gateway environment); otherwise a
+    Gateway cluster is rejoined *by name* through the authenticated Gateway
+    API (its ``gateway://`` scheduler address cannot be dialled by a bare
+    ``Client``). The parent additionally strips the losing variable from
+    the child env (see ``lc run``), so a stale ``LIGHTCONE_GATEWAY_CLUSTER``
+    lingering in a user's shell can never redirect the child to a cluster
+    the parent didn't verify.
 
     Returns ``(client, gateway_cluster_or_None)`` — the cluster handle is
     kept so ``shutdown()`` can release its local connections. It is never
-    shut down here: cluster lifetime belongs to the parent ``lc run``.
+    shut down here: on the Gateway path the cluster belongs to the *user*
+    (lc is attach-only); on the address paths it belongs to whoever
+    started the scheduler.
     """
+    if addr := os.environ.get("DASK_SCHEDULER_ADDRESS"):
+        try:
+            from dask.distributed import Client
+        except ImportError as exc:
+            raise WorkflowError(
+                "dask.distributed is required for the dask executor "
+                "(`pip install distributed`)."
+            ) from exc
+        return Client(addr), None
+
     if name := os.environ.get(GATEWAY_CLUSTER_ENV):
         try:
             from dask_gateway import Gateway
@@ -115,23 +132,12 @@ def _connect_client():  # type: ignore[no-untyped-def]
         cluster = Gateway().connect(name)
         return cluster.get_client(), cluster
 
-    try:
-        from dask.distributed import Client
-    except ImportError as exc:
-        raise WorkflowError(
-            "dask.distributed is required for the dask executor "
-            "(`pip install distributed`)."
-        ) from exc
-
-    addr = os.environ.get("DASK_SCHEDULER_ADDRESS")
-    if not addr:
-        raise WorkflowError(
-            f"Neither DASK_SCHEDULER_ADDRESS nor {GATEWAY_CLUSTER_ENV} is "
-            "set. `lc run` should set one before invoking snakemake; if "
-            "you're calling snakemake directly, point it at a running dask "
-            "scheduler."
-        )
-    return Client(addr), None
+    raise WorkflowError(
+        f"Neither DASK_SCHEDULER_ADDRESS nor {GATEWAY_CLUSTER_ENV} is "
+        "set. `lc run` should set one before invoking snakemake; if "
+        "you're calling snakemake directly, point it at a running dask "
+        "scheduler."
+    )
 
 
 class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
@@ -200,7 +206,8 @@ class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
             self._client.close()
             if self._gateway_cluster is not None:
                 # Releases this process's connections only; the cluster
-                # itself is owned (and shut down) by the parent lc run.
+                # itself belongs to the user (lc is attach-only and never
+                # shuts Gateway clusters down — see dask_cluster).
                 self._gateway_cluster.close()
         finally:
             super().shutdown()

@@ -108,6 +108,10 @@ mypy_path = "src"
 module = ["dask.*", "distributed.*", "dask_gateway.*"]
 ignore_missing_imports = true
 follow_untyped_imports = true
+# dask_gateway re-exports Gateway from .client without __all__; strict
+# mode would reject `from dask_gateway import Gateway` whenever the
+# [gateway] extra happens to be installed.
+implicit_reexport = true
 
 [[tool.mypy.overrides]]
 module = ["rocrate.*"]

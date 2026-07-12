@@ -88,8 +88,10 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
         "backend": "dask-gateway",
         "connection": {},
         # Kubernetes is the container runtime: the Gateway worker pod
-        # image IS the recipe environment, so recipes run unwrapped.
-        "container_runtime": "none",
+        # image IS the recipe environment, so recipes run unwrapped but
+        # are still containerized. Declared (not detected) — load_runtime
+        # treats it as explicit, so no "no runtime found" warning fires.
+        "container_runtime": "kubernetes",
         # Scratch comes from the deployment's LIGHTCONE_SCRATCH env (a
         # path on the shared RWX volume), which outranks site defaults
         # in lightcone.engine.scratch — nothing to declare here.

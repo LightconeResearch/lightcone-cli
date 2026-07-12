@@ -14,10 +14,13 @@ import pytest
 import yaml
 
 from lightcone.engine.container import (
+    KUBERNETES_RUNTIME,
+    REGISTRY_ENV,
     RUNTIMES,
     ContainerBuildError,
     build_image,
     compute_image_tag,
+    deployment_registry,
     detect_runtime,
     find_dependency_files,
     get_container_status,
@@ -26,7 +29,10 @@ from lightcone.engine.container import (
     is_containerfile,
     load_runtime,
     pull_image,
+    registry_image_exists,
+    registry_image_ref,
     resolve_image_for_run,
+    resolve_worker_image,
     wrap_recipe,
 )
 
@@ -568,6 +574,64 @@ class TestLoadRuntime:
         with pytest.raises(ContainerBuildError, match="Unknown container.runtime"):
             load_runtime()
 
+    def test_site_declared_kubernetes_is_explicit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On a lightcone-hub deployment (site declares kubernetes) auto
+        must resolve to kubernetes with explicit=True — the pod IS the
+        container, so no 'no runtime found' warning is owed even though
+        docker/podman are absent."""
+        from lightcone.engine.site_registry import HostSite
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.detect_current_site",
+            lambda: HostSite(
+                key="lightcone-hub",
+                defaults={"container_runtime": "kubernetes"},
+            ),
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.container.detect_runtime",
+            lambda: pytest.fail("detection must not run on a declared site"),
+        )
+        choice = load_runtime()
+        assert choice.runtime == "kubernetes"
+        assert choice.explicit is True
+
+    def test_site_declared_oci_runtime_stays_a_hint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Perlmutter-style OCI declarations keep detection-order-hint
+        semantics: a missing binary falls through instead of resolving
+        explicit (that would error or lie about availability)."""
+        from lightcone.engine.site_registry import HostSite
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "lightcone.engine.container.detect_current_site",
+            lambda: HostSite(
+                key="perlmutter",
+                defaults={"container_runtime": "podman-hpc"},
+            ),
+        )
+        monkeypatch.setattr(
+            "lightcone.engine.container.detect_runtime", lambda: "podman"
+        )
+        choice = load_runtime()
+        assert choice.runtime == "podman"
+        assert choice.explicit is False
+
+    def test_explicit_kubernetes_config_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """kubernetes in user config is explicit and needs no binary."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        self._write_config(tmp_path, {"container": {"runtime": "kubernetes"}})
+        choice = load_runtime()
+        assert choice.runtime == KUBERNETES_RUNTIME
+        assert choice.explicit is True
+
 
 # ---- resolve_image_for_run -----------------------------------------------
 
@@ -595,6 +659,167 @@ class TestResolveImageForRun:
         assert result is not None
         assert result.startswith("lc-test-")
 
+    def test_resolution_ignores_deployment_registry(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """resolve_image_for_run stays site-agnostic on purpose:
+        code_version hashes the local tag on every path, so moving a
+        project between a laptop and the hub must not register as code
+        drift. The registry ref is resolve_worker_image's job."""
+        monkeypatch.setenv(REGISTRY_ENV, "eu-docker.pkg.dev/proj/lightcone")
+        result = resolve_image_for_run(
+            "Containerfile", project_path=project, project_name="test"
+        )
+        assert result is not None
+        assert result.startswith("lc-test-")
+        assert "pkg.dev" not in result
+
+
+# ---- deployment registry (kubernetes runtime) ------------------------------
+
+
+class TestDeploymentRegistry:
+    def test_unset_env_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(REGISTRY_ENV, raising=False)
+        assert deployment_registry() is None
+
+    def test_strips_trailing_slash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(REGISTRY_ENV, "eu-docker.pkg.dev/proj/lightcone/")
+        assert deployment_registry() == "eu-docker.pkg.dev/proj/lightcone"
+
+    def test_blank_env_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(REGISTRY_ENV, "  ")
+        assert deployment_registry() is None
+
+
+class TestRegistryImageRef:
+    def test_local_tag_becomes_name_colon_hash(self) -> None:
+        ref = registry_image_ref(
+            "lc-my-analysis-abc123def456",
+            registry="eu-docker.pkg.dev/proj/lightcone",
+        )
+        # Same content hash on both sides — the environment is provably
+        # the same artifact locally and as a worker pod image.
+        assert ref == "eu-docker.pkg.dev/proj/lightcone/lc-my-analysis:abc123def456"
+
+    def test_env_registry_used_when_not_passed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(REGISTRY_ENV, "eu-docker.pkg.dev/proj/lightcone")
+        ref = registry_image_ref("lc-proj-cafe01234567")
+        assert ref == "eu-docker.pkg.dev/proj/lightcone/lc-proj:cafe01234567"
+
+    def test_no_registry_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(REGISTRY_ENV, raising=False)
+        assert registry_image_ref("lc-proj-cafe01234567") is None
+
+
+class TestResolveWorkerImage:
+    def test_none_spec(self, project: Path) -> None:
+        assert resolve_worker_image(
+            None, project_path=project, project_name="test"
+        ) is None
+
+    def test_registry_image_passes_through(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(REGISTRY_ENV, raising=False)
+        assert resolve_worker_image(
+            "ghcr.io/foo/bar:tag", project_path=project, project_name="test"
+        ) == "ghcr.io/foo/bar:tag"
+
+    def test_containerfile_resolves_to_registry_ref(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(REGISTRY_ENV, "eu-docker.pkg.dev/proj/lightcone")
+        ref = resolve_worker_image(
+            "Containerfile", project_path=project, project_name="test"
+        )
+        assert ref is not None
+        assert ref.startswith("eu-docker.pkg.dev/proj/lightcone/lc-test:")
+        # Hash identical to the local tag's — split differs (:), content
+        # hash doesn't.
+        local = resolve_image_for_run(
+            "Containerfile", project_path=project, project_name="test"
+        )
+        assert local is not None
+        assert ref.rsplit(":", 1)[1] == local.rsplit("-", 1)[1]
+
+    def test_containerfile_without_registry_returns_none(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(REGISTRY_ENV, raising=False)
+        assert resolve_worker_image(
+            "Containerfile", project_path=project, project_name="test"
+        ) is None
+
+
+class TestRegistryImageExists:
+    def test_no_credentials_returns_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Off-GKE (no metadata server) the probe must answer 'can't
+        tell' (None), never False — lc build treats None as unverified."""
+        monkeypatch.setattr(
+            "lightcone.engine.container._metadata_access_token", lambda: None
+        )
+        assert registry_image_exists(
+            "eu-docker.pkg.dev/proj/lightcone/lc-x:abc"
+        ) is None
+
+    def test_malformed_ref_returns_unknown(self) -> None:
+        assert registry_image_exists("not-a-ref") is None
+
+    def test_404_means_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import io
+        import urllib.error
+
+        monkeypatch.setattr(
+            "lightcone.engine.container._metadata_access_token", lambda: "tok"
+        )
+
+        def _raise_404(req, timeout=0):  # noqa: ANN001, ANN202
+            raise urllib.error.HTTPError(
+                req.full_url, 404, "Not Found", hdrs=None, fp=io.BytesIO(b"")
+            )
+
+        monkeypatch.setattr("urllib.request.urlopen", _raise_404)
+        assert registry_image_exists(
+            "eu-docker.pkg.dev/proj/lightcone/lc-x:abc"
+        ) is False
+
+    def test_200_means_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "lightcone.engine.container._metadata_access_token", lambda: "tok"
+        )
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):  # noqa: ANN204
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                pass
+
+        captured: dict[str, object] = {}
+
+        def _ok(req, timeout=0):  # noqa: ANN001, ANN202
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            return _Resp()
+
+        monkeypatch.setattr("urllib.request.urlopen", _ok)
+        assert registry_image_exists(
+            "eu-docker.pkg.dev/proj/lightcone/lc-x:abc"
+        ) is True
+        assert captured["url"] == (
+            "https://eu-docker.pkg.dev/v2/proj/lightcone/lc-x/manifests/abc"
+        )
+        assert captured["method"] == "HEAD"
+
 
 # ---- wrap_recipe ----------------------------------------------------------
 
@@ -606,6 +831,13 @@ class TestWrapRecipe:
     def test_runtime_none_passthrough(self) -> None:
         assert wrap_recipe(
             "echo hi", image="python:3.12-slim", runtime="none"
+        ) == "echo hi"
+
+    def test_runtime_kubernetes_passthrough(self) -> None:
+        """On the hub the worker pod IS the container — there is no OCI
+        binary inside it, so the recipe must run unwrapped."""
+        assert wrap_recipe(
+            "echo hi", image="python:3.12-slim", runtime="kubernetes"
         ) == "echo hi"
 
     def test_podman_wrap_basic(self) -> None:

@@ -537,14 +537,15 @@ def run(
     """Materialize outputs declared in astra.yaml.
 
     Always dispatches through a Dask cluster: a ``LocalCluster`` on a
-    workstation, srun-launched workers inside a SLURM allocation, a
-    Dask Gateway cluster on a JupyterHub deployment, or an existing
-    scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
+    workstation, srun-launched workers inside a SLURM allocation, the
+    user's running Dask Gateway cluster on a JupyterHub deployment
+    (created from JupyterLab; lc attaches, never creates), or an
+    existing scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
     """
     _abort_on_perlmutter_login()
 
-    from lightcone.engine.container import load_runtime
-    from lightcone.engine.dask_cluster import cluster_for_run
+    from lightcone.engine.container import KUBERNETES_RUNTIME, load_runtime
+    from lightcone.engine.dask_cluster import GATEWAY_CLUSTER_ENV, cluster_for_run
     from lightcone.engine.scratch import (
         RunLockBusyError,
         acquire_run_lock,
@@ -570,6 +571,15 @@ def run(
 
     choice = load_runtime(project_path=project)
     _ensure_images(project, runtime=choice.runtime)
+    # On a kubernetes-runtime site the worker pod is the container, so
+    # resolve which image the Gateway cluster is expected to run — the
+    # gateway branch verifies the attached cluster against it and the
+    # no-cluster-yet error message names it.
+    expected_worker_image = (
+        _expected_worker_image(project)
+        if choice.runtime == KUBERNETES_RUNTIME
+        else None
+    )
     snakefile_path, cfg_path = generate(
         project, universes=universes, runtime=choice.runtime
     )
@@ -638,29 +648,48 @@ def run(
     except RunLockBusyError as e:
         raise click.ClickException(str(e))
 
-    with cluster_for_run(
-        verbose=verbose,
-        local_directory=str(rundirs.dask_local),
-        max_workers=int(n),
-    ) as cluster_env:
-        env = {
-            **os.environ,
-            # How the child snakemake's executor reaches the cluster:
-            # DASK_SCHEDULER_ADDRESS for address-dialled clusters, or
-            # LIGHTCONE_GATEWAY_CLUSTER for Dask Gateway (rejoined by
-            # name through the Gateway API).
-            **cluster_env,
-            # The dask plugin's worker-side ``_run_shell`` takes this
-            # ``flock`` before forwarding a rule's lightcone output, so
-            # parallel rules' blocks never interleave at the line level
-            # — even across nodes. The lockfile sits under our scratch
-            # root specifically to avoid DVS on NERSC.
-            "LIGHTCONE_OUT_LOCK": str(rundirs.lock_path),
-        }
-        if verbose:
-            console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-            sys.exit(subprocess.run(cmd, env=env).returncode)
-        sys.exit(_run_silent(cmd, env=env, scratch_root=rundirs.root))
+    try:
+        with cluster_for_run(
+            verbose=verbose,
+            local_directory=str(rundirs.dask_local),
+            expected_worker_image=expected_worker_image,
+        ) as cluster_env:
+            _warn_runtime_cluster_mismatch(
+                project, runtime=choice.runtime, cluster_env=cluster_env
+            )
+            env = {
+                **os.environ,
+                # How the child snakemake's executor reaches the cluster:
+                # DASK_SCHEDULER_ADDRESS for address-dialled clusters, or
+                # LIGHTCONE_GATEWAY_CLUSTER for Dask Gateway (rejoined by
+                # name through the Gateway API).
+                **cluster_env,
+                # The dask plugin's worker-side ``_run_shell`` takes this
+                # ``flock`` before forwarding a rule's lightcone output, so
+                # parallel rules' blocks never interleave at the line level
+                # — even across nodes. The lockfile sits under our scratch
+                # root specifically to avoid DVS on NERSC.
+                "LIGHTCONE_OUT_LOCK": str(rundirs.lock_path),
+            }
+            # Exactly one of the two cluster variables may reach the
+            # child: a stale LIGHTCONE_GATEWAY_CLUSTER lingering in the
+            # user's shell (we tell them to export it) must not redirect
+            # the child to a Gateway cluster the parent never verified,
+            # and vice versa.
+            if "DASK_SCHEDULER_ADDRESS" in cluster_env:
+                env.pop(GATEWAY_CLUSTER_ENV, None)
+            elif GATEWAY_CLUSTER_ENV in cluster_env:
+                env.pop("DASK_SCHEDULER_ADDRESS", None)
+            if verbose:
+                console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+                sys.exit(subprocess.run(cmd, env=env).returncode)
+            sys.exit(_run_silent(cmd, env=env, scratch_root=rundirs.root))
+    except RuntimeError as e:
+        # Cluster bootstrap errors are user guidance ("no Gateway cluster
+        # running — create one like this…", "workers lack the resource
+        # contract"), not stack traces. SystemExit from the run itself
+        # passes through untouched.
+        raise click.ClickException(str(e))
 
 
 def _run_silent(
@@ -897,7 +926,10 @@ def verify(universe: str | None) -> None:
 @click.option(
     "--runtime",
     default=None,
-    help="docker | podman | podman-hpc (overrides ~/.lightcone/config.yaml)",
+    help=(
+        "docker | podman | podman-hpc | kubernetes "
+        "(overrides ~/.lightcone/config.yaml)"
+    ),
 )
 def build(force: bool, runtime: str | None) -> None:
     """Build container images declared in astra.yaml.
@@ -908,14 +940,28 @@ def build(force: bool, runtime: str | None) -> None:
     image store. Pre-built registry images (``python:3.12-slim``,
     ``ghcr.io/foo/bar:tag``) are skipped — the runtime pulls them at
     ``lc run`` time.
+
+    On a kubernetes-runtime site (a lightcone-hub deployment) there is
+    no local image store and nothing to build in-pod: ``lc build``
+    instead checks that each Containerfile's content-addressed image
+    exists in the deployment registry and prints exactly how to publish
+    it when missing.
     """
-    from lightcone.engine.container import ContainerBuildError, load_runtime
+    from lightcone.engine.container import (
+        KUBERNETES_RUNTIME,
+        ContainerBuildError,
+        load_runtime,
+    )
 
     project = _project_root()
     try:
         resolved_runtime = runtime or load_runtime(project_path=project).runtime
     except ContainerBuildError as e:
         raise click.ClickException(str(e))
+
+    if resolved_runtime == KUBERNETES_RUNTIME:
+        _report_registry_images(project)
+        return
 
     if resolved_runtime == "none":
         console.print(
@@ -930,19 +976,234 @@ def build(force: bool, runtime: str | None) -> None:
     console.print("[green]Done.[/green]")
 
 
+def _container_specs(project: Path) -> tuple[str, list[str]]:
+    """``(project_name, distinct container specs)`` from astra.yaml.
+
+    Specs are returned in tree order, first occurrence wins — the same
+    walk ``_ensure_images`` has always done, factored out so the
+    kubernetes-runtime paths (`lc build` registry report, expected
+    worker image) resolve the identical set.
+    """
+    from astra.helpers import load_yaml, resolve_analysis_tree
+
+    from lightcone.engine.tree import collect_tree_outputs
+
+    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
+    project_name = (spec.get("name") or project.name).lower().replace(" ", "-")
+
+    specs: list[str] = []
+    for to in collect_tree_outputs(spec):
+        recipe = to.output_def.get("recipe") or {}
+        spec_str = (
+            recipe.get("container")
+            or to.analysis_spec.get("container")
+            or spec.get("container")
+        )
+        if spec_str and spec_str not in specs:
+            specs.append(spec_str)
+    return project_name, specs
+
+
+def _warn_runtime_cluster_mismatch(
+    project: Path, *, runtime: str, cluster_env: dict[str, str]
+) -> None:
+    """Warn when the container runtime and the cluster branch disagree.
+
+    The two are resolved from independent signals (site declaration /
+    user config vs. ambient cluster env), so misconfiguration can pair
+    them wrongly in both directions:
+
+    * ``kubernetes`` runtime off-Gateway — recipes run wherever the
+      cluster puts them with no pod image lc can verify, while manifests
+      still record the declared ``container_image`` (provenance hazard,
+      e.g. ``runtime: kubernetes`` copied into a laptop config).
+    * An OCI runtime on a Gateway cluster — recipes arrive wrapped in
+      ``docker run``/``podman run`` inside worker pods that have no such
+      binary, so every containerized rule fails (e.g.
+      ``DASK_GATEWAY__ADDRESS`` set on a workstation that has docker).
+
+    Warnings, not errors: the pairing can be intentional (a k8s-native
+    external scheduler; a gateway whose workers do ship podman).
+    """
+    from lightcone.engine.container import KUBERNETES_RUNTIME, RUNTIMES
+    from lightcone.engine.dask_cluster import GATEWAY_CLUSTER_ENV
+
+    on_gateway = GATEWAY_CLUSTER_ENV in cluster_env
+    if runtime == KUBERNETES_RUNTIME and not on_gateway:
+        console.print(
+            "[yellow]⚠ Container runtime is [cyan]kubernetes[/cyan] but "
+            "this run is not attached through Dask Gateway.[/yellow]\n"
+            "  Recipes will execute unwrapped and lc cannot verify they "
+            "run in the declared container\n"
+            "  image — manifests may record provenance that does not "
+            "match what executed. If this\n"
+            "  machine is not a lightcone-hub deployment, remove "
+            "[cyan]container: {runtime: kubernetes}[/cyan]\n"
+            "  from [cyan]~/.lightcone/config.yaml[/cyan]."
+        )
+    elif runtime in RUNTIMES and on_gateway:
+        _, specs = _container_specs(project)
+        if specs:
+            console.print(
+                f"[yellow]⚠ Recipes are wrapped for [cyan]{runtime}"
+                f"[/cyan], but they will execute inside Dask Gateway "
+                "worker pods,[/yellow]\n"
+                f"  which typically do not provide {runtime} — "
+                "containerized rules will fail. On a\n"
+                "  Kubernetes-backed gateway the pod is the container: "
+                "set [cyan]container: {runtime: kubernetes}[/cyan]\n"
+                "  in [cyan]~/.lightcone/config.yaml[/cyan] and give the "
+                "cluster the project's image instead."
+            )
+
+
+def _expected_worker_image(project: Path) -> str | None:
+    """The image the project's Gateway cluster is expected to run.
+
+    Exactly one distinct declared container → its pullable realization
+    (deployment-registry ref for a Containerfile, the spec itself for a
+    registry image). Zero → ``None``. Several distinct images → ``None``
+    with a warning: a Gateway cluster runs a single worker image, so
+    heterogeneous per-rule containers cannot be realized on this path.
+    A Containerfile that cannot be resolved (no ``LIGHTCONE_REGISTRY``)
+    also yields ``None`` with a warning — silently dropping it would
+    corrupt the single-vs-multiple decision and disable verification
+    without saying so.
+    """
+    from lightcone.engine.container import is_containerfile, resolve_worker_image
+
+    project_name, specs = _container_specs(project)
+    images: list[str] = []
+    unresolved: list[str] = []
+    for spec_str in specs:
+        image = resolve_worker_image(
+            spec_str, project_path=project, project_name=project_name
+        )
+        if image is None and is_containerfile(spec_str, project):
+            unresolved.append(spec_str)
+        if image and image not in images:
+            images.append(image)
+    if unresolved:
+        console.print(
+            "[yellow]⚠ Cannot resolve "
+            + ", ".join(f"[cyan]{s}[/cyan]" for s in unresolved)
+            + " to a registry image: LIGHTCONE_REGISTRY is not set.[/yellow]\n"
+            "  Worker-image verification is disabled for this run. Ask "
+            "the hub admin to inject\n"
+            "  [cyan]LIGHTCONE_REGISTRY[/cyan] (see lightcone-hub helm "
+            "values)."
+        )
+        return None
+    if len(images) > 1:
+        console.print(
+            "[yellow]⚠ astra.yaml declares multiple distinct container "
+            "images, but a Dask Gateway cluster runs a single worker "
+            "image:[/yellow]\n"
+            + "\n".join(f"    [dim]•[/dim] {i}" for i in images)
+            + "\n  All recipes will execute in whatever image the attached "
+            "cluster runs.\n"
+            "  Consolidate on one Containerfile to restore per-recipe "
+            "provenance on this deployment."
+        )
+        return None
+    return images[0] if images else None
+
+
+def _report_registry_images(project: Path) -> None:
+    """``lc build`` on a kubernetes-runtime site.
+
+    The worker pod is the container, so images must exist in the
+    deployment registry (``LIGHTCONE_REGISTRY``) for a Gateway cluster
+    to pull — there is no docker/podman in-pod to build with. Probe the
+    registry best-effort and print the exact publish commands when an
+    image is missing. Purely informational: never fails the command,
+    because the authoritative check happens when the user's cluster
+    starts (Kubernetes pulls the image or says why not).
+    """
+    from lightcone.engine.container import (
+        compute_image_tag,
+        deployment_registry,
+        is_containerfile,
+        registry_image_exists,
+        registry_image_ref,
+    )
+
+    project_name, specs = _container_specs(project)
+    if not specs:
+        console.print("No containers declared in astra.yaml — nothing to check.")
+        return
+
+    console.print(
+        "[dim]This deployment runs recipes inside Dask Gateway worker "
+        "pods; images are pulled from the deployment registry, not built "
+        "here.[/dim]"
+    )
+    registry = deployment_registry()
+    for spec_str in specs:
+        if not is_containerfile(spec_str, project):
+            console.print(
+                f"[green]•[/green] {spec_str} — registry image; use it as "
+                "the cluster's worker image.\n"
+                "  [dim]Note: a Gateway worker image must contain dask, "
+                "distributed, dask-gateway, and\n"
+                "  lightcone-cli at hub-matching versions — plain images "
+                "like python:*-slim will not\n"
+                "  start as workers. Base project images on the "
+                "deployment's lightcone-worker-default.[/dim]"
+            )
+            continue
+        if registry is None:
+            console.print(
+                f"[yellow]•[/yellow] {spec_str} — cannot resolve: "
+                "LIGHTCONE_REGISTRY is not set on this deployment. "
+                "Ask the hub admin to inject it (see lightcone-hub "
+                "helm values)."
+            )
+            continue
+        tag = compute_image_tag(project_name, project / spec_str, project)
+        ref = registry_image_ref(tag, registry=registry)
+        exists = registry_image_exists(ref) if ref else None
+        if exists is True:
+            console.print(f"[green]✓[/green] {spec_str} → {ref} [dim](in registry)[/dim]")
+            continue
+        state = (
+            "[red]missing from the registry[/red]"
+            if exists is False
+            else "[yellow]could not be verified[/yellow]"
+        )
+        # Instruct `lc build` (not a raw `docker build .`): the tag hash
+        # attests the *staged* build context (Containerfile + deps +
+        # COPY sources, with results//.git/venvs excluded). A raw docker
+        # build from the project root would bake in whatever else lives
+        # there and push a different artifact under the attested name.
+        console.print(
+            f"[yellow]•[/yellow] {spec_str} → {ref} — {state}.\n"
+            "  Publish it from a clone of this project on any machine "
+            "with docker and registry access:\n"
+            f"    [cyan]lc build[/cyan]   [dim]# builds {tag} from the "
+            "hash-attested build context[/dim]\n"
+            f"    [cyan]docker tag {tag} {ref}[/cyan]\n"
+            f"    [cyan]docker push {ref}[/cyan]\n"
+            "  then create your Gateway cluster with "
+            f'[cyan]image="{ref}"[/cyan].'
+        )
+
+
 def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
     """Build/pull every container image referenced in astra.yaml.
 
-    No-op when *runtime* is ``"none"``. Idempotent: skips images already
-    present in the runtime's local image store. Used by ``lc build`` (with
-    ``--force`` exposed) and as a pre-flight by ``lc run`` so the first
-    invocation after editing a Containerfile doesn't fail mid-DAG with a
-    missing image.
+    No-op for non-wrapping runtimes: ``none`` uses no images, and
+    ``kubernetes`` has no local image store — images live in the
+    deployment registry (see ``_report_registry_images``). Idempotent:
+    skips images already present in the runtime's local image store.
+    Used by ``lc build`` (with ``--force`` exposed) and as a pre-flight
+    by ``lc run`` so the first invocation after editing a Containerfile
+    doesn't fail mid-DAG with a missing image.
     """
-    if runtime == "none":
-        return
+    from lightcone.engine.container import KUBERNETES_RUNTIME
 
-    from astra.helpers import load_yaml, resolve_analysis_tree
+    if runtime in ("none", KUBERNETES_RUNTIME):
+        return
 
     from lightcone.engine.container import (
         ContainerBuildError,
@@ -952,22 +1213,9 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> None:
         is_containerfile,
         pull_image,
     )
-    from lightcone.engine.tree import collect_tree_outputs
 
-    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
-    project_name = (spec.get("name") or project.name).lower().replace(" ", "-")
-
-    seen: set[str] = set()
-    for to in collect_tree_outputs(spec):
-        recipe = to.output_def.get("recipe") or {}
-        spec_str = (
-            recipe.get("container")
-            or to.analysis_spec.get("container")
-            or spec.get("container")
-        )
-        if not spec_str or spec_str in seen:
-            continue
-        seen.add(spec_str)
+    project_name, specs = _container_specs(project)
+    for spec_str in specs:
         if not is_containerfile(spec_str, project):
             # Registry image — pull so ``lc run`` can use ``--pull=never``
             # without depending on the runtime's registry resolution.

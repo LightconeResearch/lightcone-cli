@@ -1,6 +1,8 @@
 # JupyterHub + Dask Gateway + kbatch on GCP — deployment procedure and lightcone-cli integration
 
 *Status: design proposal — researched 2026-07-12 against `main` (post-#157).*
+*Revised 2026-07-12 — see §7 for the implemented design, which supersedes
+§4.2's owned-cluster branch and reframes the container story of §4.5.*
 
 ## 1. Why this works almost out of the box
 
@@ -512,6 +514,87 @@ single environment.
    subpaths; interacts with `lc init` scaffolding and the session-start hooks.
 4. **kbatch alternative** — if the 0.5 alphas misbehave, a minimal in-house hub service
    (JupyterHub-authenticated POST → k8s Job) is ~150 lines and removes the dependency.
+
+## 7. Implemented design (2026-07-12) — attach-only + kubernetes as a first-class runtime
+
+What actually shipped diverges from §4.2/§4.5 in three deliberate ways, all
+in the direction of less machinery:
+
+### 7.1 `kubernetes` is a container runtime, not a workaround
+
+§4.2's `container_runtime: "none"` was a lie with side effects: `load_runtime()`
+never consulted the site entry, auto-detection found no OCI binary, and every
+`lc run` on the hub fired the "no container runtime found / provenance will
+not match" warning — for recipes that *are* containerized, by the worker pod.
+
+The implemented model: `container_runtime: "kubernetes"` (site-declared,
+treated as **explicit** by `load_runtime()` — a deployment fact, not a
+detection guess). `wrap_recipe()` is a no-op for it, same as `none`, but the
+semantics differ: the pod is the container. Site-declared *OCI* runtimes
+(Perlmutter → podman-hpc) keep their detection-order-hint semantics.
+
+### 7.2 Registry wiring by convention: `LIGHTCONE_REGISTRY`
+
+The deployment names its registry via singleuser env (exactly like
+`LIGHTCONE_SCRATCH` and `DASK_GATEWAY__*`). A `container: Containerfile` spec
+resolves to `$LIGHTCONE_REGISTRY/lc-<project>:<hash>` — the same content hash
+as the local `lc-<project>-<hash>` tag, so the environment is provably the
+same artifact on every path. `code_version` keeps hashing the *local* tag on
+all paths (`resolve_image_for_run` stays site-agnostic) so moving a project
+laptop↔hub is not code drift; the registry ref (`resolve_worker_image`) is
+used only to name the worker image and verify the attached cluster.
+
+`lc build` on the hub builds nothing (no docker in-pod, by design): it probes
+the registry (metadata-server token, best-effort, never gating) and prints the
+exact `docker build -t <ref> … && docker push <ref>` commands to run from any
+docker-equipped machine. In-cluster kaniko builds remain deliberately
+deferred until someone actually cannot reach one.
+
+The worker image must carry dask/distributed/lightcone-cli at hub-matching
+pins; the recommended convention is `FROM <registry>/lightcone-worker-default:<tag>`
+in the project Containerfile, which then serves every path (locally it wraps;
+on the hub it runs as the pod).
+
+### 7.3 Attach-only Gateway branch
+
+`lc run` never creates Gateway clusters (§4.2's `new_cluster` + adapt +
+shutdown path is gone). The user creates one from JupyterLab — sidebar or
+notebook, where the options widget (image/cores/memory) and dashboard live —
+and `lc run` discovers it: `list_clusters()` is user-scoped under JupyterHub
+auth, so exactly one running cluster attaches with zero configuration; zero
+raises with a copy-pasteable `new_cluster(image=…)` snippet (image pre-filled
+from the project's resolved ref); several raises listing names, with
+`LIGHTCONE_GATEWAY_CLUSTER` as the disambiguator. Scaling is never touched;
+the cluster is left running on exit — the Gateway flavor of the
+`DASK_SCHEDULER_ADDRESS` convention, and the one intentional asymmetry with
+the owned local/SLURM clusters.
+
+Two contract checks at attach time, both deployment-backed:
+
+- **Resources**: live workers must advertise `cpus`/`memory`/`gpus`
+  (injected by the cluster-options handler); zero live workers is fine
+  (adaptive clusters scale on demand).
+- **Image**: the options handler also injects `LIGHTCONE_WORKER_IMAGE` into
+  scheduler+worker pods; lc reads it back via `run_on_scheduler` (a lambda,
+  cloudpickled by value, so the scheduler needn't import lightcone) and
+  warns on mismatch with the project's resolved image. Manifests record the
+  worker pod's actual image as `worker_image` (additive field, like
+  `slurm_job_id`), so provenance is ground truth even on a stale cluster.
+
+### 7.4 Path similarity, as implemented
+
+| | local | SLURM | hub |
+|---|---|---|---|
+| environment defined by | `Containerfile` | same | same |
+| `lc build` | build into local store | build via podman-hpc | check ref exists in deployment registry |
+| recipe isolation | `docker run` wrap | `podman-hpc run` wrap | worker pod **is** the image |
+| cluster lifecycle | owned per-run | owned per-run | attached, user-owned |
+| manifest truth | declared spec + code_version(tag) | same | same + `worker_image` ground truth |
+
+Deployment-side counterpart (lightcone-hub repo): `LIGHTCONE_REGISTRY` in
+singleuser extraEnv, `LIGHTCONE_WORKER_IMAGE` in the cluster-options
+environment, worker-default as the default cluster image, and a
+`just build-worker` recipe mirroring `build-notebook`.
 
 ## Sources
 

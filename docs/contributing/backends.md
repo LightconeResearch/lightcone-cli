@@ -6,9 +6,15 @@ of these:
 
 ## Adding a container runtime
 
-The supported runtimes are `docker`, `podman`, and `podman-hpc` (plus the
-`none` no-op). They are listed in
-`src/lightcone/engine/container.py::RUNTIMES`. To add a new one:
+The supported OCI runtimes are `docker`, `podman`, and `podman-hpc`,
+listed in `src/lightcone/engine/container.py::RUNTIMES`. Two non-OCI
+values sit outside that tuple: `none` (no isolation, recipes run on the
+host) and `kubernetes` (the Dask Gateway worker pod *is* the container;
+recipes run unwrapped inside it and images resolve against the
+deployment registry — see `REGISTRY_ENV` / `resolve_worker_image`).
+`kubernetes` is never auto-detected: a site declares it
+(`site_registry.py`, `container_runtime: "kubernetes"`) or the user
+pins it in config. To add a new OCI runtime:
 
 1. Append the binary name to `RUNTIMES` (detection priority is the tuple
    order).
