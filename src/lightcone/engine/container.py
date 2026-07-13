@@ -290,6 +290,31 @@ def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
 # ---------------------------------------------------------------------------
 
 
+def image_name_slug(name: str) -> str:
+    """Reduce *name* to a valid OCI image-name component.
+
+    Registries (and docker/podman locally) require lowercase ASCII
+    ``[a-z0-9]`` with ``.``/``_``/``-`` separators, starting and ending
+    alphanumeric — but ASTRA analysis names are prose (e.g.
+    ``"Union2.1 Flat ΛCDM MAP Fit"``). Accented latin is transliterated
+    via NFKD; anything else non-ASCII is dropped; remaining invalid
+    characters become ``-``; separator runs collapse. Pure-ASCII names
+    that were already valid (``gwtest``, ``union2.1``) pass through
+    unchanged, so existing content-addressed tags keep their names.
+    """
+    import unicodedata
+
+    ascii_name = (
+        unicodedata.normalize("NFKD", name)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    slug = re.sub(r"[^a-z0-9._]+", "-", ascii_name)
+    slug = re.sub(r"[-._]{2,}", "-", slug).strip("-._")
+    return slug or "project"
+
+
 def find_dependency_files(project_path: Path) -> list[Path]:
     """Return sorted list of dependency files found in *project_path*."""
     found = [project_path / name for name in DEPENDENCY_FILES]
@@ -391,8 +416,7 @@ def compute_image_tag(
             h.update(b"\0")
 
     digest = h.hexdigest()[:12]
-    safe_name = project_name.lower().replace(" ", "-")
-    return f"lc-{safe_name}-{digest}"
+    return f"lc-{image_name_slug(project_name)}-{digest}"
 
 
 def _safe_relpath(path: Path, root: Path) -> str:
@@ -858,6 +882,7 @@ def registry_image_exists(ref: str) -> bool | None:
     report status, never to gate execution.
     """
     import urllib.error
+    import urllib.parse
     import urllib.request
 
     if "/" not in ref:
@@ -875,8 +900,16 @@ def registry_image_exists(ref: str) -> bool | None:
     if token is None:
         return None
 
+    # Percent-encode the path segments: http.client rejects any
+    # non-ASCII byte in the request line with UnicodeEncodeError, and a
+    # ref built from user input (project names are prose) must degrade
+    # to "unverified", never to a traceback.
+    quoted_path = "/".join(
+        urllib.parse.quote(seg, safe="") for seg in path.split("/")
+    )
+    quoted_tag = urllib.parse.quote(tag, safe="")
     req = urllib.request.Request(
-        f"https://{host}/v2/{path}/manifests/{tag}",
+        f"https://{host}/v2/{quoted_path}/manifests/{quoted_tag}",
         method="HEAD",
         headers={
             "Authorization": f"Bearer {token}",
@@ -890,7 +923,10 @@ def registry_image_exists(ref: str) -> bool | None:
         if exc.code == 404:
             return False
         return None
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError, ValueError, UnicodeError):
+        # URLError/OSError: network; ValueError/UnicodeError: a ref the
+        # URL machinery refuses (bad host chars, non-ASCII that slipped
+        # through). All mean "cannot tell", not "missing".
         return None
 
 

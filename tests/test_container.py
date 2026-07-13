@@ -675,6 +675,43 @@ class TestResolveImageForRun:
         assert "pkg.dev" not in result
 
 
+# ---- image_name_slug --------------------------------------------------------
+
+
+class TestImageNameSlug:
+    def test_valid_ascii_names_pass_through(self) -> None:
+        """Existing content-addressed tags must keep their names."""
+        from lightcone.engine.container import image_name_slug
+
+        for name in ("gwtest", "union2.1", "my_proj", "a-b-c"):
+            assert image_name_slug(name) == name
+
+    def test_prose_astra_name_with_greek(self, project: Path) -> None:
+        """Regression: 'Union2.1 Flat ΛCDM MAP Fit' produced an invalid
+        OCI name (λ survived .lower()), which docker/podman reject and
+        which crashed the registry probe with UnicodeEncodeError."""
+        from lightcone.engine.container import image_name_slug
+
+        slug = image_name_slug("Union2.1 Flat ΛCDM MAP Fit")
+        assert slug == "union2.1-flat-cdm-map-fit"
+        tag = compute_image_tag(
+            "Union2.1 Flat ΛCDM MAP Fit", project / "Containerfile", project
+        )
+        assert tag.startswith("lc-union2.1-flat-cdm-map-fit-")
+        assert tag.isascii()
+
+    def test_accented_latin_transliterates(self) -> None:
+        from lightcone.engine.container import image_name_slug
+
+        assert image_name_slug("Étude Numérique") == "etude-numerique"
+
+    def test_degenerate_name_falls_back(self) -> None:
+        from lightcone.engine.container import image_name_slug
+
+        assert image_name_slug("ΛΩΔ") == "project"
+        assert image_name_slug("...") == "project"
+
+
 # ---- deployment registry (kubernetes runtime) ------------------------------
 
 
@@ -771,6 +808,42 @@ class TestRegistryImageExists:
 
     def test_malformed_ref_returns_unknown(self) -> None:
         assert registry_image_exists("not-a-ref") is None
+
+    def test_non_ascii_ref_never_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: a λ in the image name reached http.client's
+        ASCII-only request line and escaped as UnicodeEncodeError,
+        crashing `lc build`. The probe must degrade to None instead
+        (the ref is percent-encoded now; the registry answers 404)."""
+        monkeypatch.setattr(
+            "lightcone.engine.container._metadata_access_token", lambda: "tok"
+        )
+
+        captured: dict[str, str] = {}
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):  # noqa: ANN204
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                pass
+
+        def _open(req, timeout=0):  # noqa: ANN001, ANN202
+            # Real http.client encodes the request line as ASCII —
+            # reproduce that constraint so a regression fails here.
+            req.full_url.encode("ascii")
+            captured["url"] = req.full_url
+            return _Resp()
+
+        monkeypatch.setattr("urllib.request.urlopen", _open)
+        result = registry_image_exists(
+            "eu-docker.pkg.dev/proj/lightcone/lc-union2.1-flat-λcdm:abc"
+        )
+        assert result is not None  # quoted URL went through
+        assert "%CE%BB" in captured["url"]  # λ percent-encoded
 
     def test_404_means_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import io
