@@ -110,6 +110,22 @@ def _emit_block(block: str) -> None:
         sys.stdout.flush()
 
 
+def _unpack_result(result: object) -> tuple[int, str]:
+    """Normalize a worker's future result to ``(exit_code, block)``.
+
+    A worker running an older lightcone-cli returns a bare ``int`` exit
+    code; the current :func:`_run_shell` returns ``(exit_code, block)``.
+    Driver and worker images drift out of sync routinely on Dask Gateway
+    (the worker image lags the notebook/driver image), so accept both
+    rather than crash — the forwarded block is simply unavailable until
+    the worker image carries the tuple-returning change.
+    """
+    if isinstance(result, tuple):
+        exit_code, block = result
+        return int(exit_code), str(block)
+    return int(result), ""
+
+
 def _build_resources(job: JobExecutorInterface) -> dict[str, float]:
     """Translate Snakemake resources to Dask abstract resource units."""
     res: dict[str, float] = {}
@@ -251,7 +267,7 @@ class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
                 )
                 continue
 
-            exit_code, block = future.result()
+            exit_code, block = _unpack_result(future.result())
             if self._gateway_cluster is not None:
                 _emit_block(block)
             if exit_code != 0:

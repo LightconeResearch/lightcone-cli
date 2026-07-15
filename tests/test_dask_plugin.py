@@ -14,6 +14,7 @@ from snakemake_executor_plugin_dask.executor import (
     _build_resources,
     _emit_block,
     _run_shell,
+    _unpack_result,
 )
 
 
@@ -56,6 +57,14 @@ def test_emit_block_writes_to_stdout(capsys) -> None:  # type: ignore[no-untyped
 
     _emit_block("")
     assert capsys.readouterr().out == ""
+
+
+def test_unpack_result_accepts_tuple_and_legacy_int() -> None:
+    # Current worker: (exit_code, block).
+    assert _unpack_result((2, "boom\n")) == (2, "boom\n")
+    # Legacy worker (older image) returns a bare int — must not crash.
+    assert _unpack_result(0) == (0, "")
+    assert _unpack_result(1) == (1, "")
 
 
 def test_build_resources_default_uses_threads() -> None:
