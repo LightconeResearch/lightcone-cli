@@ -31,9 +31,9 @@ from lightcone.engine.dask_cluster import (
 from lightcone.engine.runner import SENTINEL
 
 
-def _run_shell(cmd: str) -> int:
+def _run_shell(cmd: str) -> tuple[int, str]:
     """Worker-side: run the child snakemake command, forward its lightcone
-    output, and return its exit code.
+    output, and return its exit code plus the forwarded block.
 
     The command is a child snakemake invocation that loads the generated
     Snakefile and executes one rule's ``run:`` block. That block calls
@@ -52,6 +52,11 @@ def _run_shell(cmd: str) -> int:
     On NERSC, ``$HOME`` and ``/global/cfs`` are mounted on compute nodes
     via DVS, which silently swallows ``flock``; lc run resolves the path
     onto Lustre via :mod:`lightcone.engine.scratch`.
+
+    The same ``block`` (``""`` if nothing was forwarded) is also returned
+    to the caller so the driver can reprint it on the Dask Gateway path,
+    where this worker's stdout lands in the pod log rather than the
+    terminal running ``lc run``.
     """
     p = subprocess.run(
         cmd, shell=True, capture_output=True, text=True, check=False
@@ -72,6 +77,7 @@ def _run_shell(cmd: str) -> int:
             f"✗ worker-side snakemake exited {p.returncode}; last output:"
         )
         forwarded.extend(f"    {line}" for line in tail)
+    block = ""
     if forwarded:
         block = "\n".join(forwarded) + "\n"
         lock_path = os.environ.get("LIGHTCONE_OUT_LOCK")
@@ -87,7 +93,21 @@ def _run_shell(cmd: str) -> int:
             sys.stdout.write(block)
             sys.stdout.flush()
 
-    return p.returncode
+    return p.returncode, block
+
+
+def _emit_block(block: str) -> None:
+    """Driver-side: reprint a worker-forwarded block on our own stdout.
+
+    Only used on the Dask Gateway path (see ``check_active_jobs``), where
+    the worker is a separate pod and its own stdout write in
+    ``_run_shell`` never reaches the terminal running ``lc run``. No
+    flock is needed here — ``check_active_jobs`` runs single-threaded in
+    the driver's event loop.
+    """
+    if block:
+        sys.stdout.write(block)
+        sys.stdout.flush()
 
 
 def _build_resources(job: JobExecutorInterface) -> dict[str, float]:
@@ -231,7 +251,9 @@ class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
                 )
                 continue
 
-            exit_code = future.result()
+            exit_code, block = future.result()
+            if self._gateway_cluster is not None:
+                _emit_block(block)
             if exit_code != 0:
                 self.report_job_error(
                     j, msg=f"Dask task '{j.external_jobid}' exited {exit_code}."

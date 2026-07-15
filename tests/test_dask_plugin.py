@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 from snakemake_executor_plugin_dask.executor import (
     _build_resources,
+    _emit_block,
     _run_shell,
 )
 
@@ -21,13 +22,40 @@ def _job(threads: int = 1, **resources: float) -> SimpleNamespace:
 
 
 def test_run_shell_propagates_exit_code() -> None:
-    assert _run_shell("true") == 0
-    assert _run_shell("false") != 0
+    rc, _ = _run_shell("true")
+    assert rc == 0
+    rc, _ = _run_shell("false")
+    assert rc != 0
 
 
 def test_run_shell_runs_under_shell() -> None:
     """We rely on shell=True so recipes can use pipes and env expansion."""
-    assert _run_shell("echo hi | grep hi >/dev/null") == 0
+    rc, _ = _run_shell("echo hi | grep hi >/dev/null")
+    assert rc == 0
+
+
+def test_run_shell_returns_failure_tail() -> None:
+    rc, block = _run_shell("echo boom >&2; exit 2")
+    assert rc == 2
+    assert "✗ worker-side snakemake exited 2" in block
+    assert "boom" in block
+
+
+def test_run_shell_forwards_sentinel_lines() -> None:
+    from lightcone.engine.runner import SENTINEL
+
+    rc, block = _run_shell(f"echo '{SENTINEL}hello'; echo noise")
+    assert rc == 0
+    assert "hello" in block
+    assert "noise" not in block
+
+
+def test_emit_block_writes_to_stdout(capsys) -> None:  # type: ignore[no-untyped-def]
+    _emit_block("hi\n")
+    assert capsys.readouterr().out == "hi\n"
+
+    _emit_block("")
+    assert capsys.readouterr().out == ""
 
 
 def test_build_resources_default_uses_threads() -> None:
