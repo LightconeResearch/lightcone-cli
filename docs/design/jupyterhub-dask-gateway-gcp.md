@@ -514,6 +514,32 @@ single environment.
    subpaths; interacts with `lc init` scaffolding and the session-start hooks.
 4. **kbatch alternative** — if the 0.5 alphas misbehave, a minimal in-house hub service
    (JupyterHub-authenticated POST → k8s Job) is ~150 lines and removes the dependency.
+5. **On-hub container build path — UNRESOLVED, needs a decision (surfaced 2026-07-15, LCR-176).**
+   §7.2 currently defers all image builds off-hub: `lc build` in the JupyterLab pod prints the
+   `docker build && docker push` commands to run elsewhere, because there is no docker in-pod by
+   design. End-to-end testing on the staging cluster confirmed this *works* but is a real friction
+   point — every dependency change forces the user to leave the hub, build on a docker-equipped
+   machine with registry access, push, and only then start a Gateway cluster on the new image. The
+   open decision is which build story we commit to:
+   - **(a) Keep builds off-hub, just document/smooth them** (status quo, §7.2). Cheapest; the
+     friction stays.
+   - **(b) In-cluster rootless build** (kaniko/buildkit) that builds the project image and pushes
+     to Artifact Registry from within the pod. §7.2 deferred this "until someone actually cannot
+     reach a docker machine" — LCR-176 is arguably that moment.
+   - **(c) Hub-side build service** — a JupyterHub-authenticated POST → a Kubernetes build Job,
+     the same shape as the kbatch-alternative in item 4 and the `lc submit` service.
+
+   The blocking sub-question is the one already raised as PRD open-question #3: **can an arbitrary
+   hub user be allowed to push to the deployment registry?** Options (b) and (c) both need an answer
+   on registry credentials / least privilege before they can be built. Two constraints any choice
+   must respect: the worker pod image *is* the recipe environment (so the build target is a real
+   Gateway-worker image, `FROM lightcone-worker-default`, not a slim base), and — from LCR-175 —
+   the driver (notebook) and worker images must stay on the **same lightcone-cli version**, because
+   `snakemake_executor_plugin_dask` runs split across both and version skew breaks execution; the
+   build path must keep them in lockstep the way we pin dask/distributed. *(The related but separate
+   defect — `lc init` scaffolding a `FROM python:3.12-slim` Containerfile that can never run as a
+   Gateway worker — is being handled as a code fix under LCR-176 and is not part of this open
+   question.)*
 
 ## 7. Implemented design (2026-07-12) — attach-only + kubernetes as a first-class runtime
 
