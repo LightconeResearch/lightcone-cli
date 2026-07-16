@@ -75,6 +75,28 @@ def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     assert (project / "universes").is_dir()
 
 
+def test_init_containerfile_is_gateway_worker_capable(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The scaffold image must be able to run as a Dask Gateway worker.
+
+    On the kubernetes runtime the pod image IS the recipe environment, so it
+    has to carry lightcone-cli (which pulls dask/distributed/dask-gateway at
+    pinned versions). A plain ``FROM python:3.12-slim`` that only installs
+    requirements.txt cannot start as a worker.
+    """
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+
+    containerfile = (project / "Containerfile").read_text()
+    assert "lightcone-cli[gateway]" in containerfile
+    # uv refuses a non-venv install without --system (see plan/LCR-176).
+    assert "--system" in containerfile
+    # The spec points at the project Containerfile, not the slim base.
+    assert "container: Containerfile" in (project / "astra.yaml").read_text()
+
+
 def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
     result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])

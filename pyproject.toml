@@ -34,15 +34,20 @@ dependencies = [
     "snakemake>=9.0",
     "snakemake-interface-executor-plugins>=9.0",
     "snakemake-interface-common>=1.14",
-    "dask>=2024.1",
-    "distributed>=2024.1",
+    # Pinned to the hub's Gateway image (ghcr.io/dask/dask-gateway:2026.3.0):
+    # distributed warns/fails on client<->scheduler<->worker version skew, and
+    # because lightcone-cli travels into the worker image, the pin is what
+    # keeps driver and workers in lockstep. Bump in step with the hub's
+    # gateway chart/base image.
+    "dask==2026.3.0",
+    "distributed==2026.3.0",
     "rocrate>=0.11",
 ]
 
 [project.optional-dependencies]
 # Dask Gateway client, for running against a gateway-brokered cluster
 # (e.g. the lightcone-hub JupyterHub deployment on GKE).
-gateway = ["dask-gateway>=2024.1"]
+gateway = ["dask-gateway==2026.3.0"]
 
 [dependency-groups]
 eval = [
