@@ -1,8 +1,6 @@
-# Adding an HPC Site (deprecated)
+# Adding an HPC Site
 
-There is no longer a meaningful concept of "adding an HPC site" — the
-target system that this used to feed is gone. The `site_registry` module
-is still present in the source tree but unused. See
+Site-specific defaults live in `engine/site_registry.py`. See
 [api/site_registry](../api/site_registry.md).
 
 If you want lightcone-cli to behave well on a new cluster, what you
@@ -19,3 +17,6 @@ actually need is:
    tiers hard-code Perlmutter scratch deny rules; if you add a new
    site, update `PERMISSION_TIERS` in
    `src/lightcone/cli/commands.py`.
+4. **An async SLURM policy.** Add CPU/GPU node shapes, shared thresholds,
+   constraints, and QoS walltime caps under `async_slurm`. Keep policy as
+   data so the renderer remains site-independent.

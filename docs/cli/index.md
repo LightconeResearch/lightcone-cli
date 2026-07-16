@@ -19,6 +19,7 @@ Code skills, with the CLI as the durable, scriptable backstop.
 | [`lc run`](run.md) | Generate the Snakefile and dispatch through Snakemake + Dask. |
 | [`lc build`](build.md) | Build container images declared in `astra.yaml`. |
 | [`lc status`](status.md) | Manifest-driven status report. No Snakemake import needed. |
+| [`lc cancel`](cancel.md) | Cancel a recorded asynchronous SLURM job. |
 | [`lc verify`](verify.md) | Recompute hashes, walk the input chain, surface tampering. |
 | [`lc export`](export.md) | Emit interoperable bundles (Workflow Run RO-Crate) for publication. |
 

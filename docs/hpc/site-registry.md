@@ -1,6 +1,6 @@
-# Site Registry (orphaned)
+# Site Registry
 
-The `lightcone.engine.site_registry` module still exists but is not imported
-by any active code path. It carries Perlmutter scheduler defaults that used
-to feed the wizard for the (now removed) target system. See
-[api/site_registry](../api/site_registry.md) for the current state.
+`lightcone.engine.site_registry` is the active source for site detection,
+preferred container runtime, scratch placement, and deterministic async
+SLURM policy. See [api/site_registry](../api/site_registry.md) for the data
+shape and Perlmutter profiles.

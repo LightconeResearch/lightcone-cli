@@ -1,9 +1,9 @@
 # Running on a Cluster
 
 When local laptop time isn't enough, you can take the same project to
-a SLURM HPC system or a lightcone JupyterHub deployment. There's no
-separate configuration to learn — the same `lc run` command works
-everywhere, just with more hardware to spread across.
+a SLURM HPC system or a lightcone JupyterHub deployment. The same
+execution path supports local and interactive work, while queued SLURM
+work can be submitted with `lc run --async`.
 
 ## The big picture
 
@@ -51,6 +51,10 @@ A cluster's image is fixed at creation, so create-per-run is also what
 keeps the environment fresh: edit the Containerfile, `lc run`, and the
 next cluster runs the rebuilt image.
 
+For longer work, `lc run --async` is an outer submission layer. It asks
+SLURM for an allocation and then executes ordinary `lc run` inside it, so
+recipe behavior and provenance stay identical.
+
 ## Pre-flight: pick the right container runtime
 
 On most HPC sites, docker isn't available on compute nodes. Most
@@ -64,7 +68,14 @@ $EDITOR ~/.lightcone/config.yaml
 ```yaml
 container:
   runtime: podman-hpc
+slurm:
+  account: m1234
+  time_padding: 1.5
 ```
+
+`slurm.account` is required the first time you use `--async`; alternatively,
+pass `--account m1234` for one submission. `time_padding` multiplies the
+serial sum of recipe time estimates and defaults to `1.5`.
 
 Then build and migrate the images for your project:
 
@@ -86,45 +97,26 @@ provenance warning.)
 
 ## A typical SLURM workflow
 
-### 1. Get an allocation
+### 1. Choose interactive or queued execution
+
+For short, agent-in-the-loop work, get an interactive allocation and run
+synchronously:
 
 ```bash
-salloc -N 4 -t 02:00:00 -C gpu                       # interactive
-# or
-sbatch run.sbatch                                    # batch
+salloc -A m1234 -N 1 -t 02:00:00 -C gpu -q interactive
+lc run heavy_fit -u baseline
 ```
 
-`run.sbatch` looks like:
+For long or unattended work on Perlmutter, submit it from either a login or
+compute node:
 
-=== "Generic"
-    ```bash
-    #!/bin/bash
-    #SBATCH -N 4
-    #SBATCH -t 02:00:00
-    #SBATCH -C gpu
+```bash
+lc run --async heavy_fit -u baseline
+lc status
+```
 
-    cd $HOME/my-analysis
-    source .venv/bin/activate
-    lc run -j 16
-    ```
-
-=== "NERSC Perlmutter"
-    ```bash
-    #!/bin/bash
-    #SBATCH -A <your_project>
-    #SBATCH -q regular
-    #SBATCH -C gpu
-    #SBATCH -N 4
-    #SBATCH -t 04:00:00
-
-    cd $SCRATCH/your-analysis
-
-    # make `lc` available — pick the line that matches your install:
-    export PATH=$HOME/.local/bin:$PATH                # uv tool install
-    # source ~/.conda/envs/your-env-name/bin/activate # conda env
-
-    lc run -j 16
-    ```
+Lightcone chooses `shared` or `regular`, writes the script under
+`.lightcone/jobs/`, stores logs in scratch, and records the returned job id.
 
 ### 2. `lc run` inside the allocation
 
@@ -137,7 +129,7 @@ Once `SLURM_JOB_ID` is set in your environment, `lc run` does the rest:
   per-recipe `resources:` constraints land on workers that can hold
   them.
 
-### 3. Per-recipe resource hints
+### 3. Per-recipe resources
 
 Add resource hints in your `astra.yaml` recipe blocks:
 
@@ -146,16 +138,18 @@ outputs:
   - id: heavy_fit
     type: metric
     recipe:
-      command: python scripts/fit.py --output {output[0]}
+      command: python scripts/fit.py --output {output}
       resources:
-        cpus_per_task: 32
-        mem_mb: 64000
-        gpus_per_task: 1
+        cpus: 16
+        memory: 64GB
+        gpus: 1
+        time_limit: 2h
 ```
 
-The Snakemake-via-Dask executor maps these to per-task resource
-requests, so a rule that needs a GPU only schedules on nodes that
-advertise one.
+Lightcone maps these portable ASTRA names to Snakemake/Dask resource
+requests for synchronous execution and uses the same declaration to size
+asynchronous jobs. Every recipe in an asynchronously submitted sub-DAG needs
+`time_limit`; the other fields have conservative zero/one defaults.
 
 ## Interactive: agent-driven runs
 
@@ -173,21 +167,22 @@ claude                   # or whichever agent CLI you prefer
 
 Everything the agent triggers (`lc run`, scripts, etc.) now executes
 on the allocated node. When you're done iterating and want a
-hands-off sweep of all universes, submit `lc run` as a batch job
-instead (the sbatch template above).
+hands-off work, use `lc run --async`. This is also valid while the agent is
+still on the compute node; `sbatch` queues an independent allocation.
 
 ## What about login-node-only operations?
 
-Build images, dry-run, look at status — all fine on a login node
-without an allocation:
+Build images, submit queued work, and look at status are all fine on a login
+node without an allocation:
 
 ```bash
 lc build                       # build images (uses podman-hpc on login node)
-lc status                      # offline; reads only manifests
+lc run --async heavy_fit       # submits; does not execute on the login node
+lc status                      # manifests + on-demand Slurm polling
 ```
 
-The actual `lc run` should happen inside an allocation, since that's
-where the worker nodes are.
+Plain `lc run` must happen inside an allocation. On Perlmutter login nodes it
+fails with an allocation example and a hint to try `--async`.
 
 ## External Dask schedulers
 

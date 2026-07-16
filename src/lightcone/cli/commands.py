@@ -10,6 +10,7 @@ Commands:
   MyST report template).
 - ``lc run``    — generate Snakefile and run snakemake.
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
+- ``lc cancel`` — cancel a recorded asynchronous SLURM job.
 - ``lc verify`` — recompute hashes and validate the provenance chain.
 - ``lc build``  — build containers from Containerfiles.
 
@@ -97,6 +98,10 @@ def _ensure_global_config() -> None:
                 # its daemon is unreachable); set explicitly to pin. ``none``
                 # disables containerization entirely.
                 "container": {"runtime": "auto"},
+                # Account is intentionally unset: allocations are site/user
+                # specific and must never be guessed. Async walltime is the
+                # serial sub-DAG estimate multiplied by this safety padding.
+                "slurm": {"account": None, "time_padding": 1.5},
             }
         )
     )
@@ -535,8 +540,65 @@ def _abort_on_perlmutter_login() -> None:
         "run inside a SLURM allocation.\n"
         "  Start one with, e.g.:\n"
         "    salloc -N 1 -C gpu -q interactive -t 1:00:00 -A <account>\n"
-        "  then re-run `lc run` from inside."
+        "  then re-run `lc run` from inside.\n"
+        "  If the recipes declare resources.time_limit, submit them instead with:\n"
+        "    lc run --async <output> --account <account>"
     )
+
+
+def _abort_if_sync_resources_exceed_allocation(
+    project: Path,
+    outputs: tuple[str, ...],
+) -> None:
+    """Fail before Dask waits forever on an unschedulable SLURM rule."""
+    if "SLURM_JOB_ID" not in os.environ or os.environ.get("DASK_SCHEDULER_ADDRESS"):
+        return
+
+    from lightcone.engine.async_jobs import AsyncJobError, resolve_subdag_outputs
+    from lightcone.engine.dask_cluster import _detect_node_shape
+    from lightcone.engine.resources import ResourceValueError, parse_recipe_resources
+
+    try:
+        _, subdag = resolve_subdag_outputs(project, outputs)
+    except AsyncJobError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    shape = _detect_node_shape()
+    available_memory_mb = shape.mem_bytes // 1_000_000
+    shortfalls: list[str] = []
+    for tree_output in subdag:
+        qualified = (
+            f"{tree_output.analysis_id}.{tree_output.output_id}"
+            if tree_output.analysis_id
+            else tree_output.output_id
+        )
+        try:
+            resources = parse_recipe_resources(
+                tree_output.output_def.get("recipe") or {},
+                label=f"output {qualified!r}",
+            )
+        except ResourceValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        exceeded: list[str] = []
+        if resources.cpus > shape.cpus:
+            exceeded.append(f"CPUs {resources.cpus} > {shape.cpus}")
+        if resources.memory_mb and available_memory_mb:
+            if resources.memory_mb > available_memory_mb:
+                exceeded.append(
+                    f"memory {resources.memory_mb} MB > {available_memory_mb} MB"
+                )
+        if resources.gpus > shape.gpus:
+            exceeded.append(f"GPUs {resources.gpus} > {shape.gpus}")
+        if exceeded:
+            shortfalls.append(f"  - {qualified}: {', '.join(exceeded)}")
+
+    if shortfalls:
+        raise click.ClickException(
+            "The current SLURM allocation cannot satisfy every selected recipe:\n"
+            + "\n".join(shortfalls)
+            + "\nRequest a larger interactive allocation or submit an independent "
+            "batch allocation with `lc run --async`."
+        )
 
 
 @main.command()
@@ -550,6 +612,17 @@ def _abort_on_perlmutter_login() -> None:
 )
 @click.option("--force", "-f", is_flag=True, help="Force re-materialization")
 @click.option("--verbose", "-v", is_flag=True, help="Show full executor output")
+@click.option(
+    "--async",
+    "asynchronous",
+    is_flag=True,
+    help="Submit one SLURM batch job per selected universe.",
+)
+@click.option(
+    "--account",
+    default=None,
+    help="SLURM account for --async (overrides ~/.lightcone/config.yaml).",
+)
 def run(
     outputs: tuple[str, ...],
     universe: str | None,
@@ -557,6 +630,8 @@ def run(
     rerun_triggers: str,
     force: bool,
     verbose: bool,
+    asynchronous: bool,
+    account: str | None,
 ) -> None:
     """Materialize outputs declared in astra.yaml.
 
@@ -565,7 +640,42 @@ def run(
     run-scoped Dask Gateway cluster on a JupyterHub deployment, or an
     existing scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
     """
+    project = _project_root()
+
+    from lightcone.engine.snakefile import discover_universes
+
+    universes = [universe] if universe else discover_universes(project)
+    if asynchronous:
+        from lightcone.engine.async_jobs import AsyncJobError, format_slurm_time, submit_job
+
+        try:
+            for universe_id in universes:
+                record = submit_job(
+                    project,
+                    output_ids=outputs,
+                    universe=universe_id,
+                    account_override=account,
+                    jobs=jobs,
+                    rerun_triggers=rerun_triggers,
+                    force=force,
+                    verbose=verbose,
+                )
+                console.print(
+                    f"[green]Submitted job {record.job_id}[/green] "
+                    f"([cyan]{record.qos}[/cyan], universe "
+                    f"[cyan]{record.universe}[/cyan], "
+                    f"walltime {format_slurm_time(int(record.resources['time_limit_seconds']))}).\n"
+                    f"  Script: [cyan]{record.sbatch_path}[/cyan]\n"
+                    f"  Log:    [cyan]{record.log_path}[/cyan]"
+                )
+        except AsyncJobError as exc:
+            raise click.ClickException(str(exc)) from exc
+        return
+
+    if account is not None:
+        raise click.ClickException("--account is only valid together with --async.")
     _abort_on_perlmutter_login()
+    _abort_if_sync_resources_exceed_allocation(project, outputs)
 
     from lightcone.engine.container import load_runtime
     from lightcone.engine.dask_cluster import cluster_for_run, gateway_branch_active
@@ -576,10 +686,7 @@ def run(
         prepare_run_dirs,
         resolve_scratch_root,
     )
-    from lightcone.engine.snakefile import discover_universes, generate
-
-    project = _project_root()
-    universes = [universe] if universe else discover_universes(project)
+    from lightcone.engine.snakefile import generate
 
     # Resolve scratch and prepare per-run directories before anything
     # else. Snakemake's ``.snakemake/`` is redirected via symlink so its
@@ -880,12 +987,38 @@ def _target_for(project: Path, output_id: str, universe: str) -> str:
     help="Emit machine-readable JSON instead of a styled table.",
 )
 def status(universe: str | None, as_json: bool) -> None:
-    """Report materialization status for every declared output."""
+    """Report materialization and recorded async-job status."""
+    from lightcone.engine.async_jobs import (
+        JobRecord,
+        job_display_state,
+        latest_job_for_output,
+        refresh_job_records,
+    )
     from lightcone.engine.snakefile import discover_universes
     from lightcone.engine.status import get_output_status
 
     project = _project_root()
     universes = [universe] if universe else discover_universes(project)
+    records = refresh_job_records(project)
+
+    def job_for(status_item: object, universe_id: str) -> JobRecord | None:
+        analysis_id = getattr(status_item, "analysis_id")
+        output_id = getattr(status_item, "output_id")
+        qualified = f"{analysis_id}.{output_id}" if analysis_id else output_id
+        return latest_job_for_output(
+            records, output_id=qualified, universe=universe_id
+        )
+
+    def job_payload(record: JobRecord | None) -> dict[str, str] | None:
+        if record is None:
+            return None
+        return {
+            "job_id": record.job_id,
+            "state": job_display_state(record.last_state),
+            "slurm_state": record.last_state,
+            "qos": record.qos,
+            "log_path": record.log_path,
+        }
 
     if as_json:
         payload = {
@@ -898,6 +1031,7 @@ def status(universe: str | None, as_json: bool) -> None:
                             "analysis_id": s.analysis_id,
                             "status": s.status,
                             "recipe_command": s.recipe_command,
+                            "job": job_payload(job_for(s, u)),
                         }
                         for s in get_output_status(project, universe_id=u)
                     ],
@@ -911,9 +1045,26 @@ def status(universe: str | None, as_json: bool) -> None:
     for u in universes:
         console.print(f"\n[bold]Universe[/bold] [cyan]{u}[/cyan]")
         for s in get_output_status(project, universe_id=u):
-            label = _status_label(s.status)
+            record = job_for(s, u)
+            state = job_display_state(record.last_state) if record else None
+            active_state = (
+                state
+                if state in {"queued", "running", "failed", "cancelled", "unknown"}
+                else None
+            )
+            label = _status_label(active_state or s.status)
             scope = f"[dim]{s.analysis_id}.[/dim]" if s.analysis_id else ""
-            console.print(f"  {label}  {scope}{s.output_id}")
+            detail = ""
+            if record and state in {"queued", "running"}:
+                detail = f" [dim](job {record.job_id}, {record.qos})[/dim]"
+            elif record and state == "failed":
+                detail = (
+                    f" [dim](job {record.job_id}, {record.last_state}; "
+                    f"log: {record.log_path})[/dim]"
+                )
+            elif record and state in {"cancelled", "unknown"}:
+                detail = f" [dim](job {record.job_id}, {record.last_state})[/dim]"
+            console.print(f"  {label}  {scope}{s.output_id}{detail}")
 
 
 _STATUS_STYLES = {
@@ -921,11 +1072,38 @@ _STATUS_STYLES = {
     "stale": "[yellow]✸ stale[/yellow] ",
     "missing": "[red]✗ miss[/red]  ",
     "alias": "[dim]→ alias[/dim] ",
+    "queued": "[blue]◷ queued[/blue] ",
+    "running": "[cyan]▶ running[/cyan]",
+    "failed": "[red]✗ failed[/red] ",
+    "cancelled": "[dim]■ cancel[/dim] ",
+    "unknown": "[yellow]? unknown[/yellow]",
 }
 
 
 def _status_label(s: str) -> str:
     return _STATUS_STYLES.get(s, s)
+
+
+# =============================================================================
+# lc cancel
+# =============================================================================
+
+
+@main.command()
+@click.argument("job_or_output")
+def cancel(job_or_output: str) -> None:
+    """Cancel an async job by recorded job id or output id."""
+    from lightcone.engine.async_jobs import AsyncJobError, cancel_job
+
+    project = _project_root()
+    try:
+        record = cancel_job(project, job_or_output)
+    except AsyncJobError as exc:
+        raise click.ClickException(str(exc)) from exc
+    console.print(
+        f"[green]Cancelled job {record.job_id}[/green] "
+        f"([cyan]{record.qos}[/cyan], universe [cyan]{record.universe}[/cyan])."
+    )
 
 
 # =============================================================================

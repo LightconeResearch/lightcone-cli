@@ -7,17 +7,19 @@ is a thin Click wrapper around these modules.
 
 | Module | Role |
 |--------|------|
-| [`lightcone.cli.commands`](cli.md) | Click CLI: `init`, `run`, `build`, `status`, `verify`, `setup`. |
+| [`lightcone.cli.commands`](cli.md) | Click CLI: `init`, `run`, `build`, `status`, `cancel`, `verify`, `export`. |
 | [`lightcone.engine.manifest`](manifest.md) | Per-output `.lightcone-manifest.json` write/read; `code_version`, `sha256_dir`. The integrity layer. |
 | [`lightcone.engine.snakefile`](snakefile.md) | Generate `.lightcone/Snakefile` and `snakefile-config.json` from `astra.yaml`. |
 | [`lightcone.engine.container`](container.md) | Runtime detection, content-addressed image tags, `wrap_recipe`. |
 | [`lightcone.engine.dask_cluster`](dask_cluster.md) | Cluster lifecycle for `lc run` (local / SLURM / external). |
+| [`lightcone.engine.resources`](resources.md) | Canonical ASTRA resource parsing and Snakemake-name mapping. |
+| [`lightcone.engine.async_jobs`](async_jobs.md) | Coarse SLURM submission, polling, records, and cancellation. |
 | [`lightcone.engine.status`](status.md) | Manifest-driven status walker. |
 | [`lightcone.engine.verify`](verify.md) | Recompute hashes; walk the input chain. |
 | [`lightcone.engine.tree`](tree.md) | Sub-analysis tree helpers — outputs, decisions, `from:` resolution. |
 | [`lightcone.engine.validation`](validation.md) | Post-recipe sanity checks (empty dir, all-NaN columns, …). |
 | [`snakemake_executor_plugin_dask`](dask_executor.md) | Snakemake executor plugin → `dask.distributed`. |
-| `lightcone.engine.site_registry` | Vestigial — no active code path imports it. See [api/site_registry](site_registry.md). |
+| [`lightcone.engine.site_registry`](site_registry.md) | Site detection, scratch/runtime defaults, and async SLURM policies. |
 
 ## Common entry points
 

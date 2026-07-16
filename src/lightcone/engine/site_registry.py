@@ -34,6 +34,35 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
             "hostname": "perlmutter.nersc.gov",
         },
         "container_runtime": "podman-hpc",
+        # Deterministic policy for ``lc run --async``.  Profiles are
+        # separate because Perlmutter's CPU and GPU nodes have different
+        # shapes, and GPU shared jobs receive 16 CPU cores + 64 GB host
+        # memory per requested GPU.
+        "async_slurm": {
+            "qos": {
+                "shared": {"max_time_seconds": 48 * 60 * 60},
+                "regular": {"max_time_seconds": 48 * 60 * 60},
+            },
+            "profiles": {
+                "cpu": {
+                    "constraint": "cpu",
+                    "node_cpus": 128,
+                    "node_memory_mb": 512_000,
+                    "node_gpus": 0,
+                    "shared_cpus": 64,
+                    "shared_memory_mb": 256_000,
+                },
+                "gpu": {
+                    "constraint": "gpu",
+                    "node_cpus": 64,
+                    "node_memory_mb": 256_000,
+                    "node_gpus": 4,
+                    "shared_gpus": 2,
+                    "shared_cpus_per_gpu": 16,
+                    "shared_memory_mb_per_gpu": 64_000,
+                },
+            },
+        },
         # Where lightcone keeps its operational state (snakemake metadata,
         # dask spill, cross-node stdout locks). NERSC's $HOME and CFS are
         # mounted on compute via DVS, which silently swallows ``flock`` and
@@ -199,7 +228,23 @@ def detect_current_site() -> HostSite:
     injected env is the signal). Returns a falsy :class:`HostSite`
     (``key is None``) when nothing matches.
     """
-    key = detect_site_from_env() or detect_site(socket.gethostname())
+    # Perlmutter compute-node hostnames are commonly ``nidNNNNNN`` and do
+    # not identify the system. NERSC_HOST is set consistently on login and
+    # compute nodes; LIGHTCONE_SITE is a portable explicit override for a
+    # future site whose node names have the same problem. Deployment env
+    # markers still take precedence over hostname-based detection because a
+    # pod's hostname does not identify the environment it runs in.
+    candidates = (
+        os.environ.get("LIGHTCONE_SITE"),
+        os.environ.get("NERSC_HOST"),
+        socket.gethostname(),
+    )
+    key = detect_site_from_env()
+    if key is None:
+        for value in candidates:
+            if value and (detected := detect_site(value)):
+                key = detected
+                break
     if key is None:
         return _UNKNOWN_HOST_SITE
     return HostSite(key=key, defaults=get_site_defaults(key) or {})

@@ -21,6 +21,8 @@ everything (Snakemake's `rule all`).
 | `--rerun-triggers TRIGGERS` | `code,input,mtime,params` | Comma-separated rerun triggers (forwarded to Snakemake). |
 | `--force`, `-f` | off | `--force` when targets are named, `--forceall` otherwise. |
 | `--verbose`, `-v` | off | Show the underlying Snakemake / executor chatter and the spawned `snakemake` invocation. |
+| `--async` | off | Submit one coarse SLURM job per selected universe instead of executing immediately. Perlmutter only in v1. |
+| `--account NAME` | `slurm.account` in `~/.lightcone/config.yaml` | Override the SLURM account for this async submission. Requires `--async`. |
 
 ## What happens, step by step
 
@@ -42,6 +44,11 @@ everything (Snakemake's `rule all`).
 8. In the default (non-verbose) path, filter the executor's banner
    chatter so the output reads as lightcone's, not Snakemake's. Real
    error content always passes through.
+
+With `--async`, steps 3–8 happen later inside the batch allocation. The
+submission process instead resolves the requested sub-DAG, validates its
+resources, chooses `shared` or `regular`, renders an sbatch script, submits
+it, and writes `.lightcone/jobs/<job-id>.json`.
 
 ## Output qualification
 
@@ -69,7 +76,50 @@ lc run accuracy precision --universe baseline  # several
 lc run --jobs 4 --verbose                      # parallel, with stack noise
 lc run --force --universe baseline             # rebuild everything
 lc run --rerun-triggers params,input           # tighter staleness
+lc run --async accuracy -u baseline            # submit one queued batch job
 ```
+
+## Asynchronous SLURM jobs
+
+First set the account once:
+
+```yaml
+# ~/.lightcone/config.yaml
+container:
+  runtime: podman-hpc
+slurm:
+  account: m1234
+  time_padding: 1.5
+```
+
+Every recipe in the selected output's resolved sub-DAG must declare a
+`time_limit`. Other resources default to one CPU, no requested memory, and
+no GPU:
+
+```yaml
+recipe:
+  command: python scripts/fit.py --output {output}
+  resources:
+    cpus: 16
+    memory: 64GB
+    gpus: 1
+    time_limit: 2h
+```
+
+The allocation shape is the element-wise maximum across those recipes. The
+walltime is their serial sum multiplied by `slurm.time_padding`. On
+Perlmutter, a job fitting the shared CPU/GPU profile uses `shared`; anything
+larger uses `regular`, up to the 48-hour cap. A recipe larger than one node or
+a padded walltime beyond the cap is rejected.
+
+Submission is allowed from both login and compute nodes. If `-u` is omitted,
+Lightcone submits one job per discovered universe. The generated script
+activates the environment containing the current Python executable and runs
+plain `lc run ...` inside the allocation. It therefore uses the same Dask,
+Snakemake, validation, manifest, and container path as a synchronous run,
+including `podman-hpc`; it never installs packages on a compute node.
+
+Use `lc status` to poll and [`lc cancel`](cancel.md) to cancel a recorded job.
 
 ## Inside SLURM
 
@@ -80,9 +130,12 @@ lc run --universe baseline -j 16
 
 `lc run` detects `SLURM_JOB_ID`, binds the Dask scheduler to the
 driver's hostname, and launches one `dask worker` per node via `srun`.
-Workers advertise `cpus`, `memory`, and `gpus` resources. Per-rule
-resource hints (`cpus_per_task`, `mem_mb`, `gpus_per_task`) constrain
-which workers can pick up which jobs.
+Workers advertise `cpus`, `memory`, and `gpus` resources. ASTRA recipe
+resources are translated to Snakemake's `cpus_per_task`, `mem_mb`,
+`gpus_per_task`, and `runtime` names, constraining which workers can pick up
+which jobs. Before starting Dask, Lightcone checks that every selected rule
+fits one worker in the current allocation; an impossible shape fails with a
+larger-allocation / `--async` hint instead of waiting indefinitely.
 
 ## Provenance gotcha
 

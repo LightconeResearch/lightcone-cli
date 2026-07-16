@@ -1,7 +1,7 @@
 # lc status
 
-Manifest-driven status report for every output declared in
-`astra.yaml`.
+Manifest-driven status report for every output declared in `astra.yaml`,
+annotated with recorded asynchronous SLURM jobs.
 
 ## Synopsis
 
@@ -26,6 +26,8 @@ Universe baseline
   ✸ stale precision
   ✗ miss  recall
   → alias inference
+  ◷ queued simulation (job 1234567, regular)
+  ▶ running fit (job 1234568, shared)
 ```
 
 Statuses (defined in `lightcone.engine.status.StatusLiteral`):
@@ -37,11 +39,20 @@ Statuses (defined in `lightcone.engine.status.StatusLiteral`):
 | `missing` | No manifest at the expected output path. | Never built, or the directory was deleted. |
 | `alias` | The output has no `recipe:` of its own — it's just a name pointing at a sibling output (typical for ASTRA "promoted" outputs from sub-analyses). | Status is implicitly determined by the upstream. |
 
+When `.lightcone/jobs/*.json` records exist, `lc status` batch-queries
+`squeue` and `sacct`. Affected outputs can additionally show `queued`,
+`running`, `failed`, `cancelled`, or `unknown`, with the job id, QoS, and
+failure log where relevant. Completed jobs fall back to the manifest status,
+because manifests—not scheduler history—remain the source of truth for
+outputs. JSON output includes a nullable `job` object beside each output's
+materialization `status`.
+
 ## Why it doesn't import Snakemake
 
-`lc status` reads only the per-output `.lightcone-manifest.json` files
-and recomputes `code_version` against the current spec. It never
-imports Snakemake or touches `.snakemake/`. That makes it usable on:
+`lc status` reads per-output manifests and small async job records. It never
+imports Snakemake or touches `.snakemake/`; scheduler polling happens only
+when records exist. If Slurm commands are unavailable, cached states are
+preserved. That makes it usable on:
 
 - A fresh clone before any `lc run`.
 - A frozen archive copied off a cluster.
@@ -63,5 +74,6 @@ lc status --json                # machine-readable JSON output
 
 - [`lc verify`](verify.md) — recomputes data hashes too (slower; catches
   tampering and broken chains).
+- [`lc cancel`](cancel.md) — cancel a queued or running recorded job.
 - [api/status](../api/status.md) — the Python API.
 - [api/manifest](../api/manifest.md) — the manifest schema.

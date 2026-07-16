@@ -14,6 +14,9 @@ mkdir -p ~/.lightcone
 cat > ~/.lightcone/config.yaml <<'EOF'
 container:
   runtime: auto
+slurm:
+  account: null
+  time_padding: 1.5
 EOF
 ```
 

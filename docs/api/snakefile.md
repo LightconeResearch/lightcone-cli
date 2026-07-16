@@ -42,19 +42,19 @@ rule <name>:
     output:
         data=directory("<output_dir>"),
         manifest="<output_dir>/.lightcone-manifest.json",
+    threads: <recipe.resources.cpus>
+    resources:
+        cpus_per_task=<cpus>,
+        mem_mb=<memory in MB>,
+        gpus_per_task=<gpus>,
+        runtime=<time_limit in minutes>,
     params:
         cfg=lambda wc: CFG["<rule_key>"][wc.universe],
     run:
-        shell('printf "▶ <rule_key> [%s]\\n" "{wildcards.universe}" >&2')
-        shell(params.cfg["shell_command"])
-        write_manifest(
-            output_dir=Path(output.data),
-            inputs={"<inp_id>": Path(input.<inp_id>), ...},
-            cfg=params.cfg,
-        )
-        for _w in validate_output(Path(output.data), params.cfg.get("output_type"), params.cfg["output_id"]):
-            print(f"\033[33m⚠\033[0m {_w}", file=sys.stderr)
+        run_rule(...)
 ```
+
+Unset optional memory/GPU/time values are omitted. CPU defaults to one.
 
 ## `cfg` content
 
