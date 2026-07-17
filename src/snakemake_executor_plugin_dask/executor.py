@@ -123,7 +123,11 @@ def _unpack_result(result: object) -> tuple[int, str]:
     if isinstance(result, tuple):
         exit_code, block = result
         return int(exit_code), str(block)
-    return int(result), ""
+    if isinstance(result, int):
+        return result, ""
+    raise TypeError(
+        f"unexpected dask task result type: {type(result).__name__}"
+    )
 
 
 def _build_resources(job: JobExecutorInterface) -> dict[str, float]:
