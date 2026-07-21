@@ -7,16 +7,18 @@ One context manager, four branches:
   the cluster, so we don't tear it down.
 - A Dask Gateway environment is detected (``LIGHTCONE_GATEWAY_CLUSTER`` or
   ``DASK_GATEWAY__ADDRESS`` is set, e.g. on a JupyterHub deployment) →
-  **attach** to the user's running Gateway cluster. ``lc run`` never
-  creates Gateway clusters: the user starts one from JupyterLab (Dask
-  sidebar or a notebook, where the options widget offers image/cores/
-  memory) and lc discovers it through the user-scoped Gateway API —
-  exactly one running cluster attaches unambiguously; zero or several
-  is an error naming the fix. Gateway scheduler addresses use a custom
-  ``gateway://`` comm scheme that a bare ``distributed.Client`` cannot
-  dial, so the child snakemake process is told the *cluster name* via
-  ``LIGHTCONE_GATEWAY_CLUSTER`` and rejoins through the Gateway API —
-  the same rendezvous-by-ambient-context pattern the SLURM branch uses.
+  **create** a run-scoped Gateway cluster with the project's worker image
+  and shut it down when the run finishes — the same create/cull lifecycle
+  the local and SLURM branches have always had, which is also what lets
+  every run pick up a freshly built image (a Gateway cluster's image is
+  fixed at creation). Setting ``LIGHTCONE_GATEWAY_CLUSTER=<name>``
+  instead **attaches** to that existing cluster and leaves it running on
+  exit — the escape hatch for iterating against a long-lived cluster.
+  Gateway scheduler addresses use a custom ``gateway://`` comm scheme
+  that a bare ``distributed.Client`` cannot dial, so the child snakemake
+  process is told the *cluster name* via ``LIGHTCONE_GATEWAY_CLUSTER``
+  and rejoins through the Gateway API — the same rendezvous-by-ambient-
+  context pattern the SLURM branch uses.
 - ``SLURM_JOB_ID`` is set → start an in-process scheduler via
   ``LocalCluster(n_workers=0)``, then ``srun`` one ``dask worker`` per node
   across the allocation. Workers advertise the node's full resources;
@@ -26,9 +28,11 @@ One context manager, four branches:
 Except on the Gateway branch (where the Gateway server owns scheduling),
 the scheduler is always in-process (driven by ``lc run`` itself) so its
 lifetime equals the run's lifetime — no service to manage, no orphaned
-schedulers if the driver crashes. The Gateway branch mirrors the
-``DASK_SCHEDULER_ADDRESS`` convention: we attach to a cluster someone
-else owns, so we leave it running (and its scaling untouched) on exit.
+schedulers if the driver crashes. On the Gateway branch the same
+lifetime contract is enforced server-side: clusters lc creates are shut
+down on exit (and reaped by the deployment's idle timeout if lc dies
+uncleanly); clusters the user named are left untouched, mirroring the
+``DASK_SCHEDULER_ADDRESS`` convention.
 """
 
 from __future__ import annotations
@@ -49,13 +53,20 @@ RESOURCE_CPUS = "cpus"
 RESOURCE_MEMORY = "memory"
 RESOURCE_GPUS = "gpus"
 
-#: Env var carrying a Dask Gateway cluster name. Set by the user to pick
-#: one of several running Gateway clusters (discovery attaches
-#: automatically when exactly one is up); set by :func:`cluster_for_run`
-#: for the child snakemake process so the executor plugin can rejoin the
+#: Env var carrying a Dask Gateway cluster name. Set by the user to
+#: attach to an existing long-lived cluster instead of the default
+#: create-per-run lifecycle; set by :func:`cluster_for_run` for the
+#: child snakemake process so the executor plugin can rejoin the
 #: cluster through the Gateway API (a bare ``Client`` cannot dial
 #: ``gateway://``).
 GATEWAY_CLUSTER_ENV = "LIGHTCONE_GATEWAY_CLUSTER"
+
+#: Env var bounding how long the Gateway branch waits for the first
+#: worker of a cluster it created (seconds; default 600). The wait
+#: exists to fail fast with a real error when the requested image
+#: cannot be pulled or the pool cannot schedule a worker — without it
+#: the run would sit silently at zero workers forever.
+GATEWAY_WORKER_TIMEOUT_ENV = "LIGHTCONE_GATEWAY_WORKER_TIMEOUT"
 
 #: Env var carrying the image a Gateway worker pod was started with. A
 #: lightcone-hub deployment's cluster-options handler injects it into
@@ -137,6 +148,7 @@ def cluster_for_run(
     verbose: bool = False,
     local_directory: str | None = None,
     expected_worker_image: str | None = None,
+    max_workers: int | None = None,
 ) -> Iterator[dict[str, str]]:
     """Yield the env overlay the child snakemake needs to reach the cluster.
 
@@ -154,10 +166,16 @@ def cluster_for_run(
     file I/O is slow and can pressure the gateway nodes).
 
     *expected_worker_image*, when given, is the image the project's
-    declared container resolves to on this deployment; the Gateway
-    branch compares it against what the attached cluster actually runs
-    and warns on mismatch. Ignored by the other branches (they realize
-    containers by wrapping recipes, not via pod images).
+    declared container resolves to on this deployment. A Gateway cluster
+    lc creates is started with exactly this image; an attached cluster
+    is compared against it with a warning on mismatch. Ignored by the
+    other branches (they realize containers by wrapping recipes, not
+    via pod images).
+
+    *max_workers* bounds the adaptive scaling of a Gateway cluster lc
+    creates (``lc run`` passes its ``--jobs`` value — there is never a
+    reason to hold more workers than dispatchable rules). Ignored
+    everywhere else.
     """
     if addr := os.environ.get("DASK_SCHEDULER_ADDRESS"):
         if verbose:
@@ -167,7 +185,9 @@ def cluster_for_run(
 
     if GATEWAY_CLUSTER_ENV in os.environ or "DASK_GATEWAY__ADDRESS" in os.environ:
         with _gateway_cluster(
-            verbose=verbose, expected_worker_image=expected_worker_image
+            verbose=verbose,
+            expected_worker_image=expected_worker_image,
+            max_workers=max_workers,
         ) as name:
             yield {GATEWAY_CLUSTER_ENV: name}
         return
@@ -187,19 +207,28 @@ def cluster_for_run(
 
 @contextmanager
 def _gateway_cluster(
-    *, verbose: bool, expected_worker_image: str | None
+    *,
+    verbose: bool,
+    expected_worker_image: str | None,
+    max_workers: int | None,
 ) -> Iterator[str]:
-    """Attach to the user's running Dask Gateway cluster; yield its name.
+    """Create (or attach to) a Dask Gateway cluster; yield its name.
 
-    Attach-only by design: cluster lifecycle belongs to the user (create
-    one from the JupyterLab Dask sidebar or a notebook — that's where
-    the image/cores/memory options widget lives, and where the dashboard
-    is already docked). The Gateway API is user-scoped under JupyterHub
-    auth, so ``list_clusters()`` sees only the caller's clusters —
-    exactly one running cluster attaches with zero configuration; zero
-    or several raises with the fix spelled out. We never touch the
-    cluster's scaling and leave it running on exit, mirroring the
-    ``DASK_SCHEDULER_ADDRESS`` convention.
+    Default lifecycle — create and cull, per run: a new cluster is
+    created with the project's worker image, scaled adaptively between
+    one worker and *max_workers*, and shut down when the run finishes.
+    This mirrors the local/SLURM branches (compute lives exactly as
+    long as the run) and is what makes image updates seamless: a
+    Gateway cluster's image is fixed at creation, so picking up a
+    freshly built project image *requires* a fresh cluster.
+
+    Attach — when ``LIGHTCONE_GATEWAY_CLUSTER`` names a cluster: connect
+    to it, leave its scaling alone, and leave it running on exit
+    (mirroring the ``DASK_SCHEDULER_ADDRESS`` convention). This is the
+    escape hatch for iterating repeatedly against one long-lived
+    cluster (create it from the JupyterLab Dask sidebar or a notebook
+    with ``shutdown_on_close=False``); the cost is that lc can only
+    warn — not fix — when its image is stale.
 
     The Gateway client is configured entirely by ambient dask config —
     on a lightcone JupyterHub deployment the ``DASK_GATEWAY__*`` env
@@ -230,25 +259,138 @@ def _gateway_cluster(
         ) from exc
 
     named = os.environ.get(GATEWAY_CLUSTER_ENV)
-    name = named or _discover_cluster_name(
-        gateway, expected_worker_image=expected_worker_image
-    )
+    if named:
+        with _attached_gateway_cluster(
+            gateway,
+            name=named,
+            verbose=verbose,
+            expected_worker_image=expected_worker_image,
+        ) as name:
+            yield name
+        return
+
+    with _created_gateway_cluster(
+        gateway,
+        verbose=verbose,
+        worker_image=expected_worker_image,
+        max_workers=max_workers,
+    ) as name:
+        yield name
+
+
+@contextmanager
+def _created_gateway_cluster(
+    gateway: object,
+    *,
+    verbose: bool,
+    worker_image: str | None,
+    max_workers: int | None,
+) -> Iterator[str]:
+    """Create a run-scoped Gateway cluster; shut it down on exit."""
+    options: dict[str, object] = {}
+    if worker_image:
+        # `image` is a server-side cluster option (declared by the
+        # deployment's option handler). Passing it as a kwarg merges it
+        # into the cluster options; deployments that don't declare it
+        # reject the request — surfaced below with guidance.
+        options["image"] = worker_image
     try:
-        cluster = gateway.connect(name)
+        cluster = gateway.new_cluster(  # type: ignore[attr-defined]
+            shutdown_on_close=True, **options
+        )
+    except Exception as exc:
+        detail = (
+            f" (requested image={worker_image!r} — if the deployment "
+            "does not expose an `image` cluster option, ask the hub "
+            "admin to add it to the gateway's cluster-options handler)"
+            if worker_image
+            else ""
+        )
+        raise RuntimeError(
+            f"Could not create a Dask Gateway cluster ({exc}){detail}."
+        ) from exc
+
+    bound = max(1, max_workers or 1)
+    if verbose:
+        image_note = f" with image {worker_image}" if worker_image else ""
+        print(
+            f"→ Created Dask Gateway cluster {cluster.name}{image_note}; "
+            f"scaling adaptively up to {bound} worker(s) "
+            f"(dashboard: {cluster.dashboard_link})"
+        )
+    try:
+        cluster.adapt(minimum=1, maximum=bound)
+        client = cluster.get_client()
+        try:
+            _wait_first_worker(client, image=worker_image)
+            _assert_worker_resources(client)
+        finally:
+            client.close()
+        yield str(cluster.name)
+    finally:
+        # We created it, we cull it — the PRD lifecycle. shutdown()
+        # stops the cluster server-side; if lc dies before reaching
+        # this, shutdown_on_close and the deployment's idle timeout
+        # are the backstops.
+        try:
+            cluster.shutdown()
+        except Exception:
+            cluster.close()
+        if verbose:
+            print(f"→ Shut down Dask Gateway cluster {cluster.name}")
+
+
+def _wait_first_worker(client: object, *, image: str | None) -> None:
+    """Block until the created cluster has one live worker.
+
+    An unpullable image or an unschedulable pool otherwise leaves the
+    run sitting at zero workers with no error at all — the classic
+    silent-hang failure mode. Bounded by
+    :data:`GATEWAY_WORKER_TIMEOUT_ENV` (default 600 s: a first-time
+    image pull on a fresh node is minutes, not seconds).
+    """
+    try:
+        timeout = int(os.environ.get(GATEWAY_WORKER_TIMEOUT_ENV) or 600)
+    except ValueError:
+        timeout = 600
+    try:
+        client.wait_for_workers(n_workers=1, timeout=timeout)  # type: ignore[attr-defined]
+    except Exception as exc:
+        image_hint = (
+            f"the worker image ({image}) cannot be pulled, "
+            if image
+            else "the worker image cannot be pulled, "
+        )
+        raise RuntimeError(
+            f"No Dask Gateway worker became ready within {timeout}s "
+            f"({exc}). Likely causes: {image_hint}the node pool cannot "
+            "schedule a worker (capacity/quota), or the cluster was "
+            "culled. Check the JupyterLab Dask panel for the cluster's "
+            f"state, or raise {GATEWAY_WORKER_TIMEOUT_ENV}."
+        ) from exc
+
+
+@contextmanager
+def _attached_gateway_cluster(
+    gateway: object,
+    *,
+    name: str,
+    verbose: bool,
+    expected_worker_image: str | None,
+) -> Iterator[str]:
+    """Attach to the named running Gateway cluster; leave it running."""
+    try:
+        cluster = gateway.connect(name)  # type: ignore[attr-defined]
     except Exception as exc:
         # dask-gateway raises its own error types (ValueError,
         # GatewayClusterError) for a missing/stopped cluster; translate
         # into guidance, because a *stale* LIGHTCONE_GATEWAY_CLUSTER is
         # the likely cause — we told users to export it.
-        hint = (
-            f"unset {GATEWAY_CLUSTER_ENV} to let lc discover your "
-            "running cluster, or point it at one that is running"
-            if named
-            else "it may have just stopped — check the JupyterLab Dask panel"
-        )
         raise RuntimeError(
             f"Could not connect to Dask Gateway cluster {name!r} "
-            f"({exc}); {hint}."
+            f"({exc}); unset {GATEWAY_CLUSTER_ENV} to let lc create a "
+            "run-scoped cluster, or point it at a cluster that is "
+            "running."
         ) from exc
 
     if verbose:
@@ -268,53 +410,11 @@ def _gateway_cluster(
             _check_worker_image(client, expected=expected_worker_image)
         finally:
             client.close()
-        yield cluster.name
+        yield str(cluster.name)
     finally:
         # Releases this process's connections only — the cluster (and
         # its scaling) belongs to the user.
         cluster.close()
-
-
-def _discover_cluster_name(
-    gateway: object, expected_worker_image: str | None
-) -> str:
-    """Name of the caller's single running Gateway cluster.
-
-    Raises with actionable instructions when there isn't exactly one:
-    creation is deliberately not offered here (the user creates clusters
-    from JupyterLab), so the error message *is* the UX — it must say
-    precisely what to do next.
-    """
-    reports = gateway.list_clusters()  # type: ignore[attr-defined]
-    if len(reports) == 1:
-        return str(reports[0].name)
-
-    if not reports:
-        image_arg = (
-            f'image="{expected_worker_image}", ' if expected_worker_image else ""
-        )
-        # shutdown_on_close=False matters: without it the cluster dies
-        # with the creating kernel/process, killing any lc run attached
-        # to it. The deployment's idle_timeout reaps forgotten clusters.
-        raise RuntimeError(
-            "No Dask Gateway cluster is running for your user. Create one "
-            "first — from the JupyterLab Dask sidebar (+ NEW), or in a "
-            "notebook:\n\n"
-            "    from dask_gateway import Gateway\n"
-            f"    cluster = Gateway().new_cluster({image_arg}"
-            "shutdown_on_close=False)\n"
-            "    cluster.adapt(minimum=1, maximum=8)\n\n"
-            "then re-run `lc run` (it attaches to your running cluster "
-            "and leaves it up)."
-        )
-
-    names = ", ".join(str(r.name) for r in reports)
-    raise RuntimeError(
-        f"Multiple Dask Gateway clusters are running for your user "
-        f"({names}). Pick one by setting {GATEWAY_CLUSTER_ENV}, e.g.:\n\n"
-        f"    export {GATEWAY_CLUSTER_ENV}={reports[0].name}\n\n"
-        "or shut the extras down from the JupyterLab Dask sidebar."
-    )
 
 
 def _check_worker_image(client: object, *, expected: str | None) -> None:
@@ -348,7 +448,9 @@ def _check_worker_image(client: object, *, expected: str | None) -> None:
             f"    {expected}\n"
             f"  Recipes will execute in the cluster's image; manifests "
             f"record what actually ran.\n"
-            f"  To use the project image, create a new cluster with "
+            f"  To run on the project image, unset {GATEWAY_CLUSTER_ENV} "
+            f"and let lc create a run-scoped\n"
+            f"  cluster, or recreate your cluster with "
             f'image="{expected}".'
         )
 

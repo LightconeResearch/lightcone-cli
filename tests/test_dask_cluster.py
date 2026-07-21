@@ -289,14 +289,20 @@ class _FakeGatewayClient:
         self,
         resources: dict[str, float] | None,
         worker_image: str | None = None,
+        wait_error: Exception | None = None,
     ) -> None:
         self._resources = resources
         self._worker_image = worker_image
+        self._wait_error = wait_error
 
     def scheduler_info(self) -> dict[str, object]:
         if self._resources is None:
             return {"workers": {}}
         return {"workers": {"w0": {"resources": self._resources}}}
+
+    def wait_for_workers(self, n_workers: int, timeout: int) -> None:
+        if self._wait_error is not None:
+            raise self._wait_error
 
     def run_on_scheduler(self, fn):  # noqa: ANN001, ANN202
         # The real client executes fn inside the scheduler pod, where the
@@ -323,29 +329,28 @@ class _FakeGatewayCluster:
         log: list[str],
         resources: dict[str, float] | None,
         worker_image: str | None = None,
+        wait_error: Exception | None = None,
     ) -> None:
         self.name = name
         self.dashboard_link = f"http://hub/services/dask-gateway/{name}/status"
         self._log = log
         self._resources = resources
         self._worker_image = worker_image
+        self._wait_error = wait_error
 
     def adapt(self, minimum: int, maximum: int) -> None:
         self._log.append(f"adapt({minimum},{maximum})")
 
     def get_client(self) -> _FakeGatewayClient:
-        return _FakeGatewayClient(self._resources, self._worker_image)
+        return _FakeGatewayClient(
+            self._resources, self._worker_image, self._wait_error
+        )
 
     def shutdown(self) -> None:
         self._log.append("shutdown")
 
     def close(self) -> None:
         self._log.append("close")
-
-
-class _FakeClusterReport:
-    def __init__(self, name: str) -> None:
-        self.name = name
 
 
 #: A worker resource set satisfying the deployment contract: cpus AND
@@ -357,20 +362,23 @@ def _install_fake_gateway(
     monkeypatch: pytest.MonkeyPatch,
     log: list[str],
     resources: dict[str, float] | None = None,
-    running: list[str] | None = None,
     worker_image: str | None = None,
     connect_error: Exception | None = None,
     init_error: Exception | None = None,
+    new_cluster_error: Exception | None = None,
+    wait_error: Exception | None = None,
 ):
     """Inject a fake ``dask_gateway`` module; return it for inspection.
 
-    *running* is the list of cluster names ``list_clusters()`` reports
-    (the user's running clusters). ``new_cluster`` is deliberately
-    absent from the fake: lc must never create Gateway clusters, and a
-    call would fail loudly with AttributeError. *connect_error* /
-    *init_error* simulate the real client's failure modes (stale
-    cluster name; no gateway address configured), which raise
-    non-RuntimeError types.
+    ``new_cluster`` logs the options it was called with and returns a
+    fresh cluster named ``hub.new1`` — the create/cull default path.
+    ``connect`` returns a cluster with the given name — the attach
+    path. *connect_error* / *init_error* / *new_cluster_error* simulate
+    the real client's failure modes (stale cluster name; no gateway
+    address configured; rejected cluster options), which raise
+    non-RuntimeError types. *wait_error* makes the first
+    ``wait_for_workers`` call fail (unpullable image / unschedulable
+    pool).
     """
     import sys
     import types
@@ -380,9 +388,19 @@ def _install_fake_gateway(
             if init_error is not None:
                 raise init_error
 
-        def list_clusters(self) -> list[_FakeClusterReport]:
-            log.append("list_clusters()")
-            return [_FakeClusterReport(n) for n in (running or [])]
+        def new_cluster(
+            self, shutdown_on_close: bool = False, **options: object
+        ) -> _FakeGatewayCluster:
+            log.append(
+                "new_cluster("
+                + ",".join(f"{k}={v}" for k, v in sorted(options.items()))
+                + f";shutdown_on_close={shutdown_on_close})"
+            )
+            if new_cluster_error is not None:
+                raise new_cluster_error
+            return _FakeGatewayCluster(
+                "hub.new1", log, resources, worker_image, wait_error
+            )
 
         def connect(self, name: str) -> _FakeGatewayCluster:
             log.append(f"connect({name})")
@@ -396,79 +414,103 @@ def _install_fake_gateway(
     return module
 
 
-def test_gateway_env_attaches_to_single_running_cluster(
+def test_gateway_env_creates_run_scoped_cluster(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Ambient DASK_GATEWAY__ADDRESS (a hub pod) routes to the gateway
-    branch, which discovers the user's one running cluster and attaches —
-    zero configuration, no cluster creation, no scaling changes."""
+    branch, which creates a run-scoped cluster, scales it adaptively up
+    to max_workers, and shuts it down when the run finishes — the PRD
+    create/cull lifecycle."""
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
+    log: list[str] = []
+    _install_fake_gateway(monkeypatch, log, resources=dict(_GOOD_RESOURCES))
+
+    with cluster_for_run(max_workers=8) as env:
+        assert env == {"LIGHTCONE_GATEWAY_CLUSTER": "hub.new1"}
+        assert "new_cluster(;shutdown_on_close=True)" in log
+        assert "adapt(1,8)" in log
+        assert "shutdown" not in log
+
+    assert "shutdown" in log, "run-scoped clusters are culled on exit"
+
+
+def test_gateway_creates_with_project_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The project's resolved worker image is passed as the `image`
+    cluster option — the whole point of create-per-run: every run picks
+    up the freshly built image."""
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
+    log: list[str] = []
+    _install_fake_gateway(monkeypatch, log, resources=dict(_GOOD_RESOURCES))
+
+    with cluster_for_run(expected_worker_image="reg.example/lc-proj:abc123"):
+        pass
+
+    assert (
+        "new_cluster(image=reg.example/lc-proj:abc123;shutdown_on_close=True)"
+        in log
+    )
+
+
+def test_gateway_creation_failure_names_the_image_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployment without an `image` cluster option rejects creation
+    with a dask-gateway error type; the message must say what to fix."""
     monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
     log: list[str] = []
     _install_fake_gateway(
-        monkeypatch, log, resources=dict(_GOOD_RESOURCES), running=["hub.run1"]
+        monkeypatch,
+        log,
+        new_cluster_error=ValueError("Unknown fields ['image']"),
     )
 
-    with cluster_for_run() as env:
-        assert env == {"LIGHTCONE_GATEWAY_CLUSTER": "hub.run1"}
-        assert "list_clusters()" in log
-        assert "connect(hub.run1)" in log
-        assert not any(call.startswith("adapt") for call in log), (
-            "attached clusters keep the user's scaling"
-        )
-
-    assert "shutdown" not in log, "lc never owns Gateway clusters"
-    assert "close" in log
-
-
-def test_gateway_no_running_cluster_raises_with_instructions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Zero running clusters is an error whose message IS the UX: it must
-    tell the user to create one from JupyterLab (lc never creates)."""
-    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
-    log: list[str] = []
-    _install_fake_gateway(monkeypatch, log, running=[])
-
-    with pytest.raises(RuntimeError, match="No Dask Gateway cluster") as exc:
-        with cluster_for_run():
-            pass  # pragma: no cover
-    assert "new_cluster" in str(exc.value)  # the copy-pasteable snippet
-
-
-def test_gateway_no_cluster_error_names_expected_image(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
-    log: list[str] = []
-    _install_fake_gateway(monkeypatch, log, running=[])
-
-    with pytest.raises(RuntimeError, match=r"reg\.example/lc-proj:abc") as exc:
+    with pytest.raises(RuntimeError, match="image") as exc:
         with cluster_for_run(expected_worker_image="reg.example/lc-proj:abc"):
             pass  # pragma: no cover
-    assert 'image="reg.example/lc-proj:abc"' in str(exc.value)
+    assert "cluster option" in str(exc.value)
 
 
-def test_gateway_multiple_clusters_raises_with_disambiguator(
+def test_gateway_default_bound_is_one_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
     log: list[str] = []
-    _install_fake_gateway(monkeypatch, log, running=["hub.a", "hub.b"])
+    _install_fake_gateway(monkeypatch, log, resources=dict(_GOOD_RESOURCES))
 
-    with pytest.raises(RuntimeError, match="LIGHTCONE_GATEWAY_CLUSTER") as exc:
-        with cluster_for_run():
+    with cluster_for_run():
+        pass
+
+    assert "adapt(1,1)" in log
+
+
+def test_gateway_worker_wait_timeout_raises_and_culls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No worker within the deadline (unpullable image, no capacity) must
+    fail with guidance — and still shut the created cluster down."""
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
+    log: list[str] = []
+    _install_fake_gateway(
+        monkeypatch,
+        log,
+        resources=dict(_GOOD_RESOURCES),
+        wait_error=TimeoutError("timed out"),
+    )
+
+    with pytest.raises(RuntimeError, match="worker became ready") as exc:
+        with cluster_for_run(expected_worker_image="reg.example/lc-proj:abc"):
             pass  # pragma: no cover
-    assert "hub.a" in str(exc.value)
-    assert "hub.b" in str(exc.value)
+    assert "reg.example/lc-proj:abc" in str(exc.value)
+    assert "shutdown" in log, "a failed creation must not leak the cluster"
 
 
 def test_gateway_wins_over_slurm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
     monkeypatch.setenv("SLURM_JOB_ID", "12345")
     log: list[str] = []
-    _install_fake_gateway(
-        monkeypatch, log, resources=dict(_GOOD_RESOURCES), running=["hub.run1"]
-    )
+    _install_fake_gateway(monkeypatch, log, resources=dict(_GOOD_RESOURCES))
 
     @contextmanager
     def _should_not_run(*, verbose: bool, local_directory: str | None = None):
@@ -490,12 +532,12 @@ def test_explicit_address_wins_over_gateway(
         assert env == {"DASK_SCHEDULER_ADDRESS": "tcp://existing:8786"}
 
 
-def test_gateway_named_cluster_skips_discovery(
+def test_gateway_named_cluster_attaches_and_leaves_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LIGHTCONE_GATEWAY_CLUSTER picks a cluster directly (the
-    several-clusters disambiguator) — no list_clusters round-trip, no
-    shutdown on exit."""
+    """LIGHTCONE_GATEWAY_CLUSTER=<name> is the escape hatch for a
+    long-lived cluster: attach to it, never create, never rescale,
+    leave it running on exit."""
     monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.abc999")
     log: list[str] = []
     _install_fake_gateway(monkeypatch, log, resources=dict(_GOOD_RESOURCES))
@@ -503,10 +545,10 @@ def test_gateway_named_cluster_skips_discovery(
     with cluster_for_run() as env:
         assert env == {"LIGHTCONE_GATEWAY_CLUSTER": "hub.abc999"}
         assert "connect(hub.abc999)" in log
-        assert "list_clusters()" not in log
+        assert not any(call.startswith("new_cluster") for call in log)
         assert not any(call.startswith("adapt") for call in log)
 
-    assert "shutdown" not in log
+    assert "shutdown" not in log, "attached clusters belong to the user"
     assert "close" in log
 
 
@@ -527,12 +569,27 @@ def test_gateway_rejects_workers_without_resource_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Workers not advertising cpus/memory/gpus would hang every task with
-    no error — the branch must refuse loudly at startup instead."""
+    no error — the branch must refuse loudly at startup instead (and
+    still cull the cluster it just created)."""
     monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
     log: list[str] = []
-    _install_fake_gateway(
-        monkeypatch, log, resources={}, running=["hub.run1"]
-    )  # live workers, no contract
+    _install_fake_gateway(monkeypatch, log, resources={})  # workers, no contract
+
+    with pytest.raises(RuntimeError, match="resource contract"):
+        with cluster_for_run():
+            pass  # pragma: no cover
+
+    assert "shutdown" in log, "a failed creation must not leak the cluster"
+
+
+def test_gateway_attach_contract_failure_leaves_cluster_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On the attach path the same contract failure must NOT shut the
+    user's cluster down — it isn't ours."""
+    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.run1")
+    log: list[str] = []
+    _install_fake_gateway(monkeypatch, log, resources={})
 
     with pytest.raises(RuntimeError, match="resource contract"):
         with cluster_for_run():
@@ -550,9 +607,7 @@ def test_gateway_rejects_partial_resource_contract(
     must demand cpus AND memory together."""
     monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
     log: list[str] = []
-    _install_fake_gateway(
-        monkeypatch, log, resources={RESOURCE_CPUS: 2.0}, running=["hub.run1"]
-    )
+    _install_fake_gateway(monkeypatch, log, resources={RESOURCE_CPUS: 2.0})
 
     with pytest.raises(RuntimeError, match="resource contract"):
         with cluster_for_run():
@@ -598,14 +653,14 @@ def test_gateway_unconfigured_client_raises_with_guidance(
     assert "LIGHTCONE_GATEWAY_CLUSTER" in str(exc.value)
 
 
-def test_gateway_zero_workers_is_not_an_error(
+def test_gateway_attached_zero_workers_is_not_an_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An adaptive cluster sitting at zero workers scales up once tasks
-    arrive — the contract check must only judge live workers."""
-    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
+    """An attached adaptive cluster sitting at zero workers scales up once
+    tasks arrive — the contract check must only judge live workers."""
+    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.run1")
     log: list[str] = []
-    _install_fake_gateway(monkeypatch, log, resources=None, running=["hub.run1"])
+    _install_fake_gateway(monkeypatch, log, resources=None)
 
     with cluster_for_run() as env:
         assert env == {"LIGHTCONE_GATEWAY_CLUSTER": "hub.run1"}
@@ -618,13 +673,12 @@ def test_gateway_warns_on_worker_image_mismatch(
     """The attached cluster runs a different image than the project's
     container resolves to → loud warning naming both (manifests record
     the actual image, so provenance stays truthful either way)."""
-    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
+    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.run1")
     log: list[str] = []
     _install_fake_gateway(
         monkeypatch,
         log,
         resources=dict(_GOOD_RESOURCES),
-        running=["hub.run1"],
         worker_image="reg.example/lc-proj:stale00",
     )
 
@@ -640,13 +694,12 @@ def test_gateway_matching_worker_image_is_silent(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
+    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.run1")
     log: list[str] = []
     _install_fake_gateway(
         monkeypatch,
         log,
         resources=dict(_GOOD_RESOURCES),
-        running=["hub.run1"],
         worker_image="reg.example/lc-proj:abc123",
     )
 
@@ -662,13 +715,12 @@ def test_gateway_image_check_skipped_without_deployment_marker(
 ) -> None:
     """A deployment that doesn't inject LIGHTCONE_WORKER_IMAGE can't be
     verified — skip silently rather than warn on every run."""
-    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
+    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.run1")
     log: list[str] = []
     _install_fake_gateway(
         monkeypatch,
         log,
         resources=dict(_GOOD_RESOURCES),
-        running=["hub.run1"],
         worker_image=None,
     )
 
