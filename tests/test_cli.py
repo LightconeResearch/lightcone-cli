@@ -143,7 +143,13 @@ def test_init_venv_uses_uv_when_available(
     assert result.exit_code == 0, result.output
 
     assert ["uv", "venv", "--python", "3.12", ".venv"] in calls
-    assert ["uv", "pip", "install", "--python", ".venv/bin/python", "lightcone-cli"] in calls
+    # Project deps only — never a second lightcone-cli that would shadow
+    # the ambient install once the venv is activated.
+    assert [
+        "uv", "pip", "install", "--python", ".venv/bin/python",
+        "-r", "requirements.txt",
+    ] in calls
+    assert not any("lightcone-cli" in c for c in calls)
 
 
 def test_init_venv_falls_back_to_python_when_uv_missing(
@@ -163,7 +169,11 @@ def test_init_venv_falls_back_to_python_when_uv_missing(
     assert result.exit_code == 0, result.output
 
     assert ["python", "-m", "venv", ".venv"] in calls
-    assert [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"] in calls
+    assert [
+        ".venv/bin/python", "-m", "pip", "install", "-q",
+        "-r", "requirements.txt",
+    ] in calls
+    assert not any("lightcone-cli" in c for c in calls)
 
 
 # ---- lc verify ------------------------------------------------------------
@@ -563,3 +573,23 @@ def test_init_github_failure_does_not_fail_init(
     assert result.exit_code == 0, result.output
     assert "GitHub step failed" in result.output
     assert (project / "astra.yaml").exists()
+
+
+def test_run_cmd_uses_own_interpreter_for_snakemake() -> None:
+    """The driver snakemake must be lc's own environment's, not PATH's —
+    an activated project venv earlier on PATH must not be able to swap
+    in a version-skewed snakemake under the executor."""
+    import sys
+
+    from lightcone.cli.commands import _build_snakemake_cmd
+
+    cmd = _build_snakemake_cmd(
+        snakefile_path=Path("/proj/.lightcone/Snakefile"),
+        project=Path("/proj"),
+        n="1",
+        rerun_triggers="code",
+        targets=[],
+        force=False,
+        has_outputs=False,
+    )
+    assert cmd[:3] == [sys.executable, "-m", "snakemake"]

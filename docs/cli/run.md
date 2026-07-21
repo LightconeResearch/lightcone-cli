@@ -43,6 +43,26 @@ everything (Snakemake's `rule all`).
    chatter so the output reads as lightcone's, not Snakemake's. Real
    error content always passes through.
 
+## Recipe contract: outputs are directories, inputs are local paths
+
+Two things every recipe author (human or agent) needs to know at the
+point of use:
+
+- **`{output}` expands to a directory, not a file.** Create it and
+  write your artifact(s) inside (e.g.
+  `os.makedirs(out, exist_ok=True)` then write `out/result.json`);
+  opening `{output}` itself fails with `IsADirectoryError`. The
+  manifest (`.lightcone-manifest.json`) is written next to your files
+  by the runner.
+- **An input's `source:` is passed to the recipe verbatim** — it is a
+  literal filesystem path, never fetched. Stage remote data as a local
+  file first (a download script can itself be an output that later
+  recipes take as input) and point `source:` at the staged path. A URL
+  in `source:` would silently arrive at your script as a nonexistent
+  "path". Project-relative paths work on every backend because the
+  project directory is shared with (or mounted into) the workers at the
+  same location.
+
 ## Output qualification
 
 When the same `output_id` appears in multiple sub-analyses, you must

@@ -276,7 +276,15 @@ def init(
             directory, repo_input=github_repo, private=github_private
         )
 
-    # venv
+    # venv: the project's *science* environment — requirements.txt, the
+    # same dependency list the Containerfile installs — so the code has a
+    # fast local dev loop before any container/cluster is involved.
+    # Deliberately NOT lightcone-cli: installing a second lc (and its
+    # snakemake) into the venv would shadow the deployment's install the
+    # moment the venv is activated, and a version-skewed lc produces
+    # errors that point everywhere but at the shadowing (observed on the
+    # hub: a stale venv lc predates the site's build service and cluster
+    # backend). `lc` stays a tool of the ambient environment.
     if not no_venv:
         if shutil.which("uv"):
             with console.status("[dim]Creating virtual environment…[/dim]"):
@@ -286,7 +294,7 @@ def init(
                     check=False,
                     capture_output=True,
                 )
-            with console.status("[dim]Installing lightcone-cli…[/dim]"):
+            with console.status("[dim]Installing project dependencies…[/dim]"):
                 subprocess.run(
                     [
                         "uv",
@@ -294,7 +302,8 @@ def init(
                         "install",
                         "--python",
                         ".venv/bin/python",
-                        "lightcone-cli",
+                        "-r",
+                        "requirements.txt",
                     ],
                     cwd=directory,
                     check=False,
@@ -308,15 +317,26 @@ def init(
                     check=False,
                     capture_output=True,
                 )
-            with console.status("[dim]Installing lightcone-cli…[/dim]"):
+            with console.status("[dim]Installing project dependencies…[/dim]"):
                 subprocess.run(
-                    [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"],
+                    [
+                        ".venv/bin/python",
+                        "-m",
+                        "pip",
+                        "install",
+                        "-q",
+                        "-r",
+                        "requirements.txt",
+                    ],
                     cwd=directory,
                     check=False,
                     capture_output=True,
                 )
         console.print(
-            f"[green]✓[/green] Virtual environment created in [cyan]{directory}/.venv[/cyan]"
+            f"[green]✓[/green] Virtual environment created in "
+            f"[cyan]{directory}/.venv[/cyan] "
+            f"[dim](project dependencies; `lc` itself stays on the ambient "
+            "PATH)[/dim]"
         )
 
     console.print(f"\n[green]Project initialized at[/green] {directory}")
@@ -959,6 +979,14 @@ def _build_snakemake_cmd(
     workers genuinely share the driver's environment.
     """
     cmd: list[str] = [
+        # lc's own interpreter, not a PATH lookup: an activated project
+        # venv (or any stray env) earlier on PATH would otherwise supply
+        # a different snakemake than the lightcone-cli driving it —
+        # version skew that surfaces as executor errors three layers
+        # from the cause. The worker side is unaffected (the executor
+        # resolves the child interpreter per-branch).
+        sys.executable,
+        "-m",
         "snakemake",
         "-s",
         str(snakefile_path),
