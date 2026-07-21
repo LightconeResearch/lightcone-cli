@@ -747,9 +747,7 @@ def run(
     run-scoped Dask Gateway cluster on a JupyterHub deployment (created
     with the project's worker image — kept up to date through the hub's
     build service — and culled when the run finishes), or an existing
-    scheduler if ``DASK_SCHEDULER_ADDRESS`` is set
-    (``LIGHTCONE_GATEWAY_CLUSTER=<name>`` similarly attaches to an
-    existing Gateway cluster and leaves it running).
+    scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
     """
     _abort_on_perlmutter_login()
 
@@ -1298,7 +1296,7 @@ def _warn_runtime_cluster_mismatch(
     if runtime == KUBERNETES_RUNTIME and not on_gateway:
         console.print(
             "[yellow]⚠ Container runtime is [cyan]kubernetes[/cyan] but "
-            "this run is not attached through Dask Gateway.[/yellow]\n"
+            "this run is not going through Dask Gateway.[/yellow]\n"
             "  Recipes will execute unwrapped and lc cannot verify they "
             "run in the declared container\n"
             "  image — manifests may record provenance that does not "
@@ -1366,7 +1364,7 @@ def _expected_worker_image(project: Path) -> str | None:
             "images, but a Dask Gateway cluster runs a single worker "
             "image:[/yellow]\n"
             + "\n".join(f"    [dim]•[/dim] {i}" for i in images)
-            + "\n  All recipes will execute in whatever image the attached "
+            + "\n  All recipes will execute in whatever image the "
             "cluster runs.\n"
             "  Consolidate on one Containerfile to restore per-recipe "
             "provenance on this deployment."

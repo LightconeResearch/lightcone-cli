@@ -506,6 +506,43 @@ def test_gateway_worker_wait_timeout_raises_and_culls(
     assert "shutdown" in log, "a failed creation must not leak the cluster"
 
 
+def test_gateway_ignores_stale_cluster_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LIGHTCONE_GATEWAY_CLUSTER is the parent→child rendezvous, not a
+    user knob: a value lingering in the ambient environment must not
+    redirect lc to some old cluster — on a hub it still creates a fresh
+    run-scoped cluster, and off-hub it doesn't trigger the gateway
+    branch at all."""
+    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.stale99")
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
+    log: list[str] = []
+    _install_fake_gateway(monkeypatch, log, resources=dict(_GOOD_RESOURCES))
+
+    with cluster_for_run() as env:
+        assert env == {"LIGHTCONE_GATEWAY_CLUSTER": "hub.new1"}
+        assert not any(c.startswith("connect") for c in log)
+
+    assert "shutdown" in log
+
+
+def test_gateway_stale_env_var_off_hub_takes_local_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.stale99")
+    sentinel: dict[str, str] = {}
+
+    @contextmanager
+    def _fake_local(*, verbose: bool, local_directory: str | None = None):
+        sentinel["called"] = "local"
+        yield "tcp://stub:9999"
+
+    with patch("lightcone.engine.dask_cluster._local_cluster", _fake_local):
+        with cluster_for_run() as env:
+            assert env == {"DASK_SCHEDULER_ADDRESS": "tcp://stub:9999"}
+            assert sentinel["called"] == "local"
+
+
 def test_gateway_wins_over_slurm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/")
     monkeypatch.setenv("SLURM_JOB_ID", "12345")
@@ -530,26 +567,6 @@ def test_explicit_address_wins_over_gateway(
 
     with cluster_for_run() as env:
         assert env == {"DASK_SCHEDULER_ADDRESS": "tcp://existing:8786"}
-
-
-def test_gateway_named_cluster_attaches_and_leaves_running(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """LIGHTCONE_GATEWAY_CLUSTER=<name> is the escape hatch for a
-    long-lived cluster: attach to it, never create, never rescale,
-    leave it running on exit."""
-    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.abc999")
-    log: list[str] = []
-    _install_fake_gateway(monkeypatch, log, resources=dict(_GOOD_RESOURCES))
-
-    with cluster_for_run() as env:
-        assert env == {"LIGHTCONE_GATEWAY_CLUSTER": "hub.abc999"}
-        assert "connect(hub.abc999)" in log
-        assert not any(call.startswith("new_cluster") for call in log)
-        assert not any(call.startswith("adapt") for call in log)
-
-    assert "shutdown" not in log, "attached clusters belong to the user"
-    assert "close" in log
 
 
 def test_gateway_missing_client_raises_helpfully(
@@ -582,23 +599,6 @@ def test_gateway_rejects_workers_without_resource_contract(
     assert "shutdown" in log, "a failed creation must not leak the cluster"
 
 
-def test_gateway_attach_contract_failure_leaves_cluster_running(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """On the attach path the same contract failure must NOT shut the
-    user's cluster down — it isn't ours."""
-    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.run1")
-    log: list[str] = []
-    _install_fake_gateway(monkeypatch, log, resources={})
-
-    with pytest.raises(RuntimeError, match="resource contract"):
-        with cluster_for_run():
-            pass  # pragma: no cover
-
-    assert "close" in log, "connections must be released on failure"
-    assert "shutdown" not in log, "the user's cluster must survive our failure"
-
-
 def test_gateway_rejects_partial_resource_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -612,122 +612,6 @@ def test_gateway_rejects_partial_resource_contract(
     with pytest.raises(RuntimeError, match="resource contract"):
         with cluster_for_run():
             pass  # pragma: no cover
-
-
-def test_gateway_stale_named_cluster_raises_with_guidance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A stale LIGHTCONE_GATEWAY_CLUSTER (cluster since stopped) makes the
-    real client raise its own error types (ValueError/GatewayClusterError).
-    lc told the user to export that variable, so lc owns the remediation:
-    a RuntimeError naming the env var, not a bare dask_gateway traceback."""
-    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.gone42")
-    log: list[str] = []
-    _install_fake_gateway(
-        monkeypatch, log, connect_error=ValueError("Cluster 'hub.gone42' not found")
-    )
-
-    with pytest.raises(RuntimeError, match="LIGHTCONE_GATEWAY_CLUSTER") as exc:
-        with cluster_for_run():
-            pass  # pragma: no cover
-    assert "hub.gone42" in str(exc.value)
-
-
-def test_gateway_unconfigured_client_raises_with_guidance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """LIGHTCONE_GATEWAY_CLUSTER lingering in a shell off-hub: Gateway()
-    itself raises ValueError (no gateway address configured). Must become
-    guidance to unset the variable, not a traceback."""
-    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.abc999")
-    log: list[str] = []
-    _install_fake_gateway(
-        monkeypatch,
-        log,
-        init_error=ValueError("No dask-gateway address provided"),
-    )
-
-    with pytest.raises(RuntimeError, match="unset") as exc:
-        with cluster_for_run():
-            pass  # pragma: no cover
-    assert "LIGHTCONE_GATEWAY_CLUSTER" in str(exc.value)
-
-
-def test_gateway_attached_zero_workers_is_not_an_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An attached adaptive cluster sitting at zero workers scales up once
-    tasks arrive — the contract check must only judge live workers."""
-    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.run1")
-    log: list[str] = []
-    _install_fake_gateway(monkeypatch, log, resources=None)
-
-    with cluster_for_run() as env:
-        assert env == {"LIGHTCONE_GATEWAY_CLUSTER": "hub.run1"}
-
-
-def test_gateway_warns_on_worker_image_mismatch(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """The attached cluster runs a different image than the project's
-    container resolves to → loud warning naming both (manifests record
-    the actual image, so provenance stays truthful either way)."""
-    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.run1")
-    log: list[str] = []
-    _install_fake_gateway(
-        monkeypatch,
-        log,
-        resources=dict(_GOOD_RESOURCES),
-        worker_image="reg.example/lc-proj:stale00",
-    )
-
-    with cluster_for_run(expected_worker_image="reg.example/lc-proj:abc123"):
-        pass
-
-    out = capsys.readouterr().out
-    assert "reg.example/lc-proj:stale00" in out
-    assert "reg.example/lc-proj:abc123" in out
-
-
-def test_gateway_matching_worker_image_is_silent(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.run1")
-    log: list[str] = []
-    _install_fake_gateway(
-        monkeypatch,
-        log,
-        resources=dict(_GOOD_RESOURCES),
-        worker_image="reg.example/lc-proj:abc123",
-    )
-
-    with cluster_for_run(expected_worker_image="reg.example/lc-proj:abc123"):
-        pass
-
-    assert "⚠" not in capsys.readouterr().out
-
-
-def test_gateway_image_check_skipped_without_deployment_marker(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """A deployment that doesn't inject LIGHTCONE_WORKER_IMAGE can't be
-    verified — skip silently rather than warn on every run."""
-    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.run1")
-    log: list[str] = []
-    _install_fake_gateway(
-        monkeypatch,
-        log,
-        resources=dict(_GOOD_RESOURCES),
-        worker_image=None,
-    )
-
-    with cluster_for_run(expected_worker_image="reg.example/lc-proj:abc123"):
-        pass
-
-    assert "⚠" not in capsys.readouterr().out
 
 
 def test_executor_connects_via_gateway_name(

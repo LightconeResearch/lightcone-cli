@@ -5,15 +5,12 @@ One context manager, four branches:
 
 - ``DASK_SCHEDULER_ADDRESS`` is already set → yield it as-is. We don't own
   the cluster, so we don't tear it down.
-- A Dask Gateway environment is detected (``LIGHTCONE_GATEWAY_CLUSTER`` or
-  ``DASK_GATEWAY__ADDRESS`` is set, e.g. on a JupyterHub deployment) →
-  **create** a run-scoped Gateway cluster with the project's worker image
-  and shut it down when the run finishes — the same create/cull lifecycle
-  the local and SLURM branches have always had, which is also what lets
-  every run pick up a freshly built image (a Gateway cluster's image is
-  fixed at creation). Setting ``LIGHTCONE_GATEWAY_CLUSTER=<name>``
-  instead **attaches** to that existing cluster and leaves it running on
-  exit — the escape hatch for iterating against a long-lived cluster.
+- A Dask Gateway environment is detected (``DASK_GATEWAY__ADDRESS`` is
+  set, e.g. on a JupyterHub deployment) → **create** a run-scoped
+  Gateway cluster with the project's worker image and shut it down when
+  the run finishes — the same create/cull lifecycle the local and SLURM
+  branches have always had, which is also what lets every run pick up a
+  freshly built image (a Gateway cluster's image is fixed at creation).
   Gateway scheduler addresses use a custom ``gateway://`` comm scheme
   that a bare ``distributed.Client`` cannot dial, so the child snakemake
   process is told the *cluster name* via ``LIGHTCONE_GATEWAY_CLUSTER``
@@ -29,10 +26,9 @@ Except on the Gateway branch (where the Gateway server owns scheduling),
 the scheduler is always in-process (driven by ``lc run`` itself) so its
 lifetime equals the run's lifetime — no service to manage, no orphaned
 schedulers if the driver crashes. On the Gateway branch the same
-lifetime contract is enforced server-side: clusters lc creates are shut
-down on exit (and reaped by the deployment's idle timeout if lc dies
-uncleanly); clusters the user named are left untouched, mirroring the
-``DASK_SCHEDULER_ADDRESS`` convention.
+lifetime contract is enforced server-side: the cluster lc creates is
+shut down on exit, and reaped by the deployment's idle timeout if lc
+dies uncleanly.
 """
 
 from __future__ import annotations
@@ -53,12 +49,12 @@ RESOURCE_CPUS = "cpus"
 RESOURCE_MEMORY = "memory"
 RESOURCE_GPUS = "gpus"
 
-#: Env var carrying a Dask Gateway cluster name. Set by the user to
-#: attach to an existing long-lived cluster instead of the default
-#: create-per-run lifecycle; set by :func:`cluster_for_run` for the
-#: child snakemake process so the executor plugin can rejoin the
-#: cluster through the Gateway API (a bare ``Client`` cannot dial
-#: ``gateway://``).
+#: Env var carrying a Dask Gateway cluster name — the parent→child
+#: rendezvous: :func:`cluster_for_run` sets it for the child snakemake
+#: process so the executor plugin can rejoin the run's cluster through
+#: the Gateway API (a bare ``Client`` cannot dial ``gateway://``). It is
+#: an internal contract, not a user knob; a value lingering in the
+#: ambient environment is ignored.
 GATEWAY_CLUSTER_ENV = "LIGHTCONE_GATEWAY_CLUSTER"
 
 #: Env var bounding how long the Gateway branch waits for the first
@@ -70,10 +66,8 @@ GATEWAY_WORKER_TIMEOUT_ENV = "LIGHTCONE_GATEWAY_WORKER_TIMEOUT"
 
 #: Env var carrying the image a Gateway worker pod was started with. A
 #: lightcone-hub deployment's cluster-options handler injects it into
-#: every scheduler/worker pod; :func:`cluster_for_run` reads it back to
-#: verify the attached cluster actually runs the project's image (and
-#: the manifest layer records it as ground truth — see
-#: ``lightcone.engine.manifest.write_manifest``).
+#: every scheduler/worker pod; the manifest layer records it as ground
+#: truth — see ``lightcone.engine.manifest.write_manifest``.
 WORKER_IMAGE_ENV = "LIGHTCONE_WORKER_IMAGE"
 
 
@@ -136,10 +130,7 @@ def gateway_branch_active() -> bool:
     """
     if os.environ.get("DASK_SCHEDULER_ADDRESS"):
         return False
-    return (
-        GATEWAY_CLUSTER_ENV in os.environ
-        or "DASK_GATEWAY__ADDRESS" in os.environ
-    )
+    return "DASK_GATEWAY__ADDRESS" in os.environ
 
 
 @contextmanager
@@ -166,11 +157,10 @@ def cluster_for_run(
     file I/O is slow and can pressure the gateway nodes).
 
     *expected_worker_image*, when given, is the image the project's
-    declared container resolves to on this deployment. A Gateway cluster
-    lc creates is started with exactly this image; an attached cluster
-    is compared against it with a warning on mismatch. Ignored by the
-    other branches (they realize containers by wrapping recipes, not
-    via pod images).
+    declared container resolves to on this deployment; the Gateway
+    cluster is created with exactly this image. Ignored by the other
+    branches (they realize containers by wrapping recipes, not via pod
+    images).
 
     *max_workers* bounds the adaptive scaling of a Gateway cluster lc
     creates (``lc run`` passes its ``--jobs`` value — there is never a
@@ -183,10 +173,10 @@ def cluster_for_run(
         yield {"DASK_SCHEDULER_ADDRESS": addr}
         return
 
-    if GATEWAY_CLUSTER_ENV in os.environ or "DASK_GATEWAY__ADDRESS" in os.environ:
+    if "DASK_GATEWAY__ADDRESS" in os.environ:
         with _gateway_cluster(
             verbose=verbose,
-            expected_worker_image=expected_worker_image,
+            worker_image=expected_worker_image,
             max_workers=max_workers,
         ) as name:
             yield {GATEWAY_CLUSTER_ENV: name}
@@ -209,26 +199,18 @@ def cluster_for_run(
 def _gateway_cluster(
     *,
     verbose: bool,
-    expected_worker_image: str | None,
+    worker_image: str | None,
     max_workers: int | None,
 ) -> Iterator[str]:
-    """Create (or attach to) a Dask Gateway cluster; yield its name.
+    """Create a run-scoped Dask Gateway cluster; yield its name.
 
-    Default lifecycle — create and cull, per run: a new cluster is
-    created with the project's worker image, scaled adaptively between
-    one worker and *max_workers*, and shut down when the run finishes.
-    This mirrors the local/SLURM branches (compute lives exactly as
-    long as the run) and is what makes image updates seamless: a
-    Gateway cluster's image is fixed at creation, so picking up a
-    freshly built project image *requires* a fresh cluster.
-
-    Attach — when ``LIGHTCONE_GATEWAY_CLUSTER`` names a cluster: connect
-    to it, leave its scaling alone, and leave it running on exit
-    (mirroring the ``DASK_SCHEDULER_ADDRESS`` convention). This is the
-    escape hatch for iterating repeatedly against one long-lived
-    cluster (create it from the JupyterLab Dask sidebar or a notebook
-    with ``shutdown_on_close=False``); the cost is that lc can only
-    warn — not fix — when its image is stale.
+    Create and cull, per run: a new cluster is created with the
+    project's worker image, scaled adaptively between one worker and
+    *max_workers*, and shut down when the run finishes. This mirrors
+    the local/SLURM branches (compute lives exactly as long as the
+    run) and is what makes image updates seamless: a Gateway cluster's
+    image is fixed at creation, so picking up a freshly built project
+    image *requires* a fresh cluster.
 
     The Gateway client is configured entirely by ambient dask config —
     on a lightcone JupyterHub deployment the ``DASK_GATEWAY__*`` env
@@ -240,39 +222,23 @@ def _gateway_cluster(
     except ImportError as exc:
         raise RuntimeError(
             "A Dask Gateway environment was detected "
-            f"({GATEWAY_CLUSTER_ENV} or DASK_GATEWAY__ADDRESS is set) but "
-            "the dask-gateway client is not installed. Install it with "
+            "(DASK_GATEWAY__ADDRESS is set) but the dask-gateway client "
+            "is not installed. Install it with "
             "`pip install lightcone-cli[gateway]`."
         ) from exc
 
     try:
         gateway = Gateway()
     except Exception as exc:
-        # Gateway() raises (ValueError) when no gateway address is
-        # configured — e.g. LIGHTCONE_GATEWAY_CLUSTER lingering in a
-        # shell off-hub, where no DASK_GATEWAY__* env exists.
         raise RuntimeError(
             "A Dask Gateway environment was detected but the gateway "
-            f"client could not be configured ({exc}). If you exported "
-            f"{GATEWAY_CLUSTER_ENV} on a machine without a Dask Gateway, "
-            "unset it."
+            f"client could not be configured ({exc})."
         ) from exc
-
-    named = os.environ.get(GATEWAY_CLUSTER_ENV)
-    if named:
-        with _attached_gateway_cluster(
-            gateway,
-            name=named,
-            verbose=verbose,
-            expected_worker_image=expected_worker_image,
-        ) as name:
-            yield name
-        return
 
     with _created_gateway_cluster(
         gateway,
         verbose=verbose,
-        worker_image=expected_worker_image,
+        worker_image=worker_image,
         max_workers=max_workers,
     ) as name:
         yield name
@@ -368,91 +334,6 @@ def _wait_first_worker(client: object, *, image: str | None) -> None:
             "culled. Check the JupyterLab Dask panel for the cluster's "
             f"state, or raise {GATEWAY_WORKER_TIMEOUT_ENV}."
         ) from exc
-
-
-@contextmanager
-def _attached_gateway_cluster(
-    gateway: object,
-    *,
-    name: str,
-    verbose: bool,
-    expected_worker_image: str | None,
-) -> Iterator[str]:
-    """Attach to the named running Gateway cluster; leave it running."""
-    try:
-        cluster = gateway.connect(name)  # type: ignore[attr-defined]
-    except Exception as exc:
-        # dask-gateway raises its own error types (ValueError,
-        # GatewayClusterError) for a missing/stopped cluster; translate
-        # into guidance, because a *stale* LIGHTCONE_GATEWAY_CLUSTER is
-        # the likely cause — we told users to export it.
-        raise RuntimeError(
-            f"Could not connect to Dask Gateway cluster {name!r} "
-            f"({exc}); unset {GATEWAY_CLUSTER_ENV} to let lc create a "
-            "run-scoped cluster, or point it at a cluster that is "
-            "running."
-        ) from exc
-
-    if verbose:
-        print(
-            f"→ Attached to Dask Gateway cluster {cluster.name} "
-            f"(dashboard: {cluster.dashboard_link})"
-        )
-
-    try:
-        client = cluster.get_client()
-        try:
-            # Verify the deployment contract only against what's live:
-            # an adaptive cluster sitting at zero workers will scale
-            # once the executor submits tasks, so an empty worker set
-            # is not an error here.
-            _assert_worker_resources(client)
-            _check_worker_image(client, expected=expected_worker_image)
-        finally:
-            client.close()
-        yield str(cluster.name)
-    finally:
-        # Releases this process's connections only — the cluster (and
-        # its scaling) belongs to the user.
-        cluster.close()
-
-
-def _check_worker_image(client: object, *, expected: str | None) -> None:
-    """Warn when the attached cluster doesn't run the project's image.
-
-    The scheduler pod carries the same ``LIGHTCONE_WORKER_IMAGE`` env
-    the deployment injects into workers (Gateway applies cluster-config
-    ``environment`` to both), so this works even while an adaptive
-    cluster sits at zero workers. Read via a lambda — cloudpickled by
-    value — so the scheduler pod does not need lightcone importable.
-
-    A warning, not an error: the user may be knowingly iterating on a
-    stale cluster, and the manifest layer records the *actual* image
-    (ground truth) either way. Silently skipped when the deployment
-    doesn't inject the marker or no expectation was computed.
-    """
-    if expected is None:
-        return
-    try:
-        env_key = WORKER_IMAGE_ENV  # captured by value into the lambda
-        actual = client.run_on_scheduler(  # type: ignore[attr-defined]
-            lambda: __import__("os").environ.get(env_key)
-        )
-    except Exception:
-        return  # older deployment / restricted scheduler — not fatal
-    if actual and actual != expected:
-        print(
-            f"⚠ The attached Dask Gateway cluster runs image\n"
-            f"    {actual}\n"
-            f"  but this project's container resolves to\n"
-            f"    {expected}\n"
-            f"  Recipes will execute in the cluster's image; manifests "
-            f"record what actually ran.\n"
-            f"  To run on the project image, unset {GATEWAY_CLUSTER_ENV} "
-            f"and let lc create a run-scoped\n"
-            f"  cluster, or recreate your cluster with "
-            f'image="{expected}".'
-        )
 
 
 def _assert_worker_resources(client: object) -> None:

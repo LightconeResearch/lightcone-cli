@@ -92,9 +92,11 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
         # are still containerized. Declared (not detected) — load_runtime
         # treats it as explicit, so no "no runtime found" warning fires.
         "container_runtime": "kubernetes",
-        # Scratch comes from the deployment's LIGHTCONE_SCRATCH env (a
-        # path on the shared RWX volume), which outranks site defaults
-        # in lightcone.engine.scratch — nothing to declare here.
+        # The NFS home honors flock and is mounted into Gateway worker
+        # pods at the same path, so lightcone state can live right next
+        # to the user (unlike NERSC, where DVS forces it onto Lustre).
+        # A deployment can still override via LIGHTCONE_SCRATCH.
+        "scratch_root": "$HOME",
     },
     "local": {
         "hostname_patterns": [],

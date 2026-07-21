@@ -205,6 +205,11 @@ Under the hood, each run:
 4. **Shuts the cluster down.** Nothing to clean up; a crashed run's
    cluster is reaped by the deployment's idle timeout.
 
+A Gateway scheduler's `gateway://` address cannot be used with
+`DASK_SCHEDULER_ADDRESS` — on a hub, `lc run` always manages its own
+run-scoped cluster. Requires the optional gateway extra:
+`pip install lightcone-cli[gateway]` (preinstalled on the hub image).
+
 Because the project must be reachable by the BinderHub build pods, it
 needs a GitHub remote (public, today) — `lc init` offers to create and
 connect one as part of scaffolding, including GitHub authentication via
@@ -212,39 +217,6 @@ a one-time device code (see the [`lc init` GitHub step](../cli/init.md)).
 `lc build` runs the same ensure-image step explicitly and prints the
 resulting image ref; `lc build --no-commit` refuses instead of
 auto-committing.
-
-### Attaching to a long-lived cluster
-
-To iterate repeatedly against one warm cluster (dashboard panels
-docked, no per-run cluster startup), create it yourself from JupyterLab
-and point `lc run` at it by name:
-
-```python
-from dask_gateway import Gateway
-# shutdown_on_close=False keeps the cluster alive when this kernel
-# exits. Idle clusters are reaped by the deployment after 30 min.
-cluster = Gateway().new_cluster(shutdown_on_close=False)
-cluster.adapt(minimum=1, maximum=8)
-cluster.name
-```
-
-```bash
-export LIGHTCONE_GATEWAY_CLUSTER=<cluster-name>   # e.g. hub.a1b2c3...
-lc run
-```
-
-Attached clusters are yours: `lc run` never rescales them and leaves
-them running on exit, mirroring the `DASK_SCHEDULER_ADDRESS`
-convention. The trade-off: an attached cluster's image is fixed at its
-creation, so `lc run` can only *warn* when it drifts from the
-project's current image (unset `LIGHTCONE_GATEWAY_CLUSTER` to get back
-to the always-fresh default).
-
-A Gateway scheduler's `gateway://` address cannot be used with
-`DASK_SCHEDULER_ADDRESS` — attachment is always by name.
-
-Requires the optional gateway extra:
-`pip install lightcone-cli[gateway]` (preinstalled on the hub image).
 
 ### Containers on the hub: the pod is the runtime
 
@@ -270,8 +242,7 @@ That one Containerfile then serves every path: built locally it wraps
 recipes on your laptop; built by the hub it runs them as worker pods.
 
 Manifests record the image the worker pod actually ran
-(`worker_image`), so provenance stays truthful even when you knowingly
-iterate on a stale attached cluster.
+(`worker_image`), so provenance is ground truth, not inference.
 
 ## NERSC Perlmutter: site-specific notes
 

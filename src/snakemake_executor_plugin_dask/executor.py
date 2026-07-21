@@ -161,9 +161,9 @@ def _connect_client():  # type: ignore[no-untyped-def]
 
     Returns ``(client, gateway_cluster_or_None)`` — the cluster handle is
     kept so ``shutdown()`` can release its local connections. It is never
-    shut down here: on the Gateway path the cluster belongs to the *user*
-    (lc is attach-only); on the address paths it belongs to whoever
-    started the scheduler.
+    shut down here: the parent ``lc run`` owns the Gateway cluster's
+    lifecycle; on the address paths it belongs to whoever started the
+    scheduler.
     """
     if addr := os.environ.get("DASK_SCHEDULER_ADDRESS"):
         try:
@@ -300,9 +300,8 @@ class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
         try:
             self._client.close()
             if self._gateway_cluster is not None:
-                # Releases this process's connections only; the cluster
-                # itself belongs to the user (lc is attach-only and never
-                # shuts Gateway clusters down — see dask_cluster).
+                # Releases this process's connections only; the parent
+                # lc run owns the cluster lifecycle (see dask_cluster).
                 self._gateway_cluster.close()
         finally:
             super().shutdown()

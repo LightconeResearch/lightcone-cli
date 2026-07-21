@@ -15,31 +15,22 @@ Four branches in priority order:
 1. **`DASK_SCHEDULER_ADDRESS` already set** → yield
    `{"DASK_SCHEDULER_ADDRESS": addr}` as-is. We don't own the cluster,
    so we don't tear it down.
-2. **Dask Gateway detected** (`LIGHTCONE_GATEWAY_CLUSTER` or
-   `DASK_GATEWAY__ADDRESS` set, e.g. a JupyterHub pod) → yield
-   `{"LIGHTCONE_GATEWAY_CLUSTER": name}`. Two sub-modes:
-
-   - **Create/cull (default).** A run-scoped cluster is created with
-     *expected_worker_image* as its `image` cluster option, scaled
-     adaptively `1..max_workers`, and shut down on exit — the same
-     lifetime contract as the local/SLURM branches, and the mechanism
-     that makes a freshly built project image take effect (a Gateway
-     cluster's image is fixed at creation). Startup blocks until the
-     first worker is live (bounded by
-     `LIGHTCONE_GATEWAY_WORKER_TIMEOUT`, default 600 s) so an
-     unpullable image fails loudly instead of hanging at zero workers.
-   - **Attach** (`LIGHTCONE_GATEWAY_CLUSTER=<name>` set by the user) →
-     connect to that cluster, leave its scaling and lifetime untouched
-     (same convention as branch 1), and warn when its actual worker
-     image (read from the scheduler pod's `LIGHTCONE_WORKER_IMAGE`)
-     differs from *expected_worker_image*.
-
-   Either way, startup fails fast if live workers don't advertise the
-   resource contract below (zero live workers is fine on the attach
-   path — adaptive clusters scale on demand). Gateway scheduler
-   addresses use a `gateway://` comm scheme a bare `Client` cannot
-   dial, so the child rejoins **by name** through the authenticated
-   Gateway API. Requires the optional dependency:
+2. **Dask Gateway detected** (`DASK_GATEWAY__ADDRESS` set, e.g. a
+   JupyterHub pod) → **create a run-scoped cluster** with
+   *expected_worker_image* as its `image` cluster option, scaled
+   adaptively `1..max_workers`, and shut down on exit — the same
+   lifetime contract as the local/SLURM branches, and the mechanism
+   that makes a freshly built project image take effect (a Gateway
+   cluster's image is fixed at creation). Startup blocks until the
+   first worker is live (bounded by `LIGHTCONE_GATEWAY_WORKER_TIMEOUT`,
+   default 600 s) so an unpullable image fails loudly instead of
+   hanging at zero workers, then fails fast if workers don't advertise
+   the resource contract below. Yields
+   `{"LIGHTCONE_GATEWAY_CLUSTER": name}` — that env var is the
+   parent→child rendezvous only (Gateway scheduler addresses use a
+   `gateway://` comm scheme a bare `Client` cannot dial, so the child
+   rejoins **by name** through the authenticated Gateway API); an
+   ambient value is ignored. Requires the optional dependency:
    `pip install lightcone-cli[gateway]`.
 3. **`SLURM_JOB_ID` set** → start an in-process scheduler bound to the
    driver's SLURM hostname (`SLURMD_NODENAME` or `gethostname()`),
@@ -49,9 +40,9 @@ Four branches in priority order:
 Outside the Gateway branch the scheduler is always in-process, so its
 lifetime equals the run's lifetime: no orphaned schedulers if the
 driver crashes. On the Gateway branch the same contract is enforced
-server-side: created clusters are shut down on exit
+server-side: the created cluster is shut down on exit
 (`shutdown_on_close=True` and the deployment's `idle_timeout` backstop
-a crashed driver); attached clusters belong to the user.
+a crashed driver).
 
 ## Resource keys
 
@@ -110,5 +101,5 @@ and keeps everything in one process tree.
 resource-advertising contract. The SLURM branch is tested with mocked
 `subprocess.Popen` plus a stubbed `Client.wait_for_workers`; the
 Gateway branch (create/cull lifecycle, image option, worker-wait
-failure, attach mode, contract and image verification) against a fake
-`dask_gateway` module.
+failure, stale-env-var immunity, resource-contract verification)
+against a fake `dask_gateway` module.
