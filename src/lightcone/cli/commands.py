@@ -1184,8 +1184,9 @@ def verify(universe: str | None) -> None:
     "--no-commit",
     is_flag=True,
     help=(
-        "On a hub: fail instead of auto-committing environment-file "
-        "changes before the image build"
+        "BinderHub backend only: fail instead of auto-committing "
+        "environment-file changes before the image build (the Cloud "
+        "Build backend builds the working tree directly — no commits)"
     ),
 )
 def build(force: bool, runtime: str | None, no_commit: bool) -> None:
@@ -1219,9 +1220,7 @@ def build(force: bool, runtime: str | None, no_commit: bool) -> None:
         raise click.ClickException(str(e))
 
     if resolved_runtime == KUBERNETES_RUNTIME:
-        from lightcone.engine.binder import binder_available
-
-        if binder_available():
+        if _hub_build_backend() is not None:
             _build_via_hub(project, commit=not no_commit)
         else:
             _report_registry_images(project)
@@ -1373,6 +1372,25 @@ def _expected_worker_image(project: Path) -> str | None:
     return images[0] if images else None
 
 
+def _hub_build_backend() -> str | None:
+    """Which on-hub image-build backend this deployment offers.
+
+    ``cloudbuild`` (GCP Cloud Build; selected by the deployment
+    injecting LIGHTCONE_BUILD_BUCKET) is preferred — off-cluster
+    builds, IAM-only auth, and no git remote required. ``binder``
+    (BinderHub service) is the portable alternative. ``None`` → no
+    on-hub build path; callers fall back to passive registry checks.
+    """
+    from lightcone.engine.binder import binder_available
+    from lightcone.engine.cloudbuild import cloudbuild_available
+
+    if cloudbuild_available():
+        return "cloudbuild"
+    if binder_available():
+        return "binder"
+    return None
+
+
 def _binder_progress(verbose: bool) -> Callable[[str, str], None]:
     """Progress callback for hub image builds.
 
@@ -1406,17 +1424,13 @@ def _worker_image_for_run(project: Path, *, verbose: bool) -> str | None:
     Elsewhere, falls back to the passive registry resolution of
     :func:`_expected_worker_image` (verification-only).
     """
-    from lightcone.engine.binder import (
-        BinderBuildError,
-        binder_available,
-        ensure_worker_image,
-    )
     from lightcone.engine.container import is_containerfile
 
-    if not binder_available():
+    backend = _hub_build_backend()
+    if backend is None:
         return _expected_worker_image(project)
 
-    _, specs = _container_specs(project)
+    project_name, specs = _container_specs(project)
     if not specs:
         # No container declared: the cluster runs the deployment's
         # default worker image, which ships the lightcone stack.
@@ -1437,31 +1451,67 @@ def _worker_image_for_run(project: Path, *, verbose: bool) -> str | None:
         return spec
     console.print(
         f"[cyan]Ensuring worker image[/cyan] for [cyan]{spec}[/cyan] "
-        "[dim](hub build service)[/dim]"
+        f"[dim]({backend})[/dim]"
     )
     try:
-        image = ensure_worker_image(
-            project, spec, on_progress=_binder_progress(verbose)
+        image = _ensure_hub_image(
+            backend,
+            project,
+            spec,
+            project_name=project_name,
+            on_progress=_binder_progress(verbose),
+        )
+    except click.ClickException:
+        raise
+    console.print(f"[green]✓[/green] Worker image: [cyan]{image}[/cyan]")
+    return image
+
+
+def _ensure_hub_image(
+    backend: str,
+    project: Path,
+    spec: str,
+    *,
+    project_name: str,
+    commit: bool = True,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> str:
+    """Run the selected backend's ensure step; errors become user-facing."""
+    if backend == "cloudbuild":
+        from lightcone.engine.cloudbuild import CloudBuildError
+        from lightcone.engine.cloudbuild import ensure_worker_image as cb_ensure
+
+        try:
+            return cb_ensure(
+                project, spec, project_name=project_name, on_progress=on_progress
+            )
+        except CloudBuildError as e:
+            raise click.ClickException(str(e))
+    from lightcone.engine.binder import BinderBuildError
+    from lightcone.engine.binder import ensure_worker_image as binder_ensure
+
+    try:
+        return binder_ensure(
+            project, spec, commit=commit, on_progress=on_progress
         )
     except BinderBuildError as e:
         raise click.ClickException(str(e))
-    console.print(f"[green]✓[/green] Worker image: [cyan]{image}[/cyan]")
-    return image
 
 
 def _build_via_hub(project: Path, *, commit: bool) -> None:
     """``lc build`` on a hub: publish every declared Containerfile.
 
-    Drives the BinderHub service (build + push into the deployment
-    registry) for each declared Containerfile — the explicit,
-    verbose-by-default form of the ensure step ``lc run`` performs
-    implicitly. Registry-image specs need no build and are reported
-    as-is.
+    Drives the deployment's build backend (Cloud Build or the BinderHub
+    service; build + push into the deployment registry) for each
+    declared Containerfile — the explicit, verbose-by-default form of
+    the ensure step ``lc run`` performs implicitly. Registry-image
+    specs need no build and are reported as-is.
     """
-    from lightcone.engine.binder import BinderBuildError, ensure_worker_image
     from lightcone.engine.container import is_containerfile
 
-    _, specs = _container_specs(project)
+    backend = _hub_build_backend()
+    assert backend is not None  # caller gates on _hub_build_backend()
+    project_name, specs = _container_specs(project)
     if not specs:
         console.print("No containers declared in astra.yaml — nothing to build.")
         return
@@ -1473,16 +1523,15 @@ def _build_via_hub(project: Path, *, commit: bool) -> None:
                 "worker stack)."
             )
             continue
-        console.print(f"[cyan]Building[/cyan] {spec} [dim](hub build service)[/dim]")
-        try:
-            image = ensure_worker_image(
-                project,
-                spec,
-                commit=commit,
-                on_progress=_binder_progress(verbose=True),
-            )
-        except BinderBuildError as e:
-            raise click.ClickException(str(e))
+        console.print(f"[cyan]Building[/cyan] {spec} [dim]({backend})[/dim]")
+        image = _ensure_hub_image(
+            backend,
+            project,
+            spec,
+            project_name=project_name,
+            commit=commit,
+            on_progress=_binder_progress(verbose=True),
+        )
         console.print(
             f"[green]✓[/green] {spec} → [cyan]{image}[/cyan] "
             "[dim](in the deployment registry; `lc run` will start its "

@@ -191,12 +191,14 @@ Under the hood, each run:
 1. **Makes sure the worker image is up to date.** The project's
    `Containerfile` (plus its dependency files) defines the worker-pod
    environment. If those files changed since the last build, `lc run`
-   commits them, pushes, and drives an image build through the hub's
-   BinderHub service into the deployment registry. When the registry
-   already holds the image — the common case — this is a single fast
-   round-trip. Code-only edits never trigger a rebuild: your code
-   reaches the workers through your shared home directory, not the
-   image.
+   drives an image build through the hub's build backend into the
+   deployment registry — on GCP hubs that's Cloud Build (git-free: it
+   builds your working tree directly, no commit or push involved), on
+   others the BinderHub service (which commits env changes and pushes
+   so build pods can clone the ref). When the registry already holds
+   the image — the common case — this is a single fast round-trip.
+   Code-only edits never trigger a rebuild: your code reaches the
+   workers through your shared home directory, not the image.
 2. **Creates a run-scoped Dask Gateway cluster** with that image,
    scaled adaptively between one worker and `--jobs`.
 3. Runs the pipeline (same executor, same per-recipe resource hints as
@@ -210,13 +212,13 @@ A Gateway scheduler's `gateway://` address cannot be used with
 run-scoped cluster. Requires the optional gateway extra:
 `pip install lightcone-cli[gateway]` (preinstalled on the hub image).
 
-Because the project must be reachable by the BinderHub build pods, it
-needs a GitHub remote (public, today) — `lc init` offers to create and
-connect one as part of scaffolding, including GitHub authentication via
-a one-time device code (see the [`lc init` GitHub step](../cli/init.md)).
-`lc build` runs the same ensure-image step explicitly and prints the
-resulting image ref; `lc build --no-commit` refuses instead of
-auto-committing.
+On BinderHub-backed hubs the project must be reachable by the build
+pods, so it needs a (public, today) GitHub remote — `lc init` offers to
+create and connect one, including GitHub auth via a one-time device
+code (see the [`lc init` GitHub step](../cli/init.md)). Cloud
+Build-backed hubs have no such requirement (GitHub remains recommended
+for backup/collaboration). `lc build` runs the same ensure-image step
+explicitly; see [`lc build`](../cli/build.md) for backend details.
 
 ### Containers on the hub: the pod is the runtime
 

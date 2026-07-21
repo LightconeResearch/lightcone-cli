@@ -593,3 +593,38 @@ def test_run_cmd_uses_own_interpreter_for_snakemake() -> None:
         has_outputs=False,
     )
     assert cmd[:3] == [sys.executable, "-m", "snakemake"]
+
+
+def test_build_backend_prefers_cloudbuild(
+    hub_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.cli.commands import _hub_build_backend
+
+    assert _hub_build_backend() is None
+    monkeypatch.setenv("JUPYTERHUB_API_TOKEN", "tok")
+    assert _hub_build_backend() == "binder"
+    monkeypatch.setenv("LIGHTCONE_REGISTRY", "us-central1-docker.pkg.dev/p/binder")
+    monkeypatch.setenv("LIGHTCONE_BUILD_BUCKET", "bkt")
+    assert _hub_build_backend() == "cloudbuild"
+
+
+def test_worker_image_for_run_via_cloudbuild(
+    hub_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.cli.commands import _worker_image_for_run
+
+    monkeypatch.setenv("LIGHTCONE_REGISTRY", "us-central1-docker.pkg.dev/p/binder")
+    monkeypatch.setenv("LIGHTCONE_BUILD_BUCKET", "bkt")
+    captured: dict[str, object] = {}
+
+    def fake_ensure(project, spec, *, project_name=None, on_progress=None):  # noqa: ANN001, ANN202
+        captured["spec"] = spec
+        captured["project_name"] = project_name
+        return "us-central1-docker.pkg.dev/p/binder/lc-proj:abc123def456"
+
+    monkeypatch.setattr(
+        "lightcone.engine.cloudbuild.ensure_worker_image", fake_ensure
+    )
+    image = _worker_image_for_run(hub_project, verbose=False)
+    assert image == "us-central1-docker.pkg.dev/p/binder/lc-proj:abc123def456"
+    assert captured == {"spec": "Containerfile", "project_name": "proj"}

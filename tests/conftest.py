@@ -26,3 +26,5 @@ def _no_ambient_hub_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # HTTP endpoint mid-suite.
     monkeypatch.delenv("JUPYTERHUB_API_TOKEN", raising=False)
     monkeypatch.delenv("LIGHTCONE_BINDER_URL", raising=False)
+    monkeypatch.delenv("LIGHTCONE_BUILD_BUCKET", raising=False)
+    monkeypatch.delenv("LIGHTCONE_REGISTRY", raising=False)

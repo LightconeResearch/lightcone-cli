@@ -703,3 +703,29 @@ non-issue on the gateway path where recipes run from the shared home via
 | recipe isolation | `docker run` wrap | `podman-hpc run` wrap | worker pod **is** the image |
 | cluster lifecycle | owned per-run | owned per-run | owned per-run (attach opt-in) |
 | manifest truth | declared spec + code_version(tag) | same | same + `worker_image` ground truth |
+
+### 8.5 Build backend v2 (2026-07-21): GCP Cloud Build
+
+On expert review, the BinderHub build path (§8.2) is heavier than the
+job requires on GCP: a dev-versioned chart, a privileged dockerd
+DaemonSet next to user pods, and a registry key in the deployment's
+secrets — and it structurally requires a public, pushed git ref per
+build. `lightcone.engine.cloudbuild` adds GCP Cloud Build as the
+preferred backend where available (selected by the deployment
+injecting `LIGHTCONE_BUILD_BUCKET`):
+
+- **Source = the staged build context** (the exact file set
+  `compute_image_tag` hashes), tarred and uploaded to GCS — no git
+  involvement at all; private projects build like public ones.
+- **Image identity = the content-addressed tag** (`lc-<project>:<hash>`)
+  pushed to `$LIGHTCONE_REGISTRY` — the same identity local builds use,
+  restoring §7.2's scheme; freshness is a registry HEAD.
+- **Auth = Workload Identity** (metadata-server token +
+  `cloudbuild.builds.editor` + `iam.serviceAccountUser` on a dedicated
+  build SA that holds only registry-writer): zero stored credentials.
+- Builds run in Google-managed VMs off-cluster; failures fetch the log
+  tail from the logs bucket.
+
+The binder backend remains in the CLI as the portable (non-GCP)
+alternative; `_hub_build_backend()` picks per deployment. Trade-off
+accepted: the on-hub build path on GCP is now GCP-specific.

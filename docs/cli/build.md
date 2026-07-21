@@ -36,24 +36,33 @@ nothing to build.
 
 ## On a JupyterHub deployment (`kubernetes` runtime)
 
-There is no docker in a hub pod, so `lc build` instead drives an image
-build through the deployment's BinderHub service:
+There is no docker in a hub pod, so `lc build` drives the deployment's
+build backend instead. Two backends exist; the deployment picks one by
+what it injects into user pods:
 
-1. Commits any changes to the environment-defining files (the
-   Containerfile, dependency files, and named COPY sources — never your
-   analysis code), maintaining a `Dockerfile → Containerfile` symlink
-   for repo2docker. `--no-commit` refuses instead.
-2. Pushes, so the build pods can clone the ref (the project needs a
-   GitHub remote).
-3. Streams the BinderHub build (repo2docker → the deployment registry)
-   and prints the resulting image ref — the image `lc run` will start
-   its Gateway cluster with. Already-built refs return immediately.
+**Cloud Build** (GCP deployments; selected by `LIGHTCONE_BUILD_BUCKET`
+being set, preferred where available). Fully git-free: the *staged
+build context* — the same file set the content-addressed tag hashes —
+is tarred and uploaded to the build bucket, built off-cluster by GCP
+Cloud Build, and pushed to `$LIGHTCONE_REGISTRY/lc-<project>:<hash>`.
+No GitHub remote, commit, or push is involved; private projects build
+exactly like public ones, and an unchanged environment is a single
+registry HEAD (no build). Auth is the pod's Workload Identity — no
+credentials anywhere. Failures surface the build-log tail.
+
+**BinderHub service** (selected by an ambient `JUPYTERHUB_API_TOKEN` /
+`LIGHTCONE_BINDER_URL`; the portable, non-GCP path). Builds from a git
+ref: `lc build` commits environment-file changes (`--no-commit`
+refuses instead), pushes (the project needs a clonable GitHub remote),
+maintains a `Dockerfile → Containerfile` symlink for repo2docker, and
+streams the build via SSE. Images are tagged by the environment
+commit.
 
 `lc run` performs the same ensure step automatically on every run, so
 running `lc build` explicitly is optional on the hub — useful to
-pre-build after a dependency change or to see the build log. Without a
-reachable build service, `lc build` falls back to probing the registry
-and printing off-hub publish instructions.
+pre-build after a dependency change or to see the build log. With no
+backend configured, `lc build` falls back to probing the registry and
+printing off-hub publish instructions.
 
 ## Tag computation
 
