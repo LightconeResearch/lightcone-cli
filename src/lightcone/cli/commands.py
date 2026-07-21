@@ -522,6 +522,11 @@ FROM python:3.12-slim
 # uv, pulled from its official image (fast, reproducible, no curl bootstrap).
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# Cluster deployments run this image as uid 1000; slim bases have no
+# passwd entry for it, and tools that call getpass.getuser() (snakemake,
+# at startup) crash on a passwd-less uid. Give it a name.
+RUN useradd --uid 1000 --create-home lightcone
+
 WORKDIR /app
 
 # On a Kubernetes / Dask Gateway deployment the pod image IS the execution
