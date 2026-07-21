@@ -13,8 +13,9 @@ hardware to spread across.
 2. **Inside a SLURM allocation** → an in-process scheduler bound to
    the driver's hostname, with one `dask worker` per allocated node
    launched via `srun`.
-3. **On a lightcone JupyterHub deployment** → attach to your running
-   Dask Gateway cluster (see the JupyterHub section below — don't use
+3. **On a lightcone JupyterHub deployment** → create a run-scoped Dask
+   Gateway cluster with the project's worker image, and cull it when
+   the run finishes (see the JupyterHub section below — don't use
    `DASK_SCHEDULER_ADDRESS` with a `gateway://` address, it cannot be
    dialled directly).
 4. With `DASK_SCHEDULER_ADDRESS` set → connect to whatever scheduler
@@ -177,39 +178,64 @@ own scheduler. It does *not* tear the scheduler down on exit.
 ## JupyterHub / Dask Gateway
 
 On a lightcone JupyterHub deployment (where the `DASK_GATEWAY__*` env
-vars are ambient in every pod), the model is: **you** create the
-cluster, `lc run` attaches to it.
+vars are ambient in every pod), `lc run` manages compute exactly like
+it does on your laptop — you just run it:
 
-1. Create a Dask Gateway cluster from JupyterLab — the Dask sidebar's
-   **+ NEW** button, or a notebook:
+```bash
+cd ~/my-analysis
+lc run
+```
 
-   ```python
-   from dask_gateway import Gateway
-   # shutdown_on_close=False keeps the cluster alive when this kernel
-   # exits — otherwise a kernel restart kills any lc run attached to it.
-   # Idle clusters are reaped by the deployment after 30 min.
-   cluster = Gateway().new_cluster(shutdown_on_close=False)
-   cluster.adapt(minimum=1, maximum=8)
-   ```
+Under the hood, each run:
 
-2. Run:
+1. **Makes sure the worker image is up to date.** The project's
+   `Containerfile` (plus its dependency files) defines the worker-pod
+   environment. If those files changed since the last build, `lc run`
+   commits them, pushes, and drives an image build through the hub's
+   BinderHub service into the deployment registry. When the registry
+   already holds the image — the common case — this is a single fast
+   round-trip. Code-only edits never trigger a rebuild: your code
+   reaches the workers through your shared home directory, not the
+   image.
+2. **Creates a run-scoped Dask Gateway cluster** with that image,
+   scaled adaptively between one worker and `--jobs`.
+3. Runs the pipeline (same executor, same per-recipe resource hints as
+   everywhere else; failed recipes get their output tail forwarded
+   back to your terminal).
+4. **Shuts the cluster down.** Nothing to clean up; a crashed run's
+   cluster is reaped by the deployment's idle timeout.
 
-   ```bash
-   lc run
-   ```
+Because the project must be reachable by the BinderHub build pods, it
+needs a git remote (a public GitHub repo today). `lc build` runs the
+same ensure-image step explicitly and prints the resulting image ref;
+`lc build --no-commit` refuses instead of auto-committing.
 
-The Gateway API only shows *your* clusters, so with a single cluster
-running `lc run` attaches with zero configuration — no cluster name to
-copy. It never changes the cluster's scaling and leaves it running on
-exit, mirroring the `DASK_SCHEDULER_ADDRESS` convention, so you can
-iterate `lc run` against the same warm cluster with its dashboard
-panels docked. With no cluster running, `lc run` tells you how to
-create one; with several, pick one:
+### Attaching to a long-lived cluster
+
+To iterate repeatedly against one warm cluster (dashboard panels
+docked, no per-run cluster startup), create it yourself from JupyterLab
+and point `lc run` at it by name:
+
+```python
+from dask_gateway import Gateway
+# shutdown_on_close=False keeps the cluster alive when this kernel
+# exits. Idle clusters are reaped by the deployment after 30 min.
+cluster = Gateway().new_cluster(shutdown_on_close=False)
+cluster.adapt(minimum=1, maximum=8)
+cluster.name
+```
 
 ```bash
 export LIGHTCONE_GATEWAY_CLUSTER=<cluster-name>   # e.g. hub.a1b2c3...
 lc run
 ```
+
+Attached clusters are yours: `lc run` never rescales them and leaves
+them running on exit, mirroring the `DASK_SCHEDULER_ADDRESS`
+convention. The trade-off: an attached cluster's image is fixed at its
+creation, so `lc run` can only *warn* when it drifts from the
+project's current image (unset `LIGHTCONE_GATEWAY_CLUSTER` to get back
+to the always-fresh default).
 
 A Gateway scheduler's `gateway://` address cannot be used with
 `DASK_SCHEDULER_ADDRESS` — attachment is always by name.
@@ -224,33 +250,25 @@ container runtime (`container_runtime: kubernetes`, declared by the
 site, no warning fired). Your recipes run *unwrapped inside the worker
 pod*, so the worker image **is** the project environment:
 
-- A `container:` spec naming a registry image is used directly: create
-  your Gateway cluster with that image.
-- A `container: Containerfile` spec resolves to a content-addressed
-  ref in the deployment registry:
-  `$LIGHTCONE_REGISTRY/lc-<project>:<hash>` — the *same hash* the
-  local `lc build` tag carries, so the environment is provably the
-  same artifact on every path. `lc build` on the hub checks whether
-  that ref exists in the registry and, when it doesn't, prints the
-  publish commands: run `lc build` from a clone on any machine with
-  docker (this builds from the hash-attested, filtered build context —
-  don't substitute a raw `docker build .`), then
-  `docker tag lc-<project>-<hash> <ref>` and `docker push <ref>`.
+- A `container:` spec naming a registry image is used directly as the
+  cluster's worker image — no build involved.
+- A `container: Containerfile` spec is built *on the hub* through the
+  BinderHub service, as described above. repo2docker only recognizes
+  `Dockerfile`, so `lc build` maintains a committed
+  `Dockerfile → Containerfile` symlink at the project root.
+- No `container:` at all → the deployment's default worker image,
+  which ships the lightcone stack.
 
 For the image to work as a Gateway worker it must contain `dask`,
 `distributed`, `dask-gateway`, and `lightcone-cli` at versions
-matching the hub — the simplest way is to base your Containerfile on
-the deployment's worker image
-(`FROM <registry>/lightcone-worker-default:<tag>`) and add your
-science deps on top. That one Containerfile then serves every path:
-built locally it wraps recipes on your laptop; pushed to the registry
-it runs them as pods on the hub.
+matching the hub — the scaffold `lc init` writes installs
+`lightcone-cli[gateway]` at pinned versions for exactly this reason.
+That one Containerfile then serves every path: built locally it wraps
+recipes on your laptop; built by the hub it runs them as worker pods.
 
-At attach time `lc run` verifies the cluster's actual worker image
-against the project's resolved image and warns on mismatch. Manifests
-record the image the worker pod actually ran (`worker_image`), so
-provenance stays truthful even if you knowingly run on a stale
-cluster.
+Manifests record the image the worker pod actually ran
+(`worker_image`), so provenance stays truthful even when you knowingly
+iterate on a stale attached cluster.
 
 ## NERSC Perlmutter: site-specific notes
 

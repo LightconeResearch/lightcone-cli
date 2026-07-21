@@ -14,7 +14,8 @@ lc build [OPTIONS]
 | Option | Default | Effect |
 |--------|---------|--------|
 | `--force` | off | Rebuild / re-pull even if the tag already exists locally. |
-| `--runtime {docker,podman,podman-hpc}` | resolved from `~/.lightcone/config.yaml` | Override the runtime for this build. |
+| `--runtime {docker,podman,podman-hpc,kubernetes}` | resolved from `~/.lightcone/config.yaml` (or the detected site) | Override the runtime for this build. |
+| `--no-commit` | off | On a hub: fail instead of auto-committing environment-file changes before the image build. |
 
 ## What it does
 
@@ -32,6 +33,27 @@ sub-analysis, or recipe-level):
 If the runtime is `none` (either by config or because `auto` couldn't
 find one), `lc build` prints a friendly note and exits 0. There is
 nothing to build.
+
+## On a JupyterHub deployment (`kubernetes` runtime)
+
+There is no docker in a hub pod, so `lc build` instead drives an image
+build through the deployment's BinderHub service:
+
+1. Commits any changes to the environment-defining files (the
+   Containerfile, dependency files, and named COPY sources — never your
+   analysis code), maintaining a `Dockerfile → Containerfile` symlink
+   for repo2docker. `--no-commit` refuses instead.
+2. Pushes, so the build pods can clone the ref (the project needs a
+   GitHub remote).
+3. Streams the BinderHub build (repo2docker → the deployment registry)
+   and prints the resulting image ref — the image `lc run` will start
+   its Gateway cluster with. Already-built refs return immediately.
+
+`lc run` performs the same ensure step automatically on every run, so
+running `lc build` explicitly is optional on the hub — useful to
+pre-build after a dependency change or to see the build log. Without a
+reachable build service, `lc build` falls back to probing the registry
+and printing off-hub publish instructions.
 
 ## Tag computation
 

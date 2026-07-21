@@ -514,7 +514,12 @@ single environment.
    subpaths; interacts with `lc init` scaffolding and the session-start hooks.
 4. **kbatch alternative** — if the 0.5 alphas misbehave, a minimal in-house hub service
    (JupyterHub-authenticated POST → k8s Job) is ~150 lines and removes the dependency.
-5. **On-hub container build path — UNRESOLVED, needs a decision (surfaced 2026-07-15, LCR-176).**
+5. **On-hub container build path — RESOLVED 2026-07-21: BinderHub service (see §8).**
+   The deployment enables 2i2c's *binderhub-service* in API-only mode with a push credential for
+   the deployment registry, which answers the least-privilege sub-question: users never hold
+   registry credentials — the build service holds the only writer key, and users reach it through
+   JupyterHub auth. This is a variant of (c) that we don't have to build or operate ourselves.
+   Original framing kept below for the record.
    §7.2 currently defers all image builds off-hub: `lc build` in the JupyterLab pod prints the
    `docker build && docker push` commands to run elsewhere, because there is no docker in-pod by
    design. End-to-end testing on the staging cluster confirmed this *works* but is a real friction
@@ -542,6 +547,11 @@ single environment.
    question.)*
 
 ## 7. Implemented design (2026-07-12) — attach-only + kubernetes as a first-class runtime
+
+> **Partially superseded by §8 (2026-07-21):** §7.1 and §7.2 stand;
+> §7.3's attach-only lifecycle and §7.4's build/lifecycle rows are
+> replaced by the PRD create/cull lifecycle and the BinderHub build
+> path.
 
 What actually shipped diverges from §4.2/§4.5 in three deliberate ways, all
 in the direction of less machinery:
@@ -633,3 +643,63 @@ environment, worker-default as the default cluster image, and a
 - kbatch: https://kbatch.readthedocs.io/ · https://github.com/kbatch-dev/kbatch ·
   https://kbatch-dev.github.io/helm-chart/
 - Worked example of gateway-behind-hub-proxy: https://www.zonca.dev/posts/2022-04-04-dask-gateway-jupyterhub
+
+## 8. Implemented design (2026-07-21) — PRD lifecycle: create/cull + BinderHub builds
+
+Implements the resolved decisions of the *Integration with Kubernetes and
+JupyterHub* PRD (LCR-174) on top of §7's runtime model. Two changes.
+
+### 8.1 Run-scoped Gateway clusters (replaces §7.3)
+
+`lc run` on a hub now creates a Gateway cluster per run — with the project's
+worker image as the `image` cluster option, adaptive `1..--jobs` — and shuts
+it down when the run finishes. This is PRD decision #1, and it is what the
+native-k8s model requires: a Gateway cluster's image is fixed at creation, so
+"the image is up to date" is only achievable with a fresh cluster. Startup
+waits for the first worker (`LIGHTCONE_GATEWAY_WORKER_TIMEOUT`, default
+600 s) so an unpullable image is a loud error, not a silent zero-worker hang.
+
+`LIGHTCONE_GATEWAY_CLUSTER=<name>` keeps the §7.3 behavior as an explicit
+attach mode (long-lived cluster iteration): never rescaled, never shut down,
+image drift warned about via the `LIGHTCONE_WORKER_IMAGE` check.
+
+### 8.2 On-hub image builds through binderhub-service (resolves §6.5)
+
+The deployment runs 2i2c's binderhub-service (API-only mode, repo2docker
+build pods, pushing to the deployment registry). `lightcone.engine.binder`
+drives it from the user pod:
+
+- **Auth**: the ambient `JUPYTERHUB_API_TOKEN`; service URL defaults to
+  `http://proxy-public/services/binder` (`LIGHTCONE_BINDER_URL` overrides).
+- **Environment ref**: the last commit touching the env-defining files —
+  `env_context_paths()` = Containerfile + dependency files + named COPY
+  sources, *excluding* a whole-tree `COPY .` (code reaches workers via the
+  shared home; the image is the environment). Code-only commits therefore
+  reuse the previous image; env edits are auto-committed (scoped to those
+  paths; `lc build --no-commit` refuses instead) and pushed, since build
+  pods clone from the git remote.
+- **repo2docker bridge**: a committed root `Dockerfile → Containerfile`
+  symlink (repo2docker does not read `Containerfile`).
+- **Build**: `GET /build/<provider>/<spec>/<sha>?build_only=true` streamed
+  as SSE until `ready`/`failed`; the terminal event carries `imageName`.
+  BinderHub consults its registry first, so an already-built ref is one
+  round-trip — `lc run` calls this ensure step on every kubernetes-runtime
+  run and then creates the cluster with the returned image.
+
+Trade-offs accepted: the project must have a (public, until the deployment
+configures a provider token) GitHub remote; the image tag is the env sha
+rather than the content-addressed `lc-<project>-<hash>` scheme (§7.2's
+registry probing remains as the off-hub fallback path); repo2docker builds
+at the env sha, so a whole-tree `COPY .` bakes code as of that commit — a
+non-issue on the gateway path where recipes run from the shared home via
+`--directory`.
+
+### 8.3 Path similarity, as implemented (updates §7.4)
+
+| | local | SLURM | hub |
+|---|---|---|---|
+| environment defined by | `Containerfile` | same | same |
+| `lc build` | build into local store | build via podman-hpc | BinderHub service → deployment registry |
+| recipe isolation | `docker run` wrap | `podman-hpc run` wrap | worker pod **is** the image |
+| cluster lifecycle | owned per-run | owned per-run | owned per-run (attach opt-in) |
+| manifest truth | declared spec + code_version(tag) | same | same + `worker_image` ground truth |
