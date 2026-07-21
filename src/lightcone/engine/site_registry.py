@@ -14,6 +14,7 @@ place.
 """
 from __future__ import annotations
 
+import os
 import socket
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -75,6 +76,25 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
             "//global/cscratch1/**",
             "//global/cfs/cdirs/**",
         ],
+    },
+    "lightcone-hub": {
+        # Pods have generated hostnames, so detection is by environment:
+        # a JupyterHub identity plus a configured Dask Gateway client
+        # (both injected into every singleuser pod by the lightcone-hub
+        # deployment) unambiguously mark the hub.
+        "hostname_patterns": [],
+        "env_markers": ["JUPYTERHUB_USER", "DASK_GATEWAY__ADDRESS"],
+        "display_name": "Lightcone JupyterHub",
+        "backend": "dask-gateway",
+        "connection": {},
+        # Kubernetes is the container runtime: the Gateway worker pod
+        # image IS the recipe environment, so recipes run unwrapped but
+        # are still containerized. Declared (not detected) — load_runtime
+        # treats it as explicit, so no "no runtime found" warning fires.
+        "container_runtime": "kubernetes",
+        # Scratch comes from the deployment's LIGHTCONE_SCRATCH env (a
+        # path on the shared RWX volume), which outranks site defaults
+        # in lightcone.engine.scratch — nothing to declare here.
     },
     "local": {
         "hostname_patterns": [],
@@ -152,16 +172,31 @@ class HostSite:
 _UNKNOWN_HOST_SITE = HostSite(key=None, defaults={})
 
 
+def _detect_site_from_env() -> str | None:
+    """Match a site by its declared ``env_markers`` (all must be set).
+
+    Container/pod environments have generated hostnames, so sites like
+    the JupyterHub deployment declare ambient env vars instead of
+    hostname patterns.
+    """
+    for site_key, site in SITE_DEFAULTS.items():
+        markers = site.get("env_markers")
+        if markers and all(m in os.environ for m in markers):
+            return site_key
+    return None
+
+
 def detect_current_site() -> HostSite:
     """Return the :class:`HostSite` for the local host.
 
     Single source of truth for "which site are we on?" — everything else
     in the codebase should call this rather than re-deriving it from
-    :func:`socket.gethostname` and :func:`detect_site`. Returns a falsy
-    :class:`HostSite` (``key is None``) when the hostname matches no
-    known site.
+    :func:`socket.gethostname` and :func:`detect_site`. Environment
+    markers are checked before hostname patterns (pods have generated
+    hostnames). Returns a falsy :class:`HostSite` (``key is None``)
+    when nothing matches.
     """
-    key = detect_site(socket.gethostname())
+    key = _detect_site_from_env() or detect_site(socket.gethostname())
     if key is None:
         return _UNKNOWN_HOST_SITE
     return HostSite(key=key, defaults=get_site_defaults(key) or {})

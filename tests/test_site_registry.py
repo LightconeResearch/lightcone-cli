@@ -95,3 +95,34 @@ class TestDetectCurrentSite:
         # returning an empty HostSite rather than None.
         fake_hostname("generic-laptop")
         assert detect_current_site().get("scratch_root", "/tmp") == "/tmp"
+
+    def test_env_markers_detect_hub_despite_generated_hostname(
+        self,
+        fake_hostname: Callable[[str], None],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # JupyterHub pods have generated hostnames (jupyter-<user>), so
+        # the hub site is matched by ambient env instead.
+        fake_hostname("jupyter-eiffl")
+        monkeypatch.setenv("JUPYTERHUB_USER", "eiffl")
+        monkeypatch.setenv(
+            "DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway/"
+        )
+        site = detect_current_site()
+        assert site.key == "lightcone-hub"
+        # Kubernetes (the worker pod) is the container runtime on the
+        # hub — recipes run unwrapped but are still containerized.
+        assert site.get("container_runtime") == "kubernetes"
+        assert site.get("backend") == "dask-gateway"
+
+    def test_partial_env_markers_do_not_match(
+        self,
+        fake_hostname: Callable[[str], None],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # JUPYTERHUB_USER alone (any JupyterHub, no gateway) must not
+        # claim the lightcone-hub site.
+        fake_hostname("jupyter-somebody")
+        monkeypatch.delenv("DASK_GATEWAY__ADDRESS", raising=False)
+        monkeypatch.setenv("JUPYTERHUB_USER", "somebody")
+        assert not detect_current_site()

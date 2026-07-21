@@ -332,10 +332,13 @@ def generate(
         project_path: Project root containing ``astra.yaml``.
         universes: Universe ids to expand rules over.
         runtime: Container runtime to wrap recipes with. One of
-            ``docker | podman | podman-hpc | none``. ``none`` runs
-            recipes on the host without isolation. Resolution is done
-            here once, not per-rule, so all rules use a consistent
-            runtime. See :func:`lightcone.engine.container.load_runtime`.
+            ``docker | podman | podman-hpc | kubernetes | none``.
+            ``none`` runs recipes on the host without isolation;
+            ``kubernetes`` also leaves recipes unwrapped, but because
+            the Dask Gateway worker pod *is* the container. Resolution
+            is done here once, not per-rule, so all rules use a
+            consistent runtime. See
+            :func:`lightcone.engine.container.load_runtime`.
 
     Returns ``(snakefile_path, config_path)``.
     """

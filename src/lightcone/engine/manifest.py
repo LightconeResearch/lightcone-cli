@@ -200,6 +200,12 @@ def write_manifest(
         "finished_at": time.time(),
         "host": socket.gethostname(),
         "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        # Ground truth on kubernetes-runtime sites: the image the Dask
+        # Gateway worker pod that executed this rule was started with
+        # (injected by the deployment's cluster-options handler). Unlike
+        # ``container_image`` (the declared spec), this records what
+        # actually ran. Additive, like ``slurm_job_id`` — absent off-hub.
+        "worker_image": os.environ.get("LIGHTCONE_WORKER_IMAGE"),
     }
 
     final_path = output_dir / MANIFEST_FILENAME

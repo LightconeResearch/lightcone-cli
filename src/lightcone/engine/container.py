@@ -21,6 +21,12 @@ Supported runtimes:
     * ``podman-hpc`` — NERSC-style login nodes; ``build`` migrates the
       image so compute-node apptainer can read it. ``run`` still uses
       ``podman-hpc`` directly.
+    * ``kubernetes`` — the pod is the container. On a lightcone-hub
+      deployment there is no OCI binary; recipes execute inside Dask
+      Gateway worker pods whose image *is* the project environment, so
+      ``wrap_recipe`` is a no-op and ``lc build`` resolves against the
+      deployment registry (:data:`REGISTRY_ENV`) instead of a local
+      image store. Declared by the site registry, never auto-detected.
     * ``none`` — no container; recipe runs on the host. Useful for
       development and for projects that don't need isolation.
 """
@@ -29,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shlex
 import shutil
@@ -52,6 +59,24 @@ logger = logging.getLogger(__name__)
 #: (rootless, no daemon); docker last, gated behind a ``docker info``
 #: probe so a down daemon doesn't silently win over a healthy podman.
 RUNTIMES: tuple[str, ...] = ("podman-hpc", "podman", "docker")
+
+#: The pod-is-the-container runtime (Dask Gateway worker pods on a
+#: lightcone-hub deployment). Not in :data:`RUNTIMES` — there is no binary
+#: to detect and nothing to build locally; it enters via a site declaration
+#: (see :func:`load_runtime`) or explicit user config.
+KUBERNETES_RUNTIME = "kubernetes"
+
+#: Runtimes that never wrap recipes in an OCI invocation. ``kubernetes``
+#: still *means* containerized — isolation is delegated to the worker pod —
+#: whereas ``none`` means the recipe runs on the host unisolated.
+_NON_WRAPPING_RUNTIMES: frozenset[str] = frozenset({"none", KUBERNETES_RUNTIME})
+
+#: Env var naming the deployment's container registry (e.g.
+#: ``europe-west1-docker.pkg.dev/<project>/lightcone``). Injected into
+#: singleuser pods by a lightcone-hub deployment; consumed by
+#: :func:`registry_image_ref` so Containerfile specs resolve to a pullable
+#: reference that a Dask Gateway cluster can be created with.
+REGISTRY_ENV = "LIGHTCONE_REGISTRY"
 
 #: Files whose contents contribute to the image tag hash.
 DEPENDENCY_FILES = (
@@ -123,12 +148,15 @@ class ContainerStatus:
 class RuntimeChoice:
     """Result of resolving the container runtime to use.
 
-    ``runtime`` is the resolved value (``docker | podman | podman-hpc | none``).
-    ``explicit`` is ``True`` when the user pinned this value in
-    ``~/.lightcone/config.yaml`` — i.e. they typed ``runtime: docker``,
-    ``runtime: podman``, … or ``runtime: none``. ``False`` means
-    ``runtime: auto`` (or no config), and the runtime is whatever
-    detection produced — including ``none`` as a silent fallback.
+    ``runtime`` is the resolved value
+    (``docker | podman | podman-hpc | kubernetes | none``).
+    ``explicit`` is ``True`` when the value was pinned rather than
+    detected: either the user typed it in ``~/.lightcone/config.yaml``
+    (``runtime: docker``, ``runtime: none``, …) or the host site
+    *declares* a non-OCI runtime (``kubernetes``/``none``) — a
+    deployment fact, not a guess. ``False`` means ``runtime: auto``
+    (or no config), and the runtime is whatever detection produced —
+    including ``none`` as a silent fallback.
 
     Callers use ``explicit`` to decide whether silently running without
     isolation is acceptable. When the user explicitly opted out, no
@@ -207,10 +235,19 @@ def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
     project_path is accepted for future per-project overrides but is not
     consulted today). Values:
 
-    * ``auto`` (default) — first available runtime in :data:`RUNTIMES`,
-      else falls back to ``"none"`` with ``explicit=False``.
+    * ``auto`` (default) — a site-declared non-OCI runtime wins first
+      (``kubernetes`` on a lightcone-hub deployment is a deployment
+      fact, so it resolves ``explicit=True``); otherwise the first
+      available runtime in :data:`RUNTIMES`, else ``"none"`` with
+      ``explicit=False``.
     * ``docker | podman | podman-hpc`` — explicit; binary must exist.
+    * ``kubernetes`` — explicit; recipes run unwrapped inside the
+      cluster's worker pods (no binary to check).
     * ``none`` — explicit opt-out; recipes run on the host.
+
+    Site-declared *OCI* runtimes (e.g. Perlmutter → podman-hpc) remain
+    detection-order hints, not explicit choices — missing-from-PATH
+    falls through to the next candidate as before.
 
     Raises :class:`ContainerBuildError` if an explicit runtime is
     configured but its binary is missing on PATH, or if the configured
@@ -227,13 +264,17 @@ def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
             requested = "auto"
 
     if requested == "auto":
+        declared = detect_current_site().get("container_runtime")
+        if declared in _NON_WRAPPING_RUNTIMES:
+            return RuntimeChoice(runtime=declared, explicit=True)
         return RuntimeChoice(runtime=detect_runtime() or "none", explicit=False)
-    if requested == "none":
-        return RuntimeChoice(runtime="none", explicit=True)
+    if requested in _NON_WRAPPING_RUNTIMES:
+        return RuntimeChoice(runtime=requested, explicit=True)
     if requested not in RUNTIMES:
         raise ContainerBuildError(
             f"Unknown container.runtime {requested!r} in {cfg_path}. "
-            f"Expected one of: auto, none, {', '.join(RUNTIMES)}."
+            f"Expected one of: auto, none, {KUBERNETES_RUNTIME}, "
+            f"{', '.join(RUNTIMES)}."
         )
     if shutil.which(requested) is None:
         raise ContainerBuildError(
@@ -247,6 +288,31 @@ def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
 # ---------------------------------------------------------------------------
 # Image tag computation
 # ---------------------------------------------------------------------------
+
+
+def image_name_slug(name: str) -> str:
+    """Reduce *name* to a valid OCI image-name component.
+
+    Registries (and docker/podman locally) require lowercase ASCII
+    ``[a-z0-9]`` with ``.``/``_``/``-`` separators, starting and ending
+    alphanumeric — but ASTRA analysis names are prose (e.g.
+    ``"Union2.1 Flat ΛCDM MAP Fit"``). Accented latin is transliterated
+    via NFKD; anything else non-ASCII is dropped; remaining invalid
+    characters become ``-``; separator runs collapse. Pure-ASCII names
+    that were already valid (``gwtest``, ``union2.1``) pass through
+    unchanged, so existing content-addressed tags keep their names.
+    """
+    import unicodedata
+
+    ascii_name = (
+        unicodedata.normalize("NFKD", name)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    slug = re.sub(r"[^a-z0-9._]+", "-", ascii_name)
+    slug = re.sub(r"[-._]{2,}", "-", slug).strip("-._")
+    return slug or "project"
 
 
 def find_dependency_files(project_path: Path) -> list[Path]:
@@ -350,8 +416,7 @@ def compute_image_tag(
             h.update(b"\0")
 
     digest = h.hexdigest()[:12]
-    safe_name = project_name.lower().replace(" ", "-")
-    return f"lc-{safe_name}-{digest}"
+    return f"lc-{image_name_slug(project_name)}-{digest}"
 
 
 def _safe_relpath(path: Path, root: Path) -> str:
@@ -703,6 +768,168 @@ def make_image_tag_resolver(
     return resolve
 
 
+# ---------------------------------------------------------------------------
+# Deployment registry (kubernetes runtime)
+# ---------------------------------------------------------------------------
+
+
+def deployment_registry() -> str | None:
+    """The deployment's registry prefix from :data:`REGISTRY_ENV`, or ``None``.
+
+    E.g. ``europe-west1-docker.pkg.dev/<project>/lightcone`` on a
+    lightcone-hub deployment. Trailing slashes are stripped so callers
+    can join with ``/`` unconditionally.
+    """
+    value = (os.environ.get(REGISTRY_ENV) or "").strip().rstrip("/")
+    return value or None
+
+
+def registry_image_ref(tag: str, *, registry: str | None = None) -> str | None:
+    """Translate a local content-addressed tag into a pullable registry ref.
+
+    ``lc-<project>-<hash>`` becomes ``<registry>/lc-<project>:<hash>`` —
+    the same content hash on both sides, so the environment is provably
+    the same artifact whether it was built locally (and wrapped per
+    recipe) or pulled by Kubernetes as a Gateway worker pod image.
+
+    Returns ``None`` when no registry is configured (*registry* argument
+    or :data:`REGISTRY_ENV`): without one there is no pullable name to
+    give, and inventing a local-only tag would just fail at pod start.
+    """
+    registry = registry or deployment_registry()
+    if registry is None:
+        return None
+    name, _, digest = tag.rpartition("-")
+    if not name or not digest:
+        return None
+    return f"{registry}/{name}:{digest}"
+
+
+def resolve_worker_image(
+    spec: str | None,
+    *,
+    project_path: Path,
+    project_name: str,
+) -> str | None:
+    """The image a Dask Gateway cluster should run workers with for *spec*.
+
+    The kubernetes-runtime sibling of :func:`resolve_image_for_run`:
+
+    * ``None`` / empty → ``None`` (no declared container).
+    * Path to a Containerfile → the deployment-registry ref for its
+      content-addressed tag, or ``None`` when :data:`REGISTRY_ENV` is
+      unset (the Containerfile cannot be realized as a pod image).
+    * Anything else (a registry image spec) → returned as-is.
+
+    Note :func:`resolve_image_for_run` stays site-agnostic on purpose:
+    ``code_version`` hashes the *local* tag on every path, so moving a
+    project between a laptop and the hub does not register as code
+    drift. The registry ref is a deployment detail, used only to name
+    the worker image and to verify the attached cluster runs it.
+    """
+    if not spec:
+        return None
+    if is_containerfile(spec, project_path):
+        tag = compute_image_tag(project_name, project_path / spec, project_path)
+        return registry_image_ref(tag)
+    return spec
+
+
+#: GCE/GKE metadata-server endpoint for the node service account's OAuth
+#: token. Reachable from pods on GKE (unless Workload Identity blocks it);
+#: grants Artifact Registry read via the node SA's roles.
+_METADATA_TOKEN_URL = (
+    "http://metadata.google.internal/computeMetadata/v1/"
+    "instance/service-accounts/default/token"
+)
+
+#: Manifest media types accepted when probing a registry — both Docker
+#: and OCI, single-image and index, so multi-arch pushes don't 404.
+_MANIFEST_ACCEPT = ", ".join(
+    (
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.oci.image.index.v1+json",
+    )
+)
+
+
+def _metadata_access_token() -> str | None:
+    """OAuth access token from the GCE metadata server, or ``None``."""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        _METADATA_TOKEN_URL, headers={"Metadata-Flavor": "Google"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    token = payload.get("access_token")
+    return token if isinstance(token, str) and token else None
+
+
+def registry_image_exists(ref: str) -> bool | None:
+    """Best-effort probe: does *ref* exist in its registry?
+
+    Returns ``True``/``False`` on a definitive registry answer and
+    ``None`` when we cannot tell (no metadata-server credentials, no
+    network, unexpected status). Callers must treat ``None`` as
+    "unverified", not "missing" — ``lc build`` on the hub uses this to
+    report status, never to gate execution.
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    if "/" not in ref:
+        return None
+    host, remainder = ref.split("/", 1)
+    last = remainder.rsplit("/", 1)[-1]
+    if ":" in last:
+        path, tag = remainder.rsplit(":", 1)
+    else:
+        path, tag = remainder, "latest"
+    if not host or not path or not tag:
+        return None
+
+    token = _metadata_access_token()
+    if token is None:
+        return None
+
+    # Percent-encode the path segments: http.client rejects any
+    # non-ASCII byte in the request line with UnicodeEncodeError, and a
+    # ref built from user input (project names are prose) must degrade
+    # to "unverified", never to a traceback.
+    quoted_path = "/".join(
+        urllib.parse.quote(seg, safe="") for seg in path.split("/")
+    )
+    quoted_tag = urllib.parse.quote(tag, safe="")
+    req = urllib.request.Request(
+        f"https://{host}/v2/{quoted_path}/manifests/{quoted_tag}",
+        method="HEAD",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": _MANIFEST_ACCEPT,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return bool(200 <= resp.status < 300)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        return None
+    except (urllib.error.URLError, OSError, ValueError, UnicodeError):
+        # URLError/OSError: network; ValueError/UnicodeError: a ref the
+        # URL machinery refuses (bad host chars, non-ASCII that slipped
+        # through). All mean "cannot tell", not "missing".
+        return None
+
+
 def wrap_recipe(
     recipe: str,
     *,
@@ -718,18 +945,23 @@ def wrap_recipe(
 
     No-op cases:
         * *image* is ``None`` → recipe returned unchanged
-        * *runtime* is ``"none"`` → recipe returned unchanged
+        * *runtime* is ``"none"`` → recipe returned unchanged (runs on
+          the host, unisolated)
+        * *runtime* is ``"kubernetes"`` → recipe returned unchanged (the
+          Dask Gateway worker pod *is* the container; there is no OCI
+          binary to invoke inside it)
 
     The recipe is shell-quoted with :func:`shlex.quote` and passed as the
     argument to ``bash -c`` inside the container, which keeps single
     quotes, dollar signs, and other shell metacharacters intact across
     the host bash → runtime CLI → container bash boundaries.
     """
-    if image is None or runtime == "none":
+    if image is None or runtime in _NON_WRAPPING_RUNTIMES:
         return recipe
     if runtime not in RUNTIMES:
         raise ContainerBuildError(
-            f"Unsupported run runtime {runtime!r}; expected one of {RUNTIMES} or 'none'."
+            f"Unsupported run runtime {runtime!r}; expected one of "
+            f"{RUNTIMES}, '{KUBERNETES_RUNTIME}', or 'none'."
         )
     inner = shlex.quote(recipe)
     # ``--pull=never`` is critical for podman, which by default does
@@ -772,7 +1004,15 @@ def get_container_status(
 
     containerfile = project_path / spec
     tag = compute_image_tag(project_name, containerfile, project_path)
-    exists = image_exists_locally(tag, runtime=runtime) if runtime != "none" else None
+    # Non-wrapping runtimes have no local image store to consult:
+    # ``none`` doesn't use images at all, and ``kubernetes`` resolves
+    # against the deployment registry (probed by ``lc build``, not here —
+    # status must stay offline-cheap).
+    exists = (
+        image_exists_locally(tag, runtime=runtime)
+        if runtime not in _NON_WRAPPING_RUNTIMES
+        else None
+    )
     return ContainerStatus(
         type="build",
         image=tag,
