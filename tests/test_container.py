@@ -1013,3 +1013,41 @@ class TestIsContainerfile:
 
     def test_missing_file(self, project: Path) -> None:
         assert is_containerfile("python:3.12-slim", project) is False
+
+
+# ---- env_context_paths ----------------------------------------------------
+
+
+class TestEnvContextPaths:
+    def test_excludes_whole_root_copy(self, tmp_path: Path) -> None:
+        """`COPY . .` (kept for image portability) must not make every
+        commit an environment change — on a Gateway deployment code
+        reaches workers via the shared filesystem, not the image."""
+        from lightcone.engine.container import env_context_paths
+
+        cf = tmp_path / "Containerfile"
+        cf.write_text(
+            "FROM python:3.12-slim\n"
+            "COPY requirements.txt .\n"
+            "COPY . .\n"
+        )
+        (tmp_path / "requirements.txt").write_text("numpy\n")
+        (tmp_path / "analysis.py").write_text("print('hi')\n")
+
+        paths = env_context_paths(cf, tmp_path)
+        assert "Containerfile" in paths
+        assert "requirements.txt" in paths
+        assert "analysis.py" not in paths
+        assert "." not in paths and "" not in paths
+
+    def test_includes_named_copy_sources(self, tmp_path: Path) -> None:
+        from lightcone.engine.container import env_context_paths
+
+        cf = tmp_path / "Containerfile"
+        cf.write_text("FROM python:3.12-slim\nCOPY envs/ /envs/\n")
+        envs = tmp_path / "envs"
+        envs.mkdir()
+        (envs / "lock.txt").write_text("pinned\n")
+
+        paths = env_context_paths(cf, tmp_path)
+        assert "envs" in paths

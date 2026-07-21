@@ -529,6 +529,36 @@ def _expand_copy_source(src: str, project_path: Path) -> list[Path]:
     return []
 
 
+def env_context_paths(containerfile: Path, project_path: Path) -> list[str]:
+    """Project-relative paths that define the image's *environment*.
+
+    The build-context set of :func:`_iter_build_context_entries` minus
+    any ``COPY .`` of the whole project root. On a Gateway deployment
+    the worker-pod image is the execution *environment* — recipes run
+    in the project directory on the shared filesystem (the executor pins
+    ``--directory``), so a whole-tree ``COPY . .`` (kept for image
+    portability) does not affect what executes. Excluding it means
+    code-only commits don't demand an image rebuild; edits to the
+    Containerfile, dependency files, or specifically COPY'd sources do.
+
+    Used as a git pathspec to decide image freshness (the last commit
+    touching any of these paths identifies the environment).
+    """
+    root = project_path.resolve()
+    paths: list[str] = []
+    for _, path in _iter_build_context_entries(containerfile, project_path):
+        resolved = path.resolve()
+        if resolved == root:
+            continue
+        try:
+            rel = resolved.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if rel not in paths:
+            paths.append(rel)
+    return paths
+
+
 def is_containerfile(spec: str, project_path: Path) -> bool:
     """Return ``True`` if *spec* refers to an existing file (Containerfile)."""
     return (project_path / spec).is_file()

@@ -328,3 +328,153 @@ def test_run_cmd_multiple_triggers_all_before_separator() -> None:
     for trigger in ("code", "input", "mtime", "params"):
         assert trigger in cmd, f"trigger '{trigger}' missing from cmd"
         assert cmd.index(trigger) < sep_idx, f"trigger '{trigger}' must come before '--'"
+
+
+# ---- lc build / lc run worker image on a hub (kubernetes + BinderHub) ------
+
+
+@pytest.fixture
+def hub_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """A minimal project declaring a project-level Containerfile."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "name: proj\n"
+        "container: Containerfile\n"
+        "outputs:\n  - id: foo\n    recipe:\n      command: echo\n"
+    )
+    (project / "Containerfile").write_text("FROM python:3.12-slim\n")
+    monkeypatch.chdir(project)
+    return project
+
+
+def test_build_kubernetes_builds_via_hub_service(
+    runner: CliRunner, hub_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a hub (BinderHub reachable) `lc build` drives a real image build
+    instead of printing off-hub publish instructions."""
+    monkeypatch.setenv("JUPYTERHUB_API_TOKEN", "tok")
+    captured: dict[str, object] = {}
+
+    def fake_ensure(project, spec, *, commit=True, on_progress=None):  # noqa: ANN001, ANN202
+        captured["spec"] = spec
+        captured["commit"] = commit
+        return "reg/binder/proj:abc123"
+
+    monkeypatch.setattr(
+        "lightcone.engine.binder.ensure_worker_image", fake_ensure
+    )
+    result = runner.invoke(main, ["build", "--runtime", "kubernetes"])
+    assert result.exit_code == 0, result.output
+    assert "reg/binder/proj:abc123" in result.output
+    assert captured == {"spec": "Containerfile", "commit": True}
+
+
+def test_build_kubernetes_no_commit_flag(
+    runner: CliRunner, hub_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JUPYTERHUB_API_TOKEN", "tok")
+    captured: dict[str, object] = {}
+
+    def fake_ensure(project, spec, *, commit=True, on_progress=None):  # noqa: ANN001, ANN202
+        captured["commit"] = commit
+        return "reg/binder/proj:abc123"
+
+    monkeypatch.setattr(
+        "lightcone.engine.binder.ensure_worker_image", fake_ensure
+    )
+    result = runner.invoke(
+        main, ["build", "--runtime", "kubernetes", "--no-commit"]
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["commit"] is False
+
+
+def test_build_kubernetes_build_error_is_user_facing(
+    runner: CliRunner, hub_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JUPYTERHUB_API_TOKEN", "tok")
+
+    def fake_ensure(project, spec, *, commit=True, on_progress=None):  # noqa: ANN001, ANN202
+        from lightcone.engine.binder import BinderBuildError
+
+        raise BinderBuildError("the build broke")
+
+    monkeypatch.setattr(
+        "lightcone.engine.binder.ensure_worker_image", fake_ensure
+    )
+    result = runner.invoke(main, ["build", "--runtime", "kubernetes"])
+    assert result.exit_code != 0
+    assert "the build broke" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_build_kubernetes_off_hub_falls_back_to_registry_report(
+    runner: CliRunner, hub_project: Path
+) -> None:
+    """Without a reachable BinderHub service (e.g. kubernetes runtime
+    configured off-hub) the old passive registry report still runs."""
+    result = runner.invoke(main, ["build", "--runtime", "kubernetes"])
+    assert result.exit_code == 0, result.output
+    assert "not built" in result.output
+
+
+def test_worker_image_for_run_ensures_via_binder(
+    hub_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.cli.commands import _worker_image_for_run
+
+    monkeypatch.setenv("JUPYTERHUB_API_TOKEN", "tok")
+    monkeypatch.setattr(
+        "lightcone.engine.binder.ensure_worker_image",
+        lambda p, s, *, commit=True, on_progress=None: "reg/binder/proj:sha1",
+    )
+    assert (
+        _worker_image_for_run(hub_project, verbose=False)
+        == "reg/binder/proj:sha1"
+    )
+
+
+def test_worker_image_for_run_registry_spec_passes_through(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared registry image needs no build — used as the worker image
+    verbatim, even on a hub."""
+    from lightcone.cli.commands import _worker_image_for_run
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "name: proj\n"
+        "container: ghcr.io/org/worker:1.0\n"
+        "outputs:\n  - id: foo\n    recipe:\n      command: echo\n"
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("JUPYTERHUB_API_TOKEN", "tok")
+
+    def _boom(*args: object, **kwargs: object) -> str:
+        raise AssertionError("registry specs must not trigger a build")
+
+    monkeypatch.setattr("lightcone.engine.binder.ensure_worker_image", _boom)
+    assert (
+        _worker_image_for_run(project, verbose=False) == "ghcr.io/org/worker:1.0"
+    )
+
+
+def test_worker_image_for_run_no_container_uses_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.cli.commands import _worker_image_for_run
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "name: proj\noutputs:\n  - id: foo\n    recipe:\n      command: echo\n"
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("JUPYTERHUB_API_TOKEN", "tok")
+    assert _worker_image_for_run(project, verbose=False) is None

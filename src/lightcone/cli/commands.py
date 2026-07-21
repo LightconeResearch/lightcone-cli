@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import click
@@ -540,10 +541,13 @@ def run(
     """Materialize outputs declared in astra.yaml.
 
     Always dispatches through a Dask cluster: a ``LocalCluster`` on a
-    workstation, srun-launched workers inside a SLURM allocation, the
-    user's running Dask Gateway cluster on a JupyterHub deployment
-    (created from JupyterLab; lc attaches, never creates), or an
-    existing scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
+    workstation, srun-launched workers inside a SLURM allocation, a
+    run-scoped Dask Gateway cluster on a JupyterHub deployment (created
+    with the project's worker image — kept up to date through the hub's
+    build service — and culled when the run finishes), or an existing
+    scheduler if ``DASK_SCHEDULER_ADDRESS`` is set
+    (``LIGHTCONE_GATEWAY_CLUSTER=<name>`` similarly attaches to an
+    existing Gateway cluster and leaves it running).
     """
     _abort_on_perlmutter_login()
 
@@ -578,12 +582,14 @@ def run(
 
     choice = load_runtime(project_path=project)
     _ensure_images(project, runtime=choice.runtime)
-    # On a kubernetes-runtime site the worker pod is the container, so
-    # resolve which image the Gateway cluster is expected to run — the
-    # gateway branch verifies the attached cluster against it and the
-    # no-cluster-yet error message names it.
+    # On a kubernetes-runtime site the worker pod is the container:
+    # resolve which image the Gateway cluster must run. On a hub this
+    # ensures the image is up to date first (committing/pushing env
+    # changes and driving a BinderHub build when needed — a fast no-op
+    # round-trip when the registry already has it); the run-scoped
+    # cluster is then created with exactly that image.
     expected_worker_image = (
-        _expected_worker_image(project)
+        _worker_image_for_run(project, verbose=verbose)
         if choice.runtime == KUBERNETES_RUNTIME
         else None
     )
@@ -661,6 +667,7 @@ def run(
             verbose=verbose,
             local_directory=str(rundirs.dask_local),
             expected_worker_image=expected_worker_image,
+            max_workers=int(n),
         ) as cluster_env:
             _warn_runtime_cluster_mismatch(
                 project, runtime=choice.runtime, cluster_env=cluster_env
@@ -965,7 +972,15 @@ def verify(universe: str | None) -> None:
         "(overrides ~/.lightcone/config.yaml)"
     ),
 )
-def build(force: bool, runtime: str | None) -> None:
+@click.option(
+    "--no-commit",
+    is_flag=True,
+    help=(
+        "On a hub: fail instead of auto-committing environment-file "
+        "changes before the image build"
+    ),
+)
+def build(force: bool, runtime: str | None, no_commit: bool) -> None:
     """Build container images declared in astra.yaml.
 
     Containerfile syntax is Dockerfile syntax — we use ``docker``,
@@ -976,10 +991,12 @@ def build(force: bool, runtime: str | None) -> None:
     ``lc run`` time.
 
     On a kubernetes-runtime site (a lightcone-hub deployment) there is
-    no local image store and nothing to build in-pod: ``lc build``
-    instead checks that each Containerfile's content-addressed image
-    exists in the deployment registry and prints exactly how to publish
-    it when missing.
+    no docker in-pod: ``lc build`` instead commits any environment-file
+    changes, pushes them, and drives an image build through the hub's
+    BinderHub service into the deployment registry — the image a
+    Gateway cluster will run. Without a reachable build service it
+    falls back to probing the registry and printing how to publish the
+    image off-hub.
     """
     from lightcone.engine.container import (
         KUBERNETES_RUNTIME,
@@ -994,7 +1011,12 @@ def build(force: bool, runtime: str | None) -> None:
         raise click.ClickException(str(e))
 
     if resolved_runtime == KUBERNETES_RUNTIME:
-        _report_registry_images(project)
+        from lightcone.engine.binder import binder_available
+
+        if binder_available():
+            _build_via_hub(project, commit=not no_commit)
+        else:
+            _report_registry_images(project)
         return
 
     if resolved_runtime == "none":
@@ -1141,6 +1163,123 @@ def _expected_worker_image(project: Path) -> str | None:
         )
         return None
     return images[0] if images else None
+
+
+def _binder_progress(verbose: bool) -> Callable[[str, str], None]:
+    """Progress callback for hub image builds.
+
+    Git steps (commit/push) always print — they mutate the user's repo
+    and must never be silent. Build phases print on transition; the
+    per-line repo2docker build log only with ``--verbose``.
+    """
+    state = {"phase": ""}
+
+    def cb(phase: str, message: str) -> None:
+        if phase in ("commit", "push"):
+            console.print(f"  [dim]{message}[/dim]")
+            return
+        if phase and phase != state["phase"]:
+            state["phase"] = phase
+            console.print(f"  [dim]binder: {phase}[/dim]")
+        if verbose and message:
+            console.print(f"  [dim]{message}[/dim]")
+
+    return cb
+
+
+def _worker_image_for_run(project: Path, *, verbose: bool) -> str | None:
+    """The worker image a kubernetes-runtime run should use.
+
+    On a hub (BinderHub service reachable) a declared Containerfile is
+    *ensured*: environment changes are committed and pushed, and the
+    image is built through the hub's build service when the registry
+    doesn't have it yet — so ``lc run`` always starts its cluster on an
+    up-to-date image. Registry-image specs pass through unchanged.
+    Elsewhere, falls back to the passive registry resolution of
+    :func:`_expected_worker_image` (verification-only).
+    """
+    from lightcone.engine.binder import (
+        BinderBuildError,
+        binder_available,
+        ensure_worker_image,
+    )
+    from lightcone.engine.container import is_containerfile
+
+    if not binder_available():
+        return _expected_worker_image(project)
+
+    _, specs = _container_specs(project)
+    if not specs:
+        # No container declared: the cluster runs the deployment's
+        # default worker image, which ships the lightcone stack.
+        return None
+    if len(specs) > 1:
+        console.print(
+            "[yellow]⚠ astra.yaml declares multiple distinct containers, "
+            "but a Dask Gateway cluster runs a single worker image:"
+            "[/yellow]\n"
+            + "\n".join(f"    [dim]•[/dim] {s}" for s in specs)
+            + "\n  Falling back to the deployment's default worker image. "
+            "Consolidate on one\n"
+            "  Containerfile to run recipes in the project environment."
+        )
+        return None
+    spec = specs[0]
+    if not is_containerfile(spec, project):
+        return spec
+    console.print(
+        f"[cyan]Ensuring worker image[/cyan] for [cyan]{spec}[/cyan] "
+        "[dim](hub build service)[/dim]"
+    )
+    try:
+        image = ensure_worker_image(
+            project, spec, on_progress=_binder_progress(verbose)
+        )
+    except BinderBuildError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/green] Worker image: [cyan]{image}[/cyan]")
+    return image
+
+
+def _build_via_hub(project: Path, *, commit: bool) -> None:
+    """``lc build`` on a hub: publish every declared Containerfile.
+
+    Drives the BinderHub service (build + push into the deployment
+    registry) for each declared Containerfile — the explicit,
+    verbose-by-default form of the ensure step ``lc run`` performs
+    implicitly. Registry-image specs need no build and are reported
+    as-is.
+    """
+    from lightcone.engine.binder import BinderBuildError, ensure_worker_image
+    from lightcone.engine.container import is_containerfile
+
+    _, specs = _container_specs(project)
+    if not specs:
+        console.print("No containers declared in astra.yaml — nothing to build.")
+        return
+    for spec in specs:
+        if not is_containerfile(spec, project):
+            console.print(
+                f"[green]•[/green] {spec} — registry image; the Gateway "
+                "cluster pulls it directly (must ship the lightcone "
+                "worker stack)."
+            )
+            continue
+        console.print(f"[cyan]Building[/cyan] {spec} [dim](hub build service)[/dim]")
+        try:
+            image = ensure_worker_image(
+                project,
+                spec,
+                commit=commit,
+                on_progress=_binder_progress(verbose=True),
+            )
+        except BinderBuildError as e:
+            raise click.ClickException(str(e))
+        console.print(
+            f"[green]✓[/green] {spec} → [cyan]{image}[/cyan] "
+            "[dim](in the deployment registry; `lc run` will start its "
+            "cluster with it)[/dim]"
+        )
 
 
 def _report_registry_images(project: Path) -> None:

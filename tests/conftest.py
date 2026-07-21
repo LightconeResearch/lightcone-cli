@@ -20,3 +20,9 @@ def _no_ambient_hub_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.delenv("JUPYTERHUB_USER", raising=False)
     monkeypatch.delenv("DASK_GATEWAY__ADDRESS", raising=False)
+    # Same reasoning for the BinderHub build seam: an ambient JupyterHub
+    # API token (or an explicit binder URL) would make binder_available()
+    # true and route `lc build`/`lc run` image resolution through a real
+    # HTTP endpoint mid-suite.
+    monkeypatch.delenv("JUPYTERHUB_API_TOKEN", raising=False)
+    monkeypatch.delenv("LIGHTCONE_BINDER_URL", raising=False)
