@@ -145,6 +145,27 @@ _____|_________________
 @click.option("--no-git", is_flag=True, help="Skip git init")
 @click.option("--no-venv", is_flag=True, help="Skip Python venv creation")
 @click.option(
+    "--github",
+    "github_repo",
+    default=None,
+    metavar="[NAME|OWNER/NAME|URL]",
+    help=(
+        "Connect the project to this GitHub repository (created if it "
+        "doesn't exist) without prompting"
+    ),
+)
+@click.option(
+    "--private/--public",
+    "github_private",
+    default=None,
+    help="Visibility when --github creates a new repository",
+)
+@click.option(
+    "--no-github",
+    is_flag=True,
+    help="Skip the GitHub connection step entirely",
+)
+@click.option(
     "--permissions",
     type=click.Choice(["yolo", "recommended", "minimal"]),
     default="recommended",
@@ -165,6 +186,9 @@ def init(
     directory: Path,
     no_git: bool,
     no_venv: bool,
+    github_repo: str | None,
+    github_private: bool | None,
+    no_github: bool,
     permissions: str,
     scratch_override: str | None,
 ) -> None:
@@ -174,8 +198,8 @@ def init(
     base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
     lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
     ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
-    a template MyST report (``myst.yml`` + ``index.md``), and an optional
-    Python venv.
+    a template MyST report (``myst.yml`` + ``index.md``), an optional
+    GitHub repository connection, and an optional Python venv.
     """
     console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
 
@@ -244,6 +268,13 @@ def init(
     if not no_git:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
         console.print("[green]✓[/green] Initialized git repository")
+
+    # GitHub connection: encouraged (a repo backs the analysis up and is
+    # what a hub deployment's image builder clones), never forced.
+    if not no_github and not no_git:
+        _connect_github(
+            directory, repo_input=github_repo, private=github_private
+        )
 
     # venv
     if not no_venv:
@@ -317,6 +348,152 @@ def init(
         "  • Preview the report with [cyan]myst start[/cyan] "
         "(requires the MyST CLI: [cyan]npm i -g mystmd[/cyan])"
     )
+
+
+def _connect_github(
+    directory: Path, *, repo_input: str | None, private: bool | None
+) -> None:
+    """The ``lc init`` GitHub step: authenticate, create/connect, push.
+
+    Deliberately non-fatal: scaffolding must never be lost to a network
+    hiccup or a declined prompt — any failure degrades to a printed
+    "here's how to do it later" and init continues. Interactive prompts
+    appear only on a TTY; scripted/agent runs use ``--github``/
+    ``--no-github`` (no flags → a one-line hint, no blocking).
+    """
+    from lightcone.engine import github as gh_engine
+    from lightcone.engine.site_registry import detect_current_site
+
+    probe = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=directory,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode == 0:
+        console.print(
+            f"[green]✓[/green] GitHub remote already configured "
+            f"([cyan]{probe.stdout.strip()}[/cyan])"
+        )
+        return
+
+    interactive = (
+        repo_input is None and sys.stdin.isatty() and sys.stdout.isatty()
+    )
+    if repo_input is None and not interactive:
+        console.print(
+            "[dim]No GitHub repository connected (non-interactive run). "
+            "Connect later with `lc init --github <name>` semantics: "
+            "`gh repo create --source . --push`.[/dim]"
+        )
+        return
+
+    on_hub = detect_current_site().key == "lightcone-hub"
+    try:
+        console.print(
+            "\n[bold]GitHub[/bold] [dim]— a repository backs your analysis "
+            "up and is what the hub's image builder clones for cloud "
+            "runs.[/dim]"
+        )
+        if interactive and not click.confirm(
+            "  Connect this project to a GitHub repository?", default=True
+        ):
+            console.print(
+                "  [dim]Skipped. Later: `gh repo create --source . "
+                "--push`.[/dim]"
+            )
+            return
+
+        identity = gh_engine.discover_identity()
+        if identity is None and gh_engine.device_flow_client_id():
+
+            def _show_code(code: str, uri: str) -> None:
+                console.print(
+                    f"  To authorize, enter code [bold cyan]{code}[/bold cyan] "
+                    f"at [cyan]{uri}[/cyan]\n"
+                    "  [dim]Waiting for authorization… (Ctrl-C to skip)[/dim]"
+                )
+
+            identity = gh_engine.device_flow(_show_code)
+            where = gh_engine.persist_token(identity)
+            console.print(
+                f"[green]✓[/green] Authenticated as "
+                f"[cyan]{identity.login}[/cyan]"
+                + (f" [dim]({where})[/dim]" if where else "")
+            )
+        elif identity is None and interactive and shutil.which("gh"):
+            if click.confirm(
+                "  No GitHub credential found. Run `gh auth login` now?",
+                default=True,
+            ):
+                subprocess.run(["gh", "auth", "login"], check=False)
+                identity = gh_engine.discover_identity()
+        if identity is None:
+            console.print(
+                "  [yellow]No GitHub credential available.[/yellow] "
+                "[dim]Authenticate (`gh auth login`) and connect later "
+                "with `gh repo create --source . --push`.[/dim]"
+            )
+            return
+        if identity.source != "device":
+            console.print(
+                f"[green]✓[/green] Authenticated as "
+                f"[cyan]{identity.login}[/cyan] [dim](via {identity.source})[/dim]"
+            )
+
+        raw = repo_input or click.prompt(
+            "  Repository (name, owner/name, or URL of an existing repo)",
+            default=directory.name,
+        )
+        target = gh_engine.resolve_repo(identity, raw)
+        if target.exists:
+            console.print(
+                f"[green]✓[/green] Connecting to existing repository "
+                f"[cyan]{target.full_name}[/cyan]"
+            )
+        else:
+            if private is None:
+                # The hub's image builder clones anonymously, so public
+                # is the default that keeps `lc run` working there;
+                # everywhere else default to private.
+                private = (
+                    click.confirm(
+                        "  Keep the repository private?", default=not on_hub
+                    )
+                    if interactive
+                    else not on_hub
+                )
+            gh_engine.create_repo(identity, target, private=private)
+            console.print(
+                f"[green]✓[/green] Created "
+                f"{'private' if private else 'public'} repository "
+                f"[cyan]{target.full_name}[/cyan]"
+            )
+            if private and on_hub:
+                console.print(
+                    "  [yellow]⚠ The hub's image builder can only clone "
+                    "public repositories today[/yellow] — cloud runs will "
+                    "fail to build until the repo is public\n"
+                    "  ([cyan]gh repo edit --visibility public[/cyan]) or "
+                    "the deployment gets a clone token."
+                )
+        gh_engine.connect_and_push(directory, identity, target)
+        console.print(
+            f"[green]✓[/green] Pushed initial commit → "
+            f"[cyan]{target.url}[/cyan]"
+        )
+    except KeyboardInterrupt:
+        console.print(
+            "\n  [dim]GitHub step skipped. Later: `gh repo create "
+            "--source . --push`.[/dim]"
+        )
+    except gh_engine.GitHubError as e:
+        console.print(
+            f"  [yellow]GitHub step failed:[/yellow] {e}\n"
+            "  [dim]The project is fully scaffolded locally; connect "
+            "later with `gh repo create --source . --push`.[/dim]"
+        )
 
 
 _CONTAINERFILE = """\

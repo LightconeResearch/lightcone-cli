@@ -206,9 +206,12 @@ Under the hood, each run:
    cluster is reaped by the deployment's idle timeout.
 
 Because the project must be reachable by the BinderHub build pods, it
-needs a git remote (a public GitHub repo today). `lc build` runs the
-same ensure-image step explicitly and prints the resulting image ref;
-`lc build --no-commit` refuses instead of auto-committing.
+needs a GitHub remote (public, today) — `lc init` offers to create and
+connect one as part of scaffolding, including GitHub authentication via
+a one-time device code (see the [`lc init` GitHub step](../cli/init.md)).
+`lc build` runs the same ensure-image step explicitly and prints the
+resulting image ref; `lc build --no-commit` refuses instead of
+auto-committing.
 
 ### Attaching to a long-lived cluster
 

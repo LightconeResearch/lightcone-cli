@@ -478,3 +478,88 @@ def test_worker_image_for_run_no_container_uses_default(
     monkeypatch.chdir(project)
     monkeypatch.setenv("JUPYTERHUB_API_TOKEN", "tok")
     assert _worker_image_for_run(project, verbose=False) is None
+
+
+# ---- lc init GitHub step ---------------------------------------------------
+
+
+def test_init_non_interactive_skips_github_with_hint(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-venv"])
+    assert result.exit_code == 0, result.output
+    assert "No GitHub repository connected" in result.output
+
+
+def test_init_no_github_flag_skips_silently(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    project = tmp_path / "proj"
+    result = runner.invoke(
+        main, ["init", str(project), "--no-venv", "--no-github"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "GitHub" not in result.output.replace(
+        "Sign in with GitHub", ""
+    ) or "No GitHub repository connected" not in result.output
+
+
+def test_init_github_flag_connects_non_interactively(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.github import GitHubIdentity, RepoTarget
+
+    created: dict[str, object] = {}
+    identity = GitHubIdentity(token="tok", login="eiffl", source="gh")
+
+    monkeypatch.setattr(
+        "lightcone.engine.github.discover_identity", lambda: identity
+    )
+    monkeypatch.setattr(
+        "lightcone.engine.github.resolve_repo",
+        lambda ident, raw: RepoTarget("eiffl", raw, exists=False),
+    )
+
+    def fake_create(ident, target, *, private):  # noqa: ANN001, ANN202
+        created["target"] = target.full_name
+        created["private"] = private
+
+    def fake_push(directory, ident, target):  # noqa: ANN001, ANN202
+        created["pushed"] = True
+
+    monkeypatch.setattr("lightcone.engine.github.create_repo", fake_create)
+    monkeypatch.setattr(
+        "lightcone.engine.github.connect_and_push", fake_push
+    )
+
+    project = tmp_path / "proj"
+    result = runner.invoke(
+        main,
+        ["init", str(project), "--no-venv", "--github", "myproj", "--private"],
+    )
+    assert result.exit_code == 0, result.output
+    assert created == {
+        "target": "eiffl/myproj",
+        "private": True,
+        "pushed": True,
+    }
+    assert "Created private repository" in result.output
+
+
+def test_init_github_failure_does_not_fail_init(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.github import GitHubError
+
+    def boom() -> None:
+        raise GitHubError("network down")
+
+    monkeypatch.setattr("lightcone.engine.github.discover_identity", boom)
+    project = tmp_path / "proj"
+    result = runner.invoke(
+        main, ["init", str(project), "--no-venv", "--github", "myproj"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "GitHub step failed" in result.output
+    assert (project / "astra.yaml").exists()
