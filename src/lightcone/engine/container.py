@@ -422,6 +422,19 @@ def deployment_registry() -> str | None:
     return registry.rstrip("/") or None
 
 
+def runtime_registry(runtime: str) -> str | None:
+    """Registry prefix image identities resolve against under *runtime*.
+
+    The single source of truth for "which spelling of the image identity
+    does this runtime use": the deployment registry on
+    :data:`KUBERNETES` (worker pods pull from a registry), ``None`` —
+    local-store tags — everywhere else. Shared by the Snakefile
+    generator and the status walker so their ``code_version``s can
+    never disagree about the image identity.
+    """
+    return deployment_registry() if runtime == KUBERNETES else None
+
+
 def _safe_relpath(path: Path, root: Path) -> str:
     try:
         return path.resolve().relative_to(root.resolve()).as_posix()

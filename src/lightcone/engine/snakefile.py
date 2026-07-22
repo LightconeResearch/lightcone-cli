@@ -30,9 +30,8 @@ from typing import Any
 from astra.helpers import load_yaml, resolve_analysis_tree
 
 from lightcone.engine.container import (
-    KUBERNETES,
-    deployment_registry,
     make_image_tag_resolver,
+    runtime_registry,
     wrap_recipe,
 )
 from lightcone.engine.manifest import code_version
@@ -359,9 +358,8 @@ def generate(
     git_sha = _git_sha(project_path)
     git_remote = _git_remote(project_path)
     lc_version = _lc_version()
-    registry = deployment_registry() if runtime == KUBERNETES else None
     resolve_image = make_image_tag_resolver(
-        project_path, project_name, registry=registry
+        project_path, project_name, registry=runtime_registry(runtime)
     )
 
     for to in tree_outputs:
