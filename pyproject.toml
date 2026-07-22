@@ -110,9 +110,17 @@ explicit_package_bases = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["dask.*", "distributed.*", "dask_gateway", "dask_gateway.*"]
+module = ["dask.*", "distributed.*"]
 ignore_missing_imports = true
 follow_untyped_imports = true
+
+[[tool.mypy.overrides]]
+# Untyped and without explicit re-exports; skip so `from dask_gateway
+# import Gateway` doesn't trip strict no_implicit_reexport when the
+# package happens to be installed (it's a dev/extra dependency).
+module = ["dask_gateway", "dask_gateway.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [[tool.mypy.overrides]]
 module = ["rocrate.*"]
