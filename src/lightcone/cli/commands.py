@@ -207,16 +207,15 @@ def init(
             "container: python:3.12-slim", "container: Containerfile", 1
         )
     )
-    # On a Dask Gateway deployment the project image doubles as the
-    # worker pod image, so the scaffold must be worker-capable: the
-    # dask/gateway/snakemake/lightcone stack at the versions the hub
-    # runs, and a uid-1000 user matching the mounted NFS home.
-    on_hub = site.get("backend") == "kubernetes"
-    (directory / "Containerfile").write_text(
-        _CONTAINERFILE_WORKER if on_hub else _CONTAINERFILE
-    )
+    # One scaffold everywhere — the Containerfile is agnostic to the
+    # execution environment. lightcone-cli in requirements.txt brings
+    # the whole execution stack (snakemake, dask, distributed,
+    # dask-gateway) so the same image can wrap recipes locally or run
+    # as a Dask Gateway worker pod on a hub; anything pod-specific
+    # (uid, mounts) is deployment configuration, not image content.
+    (directory / "Containerfile").write_text(_CONTAINERFILE)
     (directory / "requirements.txt").write_text(
-        _REQUIREMENTS + _worker_stack_pins() if on_hub else _REQUIREMENTS
+        _REQUIREMENTS + _lightcone_requirement()
     )
 
     # Append lightcone-specific entries to the .gitignore astra wrote.
@@ -333,16 +332,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY requirements.txt .
-
-# Install curl and certificates, then clean up to keep image size small
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install uv
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
-RUN uv pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 """
@@ -354,45 +344,29 @@ pandas
 """
 
 
-_CONTAINERFILE_WORKER = """\
-FROM python:3.12-slim
+def _lightcone_requirement() -> str:
+    """Requirements lines pinning lightcone-cli into the project image.
 
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-# This image runs as a Dask Gateway worker pod with the user's NFS home
-# mounted at /home/jovyan. A uid-1000 passwd entry keeps outputs owned
-# by the user and getpass.getuser() (called by snakemake) working.
-RUN useradd --create-home --uid 1000 jovyan
-USER jovyan
-"""
-
-
-def _worker_stack_pins() -> str:
-    """Requirements lines for the Dask Gateway worker stack.
-
-    A Gateway worker must speak the deployment's dask protocol and run
-    the child snakemake that executes each rule, so the project image
-    carries dask/distributed/dask-gateway/snakemake/lightcone-cli. Pins
-    mirror the environment ``lc init`` is running in — the notebook pod
-    matches the hub's gateway version, so pinning to it keeps the
-    worker in lockstep. Unpinned fallback for anything not installed
-    here (or installed as a dev build).
+    The project image must be able to execute rules on any backend —
+    including as a Dask Gateway worker pod, where the dask worker and
+    the child snakemake run *inside* the image. lightcone-cli carries
+    that whole stack (snakemake, dask, distributed, dask-gateway) as
+    normal dependencies, so one line covers it. The pin mirrors the
+    version running ``lc init`` to keep driver and image in lockstep;
+    dev builds fall back to unpinned (their version isn't published).
     """
     from importlib.metadata import PackageNotFoundError, version
 
-    lines = ["", "# Dask Gateway worker stack (pinned to this hub's versions)"]
-    for dist in ("dask", "distributed", "dask-gateway", "snakemake", "lightcone-cli"):
-        try:
-            v = version(dist)
-        except PackageNotFoundError:
-            v = ""
-        lines.append(f"{dist}=={v}" if v and "dev" not in v else dist)
-    return "\n".join(lines) + "\n"
+    try:
+        v = version("lightcone-cli")
+    except PackageNotFoundError:
+        v = ""
+    pin = f"lightcone-cli=={v}" if v and "dev" not in v else "lightcone-cli"
+    return (
+        "\n# Execution stack — lets this image run rules on any backend,\n"
+        "# including as a Dask Gateway worker pod.\n"
+        f"{pin}\n"
+    )
 
 
 _GITIGNORE_APPEND = """
@@ -690,7 +664,6 @@ def run(
         targets=targets,
         force=force,
         has_outputs=bool(outputs),
-        gateway=gateway_branch_active(),
     )
 
     # Hold a project-level flock for the duration of the run. Acquiring
@@ -802,7 +775,6 @@ def _build_snakemake_cmd(
     targets: list[str],
     force: bool,
     has_outputs: bool,
-    gateway: bool = False,
 ) -> list[str]:
     """Build the snakemake argv list for ``lc run``.
 
@@ -810,18 +782,17 @@ def _build_snakemake_cmd(
     an explicit ``--`` separator it greedily consumes the first positional
     target path as an extra trigger value, causing an "invalid choice" error.
 
-    *gateway* adapts the invocation to Dask Gateway worker pods:
-
-    * ``--latency-wait 120`` — NFS home volumes sync slowly between
-      worker pods and the driver (measured up to ~60 s on the dev hub,
-      LCR-177); snakemake's default 5 s output-wait would fail
-      successful rules spuriously.
-    * ``--shared-fs-usage`` without ``software-deployment`` — with it
-      (the default) the child snakemake command embeds the *driver's*
-      ``sys.executable``, a path that doesn't exist inside the worker
-      image; without it, workers invoke plain ``python`` from their own
-      PATH. Everything else stays shared: the NFS home carries the
-      project, sources, and snakemake persistence.
+    ``--shared-fs-usage`` lists everything *except*
+    ``software-deployment``. With it included (snakemake's default),
+    spawned job commands embed the *driver's* ``sys.executable`` — a
+    path that doesn't exist inside a Dask Gateway worker image. Without
+    it, workers invoke plain ``python`` from their own environment,
+    which is equally correct on the other backends: LocalCluster
+    threads and srun-launched SLURM workers inherit the driver's
+    activated environment (and SLURM setups already require it — see
+    the ``dask``-on-PATH check in the cluster module). One invocation
+    shape for every backend; everything else stays shared via the
+    common filesystem (persistence, inputs/outputs, sources).
     """
     cmd: list[str] = [
         "snakemake",
@@ -835,20 +806,15 @@ def _build_snakemake_cmd(
         n,
         "--executor",
         "dask",
+        "--shared-fs-usage",
+        "persistence",
+        "input-output",
+        "sources",
+        "storage-local-copies",
+        "source-cache",
         "--rerun-triggers",
         *rerun_triggers.split(","),
     ]
-    if gateway:
-        cmd += [
-            "--latency-wait",
-            "120",
-            "--shared-fs-usage",
-            "persistence",
-            "input-output",
-            "sources",
-            "storage-local-copies",
-            "source-cache",
-        ]
     if force:
         # ``--force`` scopes to explicit targets; ``rule all`` itself
         # has no recipe, so force-all is the only useful sense when no

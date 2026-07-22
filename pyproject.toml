@@ -36,6 +36,11 @@ dependencies = [
     "snakemake-interface-common>=1.14",
     "dask>=2024.1",
     "distributed>=2024.1",
+    # Dask Gateway client for JupyterHub/Kubernetes deployments. A
+    # normal dependency (not an extra) so `lc run` works out of the box
+    # on a hub and scaffolded project images inherit it via their
+    # lightcone-cli pin.
+    "dask-gateway>=2024.1",
     "rocrate>=0.11",
 ]
 
@@ -53,21 +58,11 @@ dev = [
     "ruff",
     "mypy",
     "types-PyYAML",
-    # Real gateway client in the dev env: the image-override contract
-    # (lc's explicit image kwarg must beat the deployment's ambient
-    # DASK_GATEWAY__CLUSTER__OPTIONS__IMAGE default) is pinned by a
-    # regression test against the actual client merge logic.
-    "dask-gateway>=2024.1",
 ]
 docs = [
     "zensical>=0.0.33",
 ]
 
-
-[project.optional-dependencies]
-# Dask Gateway client for JupyterHub/Kubernetes deployments. The
-# client's minor version should match the deployment's gateway server.
-gateway = ["dask-gateway>=2024.1"]
 
 [project.scripts]
 lc = "lightcone.cli:main"
@@ -116,8 +111,7 @@ follow_untyped_imports = true
 
 [[tool.mypy.overrides]]
 # Untyped and without explicit re-exports; skip so `from dask_gateway
-# import Gateway` doesn't trip strict no_implicit_reexport when the
-# package happens to be installed (it's a dev/extra dependency).
+# import Gateway` doesn't trip strict no_implicit_reexport.
 module = ["dask_gateway", "dask_gateway.*"]
 ignore_missing_imports = true
 follow_imports = "skip"

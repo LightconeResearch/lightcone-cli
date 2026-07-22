@@ -81,9 +81,16 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
     # GKE). Unlike HPC sites, hostnames here are meaningless pod names —
     # detection is by the env vars the deployment injects into every
     # user pod. ``container_runtime: kubernetes`` routes recipe
-    # execution through worker pods running the project image, and
-    # scratch stays in ``$HOME`` because that's the NFS volume shared
-    # with the Dask worker pods (there is no site-local scratch).
+    # execution through worker pods running the project image.
+    #
+    # ``scratch_root`` must be declared even though "local" gets by
+    # without one: with no site scratch, resolution falls back to the
+    # tempdir — fine on a single machine, but a pod's ``/tmp`` is
+    # pod-local. The ``.snakemake`` state the driver symlinks into
+    # scratch has to live on the NFS home every worker pod mounts, or
+    # each worker would write its job metadata into its own ``/tmp``
+    # (invisible to the driver) and every subsequent run would consider
+    # all outputs stale. ``$HOME`` *is* the shared filesystem here.
     "jupyterhub": {
         "hostname_patterns": [],
         "env_markers": ["DASK_GATEWAY__ADDRESS"],

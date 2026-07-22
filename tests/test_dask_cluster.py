@@ -450,28 +450,6 @@ def test_gateway_missing_resource_contract_refused(
     assert record["shutdown"] is True
 
 
-def test_gateway_missing_client_package_hint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import builtins
-    import sys
-
-    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
-    monkeypatch.delitem(sys.modules, "dask_gateway", raising=False)
-    real_import = builtins.__import__
-
-    def _no_gateway(name: str, *args: object, **kwargs: object):
-        if name == "dask_gateway":
-            raise ImportError("nope")
-        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(builtins, "__import__", _no_gateway)
-
-    with pytest.raises(RuntimeError, match=r"lightcone-cli\[gateway\]"):
-        with cluster_for_run():
-            pass  # pragma: no cover
-
-
 def test_gateway_branch_active_matches_routing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

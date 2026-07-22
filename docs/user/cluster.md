@@ -30,10 +30,11 @@ everything is zero-configuration — the deployment injects the whole
 contract into your session (`DASK_GATEWAY__*`, `LIGHTCONE_REGISTRY`,
 `LIGHTCONE_BUILD_BUCKET`), and `lc` picks it up:
 
-- `lc init` scaffolds a **worker-capable** Containerfile: the project
-  image doubles as the Dask worker pod image, so it carries
-  dask/dask-gateway/snakemake/lightcone-cli pinned to the hub's
-  versions on top of your own dependencies.
+- The scaffolded project image doubles as the Dask worker pod image
+  with no hub-specific content: `lc init` pins `lightcone-cli` in
+  `requirements.txt`, which brings the whole execution stack
+  (snakemake, dask, distributed, dask-gateway) on top of your own
+  dependencies — the same image runs anywhere.
 - `lc build` builds through the deployment's **GCP Cloud Build**
   service (there's no docker in your session) and pushes
   `<registry>/lc-<project>:<content-hash>` to the hub's Artifact

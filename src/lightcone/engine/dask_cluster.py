@@ -195,15 +195,7 @@ def _gateway_cluster(
     vars carry the API address, the JupyterHub auth mode, and the proxy
     address, so ``Gateway()`` needs no arguments here.
     """
-    try:
-        from dask_gateway import Gateway
-    except ImportError as exc:
-        raise RuntimeError(
-            "A Dask Gateway environment was detected "
-            "(DASK_GATEWAY__ADDRESS is set) but the dask-gateway client "
-            "is not installed. Install it with "
-            "`pip install lightcone-cli[gateway]`."
-        ) from exc
+    from dask_gateway import Gateway
 
     gateway = Gateway()
     # The server-declared cluster options (merged with ambient config
