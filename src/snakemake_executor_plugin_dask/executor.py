@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 from collections.abc import AsyncGenerator
@@ -148,6 +149,16 @@ class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
                 "(`pip install distributed`)."
             ) from exc
         self._client, self._close_client = _connect_client()
+
+    def get_job_exec_prefix(self, job: JobExecutorInterface) -> str:
+        # Spawned job commands carry no --directory: snakemake expects
+        # remote executors to cd into the workdir themselves (the
+        # official kubernetes executor does the same). Local and SLURM
+        # workers happen to inherit the driver's cwd, but a Dask
+        # Gateway worker pod starts in its image's WORKDIR (e.g. /app),
+        # where the child snakemake would resolve every relative path
+        # — and die on a read-only ``.snakemake``.
+        return f"cd {shlex.quote(self.workflow.workdir_init)}"
 
     def run_job(self, job: JobExecutorInterface) -> None:
         cmd = self.format_job_exec(job)

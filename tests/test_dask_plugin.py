@@ -202,3 +202,19 @@ def test_connect_client_gateway_rendezvous_by_name(
     closer()
     assert record.get("client_closed") is True
     assert record.get("cluster_closed") is True
+
+
+def test_job_exec_prefix_cds_into_workdir() -> None:
+    """Gateway worker pods start in the image's WORKDIR, not the
+    project — every spawned job must cd into the workflow's workdir
+    first (spawned commands carry no --directory)."""
+    from types import SimpleNamespace
+
+    from snakemake_executor_plugin_dask.executor import DaskExecutor
+
+    executor = DaskExecutor.__new__(DaskExecutor)
+    executor.workflow = SimpleNamespace(  # type: ignore[attr-defined]
+        workdir_init="/home/jovyan/my project"
+    )
+    prefix = executor.get_job_exec_prefix(SimpleNamespace())  # type: ignore[arg-type]
+    assert prefix == "cd '/home/jovyan/my project'"
