@@ -206,12 +206,29 @@ def _gateway_cluster(
         ) from exc
 
     gateway = Gateway()
+    # The server-declared cluster options (merged with ambient config
+    # defaults) tell us what this deployment exposes and what the
+    # effective worker shape/image will be.
+    try:
+        declared = dict(gateway.cluster_options())
+    except Exception:
+        declared = {}
     options: dict[str, object] = {}
     if worker_image:
         # ``image`` is a server-side cluster option declared by the
         # deployment's options handler; a deployment that doesn't
         # expose it rejects the request — surfaced below with guidance.
         options["image"] = worker_image
+    if "environment" in declared:
+        # Self-provision everything our executor needs from a worker
+        # pod through the *standard* ``environment`` option, so the
+        # deployment's options handler can stay stock — no
+        # lightcone-specific injection required server-side.
+        base_env = dict(declared.get("environment") or {})
+        options["environment"] = {
+            **base_env,
+            **_worker_environment(declared, worker_image),
+        }
     try:
         cluster = gateway.new_cluster(shutdown_on_close=True, **options)
     except Exception as exc:
@@ -253,6 +270,52 @@ def _gateway_cluster(
             cluster.close()
         if verbose:
             print(f"→ Shut down Dask Gateway cluster {cluster.name}")
+
+
+def _worker_environment(
+    declared: dict[str, object], worker_image: str | None
+) -> dict[str, str]:
+    """Env vars lc provisions into scheduler/worker pods.
+
+    Passed through the deployment's standard ``environment`` cluster
+    option — everything worker pods need that only lc (or the driver's
+    own environment) knows, keeping the deployment's options handler
+    free of lightcone-specific injection:
+
+    * ``HOME``/``USER``/``LOGNAME`` — forwarded from the driver.
+      Passwd-less uid-1000 images crash ``getpass.getuser()`` (called
+      by snakemake at startup) without them, and home paths are
+      identical on both sides by construction (same NFS mount).
+    * ``DASK_DISTRIBUTED__WORKER__RESOURCES__*`` — the scheduling
+      resource contract, mirrored from the deployment's declared
+      ``worker_cores``/``worker_memory`` option values. Dask matches
+      resource keys by exact presence; without these every rule hangs.
+    * ``LIGHTCONE_WORKER_IMAGE`` — the image the cluster runs (ours,
+      or the deployment default), recorded by the manifest layer as
+      execution ground truth.
+    """
+    env: dict[str, str] = {}
+    for var in ("HOME", "USER", "LOGNAME"):
+        if val := os.environ.get(var):
+            env[var] = val
+
+    cores = declared.get("worker_cores")
+    if isinstance(cores, (int, float)) and cores > 0:
+        env["DASK_DISTRIBUTED__WORKER__RESOURCES__CPUS"] = str(int(cores))
+    memory = declared.get("worker_memory")
+    if isinstance(memory, (int, float)) and memory > 0:
+        # Deployments conventionally declare worker_memory in GB
+        # (float); anything implausibly large for GB is already bytes.
+        mem_bytes = int(memory * 1e9) if memory < 1e6 else int(memory)
+        env["DASK_DISTRIBUTED__WORKER__RESOURCES__MEMORY"] = str(mem_bytes)
+    env["DASK_DISTRIBUTED__WORKER__RESOURCES__GPUS"] = str(
+        int(declared.get("worker_gpus") or 0)  # type: ignore[call-overload]
+    )
+
+    image = worker_image or declared.get("image")
+    if isinstance(image, str) and image:
+        env["LIGHTCONE_WORKER_IMAGE"] = image
+    return env
 
 
 def _wait_first_worker(client: object, *, image: str | None) -> None:
@@ -303,9 +366,11 @@ def _assert_worker_resources(client: object) -> None:
         "Dask Gateway workers do not advertise the lightcone resource "
         f"contract ({RESOURCE_CPUS}+{RESOURCE_MEMORY}, plus "
         f"{RESOURCE_GPUS} on GPU pools); per-rule resource requests "
-        "would never schedule. Fix the deployment to inject "
-        "DASK_DISTRIBUTED__WORKER__RESOURCES__* into worker pods (see "
-        "the hub-deploy dask-gateway cluster-options handler)."
+        "would never schedule. lc provisions these via the gateway's "
+        "`environment` cluster option — this deployment likely doesn't "
+        "expose that option (or strips it); ask the hub admin to expose "
+        "the standard image/worker_cores/worker_memory/environment "
+        "options."
     )
 
 

@@ -33,10 +33,18 @@ server-side — create per run, cull on exit (the deployment's idle
 timeout is the backstop). Create-per-run is also what makes image
 updates seamless: a Gateway cluster's image is fixed at creation.
 
-The Gateway branch fails fast on two silent-hang failure modes: zero
-workers within the timeout (unpullable image, unschedulable pool), and
-workers that don't advertise the `cpus`/`memory` resource contract
-(a deployment that forgot `DASK_DISTRIBUTED__WORKER__RESOURCES__*`).
+The Gateway branch self-provisions the worker environment through the
+deployment's **standard `environment` cluster option** (no
+lightcone-specific injection needed server-side): the
+`DASK_DISTRIBUTED__WORKER__RESOURCES__*` scheduling contract mirrored
+from the declared `worker_cores`/`worker_memory` option values, the
+driver's `HOME`/`USER`/`LOGNAME` (passwd-less uid-1000 images crash
+`getpass.getuser()` without them), and `LIGHTCONE_WORKER_IMAGE` as
+manifest ground truth. It also fails fast on two silent-hang failure
+modes: zero workers within the timeout (unpullable image,
+unschedulable pool), and workers that don't advertise the
+`cpus`/`memory` resource contract (a deployment that doesn't expose
+the `environment` option).
 
 ## Resource keys
 

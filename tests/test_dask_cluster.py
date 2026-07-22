@@ -303,6 +303,7 @@ def _install_fake_gateway(
     *,
     worker_resources: dict[str, float] | None = None,
     wait_raises: bool = False,
+    declared_options: dict[str, object] | None = None,
 ):
     """Register a fake ``dask_gateway`` module and return it."""
     import sys
@@ -312,6 +313,16 @@ def _install_fake_gateway(
         worker_resources
         if worker_resources is not None
         else {"cpus": 2.0, "memory": 4e9}
+    )
+    declared = (
+        declared_options
+        if declared_options is not None
+        else {
+            "image": "notebook:latest",
+            "worker_cores": 2,
+            "worker_memory": 4.0,
+            "environment": {},
+        }
     )
 
     class _FakeClient:
@@ -343,6 +354,9 @@ def _install_fake_gateway(
             record["closed"] = True
 
     class _FakeGateway:
+        def cluster_options(self) -> dict[str, object]:
+            return dict(declared)
+
         def new_cluster(self, shutdown_on_close: bool = True, **options: object):
             record["shutdown_on_close"] = shutdown_on_close
             record["options"] = options
@@ -362,7 +376,8 @@ def test_gateway_env_takes_gateway_branch(monkeypatch: pytest.MonkeyPatch) -> No
 
     with cluster_for_run(worker_image="reg/lc-p:abc", max_workers=4) as env:
         assert env == {GATEWAY_CLUSTER_ENV: "hub.abc123"}
-        assert record["options"] == {"image": "reg/lc-p:abc"}
+        opts = record["options"]
+        assert opts["image"] == "reg/lc-p:abc"  # type: ignore[index]
         assert record["adapt"] == (1, 4)
         assert "shutdown" not in record
 
@@ -379,7 +394,7 @@ def test_gateway_without_image_uses_deployment_default(
     with cluster_for_run() as _env:
         pass
 
-    assert record["options"] == {}, "no image option → deployment default"
+    assert "image" not in record["options"], "no image option → deployment default"  # type: ignore[operator]
 
 
 def test_explicit_scheduler_address_wins_over_gateway(
@@ -502,3 +517,81 @@ def test_gateway_explicit_image_beats_ambient_default() -> None:
                 assert captured["cluster_options"] == {"image": "notebook:latest"}
         finally:
             gateway.close()
+
+
+def test_gateway_self_provisions_worker_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """lc passes everything worker pods need through the STANDARD
+    `environment` cluster option — resource contract mirrored from the
+    deployment's declared worker shape, driver identity forwarded,
+    image ground truth — so the deployment's options handler needs no
+    lightcone-specific injection."""
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    monkeypatch.setenv("HOME", "/home/jovyan")
+    monkeypatch.setenv("USER", "jovyan")
+    monkeypatch.setenv("LOGNAME", "jovyan")
+    record: dict[str, object] = {}
+    _install_fake_gateway(
+        monkeypatch,
+        record,
+        declared_options={
+            "image": "notebook:latest",
+            "worker_cores": 2,
+            "worker_memory": 4.0,
+            "environment": {"EXTRA": "kept"},
+        },
+    )
+
+    with cluster_for_run(worker_image="reg/lc-p:abc"):
+        pass
+
+    env = record["options"]["environment"]  # type: ignore[index]
+    assert env["DASK_DISTRIBUTED__WORKER__RESOURCES__CPUS"] == "2"
+    assert env["DASK_DISTRIBUTED__WORKER__RESOURCES__MEMORY"] == str(int(4.0 * 1e9))
+    assert env["DASK_DISTRIBUTED__WORKER__RESOURCES__GPUS"] == "0"
+    assert env["HOME"] == "/home/jovyan"
+    assert env["USER"] == "jovyan"
+    assert env["LOGNAME"] == "jovyan"
+    assert env["LIGHTCONE_WORKER_IMAGE"] == "reg/lc-p:abc"
+    assert env["EXTRA"] == "kept", "ambient environment defaults must survive"
+
+
+def test_gateway_worker_image_env_falls_back_to_declared_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    record: dict[str, object] = {}
+    _install_fake_gateway(monkeypatch, record)
+
+    with cluster_for_run():  # no project image → deployment default
+        pass
+
+    env = record["options"]["environment"]  # type: ignore[index]
+    assert env["LIGHTCONE_WORKER_IMAGE"] == "notebook:latest"
+
+
+def test_gateway_no_environment_option_no_injection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployment that doesn't expose `environment` gets no surprise
+    kwarg (the server would reject it)."""
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    record: dict[str, object] = {}
+    _install_fake_gateway(
+        monkeypatch, record, declared_options={"image": "notebook:latest"}
+    )
+
+    with cluster_for_run(worker_image="reg/lc-p:abc"):
+        pass
+
+    assert "environment" not in record["options"]  # type: ignore[operator]
+
+
+def test_worker_environment_memory_bytes_heuristic() -> None:
+    from lightcone.engine.dask_cluster import _worker_environment
+
+    env = _worker_environment({"worker_memory": 4294967296}, None)
+    assert env["DASK_DISTRIBUTED__WORKER__RESOURCES__MEMORY"] == "4294967296"
+    env = _worker_environment({"worker_memory": 4.0}, None)
+    assert env["DASK_DISTRIBUTED__WORKER__RESOURCES__MEMORY"] == str(int(4e9))

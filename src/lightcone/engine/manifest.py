@@ -200,8 +200,9 @@ def write_manifest(
         "finished_at": time.time(),
         "host": socket.gethostname(),
         "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
-        # On a Dask Gateway deployment the cluster-options handler
-        # injects the image every scheduler/worker pod was started with.
+        # On a Dask Gateway deployment `lc run` provisions this into
+        # every scheduler/worker pod (via the `environment` cluster
+        # option) with the image the cluster was started with.
         # ``container_image`` above is what the spec *declared*; this is
         # the pod-reported ground truth of what actually executed.
         # Optional/additive — None everywhere else.
