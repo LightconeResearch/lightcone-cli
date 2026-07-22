@@ -31,6 +31,7 @@ with the deployment's idle timeout as the backstop if lc dies uncleanly.
 
 from __future__ import annotations
 
+import getpass
 import logging
 import os
 import shutil
@@ -274,9 +275,13 @@ def _worker_environment(
     own environment) knows, keeping the deployment's options handler
     free of lightcone-specific injection:
 
-    * ``HOME``/``USER``/``LOGNAME`` — forwarded from the driver.
-      Passwd-less uid-1000 images crash ``getpass.getuser()`` (called
-      by snakemake at startup) without them, and home paths are
+    * ``HOME``/``USER``/``LOGNAME`` — always set. Project images are
+      environment-agnostic (no passwd entry for the pod uid), so
+      ``getpass.getuser()`` (called by snakemake at startup) crashes
+      in a worker unless the env vars are present — and the notebook
+      pod may not export ``USER``/``LOGNAME`` itself (its own passwd
+      entry covers it), so the name is *derived* on the driver via
+      ``getpass`` rather than merely forwarded. Home paths are
       identical on both sides by construction (same NFS mount).
     * ``DASK_DISTRIBUTED__WORKER__RESOURCES__*`` — the scheduling
       resource contract, mirrored from the deployment's declared
@@ -287,9 +292,19 @@ def _worker_environment(
       execution ground truth.
     """
     env: dict[str, str] = {}
-    for var in ("HOME", "USER", "LOGNAME"):
-        if val := os.environ.get(var):
-            env[var] = val
+    if home := os.environ.get("HOME"):
+        env["HOME"] = home
+    try:
+        # Checks USER/LOGNAME/... env vars first, then the driver's
+        # passwd — one of the two works in any sane notebook pod.
+        user = getpass.getuser()
+    except (KeyError, OSError):
+        # Driver can't determine a name either; any stable non-empty
+        # value keeps snakemake alive, and jovyan is the Jupyter
+        # convention for uid 1000.
+        user = "jovyan"
+    env["USER"] = user
+    env["LOGNAME"] = user
 
     cores = declared.get("worker_cores")
     if isinstance(cores, (int, float)) and cores > 0:

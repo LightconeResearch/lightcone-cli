@@ -535,6 +535,35 @@ def test_gateway_self_provisions_worker_environment(
     assert env["EXTRA"] == "kept", "ambient environment defaults must survive"
 
 
+def test_gateway_provisions_identity_without_user_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """USER/LOGNAME must be *derived*, not merely forwarded: notebook
+    pods often don't export them (their own passwd entry covers
+    getpass), while the environment-agnostic worker image has NO passwd
+    entry for the pod uid — so the child snakemake crashes at
+    ``getpass.getuser()`` unless lc always provisions the vars.
+    Regression: live run failed with ``getpwuid(): uid not found``."""
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("LOGNAME", raising=False)
+    record: dict[str, object] = {}
+    _install_fake_gateway(
+        monkeypatch,
+        record,
+        declared_options={"image": "notebook:latest", "environment": {}},
+    )
+
+    with cluster_for_run(worker_image="reg/lc-p:abc"):
+        pass
+
+    import getpass
+
+    env = record["options"]["environment"]  # type: ignore[index]
+    assert env["USER"] == getpass.getuser()
+    assert env["LOGNAME"] == env["USER"]
+
+
 def test_gateway_worker_image_env_falls_back_to_declared_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
