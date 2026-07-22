@@ -1,7 +1,7 @@
 """Resolve and prepare lightcone's scratch root.
 
 A single concept: where lightcone keeps its operational state — snakemake
-metadata, dask worker spill, cross-node stdout locks. Resolved at the
+metadata, dask worker spill, the run-exclusion lock. Resolved at the
 start of every ``lc run``. Resolution precedence (first hit wins):
 
 1. ``LIGHTCONE_SCRATCH`` env var (escape hatch / CI override).
@@ -18,7 +18,7 @@ snakemake state is keyed by a hash of the project's absolute path.
 Why this matters on NERSC: ``$HOME`` and ``/global/cfs`` are mounted on
 compute nodes via DVS, which `does not support file locking
 <https://docs.nersc.gov/performance/io/dvs/>`_. Snakemake's workflow
-lock, our cross-node stdout lock, and any future coordination primitive
+lock, our run-exclusion lock, and any future coordination primitive
 silently fail there. ``$SCRATCH`` is Lustre, which works correctly.
 """
 from __future__ import annotations
@@ -47,7 +47,6 @@ class RunDirs:
     root: Path  # ``<scratch>/.lightcone``
     snakemake_state: Path  # ``<scratch>/.lightcone/snakemake/<project-hash>/.snakemake``
     dask_local: Path  # ``<scratch>/.lightcone/dask/<run-id>``
-    lock_path: Path  # ``<scratch>/.lightcone/locks/<run-id>.lock``
     # Project-level sentinel for the run-exclusion flock. Held for the
     # duration of one ``lc run`` to prevent concurrent invocations on
     # the same project from interleaving Snakemake state updates.
@@ -108,19 +107,16 @@ def prepare_run_dirs(project_path: Path, *, run_id: str | None = None) -> RunDir
     pkey = project_hash(project_path)
     snakemake_state = root / "snakemake" / pkey / ".snakemake"
     dask_local = root / "dask" / rid
-    lock_path = root / "locks" / f"{rid}.lock"
     run_lock_path = root / "locks" / f"{pkey}.run-lock"
-    for d in (root, snakemake_state.parent, dask_local, lock_path.parent):
+    for d in (root, snakemake_state.parent, dask_local, run_lock_path.parent):
         d.mkdir(parents=True, exist_ok=True)
-    # Touch lockfiles so workers can ``flock`` them without racing on
-    # ``O_CREAT``. Empty file is fine — flock is independent of contents.
-    lock_path.touch(exist_ok=True)
+    # Touch the lockfile so ``flock`` never races on ``O_CREAT``. Empty
+    # file is fine — flock is independent of contents.
     run_lock_path.touch(exist_ok=True)
     return RunDirs(
         root=root,
         snakemake_state=snakemake_state,
         dask_local=dask_local,
-        lock_path=lock_path,
         run_lock_path=run_lock_path,
     )
 

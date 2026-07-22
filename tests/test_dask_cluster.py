@@ -28,6 +28,8 @@ from lightcone.engine.dask_cluster import (
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in (
         "DASK_SCHEDULER_ADDRESS",
+        "DASK_GATEWAY__ADDRESS",
+        "LIGHTCONE_GATEWAY_WORKER_TIMEOUT",
         "SLURM_JOB_ID",
         "SLURM_NNODES",
         "SLURM_CPUS_ON_NODE",
@@ -69,8 +71,8 @@ def test_existing_scheduler_address_yields_unchanged(
 ) -> None:
     monkeypatch.setenv("DASK_SCHEDULER_ADDRESS", "tcp://example:8786")
 
-    with cluster_for_run() as addr:
-        assert addr == "tcp://example:8786"
+    with cluster_for_run() as env:
+        assert env == {"DASK_SCHEDULER_ADDRESS": "tcp://example:8786"}
 
 
 def test_no_env_uses_local_cluster() -> None:
@@ -83,8 +85,8 @@ def test_no_env_uses_local_cluster() -> None:
         yield "tcp://stub:9999"
 
     with patch("lightcone.engine.dask_cluster._local_cluster", _fake_local):
-        with cluster_for_run() as addr:
-            assert addr == "tcp://stub:9999"
+        with cluster_for_run() as env:
+            assert env == {"DASK_SCHEDULER_ADDRESS": "tcp://stub:9999"}
             assert sentinel["called"] == "local"
 
 
@@ -98,8 +100,8 @@ def test_slurm_env_takes_slurm_path(monkeypatch: pytest.MonkeyPatch) -> None:
         yield "tcp://stub:9999"
 
     with patch("lightcone.engine.dask_cluster._slurm_backed_cluster", _fake_slurm):
-        with cluster_for_run() as addr:
-            assert addr == "tcp://stub:9999"
+        with cluster_for_run() as env:
+            assert env == {"DASK_SCHEDULER_ADDRESS": "tcp://stub:9999"}
             assert sentinel["called"] == "slurm"
 
 
@@ -116,8 +118,8 @@ def test_existing_scheduler_address_wins_over_slurm(
         yield  # pragma: no cover
 
     with patch("lightcone.engine.dask_cluster._slurm_backed_cluster", _should_not_run):
-        with cluster_for_run() as addr:
-            assert addr == "tcp://existing:8786"
+        with cluster_for_run() as env:
+            assert env == {"DASK_SCHEDULER_ADDRESS": "tcp://existing:8786"}
 
 
 def test_slurm_backed_cluster_binds_to_routable_host(
@@ -289,3 +291,179 @@ def test_local_cluster_smoke() -> None:
             assert client.submit(lambda x: x + 1, 41).result() == 42
         finally:
             client.close()
+
+# ---------------------------------------------------------------------------
+# Dask Gateway branch
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+    record: dict[str, object],
+    *,
+    worker_resources: dict[str, float] | None = None,
+    wait_raises: bool = False,
+):
+    """Register a fake ``dask_gateway`` module and return it."""
+    import sys
+    from types import SimpleNamespace
+
+    resources = (
+        worker_resources
+        if worker_resources is not None
+        else {"cpus": 2.0, "memory": 4e9}
+    )
+
+    class _FakeClient:
+        def wait_for_workers(self, n_workers: int, timeout: int) -> None:
+            record["waited"] = (n_workers, timeout)
+            if wait_raises:
+                raise TimeoutError("no workers")
+
+        def scheduler_info(self) -> dict[str, object]:
+            return {"workers": {"w0": {"resources": resources}}}
+
+        def close(self) -> None:
+            record["client_closed"] = True
+
+    class _FakeCluster:
+        name = "hub.abc123"
+        dashboard_link = "http://dash"
+
+        def adapt(self, minimum: int, maximum: int) -> None:
+            record["adapt"] = (minimum, maximum)
+
+        def get_client(self) -> _FakeClient:
+            return _FakeClient()
+
+        def shutdown(self) -> None:
+            record["shutdown"] = True
+
+        def close(self) -> None:
+            record["closed"] = True
+
+    class _FakeGateway:
+        def new_cluster(self, shutdown_on_close: bool = True, **options: object):
+            record["shutdown_on_close"] = shutdown_on_close
+            record["options"] = options
+            return _FakeCluster()
+
+    module = SimpleNamespace(Gateway=_FakeGateway)
+    monkeypatch.setitem(sys.modules, "dask_gateway", module)
+    return module
+
+
+def test_gateway_env_takes_gateway_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lightcone.engine.dask_cluster import GATEWAY_CLUSTER_ENV
+
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    record: dict[str, object] = {}
+    _install_fake_gateway(monkeypatch, record)
+
+    with cluster_for_run(worker_image="reg/lc-p:abc", max_workers=4) as env:
+        assert env == {GATEWAY_CLUSTER_ENV: "hub.abc123"}
+        assert record["options"] == {"image": "reg/lc-p:abc"}
+        assert record["adapt"] == (1, 4)
+        assert "shutdown" not in record
+
+    assert record["shutdown"] is True, "run-scoped cluster must be culled on exit"
+
+
+def test_gateway_without_image_uses_deployment_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    record: dict[str, object] = {}
+    _install_fake_gateway(monkeypatch, record)
+
+    with cluster_for_run() as _env:
+        pass
+
+    assert record["options"] == {}, "no image option → deployment default"
+
+
+def test_explicit_scheduler_address_wins_over_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DASK_SCHEDULER_ADDRESS", "tcp://existing:8786")
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+
+    with cluster_for_run() as env:
+        assert env == {"DASK_SCHEDULER_ADDRESS": "tcp://existing:8786"}
+
+
+def test_gateway_culled_when_body_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cluster must be shut down even when the run fails."""
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    record: dict[str, object] = {}
+    _install_fake_gateway(monkeypatch, record)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with cluster_for_run():
+            raise RuntimeError("boom")
+
+    assert record["shutdown"] is True
+
+
+def test_gateway_zero_workers_fails_loudly_and_culls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    monkeypatch.setenv("LIGHTCONE_GATEWAY_WORKER_TIMEOUT", "7")
+    record: dict[str, object] = {}
+    _install_fake_gateway(monkeypatch, record, wait_raises=True)
+
+    with pytest.raises(RuntimeError, match="within 7s"):
+        with cluster_for_run(worker_image="reg/lc-p:abc"):
+            pass  # pragma: no cover
+
+    assert record["waited"] == (1, 7)
+    assert record["shutdown"] is True
+
+
+def test_gateway_missing_resource_contract_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    record: dict[str, object] = {}
+    _install_fake_gateway(monkeypatch, record, worker_resources={})
+
+    with pytest.raises(RuntimeError, match="resource contract"):
+        with cluster_for_run():
+            pass  # pragma: no cover
+
+    assert record["shutdown"] is True
+
+
+def test_gateway_missing_client_package_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import builtins
+    import sys
+
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    monkeypatch.delitem(sys.modules, "dask_gateway", raising=False)
+    real_import = builtins.__import__
+
+    def _no_gateway(name: str, *args: object, **kwargs: object):
+        if name == "dask_gateway":
+            raise ImportError("nope")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _no_gateway)
+
+    with pytest.raises(RuntimeError, match=r"lightcone-cli\[gateway\]"):
+        with cluster_for_run():
+            pass  # pragma: no cover
+
+
+def test_gateway_branch_active_matches_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine.dask_cluster import gateway_branch_active
+
+    assert gateway_branch_active() is False
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    assert gateway_branch_active() is True
+    monkeypatch.setenv("DASK_SCHEDULER_ADDRESS", "tcp://existing:8786")
+    assert gateway_branch_active() is False

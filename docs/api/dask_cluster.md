@@ -1,24 +1,42 @@
 # lightcone.engine.dask_cluster
 
 Cluster lifecycle for `lc run`. One context manager (`cluster_for_run`),
-three branches, no service to manage.
+four branches, no service to manage.
 
 Source: `src/lightcone/engine/dask_cluster.py`.
 
-## `cluster_for_run(*, verbose=False) → Iterator[str]`
+## `cluster_for_run(*, verbose=False, worker_image=None, max_workers=None) → Iterator[dict[str, str]]`
 
-Yields a Dask scheduler address valid for the duration of `lc run`.
-Three branches in priority order:
+Yields the env overlay the child snakemake needs to reach the cluster
+(the executor plugin lives in a different process, so connection info
+travels via environment variables). Four branches in priority order:
 
-1. **`DASK_SCHEDULER_ADDRESS` already set** → yield as-is. We don't
+1. **`DASK_SCHEDULER_ADDRESS` already set** → yield it as-is. We don't
    own the cluster, so we don't tear it down.
-2. **`SLURM_JOB_ID` set** → start an in-process scheduler bound to the
+2. **`DASK_GATEWAY__ADDRESS` set** (a JupyterHub deployment) →
+   **create** a run-scoped Dask Gateway cluster with `worker_image` as
+   its `image` cluster option, scale it adaptively `1..max_workers`,
+   wait (bounded by `LIGHTCONE_GATEWAY_WORKER_TIMEOUT`, default 600 s)
+   for the first worker, and shut the cluster down on exit — success
+   or failure. Yields `{LIGHTCONE_GATEWAY_CLUSTER: <name>}`: Gateway
+   schedulers speak a `gateway://` comm scheme a bare `Client` cannot
+   dial, so the executor rejoins by name through the Gateway API.
+3. **`SLURM_JOB_ID` set** → start an in-process scheduler bound to the
    driver's SLURM hostname (`SLURMD_NODENAME` or `gethostname()`),
    then `srun` one `dask worker` per node across the allocation.
-3. **Neither** → `LocalCluster()` sized to the local machine.
+4. **None of the above** → `LocalCluster()` sized to the local machine.
 
-The scheduler is always in-process, so its lifetime equals the run's
-lifetime: no orphaned schedulers if the driver crashes.
+Outside the Gateway branch the scheduler is always in-process, so its
+lifetime equals the run's lifetime: no orphaned schedulers if the
+driver crashes. On the Gateway branch the same contract is enforced
+server-side — create per run, cull on exit (the deployment's idle
+timeout is the backstop). Create-per-run is also what makes image
+updates seamless: a Gateway cluster's image is fixed at creation.
+
+The Gateway branch fails fast on two silent-hang failure modes: zero
+workers within the timeout (unpullable image, unschedulable pool), and
+workers that don't advertise the `cpus`/`memory` resource contract
+(a deployment that forgot `DASK_DISTRIBUTED__WORKER__RESOURCES__*`).
 
 ## Resource keys
 

@@ -200,6 +200,12 @@ def write_manifest(
         "finished_at": time.time(),
         "host": socket.gethostname(),
         "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        # On a Dask Gateway deployment the cluster-options handler
+        # injects the image every scheduler/worker pod was started with.
+        # ``container_image`` above is what the spec *declared*; this is
+        # the pod-reported ground truth of what actually executed.
+        # Optional/additive — None everywhere else.
+        "worker_image": os.environ.get("LIGHTCONE_WORKER_IMAGE"),
     }
 
     final_path = output_dir / MANIFEST_FILENAME

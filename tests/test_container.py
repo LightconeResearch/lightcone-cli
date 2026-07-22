@@ -708,3 +708,75 @@ class TestIsContainerfile:
 
     def test_missing_file(self, project: Path) -> None:
         assert is_containerfile("python:3.12-slim", project) is False
+
+
+# ---- kubernetes runtime ---------------------------------------------------
+
+
+class TestKubernetesRuntime:
+    def test_wrap_recipe_is_passthrough(self) -> None:
+        """The worker pod already runs the image — wrapping would
+        containerize twice."""
+        from lightcone.engine.container import KUBERNETES
+
+        wrapped = wrap_recipe(
+            "python run.py", image="reg/lc-p:abc", runtime=KUBERNETES
+        )
+        assert wrapped == "python run.py"
+
+    def test_registry_ref_shares_identity_with_local_tag(
+        self, project: Path
+    ) -> None:
+        from lightcone.engine.container import registry_image_ref
+
+        tag = compute_image_tag("proj", project / "Containerfile", project)
+        ref = registry_image_ref(
+            "proj", project / "Containerfile", project, registry="reg.io/ns/repo"
+        )
+        digest = tag.rsplit("-", 1)[1]
+        assert ref == f"reg.io/ns/repo/lc-proj:{digest}"
+
+    def test_resolve_image_uses_registry_when_given(self, project: Path) -> None:
+        ref = resolve_image_for_run(
+            "Containerfile",
+            project_path=project,
+            project_name="proj",
+            registry="reg.io/ns/repo",
+        )
+        assert ref is not None and ref.startswith("reg.io/ns/repo/lc-proj:")
+
+    def test_resolve_prebuilt_ignores_registry(self, project: Path) -> None:
+        assert (
+            resolve_image_for_run(
+                "python:3.12-slim",
+                project_path=project,
+                project_name="proj",
+                registry="reg.io/ns/repo",
+            )
+            == "python:3.12-slim"
+        )
+
+    def test_detect_runtime_site_kubernetes_skips_path_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A gateway deployment has no OCI binary to find — the site
+        preference short-circuits detection entirely."""
+        monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dg")
+        monkeypatch.setattr(
+            "lightcone.engine.container.shutil.which",
+            lambda _: pytest.fail("no PATH probing on kubernetes sites"),
+        )
+        assert detect_runtime() == "kubernetes"
+
+    def test_load_runtime_explicit_kubernetes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        cfg_dir = tmp_path / ".lightcone"
+        cfg_dir.mkdir()
+        (cfg_dir / "config.yaml").write_text(
+            yaml.safe_dump({"container": {"runtime": "kubernetes"}})
+        )
+        choice = load_runtime()
+        assert choice.runtime == "kubernetes"
+        assert choice.explicit is True

@@ -232,3 +232,92 @@ def test_run_cmd_multiple_triggers_all_before_separator() -> None:
     for trigger in ("code", "input", "mtime", "params"):
         assert trigger in cmd, f"trigger '{trigger}' missing from cmd"
         assert cmd.index(trigger) < sep_idx, f"trigger '{trigger}' must come before '--'"
+
+
+# ---- JupyterHub deployment paths ------------------------------------------
+
+
+def test_run_cmd_gateway_adaptations() -> None:
+    """The gateway invocation tolerates NFS latency and must NOT embed
+    the driver's sys.executable (worker images have their own python) —
+    dropping software-deployment from --shared-fs-usage is what makes
+    snakemake spawn plain `python` on the workers."""
+    from lightcone.cli.commands import _build_snakemake_cmd
+
+    cmd = _build_snakemake_cmd(
+        snakefile_path=Path("/p/.lightcone/Snakefile"),
+        project=Path("/p"),
+        n="4",
+        rerun_triggers="mtime",
+        targets=["results/u/foo/.lightcone-manifest.json"],
+        force=False,
+        has_outputs=True,
+        gateway=True,
+    )
+    i = cmd.index("--latency-wait")
+    assert cmd[i + 1] == "120"
+    j = cmd.index("--shared-fs-usage")
+    values = cmd[j + 1 : cmd.index("--")]
+    assert "software-deployment" not in values
+    assert "persistence" in values and "input-output" in values
+    # nargs=+ flags must never swallow the positional targets.
+    assert cmd.index("--") < cmd.index("results/u/foo/.lightcone-manifest.json")
+
+    cmd = _build_snakemake_cmd(
+        snakefile_path=Path("/p/.lightcone/Snakefile"),
+        project=Path("/p"),
+        n="4",
+        rerun_triggers="mtime",
+        targets=[],
+        force=False,
+        has_outputs=False,
+    )
+    assert "--latency-wait" not in cmd
+    assert "--shared-fs-usage" not in cmd
+
+
+def test_init_on_hub_scaffolds_worker_capable_image(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a Dask Gateway deployment the project image doubles as the
+    worker pod image, so the scaffold must carry the worker stack and a
+    uid-1000 user matching the mounted NFS home."""
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+
+    containerfile = (project / "Containerfile").read_text()
+    assert "useradd" in containerfile and "1000" in containerfile
+    requirements = (project / "requirements.txt").read_text()
+    for dist in ("dask", "distributed", "dask-gateway", "snakemake", "lightcone-cli"):
+        assert dist in requirements
+
+
+def test_init_off_hub_keeps_slim_scaffold(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DASK_GATEWAY__ADDRESS", raising=False)
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+    assert "dask-gateway" not in (project / "requirements.txt").read_text()
+
+
+def test_worker_stack_pins_ambient_versions() -> None:
+    from lightcone.cli.commands import _worker_stack_pins
+
+    pins = _worker_stack_pins()
+    # dask and snakemake are installed in the dev env → pinned; the pin
+    # must mirror the running environment.
+    import dask
+
+    assert f"dask=={dask.__version__}" in pins
+    # dask-gateway is not a dev dependency → unpinned fallback line.
+    assert "dask-gateway" in pins
+
+
+def test_ensure_images_none_runtime_returns_empty(tmp_path: Path) -> None:
+    from lightcone.cli.commands import _ensure_images
+
+    assert _ensure_images(tmp_path, runtime="none") == []

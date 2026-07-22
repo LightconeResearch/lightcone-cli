@@ -29,7 +29,12 @@ from typing import Any
 
 from astra.helpers import load_yaml, resolve_analysis_tree
 
-from lightcone.engine.container import make_image_tag_resolver, wrap_recipe
+from lightcone.engine.container import (
+    KUBERNETES,
+    deployment_registry,
+    make_image_tag_resolver,
+    wrap_recipe,
+)
 from lightcone.engine.manifest import code_version
 from lightcone.engine.tree import (
     TreeOutput,
@@ -332,10 +337,13 @@ def generate(
         project_path: Project root containing ``astra.yaml``.
         universes: Universe ids to expand rules over.
         runtime: Container runtime to wrap recipes with. One of
-            ``docker | podman | podman-hpc | none``. ``none`` runs
-            recipes on the host without isolation. Resolution is done
-            here once, not per-rule, so all rules use a consistent
-            runtime. See :func:`lightcone.engine.container.load_runtime`.
+            ``docker | podman | podman-hpc | kubernetes | none``.
+            ``none`` runs recipes on the host without isolation;
+            ``kubernetes`` leaves recipes unwrapped (the worker pod runs
+            the project image) and resolves Containerfile specs to
+            registry refs. Resolution is done here once, not per-rule,
+            so all rules use a consistent runtime. See
+            :func:`lightcone.engine.container.load_runtime`.
 
     Returns ``(snakefile_path, config_path)``.
     """
@@ -351,7 +359,10 @@ def generate(
     git_sha = _git_sha(project_path)
     git_remote = _git_remote(project_path)
     lc_version = _lc_version()
-    resolve_image = make_image_tag_resolver(project_path, project_name)
+    registry = deployment_registry() if runtime == KUBERNETES else None
+    resolve_image = make_image_tag_resolver(
+        project_path, project_name, registry=registry
+    )
 
     for to in tree_outputs:
         recipe = to.output_def.get("recipe")

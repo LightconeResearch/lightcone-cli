@@ -59,6 +59,11 @@ docs = [
 ]
 
 
+[project.optional-dependencies]
+# Dask Gateway client for JupyterHub/Kubernetes deployments. The
+# client's minor version should match the deployment's gateway server.
+gateway = ["dask-gateway>=2024.1"]
+
 [project.scripts]
 lc = "lightcone.cli:main"
 
@@ -100,7 +105,7 @@ explicit_package_bases = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["dask.*", "distributed.*"]
+module = ["dask.*", "distributed.*", "dask_gateway", "dask_gateway.*"]
 ignore_missing_imports = true
 follow_untyped_imports = true
 

@@ -21,6 +21,13 @@ Supported runtimes:
     * ``podman-hpc`` — NERSC-style login nodes; ``build`` migrates the
       image so compute-node apptainer can read it. ``run`` still uses
       ``podman-hpc`` directly.
+    * ``kubernetes`` — the execution environment (a Dask Gateway worker
+      pod) already *is* the container: ``lc run`` starts the cluster
+      with the project's image, so ``wrap_recipe`` is a passthrough and
+      images resolve to registry refs (``<registry>/lc-<name>:<hash>``)
+      instead of local-store tags. Building goes through a remote
+      builder (:mod:`lightcone.engine.cloudbuild`), never a local OCI
+      CLI.
     * ``none`` — no container; recipe runs on the host. Useful for
       development and for projects that don't need isolation.
 """
@@ -29,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shlex
 import shutil
@@ -52,6 +60,19 @@ logger = logging.getLogger(__name__)
 #: (rootless, no daemon); docker last, gated behind a ``docker info``
 #: probe so a down daemon doesn't silently win over a healthy podman.
 RUNTIMES: tuple[str, ...] = ("podman-hpc", "podman", "docker")
+
+#: The non-OCI-CLI runtime: recipes run directly inside a worker pod
+#: that was started from the project's image. Never auto-detected from
+#: PATH — it is selected by site detection (a Dask Gateway deployment)
+#: or pinned explicitly in ``~/.lightcone/config.yaml``.
+KUBERNETES = "kubernetes"
+
+#: Registry prefix images are pushed to / pulled from on a deployment
+#: with a remote builder (e.g. ``europe-west1-docker.pkg.dev/<project>/
+#: <repo>`` on a lightcone JupyterHub). Injected into user pods by the
+#: deployment; its presence is half of the Cloud Build contract (see
+#: :mod:`lightcone.engine.cloudbuild`).
+REGISTRY_ENV = "LIGHTCONE_REGISTRY"
 
 #: Files whose contents contribute to the image tag hash.
 DEPENDENCY_FILES = (
@@ -155,7 +176,13 @@ def detect_runtime() -> str | None:
     → podman-hpc) are *hints* — missing-from-PATH falls through to the
     next candidate. Errors on missing-but-explicit user config are
     :func:`load_runtime`'s job.
+
+    A site that declares ``container_runtime: kubernetes`` (a Dask
+    Gateway deployment) short-circuits the PATH probing entirely —
+    there is no binary to find; the pod itself is the container.
     """
+    if _site_preferred_runtime() == KUBERNETES:
+        return KUBERNETES
     for runtime in _detection_order():
         if shutil.which(runtime) is None:
             continue
@@ -180,7 +207,7 @@ def _site_preferred_runtime() -> str | None:
     the declared value is not a known runtime — never raises.
     """
     preferred = detect_current_site().get("container_runtime")
-    return preferred if preferred in RUNTIMES else None
+    return preferred if preferred in (*RUNTIMES, KUBERNETES) else None
 
 
 def _docker_daemon_up() -> bool:
@@ -208,8 +235,11 @@ def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
     consulted today). Values:
 
     * ``auto`` (default) — first available runtime in :data:`RUNTIMES`,
-      else falls back to ``"none"`` with ``explicit=False``.
+      else falls back to ``"none"`` with ``explicit=False``. On a site
+      that declares ``container_runtime: kubernetes``, auto resolves to
+      :data:`KUBERNETES` without any PATH probing.
     * ``docker | podman | podman-hpc`` — explicit; binary must exist.
+    * ``kubernetes`` — explicit; no binary involved.
     * ``none`` — explicit opt-out; recipes run on the host.
 
     Raises :class:`ContainerBuildError` if an explicit runtime is
@@ -228,12 +258,12 @@ def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
 
     if requested == "auto":
         return RuntimeChoice(runtime=detect_runtime() or "none", explicit=False)
-    if requested == "none":
-        return RuntimeChoice(runtime="none", explicit=True)
+    if requested in ("none", KUBERNETES):
+        return RuntimeChoice(runtime=requested, explicit=True)
     if requested not in RUNTIMES:
         raise ContainerBuildError(
             f"Unknown container.runtime {requested!r} in {cfg_path}. "
-            f"Expected one of: auto, none, {', '.join(RUNTIMES)}."
+            f"Expected one of: auto, none, {KUBERNETES}, {', '.join(RUNTIMES)}."
         )
     if shutil.which(requested) is None:
         raise ContainerBuildError(
@@ -316,19 +346,23 @@ def _iter_build_context_entries(
                 yield "copy_dir", resolved
 
 
-def compute_image_tag(
+def image_identity(
     project_name: str,
     containerfile: Path,
     project_path: Path,
-) -> str:
-    """Compute a content-addressed image tag.
+) -> tuple[str, str]:
+    """Compute a content-addressed image identity ``(safe_name, digest)``.
 
-    The tag is ``lc-<project_name>-<12-char-sha256>``.  The hash covers
-    the Containerfile, every dependency file in :data:`DEPENDENCY_FILES`,
-    and the contents of every ``COPY``/``ADD`` source path referenced
-    from the Containerfile (files hashed directly, directories walked
-    recursively with stable ordering and :data:`_COPY_DIR_EXCLUDE`
-    subtrees skipped).
+    The digest (12-char sha256) covers the Containerfile, every
+    dependency file in :data:`DEPENDENCY_FILES`, and the contents of
+    every ``COPY``/``ADD`` source path referenced from the Containerfile
+    (files hashed directly, directories walked recursively with stable
+    ordering and :data:`_COPY_DIR_EXCLUDE` subtrees skipped).
+
+    The identity is spelled two ways downstream — ``lc-<name>-<digest>``
+    in a local image store (:func:`compute_image_tag`), ``…/lc-<name>:
+    <digest>`` in a registry (:func:`registry_image_ref`) — but it is
+    one identity: the same digest everywhere, on every backend.
     """
     h = hashlib.sha256()
     for kind, path in _iter_build_context_entries(containerfile, project_path):
@@ -349,9 +383,43 @@ def compute_image_tag(
                 _hash_dir_into(path, h)
             h.update(b"\0")
 
-    digest = h.hexdigest()[:12]
-    safe_name = project_name.lower().replace(" ", "-")
+    return project_name.lower().replace(" ", "-"), h.hexdigest()[:12]
+
+
+def compute_image_tag(
+    project_name: str,
+    containerfile: Path,
+    project_path: Path,
+) -> str:
+    """Content-addressed local-store tag: ``lc-<project_name>-<digest>``.
+
+    See :func:`image_identity` for what the digest covers.
+    """
+    safe_name, digest = image_identity(project_name, containerfile, project_path)
     return f"lc-{safe_name}-{digest}"
+
+
+def registry_image_ref(
+    project_name: str,
+    containerfile: Path,
+    project_path: Path,
+    *,
+    registry: str,
+) -> str:
+    """Content-addressed registry ref: ``<registry>/lc-<name>:<digest>``.
+
+    Same identity as :func:`compute_image_tag`, spelled for a registry:
+    the digest moves into the tag position so one repository per project
+    accumulates its image history.
+    """
+    safe_name, digest = image_identity(project_name, containerfile, project_path)
+    return f"{registry.rstrip('/')}/lc-{safe_name}:{digest}"
+
+
+def deployment_registry() -> str | None:
+    """The deployment-injected registry prefix, or ``None`` off-deployment."""
+    registry = (os.environ.get(REGISTRY_ENV) or "").strip()
+    return registry.rstrip("/") or None
 
 
 def _safe_relpath(path: Path, root: Path) -> str:
@@ -660,13 +728,16 @@ def resolve_image_for_run(
     *,
     project_path: Path,
     project_name: str,
+    registry: str | None = None,
 ) -> str | None:
     """Translate an astra.yaml ``container:`` value into the image tag
     that the runtime will execute.
 
     * ``None`` / empty → ``None`` (no container).
-    * Path to a Containerfile in the project → the content-addressed tag
-      that ``lc build`` would have produced (``lc-<name>-<hash>``).
+    * Path to a Containerfile in the project → the content-addressed
+      identity ``lc build`` produces: a local-store tag
+      (``lc-<name>-<hash>``), or with *registry* set (a deployment with
+      a remote builder) the registry ref (``<registry>/lc-<name>:<hash>``).
     * Anything else (registry image, e.g. ``python:3.12-slim``, or a
       pre-namespaced ``ghcr.io/foo/bar:tag``) → returned as-is for the
       runtime to pull.
@@ -674,13 +745,20 @@ def resolve_image_for_run(
     if not spec:
         return None
     if is_containerfile(spec, project_path):
-        return compute_image_tag(project_name, project_path / spec, project_path)
+        containerfile = project_path / spec
+        if registry is not None:
+            return registry_image_ref(
+                project_name, containerfile, project_path, registry=registry
+            )
+        return compute_image_tag(project_name, containerfile, project_path)
     return spec
 
 
 def make_image_tag_resolver(
     project_path: Path,
     project_name: str,
+    *,
+    registry: str | None = None,
 ) -> Callable[[str | None], str | None]:
     """Memoizing wrapper around :func:`resolve_image_for_run`.
 
@@ -695,7 +773,10 @@ def make_image_tag_resolver(
         if spec in cache:
             return cache[spec]
         tag = resolve_image_for_run(
-            spec, project_path=project_path, project_name=project_name
+            spec,
+            project_path=project_path,
+            project_name=project_name,
+            registry=registry,
         )
         cache[spec] = tag
         return tag
@@ -719,13 +800,18 @@ def wrap_recipe(
     No-op cases:
         * *image* is ``None`` → recipe returned unchanged
         * *runtime* is ``"none"`` → recipe returned unchanged
+        * *runtime* is :data:`KUBERNETES` → recipe returned unchanged:
+          the Dask worker pod executing it was started from *image*, so
+          wrapping would be containerizing twice. The image still flows
+          into ``code_version`` and the manifest — provenance records
+          the pod's image, which is what actually ran the recipe.
 
     The recipe is shell-quoted with :func:`shlex.quote` and passed as the
     argument to ``bash -c`` inside the container, which keeps single
     quotes, dollar signs, and other shell metacharacters intact across
     the host bash → runtime CLI → container bash boundaries.
     """
-    if image is None or runtime == "none":
+    if image is None or runtime in ("none", KUBERNETES):
         return recipe
     if runtime not in RUNTIMES:
         raise ContainerBuildError(
@@ -771,8 +857,24 @@ def get_container_status(
         return ContainerStatus(type="prebuilt", image=spec)
 
     containerfile = project_path / spec
+    if runtime == KUBERNETES and (registry := deployment_registry()) is not None:
+        from lightcone.engine.cloudbuild import registry_image_exists
+
+        ref = registry_image_ref(
+            project_name, containerfile, project_path, registry=registry
+        )
+        return ContainerStatus(
+            type="build",
+            image=ref,
+            exists=registry_image_exists(ref),
+            containerfile=spec,
+        )
     tag = compute_image_tag(project_name, containerfile, project_path)
-    exists = image_exists_locally(tag, runtime=runtime) if runtime != "none" else None
+    exists = (
+        image_exists_locally(tag, runtime=runtime)
+        if runtime not in ("none", KUBERNETES)
+        else None
+    )
     return ContainerStatus(
         type="build",
         image=tag,
