@@ -53,6 +53,11 @@ dev = [
     "ruff",
     "mypy",
     "types-PyYAML",
+    # Real gateway client in the dev env: the image-override contract
+    # (lc's explicit image kwarg must beat the deployment's ambient
+    # DASK_GATEWAY__CLUSTER__OPTIONS__IMAGE default) is pinned by a
+    # regression test against the actual client merge logic.
+    "dask-gateway>=2024.1",
 ]
 docs = [
     "zensical>=0.0.33",

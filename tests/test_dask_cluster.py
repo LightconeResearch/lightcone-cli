@@ -467,3 +467,38 @@ def test_gateway_branch_active_matches_routing(
     assert gateway_branch_active() is True
     monkeypatch.setenv("DASK_SCHEDULER_ADDRESS", "tcp://existing:8786")
     assert gateway_branch_active() is False
+
+
+def test_gateway_explicit_image_beats_ambient_default() -> None:
+    """The deployment injects DASK_GATEWAY__CLUSTER__OPTIONS__IMAGE
+    (= the notebook image) as the client's ambient default. lc run's
+    explicit ``image`` kwarg MUST override it — otherwise every cluster
+    would run the notebook image instead of the one `lc build` just
+    produced. Pinned against the real dask-gateway client merge logic.
+    """
+    pytest.importorskip("dask_gateway")
+    import dask
+    from dask_gateway import Gateway
+
+    captured: dict[str, object] = {}
+
+    async def fake_request(self, method, url, json=None, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cluster_options"] = (json or {}).get("cluster_options")
+
+        class _Resp:
+            async def json(self) -> dict[str, str]:
+                return {"name": "hub.fake"}
+
+        return _Resp()
+
+    with dask.config.set({"gateway.cluster.options": {"image": "notebook:latest"}}):
+        gateway = Gateway(address="http://gateway.invalid", auth="basic")
+        try:
+            with patch.object(Gateway, "_request", fake_request):
+                gateway.submit(image="reg/lc-proj:abc123")
+                assert captured["cluster_options"] == {"image": "reg/lc-proj:abc123"}
+
+                gateway.submit()
+                assert captured["cluster_options"] == {"image": "notebook:latest"}
+        finally:
+            gateway.close()
