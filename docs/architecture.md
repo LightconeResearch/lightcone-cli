@@ -264,12 +264,13 @@ plugin then carries the skills, the venv and session hooks, and the
 inert until `lightcone` is listed in the official Anthropic marketplace; the
 `settings.json` registration is the working install path today.
 
-### Permission tiers
+### Permissions
 
-`lc init --permissions {yolo,recommended,minimal}` writes the matching tier
-from `PERMISSION_TIERS` into `.claude/settings.json`. `recommended` (the
-default) allows the agent to edit, write, and shell out, but blocks edits to
-dotfiles, scratch paths, and `git push`.
+`lc init` writes no permission policy. Permissions belong to the harness, not
+to the tool that scaffolds the project. The user chooses the trust level Claude
+Code runs under. For cluster work,
+[Troubleshooting](user/troubleshooting.md#recommended-permissions-for-cluster-work)
+offers a copy-paste ruleset; it stays opt-in.
 
 ---
 
@@ -348,7 +349,7 @@ each rule to a Dask scheduler.
 | `.lightcone/snakefile-config.json` | Project (generated) | Per-`(rule, universe)` config. |
 | `.lightcone/lightcone.yaml` | Project | Tiny scratchpad — currently writes only `target: local`. Not consumed by today's code. |
 | `~/.lightcone/config.yaml` | User | `container.runtime`. |
-| `.claude/settings.json` | Project | Claude Code permissions. |
+| `.claude/settings.json` | Project | agent-skills marketplace + enabled plugin. No permission policy. |
 
 The `dagster.yaml` and `~/.lightcone/targets/*.yaml` files referenced in
 older docs are no longer used — historical residue.

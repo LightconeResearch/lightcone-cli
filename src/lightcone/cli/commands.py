@@ -46,47 +46,6 @@ PLUGIN_NAME = "lightcone"
 PLUGIN_REF = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 
 
-PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
-    "yolo": {
-        "allow": [
-            "Bash(*)",
-            "Edit",
-            "Read",
-            "Write",
-            "WebSearch",
-            "WebFetch",
-            "mcp__*",
-        ],
-    },
-    "recommended": {
-        "allow": ["Read", "Edit", "Write", "Bash(*)", "WebSearch", "WebFetch"],
-        # Patterns under "ask" prompt the user before the agent can act,
-        # but don't block outright the way "deny" does. Use "ask" for
-        # paths the agent legitimately *might* need to write to but
-        # where a stray edit would be expensive — scratch filesystems
-        # being the obvious case on HPC, where projects often live in
-        # $SCRATCH and a careless edit could trash someone else's data.
-        "ask": [
-            "Edit(//scratch/**)",
-            "Edit(//pscratch/**)",
-            "Write(//scratch/**)",
-            "Write(//pscratch/**)",
-        ],
-        "deny": [
-            "Edit(~/.ssh/**)",
-            "Edit(~/.aws/**)",
-            "Edit(~/.gnupg/**)",
-            "Bash(sudo *)",
-            "Bash(rm -rf *)",
-            "Bash(rm -fr *)",
-            "Bash(git push *)",
-            "Bash(git push)",
-        ],
-    },
-    "minimal": {"allow": ["Read"]},
-}
-
-
 def _config_path() -> Path:
     return Path.home() / ".lightcone" / "config.yaml"
 
@@ -177,12 +136,6 @@ _____|_________________
 @click.option("--no-git", is_flag=True, help="Skip git init")
 @click.option("--no-venv", is_flag=True, help="Skip Python venv creation")
 @click.option(
-    "--permissions",
-    type=click.Choice(["yolo", "recommended", "minimal"]),
-    default="recommended",
-    help="Claude Code permission tier",
-)
-@click.option(
     "--scratch",
     "scratch_override",
     default=None,
@@ -197,7 +150,6 @@ def init(
     directory: Path,
     no_git: bool,
     no_venv: bool,
-    permissions: str,
     scratch_override: str | None,
 ) -> None:
     """Scaffold a new ASTRA project with Claude Code integration.
@@ -205,9 +157,9 @@ def init(
     Delegates the spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
     base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
     lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
-    ``.lightcone/`` project state, ``.claude/settings.json`` (permission tier
-    plus the agent-skills marketplace registration), ``CLAUDE.md``, a template
-    MyST report (``myst.yml`` + ``index.md``), and an optional Python venv.
+    ``.lightcone/`` project state, ``.claude/settings.json`` (the agent-skills
+    marketplace registration), ``CLAUDE.md``, a template MyST report
+    (``myst.yml`` + ``index.md``), and an optional Python venv.
     """
     console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
 
@@ -258,8 +210,8 @@ def init(
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
 
-    # Claude Code settings: permission tier + agent-skills marketplace.
-    _write_claude_settings(directory, permissions)
+    # Claude Code settings: register the agent-skills marketplace.
+    _write_claude_settings(directory)
 
     # Project CLAUDE.md (a stub)
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
@@ -490,20 +442,22 @@ prose. Preview with `myst start` (requires the MyST CLI, `npm i -g mystmd`).
 """
 
 
-def _write_claude_settings(project_dir: Path, permissions: str) -> None:
-    """Write ``.claude/settings.json`` — permission tier plus marketplace.
+def _write_claude_settings(project_dir: Path) -> None:
+    """Write ``.claude/settings.json`` — the agent-skills marketplace only.
 
-    The CLI no longer ships skills, hooks, or subagents. It registers the
-    ``agent-skills`` marketplace and enables the ``lightcone`` plugin. When
-    the user trusts the project folder, Claude Code offers to install the
-    plugin; the plugin then carries the skills, hooks, and the lc-extractor
-    subagent. Hooks are no longer written into ``settings.json`` — the plugin
-    owns them.
+    The CLI registers the ``agent-skills`` marketplace and enables the
+    ``lightcone`` plugin. When the user trusts the project folder, Claude Code
+    offers to install the plugin; the plugin then carries the skills, hooks,
+    and the lc-extractor subagent.
+
+    The CLI writes no permission policy. Permissions belong to the harness, not
+    to the tool that scaffolds the project — the user chooses the trust level
+    Claude Code runs under. ``docs/user/troubleshooting.md`` offers a
+    copy-paste ruleset for cluster work; it stays opt-in.
     """
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
     settings = {
-        "permissions": PERMISSION_TIERS[permissions],
         "extraKnownMarketplaces": {
             MARKETPLACE_NAME: {
                 "source": {

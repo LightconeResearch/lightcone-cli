@@ -103,14 +103,14 @@ def test_init_writes_marketplace_settings(
     assert result.exit_code == 0, result.output
 
     settings = json.loads((project / ".claude" / "settings.json").read_text())
-    # Permission tier is still written.
-    assert settings["permissions"]["allow"]  # recommended tier by default
     # Marketplace is registered so Claude Code can offer the plugin.
     assert settings["extraKnownMarketplaces"]["lightcone-research"]["source"] == {
         "source": "github",
         "repo": "LightconeResearch/agent-skills",
     }
     assert settings["enabledPlugins"] == {"lightcone@lightcone-research": True}
+    # The CLI writes no permission policy — that belongs to the harness.
+    assert "permissions" not in settings
     # Hooks no longer live in settings.json — the plugin carries them.
     assert "hooks" not in settings
     # No skills/agents/scripts are copied into the project anymore.

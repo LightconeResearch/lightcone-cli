@@ -23,7 +23,7 @@ CLAUDE.md                     # short note pointing future agents at the project
 results/                      # placeholder; populated by `lc run`
 universes/                    # placeholder; populate via `astra universe generate -n …`
 .claude/
-  settings.json               # permission tier + agent-skills marketplace registration
+  settings.json               # agent-skills marketplace registration (no permission policy)
 .venv/                        # Python venv (skipped with --no-venv)
 ```
 
@@ -35,32 +35,25 @@ universes/                    # placeholder; populate via `astra universe genera
 |--------|---------|--------|
 | `--no-git` | off | Skip `git init`. |
 | `--no-venv` | off | Skip `python -m venv .venv`. |
-| `--permissions {yolo,recommended,minimal}` | `recommended` | Which `.claude/settings.json` permission tier to install. |
 
-> The historical `--target`, `--existing-project`, and `--sub-analysis`
-> flags have been removed; today's `lc init` only knows the three flags
-> above. For migrating an existing project, run `lc init` in a fresh
+> The historical `--target`, `--existing-project`, `--sub-analysis`, and
+> `--permissions` flags have been removed; today's `lc init` only knows the two
+> flags above. For migrating an existing project, run `lc init` in a fresh
 > directory and use the `/lightcone-experimental:from-code` skill from inside Claude Code.
 
-## Permission tiers
+## Permissions
 
-| Tier | Allowed | Denied |
-|------|---------|--------|
-| `yolo` | `Bash(*)`, `Edit`, `Read`, `Write`, `WebSearch`, `WebFetch`, `mcp__*` | — |
-| `recommended` | `Read`, `Edit`, `Write`, `Bash(*)`, `WebSearch`, `WebFetch` | Edits to `~/.ssh`, `~/.aws`, `~/.gnupg`, `/scratch`, `/pscratch`; `sudo`, `rm -rf`, `git push`. |
-| `minimal` | `Read` | Everything else. |
-
-The tiers are defined as `PERMISSION_TIERS` in
-`src/lightcone/cli/commands.py` — adjust there if you want to add a tier
-or change defaults.
+`lc init` writes no permission policy. Permissions belong to the harness. You
+choose the trust level Claude Code runs under. See
+[Troubleshooting](../user/troubleshooting.md#recommended-permissions-for-cluster-work)
+for a copy-paste ruleset for cluster work.
 
 ## Examples
 
 ```bash
-lc init                                # scaffold in cwd, recommended tier
+lc init                                # scaffold in cwd
 lc init my-analysis                    # scaffold in ./my-analysis
 lc init my-analysis --no-git --no-venv # bare bones
-lc init . --permissions yolo           # for autonomous loops you trust
 ```
 
 ## Next steps

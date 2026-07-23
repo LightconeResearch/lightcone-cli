@@ -202,10 +202,10 @@ across iterations. Stop the loop by setting `status: closed` in the
 constitution's frontmatter (the next iteration sees it and exits) or by
 killing the tmux session.
 
-## Permission tier
+## Permissions
 
-The set of tools and bash patterns Claude Code is allowed to use in
-your project. Three tiers ship: `yolo` (everything), `recommended`
-(default — full access minus dangerous patterns), `minimal` (read
-only). Selected at `lc init` time and stored in
-`.claude/settings.json`.
+The set of tools and bash patterns Claude Code is allowed to use in your
+project. `lc init` writes no permission policy — permissions belong to the
+harness, and you choose the trust level Claude Code runs under. See
+[Troubleshooting](troubleshooting.md#recommended-permissions-for-cluster-work)
+for a copy-paste ruleset for cluster work.

@@ -110,25 +110,67 @@ no longer exists. Usually caused by:
 
 Fix: `lc run` the downstream output. The chain will re-anchor.
 
+## Recommended permissions for cluster work
+
+`lc init` does not write a permission policy. Permissions belong to the
+harness. You choose the trust level your agent runs under. This guidance is
+offered, not imposed.
+
+For frictionless operation with Claude Code, run it in "accept edits" mode.
+Cycle to it with `shift+tab`, start with `--permission-mode acceptEdits`, or
+set `permissions.defaultMode` in `.claude/settings.json`. Auto mode carries the
+same idea further for a loop you trust.
+
+With Codex, pick the "Approve for me" mode (a.k.a. Auto-review, config key
+`approvals_reviewer = "auto_review"`). It reviews and approves routine actions
+for you, so the loop keeps moving.
+
+On a shared cluster you may want guardrails instead. The rules below are a
+starting point, not a requirement. Copy them into `.claude/settings.json` (or
+your user `~/.claude/settings.json`) and adjust. The `ask` rules prompt before
+a write to a scratch filesystem, where a stray edit can trash another user's
+data. The `deny` rules block edits to secrets and a few dangerous commands.
+
+```json
+{
+  "permissions": {
+    "allow": ["Read", "Edit", "Write", "Bash(*)", "WebSearch", "WebFetch"],
+    "ask": [
+      "Edit(//scratch/**)",
+      "Edit(//pscratch/**)",
+      "Write(//scratch/**)",
+      "Write(//pscratch/**)"
+    ],
+    "deny": [
+      "Edit(~/.ssh/**)",
+      "Edit(~/.aws/**)",
+      "Edit(~/.gnupg/**)",
+      "Bash(sudo *)",
+      "Bash(rm -rf *)",
+      "Bash(rm -fr *)",
+      "Bash(git push *)",
+      "Bash(git push)"
+    ]
+  }
+}
+```
+
+A future "best-practices" skill may carry this guidance so you do not have to
+copy it by hand.
+
 ## Claude Code says it can't write a file
 
-The default permission tier (`recommended`) blocks edits to a few
-sensitive places: `~/.ssh`, `~/.aws`, `~/.gnupg`, `/scratch`,
-`/pscratch`, plus `sudo`, `git push`, `rm -rf`, …
-
-If the file you're trying to edit isn't in those, check
-`.claude/settings.json`. If it is — your `recommended` tier is doing
-its job. Either move the work elsewhere or, knowing what you're doing,
-invoke `lc init … --permissions yolo` next time.
+Check `.claude/settings.json` for a `deny` or `ask` rule that matches the path.
+`lc init` writes no permission rules, so any block comes from your own settings
+or your harness trust level. Either move the work elsewhere or relax the rule.
 
 ## I deleted `.claude/settings.json` by accident
 
 `lc init` won't recreate it because `astra.yaml` exists. Write the file back
-by hand — the permission tier plus the marketplace registration:
+by hand — it registers the marketplace so Claude Code can offer the plugin:
 
 ```json
 {
-  "permissions": {"allow": ["Read", "Edit", "Write", "Bash(*)", "WebSearch", "WebFetch"]},
   "extraKnownMarketplaces": {
     "lightcone-research": {
       "source": {"source": "github", "repo": "LightconeResearch/agent-skills"}

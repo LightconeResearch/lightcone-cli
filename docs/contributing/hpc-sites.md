@@ -15,7 +15,7 @@ actually need is:
    manager binds the scheduler to the SLURM canonical hostname and
    launches one worker per node via `srun`. See
    [api/dask_cluster](../api/dask_cluster.md).
-3. **A scratch path that the agent should not edit.** Today's permission
-   tiers hard-code Perlmutter scratch deny rules; if you add a new
-   site, update `PERMISSION_TIERS` in
-   `src/lightcone/cli/commands.py`.
+3. **A scratch path that the agent should not edit.** `lc init` writes no
+   permission policy, so there is nothing to update here. The
+   [Troubleshooting](../user/troubleshooting.md#recommended-permissions-for-cluster-work)
+   page carries the recommended scratch ruleset that users opt into.

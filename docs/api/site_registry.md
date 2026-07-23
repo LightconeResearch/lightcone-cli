@@ -28,21 +28,16 @@ inside lightcone-cli right now.
 
 The Perlmutter scratch deny rules used to be merged into
 `.claude/settings.json` automatically when a non-local target was
-configured. With the target system gone, the equivalent rules are
-hard-coded inline in `PERMISSION_TIERS` (see
-`src/lightcone/cli/commands.py`):
+configured. That is gone. `lc init` now writes no permission policy at all —
+permissions belong to the harness. The
+[Troubleshooting](../user/troubleshooting.md#recommended-permissions-for-cluster-work)
+page offers a copy-paste scratch ruleset that users add themselves.
 
-```python
-"Edit(//scratch/**)",
-"Edit(//pscratch/**)",
-```
-
-If you want richer per-site rules without rebuilding the target
-system, point `lc init`'s `_write_claude_settings` at
-`get_site_scratch_deny_rules(detect_site(socket.gethostname()))` and
-merge the result into the deny list. Two lines of code.
+If you want richer per-site rules, `lc init` could read this registry and print
+a suggested ruleset for the detected site. That would keep the CLI advisory —
+it suggests, the user decides — instead of imposing a policy.
 
 ## Recommendation
 
-Either delete this module (no callers) or revive it for the use case
+Either delete this module (no callers) or revive it for the advisory use case
 above. Leaving it as-is encourages the drift this audit is fighting.

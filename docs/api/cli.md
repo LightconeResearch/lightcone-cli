@@ -29,17 +29,6 @@ def main(ctx: click.Context) -> None:
 lc = "lightcone.cli:main"
 ```
 
-## `PERMISSION_TIERS`
-
-```python
-PERMISSION_TIERS: dict[str, dict[str, list[str]]] = { "yolo": {...}, "recommended": {...}, "minimal": {...} }
-```
-
-Used by `lc init --permissions` to populate `.claude/settings.json`.
-The constant lives at module top so tests and external tools can read
-it directly. To add a new tier, edit this dict and update the
-`click.Choice` on `lc init`.
-
 ## Helpers
 
 ### `_config_path() → Path`
@@ -85,11 +74,11 @@ new projects look like.
 
 ## Claude settings
 
-`_write_claude_settings(project_dir, permissions)` writes
-`project_dir/.claude/settings.json`. The file holds the chosen permission tier
-plus `extraKnownMarketplaces` and `enabledPlugins`, which register the
-`agent-skills` marketplace and enable the `lightcone` plugin. No skills, hooks,
-or agents are copied — the plugin carries them.
+`_write_claude_settings(project_dir)` writes
+`project_dir/.claude/settings.json`. The file holds `extraKnownMarketplaces`
+and `enabledPlugins`, which register the `agent-skills` marketplace and enable
+the `lightcone` plugin. It holds no permission policy — permissions belong to
+the harness. No skills, hooks, or agents are copied — the plugin carries them.
 
 `emit_plugin_hint()` writes a `<claude-code-hint>` marker to stderr when
 `CLAUDECODE` is set, so Claude Code can recommend the plugin.
