@@ -47,12 +47,15 @@ MARKETPLACE_REPO = "LightconeResearch/agent-skills"
 PLUGIN_NAME = "lightcone"
 PLUGIN_REF = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 
-# astra-tools is a library dependency of this wheel (``lc init`` imports
-# ``astra.cli``), but the ``astra`` command is project-scoped: ``lc init``
-# installs astra-tools into the project's ``.venv`` so ``.venv/bin/astra``
-# exists, and the plugin's activate-venv SessionStart hook prepends ``.venv/bin``
-# to PATH so that copy resolves. This is the requirement string that venv
-# install uses.
+# ``lc`` is global-only: one copy per machine (``uv tool install
+# lightcone-cli``), never in the project venv — that kills the global-vs-venv-vs-
+# container version skew. The project ``.venv`` carries only ``astra`` (from
+# astra-tools). astra-tools is also a library dependency of this wheel (``lc
+# init`` imports ``astra.cli``), but the ``astra`` *command* is project-scoped:
+# ``lc init`` installs astra-tools into the project's ``.venv`` so
+# ``.venv/bin/astra`` exists, and the plugin's activate-venv SessionStart hook
+# prepends ``.venv/bin`` to PATH so that copy resolves while ``lc`` stays global.
+# This is the requirement string that venv install uses.
 ASTRA_TOOLS_REQUIREMENT = "astra-tools>=0.2.10"
 
 
@@ -303,44 +306,15 @@ def _init_git_and_venv(directory: Path, *, no_git: bool, no_venv: bool) -> None:
 
     if no_venv:
         return
+    # The project venv carries only ``astra`` — ``lc`` is installed globally,
+    # once per machine, never here. Create the venv, then install astra-tools.
     use_uv = shutil.which("uv") is not None
     if use_uv:
-        with console.status("[dim]Creating virtual environment…[/dim]"):
-            subprocess.run(
-                ["uv", "venv", "--python", "3.12", ".venv"],
-                cwd=directory,
-                check=False,
-                capture_output=True,
-            )
-        with console.status("[dim]Installing lightcone-cli…[/dim]"):
-            subprocess.run(
-                [
-                    "uv",
-                    "pip",
-                    "install",
-                    "--python",
-                    ".venv/bin/python",
-                    "lightcone-cli",
-                ],
-                cwd=directory,
-                check=False,
-                capture_output=True,
-            )
+        venv_cmd = ["uv", "venv", "--python", "3.12", ".venv"]
     else:
-        with console.status("[dim]Creating virtual environment…[/dim]"):
-            subprocess.run(
-                ["python", "-m", "venv", ".venv"],
-                cwd=directory,
-                check=False,
-                capture_output=True,
-            )
-        with console.status("[dim]Installing lightcone-cli…[/dim]"):
-            subprocess.run(
-                [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"],
-                cwd=directory,
-                check=False,
-                capture_output=True,
-            )
+        venv_cmd = ["python", "-m", "venv", ".venv"]
+    with console.status("[dim]Creating virtual environment…[/dim]"):
+        subprocess.run(venv_cmd, cwd=directory, check=False, capture_output=True)
     console.print(
         f"[green]✓[/green] Virtual environment created in [cyan]{directory}/.venv[/cyan]"
     )

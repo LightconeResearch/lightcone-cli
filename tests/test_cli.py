@@ -233,7 +233,8 @@ def test_init_venv_uses_uv_when_available(
     assert result.exit_code == 0, result.output
 
     assert ["uv", "venv", "--python", "3.12", ".venv"] in calls
-    assert ["uv", "pip", "install", "--python", ".venv/bin/python", "lightcone-cli"] in calls
+    # `lc` is global-only — it must NOT be installed into the project venv.
+    assert not any("lightcone-cli" in c for c in calls)
     # astra is project-scoped: lc init installs astra-tools into the venv so
     # `.venv/bin/astra` resolves via the plugin's activation hook.
     from lightcone.cli.commands import ASTRA_TOOLS_REQUIREMENT
@@ -260,7 +261,8 @@ def test_init_venv_falls_back_to_python_when_uv_missing(
     assert result.exit_code == 0, result.output
 
     assert ["python", "-m", "venv", ".venv"] in calls
-    assert [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"] in calls
+    # `lc` is global-only — it must NOT be installed into the project venv.
+    assert not any("lightcone-cli" in c for c in calls)
     from lightcone.cli.commands import ASTRA_TOOLS_REQUIREMENT
 
     assert [

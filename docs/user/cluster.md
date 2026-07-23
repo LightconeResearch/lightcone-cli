@@ -72,8 +72,8 @@ sbatch run.sbatch                                    # batch
     #SBATCH -C gpu
 
     cd $HOME/my-analysis
-    source .venv/bin/activate
-    lc run -j 16
+    source .venv/bin/activate                          # puts `astra` on PATH
+    lc run -j 16                                        # `lc` is the global install
     ```
 
 === "NERSC Perlmutter"
@@ -215,9 +215,11 @@ scratch_root: $SCRATCH
 
 ## Troubleshooting
 
-- `dask CLI is not on PATH inside the SLURM allocation`. Install
-  `lightcone-cli` into the venv that your sbatch script activates;
-  `dask` ships with `distributed`, which is a transitive dep.
+- `dask CLI is not on PATH inside the SLURM allocation`. `dask` ships
+  with `distributed`, a transitive dep of the global `lightcone-cli`
+  install (`uv tool install lightcone-cli`). Make sure that global
+  install is on PATH inside the allocation — e.g.
+  `export PATH=$HOME/.local/bin:$PATH` in your sbatch script.
 - Workers never register. Usually means the SLURM node hostnames
   aren't resolvable from each other; check `SLURMD_NODENAME` /
   `gethostname()` and confirm the workers can reach the scheduler.
