@@ -45,6 +45,14 @@ MARKETPLACE_REPO = "LightconeResearch/agent-skills"
 PLUGIN_NAME = "lightcone"
 PLUGIN_REF = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 
+# astra-tools is a library dependency of this wheel (``lc init`` imports
+# ``astra.cli``), but the ``astra`` command is project-scoped: ``lc init``
+# installs astra-tools into the project's ``.venv`` so ``.venv/bin/astra``
+# exists, and the plugin's activate-venv SessionStart hook prepends ``.venv/bin``
+# to PATH so that copy resolves. This is the requirement string that venv
+# install uses.
+ASTRA_TOOLS_REQUIREMENT = "astra-tools>=0.2.10"
+
 
 def _config_path() -> Path:
     return Path.home() / ".lightcone" / "config.yaml"
@@ -284,7 +292,8 @@ def _init_git_and_venv(directory: Path, *, no_git: bool, no_venv: bool) -> None:
 
     if no_venv:
         return
-    if shutil.which("uv"):
+    use_uv = shutil.which("uv") is not None
+    if use_uv:
         with console.status("[dim]Creating virtual environment…[/dim]"):
             subprocess.run(
                 ["uv", "venv", "--python", "3.12", ".venv"],
@@ -324,6 +333,38 @@ def _init_git_and_venv(directory: Path, *, no_git: bool, no_venv: bool) -> None:
     console.print(
         f"[green]✓[/green] Virtual environment created in [cyan]{directory}/.venv[/cyan]"
     )
+    _install_astra_tools(directory, use_uv=use_uv)
+
+
+def _install_astra_tools(directory: Path, *, use_uv: bool) -> None:
+    """Install astra-tools into the project ``.venv`` so ``.venv/bin/astra`` exists.
+
+    The ``astra`` command is project-scoped, not a global export of this wheel.
+    The plugin's activate-venv SessionStart hook prepends ``.venv/bin`` to PATH,
+    so an ``astra`` invoked inside the project resolves to this copy. Best-effort:
+    on failure we warn and continue rather than failing ``lc init`` — a missing
+    ``astra`` degrades the workflow, it does not break the scaffold.
+    """
+    if use_uv:
+        cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            ".venv/bin/python",
+            ASTRA_TOOLS_REQUIREMENT,
+        ]
+    else:
+        cmd = [".venv/bin/python", "-m", "pip", "install", "-q", ASTRA_TOOLS_REQUIREMENT]
+    with console.status("[dim]Installing astra-tools…[/dim]"):
+        result = subprocess.run(cmd, cwd=directory, check=False, capture_output=True)
+    if result.returncode == 0:
+        console.print("[green]✓[/green] Installed astra-tools into the venv")
+    else:
+        console.print(
+            "[yellow]![/yellow] Could not install astra-tools into the venv; "
+            f"install it by hand with [cyan]{' '.join(cmd)}[/cyan]"
+        )
 
 
 def _report_init(
