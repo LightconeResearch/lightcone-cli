@@ -169,24 +169,21 @@ trust level. Either move the work elsewhere or relax the rule.
 
 ## I deleted `.claude/settings.json` by accident
 
-This file is the Claude Code marketplace registration. Run `lc init` inside the
-project. It is convergent: it re-adds the registration non-destructively and
-leaves `astra.yaml` alone. Or write the file back by hand — it registers the
-marketplace so Claude Code can offer the plugin:
+This file activates the `lightcone` plugin in the project. Run `lc init` inside
+the project. It is convergent: it re-adds the activation non-destructively and
+leaves `astra.yaml` alone. Or write the file back by hand — it enables the plugin
+that the global marketplace registration provides:
 
 ```json
 {
-  "extraKnownMarketplaces": {
-    "lightcone-research": {
-      "source": {"source": "github", "repo": "LightconeResearch/agent-skills"}
-    }
-  },
   "enabledPlugins": {"lightcone@lightcone-research": true}
 }
 ```
 
-Then restart Claude Code and trust the folder so it reinstalls the plugin.
-(On Codex, re-register the plugin with `codex plugin add lightcone@lightcone-research`.)
+Then restart Claude Code and trust the folder so it loads the plugin. (If the
+marketplace registration is gone too, re-add it globally with
+`claude plugin marketplace add LightconeResearch/agent-skills`. On Codex,
+re-register the plugin with `codex plugin add lightcone@lightcone-research`.)
 
 ## I want to start the spec over
 

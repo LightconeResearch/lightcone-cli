@@ -66,10 +66,10 @@ reads `astra.yaml` and `CLAUDE.md` so it has context from the start.
 These commands come from the `lightcone` plugin, not the `lightcone-cli`
 package. `lc init` registers the
 [agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace
-with your harness. On Claude Code it offers to install the plugin the first time
-you trust the folder — accept, and the commands below appear. On Codex, `lc
-init` runs `codex plugin` for you when `codex` is on PATH. See
-[Install](install.md) for the by-hand steps.
+globally with your harness and activates the plugin in this project. On Claude
+Code the plugin loads the first time you trust the folder — the commands below
+appear. On Codex, `lc init` runs `codex plugin` for you when `codex` is on PATH.
+See [Install](install.md) for the by-hand steps.
 
 Inside the session, the `from-*` family is organized by what you're
 starting from. We'll use `/lightcone:new` in this guide; the others work the same

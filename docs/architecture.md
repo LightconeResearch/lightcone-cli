@@ -241,28 +241,27 @@ wheel. They ship from the
 [LightconeResearch/agent-skills](https://github.com/LightconeResearch/agent-skills)
 marketplace as the `lightcone` plugin.
 
-`lc init` does not copy any of them. It registers the plugin with both
-harnesses, but the mechanisms differ because the harnesses differ. For Claude
-Code the registration is **per-project and declarative** — `lc init` writes
-`.claude/settings.json`:
+`lc init` does not copy any of them. It registers the marketplace with each
+harness once, globally, then activates the plugin per project. The mechanisms
+differ because the harnesses differ. For Claude Code, `lc init` runs
+`claude plugin marketplace add LightconeResearch/agent-skills` — a global,
+best-effort step, skipped when `claude` is not on PATH. It then writes
+`.claude/settings.json` to activate the plugin in this project only:
 
 ```json
 {
-  "extraKnownMarketplaces": {
-    "lightcone-research": {
-      "source": {"source": "github", "repo": "LightconeResearch/agent-skills"}
-    }
-  },
   "enabledPlugins": {"lightcone@lightcone-research": true}
 }
 ```
 
-Claude Code then offers to install the plugin when the user trusts the folder.
-For Codex the registration is **global and imperative** — Codex has no
-project-scoped plugin config yet ([openai/codex#18115](https://github.com/openai/codex/issues/18115)),
-so when `codex` is on PATH `lc init` shells out to `codex plugin marketplace add`
-and `codex plugin add`, which persist to the user's Codex config for all
-projects. Either way the plugin carries the skills, the venv and session hooks,
+The settings file carries activation only — no marketplace source, no version.
+Claude Code loads the plugin when the user trusts the folder. This is what makes
+the plugin active only in `lc init`'d directories. For Codex the registration is
+**global and imperative** — Codex has no project-scoped plugin config yet
+([openai/codex#18115](https://github.com/openai/codex/issues/18115)), so when
+`codex` is on PATH `lc init` shells out to `codex plugin marketplace add` and
+`codex plugin add`, which persist to the user's Codex config for all projects.
+Either way the plugin carries the skills, the venv and session hooks,
 and the `lc-extractor` subagent. The by-hand commands for both harnesses are
 also documented as a fallback — see [Install](user/install.md).
 
@@ -351,7 +350,7 @@ each rule to a Dask scheduler.
 | `.lightcone/snakefile-config.json` | Project (generated) | Per-`(rule, universe)` config. |
 | `.lightcone/lightcone.yaml` | Project | Tiny scratchpad — currently writes only `target: local`. Not consumed by today's code. |
 | `~/.lightcone/config.yaml` | User | `container.runtime`. |
-| `.claude/settings.json` | Project | agent-skills marketplace + enabled plugin. No permission policy. |
+| `.claude/settings.json` | Project | Enabled plugin (activation only; no marketplace source). No permission policy. |
 
 The `dagster.yaml` and `~/.lightcone/targets/*.yaml` files referenced in
 older docs are no longer used — historical residue.

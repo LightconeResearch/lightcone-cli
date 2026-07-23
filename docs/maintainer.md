@@ -49,5 +49,6 @@ we do not replicate any of that. The parts that are ours:
 The agent skills, hooks, and the `lc-extractor` subagent are *not* ours to
 bundle. They ship from the
 [agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace as
-the `lightcone` plugin. `lc init` registers that marketplace in the project's
-`.claude/settings.json`.
+the `lightcone` plugin. `lc init` registers that marketplace globally with each
+harness, then activates the plugin per project — for Claude Code, `enabledPlugins`
+in the project's `.claude/settings.json`.

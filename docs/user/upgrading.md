@@ -41,6 +41,7 @@ This model is not settled. A few points are still open.
 - Whether the first marketplace release counts as breaking.
 - How projects created before the plugin existed migrate onto it. That path is
   deferred to a later PR.
-- The version scheme itself: one lockstep version for both artifacts,
-  independent versions with a declared compatibility floor, or an exact
-  marketplace ref pinned at `lc init` time. See the PR discussion.
+- The version scheme itself: one lockstep version for both artifacts, or
+  independent versions with a declared compatibility floor. Per-project version
+  pinning is not an option — the plugin installs globally with the harness, so a
+  single project cannot pin its own plugin version. See the PR discussion.

@@ -23,7 +23,7 @@ CLAUDE.md                     # short note pointing future agents at the project
 results/                      # placeholder; populated by `lc run`
 universes/                    # placeholder; populate via `astra universe generate -n …`
 .claude/
-  settings.json               # agent-skills marketplace registration (no permission policy)
+  settings.json               # enabled plugin activation (no marketplace source, no permission policy)
 .venv/                        # Python venv (skipped with --no-venv)
 ```
 

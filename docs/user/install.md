@@ -186,14 +186,16 @@ choice is yours.
 
 The `lc` slash commands (`/lightcone:new`, `/lightcone:report`, and the rest)
 ship as a plugin, not with the `lightcone-cli` package. `lc init` registers the
-agent-skills marketplace with both harnesses, so normally you do nothing here.
-The by-hand commands below are the fallback if you skipped `lc init` or want to
-register a harness yourself.
+agent-skills marketplace globally with each harness, then activates the plugin
+per project, so normally you do nothing here. The by-hand commands below are the
+fallback if you skipped `lc init` or want to register a harness yourself.
 
 === "Claude Code"
-    `lc init` writes the marketplace registration into the project's
-    `.claude/settings.json`, so when you start Claude Code and trust the folder
-    it offers to install the `lightcone` plugin. To do it by hand instead:
+    `lc init` registers the marketplace globally
+    (`claude plugin marketplace add`) and activates the plugin in this project by
+    writing `enabledPlugins` into `.claude/settings.json`. So when you start
+    Claude Code and trust the folder, it loads the `lightcone` plugin. To do it by
+    hand instead:
 
     ```bash
     claude plugin marketplace add LightconeResearch/agent-skills
