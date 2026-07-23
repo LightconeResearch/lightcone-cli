@@ -16,8 +16,8 @@ If you're looking for the user-facing docs, the
   exact Snakemake invocation each one triggers.
 - [Python API](api/index.md) — the `lightcone.engine.*` modules: public
   signatures, common entry points, and module responsibilities.
-- [Skills](skills/index.md) — what each `/lc-*` Claude Code skill does,
-  including the full `/lc-from-paper` reproduction bundle.
+- [Skills](skills/index.md) — the Claude Code skills, which ship from the
+  `agent-skills` marketplace, including the `from-paper` reproduction bundle.
 - [HPC & SLURM](hpc/index.md) — how the Dask cluster manager adapts to local,
   SLURM, and external schedulers.
 - [Contributing](contributing/setup.md) — clone, install, run the test suite,
@@ -45,4 +45,9 @@ we do not replicate any of that. The parts that are ours:
 - **Snakefile generator** — translates `astra.yaml` into `.lightcone/Snakefile`.
 - **Manifest layer** — writes and verifies `.lightcone-manifest.json` per output.
 - **Cluster manager** — picks local / SLURM / external Dask shape at runtime.
-- **Claude Code plugin** — skills, hooks, and agents bundled into the wheel.
+
+The Claude Code skills, hooks, and the `lc-extractor` subagent are *not* ours to
+bundle. They ship from the
+[agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace as
+the `lightcone` plugin. `lc init` registers that marketplace in the project's
+`.claude/settings.json`.

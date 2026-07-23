@@ -31,10 +31,19 @@ import click
 import yaml
 from rich.console import Console
 
-from lightcone.cli.plugin import get_plugin_source_dir
-
 console = Console()
 logger = logging.getLogger(__name__)
+
+
+# Claude Code plugin distribution. The lightcone skills, hooks, and the
+# lc-extractor subagent ship from the ``agent-skills`` marketplace, not from
+# this wheel. ``lc init`` registers the marketplace and enables the
+# ``lightcone`` plugin in the project's ``.claude/settings.json``; Claude Code
+# offers to install it when the user trusts the folder.
+MARKETPLACE_NAME = "lightcone-research"
+MARKETPLACE_REPO = "LightconeResearch/agent-skills"
+PLUGIN_NAME = "lightcone"
+PLUGIN_REF = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 
 
 PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
@@ -102,6 +111,29 @@ def _ensure_global_config() -> None:
     )
 
 
+def emit_plugin_hint() -> None:
+    """Recommend the ``lightcone`` plugin to Claude Code, via a stderr marker.
+
+    Claude Code sets ``CLAUDECODE=1`` in every subprocess it runs. When we
+    detect it, we write a one-line ``<claude-code-hint>`` tag to stderr. Claude
+    Code strips the line from the command output, checks the plugin is not
+    installed, and offers a one-time install prompt. The tag never reaches the
+    model and costs no tokens. Outside Claude Code the marker is not emitted.
+
+    Note: as of this writing Claude Code only acts on hints that target the
+    official Anthropic marketplace (``claude-plugins-official``). Our plugin
+    ships from ``lightcone-research``, so the prompt does not fire yet — the
+    marketplace registration in ``lc init`` is the working install path. We
+    emit the tag now so the prompt lights up automatically once ``lightcone``
+    is listed in the official marketplace.
+    """
+    if not os.environ.get("CLAUDECODE"):
+        return
+    sys.stderr.write(
+        f'<claude-code-hint v="1" type="plugin" value="{PLUGIN_REF}" />\n'
+    )
+
+
 @click.group()
 @click.version_option(package_name="lightcone-cli")
 @click.pass_context
@@ -109,6 +141,7 @@ def main(ctx: click.Context) -> None:
     """lightcone-cli — ASTRA-compliant agentic layer CLI."""
     ctx.ensure_object(dict)
     _ensure_global_config()
+    emit_plugin_hint()
 
 
 # =============================================================================
@@ -172,9 +205,9 @@ def init(
     Delegates the spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
     base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
     lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
-    ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
-    a template MyST report (``myst.yml`` + ``index.md``), and an optional
-    Python venv.
+    ``.lightcone/`` project state, ``.claude/settings.json`` (permission tier
+    plus the agent-skills marketplace registration), ``CLAUDE.md``, a template
+    MyST report (``myst.yml`` + ``index.md``), and an optional Python venv.
     """
     console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
 
@@ -225,10 +258,8 @@ def init(
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
 
-    # Claude Code plugin bundle
-    plugin_source = get_plugin_source_dir()
-    if plugin_source is not None and plugin_source.exists():
-        _install_claude_plugin(directory, plugin_source, permissions)
+    # Claude Code settings: permission tier + agent-skills marketplace.
+    _write_claude_settings(directory, permissions)
 
     # Project CLAUDE.md (a stub)
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
@@ -306,11 +337,15 @@ def init(
 
     console.print("\nNext steps:")
     console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
-    console.print("  • Start [cyan]claude[/cyan]")
     console.print(
-        "  • Run [cyan]/lc-new[/cyan] to scope a new analysis, "
-        "[cyan]/lc-from-code[/cyan] to port existing code, "
-        "or [cyan]/lc-from-paper[/cyan] to reproduce a paper"
+        "  • Start [cyan]claude[/cyan] and trust the folder — Claude Code offers "
+        f"to install the [cyan]{PLUGIN_REF}[/cyan] plugin (skills, hooks, "
+        "lc-extractor subagent)"
+    )
+    console.print(
+        "  • Run [cyan]/lightcone:new[/cyan] to scope a new analysis, "
+        "[cyan]/lightcone-experimental:from-code[/cyan] to port existing code, "
+        "or [cyan]/lightcone-experimental:from-paper[/cyan] to reproduce a paper"
     )
     console.print(
         "  • Preview the report with [cyan]myst start[/cyan] "
@@ -422,11 +457,15 @@ This is an ASTRA project orchestrated by `lightcone-cli`. It was just
 scaffolded by `lc init` and has not been scoped yet — `astra.yaml` holds
 the placeholder example, not real science.
 
-The three entry skills cover the common starting points:
+The entry skills cover the common starting points:
 
-- `/lc-new` — scope from a research question (empty `astra.yaml`).
-- `/lc-from-code` — wrap an existing codebase in ASTRA.
-- `/lc-from-paper` — reproduce a published paper end-to-end.
+- `/lightcone:new` — scope from a research question (empty `astra.yaml`).
+- `/lightcone-experimental:from-code` — wrap an existing codebase in ASTRA.
+- `/lightcone-experimental:from-paper` — reproduce a published paper end-to-end.
+
+`lc init` enables the `lightcone` plugin, which carries `/lightcone:new`. The
+`from-code` and `from-paper` skills live in the `lightcone-experimental` plugin;
+install it first (`/plugin install lightcone-experimental@lightcone-research`).
 
 Once scoped, the `lc` CLI keeps the substrate in sync:
 
@@ -451,30 +490,29 @@ prose. Preview with `myst start` (requires the MyST CLI, `npm i -g mystmd`).
 """
 
 
-def _install_claude_plugin(
-    project_dir: Path,
-    plugin_source: Path,
-    permissions: str,
-) -> None:
-    """Copy the bundled Claude Code plugin into the project's ``.claude/``.
+def _write_claude_settings(project_dir: Path, permissions: str) -> None:
+    """Write ``.claude/settings.json`` — permission tier plus marketplace.
 
-    The hook configuration ships with the plugin as ``hooks.json`` so
-    that hook entries live next to the scripts they reference. The CLI
-    only owns the ``--permissions`` tier selection.
+    The CLI no longer ships skills, hooks, or subagents. It registers the
+    ``agent-skills`` marketplace and enables the ``lightcone`` plugin. When
+    the user trusts the project folder, Claude Code offers to install the
+    plugin; the plugin then carries the skills, hooks, and the lc-extractor
+    subagent. Hooks are no longer written into ``settings.json`` — the plugin
+    owns them.
     """
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
-    for sub in ("skills", "agents", "scripts", "guides", "templates"):
-        src = plugin_source / sub
-        if src.exists():
-            dest = claude_dir / sub
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest)
-    hooks = json.loads((plugin_source / "hooks.json").read_text())
     settings = {
         "permissions": PERMISSION_TIERS[permissions],
-        "hooks": hooks,
+        "extraKnownMarketplaces": {
+            MARKETPLACE_NAME: {
+                "source": {
+                    "source": "github",
+                    "repo": MARKETPLACE_REPO,
+                },
+            },
+        },
+        "enabledPlugins": {PLUGIN_REF: True},
     }
     (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
 

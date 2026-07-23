@@ -38,7 +38,7 @@ hard-coded inline in `PERMISSION_TIERS` (see
 ```
 
 If you want richer per-site rules without rebuilding the target
-system, point `lc init`'s `_install_claude_plugin` at
+system, point `lc init`'s `_write_claude_settings` at
 `get_site_scratch_deny_rules(detect_site(socket.gethostname()))` and
 merge the result into the deny list. Two lines of code.
 

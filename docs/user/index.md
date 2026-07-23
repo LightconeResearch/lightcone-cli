@@ -14,8 +14,8 @@ No need to write code by hand, **you stay in charge of the scientific choices**,
   machine or on a cluster.
 - [Getting Started](getting-started.md) — create your first project,
   run it end-to-end, and understand what each piece does.
-- [The Agentic Workflow](agent-workflow.md) — `/lc-new`,
-  `/lc-from-code`, `/lc-from-paper`, and `/lc-feedback` — what each
+- [The Agentic Workflow](agent-workflow.md) — `/lightcone:new`,
+  `/lightcone-experimental:from-code`, `/lightcone-experimental:from-paper`, and `/lightcone:feedback` — what each
   command does and when to reach for it.
 - [Running on a Cluster](cluster.md) — taking your analysis to a SLURM
   HPC system, including Perlmutter-specific notes.
@@ -33,7 +33,7 @@ No need to write code by hand, **you stay in charge of the scientific choices**,
         uv tool install lightcone-cli
         lc init my-analysis && cd my-analysis
         claude
-        # then, inside Claude Code,  run /lc-new
+        # then, inside Claude Code,  run /lightcone:new
         ```
 
     === "pip"
@@ -41,7 +41,7 @@ No need to write code by hand, **you stay in charge of the scientific choices**,
         pip install lightcone-cli
         lc init my-analysis && cd my-analysis
         claude 
-        # then, inside Claude Code: /lc-new
+        # then, inside Claude Code: /lightcone:new
         ```
 
 That's the shortest possible path. The rest of the guide is the unhurried version.

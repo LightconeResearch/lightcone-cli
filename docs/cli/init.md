@@ -22,9 +22,8 @@ CLAUDE.md                     # short note pointing future agents at the project
   lightcone.yaml              # currently a stub: { target: local }
 results/                      # placeholder; populated by `lc run`
 universes/                    # placeholder; populate via `astra universe generate -n …`
-.claude/                      # bundled Claude Code plugin
-  skills/, agents/, hooks/, scripts/, templates/
-  settings.json               # the chosen permission tier
+.claude/
+  settings.json               # permission tier + agent-skills marketplace registration
 .venv/                        # Python venv (skipped with --no-venv)
 ```
 
@@ -41,7 +40,7 @@ universes/                    # placeholder; populate via `astra universe genera
 > The historical `--target`, `--existing-project`, and `--sub-analysis`
 > flags have been removed; today's `lc init` only knows the three flags
 > above. For migrating an existing project, run `lc init` in a fresh
-> directory and use the `/lc-from-code` skill from inside Claude Code.
+> directory and use the `/lightcone-experimental:from-code` skill from inside Claude Code.
 
 ## Permission tiers
 
@@ -70,7 +69,7 @@ lc init . --permissions yolo           # for autonomous loops you trust
 cd my-analysis
 claude           # open Claude Code
 # Inside Claude Code:
-/lc-new  # scope a research question into astra.yaml
+/lightcone:new  # scope a research question into astra.yaml
 # Then ask the agent to implement the spec.
 # It will run lc run, watch lc status, then validate and verify.
 ```

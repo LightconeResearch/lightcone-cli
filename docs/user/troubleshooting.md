@@ -121,34 +121,34 @@ If the file you're trying to edit isn't in those, check
 its job. Either move the work elsewhere or, knowing what you're doing,
 invoke `lc init … --permissions yolo` next time.
 
-## I deleted `.claude/` by accident
+## I deleted `.claude/settings.json` by accident
 
-`lc init` won't recreate it because `astra.yaml` exists. You can copy
-the plugin in by hand:
+`lc init` won't recreate it because `astra.yaml` exists. Write the file back
+by hand — the permission tier plus the marketplace registration:
 
-```bash
-python - <<'PY'
-import shutil
-from pathlib import Path
-from lightcone.cli.plugin import get_plugin_source_dir
-src = get_plugin_source_dir()
-dst = Path(".claude")
-for sub in ("skills", "agents", "scripts", "guides", "templates"):
-    s, d = src / sub, dst / sub
-    if d.exists(): shutil.rmtree(d)
-    if s.exists(): shutil.copytree(s, d)
-PY
+```json
+{
+  "permissions": {"allow": ["Read", "Edit", "Write", "Bash(*)", "WebSearch", "WebFetch"]},
+  "extraKnownMarketplaces": {
+    "lightcone-research": {
+      "source": {"source": "github", "repo": "LightconeResearch/agent-skills"}
+    }
+  },
+  "enabledPlugins": {"lightcone@lightcone-research": true}
+}
 ```
+
+Then restart Claude Code and trust the folder so it reinstalls the plugin.
 
 ## I want to start the spec over
 
 Move `astra.yaml` aside (don't delete it — agents like having context
-about what you tried), then `/lc-new` again:
+about what you tried), then `/lightcone:new` again:
 
 ```bash
 mv astra.yaml astra.previous.yaml
 claude
-# /lc-new
+# /lightcone:new
 ```
 
 ## File a bug from inside the session
@@ -156,11 +156,11 @@ claude
 Inside Claude Code:
 
 ```text
-/lc-feedback the lc-extractor agent crashed on PDF X
+/lightcone:feedback the lc-extractor agent crashed on PDF X
 ```
 
 The skill files an issue with auto-collected versions and a trimmed
-error trace. See [`/lc-feedback`](../skills/lc-feedback.md).
+error trace. See [Skills](../skills/index.md).
 
 ## When all else fails
 

@@ -18,23 +18,37 @@ care of the rest — specification, execution, and provenance.
 uv tool install lightcone-cli
 lc init my-analysis
 cd my-analysis
-claude
+claude   # trust the folder to install the lightcone plugin
+```
+
+The skills ship as a plugin, not with `lightcone-cli`. `lc init` registers the
+[agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace,
+and Claude Code offers to install the `lightcone` plugin when you trust the
+folder. To install it by hand:
+
+```bash
+claude plugin marketplace add LightconeResearch/agent-skills
+claude plugin install lightcone@lightcone-research
 ```
 
 Then tell the agent what you have to start from — a research question
-(`/lc-new`), existing code (`/lc-from-code`), or a paper to reproduce
-(`/lc-from-paper`).
+(`/lightcone:new`), existing code (`/lightcone-experimental:from-code`), or a
+paper to reproduce (`/lightcone-experimental:from-paper`).
 
 → [Full getting-started guide](https://docs.lightconeresearch.org/user/getting-started/)
 
 ## Skills
 
+Skills live in the
+[agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace.
+
 | Skill | What it does |
 |---|---|
-| [`/lc-new`](https://docs.lightconeresearch.org/skills/lc-new/) | Scope a new analysis from a research question into a full `astra.yaml` spec |
-| [`/lc-from-code`](https://docs.lightconeresearch.org/skills/lc-from-code/) | Bring an existing codebase into ASTRA |
-| [`/lc-from-paper`](https://docs.lightconeresearch.org/skills/lc-from-paper/) | Reproduce a published paper end-to-end |
-| [`/lc-feedback`](https://docs.lightconeresearch.org/skills/lc-feedback/) | File a bug report with version and error context auto-collected |
+| `/lightcone:new` | Scope a new analysis from a research question into a full `astra.yaml` spec |
+| `/lightcone:report` | Author the MyST report that references `astra.yaml` elements by path |
+| `/lightcone:feedback` | File a bug report with version and error context auto-collected |
+| `/lightcone-experimental:from-code` | Bring an existing codebase into ASTRA |
+| `/lightcone-experimental:from-paper` | Reproduce a published paper end-to-end |
 
 ## Capabilities
 

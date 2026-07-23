@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**lightcone-cli** is Lightcone Research's agentic layer for ASTRA (Agentic Schema for Transparent Research Analysis). It ships the `lc` executable and Claude Code skills/hooks used during interactive analysis work.
+**lightcone-cli** is Lightcone Research's agentic layer for ASTRA (Agentic Schema for Transparent Research Analysis). It ships the `lc` executable. The Claude Code skills and hooks used during interactive analysis work ship separately, from the [agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace as the `lightcone` plugin; `lc init` registers that marketplace.
 
 - **ASTRA** = pure specification: schema, validation, prior insights & findings, evidence verification, helpers, minimal CLI
 - **lightcone-cli** = agentic layer: Claude Code skills, project scaffolding, **Snakemake-based execution**, container builds
@@ -49,9 +49,7 @@ astra.yaml ── snakefile generator ──> .lightcone/Snakefile
 src/lightcone/              # namespace — NO __init__.py
 ├── cli/                    # Click surface
 │   ├── __init__.py         # exposes main()
-│   ├── commands.py         # init, run, status, verify, build
-│   ├── plugin.py           # get_plugin_source_dir
-│   └── claude/             # force-included Claude plugin bundle (in installed wheel only)
+│   └── commands.py         # init, run, status, verify, build
 ├── engine/                 # execution substrate — Snakemake-based
 │   ├── __init__.py
 │   ├── manifest.py         # write_manifest, sha256_dir, code_version — the integrity layer
@@ -66,17 +64,9 @@ src/lightcone/              # namespace — NO __init__.py
     ├── cli.py              # `lc eval` subcommand group
     ├── harness.py, sandbox.py, graders.py, build.py, report.py, models.py
 
-claude/lightcone/           # Claude plugin source — force-included into the wheel
-├── skills/                 # lc-new, lc-from-code, lc-from-paper,
-│                            # lc-feedback, ralph;
-│                            # paper-reproduction bundle: lc-from-paper (entry),
-│                            # ralph (loop substrate),
-│                            # paper-extraction, figure-comparison,
-│                            # check-sentence-by-sentence
-│                            # (see skills/README.md for the full bundle map)
-├── agents/                 # lc-extractor
-├── templates/              # Project CLAUDE.md template
-└── scripts/                # Session hooks (bash): venv activation, validate-on-save, session-start primer
+# Skills, hooks, and the lc-extractor subagent are NOT in this repo. They ship
+# from github.com/LightconeResearch/agent-skills as the `lightcone` plugin.
+# `lc init` registers that marketplace in .claude/settings.json.
 
 tests/                      # pytest — mirrors src/ structure
 pyproject.toml              # hatchling + hatch-vcs, ASTRA + Snakemake as deps
@@ -152,7 +142,7 @@ Global config (`~/.lightcone/config.yaml`) is auto-created with defaults on firs
 | Change manifest semantics | `src/lightcone/engine/manifest.py` + `tests/test_manifest.py` | Bump `SCHEMA_VERSION`; add a test |
 | Change Snakefile shape | `src/lightcone/engine/snakefile.py` + `tests/test_snakefile.py` | Includes a `snakemake -n` parse test |
 | Add container features | `src/lightcone/engine/container.py` | `compute_image_tag()`, build/resolve functions |
-| Create a skill | `claude/lightcone/skills/` | SKILL.md with YAML frontmatter (`name`, `description`, `allowed-tools`) |
+| Create or edit a skill | [`LightconeResearch/agent-skills`](https://github.com/LightconeResearch/agent-skills) | Skills live in that repo, not here |
 
 ## Test Patterns
 

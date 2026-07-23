@@ -93,6 +93,50 @@ def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None
     assert "_build/" in (project / ".gitignore").read_text()
 
 
+def test_init_writes_marketplace_settings(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    import json
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+
+    settings = json.loads((project / ".claude" / "settings.json").read_text())
+    # Permission tier is still written.
+    assert settings["permissions"]["allow"]  # recommended tier by default
+    # Marketplace is registered so Claude Code can offer the plugin.
+    assert settings["extraKnownMarketplaces"]["lightcone-research"]["source"] == {
+        "source": "github",
+        "repo": "LightconeResearch/agent-skills",
+    }
+    assert settings["enabledPlugins"] == {"lightcone@lightcone-research": True}
+    # Hooks no longer live in settings.json — the plugin carries them.
+    assert "hooks" not in settings
+    # No skills/agents/scripts are copied into the project anymore.
+    assert not (project / ".claude" / "skills").exists()
+    assert not (project / ".claude" / "hooks.json").exists()
+
+
+def test_emit_plugin_hint_only_inside_claude_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from lightcone.cli.commands import PLUGIN_REF, emit_plugin_hint
+
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    emit_plugin_hint()
+    assert capsys.readouterr().err == ""
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    emit_plugin_hint()
+    err = capsys.readouterr().err
+    assert err.strip() == (
+        f'<claude-code-hint v="1" type="plugin" value="{PLUGIN_REF}" />'
+    )
+    # The tag must occupy its own line for Claude Code to act on it.
+    assert err.endswith("\n")
+
+
 def test_init_refuses_when_astra_yaml_exists(
     runner: CliRunner, tmp_path: Path
 ) -> None:

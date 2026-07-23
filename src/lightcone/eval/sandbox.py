@@ -200,6 +200,29 @@ class EvalSandbox:
                 f"{result.output[-2000:]}"
             )
 
+        # Install the lightcone plugin (skills, hooks, lc-extractor subagent).
+        # `lc init` registers the agent-skills marketplace in
+        # `.claude/settings.json`, but that only auto-installs when a human
+        # trusts the folder interactively. The eval runs `claude -p`, which
+        # never shows that prompt, so we install the plugin headlessly here.
+        #
+        # TODO(LCR-131): confirm the headless plugin-install contract and
+        # error handling. Kept non-fatal for now: if the install command
+        # signature changes or the sandbox lacks network, the trial still
+        # runs (skill-less) rather than aborting setup.
+        install = self.exec(
+            "claude plugin marketplace add LightconeResearch/agent-skills"
+            " && claude plugin install lightcone@lightcone-research",
+            timeout=120,
+        )
+        if install.exit_code != 0:
+            logger.warning(
+                "Headless lightcone plugin install failed (exit %s); trial "
+                "runs without plugin skills. See LCR-131.\n%s",
+                install.exit_code,
+                install.output[-1000:],
+            )
+
         # Overlay task seed files (astra.yaml, data/, task.yaml). The
         # task's astra.yaml replaces the one `astra init` boilerplated.
         self._upload_directory(seed_dir, self.WORK_DIR)

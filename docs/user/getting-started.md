@@ -61,28 +61,35 @@ reads `astra.yaml` and `CLAUDE.md` so it has context from the start.
 
 ## 3. The slash commands
 
-Inside Claude Code, the `/lc-from-*` family is organized by what you're
-starting from. We'll use `/lc-new` in this guide; the others work the same
+These commands come from the `lightcone` plugin, not the `lightcone-cli`
+package. `lc init` registers the
+[agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace,
+so Claude Code offers to install the plugin the first time you trust the folder.
+Accept, and the commands below appear. See [Install](install.md) for the manual
+steps.
+
+Inside Claude Code, the `from-*` family is organized by what you're
+starting from. We'll use `/lightcone:new` in this guide; the others work the same
 way.
 
 | Command | Use it when… |
 |---------|--------------|
-| `/lc-new` | You're starting from a research question and an empty `astra.yaml`. |
-| `/lc-from-code` | You have an existing codebase you want wrapped in ASTRA. |
-| `/lc-from-paper` | You have a published paper (DOI / arXiv ID) you want to reproduce. |
-| `/lc-feedback` | Something broke and you want to file a GitHub issue without leaving the session. |
+| `/lightcone:new` | You're starting from a research question and an empty `astra.yaml`. |
+| `/lightcone-experimental:from-code` | You have an existing codebase you want wrapped in ASTRA. |
+| `/lightcone-experimental:from-paper` | You have a published paper (DOI / arXiv ID) you want to reproduce. |
+| `/lightcone:feedback` | Something broke and you want to file a GitHub issue without leaving the session. |
 
 These are structured entry points for common starting situations. Once inside a
 project you can also just describe what you're trying to do to Claude —
 `astra.yaml`, `lc run`, and `lc verify` keep things tracked regardless of how
 you got there.
 
-## 4. Scope the analysis with `/lc-new`
+## 4. Scope the analysis with `/lightcone:new`
 
 Type:
 
 ```text
-/lc-new
+/lightcone:new
 ```
 
 The agent banner switches to **RESEARCH QUESTION** and asks something like

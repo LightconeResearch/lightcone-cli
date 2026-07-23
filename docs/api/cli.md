@@ -83,10 +83,13 @@ Map a status literal to the Rich-formatted display label:
 multi-line strings written at `lc init` time. Edit them to change what
 new projects look like.
 
-## Plugin install
+## Claude settings
 
-`_install_claude_plugin(project_dir, plugin_source, permissions)` copies
-the bundled plugin into `project_dir/.claude/` (`skills`, `agents`,
-`scripts`, `guides`, `templates`) and writes `.claude/settings.json`
-from the chosen permission tier. Existing subdirectories are removed
-before copying.
+`_write_claude_settings(project_dir, permissions)` writes
+`project_dir/.claude/settings.json`. The file holds the chosen permission tier
+plus `extraKnownMarketplaces` and `enabledPlugins`, which register the
+`agent-skills` marketplace and enable the `lightcone` plugin. No skills, hooks,
+or agents are copied — the plugin carries them.
+
+`emit_plugin_hint()` writes a `<claude-code-hint>` marker to stderr when
+`CLAUDECODE` is set, so Claude Code can recommend the plugin.

@@ -1,8 +1,8 @@
 # The Agentic Workflow
 
 The agentic surface is three entry slash commands plus feedback. The
-`/lc-from-*` family is parallel by what you start from — a question,
-code, or a paper — and `/lc-feedback` handles bug reports. Each one is
+`from-*` family is parallel by what you start from — a question,
+code, or a paper — and `/lightcone:feedback` handles bug reports. Each one is
 a structured prompt: the agent follows a specific phased flow, not
 free-form chat. This page walks through each of them in the order you'd
 naturally hit them.
@@ -16,7 +16,7 @@ whether you go through a skill or not.
 > writes to disk. You stay in charge of approving everything; the agent
 > never publishes a paper for you.
 
-## `/lc-new` — scope a new analysis
+## `/lightcone:new` — scope a new analysis
 
 **You start with a research question. You end with a complete
 `astra.yaml` (and optionally a literature evidence trail).**
@@ -46,18 +46,18 @@ The skill walks you through four phases:
    section of `CLAUDE.md` gets the conversational context that wouldn't
    otherwise survive a `/clear`.
 
-You don't write any code or YAML during `/lc-new`. By the
+You don't write any code or YAML during `/lightcone:new`. By the
 time it finishes, you have a precise specification. The agent enforces
 this: the skill is *only allowed* to edit `astra.yaml`, files in
 `universes/`, and `CLAUDE.md`.
 
-## `/lc-from-code` — wrap existing code
+## `/lightcone-experimental:from-code` — wrap existing code
 
 **You have a folder of scripts. You end with an ASTRA project around
 them.**
 
 When you have an existing analysis (a notebook, a folder of `.py`
-files, a config-driven pipeline), `/lc-from-code` does the wrapping
+files, a config-driven pipeline), `/lightcone-experimental:from-code` does the wrapping
 for you. Three phases:
 
 1. **Scan.** A subagent reads every script and notebook and returns a
@@ -71,24 +71,24 @@ for you. Three phases:
    identified decisions, leaves the actual analytical logic alone, and
    iterates on `lc run` until everything materializes.
 
-The hard rule of `/lc-from-code` is **minimal changes**: the skill
+The hard rule of `/lightcone-experimental:from-code` is **minimal changes**: the skill
 never refactors, renames, or "improves" your code. It only adds the
 parameter plumbing.
 
-## `/lc-from-paper` — reproduce a published paper
+## `/lightcone-experimental:from-paper` — reproduce a published paper
 
 **You have a DOI or arXiv ID. You end with a reproduction project
 driven by an ORIENT-first agent that hands off to a long-running
 ralph loop for the heavy middle.**
 
-`/lc-from-paper` is the entry point of the paper-reproduction bundle.
+`/lightcone-experimental:from-paper` is the entry point of the paper-reproduction bundle.
 It opens with **ORIENT** — one pre-loop phase in your main session
-that runs in seven stages: ask for the paper, run `/paper-extraction`
+that runs in seven stages: ask for the paper, run `/lightcone-experimental:paper-extraction`
 inline (so subsequent questions are grounded in the actual paper),
 interview you (scope, fidelity intent — your prose answer to "when is
 this good enough" — code repo confirmation, paper-specific
 conventions, prior familiarity, external context), clone the
-reference code and run `/lc-from-code` scan-only (when a repo exists),
+reference code and run `/lightcone-experimental:from-code` scan-only (when a repo exists),
 optionally follow up, then draft **two files** at the workdir root:
 `constitution.md` (the ralph loop's driving document — Goal, fidelity
 intent, scope, quality bar, evidence) and `CLAUDE.md` (the auto-loading
@@ -112,8 +112,8 @@ keeps moving.
 When the loop closes (constitution `status: closed` after COMPARE
 returns `pass` and a cold-survey iteration finds nothing left to
 improve), come back and the agent runs **REVIEW close-out** in your
-session: `/figure-comparison` against the targets, optional
-`/check-sentence-by-sentence`, a walk through the accumulated open
+session: `/lightcone-experimental:figure-comparison` against the targets, optional
+`/lightcone-experimental:check-sentence-by-sentence`, a walk through the accumulated open
 questions, a `REPRODUCTION-SUMMARY.md`. COMPARE's opportunity
 assessment — where the gaps are, how much they likely matter, and how
 they sit relative to your fidelity intent — propagates into
@@ -122,15 +122,16 @@ be tightened on a return visit.
 
 The bundle composes sibling skills: `ralph` (the loop substrate),
 `paper-extraction`, `figure-comparison`, and
-`check-sentence-by-sentence`. See
-[`claude/lightcone/skills/README.md`](https://github.com/LightconeResearch/lightcone-cli/blob/main/claude/lightcone/skills/README.md)
+`check-sentence-by-sentence`. These ship in the `lightcone-experimental`
+plugin. See the
+[agent-skills README](https://github.com/LightconeResearch/agent-skills)
 for the full bundle map.
 
-## `/lc-feedback` — file an issue without context-switching
+## `/lightcone:feedback` — file an issue without context-switching
 
 **Something broke. You end with a GitHub issue URL.**
 
-Inline arguments are encouraged: `/lc-feedback pipeline dies on second
+Inline arguments are encouraged: `/lightcone:feedback pipeline dies on second
 output`. The skill triages the right repo (ASTRA vs lightcone-cli),
 collects the version of `astra` and `lightcone-cli`, your Python
 version, and your OS, drafts a minimal issue body with a trimmed error

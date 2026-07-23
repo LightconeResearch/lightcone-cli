@@ -16,7 +16,7 @@ Snakemake that owns provenance.** This page expands that sentence.
    manager picks the right shape (local / SLURM / external) on the fly.
 
 The Claude Code plugin (skills + hooks + agents) is the agentic surface
-layered on top.
+layered on top. It ships from the `agent-skills` marketplace, not this wheel.
 
 ---
 
@@ -236,31 +236,40 @@ the qualified `<analysis_id>.<output_id>` form.
 
 ## Claude Code plugin
 
-The plugin lives at `claude/lightcone/`. It is force-included into the
-installed wheel via `pyproject.toml` so `lc init` can find it whether
-you're running from source or from PyPI:
+The skills, hooks, and the `lc-extractor` subagent are not bundled in the
+wheel. They ship from the
+[LightconeResearch/agent-skills](https://github.com/LightconeResearch/agent-skills)
+marketplace as the `lightcone` plugin.
 
-```toml
-[tool.hatch.build.targets.wheel.force-include]
-"claude/lightcone" = "lightcone/cli/claude/lightcone"
+`lc init` does not copy any of them. It writes `.claude/settings.json` with the
+marketplace registration:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "lightcone-research": {
+      "source": {"source": "github", "repo": "LightconeResearch/agent-skills"}
+    }
+  },
+  "enabledPlugins": {"lightcone@lightcone-research": true}
+}
 ```
 
-`lightcone.cli.plugin.get_plugin_source_dir()` does the lookup: bundled
-location first, dev location (relative to the repo root) second.
+Claude Code offers to install the plugin when the user trusts the folder. The
+plugin then carries the skills, the venv and session hooks, and the
+`lc-extractor` subagent.
+
+`lc` also emits a `<claude-code-hint>` stderr marker (see
+`emit_plugin_hint()`) so Claude Code can recommend the plugin. The marker is
+inert until `lightcone` is listed in the official Anthropic marketplace; the
+`settings.json` registration is the working install path today.
 
 ### Permission tiers
 
-`lc init --permissions {yolo,recommended,minimal}` writes a
-`.claude/settings.json` from the matching tier in
-`PERMISSION_TIERS`. `recommended` (the default) allows the agent to
-edit, write, and shell out, but blocks edits to dotfiles, scratch
-paths, and `git push`.
-
-### Hooks
-
-The plugin registers Claude Code hooks for venv activation,
-auto-validation on save, and integrity-aware "did you forget `lc run`?"
-warnings.
+`lc init --permissions {yolo,recommended,minimal}` writes the matching tier
+from `PERMISSION_TIERS` into `.claude/settings.json`. `recommended` (the
+default) allows the agent to edit, write, and shell out, but blocks edits to
+dotfiles, scratch paths, and `git push`.
 
 ---
 
@@ -270,8 +279,7 @@ warnings.
 src/lightcone/                  # PEP 420 namespace package — NO __init__.py
 ├── cli/                        # Click surface
 │   ├── __init__.py             # exposes main()
-│   ├── commands.py             # init, run, status, verify, build, export
-│   └── plugin.py               # plugin source-dir discovery
+│   └── commands.py             # init, run, status, verify, build, export
 ├── engine/                     # execution substrate
 │   ├── manifest.py             # write_manifest, sha256_dir, code_version
 │   ├── snakefile.py            # generate .lightcone/Snakefile from astra.yaml
@@ -287,13 +295,8 @@ src/lightcone/                  # PEP 420 namespace package — NO __init__.py
 
 src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
 
-claude/lightcone/               # Claude Code plugin (force-included into the wheel)
-├── skills/                     # lc-new, lc-from-code, lc-from-paper,
-│                                # lc-feedback, ralph (+ bundle siblings);
-│                                # reference skills: astra, lc-cli
-├── agents/                     # lc-extractor (literature subagent)
-├── templates/                  # project CLAUDE.md template
-└── scripts/                    # session hooks (bash): venv, validate-on-save, session-start primer
+# Skills, hooks, and the lc-extractor subagent are NOT in this repo. They ship
+# from github.com/LightconeResearch/agent-skills as the `lightcone` plugin.
 
 tests/                          # pytest, mirrors src/
 pyproject.toml                  # hatchling + hatch-vcs; ASTRA + Snakemake as deps

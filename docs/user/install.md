@@ -175,8 +175,36 @@ choice is yours.
     curl -fsSL https://opencode.ai/install | bash
     ```
 
-Open a project in your terminal or editor (see [Getting Started](getting-started.md)) and run your agent CLI from inside it. Inside Claude Code you'll type slash commands like `/lc-new`,
-`/lc-from-code`, and `/lc-from-paper` — see
+## 4b. Install the lightcone skills
+
+The `lc` slash commands (`/lightcone:new`, `/lightcone:report`, and the rest)
+ship as a plugin, not with the `lightcone-cli` package. `lc init` registers the
+marketplace in the project's `.claude/settings.json`. When you start Claude Code
+and trust the folder, it offers to install the `lightcone` plugin.
+
+To install the plugin by hand:
+
+=== "Claude Code"
+    ```bash
+    claude plugin marketplace add LightconeResearch/agent-skills
+    claude plugin install lightcone@lightcone-research
+    ```
+
+    Or from inside a session: `/plugin marketplace add LightconeResearch/agent-skills`,
+    then `/plugin install lightcone@lightcone-research`.
+
+=== "OpenAI Codex"
+    ```bash
+    codex plugin marketplace add LightconeResearch/agent-skills
+    codex plugin add lightcone@lightcone-research
+    ```
+
+The skills live in
+[LightconeResearch/agent-skills](https://github.com/LightconeResearch/agent-skills).
+See [Skills](../skills/index.md) for the full plugin and command map.
+
+Open a project in your terminal or editor (see [Getting Started](getting-started.md)) and run your agent CLI from inside it. Inside Claude Code you'll type slash commands like `/lightcone:new`,
+`/lightcone-experimental:from-code`, and `/lightcone-experimental:from-paper` — see
 [The Agentic Workflow](agent-workflow.md).
 
 ## 5. (Optional) Docker or Podman
