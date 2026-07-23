@@ -17,14 +17,18 @@ The two versions move independently. A skill edit ships from the marketplace
 without a CLI release. A CLI change that alters the plugin contract requires a
 plugin version bump. Neither channel assumes the other has moved.
 
-## The project-scoped `astra`
+## The global `astra`
 
-The `astra` command is not global. `lc init` installs astra-tools into the
-project's `.venv`, and the plugin's activation hook prepends `.venv/bin` to
-PATH so `astra` resolves inside the project. Each project therefore pins its own
-astra-tools version in its venv. To move a project to a newer astra-tools,
-upgrade it inside that venv (for example
-`uv pip install --python .venv/bin/python -U astra-tools`).
+The `astra` command is global, alongside `lc`. Both ship from the one
+`lightcone-cli` wheel (`astra-tools` is a dependency), so `uv tool upgrade
+lightcone-cli` moves them together — no per-project venv to keep in sync. `lc
+init` creates no `.venv`.
+
+When a single project needs a spec-exact `astra` — pinned to the astra-tools and
+astra-spec versions its `astra.yaml` was authored against — invoke it per-call
+rather than freezing a venv: `uvx --from astra-tools==X --with astra-spec==Y
+astra`. This gives an exact pin at the moment of use instead of a stale one
+frozen at init time.
 
 ## Compatibility is carried by versioning
 

@@ -31,7 +31,7 @@ from lightcone.cli.commands import main
 
 def test_init_creates_structure(tmp_path):
     runner = CliRunner()
-    result = runner.invoke(main, ["init", str(tmp_path / "myproject"), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(tmp_path / "myproject"), "--no-git"])
     assert result.exit_code == 0
     assert (tmp_path / "myproject" / "astra.yaml").exists()
 ```

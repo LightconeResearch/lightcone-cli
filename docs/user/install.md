@@ -128,12 +128,12 @@ Get a confirmation of the proper installation by running
 
     lc --version                # → lightcone-cli, version ...
 
-This install puts one global command on PATH: `lc`. The `astra` command is
-project-scoped. `lc init` installs astra-tools into the project's `.venv`, and
-the plugin's activation hook prepends `.venv/bin` to PATH, so `astra` resolves
-inside a project without a global install. (If you want `astra` in a bare
-terminal outside any project, install it globally with
-`uv tool install astra-tools`.)
+This install puts two global commands on PATH: `lc` and `astra`. Both ship from
+the one `lightcone-cli` wheel (`astra-tools` is a dependency), so a single
+install exposes both — no project venv, no version skew between them. `lc init`
+creates no `.venv`; analysis dependencies ride the container via
+`requirements.txt`. When a project needs a spec-exact `astra`, invoke it
+per-call with `uvx --from astra-tools==X --with astra-spec==Y astra`.
 
 > **Note** Some people may have already set a personal shell alias `lc='ls --color'`. If that's you, installing lightcone-cli will shadow the alias — make sure to rebind it (e.g. `alias l='ls --color'`).
 

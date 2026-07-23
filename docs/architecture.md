@@ -261,7 +261,7 @@ the plugin active only in `lc init`'d directories. For Codex the registration is
 ([openai/codex#18115](https://github.com/openai/codex/issues/18115)), so when
 `codex` is on PATH `lc init` shells out to `codex plugin marketplace add` and
 `codex plugin add`, which persist to the user's Codex config for all projects.
-Either way the plugin carries the skills, the venv and session hooks,
+Either way the plugin carries the skills, the session hooks,
 and the `lc-extractor` subagent. The by-hand commands for both harnesses are
 also documented as a fallback — see [Install](user/install.md).
 

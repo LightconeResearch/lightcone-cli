@@ -72,8 +72,7 @@ sbatch run.sbatch                                    # batch
     #SBATCH -C gpu
 
     cd $HOME/my-analysis
-    source .venv/bin/activate                          # puts `astra` on PATH
-    lc run -j 16                                        # `lc` is the global install
+    lc run -j 16                                        # `lc` and `astra` are global installs
     ```
 
 === "NERSC Perlmutter"

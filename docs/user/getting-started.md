@@ -28,7 +28,6 @@ r2-decision-demo/
 ├── CLAUDE.md           # short note for the agent (resumes context across sessions)
 ├── .gitignore
 ├── .git                # initialized git repository (skip with --no-git)
-├── .venv/              # Python virtual env (skip with --no-venv)
 ├── .claude/            # Claude Code plugin — skills, agents, hooks
 ├── .lightcone/         # internal scratchpad — don't edit by hand
 ├── Containerfile       # build instructions for a local testing container

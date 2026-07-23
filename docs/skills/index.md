@@ -20,7 +20,7 @@ The marketplace ships three plugins.
 | Plugin | Skills | Notes |
 |---|---|---|
 | `astra` | `astra` | Standalone ASTRA authoring skill. Ships the validate-on-save and activate-on-read hooks. |
-| `lightcone` *(recommended)* | `new`, `report`, `cli`, `feedback` | Bundles `astra`. Ships the session hooks (including the one that activates the project venv so `astra` resolves locally) plus the `lc-extractor` subagent. This one plugin is all you need for interactive work. |
+| `lightcone` *(recommended)* | `new`, `report`, `cli`, `feedback` | Bundles `astra`. Ships the session hooks plus the `lc-extractor` subagent. This one plugin is all you need for interactive work. |
 | `lightcone-experimental` | `from-paper`, `from-code`, `paper-extraction`, `ralph`, `check-sentence-by-sentence`, `figure-comparison` | Opt-in. Requires `lightcone`. Under active development. |
 
 ## Skills

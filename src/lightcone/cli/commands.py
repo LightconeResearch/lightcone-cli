@@ -7,7 +7,7 @@ The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 
 Commands:
 - ``lc init``   — scaffold a project, or converge an existing one onto the
-  integration (CLAUDE.md, .claude/, venv, gitignore, MyST report template).
+  integration (CLAUDE.md, .claude/, gitignore, MyST report template).
 - ``lc run``    — generate Snakefile and run snakemake.
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
@@ -47,16 +47,14 @@ MARKETPLACE_REPO = "LightconeResearch/agent-skills"
 PLUGIN_NAME = "lightcone"
 PLUGIN_REF = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 
-# ``lc`` is global-only: one copy per machine (``uv tool install
-# lightcone-cli``), never in the project venv — that kills the global-vs-venv-vs-
-# container version skew. The project ``.venv`` carries only ``astra`` (from
-# astra-tools). astra-tools is also a library dependency of this wheel (``lc
-# init`` imports ``astra.cli``), but the ``astra`` *command* is project-scoped:
-# ``lc init`` installs astra-tools into the project's ``.venv`` so
-# ``.venv/bin/astra`` exists, and the plugin's activate-venv SessionStart hook
-# prepends ``.venv/bin`` to PATH so that copy resolves while ``lc`` stays global.
-# This is the requirement string that venv install uses.
-ASTRA_TOOLS_REQUIREMENT = "astra-tools>=0.2.10"
+# Both ``lc`` and ``astra`` are global-only: one copy per machine from a single
+# ``uv tool install lightcone-cli`` (astra-tools is a dependency of this wheel,
+# so the same install exposes both entry points). ``lc init`` creates no project
+# venv — that kills the global-vs-venv-vs-container version skew. Analysis
+# dependencies live in ``requirements.txt`` and flow into the container, not the
+# host. When a project needs a spec-exact ``astra``, invoke it per-call with
+# ``uvx --from astra-tools==X --with astra-spec==Y astra`` rather than freezing a
+# venv at init time.
 
 
 def _config_path() -> Path:
@@ -124,9 +122,6 @@ _____|_________________
 @click.argument("directory", type=click.Path(path_type=Path), default=".")
 @click.option("--no-git", is_flag=True, help="Skip git init (fresh scaffold only)")
 @click.option(
-    "--no-venv", is_flag=True, help="Skip Python venv creation (fresh scaffold only)"
-)
-@click.option(
     "--scratch",
     "scratch_override",
     default=None,
@@ -140,7 +135,6 @@ _____|_________________
 def init(
     directory: Path,
     no_git: bool,
-    no_venv: bool,
     scratch_override: str | None,
 ) -> None:
     """Initialize (or converge) an ASTRA project with agent-harness integration.
@@ -152,12 +146,12 @@ def init(
     - **Fresh directory** — delegates the spec scaffold (``astra.yaml``,
       ``universes/baseline.yaml``, base ``.gitignore``, ``src/``) to
       ``astra init``, then layers on the lightcone bits: ``Containerfile`` +
-      ``requirements.txt``, ``CLAUDE.md``, an optional git repo and Python venv,
-      and the integration files below.
+      ``requirements.txt``, ``CLAUDE.md``, an optional git repo, and the
+      integration files below.
 
     - **Existing ASTRA project** — leaves ``astra.yaml`` and the scaffold alone
-      (no Containerfile, git, or venv) and layers on only the missing
-      integration files, reporting what it added versus skipped.
+      (no Containerfile or git) and layers on only the missing integration
+      files, reporting what it added versus skipped.
 
     The integration files are written idempotently in both cases: ``.lightcone/``
     project state, ``results/``, the ``.claude/settings.json`` marketplace
@@ -177,10 +171,10 @@ def init(
     # the missing ones are written.
     added, skipped = _layer_integration(directory, scratch_override)
 
-    # git + venv only make sense for a fresh scaffold; an existing project
-    # already owns those choices.
+    # git init only makes sense for a fresh scaffold; an existing project
+    # already owns that choice.
     if fresh:
-        _init_git_and_venv(directory, no_git=no_git, no_venv=no_venv)
+        _init_git(directory, no_git=no_git)
 
     _report_init(
         directory,
@@ -296,60 +290,18 @@ def _layer_integration(
     return added, skipped
 
 
-def _init_git_and_venv(directory: Path, *, no_git: bool, no_venv: bool) -> None:
-    """Initialize a git repo and a Python venv for a fresh scaffold."""
+def _init_git(directory: Path, *, no_git: bool) -> None:
+    """Initialize a git repo for a fresh scaffold.
+
+    No project venv is created: both ``lc`` and ``astra`` are installed globally
+    from the ``lightcone-cli`` wheel, and analysis dependencies ride the
+    container via ``requirements.txt``.
+    """
     # git init last so the initial commit captures every scaffolded file.
     no_git = no_git or (directory / ".git").exists()
     if not no_git:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
         console.print("[green]✓[/green] Initialized git repository")
-
-    if no_venv:
-        return
-    # The project venv carries only ``astra`` — ``lc`` is installed globally,
-    # once per machine, never here. Create the venv, then install astra-tools.
-    use_uv = shutil.which("uv") is not None
-    if use_uv:
-        venv_cmd = ["uv", "venv", "--python", "3.12", ".venv"]
-    else:
-        venv_cmd = ["python", "-m", "venv", ".venv"]
-    with console.status("[dim]Creating virtual environment…[/dim]"):
-        subprocess.run(venv_cmd, cwd=directory, check=False, capture_output=True)
-    console.print(
-        f"[green]✓[/green] Virtual environment created in [cyan]{directory}/.venv[/cyan]"
-    )
-    _install_astra_tools(directory, use_uv=use_uv)
-
-
-def _install_astra_tools(directory: Path, *, use_uv: bool) -> None:
-    """Install astra-tools into the project ``.venv`` so ``.venv/bin/astra`` exists.
-
-    The ``astra`` command is project-scoped, not a global export of this wheel.
-    The plugin's activate-venv SessionStart hook prepends ``.venv/bin`` to PATH,
-    so an ``astra`` invoked inside the project resolves to this copy. Best-effort:
-    on failure we warn and continue rather than failing ``lc init`` — a missing
-    ``astra`` degrades the workflow, it does not break the scaffold.
-    """
-    if use_uv:
-        cmd = [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            ".venv/bin/python",
-            ASTRA_TOOLS_REQUIREMENT,
-        ]
-    else:
-        cmd = [".venv/bin/python", "-m", "pip", "install", "-q", ASTRA_TOOLS_REQUIREMENT]
-    with console.status("[dim]Installing astra-tools…[/dim]"):
-        result = subprocess.run(cmd, cwd=directory, check=False, capture_output=True)
-    if result.returncode == 0:
-        console.print("[green]✓[/green] Installed astra-tools into the venv")
-    else:
-        console.print(
-            "[yellow]![/yellow] Could not install astra-tools into the venv; "
-            f"install it by hand with [cyan]{' '.join(cmd)}[/cyan]"
-        )
 
 
 def _report_init(

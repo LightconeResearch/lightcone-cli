@@ -15,7 +15,7 @@ agent skills, with the CLI as the durable, scriptable backstop.
 
 | Command | Purpose |
 |---------|---------|
-| [`lc init`](init.md) | Scaffold a new ASTRA project (`astra.yaml`, `.claude/`, `.lightcone/`, optional venv & git). |
+| [`lc init`](init.md) | Scaffold a new ASTRA project (`astra.yaml`, `.claude/`, `.lightcone/`, optional git). |
 | [`lc run`](run.md) | Generate the Snakefile and dispatch through Snakemake + Dask. |
 | [`lc build`](build.md) | Build container images declared in `astra.yaml`. |
 | [`lc status`](status.md) | Manifest-driven status report. No Snakemake import needed. |

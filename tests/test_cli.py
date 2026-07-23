@@ -69,7 +69,7 @@ def test_first_invocation_auto_creates_global_config(
     # without a pre-existing project.
     project = tmp_path / "proj"
     result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv"]
+        main, ["init", str(project), "--no-git"]
     )
     assert result.exit_code == 0, result.output
     assert config.exists()
@@ -81,7 +81,7 @@ def test_first_invocation_auto_creates_global_config(
 
 def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
     assert (project / "astra.yaml").exists()
     assert (project / "CLAUDE.md").exists()
@@ -93,7 +93,7 @@ def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
 
 def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
 
     myst_yml = (project / "myst.yml").read_text()
@@ -115,7 +115,7 @@ def test_init_writes_marketplace_settings(
     import json
 
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
 
     settings = json.loads((project / ".claude" / "settings.json").read_text())
@@ -143,11 +143,11 @@ def test_init_is_idempotent_on_fresh_scaffold(
     """Running `lc init` twice on the same dir must not error — the second run
     converges rather than refusing that astra.yaml now exists."""
     project = tmp_path / "proj"
-    first = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    first = runner.invoke(main, ["init", str(project), "--no-git"])
     assert first.exit_code == 0, first.output
     scaffold_astra = (project / "astra.yaml").read_text()
 
-    second = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    second = runner.invoke(main, ["init", str(project), "--no-git"])
     assert second.exit_code == 0, second.output
     assert "Nothing to do" in second.output
     # The spec is never rewritten.
@@ -216,58 +216,46 @@ def test_init_converges_and_preserves_existing_files(
     assert "Nothing to do" in again.output
 
 
-def test_init_venv_uses_uv_when_available(
+def test_init_creates_no_venv_and_installs_nothing(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`lc init` is a pure scaffold: no project venv, no package install.
+
+    Both `lc` and `astra` are installed globally from the lightcone-cli wheel,
+    and analysis dependencies flow into the container via requirements.txt — so
+    init must never create `.venv` or shell out to venv/pip/uv-install.
+    """
     calls: list[list[str]] = []
 
     def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
         calls.append(list(cmd))
         return MagicMock(returncode=0)
 
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None
+    )
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     project = tmp_path / "proj"
     result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
 
-    assert ["uv", "venv", "--python", "3.12", ".venv"] in calls
-    # `lc` is global-only — it must NOT be installed into the project venv.
+    # No venv is created on disk...
+    assert not (project / ".venv").exists()
+    # ...and no venv/pip/uv-install subprocess is ever spawned.
+    assert not any("venv" in c for c in calls)
+    assert not any(c[:2] == ["uv", "pip"] for c in calls)
+    assert not any("pip" in c and "install" in c for c in calls)
+    # Nothing named lightcone-cli or astra-tools is installed anywhere.
     assert not any("lightcone-cli" in c for c in calls)
-    # astra is project-scoped: lc init installs astra-tools into the venv so
-    # `.venv/bin/astra` resolves via the plugin's activation hook.
-    from lightcone.cli.commands import ASTRA_TOOLS_REQUIREMENT
-
-    assert [
-        "uv", "pip", "install", "--python", ".venv/bin/python", ASTRA_TOOLS_REQUIREMENT
-    ] in calls
+    assert not any("astra-tools" in c for c in calls)
 
 
-def test_init_venv_falls_back_to_python_when_uv_missing(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[list[str]] = []
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
-        calls.append(list(cmd))
-        return MagicMock(returncode=0)
-
-    monkeypatch.setattr(shutil, "which", lambda _: None)
-    monkeypatch.setattr(subprocess, "run", _fake_run)
-
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
+def test_init_has_no_no_venv_flag(runner: CliRunner) -> None:
+    """The `--no-venv` flag is gone — there is no venv to skip."""
+    result = runner.invoke(main, ["init", "--help"])
     assert result.exit_code == 0, result.output
-
-    assert ["python", "-m", "venv", ".venv"] in calls
-    # `lc` is global-only — it must NOT be installed into the project venv.
-    assert not any("lightcone-cli" in c for c in calls)
-    from lightcone.cli.commands import ASTRA_TOOLS_REQUIREMENT
-
-    assert [
-        ".venv/bin/python", "-m", "pip", "install", "-q", ASTRA_TOOLS_REQUIREMENT
-    ] in calls
+    assert "--no-venv" not in result.output
 
 
 # ---- lc init (Codex registration) -----------------------------------------
@@ -290,7 +278,7 @@ def test_init_registers_codex_when_available(
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
 
     from lightcone.cli.commands import PLUGIN_REF, _marketplace_arg
@@ -313,7 +301,7 @@ def test_init_skips_codex_when_absent(
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
     assert not any(c[:1] == ["codex"] for c in calls)
 
@@ -339,7 +327,7 @@ def test_init_registers_claude_marketplace_when_available(
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
 
     from lightcone.cli.commands import _marketplace_arg
@@ -364,7 +352,7 @@ def test_init_skips_claude_marketplace_when_absent(
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
     assert not any(c[:1] == ["claude"] for c in calls)
 

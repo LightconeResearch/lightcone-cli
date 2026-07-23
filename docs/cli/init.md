@@ -24,7 +24,6 @@ results/                      # placeholder; populated by `lc run`
 universes/                    # placeholder; populate via `astra universe generate -n …`
 .claude/
   settings.json               # enabled plugin activation (no marketplace source, no permission policy)
-.venv/                        # Python venv (skipped with --no-venv)
 ```
 
 `lc init` refuses to run if `DIRECTORY/astra.yaml` already exists.
@@ -34,11 +33,14 @@ universes/                    # placeholder; populate via `astra universe genera
 | Option | Default | Effect |
 |--------|---------|--------|
 | `--no-git` | off | Skip `git init`. |
-| `--no-venv` | off | Skip `python -m venv .venv`. |
 
-> The historical `--target`, `--existing-project`, `--sub-analysis`, and
-> `--permissions` flags have been removed; today's `lc init` only knows the two
-> flags above. For migrating an existing project, run `lc init` in a fresh
+> `lc init` creates no Python venv. Both `lc` and `astra` install globally from
+> the `lightcone-cli` wheel, and analysis dependencies ride the container via
+> `requirements.txt`.
+>
+> The historical `--target`, `--existing-project`, `--sub-analysis`,
+> `--permissions`, and `--no-venv` flags have been removed; today's `lc init`
+> only knows `--no-git` and `--scratch`. For migrating an existing project, run `lc init` in a fresh
 > directory and use the `/lightcone-experimental:from-code` skill from inside your agent.
 
 ## Permissions
@@ -53,7 +55,7 @@ for a copy-paste ruleset for cluster work.
 ```bash
 lc init                                # scaffold in cwd
 lc init my-analysis                    # scaffold in ./my-analysis
-lc init my-analysis --no-git --no-venv # bare bones
+lc init my-analysis --no-git           # skip git init
 ```
 
 ## Next steps
