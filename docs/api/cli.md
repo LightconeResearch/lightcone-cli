@@ -79,6 +79,3 @@ new projects look like.
 and `enabledPlugins`, which register the `agent-skills` marketplace and enable
 the `lightcone` plugin. It holds no permission policy — permissions belong to
 the harness. No skills, hooks, or agents are copied — the plugin carries them.
-
-`emit_plugin_hint()` writes a `<claude-code-hint>` marker to stderr when
-`CLAUDECODE` is set, so Claude Code can recommend the plugin.

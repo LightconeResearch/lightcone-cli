@@ -257,12 +257,8 @@ marketplace registration:
 
 Claude Code offers to install the plugin when the user trusts the folder. The
 plugin then carries the skills, the venv and session hooks, and the
-`lc-extractor` subagent.
-
-`lc` also emits a `<claude-code-hint>` stderr marker (see
-`emit_plugin_hint()`) so Claude Code can recommend the plugin. The marker is
-inert until `lightcone` is listed in the official Anthropic marketplace; the
-`settings.json` registration is the working install path today.
+`lc-extractor` subagent. The install command is also documented for users who
+want to add it by hand — see [Install](user/install.md).
 
 ### Permissions
 

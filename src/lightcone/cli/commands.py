@@ -70,29 +70,6 @@ def _ensure_global_config() -> None:
     )
 
 
-def emit_plugin_hint() -> None:
-    """Recommend the ``lightcone`` plugin to Claude Code, via a stderr marker.
-
-    Claude Code sets ``CLAUDECODE=1`` in every subprocess it runs. When we
-    detect it, we write a one-line ``<claude-code-hint>`` tag to stderr. Claude
-    Code strips the line from the command output, checks the plugin is not
-    installed, and offers a one-time install prompt. The tag never reaches the
-    model and costs no tokens. Outside Claude Code the marker is not emitted.
-
-    Note: as of this writing Claude Code only acts on hints that target the
-    official Anthropic marketplace (``claude-plugins-official``). Our plugin
-    ships from ``lightcone-research``, so the prompt does not fire yet — the
-    marketplace registration in ``lc init`` is the working install path. We
-    emit the tag now so the prompt lights up automatically once ``lightcone``
-    is listed in the official marketplace.
-    """
-    if not os.environ.get("CLAUDECODE"):
-        return
-    sys.stderr.write(
-        f'<claude-code-hint v="1" type="plugin" value="{PLUGIN_REF}" />\n'
-    )
-
-
 @click.group()
 @click.version_option(package_name="lightcone-cli")
 @click.pass_context
@@ -100,7 +77,6 @@ def main(ctx: click.Context) -> None:
     """lightcone-cli — ASTRA-compliant agentic layer CLI."""
     ctx.ensure_object(dict)
     _ensure_global_config()
-    emit_plugin_hint()
 
 
 # =============================================================================

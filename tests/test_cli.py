@@ -118,25 +118,6 @@ def test_init_writes_marketplace_settings(
     assert not (project / ".claude" / "hooks.json").exists()
 
 
-def test_emit_plugin_hint_only_inside_claude_code(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from lightcone.cli.commands import PLUGIN_REF, emit_plugin_hint
-
-    monkeypatch.delenv("CLAUDECODE", raising=False)
-    emit_plugin_hint()
-    assert capsys.readouterr().err == ""
-
-    monkeypatch.setenv("CLAUDECODE", "1")
-    emit_plugin_hint()
-    err = capsys.readouterr().err
-    assert err.strip() == (
-        f'<claude-code-hint v="1" type="plugin" value="{PLUGIN_REF}" />'
-    )
-    # The tag must occupy its own line for Claude Code to act on it.
-    assert err.endswith("\n")
-
-
 def test_init_refuses_when_astra_yaml_exists(
     runner: CliRunner, tmp_path: Path
 ) -> None:
