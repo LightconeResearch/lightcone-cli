@@ -35,8 +35,10 @@ lc init my-analysis
 cd my-analysis
 ```
 
-`lc init` won't run inside an existing project (it refuses if
-`astra.yaml` already exists).
+`lc init` is convergent: run it in a fresh directory to scaffold a new
+project, or in an existing ASTRA project to layer on the missing
+integration bits. It never rewrites `astra.yaml`. See
+[The upgrade model](upgrading.md).
 
 ## "lc: command not found" or `lc` prints a directory listing
 
@@ -166,8 +168,9 @@ or your harness trust level. Either move the work elsewhere or relax the rule.
 
 ## I deleted `.claude/settings.json` by accident
 
-`lc init` won't recreate it because `astra.yaml` exists. Write the file back
-by hand — it registers the marketplace so Claude Code can offer the plugin:
+Run `lc init` inside the project. It is convergent: it re-adds the marketplace
+registration non-destructively and leaves `astra.yaml` alone. Or write the file
+back by hand — it registers the marketplace so Claude Code can offer the plugin:
 
 ```json
 {
