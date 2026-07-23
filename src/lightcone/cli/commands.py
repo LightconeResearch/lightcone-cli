@@ -35,11 +35,13 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
-# Claude Code plugin distribution. The lightcone skills, hooks, and the
+# Agent-skills plugin distribution. The lightcone skills, hooks, and the
 # lc-extractor subagent ship from the ``agent-skills`` marketplace, not from
-# this wheel. ``lc init`` registers the marketplace and enables the
-# ``lightcone`` plugin in the project's ``.claude/settings.json``; Claude Code
-# offers to install it when the user trusts the folder.
+# this wheel. The CLI and plugin install globally, once. ``lc init`` registers
+# the marketplace globally with each harness on PATH, then activates the
+# ``lightcone`` plugin per project — for Claude Code by writing
+# ``enabledPlugins`` into the project's ``.claude/settings.json`` (so the plugin
+# is only active in lc-init'd folders the harness trusts).
 MARKETPLACE_NAME = "lightcone-research"
 MARKETPLACE_REPO = "LightconeResearch/agent-skills"
 PLUGIN_NAME = "lightcone"
@@ -260,15 +262,19 @@ def _layer_integration(
         (directory / "results").mkdir(exist_ok=True)
         added.append("results/")
 
-    # .claude/settings.json — merge the marketplace registration non-destructively
+    # .claude/settings.json — activate the plugin non-destructively. Activation
+    # only: no marketplace source, no version. This is what keeps the plugin
+    # active only in lc-init'd folders (Claude Code loads it on folder trust).
     if _merge_claude_settings(directory):
-        added.append(".claude/settings.json (marketplace registration)")
+        added.append(".claude/settings.json (plugin activation)")
     else:
-        skipped.append(".claude/settings.json (already registered)")
+        skipped.append(".claude/settings.json (already activated)")
 
-    # Codex — register the plugin globally via the codex CLI. It is not a
-    # project file, so it lives outside the added/skipped report; the function
-    # prints its own status line.
+    # Register the marketplace globally with each harness on PATH. These are not
+    # project files, so they live outside the added/skipped report; each function
+    # prints its own status line. The commands are idempotent, so re-running
+    # ``lc init`` converges.
+    _register_claude_marketplace(directory)
     _register_codex_plugin(directory)
 
     # Template MyST report (myst.yml + index.md), each skipped if present.
@@ -559,23 +565,19 @@ prose. Preview with `myst start` (requires the MyST CLI, `npm i -g mystmd`).
 """
 
 
-def _marketplace_source() -> dict[str, object]:
-    """The ``extraKnownMarketplaces`` entry for the agent-skills marketplace."""
-    return {
-        "source": {
-            "source": "github",
-            "repo": MARKETPLACE_REPO,
-        },
-    }
-
-
 def _merge_claude_settings(project_dir: Path) -> bool:
-    """Non-destructively add the marketplace registration to ``.claude/settings.json``.
+    """Non-destructively activate the ``lightcone`` plugin in ``.claude/settings.json``.
 
-    Preserves any existing content: only the ``lightcone-research`` marketplace
-    entry and the ``lightcone`` plugin key are touched. The CLI writes no
-    permission policy — permissions belong to the harness. Returns ``True`` if
-    the file was created or changed, ``False`` if it was already registered.
+    Activation only: sets ``enabledPlugins["lightcone@lightcone-research"] = true``
+    so Claude Code loads the plugin when it trusts this folder. No marketplace
+    source and no version live here — the marketplace is registered globally,
+    once, by :func:`_register_claude_marketplace`. Writing activation per project
+    is what keeps the plugin active only in lc-init'd folders.
+
+    Preserves any existing content: only the ``lightcone`` plugin key is touched.
+    The CLI writes no permission policy — permissions belong to the harness.
+    Returns ``True`` if the file was created or changed, ``False`` if the plugin
+    was already activated.
     """
     claude_dir = project_dir / ".claude"
     settings_path = claude_dir / "settings.json"
@@ -593,10 +595,6 @@ def _merge_claude_settings(project_dir: Path) -> bool:
         settings = {}
 
     changed = False
-    marketplaces = settings.setdefault("extraKnownMarketplaces", {})
-    if marketplaces.get(MARKETPLACE_NAME) != _marketplace_source():
-        marketplaces[MARKETPLACE_NAME] = _marketplace_source()
-        changed = True
     plugins = settings.setdefault("enabledPlugins", {})
     if plugins.get(PLUGIN_REF) is not True:
         plugins[PLUGIN_REF] = True
@@ -608,20 +606,58 @@ def _merge_claude_settings(project_dir: Path) -> bool:
     return changed
 
 
-def _codex_marketplace_arg() -> str:
-    """The repo argument for ``codex plugin marketplace add``."""
+def _marketplace_arg() -> str:
+    """The marketplace argument for ``<harness> plugin marketplace add``.
+
+    Claude Code and Codex both accept the ``owner/repo`` form (and an optional
+    ``@ref`` suffix), so a single argument serves both registrations.
+    """
     return MARKETPLACE_REPO
+
+
+def _register_claude_marketplace(project_dir: Path) -> bool:
+    """Register the agent-skills marketplace with Claude Code globally, if
+    ``claude`` is on PATH.
+
+    Claude Code marketplaces are user-scoped, so this registers once for every
+    project. It adds the *marketplace* only; the plugin itself is activated per
+    project by :func:`_merge_claude_settings` (which writes ``enabledPlugins``),
+    so the plugin stays active only in lc-init'd folders. We do not install the
+    plugin at user scope for Claude. ``claude plugin marketplace add`` is
+    idempotent, so re-running ``lc init`` converges to a no-op.
+
+    Best-effort and harness-optional: if ``claude`` is absent we skip silently;
+    on a failed command we warn and continue rather than failing ``lc init``.
+    Returns ``True`` when the marketplace was registered, ``False`` otherwise.
+    """
+    if not shutil.which("claude"):
+        return False
+    cmd = ["claude", "plugin", "marketplace", "add", _marketplace_arg()]
+    result = subprocess.run(cmd, cwd=project_dir, check=False, capture_output=True)
+    if result.returncode != 0:
+        console.print(
+            "[yellow]![/yellow] Could not register the agent-skills marketplace "
+            f"with Claude Code ([cyan]{' '.join(cmd)}[/cyan] failed); register it "
+            "by hand."
+        )
+        return False
+    console.print(
+        "[green]✓[/green] Registered the agent-skills marketplace with Claude Code "
+        "(global — marketplaces are user-scoped, so it applies to every project)"
+    )
+    return True
 
 
 def _register_codex_plugin(project_dir: Path) -> bool:
     """Register the ``lightcone`` plugin with Codex, if ``codex`` is on PATH.
 
-    The Claude registration is per-project and declarative — a merged
-    ``.claude/settings.json`` the harness reads on folder trust. Codex has no
-    project-scoped plugin config yet (openai/codex#18115), so its registration is
-    *global* (user-scoped, applies to every project) and *imperative*: we shell
-    out to ``codex plugin marketplace add`` then ``codex plugin add``. Both are
-    idempotent, so re-running ``lc init`` converges to a no-op.
+    Codex has no project-scoped plugin config yet (openai/codex#18115), so its
+    registration is *global* (user-scoped, applies to every project) and
+    *imperative*: we shell out to ``codex plugin marketplace add`` then
+    ``codex plugin add``. Both are idempotent, so re-running ``lc init``
+    converges to a no-op. (Claude Code, by contrast, splits this: a global
+    marketplace registration via :func:`_register_claude_marketplace` plus
+    per-project activation via :func:`_merge_claude_settings`.)
 
     Best-effort and harness-optional: if ``codex`` is absent we skip silently; on
     a failed command we warn and continue rather than failing ``lc init``.
@@ -630,7 +666,7 @@ def _register_codex_plugin(project_dir: Path) -> bool:
     if not shutil.which("codex"):
         return False
     steps = (
-        ["codex", "plugin", "marketplace", "add", _codex_marketplace_arg()],
+        ["codex", "plugin", "marketplace", "add", _marketplace_arg()],
         ["codex", "plugin", "add", PLUGIN_REF],
     )
     for cmd in steps:

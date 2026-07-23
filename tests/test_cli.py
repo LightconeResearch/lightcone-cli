@@ -28,14 +28,15 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _no_real_codex(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default: pretend ``codex`` is not on PATH so ``lc init`` never shells out
-    to a real Codex install, which would mutate the user's global config. Tests
-    that exercise the Codex path override ``shutil.which`` themselves."""
+def _no_real_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default: pretend the ``claude`` and ``codex`` CLIs are not on PATH so
+    ``lc init`` never shells out to a real install, which would mutate the
+    user's global harness config. Tests that exercise a harness registration
+    path override ``shutil.which`` themselves."""
     real_which = shutil.which
 
     def fake_which(name: str, *args: object, **kwargs: object) -> str | None:
-        if name == "codex":
+        if name in ("claude", "codex"):
             return None
         return real_which(name, *args, **kwargs)  # type: ignore[arg-type]
 
@@ -118,12 +119,12 @@ def test_init_writes_marketplace_settings(
     assert result.exit_code == 0, result.output
 
     settings = json.loads((project / ".claude" / "settings.json").read_text())
-    # Marketplace is registered so Claude Code can offer the plugin.
-    assert settings["extraKnownMarketplaces"]["lightcone-research"]["source"] == {
-        "source": "github",
-        "repo": "LightconeResearch/agent-skills",
-    }
+    # Activation only — the plugin is enabled per project so it is active only
+    # in lc-init'd folders.
     assert settings["enabledPlugins"] == {"lightcone@lightcone-research": True}
+    # The marketplace is registered globally (not per project), so no
+    # marketplace source lands in settings.json.
+    assert "extraKnownMarketplaces" not in settings
     # The CLI writes no permission policy — that belongs to the harness.
     assert "permissions" not in settings
     # Hooks no longer live in settings.json — the plugin carries them.
@@ -172,7 +173,7 @@ def test_init_layers_integration_onto_existing_project(
     assert (project / "index.md").exists()
     settings = json.loads((project / ".claude" / "settings.json").read_text())
     assert settings["enabledPlugins"] == {"lightcone@lightcone-research": True}
-    assert "lightcone-research" in settings["extraKnownMarketplaces"]
+    assert "extraKnownMarketplaces" not in settings
 
     # ...but the scaffold/venv/git steps are skipped when astra.yaml pre-exists.
     assert not (project / "Containerfile").exists()
@@ -290,9 +291,9 @@ def test_init_registers_codex_when_available(
     result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
     assert result.exit_code == 0, result.output
 
-    from lightcone.cli.commands import PLUGIN_REF, _codex_marketplace_arg
+    from lightcone.cli.commands import PLUGIN_REF, _marketplace_arg
 
-    assert ["codex", "plugin", "marketplace", "add", _codex_marketplace_arg()] in calls
+    assert ["codex", "plugin", "marketplace", "add", _marketplace_arg()] in calls
     assert ["codex", "plugin", "add", PLUGIN_REF] in calls
 
 
@@ -313,6 +314,57 @@ def test_init_skips_codex_when_absent(
     result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
     assert result.exit_code == 0, result.output
     assert not any(c[:1] == ["codex"] for c in calls)
+
+
+# ---- lc init (Claude marketplace registration) ----------------------------
+
+
+def test_init_registers_claude_marketplace_when_available(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `claude` is on PATH, `lc init` registers the marketplace globally —
+    the plugin itself is activated per project via settings.json, so no
+    `plugin install` is run here."""
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+
+    from lightcone.cli.commands import _marketplace_arg
+
+    assert ["claude", "plugin", "marketplace", "add", _marketplace_arg()] in calls
+    # The plugin is not installed at user scope for Claude — activation is
+    # per-project via enabledPlugins in settings.json.
+    assert not any(c[:3] == ["claude", "plugin", "install"] for c in calls)
+
+
+def test_init_skips_claude_marketplace_when_absent(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No `claude` on PATH → `lc init` makes no claude calls and still succeeds."""
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+    assert not any(c[:1] == ["claude"] for c in calls)
 
 
 # ---- lc verify ------------------------------------------------------------
