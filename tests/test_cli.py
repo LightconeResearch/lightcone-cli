@@ -118,15 +118,86 @@ def test_init_writes_marketplace_settings(
     assert not (project / ".claude" / "hooks.json").exists()
 
 
-def test_init_refuses_when_astra_yaml_exists(
+# ---- lc init (convergent on an existing ASTRA project) --------------------
+
+
+def test_init_is_idempotent_on_fresh_scaffold(
     runner: CliRunner, tmp_path: Path
 ) -> None:
+    """Running `lc init` twice on the same dir must not error — the second run
+    converges rather than refusing that astra.yaml now exists."""
+    project = tmp_path / "proj"
+    first = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert first.exit_code == 0, first.output
+    scaffold_astra = (project / "astra.yaml").read_text()
+
+    second = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert second.exit_code == 0, second.output
+    assert "Nothing to do" in second.output
+    # The spec is never rewritten.
+    assert (project / "astra.yaml").read_text() == scaffold_astra
+
+
+def test_init_layers_integration_onto_existing_project(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    import json
+
     project = tmp_path / "proj"
     project.mkdir()
-    (project / "astra.yaml").write_text("# already here\n")
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert result.exit_code != 0
-    assert "already exists" in result.output
+    (project / "astra.yaml").write_text("# existing ASTRA project\n")
+
+    result = runner.invoke(main, ["init", str(project)])
+    assert result.exit_code == 0, result.output
+
+    # Integration bits are layered on...
+    assert (project / ".lightcone" / "lightcone.yaml").exists()
+    assert (project / "results").is_dir()
+    assert (project / "myst.yml").exists()
+    assert (project / "index.md").exists()
+    settings = json.loads((project / ".claude" / "settings.json").read_text())
+    assert settings["enabledPlugins"] == {"lightcone@lightcone-research": True}
+    assert "lightcone-research" in settings["extraKnownMarketplaces"]
+
+    # ...but the scaffold/venv/git steps are skipped when astra.yaml pre-exists.
+    assert not (project / "Containerfile").exists()
+    assert not (project / ".venv").exists()
+    assert not (project / ".git").exists()
+    # The existing spec is left untouched.
+    assert (project / "astra.yaml").read_text() == "# existing ASTRA project\n"
+
+
+def test_init_converges_and_preserves_existing_files(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    import json
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "astra.yaml").write_text("# existing\n")
+
+    # Pre-existing settings.json with unrelated content must survive the merge.
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"permissions": {"allow": ["Bash(ls:*)"]}})
+    )
+    # Pre-existing report file must not be clobbered.
+    (project / "index.md").write_text("# my real report\n")
+
+    result = runner.invoke(main, ["init", str(project)])
+    assert result.exit_code == 0, result.output
+    assert "skipped (already present) index.md" in result.output
+
+    settings = json.loads((claude_dir / "settings.json").read_text())
+    assert settings["permissions"] == {"allow": ["Bash(ls:*)"]}
+    assert settings["enabledPlugins"] == {"lightcone@lightcone-research": True}
+    assert (project / "index.md").read_text() == "# my real report\n"
+
+    # Re-running is a clean no-op — nothing new added.
+    again = runner.invoke(main, ["init", str(project)])
+    assert again.exit_code == 0, again.output
+    assert "Nothing to do" in again.output
 
 
 def test_init_venv_uses_uv_when_available(

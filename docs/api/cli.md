@@ -74,8 +74,9 @@ new projects look like.
 
 ## Claude settings
 
-`_write_claude_settings(project_dir)` writes
-`project_dir/.claude/settings.json`. The file holds `extraKnownMarketplaces`
-and `enabledPlugins`, which register the `agent-skills` marketplace and enable
-the `lightcone` plugin. It holds no permission policy — permissions belong to
-the harness. No skills, hooks, or agents are copied — the plugin carries them.
+`_merge_claude_settings(project_dir)` non-destructively updates
+`project_dir/.claude/settings.json`. It adds `extraKnownMarketplaces` and
+`enabledPlugins`, which register the `agent-skills` marketplace and enable the
+`lightcone` plugin, while preserving any other content already in the file. It
+holds no permission policy — permissions belong to the harness. No skills,
+hooks, or agents are copied — the plugin carries them.

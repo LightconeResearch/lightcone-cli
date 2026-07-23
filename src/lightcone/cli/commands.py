@@ -6,8 +6,8 @@ The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 ``astra.yaml`` and shells out to ``snakemake``.
 
 Commands:
-- ``lc init``   — scaffold a project (CLAUDE.md, .claude/, venv, gitignore,
-  MyST report template).
+- ``lc init``   — scaffold a project, or converge an existing one onto the
+  integration (CLAUDE.md, .claude/, venv, gitignore, MyST report template).
 - ``lc run``    — generate Snakefile and run snakemake.
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
@@ -109,8 +109,10 @@ _____|_________________
 
 @main.command()
 @click.argument("directory", type=click.Path(path_type=Path), default=".")
-@click.option("--no-git", is_flag=True, help="Skip git init")
-@click.option("--no-venv", is_flag=True, help="Skip Python venv creation")
+@click.option("--no-git", is_flag=True, help="Skip git init (fresh scaffold only)")
+@click.option(
+    "--no-venv", is_flag=True, help="Skip Python venv creation (fresh scaffold only)"
+)
 @click.option(
     "--scratch",
     "scratch_override",
@@ -128,25 +130,63 @@ def init(
     no_venv: bool,
     scratch_override: str | None,
 ) -> None:
-    """Scaffold a new ASTRA project with Claude Code integration.
+    """Initialize (or converge) an ASTRA project with Claude Code integration.
 
-    Delegates the spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
-    base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
-    lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
-    ``.lightcone/`` project state, ``.claude/settings.json`` (the agent-skills
-    marketplace registration), ``CLAUDE.md``, a template MyST report
-    (``myst.yml`` + ``index.md``), and an optional Python venv.
+    ``lc init`` is convergent, so it is safe to run anywhere, any number of
+    times. What it does depends on whether the directory already holds an
+    ``astra.yaml``:
+
+    - **Fresh directory** — delegates the spec scaffold (``astra.yaml``,
+      ``universes/baseline.yaml``, base ``.gitignore``, ``src/``) to
+      ``astra init``, then layers on the lightcone bits: ``Containerfile`` +
+      ``requirements.txt``, ``CLAUDE.md``, an optional git repo and Python venv,
+      and the integration files below.
+
+    - **Existing ASTRA project** — leaves ``astra.yaml`` and the scaffold alone
+      (no Containerfile, git, or venv) and layers on only the missing
+      integration files, reporting what it added versus skipped.
+
+    The integration files are written idempotently in both cases: ``.lightcone/``
+    project state, ``results/``, the ``.claude/settings.json`` marketplace
+    registration (merged non-destructively), and the MyST report (``myst.yml`` +
+    ``index.md``). Each is skipped if already present.
     """
     console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
 
-    from astra.cli import init as astra_init
-
-    from lightcone.engine.site_registry import detect_current_site
-
     directory = directory.resolve()
+    fresh = not (directory / "astra.yaml").is_file()
 
-    if (directory / "astra.yaml").exists():
-        raise click.ClickException(f"{directory}/astra.yaml already exists.")
+    if fresh:
+        _scaffold_fresh_project(directory, scratch_override)
+
+    # Integration files — idempotent, written in both the fresh and existing
+    # cases. On a fresh scaffold they're all new; on an existing project only
+    # the missing ones are written.
+    added, skipped = _layer_integration(directory, scratch_override)
+
+    # git + venv only make sense for a fresh scaffold; an existing project
+    # already owns those choices.
+    if fresh:
+        _init_git_and_venv(directory, no_git=no_git, no_venv=no_venv)
+
+    _report_init(
+        directory,
+        fresh=fresh,
+        added=added,
+        skipped=skipped,
+        scratch_override=scratch_override,
+    )
+
+
+def _scaffold_fresh_project(directory: Path, scratch_override: str | None) -> None:
+    """Scaffold the spec + lightcone-only files for a brand-new project.
+
+    Runs only when ``directory`` has no ``astra.yaml``. Delegates the spec to
+    ``astra init``, then writes the files that belong to a fresh project but not
+    to an adopted one: the ``Containerfile``, ``requirements.txt``, the
+    ``.gitignore`` additions, and the stub ``CLAUDE.md``.
+    """
+    from astra.cli import init as astra_init
 
     # Spec scaffold: astra.yaml, universes/baseline.yaml, base .gitignore,
     # src/. We hold off on git init until our own files are in place so
@@ -174,79 +214,139 @@ def init(
     gitignore_path = directory / ".gitignore"
     gitignore_path.write_text(gitignore_path.read_text() + _GITIGNORE_APPEND)
 
-    # .lightcone/ project state dir + lightcone.yaml
-    (directory / ".lightcone").mkdir(exist_ok=True)
-    project_cfg: dict[str, object] = {"target": "local"}
-    if scratch_override:
-        project_cfg["scratch_root"] = scratch_override
-    (directory / ".lightcone" / "lightcone.yaml").write_text(
-        yaml.safe_dump(project_cfg)
-    )
-
-    # results/ directory placeholder
-    (directory / "results").mkdir(exist_ok=True)
-
-    # Claude Code settings: register the agent-skills marketplace.
-    _write_claude_settings(directory)
-
     # Project CLAUDE.md (a stub)
     (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
 
-    # Template MyST report. MyST support is a recommended add-on on top of
-    # the spec, not part of it — which is why the report scaffold lives here
-    # and not in `astra init`.
-    _create_report_template(directory)
 
+def _layer_integration(
+    directory: Path, scratch_override: str | None
+) -> tuple[list[str], list[str]]:
+    """Write the idempotent integration files onto ``directory``.
+
+    These layer on top of the ASTRA spec: ``.lightcone/`` state, ``results/``,
+    the ``.claude/`` marketplace registration, and the MyST report. Each is
+    written only if absent, so the call converges — everything on a fresh
+    scaffold, nothing on an already-integrated project. Returns
+    ``(added, skipped)`` for the caller to report. ``astra.yaml`` is never
+    touched.
+    """
+    added: list[str] = []
+    skipped: list[str] = []
+
+    # .lightcone/ project state dir + lightcone.yaml
+    lc_yaml = directory / ".lightcone" / "lightcone.yaml"
+    if lc_yaml.exists():
+        skipped.append(".lightcone/lightcone.yaml")
+    else:
+        (directory / ".lightcone").mkdir(exist_ok=True)
+        project_cfg: dict[str, object] = {"target": "local"}
+        if scratch_override:
+            project_cfg["scratch_root"] = scratch_override
+        lc_yaml.write_text(yaml.safe_dump(project_cfg))
+        added.append(".lightcone/lightcone.yaml")
+
+    # results/ directory placeholder
+    if (directory / "results").is_dir():
+        skipped.append("results/")
+    else:
+        (directory / "results").mkdir(exist_ok=True)
+        added.append("results/")
+
+    # .claude/settings.json — merge the marketplace registration non-destructively
+    if _merge_claude_settings(directory):
+        added.append(".claude/settings.json (marketplace registration)")
+    else:
+        skipped.append(".claude/settings.json (already registered)")
+
+    # Template MyST report (myst.yml + index.md), each skipped if present.
+    name = directory.name or "My Analysis"
+    if (directory / "myst.yml").exists():
+        skipped.append("myst.yml")
+    else:
+        (directory / "myst.yml").write_text(_MYST_YML)
+        added.append("myst.yml")
+    if (directory / "index.md").exists():
+        skipped.append("index.md")
+    else:
+        (directory / "index.md").write_text(f"# {name}\n" + _INDEX_MD_BODY)
+        added.append("index.md")
+
+    return added, skipped
+
+
+def _init_git_and_venv(directory: Path, *, no_git: bool, no_venv: bool) -> None:
+    """Initialize a git repo and a Python venv for a fresh scaffold."""
     # git init last so the initial commit captures every scaffolded file.
     no_git = no_git or (directory / ".git").exists()
     if not no_git:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
         console.print("[green]✓[/green] Initialized git repository")
 
-    # venv
-    if not no_venv:
-        if shutil.which("uv"):
-            with console.status("[dim]Creating virtual environment…[/dim]"):
-                subprocess.run(
-                    ["uv", "venv", "--python", "3.12", ".venv"],
-                    cwd=directory,
-                    check=False,
-                    capture_output=True,
-                )
-            with console.status("[dim]Installing lightcone-cli…[/dim]"):
-                subprocess.run(
-                    [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--python",
-                        ".venv/bin/python",
-                        "lightcone-cli",
-                    ],
-                    cwd=directory,
-                    check=False,
-                    capture_output=True,
-                )
-        else:
-            with console.status("[dim]Creating virtual environment…[/dim]"):
-                subprocess.run(
-                    ["python", "-m", "venv", ".venv"],
-                    cwd=directory,
-                    check=False,
-                    capture_output=True,
-                )
-            with console.status("[dim]Installing lightcone-cli…[/dim]"):
-                subprocess.run(
-                    [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"],
-                    cwd=directory,
-                    check=False,
-                    capture_output=True,
-                )
-        console.print(
-            f"[green]✓[/green] Virtual environment created in [cyan]{directory}/.venv[/cyan]"
-        )
+    if no_venv:
+        return
+    if shutil.which("uv"):
+        with console.status("[dim]Creating virtual environment…[/dim]"):
+            subprocess.run(
+                ["uv", "venv", "--python", "3.12", ".venv"],
+                cwd=directory,
+                check=False,
+                capture_output=True,
+            )
+        with console.status("[dim]Installing lightcone-cli…[/dim]"):
+            subprocess.run(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    ".venv/bin/python",
+                    "lightcone-cli",
+                ],
+                cwd=directory,
+                check=False,
+                capture_output=True,
+            )
+    else:
+        with console.status("[dim]Creating virtual environment…[/dim]"):
+            subprocess.run(
+                ["python", "-m", "venv", ".venv"],
+                cwd=directory,
+                check=False,
+                capture_output=True,
+            )
+        with console.status("[dim]Installing lightcone-cli…[/dim]"):
+            subprocess.run(
+                [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"],
+                cwd=directory,
+                check=False,
+                capture_output=True,
+            )
+    console.print(
+        f"[green]✓[/green] Virtual environment created in [cyan]{directory}/.venv[/cyan]"
+    )
 
-    console.print(f"\n[green]Project initialized at[/green] {directory}")
+
+def _report_init(
+    directory: Path,
+    *,
+    fresh: bool,
+    added: list[str],
+    skipped: list[str],
+    scratch_override: str | None,
+) -> None:
+    """Print the closing report for ``lc init`` — fresh scaffold or convergence."""
+    from lightcone.engine.site_registry import detect_current_site
+
+    if fresh:
+        console.print(f"\n[green]Project initialized at[/green] {directory}")
+    else:
+        console.print(f"\n[green]Converged lightcone integration in[/green] {directory}")
+        for item in added:
+            console.print(f"  [green]✓ added[/green] {item}")
+        for item in skipped:
+            console.print(f"  [dim]• skipped (already present)[/dim] {item}")
+        if not added:
+            console.print("  [dim]Nothing to do — already fully integrated.[/dim]")
 
     # Surface the resolved scratch root if a known site was detected — gives
     # users early visibility into where lc run will keep its operational
@@ -264,7 +364,10 @@ def init(
             )
 
     console.print("\nNext steps:")
-    console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
+    if fresh:
+        console.print(
+            f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]"
+        )
     console.print(
         "  • Start [cyan]claude[/cyan] and trust the folder — Claude Code offers "
         f"to install the [cyan]{PLUGIN_REF}[/cyan] plugin (skills, hooks, "
@@ -321,18 +424,10 @@ _build/
 """
 
 
-def _create_report_template(directory: Path) -> None:
-    """Write ``myst.yml`` + ``index.md`` — a starter report for the analysis.
-
-    The report references the boilerplate ``astra.yaml`` elements by path via
-    the MySTRA plugin, so the ids used below must track the ``astra init``
-    boilerplate (``example_method``, ``main_result``).
-    """
-    name = directory.name or "My Analysis"
-    (directory / "myst.yml").write_text(_MYST_YML)
-    (directory / "index.md").write_text(f"# {name}\n" + _INDEX_MD_BODY)
-
-
+# The MyST report is written by ``_layer_integration``. It references the
+# boilerplate ``astra.yaml`` elements by path via the MySTRA plugin, so the ids
+# below must track the ``astra init`` boilerplate (``example_method``,
+# ``main_result``).
 _MYST_YML = """\
 # MyST configuration for the analysis report (https://mystmd.org/).
 # The MySTRA plugin resolves {astra}`...` references against astra.yaml.
@@ -418,33 +513,53 @@ prose. Preview with `myst start` (requires the MyST CLI, `npm i -g mystmd`).
 """
 
 
-def _write_claude_settings(project_dir: Path) -> None:
-    """Write ``.claude/settings.json`` — the agent-skills marketplace only.
+def _marketplace_source() -> dict[str, object]:
+    """The ``extraKnownMarketplaces`` entry for the agent-skills marketplace."""
+    return {
+        "source": {
+            "source": "github",
+            "repo": MARKETPLACE_REPO,
+        },
+    }
 
-    The CLI registers the ``agent-skills`` marketplace and enables the
-    ``lightcone`` plugin. When the user trusts the project folder, Claude Code
-    offers to install the plugin; the plugin then carries the skills, hooks,
-    and the lc-extractor subagent.
 
-    The CLI writes no permission policy. Permissions belong to the harness, not
-    to the tool that scaffolds the project — the user chooses the trust level
-    Claude Code runs under. ``docs/user/troubleshooting.md`` offers a
-    copy-paste ruleset for cluster work; it stays opt-in.
+def _merge_claude_settings(project_dir: Path) -> bool:
+    """Non-destructively add the marketplace registration to ``.claude/settings.json``.
+
+    Preserves any existing content: only the ``lightcone-research`` marketplace
+    entry and the ``lightcone`` plugin key are touched. The CLI writes no
+    permission policy — permissions belong to the harness. Returns ``True`` if
+    the file was created or changed, ``False`` if it was already registered.
     """
     claude_dir = project_dir / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    settings = {
-        "extraKnownMarketplaces": {
-            MARKETPLACE_NAME: {
-                "source": {
-                    "source": "github",
-                    "repo": MARKETPLACE_REPO,
-                },
-            },
-        },
-        "enabledPlugins": {PLUGIN_REF: True},
-    }
-    (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
+    settings_path = claude_dir / "settings.json"
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+        except json.JSONDecodeError as e:
+            raise click.ClickException(
+                f"{settings_path} is not valid JSON ({e}); fix or remove it "
+                "before running lc init."
+            )
+        if not isinstance(settings, dict):
+            raise click.ClickException(f"{settings_path} is not a JSON object.")
+    else:
+        settings = {}
+
+    changed = False
+    marketplaces = settings.setdefault("extraKnownMarketplaces", {})
+    if marketplaces.get(MARKETPLACE_NAME) != _marketplace_source():
+        marketplaces[MARKETPLACE_NAME] = _marketplace_source()
+        changed = True
+    plugins = settings.setdefault("enabledPlugins", {})
+    if plugins.get(PLUGIN_REF) is not True:
+        plugins[PLUGIN_REF] = True
+        changed = True
+
+    if changed:
+        claude_dir.mkdir(exist_ok=True)
+        settings_path.write_text(json.dumps(settings, indent=2))
+    return changed
 
 
 # =============================================================================
