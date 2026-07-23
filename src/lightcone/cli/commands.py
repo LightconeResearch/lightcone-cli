@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 # is only active in lc-init'd folders the harness trusts).
 MARKETPLACE_NAME = "lightcone-research"
 MARKETPLACE_REPO = "LightconeResearch/agent-skills"
+# DOGFOOD PIN — revert to default branch when agent-skills#15 merges.
+MARKETPLACE_BRANCH = "astra-plugin-rework"
 PLUGIN_NAME = "lightcone"
 PLUGIN_REF = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 
@@ -538,7 +540,9 @@ def _marketplace_arg() -> str:
     Claude Code and Codex both accept the ``owner/repo`` form (and an optional
     ``@ref`` suffix), so a single argument serves both registrations.
     """
-    return MARKETPLACE_REPO
+    # DOGFOOD PIN — revert to `MARKETPLACE_REPO` when agent-skills#15 merges.
+    # The `@branch` suffix pins `<harness> plugin marketplace add` to a branch.
+    return f"{MARKETPLACE_REPO}@{MARKETPLACE_BRANCH}"
 
 
 def _register_claude_marketplace(project_dir: Path) -> bool:

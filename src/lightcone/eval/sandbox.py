@@ -211,7 +211,11 @@ class EvalSandbox:
         # signature changes or the sandbox lacks network, the trial still
         # runs (skill-less) rather than aborting setup.
         install = self.exec(
-            "claude plugin marketplace add LightconeResearch/agent-skills"
+            # DOGFOOD PIN — the `@astra-plugin-rework` ref pins the marketplace
+            # to agent-skills#15 so the eval exercises the PR. Revert to
+            # `LightconeResearch/agent-skills` when it merges.
+            "claude plugin marketplace add"
+            " LightconeResearch/agent-skills@astra-plugin-rework"
             " && claude plugin install lightcone@lightcone-research",
             timeout=120,
         )
