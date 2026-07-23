@@ -18,18 +18,17 @@ care of the rest — specification, execution, and provenance.
 uv tool install lightcone-cli
 lc init my-analysis
 cd my-analysis
+# then open your agent harness in the project, e.g. Claude Code:
 claude   # trust the folder to install the lightcone plugin
 ```
 
 The skills ship as a plugin, not with `lightcone-cli`. `lc init` registers the
-[agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace,
-and Claude Code offers to install the `lightcone` plugin when you trust the
-folder. To install it by hand:
-
-```bash
-claude plugin marketplace add LightconeResearch/agent-skills
-claude plugin install lightcone@lightcone-research
-```
+[agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace
+with both harnesses: it writes `.claude/settings.json` for Claude Code (which
+offers to install the `lightcone` plugin on folder trust) and runs
+`codex plugin` for Codex when `codex` is on PATH. The
+[install guide](https://docs.lightconeresearch.org/user/install/) has the
+by-hand commands as a fallback.
 
 Then tell the agent what you have to start from — a research question
 (`/lightcone:new`), existing code (`/lightcone-experimental:from-code`), or a

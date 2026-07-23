@@ -6,9 +6,11 @@ Claude Code and Codex slash commands. They no longer ship inside
 [LightconeResearch/agent-skills](https://github.com/LightconeResearch/agent-skills)
 marketplace and install as plugins.
 
-`lc init` registers the marketplace in the project's `.claude/settings.json`.
-Claude Code offers to install the `lightcone` plugin when you trust the folder.
-See [Install](../user/install.md) for the manual commands.
+`lc init` registers the marketplace with both harnesses. On Claude Code it
+writes the project's `.claude/settings.json`, and Claude Code offers to install
+the `lightcone` plugin when you trust the folder. On Codex it runs
+`codex plugin` (global registration) when `codex` is on PATH. See
+[Install](../user/install.md) for the by-hand commands.
 
 ## Plugins
 

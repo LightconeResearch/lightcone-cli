@@ -9,9 +9,9 @@ The toolchain has two moving parts. Each travels on its own channel.
 
 - **The `lc` CLI** ships through `uv`. Run `uv tool upgrade lightcone-cli`
   to get a newer CLI.
-- **The `lightcone` plugin** ships through the Claude Code marketplace. The
-  plugin carries the skills, the hooks, and the `lc-extractor` subagent.
-  Claude Code refreshes it on its own.
+- **The `lightcone` plugin** ships through the agent-skills marketplace. The
+  plugin carries the skills, the hooks, and the `lc-extractor` subagent. Your
+  harness refreshes it on its own.
 
 The two versions move independently. A skill edit ships from the marketplace
 without a CLI release. A CLI change that alters the plugin contract requires a

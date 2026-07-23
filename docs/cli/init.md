@@ -1,6 +1,6 @@
 # lc init
 
-Scaffold a new ASTRA project with Claude Code integration.
+Scaffold a new ASTRA project with agent integration.
 
 ## Synopsis
 
@@ -39,12 +39,12 @@ universes/                    # placeholder; populate via `astra universe genera
 > The historical `--target`, `--existing-project`, `--sub-analysis`, and
 > `--permissions` flags have been removed; today's `lc init` only knows the two
 > flags above. For migrating an existing project, run `lc init` in a fresh
-> directory and use the `/lightcone-experimental:from-code` skill from inside Claude Code.
+> directory and use the `/lightcone-experimental:from-code` skill from inside your agent.
 
 ## Permissions
 
 `lc init` writes no permission policy. Permissions belong to the harness. You
-choose the trust level Claude Code runs under. See
+choose the trust level your agent runs under. See
 [Troubleshooting](../user/troubleshooting.md#recommended-permissions-for-cluster-work)
 for a copy-paste ruleset for cluster work.
 
@@ -60,8 +60,9 @@ lc init my-analysis --no-git --no-venv # bare bones
 
 ```bash
 cd my-analysis
-claude           # open Claude Code
-# Inside Claude Code:
+# open your agent CLI in the project, e.g. Claude Code:
+claude
+# Inside the session:
 /lightcone:new  # scope a research question into astra.yaml
 # Then ask the agent to implement the spec.
 # It will run lc run, watch lc status, then validate and verify.

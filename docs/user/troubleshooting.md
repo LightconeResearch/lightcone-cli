@@ -160,17 +160,19 @@ data. The `deny` rules block edits to secrets and a few dangerous commands.
 A future "best-practices" skill may carry this guidance so you do not have to
 copy it by hand.
 
-## Claude Code says it can't write a file
+## The agent says it can't write a file
 
-Check `.claude/settings.json` for a `deny` or `ask` rule that matches the path.
-`lc init` writes no permission rules, so any block comes from your own settings
-or your harness trust level. Either move the work elsewhere or relax the rule.
+Check your harness permission settings for a `deny` or `ask` rule that matches
+the path (for Claude Code, `.claude/settings.json`). `lc init` writes no
+permission rules, so any block comes from your own settings or your harness
+trust level. Either move the work elsewhere or relax the rule.
 
 ## I deleted `.claude/settings.json` by accident
 
-Run `lc init` inside the project. It is convergent: it re-adds the marketplace
-registration non-destructively and leaves `astra.yaml` alone. Or write the file
-back by hand — it registers the marketplace so Claude Code can offer the plugin:
+This file is the Claude Code marketplace registration. Run `lc init` inside the
+project. It is convergent: it re-adds the registration non-destructively and
+leaves `astra.yaml` alone. Or write the file back by hand — it registers the
+marketplace so Claude Code can offer the plugin:
 
 ```json
 {
@@ -184,6 +186,7 @@ back by hand — it registers the marketplace so Claude Code can offer the plugi
 ```
 
 Then restart Claude Code and trust the folder so it reinstalls the plugin.
+(On Codex, re-register the plugin with `codex plugin add lightcone@lightcone-research`.)
 
 ## I want to start the spec over
 
@@ -192,13 +195,13 @@ about what you tried), then `/lightcone:new` again:
 
 ```bash
 mv astra.yaml astra.previous.yaml
-claude
+claude   # or your agent CLI of choice
 # /lightcone:new
 ```
 
 ## File a bug from inside the session
 
-Inside Claude Code:
+Inside your agent session:
 
 ```text
 /lightcone:feedback the lc-extractor agent crashed on PDF X

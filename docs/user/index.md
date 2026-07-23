@@ -10,7 +10,7 @@ No need to write code by hand, **you stay in charge of the scientific choices**,
 
 ## What this guide covers
 
-- [Install](install.md) — get the `lc` command line and Claude Code running on your
+- [Install](install.md) — get the `lc` command line and your agent running on your
   machine or on a cluster.
 - [Getting Started](getting-started.md) — create your first project,
   run it end-to-end, and understand what each piece does.
@@ -32,16 +32,16 @@ No need to write code by hand, **you stay in charge of the scientific choices**,
         ```bash
         uv tool install lightcone-cli
         lc init my-analysis && cd my-analysis
-        claude
-        # then, inside Claude Code,  run /lightcone:new
+        claude   # or your agent CLI of choice
+        # then, inside the session, run /lightcone:new
         ```
 
     === "pip"
         ```bash
         pip install lightcone-cli
         lc init my-analysis && cd my-analysis
-        claude 
-        # then, inside Claude Code: /lightcone:new
+        claude   # or your agent CLI of choice
+        # then, inside the session: /lightcone:new
         ```
 
 That's the shortest possible path. The rest of the guide is the unhurried version.
@@ -54,7 +54,7 @@ That's the shortest possible path. The rest of the guide is the unhurried versio
   Python commands, not a DSL. There's no learning curve beyond what's
   in [Getting Started](getting-started.md).
 - **An IDE.** `lc` is a command-line tool; the agent surface lives
-  inside the agent harness (Claude Code for now).
+  inside the agent harness (Claude Code and Codex).
 
 If you'd rather skim the design and architecture, the
 [maintainer docs](../maintainer.md) are the other half of this site.

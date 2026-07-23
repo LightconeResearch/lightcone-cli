@@ -2,10 +2,10 @@
 
 ## Project Overview
 
-**lightcone-cli** is Lightcone Research's agentic layer for ASTRA (Agentic Schema for Transparent Research Analysis). It ships the `lc` executable. The Claude Code skills and hooks used during interactive analysis work ship separately, from the [agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace as the `lightcone` plugin; `lc init` registers that marketplace.
+**lightcone-cli** is Lightcone Research's agentic layer for ASTRA (Agentic Schema for Transparent Research Analysis). It ships the `lc` executable. The agent skills and hooks used during interactive analysis work ship separately, from the [agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace as the `lightcone` plugin; `lc init` registers it with both harnesses — writing `.claude/settings.json` for Claude Code and running `codex plugin` for Codex when `codex` is on PATH.
 
 - **ASTRA** = pure specification: schema, validation, prior insights & findings, evidence verification, helpers, minimal CLI
-- **lightcone-cli** = agentic layer: Claude Code skills, project scaffolding, **Snakemake-based execution**, container builds
+- **lightcone-cli** = agentic layer: agent skills, project scaffolding, **Snakemake-based execution**, container builds
 
 lightcone-cli depends on ASTRA. The `astra` CLI handles spec operations; the `lc` CLI handles execution and agent operations.
 
@@ -66,7 +66,8 @@ src/lightcone/              # namespace — NO __init__.py
 
 # Skills, hooks, and the lc-extractor subagent are NOT in this repo. They ship
 # from github.com/LightconeResearch/agent-skills as the `lightcone` plugin.
-# `lc init` registers that marketplace in .claude/settings.json.
+# `lc init` registers it with both harnesses: .claude/settings.json for Claude
+# Code, and `codex plugin` (global) for Codex when `codex` is on PATH.
 
 tests/                      # pytest — mirrors src/ structure
 pyproject.toml              # hatchling + hatch-vcs, ASTRA + Snakemake as deps

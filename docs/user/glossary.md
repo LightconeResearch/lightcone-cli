@@ -139,8 +139,9 @@ node launched via `srun`.
 
 ## Skill
 
-A Claude Code slash command. Skills ship in the `lightcone` plugin from the
-`lightcone-research` marketplace, not with the `lightcone-cli` package.
+A slash command in your agent harness (Claude Code, Codex). Skills ship in the
+`lightcone` plugin from the `lightcone-research` marketplace, not with the
+`lightcone-cli` package.
 The `from-*` family is parallel by what you start from — a question
 (`/lightcone:new`), code (`/lightcone-experimental:from-code`), or a paper
 (`/lightcone-experimental:from-paper`). `/lightcone:feedback` files upstream issues from inside
@@ -149,7 +150,8 @@ through a specific phased workflow.
 
 ## Subagent
 
-A Claude Code agent invoked by another agent via the `Task` tool. The
+A nested agent invoked by another agent to run a scoped task in isolated
+context (in Claude Code, via the `Task` tool). The
 `lc-extractor` subagent reads PDFs and pulls verifiable quotes; it's
 spawned by `/lightcone:new` during the literature deep-dive phase.
 Subagents have isolated context, which is why `/lightcone:new` uses
@@ -204,8 +206,8 @@ killing the tmux session.
 
 ## Permissions
 
-The set of tools and bash patterns Claude Code is allowed to use in your
+The set of tools and bash patterns your agent is allowed to use in your
 project. `lc init` writes no permission policy — permissions belong to the
-harness, and you choose the trust level Claude Code runs under. See
+harness, and you choose the trust level your harness runs under. See
 [Troubleshooting](troubleshooting.md#recommended-permissions-for-cluster-work)
 for a copy-paste ruleset for cluster work.

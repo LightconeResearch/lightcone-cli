@@ -46,29 +46,32 @@ is downstream of this file. The boilerplate from `lc init` has one example
 output and an empty decisions block — enough to run `lc run` and see something
 materialize, but not yet a real analysis.
 
-**`CLAUDE.md`** — a short note that tells Claude Code about the project. The
+**`CLAUDE.md`** — a short note that tells the agent about the project. The
 skills will update this as you go (filling in working notes, design context).
 You can edit it by hand whenever you want.
 
-## 2. Open Claude Code
+## 2. Open your agent
+
+Open your agent CLI inside the project directory. For example, Claude Code:
 
 ```bash
 claude
 ```
 
-This opens an interactive session inside the project directory. Claude Code
+This opens an interactive session inside the project directory. The agent
 reads `astra.yaml` and `CLAUDE.md` so it has context from the start.
 
 ## 3. The slash commands
 
 These commands come from the `lightcone` plugin, not the `lightcone-cli`
 package. `lc init` registers the
-[agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace,
-so Claude Code offers to install the plugin the first time you trust the folder.
-Accept, and the commands below appear. See [Install](install.md) for the manual
-steps.
+[agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace
+with your harness. On Claude Code it offers to install the plugin the first time
+you trust the folder — accept, and the commands below appear. On Codex, `lc
+init` runs `codex plugin` for you when `codex` is on PATH. See
+[Install](install.md) for the by-hand steps.
 
-Inside Claude Code, the `from-*` family is organized by what you're
+Inside the session, the `from-*` family is organized by what you're
 starting from. We'll use `/lightcone:new` in this guide; the others work the same
 way.
 
@@ -80,7 +83,7 @@ way.
 | `/lightcone:feedback` | Something broke and you want to file a GitHub issue without leaving the session. |
 
 These are structured entry points for common starting situations. Once inside a
-project you can also just describe what you're trying to do to Claude —
+project you can also just describe what you're trying to do to the agent —
 `astra.yaml`, `lc run`, and `lc verify` keep things tracked regardless of how
 you got there.
 

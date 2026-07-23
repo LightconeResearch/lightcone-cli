@@ -15,7 +15,7 @@ Snakemake that owns provenance.** This page expands that sentence.
    scheduler whose lifetime equals the run's lifetime. The cluster
    manager picks the right shape (local / SLURM / external) on the fly.
 
-The Claude Code plugin (skills + hooks + agents) is the agentic surface
+The agent plugin (skills + hooks + agents) is the agentic surface
 layered on top. It ships from the `agent-skills` marketplace, not this wheel.
 
 ---
@@ -234,15 +234,17 @@ the qualified `<analysis_id>.<output_id>` form.
 
 ---
 
-## Claude Code plugin
+## The agent plugin
 
 The skills, hooks, and the `lc-extractor` subagent are not bundled in the
 wheel. They ship from the
 [LightconeResearch/agent-skills](https://github.com/LightconeResearch/agent-skills)
 marketplace as the `lightcone` plugin.
 
-`lc init` does not copy any of them. It writes `.claude/settings.json` with the
-marketplace registration:
+`lc init` does not copy any of them. It registers the plugin with both
+harnesses, but the mechanisms differ because the harnesses differ. For Claude
+Code the registration is **per-project and declarative** — `lc init` writes
+`.claude/settings.json`:
 
 ```json
 {
@@ -255,16 +257,20 @@ marketplace registration:
 }
 ```
 
-Claude Code offers to install the plugin when the user trusts the folder. The
-plugin then carries the skills, the venv and session hooks, and the
-`lc-extractor` subagent. The install command is also documented for users who
-want to add it by hand — see [Install](user/install.md).
+Claude Code then offers to install the plugin when the user trusts the folder.
+For Codex the registration is **global and imperative** — Codex has no
+project-scoped plugin config yet ([openai/codex#18115](https://github.com/openai/codex/issues/18115)),
+so when `codex` is on PATH `lc init` shells out to `codex plugin marketplace add`
+and `codex plugin add`, which persist to the user's Codex config for all
+projects. Either way the plugin carries the skills, the venv and session hooks,
+and the `lc-extractor` subagent. The by-hand commands for both harnesses are
+also documented as a fallback — see [Install](user/install.md).
 
 ### Permissions
 
 `lc init` writes no permission policy. Permissions belong to the harness, not
-to the tool that scaffolds the project. The user chooses the trust level Claude
-Code runs under. For cluster work,
+to the tool that scaffolds the project. The user chooses the trust level their
+harness runs under. For cluster work,
 [Troubleshooting](user/troubleshooting.md#recommended-permissions-for-cluster-work)
 offers a copy-paste ruleset; it stays opt-in.
 

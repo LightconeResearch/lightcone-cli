@@ -1,8 +1,8 @@
 # CLI Reference
 
 The `lc` CLI is a thin wrapper around the engine. The user-facing
-surface is small on purpose — the heavy lifting happens through Claude
-Code skills, with the CLI as the durable, scriptable backstop.
+surface is small on purpose — the heavy lifting happens through the
+agent skills, with the CLI as the durable, scriptable backstop.
 
 ## Global behavior
 

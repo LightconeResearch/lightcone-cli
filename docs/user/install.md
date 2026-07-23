@@ -1,7 +1,7 @@
 # Install
 
 To get started on a lightcone project, you need three things on your machine: Python 3.11+, the lightcone command line tool `lc`, and
-an agent-based CLI (currently supporting Claude Code).  
+an agent CLI (supporting Claude Code, Codex, and opencode).  
 A container runtime is optional but recommended.
 
 ## 1. Python
@@ -186,12 +186,15 @@ choice is yours.
 
 The `lc` slash commands (`/lightcone:new`, `/lightcone:report`, and the rest)
 ship as a plugin, not with the `lightcone-cli` package. `lc init` registers the
-marketplace in the project's `.claude/settings.json`. When you start Claude Code
-and trust the folder, it offers to install the `lightcone` plugin.
-
-To install the plugin by hand:
+agent-skills marketplace with both harnesses, so normally you do nothing here.
+The by-hand commands below are the fallback if you skipped `lc init` or want to
+register a harness yourself.
 
 === "Claude Code"
+    `lc init` writes the marketplace registration into the project's
+    `.claude/settings.json`, so when you start Claude Code and trust the folder
+    it offers to install the `lightcone` plugin. To do it by hand instead:
+
     ```bash
     claude plugin marketplace add LightconeResearch/agent-skills
     claude plugin install lightcone@lightcone-research
@@ -201,6 +204,11 @@ To install the plugin by hand:
     then `/plugin install lightcone@lightcone-research`.
 
 === "OpenAI Codex"
+    Codex has no project-scoped plugin config yet
+    ([openai/codex#18115](https://github.com/openai/codex/issues/18115)), so
+    `lc init` runs these two commands for you when `codex` is on PATH — a global
+    registration that applies to every project. To do it by hand:
+
     ```bash
     codex plugin marketplace add LightconeResearch/agent-skills
     codex plugin add lightcone@lightcone-research
@@ -210,7 +218,7 @@ The skills live in
 [LightconeResearch/agent-skills](https://github.com/LightconeResearch/agent-skills).
 See [Skills](../skills/index.md) for the full plugin and command map.
 
-Open a project in your terminal or editor (see [Getting Started](getting-started.md)) and run your agent CLI from inside it. Inside Claude Code you'll type slash commands like `/lightcone:new`,
+Open a project in your terminal or editor (see [Getting Started](getting-started.md)) and run your agent CLI from inside it. Your agent exposes these as slash commands like `/lightcone:new`,
 `/lightcone-experimental:from-code`, and `/lightcone-experimental:from-paper` — see
 [The Agentic Workflow](agent-workflow.md).
 

@@ -2,7 +2,7 @@
 
 `lightcone-cli` is a thin shim over Snakemake that owns provenance. This guide
 covers everything below the user surface: how the execution and integrity layers
-work, what each engine module does, how the Claude Code plugin is structured, and
+work, what each engine module does, how the agent plugin is structured, and
 how to get a working dev loop.
 
 If you're looking for the user-facing docs, the
@@ -16,7 +16,7 @@ If you're looking for the user-facing docs, the
   exact Snakemake invocation each one triggers.
 - [Python API](api/index.md) — the `lightcone.engine.*` modules: public
   signatures, common entry points, and module responsibilities.
-- [Skills](skills/index.md) — the Claude Code skills, which ship from the
+- [Skills](skills/index.md) — the agent skills, which ship from the
   `agent-skills` marketplace, including the `from-paper` reproduction bundle.
 - [HPC & SLURM](hpc/index.md) — how the Dask cluster manager adapts to local,
   SLURM, and external schedulers.
@@ -46,7 +46,7 @@ we do not replicate any of that. The parts that are ours:
 - **Manifest layer** — writes and verifies `.lightcone-manifest.json` per output.
 - **Cluster manager** — picks local / SLURM / external Dask shape at runtime.
 
-The Claude Code skills, hooks, and the `lc-extractor` subagent are *not* ours to
+The agent skills, hooks, and the `lc-extractor` subagent are *not* ours to
 bundle. They ship from the
 [agent-skills](https://github.com/LightconeResearch/agent-skills) marketplace as
 the `lightcone` plugin. `lc init` registers that marketplace in the project's
