@@ -27,6 +27,21 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return fake_home
 
 
+@pytest.fixture(autouse=True)
+def _no_real_codex(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default: pretend ``codex`` is not on PATH so ``lc init`` never shells out
+    to a real Codex install, which would mutate the user's global config. Tests
+    that exercise the Codex path override ``shutil.which`` themselves."""
+    real_which = shutil.which
+
+    def fake_which(name: str, *args: object, **kwargs: object) -> str | None:
+        if name == "codex":
+            return None
+        return real_which(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+
 # ---- top-level ------------------------------------------------------------
 
 
@@ -250,6 +265,54 @@ def test_init_venv_falls_back_to_python_when_uv_missing(
     assert [
         ".venv/bin/python", "-m", "pip", "install", "-q", ASTRA_TOOLS_REQUIREMENT
     ] in calls
+
+
+# ---- lc init (Codex registration) -----------------------------------------
+
+
+def test_init_registers_codex_when_available(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `codex` is on PATH, `lc init` shells out to register the marketplace
+    and add the plugin — both idempotent, so convergent re-runs are safe."""
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/usr/bin/codex" if name == "codex" else None
+    )
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+
+    from lightcone.cli.commands import PLUGIN_REF, _codex_marketplace_arg
+
+    assert ["codex", "plugin", "marketplace", "add", _codex_marketplace_arg()] in calls
+    assert ["codex", "plugin", "add", PLUGIN_REF] in calls
+
+
+def test_init_skips_codex_when_absent(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No `codex` on PATH → `lc init` makes no codex calls and still succeeds."""
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+    assert not any(c[:1] == ["codex"] for c in calls)
 
 
 # ---- lc verify ------------------------------------------------------------

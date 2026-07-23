@@ -138,7 +138,7 @@ def init(
     no_venv: bool,
     scratch_override: str | None,
 ) -> None:
-    """Initialize (or converge) an ASTRA project with Claude Code integration.
+    """Initialize (or converge) an ASTRA project with agent-harness integration.
 
     ``lc init`` is convergent, so it is safe to run anywhere, any number of
     times. What it does depends on whether the directory already holds an
@@ -265,6 +265,11 @@ def _layer_integration(
         added.append(".claude/settings.json (marketplace registration)")
     else:
         skipped.append(".claude/settings.json (already registered)")
+
+    # Codex — register the plugin globally via the codex CLI. It is not a
+    # project file, so it lives outside the added/skipped report; the function
+    # prints its own status line.
+    _register_codex_plugin(directory)
 
     # Template MyST report (myst.yml + index.md), each skipped if present.
     name = directory.name or "My Analysis"
@@ -601,6 +606,46 @@ def _merge_claude_settings(project_dir: Path) -> bool:
         claude_dir.mkdir(exist_ok=True)
         settings_path.write_text(json.dumps(settings, indent=2))
     return changed
+
+
+def _codex_marketplace_arg() -> str:
+    """The repo argument for ``codex plugin marketplace add``."""
+    return MARKETPLACE_REPO
+
+
+def _register_codex_plugin(project_dir: Path) -> bool:
+    """Register the ``lightcone`` plugin with Codex, if ``codex`` is on PATH.
+
+    The Claude registration is per-project and declarative — a merged
+    ``.claude/settings.json`` the harness reads on folder trust. Codex has no
+    project-scoped plugin config yet (openai/codex#18115), so its registration is
+    *global* (user-scoped, applies to every project) and *imperative*: we shell
+    out to ``codex plugin marketplace add`` then ``codex plugin add``. Both are
+    idempotent, so re-running ``lc init`` converges to a no-op.
+
+    Best-effort and harness-optional: if ``codex`` is absent we skip silently; on
+    a failed command we warn and continue rather than failing ``lc init``.
+    Returns ``True`` when the plugin was registered, ``False`` otherwise.
+    """
+    if not shutil.which("codex"):
+        return False
+    steps = (
+        ["codex", "plugin", "marketplace", "add", _codex_marketplace_arg()],
+        ["codex", "plugin", "add", PLUGIN_REF],
+    )
+    for cmd in steps:
+        result = subprocess.run(cmd, cwd=project_dir, check=False, capture_output=True)
+        if result.returncode != 0:
+            console.print(
+                "[yellow]![/yellow] Could not register the lightcone plugin with "
+                f"Codex ([cyan]{' '.join(cmd)}[/cyan] failed); register it by hand."
+            )
+            return False
+    console.print(
+        "[green]✓[/green] Registered the lightcone plugin with Codex "
+        "(global — Codex config is user-scoped, so it applies to every project)"
+    )
+    return True
 
 
 # =============================================================================
