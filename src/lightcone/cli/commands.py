@@ -44,7 +44,8 @@ logger = logging.getLogger(__name__)
 # is only active in lc-init'd folders the harness trusts).
 MARKETPLACE_NAME = "lightcone-research"
 MARKETPLACE_REPO = "LightconeResearch/agent-skills"
-# DOGFOOD PIN — revert to default branch when agent-skills#15 merges.
+# INTERIM — the marketplace tracks the agent-skills#15 branch until it merges;
+# flip back to the default branch (drop the suffix) when it does.
 MARKETPLACE_BRANCH = "astra-plugin-rework"
 PLUGIN_NAME = "lightcone"
 PLUGIN_REF = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
@@ -561,7 +562,7 @@ def _marketplace_arg() -> str:
     Claude Code and Codex both accept the ``owner/repo`` form (and an optional
     ``@ref`` suffix), so a single argument serves both registrations.
     """
-    # DOGFOOD PIN — revert to `MARKETPLACE_REPO` when agent-skills#15 merges.
+    # INTERIM — revert to `MARKETPLACE_REPO` when agent-skills#15 merges.
     # The `@branch` suffix pins `<harness> plugin marketplace add` to a branch.
     return f"{MARKETPLACE_REPO}@{MARKETPLACE_BRANCH}"
 
@@ -593,8 +594,8 @@ def _register_claude_marketplace(project_dir: Path) -> bool:
         )
         return False
     console.print(
-        "[green]✓[/green] Registered the agent-skills marketplace with Claude Code "
-        "(global — marketplaces are user-scoped, so it applies to every project)"
+        "[green]✓[/green] Marketplace registration ensured with Claude Code (idempotent; "
+        "global — marketplaces are user-scoped, so it applies to every project)"
     )
     return True
 
@@ -629,8 +630,8 @@ def _register_codex_plugin(project_dir: Path) -> bool:
             )
             return False
     console.print(
-        "[green]✓[/green] Registered the lightcone plugin with Codex "
-        "(global — Codex config is user-scoped, so it applies to every project)"
+        "[green]✓[/green] Plugin registration ensured with Codex (idempotent; "
+        "global — Codex config is user-scoped, so it applies to every project)"
     )
     return True
 

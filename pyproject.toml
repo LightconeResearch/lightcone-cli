@@ -26,8 +26,7 @@ classifiers = [
 ]
 
 dependencies = [
-    # DOGFOOD PIN — revert when astra-tools releases >0.2.10 (restore "astra-tools>=0.2.10").
-    "astra-tools @ git+https://github.com/LightconeResearch/astra-tools@main",
+    "astra-tools>=0.2.11",
     "click>=8.0",
     "pyyaml>=6.0",
     "rich>=13.0",
@@ -69,11 +68,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.version]
 source = "vcs"
-
-# DOGFOOD PIN — needed for the astra-tools git direct reference above; remove
-# together with that pin when astra-tools releases >0.2.10.
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = [
