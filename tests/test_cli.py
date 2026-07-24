@@ -175,10 +175,12 @@ def test_init_layers_integration_onto_existing_project(
     assert settings["enabledPlugins"] == {"lightcone@lightcone-research": True}
     assert "extraKnownMarketplaces" not in settings
 
-    # ...but the scaffold/venv/git steps are skipped when astra.yaml pre-exists.
+    # ...but the scaffold/git steps are skipped when astra.yaml pre-exists.
     assert not (project / "Containerfile").exists()
-    assert not (project / ".venv").exists()
     assert not (project / ".git").exists()
+    # The venv is per-checkout state every checkout needs, so adoption
+    # creates it too (a fresh clone converges to a working checkout).
+    assert (project / ".venv").exists()
     # The existing spec is left untouched.
     assert (project / "astra.yaml").read_text() == "# existing ASTRA project\n"
 

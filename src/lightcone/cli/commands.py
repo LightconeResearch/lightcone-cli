@@ -179,10 +179,13 @@ def init(
     # the missing ones are written.
     added, skipped = _layer_integration(directory, scratch_override)
 
-    # git + venv only make sense for a fresh scaffold; an existing project
-    # already owns those choices.
-    if fresh:
-        _init_git_and_venv(directory, no_git=no_git, no_venv=no_venv)
+    # git only makes sense for a fresh scaffold: a clone brings its own .git,
+    # and an adopted project's git status is its owner's business. The venv is
+    # different — per-checkout state every checkout needs (the plugin's
+    # activate-venv hook expects it) — so it converges on both paths.
+    _init_git_and_venv(
+        directory, no_git=no_git or not fresh, no_venv=no_venv
+    )
 
     _report_init(
         directory,
@@ -299,7 +302,12 @@ def _layer_integration(
 
 
 def _init_git_and_venv(directory: Path, *, no_git: bool, no_venv: bool) -> None:
-    """Initialize a git repo and an empty Python venv for a fresh scaffold."""
+    """Initialize a git repo (fresh scaffolds only) and an empty Python venv.
+
+    The venv runs on every ``lc init``, guarded on ``.venv`` existing — a
+    freshly cloned lc project converges to a working checkout, analysis
+    environment included.
+    """
     # git init last so the initial commit captures every scaffolded file.
     no_git = no_git or (directory / ".git").exists()
     if not no_git:
