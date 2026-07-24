@@ -35,9 +35,9 @@ lc init my-analysis
 cd my-analysis
 ```
 
-`lc init` is convergent: run it in a fresh directory to scaffold a new
-project, or in an existing ASTRA project to layer on the missing
-integration bits. It never rewrites `astra.yaml`. See
+`lc init` is convergent — it adds whatever artifact is missing and leaves
+whatever is present alone, so it is safe to run in a new or existing
+directory. It never rewrites `astra.yaml`. See
 [The upgrade model](upgrading.md).
 
 ## "lc: command not found" or `lc` prints a directory listing

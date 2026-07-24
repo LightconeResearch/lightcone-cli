@@ -6,8 +6,8 @@ The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 ``astra.yaml`` and shells out to ``snakemake``.
 
 Commands:
-- ``lc init``   — scaffold a project, or converge an existing one onto the
-  integration (CLAUDE.md, .claude/, venv, gitignore, MyST report template).
+- ``lc init``   — converge a project onto the lightcone integration (each
+  artifact: present, skip; missing, add).
 - ``lc run``    — generate Snakefile and run snakemake.
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
@@ -168,13 +168,15 @@ def init(
     directory = directory.resolve()
 
     added, skipped = _write_spec(directory)
-    more_added, more_skipped = _layer_integration(directory, scratch_override)
+    more_added, more_skipped = _converge_artifacts(directory, scratch_override)
     added += more_added
     skipped += more_skipped
 
     # git init last, so a first-run repo's initial commit captures the full
     # converged scaffold.
-    _init_git_and_venv(directory, no_git=no_git, no_venv=no_venv)
+    more_added, more_skipped = _init_git_and_venv(directory, no_git=no_git, no_venv=no_venv)
+    added += more_added
+    skipped += more_skipped
 
     _report_init(
         directory,
@@ -238,7 +240,7 @@ def _append_gitignore(directory: Path) -> bool:
     return True
 
 
-def _layer_integration(
+def _converge_artifacts(
     directory: Path, scratch_override: str | None
 ) -> tuple[list[str], list[str]]:
     """Converge the remaining lightcone artifacts onto ``directory``.
@@ -255,23 +257,21 @@ def _layer_integration(
     added: list[str] = []
     skipped: list[str] = []
 
-    if (directory / "Containerfile").exists():
-        skipped.append("Containerfile")
-    else:
-        (directory / "Containerfile").write_text(_CONTAINERFILE)
-        added.append("Containerfile")
-
-    if (directory / "requirements.txt").exists():
-        skipped.append("requirements.txt")
-    else:
-        (directory / "requirements.txt").write_text(_REQUIREMENTS)
-        added.append("requirements.txt")
-
-    if (directory / "CLAUDE.md").exists():
-        skipped.append("CLAUDE.md")
-    else:
-        (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
-        added.append("CLAUDE.md")
+    # Plain (path, content) writers: present, skip; missing, write + add.
+    writers = [
+        ("Containerfile", _CONTAINERFILE),
+        ("requirements.txt", _REQUIREMENTS),
+        ("CLAUDE.md", _PROJECT_CLAUDE_MD),
+        ("myst.yml", _MYST_YML),
+        ("index.md", f"# {directory.name or 'My Analysis'}\n" + _INDEX_MD_BODY),
+    ]
+    for label, content in writers:
+        path = directory / label
+        if path.exists():
+            skipped.append(label)
+        else:
+            path.write_text(content)
+            added.append(label)
 
     if _append_gitignore(directory):
         added.append(".gitignore (lightcone entries)")
@@ -309,59 +309,57 @@ def _layer_integration(
     # project files, so they live outside the added/skipped report; each function
     # prints its own status line. The commands are idempotent, so re-running
     # ``lc init`` converges.
-    _register_claude_marketplace(directory)
-    _register_codex_plugin(directory)
-
-    # Template MyST report (myst.yml + index.md), each skipped if present.
-    name = directory.name or "My Analysis"
-    if (directory / "myst.yml").exists():
-        skipped.append("myst.yml")
-    else:
-        (directory / "myst.yml").write_text(_MYST_YML)
-        added.append("myst.yml")
-    if (directory / "index.md").exists():
-        skipped.append("index.md")
-    else:
-        (directory / "index.md").write_text(f"# {name}\n" + _INDEX_MD_BODY)
-        added.append("index.md")
+    _register_claude_marketplace()
+    _register_codex_plugin()
 
     return added, skipped
 
 
-def _init_git_and_venv(directory: Path, *, no_git: bool, no_venv: bool) -> None:
+def _init_git_and_venv(
+    directory: Path, *, no_git: bool, no_venv: bool
+) -> tuple[list[str], list[str]]:
     """Converge the git repo and the Python venv: present, skip; missing, add.
 
     Both run on every ``lc init`` regardless of whether ``astra.yaml`` was
     already there — a checkout without a ``.git`` gets one, and every
-    checkout needs its own ``.venv`` (the plugin's activate-venv hook
-    expects it), so both converge to present the same way as any other
-    artifact.
+    checkout gets its own ``.venv`` as its analysis environment, so both
+    converge to present the same way as any other artifact, feeding the
+    same ``(added, skipped)`` report as everything else. ``--no-git``/
+    ``--no-venv`` opt out of adding a missing artifact; they are not
+    reported either way, matching how a skipped-by-flag item is invisible
+    elsewhere in ``lc init``.
     """
-    no_git = no_git or (directory / ".git").exists()
-    if not no_git:
+    added: list[str] = []
+    skipped: list[str] = []
+
+    if (directory / ".git").exists():
+        skipped.append("git repo")
+    elif not no_git:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
         console.print("[green]✓[/green] Initialized git repository")
+        added.append("git repo")
 
-    no_venv = no_venv or (directory / ".venv").exists()
-    if no_venv:
-        if (directory / ".venv").exists():
-            console.print("  [dim]• skipped (already present)[/dim] .venv")
-        return
-    # The venv is deliberately empty: neither ``lc`` nor ``astra`` goes in it
-    # (both are global installs — see the module comment above). It's the
-    # analysis environment the agent populates as the project's dependencies
-    # come into focus.
-    use_uv = shutil.which("uv") is not None
-    if use_uv:
-        venv_cmd = ["uv", "venv", "--python", "3.12", ".venv"]
-    else:
-        venv_cmd = ["python", "-m", "venv", ".venv"]
-    with console.status("[dim]Creating virtual environment…[/dim]"):
-        subprocess.run(venv_cmd, cwd=directory, check=False, capture_output=True)
-    console.print(
-        f"[green]✓[/green] Virtual environment created (empty — analysis "
-        f"dependencies install here) in [cyan]{directory}/.venv[/cyan]"
-    )
+    if (directory / ".venv").exists():
+        skipped.append(".venv")
+    elif not no_venv:
+        # The venv is deliberately empty: neither ``lc`` nor ``astra`` goes in
+        # it (both are global installs — see the module comment above). It's
+        # the analysis environment the agent populates as the project's
+        # dependencies come into focus.
+        use_uv = shutil.which("uv") is not None
+        if use_uv:
+            venv_cmd = ["uv", "venv", "--python", "3.12", ".venv"]
+        else:
+            venv_cmd = ["python", "-m", "venv", ".venv"]
+        with console.status("[dim]Creating virtual environment…[/dim]"):
+            subprocess.run(venv_cmd, cwd=directory, check=False, capture_output=True)
+        console.print(
+            f"[green]✓[/green] Virtual environment created (empty — analysis "
+            f"dependencies install here) in [cyan]{directory}/.venv[/cyan]"
+        )
+        added.append(".venv")
+
+    return added, skipped
 
 
 def _report_init(
@@ -458,7 +456,7 @@ _build/
 """
 
 
-# The MyST report is written by ``_layer_integration``. It references the
+# The MyST report is written by ``_converge_artifacts``. It references the
 # boilerplate ``astra.yaml`` elements by path via the MySTRA plugin, so the ids
 # below must track the ``astra init`` boilerplate (``example_method``,
 # ``main_result``).
@@ -599,7 +597,7 @@ def _marketplace_arg() -> str:
     return f"{MARKETPLACE_REPO}@{MARKETPLACE_BRANCH}"
 
 
-def _register_claude_marketplace(project_dir: Path) -> bool:
+def _register_claude_marketplace() -> None:
     """Register the agent-skills marketplace with Claude Code globally, if
     ``claude`` is on PATH.
 
@@ -612,27 +610,25 @@ def _register_claude_marketplace(project_dir: Path) -> bool:
 
     Best-effort and harness-optional: if ``claude`` is absent we skip silently;
     on a failed command we warn and continue rather than failing ``lc init``.
-    Returns ``True`` when the marketplace was registered, ``False`` otherwise.
     """
     if not shutil.which("claude"):
-        return False
+        return
     cmd = ["claude", "plugin", "marketplace", "add", _marketplace_arg()]
-    result = subprocess.run(cmd, cwd=project_dir, check=False, capture_output=True)
+    result = subprocess.run(cmd, check=False, capture_output=True)
     if result.returncode != 0:
         console.print(
             "[yellow]![/yellow] Could not register the agent-skills marketplace "
             f"with Claude Code ([cyan]{' '.join(cmd)}[/cyan] failed); register it "
             "by hand."
         )
-        return False
+        return
     console.print(
         "[green]✓[/green] Registered the agent-skills marketplace with Claude Code "
         "(global — marketplaces are user-scoped, so it applies to every project)"
     )
-    return True
 
 
-def _register_codex_plugin(project_dir: Path) -> bool:
+def _register_codex_plugin() -> None:
     """Register the ``lightcone`` plugin with Codex, if ``codex`` is on PATH.
 
     Codex has no project-scoped plugin config yet (openai/codex#18115), so its
@@ -645,27 +641,25 @@ def _register_codex_plugin(project_dir: Path) -> bool:
 
     Best-effort and harness-optional: if ``codex`` is absent we skip silently; on
     a failed command we warn and continue rather than failing ``lc init``.
-    Returns ``True`` when the plugin was registered, ``False`` otherwise.
     """
     if not shutil.which("codex"):
-        return False
+        return
     steps = (
         ["codex", "plugin", "marketplace", "add", _marketplace_arg()],
         ["codex", "plugin", "add", PLUGIN_REF],
     )
     for cmd in steps:
-        result = subprocess.run(cmd, cwd=project_dir, check=False, capture_output=True)
+        result = subprocess.run(cmd, check=False, capture_output=True)
         if result.returncode != 0:
             console.print(
                 "[yellow]![/yellow] Could not register the lightcone plugin with "
                 f"Codex ([cyan]{' '.join(cmd)}[/cyan] failed); register it by hand."
             )
-            return False
+            return
     console.print(
         "[green]✓[/green] Registered the lightcone plugin with Codex "
         "(global — Codex config is user-scoped, so it applies to every project)"
     )
-    return True
 
 
 # =============================================================================

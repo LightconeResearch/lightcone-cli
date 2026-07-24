@@ -314,7 +314,7 @@ def test_init_no_venv_skips_venv_creation(
 
 
 def test_init_skips_venv_when_already_present(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A pre-existing `.venv` is left alone — `lc init` must not silently wipe
     and recreate it (mirrors the git-init guard). `astra init` requires an
@@ -338,14 +338,13 @@ def test_init_skips_venv_when_already_present(
     sentinel = venv_dir / "sentinel"
     sentinel.write_text("do not touch")
 
-    _init_git_and_venv(project, no_git=True, no_venv=False)
-    output = capsys.readouterr().out
+    added, skipped = _init_git_and_venv(project, no_git=True, no_venv=False)
 
     assert not any("venv" in c for c in calls)
     assert sentinel.exists()
     assert sentinel.read_text() == "do not touch"
-    assert "skipped (already present)" in output
-    assert ".venv" in output
+    assert ".venv" in skipped
+    assert ".venv" not in added
 
 
 def test_init_has_no_venv_flag(runner: CliRunner) -> None:
