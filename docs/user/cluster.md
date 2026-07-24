@@ -1,23 +1,55 @@
 # Running on a Cluster
 
 When local laptop time isn't enough, you can take the same project to
-a SLURM HPC system. There's no separate configuration to learn — the
-same `lc run` command works inside an allocation, just with more
-hardware to spread across.
+a SLURM HPC system or a lightcone JupyterHub deployment. There's no
+separate configuration to learn — the same `lc run` command works
+everywhere, just with more hardware to spread across.
 
 ## The big picture
 
-`lc run` always dispatches through a Dask cluster. Three branches:
+`lc run` always dispatches through a Dask cluster. Four branches:
 
 1. On your laptop → a `LocalCluster` sized to the machine.
-2. **Inside a SLURM allocation** → an in-process scheduler bound to
+2. **On a JupyterHub deployment** (Dask Gateway detected) → a
+   run-scoped Gateway cluster created with your project's container
+   image and shut down when the run finishes.
+3. **Inside a SLURM allocation** → an in-process scheduler bound to
    the driver's hostname, with one `dask worker` per allocated node
    launched via `srun`.
-3. With `DASK_SCHEDULER_ADDRESS` set → connect to whatever scheduler
+4. With `DASK_SCHEDULER_ADDRESS` set → connect to whatever scheduler
    you've pointed at.
 
 You don't pick — `lc run` detects which case applies. The only thing
-you do differently on a cluster is request the nodes.
+you do differently on a cluster is request the nodes (and on
+JupyterHub, not even that).
+
+## JupyterHub deployments (Kubernetes + Dask Gateway)
+
+On a lightcone JupyterHub (GKE with Dask Gateway and Cloud Build),
+everything is zero-configuration — the deployment injects the whole
+contract into your session (`DASK_GATEWAY__*`, `LIGHTCONE_REGISTRY`,
+`LIGHTCONE_BUILD_BUCKET`), and `lc` picks it up:
+
+- The scaffolded project image doubles as the Dask worker pod image
+  with no hub-specific content: `lc init` pins `lightcone-cli` in
+  `requirements.txt`, which brings the whole execution stack
+  (snakemake, dask, distributed, dask-gateway) on top of your own
+  dependencies — the same image runs anywhere.
+- `lc build` builds through the deployment's **GCP Cloud Build**
+  service (there's no docker in your session) and pushes
+  `<registry>/lc-<project>:<content-hash>` to the hub's Artifact
+  Registry. Unchanged files never rebuild — freshness is one registry
+  check.
+- `lc run` makes sure the image is up to date, **creates a Dask
+  Gateway cluster with that image**, runs the pipeline in worker pods
+  (recipes execute directly in the image — no nested containers), and
+  **culls the cluster when the run finishes**. Your NFS home is
+  mounted in every worker pod at the same path, so outputs land in
+  the project tree exactly as they do locally.
+
+A cluster's image is fixed at creation, so create-per-run is also what
+keeps the environment fresh: edit the Containerfile, `lc run`, and the
+next cluster runs the rebuilt image.
 
 ## Pre-flight: pick the right container runtime
 

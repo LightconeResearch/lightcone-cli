@@ -361,3 +361,30 @@ def test_read_manifest_propagates_oserror(tmp_path: Path) -> None:
             read_manifest(out)
     finally:
         manifest_path.chmod(0o644)
+
+
+def test_manifest_records_worker_image_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a Gateway deployment the pod env carries the image it was
+    started with — the manifest records it as ground truth."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "data.txt").write_text("x")
+    cfg = {
+        "output_id": "o",
+        "universe_id": "u",
+        "recipe": "echo",
+        "container_image": "Containerfile",
+        "decisions": {},
+        "code_version": "sha256:x",
+        "git_sha": None,
+        "lc_version": "0",
+    }
+    monkeypatch.delenv("LIGHTCONE_WORKER_IMAGE", raising=False)
+    write_manifest(output_dir=out, inputs={}, cfg=cfg)
+    assert read_manifest(out)["worker_image"] is None
+
+    monkeypatch.setenv("LIGHTCONE_WORKER_IMAGE", "reg/lc-p:abc")
+    write_manifest(output_dir=out, inputs={}, cfg=cfg)
+    assert read_manifest(out)["worker_image"] == "reg/lc-p:abc"

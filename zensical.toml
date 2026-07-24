@@ -37,6 +37,7 @@ nav = [
       {"engine/manifest" = "api/manifest.md"},
       {"engine/snakefile" = "api/snakefile.md"},
       {"engine/container" = "api/container.md"},
+      {"engine/cloudbuild" = "api/cloudbuild.md"},
       {"engine/status" = "api/status.md"},
       {"engine/verify" = "api/verify.md"},
       {"engine/tree" = "api/tree.md"},

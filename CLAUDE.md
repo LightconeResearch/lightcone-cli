@@ -57,6 +57,7 @@ src/lightcone/              # namespace — NO __init__.py
 │   ├── manifest.py         # write_manifest, sha256_dir, code_version — the integrity layer
 │   ├── snakefile.py        # generates .lightcone/Snakefile from astra.yaml
 │   ├── container.py        # Content-addressed container builds (Docker, podman-hpc, apptainer)
+│   ├── cloudbuild.py       # GCP Cloud Build backend (JupyterHub deployments; no local OCI runtime)
 │   ├── status.py           # Manifest-driven status walker (no Snakemake import)
 │   ├── verify.py           # Recompute hashes; validate provenance chain
 │   ├── tree.py             # Sub-analysis tree traversal (kept from before)

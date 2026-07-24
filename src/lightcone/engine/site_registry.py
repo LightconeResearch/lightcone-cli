@@ -14,6 +14,7 @@ place.
 """
 from __future__ import annotations
 
+import os
 import socket
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -76,6 +77,29 @@ SITE_DEFAULTS: dict[str, dict[str, Any]] = {
             "//global/cfs/cdirs/**",
         ],
     },
+    # A JupyterHub deployment with Dask Gateway (e.g. lightcone-hub on
+    # GKE). Unlike HPC sites, hostnames here are meaningless pod names —
+    # detection is by the env vars the deployment injects into every
+    # user pod. ``container_runtime: kubernetes`` routes recipe
+    # execution through worker pods running the project image.
+    #
+    # ``scratch_root`` must be declared even though "local" gets by
+    # without one: with no site scratch, resolution falls back to the
+    # tempdir — fine on a single machine, but a pod's ``/tmp`` is
+    # pod-local. The ``.snakemake`` state the driver symlinks into
+    # scratch has to live on the NFS home every worker pod mounts, or
+    # each worker would write its job metadata into its own ``/tmp``
+    # (invisible to the driver) and every subsequent run would consider
+    # all outputs stale. ``$HOME`` *is* the shared filesystem here.
+    "jupyterhub": {
+        "hostname_patterns": [],
+        "env_markers": ["DASK_GATEWAY__ADDRESS"],
+        "display_name": "JupyterHub (Dask Gateway)",
+        "backend": "kubernetes",
+        "connection": {},
+        "container_runtime": "kubernetes",
+        "scratch_root": "$HOME",
+    },
     "local": {
         "hostname_patterns": [],
         "display_name": "Local",
@@ -96,6 +120,19 @@ def detect_site(hostname_or_name: str) -> str | None:
         for pattern in site.get("hostname_patterns", []):
             if pattern in normalized:
                 return site_key
+    return None
+
+
+def detect_site_from_env() -> str | None:
+    """Detect a site whose declared ``env_markers`` are all present.
+
+    Deployment-style sites (JupyterHub pods) have arbitrary hostnames;
+    what identifies them is the environment the deployment injects.
+    """
+    for site_key, site in SITE_DEFAULTS.items():
+        markers = site.get("env_markers") or []
+        if markers and all(os.environ.get(m) for m in markers):
+            return site_key
     return None
 
 
@@ -157,11 +194,12 @@ def detect_current_site() -> HostSite:
 
     Single source of truth for "which site are we on?" — everything else
     in the codebase should call this rather than re-deriving it from
-    :func:`socket.gethostname` and :func:`detect_site`. Returns a falsy
-    :class:`HostSite` (``key is None``) when the hostname matches no
-    known site.
+    :func:`socket.gethostname` and :func:`detect_site`. Environment
+    markers win over hostname patterns (a pod's hostname is noise; the
+    injected env is the signal). Returns a falsy :class:`HostSite`
+    (``key is None``) when nothing matches.
     """
-    key = detect_site(socket.gethostname())
+    key = detect_site_from_env() or detect_site(socket.gethostname())
     if key is None:
         return _UNKNOWN_HOST_SITE
     return HostSite(key=key, defaults=get_site_defaults(key) or {})
