@@ -287,6 +287,41 @@ def test_init_no_venv_skips_venv_creation(
     assert not any("venv" in c for c in calls)
 
 
+def test_init_skips_venv_when_already_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pre-existing `.venv` is left alone — `lc init` must not silently wipe
+    and recreate it (mirrors the git-init guard). `astra init` requires an
+    empty/non-existing directory, so this exercises `_init_git_and_venv`
+    directly rather than round-tripping through the full CLI."""
+    from lightcone.cli.commands import _init_git_and_venv
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    venv_dir = project / ".venv"
+    venv_dir.mkdir()
+    sentinel = venv_dir / "sentinel"
+    sentinel.write_text("do not touch")
+
+    _init_git_and_venv(project, no_git=True, no_venv=False)
+    output = capsys.readouterr().out
+
+    assert not any("venv" in c for c in calls)
+    assert sentinel.exists()
+    assert sentinel.read_text() == "do not touch"
+    assert "skipped (already present)" in output
+    assert ".venv" in output
+
+
 def test_init_has_no_venv_flag(runner: CliRunner) -> None:
     """The `--no-venv` flag exists again, to skip the (now-empty) venv."""
     result = runner.invoke(main, ["init", "--help"])

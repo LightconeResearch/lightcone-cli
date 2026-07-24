@@ -305,7 +305,10 @@ def _init_git_and_venv(directory: Path, *, no_git: bool, no_venv: bool) -> None:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
         console.print("[green]✓[/green] Initialized git repository")
 
+    no_venv = no_venv or (directory / ".venv").exists()
     if no_venv:
+        if (directory / ".venv").exists():
+            console.print("  [dim]• skipped (already present)[/dim] .venv")
         return
     # The venv is deliberately empty: neither ``lc`` nor ``astra`` goes in it
     # (both are global installs — see the module comment above). It's the
