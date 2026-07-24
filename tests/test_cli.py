@@ -69,7 +69,7 @@ def test_first_invocation_auto_creates_global_config(
     # without a pre-existing project.
     project = tmp_path / "proj"
     result = runner.invoke(
-        main, ["init", str(project), "--no-git"]
+        main, ["init", str(project), "--no-git", "--no-venv"]
     )
     assert result.exit_code == 0, result.output
     assert config.exists()
@@ -81,7 +81,7 @@ def test_first_invocation_auto_creates_global_config(
 
 def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
     assert result.exit_code == 0, result.output
     assert (project / "astra.yaml").exists()
     assert (project / "CLAUDE.md").exists()
@@ -93,7 +93,7 @@ def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
 
 def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
     assert result.exit_code == 0, result.output
 
     myst_yml = (project / "myst.yml").read_text()
@@ -115,7 +115,7 @@ def test_init_writes_marketplace_settings(
     import json
 
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
     assert result.exit_code == 0, result.output
 
     settings = json.loads((project / ".claude" / "settings.json").read_text())
@@ -216,46 +216,82 @@ def test_init_converges_and_preserves_existing_files(
     assert "Nothing to do" in again.output
 
 
-def test_init_creates_no_venv_and_installs_nothing(
+def test_init_venv_uses_uv_when_available(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`lc init` is a pure scaffold: no project venv, no package install.
-
-    Both `lc` and `astra` are installed globally from the lightcone-cli wheel,
-    and analysis dependencies flow into the container via requirements.txt — so
-    init must never create `.venv` or shell out to venv/pip/uv-install.
-    """
+    """`lc init` creates the project venv via `uv venv` when uv is on PATH, and
+    installs nothing into it — it's the empty analysis environment the agent
+    populates later, not a copy of `lc`/`astra`."""
     calls: list[list[str]] = []
 
     def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
         calls.append(list(cmd))
         return MagicMock(returncode=0)
 
-    monkeypatch.setattr(
-        shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None
-    )
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     project = tmp_path / "proj"
     result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
 
-    # No venv is created on disk...
-    assert not (project / ".venv").exists()
-    # ...and no venv/pip/uv-install subprocess is ever spawned.
-    assert not any("venv" in c for c in calls)
+    assert ["uv", "venv", "--python", "3.12", ".venv"] in calls
+    # Empty venv: nothing gets installed into it.
     assert not any(c[:2] == ["uv", "pip"] for c in calls)
     assert not any("pip" in c and "install" in c for c in calls)
-    # Nothing named lightcone-cli or astra-tools is installed anywhere.
     assert not any("lightcone-cli" in c for c in calls)
     assert not any("astra-tools" in c for c in calls)
 
 
-def test_init_has_no_no_venv_flag(runner: CliRunner) -> None:
-    """The `--no-venv` flag is gone — there is no venv to skip."""
+def test_init_venv_falls_back_to_python_when_uv_missing(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    assert result.exit_code == 0, result.output
+
+    assert ["python", "-m", "venv", ".venv"] in calls
+    # Empty venv: nothing gets installed into it.
+    assert not any("pip" in c and "install" in c for c in calls)
+    assert not any("lightcone-cli" in c for c in calls)
+    assert not any("astra-tools" in c for c in calls)
+
+
+def test_init_no_venv_skips_venv_creation(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--no-venv` skips venv creation entirely — no venv/uv subprocess call."""
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+
+    assert not (project / ".venv").exists()
+    assert not any("venv" in c for c in calls)
+
+
+def test_init_has_no_venv_flag(runner: CliRunner) -> None:
+    """The `--no-venv` flag exists again, to skip the (now-empty) venv."""
     result = runner.invoke(main, ["init", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--no-venv" not in result.output
+    assert "--no-venv" in result.output
 
 
 # ---- lc init (Codex registration) -----------------------------------------

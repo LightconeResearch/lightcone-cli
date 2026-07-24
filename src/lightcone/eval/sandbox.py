@@ -186,12 +186,12 @@ class EvalSandbox:
         )
 
         # Scaffold the project using the lc init from the wheel under
-        # test. --no-git: we run git init below, after the overlay, so the
-        # seed commit captures the task files too. `lc init` creates no venv;
-        # both `lc` and `astra` are on PATH globally in the sandbox image.
+        # test. --no-venv: deps are pre-installed system-wide on the
+        # sandbox image. --no-git: we run git init below, after the
+        # overlay, so the seed commit captures the task files too.
         result = self.exec(
             f"mkdir -p {self.WORK_DIR}"
-            f" && lc init {self.WORK_DIR} --no-git",
+            f" && lc init {self.WORK_DIR} --no-git --no-venv",
             timeout=120,
         )
         if result.exit_code != 0:

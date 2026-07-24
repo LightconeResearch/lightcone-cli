@@ -7,7 +7,7 @@ The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 
 Commands:
 - ``lc init``   — scaffold a project, or converge an existing one onto the
-  integration (CLAUDE.md, .claude/, gitignore, MyST report template).
+  integration (CLAUDE.md, .claude/, venv, gitignore, MyST report template).
 - ``lc run``    — generate Snakefile and run snakemake.
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
@@ -51,12 +51,13 @@ PLUGIN_REF = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 
 # Both ``lc`` and ``astra`` are global-only: one copy per machine from a single
 # ``uv tool install lightcone-cli`` (astra-tools is a dependency of this wheel,
-# so the same install exposes both entry points). ``lc init`` creates no project
-# venv — that kills the global-vs-venv-vs-container version skew. Analysis
-# dependencies live in ``requirements.txt`` and flow into the container, not the
-# host. When a project needs a spec-exact ``astra``, invoke it per-call with
-# ``uvx --from astra-tools==X --with astra-spec==Y astra`` rather than freezing a
-# venv at init time.
+# so the same install exposes both entry points). ``lc init`` still creates a
+# project ``.venv``, but leaves it empty — nothing from this wheel or
+# astra-tools goes in it. It's the analysis environment: dependencies the
+# agent installs while working the project, not a copy of the tooling. When a
+# project needs a spec-exact ``astra``, invoke it per-call with ``uvx --from
+# astra-tools==X --with astra-spec==Y astra`` rather than freezing one in the
+# venv.
 
 
 def _config_path() -> Path:
@@ -124,6 +125,9 @@ _____|_________________
 @click.argument("directory", type=click.Path(path_type=Path), default=".")
 @click.option("--no-git", is_flag=True, help="Skip git init (fresh scaffold only)")
 @click.option(
+    "--no-venv", is_flag=True, help="Skip Python venv creation (fresh scaffold only)"
+)
+@click.option(
     "--scratch",
     "scratch_override",
     default=None,
@@ -137,6 +141,7 @@ _____|_________________
 def init(
     directory: Path,
     no_git: bool,
+    no_venv: bool,
     scratch_override: str | None,
 ) -> None:
     """Initialize (or converge) an ASTRA project with agent-harness integration.
@@ -148,12 +153,12 @@ def init(
     - **Fresh directory** — delegates the spec scaffold (``astra.yaml``,
       ``universes/baseline.yaml``, base ``.gitignore``, ``src/``) to
       ``astra init``, then layers on the lightcone bits: ``Containerfile`` +
-      ``requirements.txt``, ``CLAUDE.md``, an optional git repo, and the
-      integration files below.
+      ``requirements.txt``, ``CLAUDE.md``, an optional git repo and Python venv,
+      and the integration files below.
 
     - **Existing ASTRA project** — leaves ``astra.yaml`` and the scaffold alone
-      (no Containerfile or git) and layers on only the missing integration
-      files, reporting what it added versus skipped.
+      (no Containerfile, git, or venv) and layers on only the missing
+      integration files, reporting what it added versus skipped.
 
     The integration files are written idempotently in both cases: ``.lightcone/``
     project state, ``results/``, the ``.claude/settings.json`` marketplace
@@ -173,10 +178,10 @@ def init(
     # the missing ones are written.
     added, skipped = _layer_integration(directory, scratch_override)
 
-    # git init only makes sense for a fresh scaffold; an existing project
-    # already owns that choice.
+    # git + venv only make sense for a fresh scaffold; an existing project
+    # already owns those choices.
     if fresh:
-        _init_git(directory, no_git=no_git)
+        _init_git_and_venv(directory, no_git=no_git, no_venv=no_venv)
 
     _report_init(
         directory,
@@ -292,18 +297,31 @@ def _layer_integration(
     return added, skipped
 
 
-def _init_git(directory: Path, *, no_git: bool) -> None:
-    """Initialize a git repo for a fresh scaffold.
-
-    No project venv is created: both ``lc`` and ``astra`` are installed globally
-    from the ``lightcone-cli`` wheel, and analysis dependencies ride the
-    container via ``requirements.txt``.
-    """
+def _init_git_and_venv(directory: Path, *, no_git: bool, no_venv: bool) -> None:
+    """Initialize a git repo and an empty Python venv for a fresh scaffold."""
     # git init last so the initial commit captures every scaffolded file.
     no_git = no_git or (directory / ".git").exists()
     if not no_git:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
         console.print("[green]✓[/green] Initialized git repository")
+
+    if no_venv:
+        return
+    # The venv is deliberately empty: neither ``lc`` nor ``astra`` goes in it
+    # (both are global installs — see the module comment above). It's the
+    # analysis environment the agent populates as the project's dependencies
+    # come into focus.
+    use_uv = shutil.which("uv") is not None
+    if use_uv:
+        venv_cmd = ["uv", "venv", "--python", "3.12", ".venv"]
+    else:
+        venv_cmd = ["python", "-m", "venv", ".venv"]
+    with console.status("[dim]Creating virtual environment…[/dim]"):
+        subprocess.run(venv_cmd, cwd=directory, check=False, capture_output=True)
+    console.print(
+        f"[green]✓[/green] Virtual environment created (empty — analysis "
+        f"dependencies install here) in [cyan]{directory}/.venv[/cyan]"
+    )
 
 
 def _report_init(
