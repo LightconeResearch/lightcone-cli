@@ -109,6 +109,21 @@ def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None
     assert "_build/" in (project / ".gitignore").read_text()
 
 
+def test_init_gitignore_append_is_idempotent(runner: CliRunner, tmp_path: Path) -> None:
+    """Running `lc init` twice must not duplicate the lightcone `.gitignore`
+    block — it's detected by a distinctive line, not an exact-string match."""
+    project = tmp_path / "proj"
+    first = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert first.exit_code == 0, first.output
+
+    second = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert second.exit_code == 0, second.output
+
+    gitignore = (project / ".gitignore").read_text()
+    assert gitignore.count("# lightcone-cli") == 1
+    assert "skipped (already present) .gitignore (lightcone entries)" in second.output
+
+
 def test_init_writes_marketplace_settings(
     runner: CliRunner, tmp_path: Path
 ) -> None:
@@ -157,6 +172,9 @@ def test_init_is_idempotent_on_fresh_scaffold(
 def test_init_layers_integration_onto_existing_project(
     runner: CliRunner, tmp_path: Path
 ) -> None:
+    """`lc init` converges item by item: an existing `astra.yaml` is left
+    alone, but every other artifact is added if missing, same as a from-
+    scratch run — there is no separate "adoption" mode that skips them."""
     import json
 
     project = tmp_path / "proj"
@@ -175,14 +193,20 @@ def test_init_layers_integration_onto_existing_project(
     assert settings["enabledPlugins"] == {"lightcone@lightcone-research": True}
     assert "extraKnownMarketplaces" not in settings
 
-    # ...but the scaffold/git steps are skipped when astra.yaml pre-exists.
-    assert not (project / "Containerfile").exists()
-    assert not (project / ".git").exists()
+    # ...and so are the artifacts that used to be scaffold-only: adopting a
+    # project with an existing astra.yaml still gets a Containerfile,
+    # CLAUDE.md, and a git repo if it's missing them.
+    assert (project / "Containerfile").exists()
+    assert (project / "requirements.txt").exists()
+    assert (project / "CLAUDE.md").exists()
+    assert (project / ".git").exists()
     # The venv is per-checkout state every checkout needs, so adoption
     # creates it too (a fresh clone converges to a working checkout).
     assert (project / ".venv").exists()
-    # The existing spec is left untouched.
+    # The existing spec is left untouched — no repoint, no rewrite.
     assert (project / "astra.yaml").read_text() == "# existing ASTRA project\n"
+    assert "skipped (already present)" in result.output
+    assert "astra.yaml" in result.output
 
 
 def test_init_converges_and_preserves_existing_files(
