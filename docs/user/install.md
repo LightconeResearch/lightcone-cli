@@ -239,6 +239,13 @@ have either, you can still use `lc` — set `runtime: none` in
 `~/.lightcone/config.yaml` and recipes will run on the host without
 isolation.
 
+With `runtime: none`, recipes use whatever is on your `PATH`. `lc` does
+not provision an environment for them. Provide the packages from
+`requirements.txt` yourself — `uv venv && uv pip install -r
+requirements.txt`, then activate it before `lc run` (or use any
+environment manager you prefer). With a container runtime this is
+unnecessary: the image installs `requirements.txt` at build time.
+
 ## Sanity check
 
     lc --help
