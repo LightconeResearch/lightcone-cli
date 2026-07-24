@@ -32,6 +32,7 @@ r2-decision-demo/
 ├── .lightcone/         # internal scratchpad — don't edit by hand
 ├── Containerfile       # build instructions for a local testing container
 ├── requirements.txt    # software dependencies
+├── .venv/              # empty analysis venv (skip with --no-venv)
 ├── universes/
 ├── src/
 └── results/

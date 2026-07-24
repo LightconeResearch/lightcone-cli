@@ -21,8 +21,10 @@ plugin version bump. Neither channel assumes the other has moved.
 
 The `astra` command is global, alongside `lc`. Both ship from the one
 `lightcone-cli` wheel (`astra-tools` is a dependency), so `uv tool upgrade
-lightcone-cli` moves them together — no per-project venv to keep in sync. `lc
-init` creates no `.venv`.
+lightcone-cli` moves them together — neither one lives in the project venv,
+so there's no per-project copy to keep in sync. `lc init` does create a
+project `.venv`, but leaves it empty for analysis dependencies, not `lc` or
+`astra`.
 
 When a single project needs a spec-exact `astra` — pinned to the astra-tools and
 astra-spec versions its `astra.yaml` was authored against — invoke it per-call

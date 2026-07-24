@@ -131,9 +131,11 @@ Get a confirmation of the proper installation by running
 This install puts two global commands on PATH: `lc` and `astra`. Both ship from
 the one `lightcone-cli` wheel (`astra-tools` is a dependency), so a single
 install exposes both — no project venv, no version skew between them. `lc init`
-creates no `.venv`; analysis dependencies ride the container via
-`requirements.txt`. When a project needs a spec-exact `astra`, invoke it
-per-call with `uvx --from astra-tools==X --with astra-spec==Y astra`.
+does create a project `.venv`, but leaves it empty: neither `lc` nor `astra`
+goes in it. It's the analysis environment your agent populates as the
+project's dependencies come into focus; `requirements.txt` feeds the
+container build, not this venv. When a project needs a spec-exact `astra`,
+invoke it per-call with `uvx --from astra-tools==X --with astra-spec==Y astra`.
 
 > **Note** Some people may have already set a personal shell alias `lc='ls --color'`. If that's you, installing lightcone-cli will shadow the alias — make sure to rebind it (e.g. `alias l='ls --color'`).
 
@@ -240,11 +242,12 @@ have either, you can still use `lc` — set `runtime: none` in
 isolation.
 
 With `runtime: none`, recipes use whatever is on your `PATH`. `lc` does
-not provision an environment for them. Provide the packages from
-`requirements.txt` yourself — `uv venv && uv pip install -r
-requirements.txt`, then activate it before `lc run` (or use any
-environment manager you prefer). With a container runtime this is
-unnecessary: the image installs `requirements.txt` at build time.
+not provision an environment for them. Install the packages from
+`requirements.txt` into the project `.venv` yourself — `uv pip install
+--python .venv/bin/python -r requirements.txt`, then activate it before
+`lc run` (or use any environment manager you prefer). With a container
+runtime this is unnecessary: the image installs `requirements.txt` at
+build time.
 
 ## Sanity check
 

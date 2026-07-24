@@ -24,6 +24,7 @@ results/                      # placeholder; populated by `lc run`
 universes/                    # placeholder; populate via `astra universe generate -n …`
 .claude/
   settings.json               # enabled plugin activation (no marketplace source, no permission policy)
+.venv/                        # empty Python venv (skipped with --no-venv)
 ```
 
 `lc init` refuses to run if `DIRECTORY/astra.yaml` already exists.
@@ -33,14 +34,18 @@ universes/                    # placeholder; populate via `astra universe genera
 | Option | Default | Effect |
 |--------|---------|--------|
 | `--no-git` | off | Skip `git init`. |
+| `--no-venv` | off | Skip Python venv creation. |
 
-> `lc init` creates no Python venv. Both `lc` and `astra` install globally from
-> the `lightcone-cli` wheel, and analysis dependencies ride the container via
-> `requirements.txt`.
+> Both `lc` and `astra` install globally from the `lightcone-cli` wheel —
+> neither goes into the project venv. `lc init` creates `.venv` empty (`uv
+> venv --python 3.12 .venv`, falling back to `python -m venv .venv` when `uv`
+> isn't on PATH); it's the analysis environment the agent populates as the
+> project's dependencies come into focus. `requirements.txt` feeds the
+> container build, not this venv.
 >
-> The historical `--target`, `--existing-project`, `--sub-analysis`,
-> `--permissions`, and `--no-venv` flags have been removed; today's `lc init`
-> only knows `--no-git` and `--scratch`. For migrating an existing project, run `lc init` in a fresh
+> The historical `--target`, `--existing-project`, `--sub-analysis`, and
+> `--permissions` flags have been removed; today's `lc init` only knows
+> `--no-git`, `--no-venv`, and `--scratch`. For migrating an existing project, run `lc init` in a fresh
 > directory and use the `/lightcone-experimental:from-code` skill from inside your agent.
 
 ## Permissions
@@ -56,6 +61,7 @@ for a copy-paste ruleset for cluster work.
 lc init                                # scaffold in cwd
 lc init my-analysis                    # scaffold in ./my-analysis
 lc init my-analysis --no-git           # skip git init
+lc init my-analysis --no-git --no-venv # bare bones
 ```
 
 ## Next steps
