@@ -211,7 +211,7 @@ class EvalSandbox:
         # signature changes or the sandbox lacks network, the trial still
         # runs (skill-less) rather than aborting setup.
         install = self.exec(
-            # INTERIM — the `@astra-plugin-rework` ref tracks agent-skills#15
+            # INTERIM — the `@astra-plugin-rework` ref tracks the agent-skills#15/#17 stack
             # so the eval exercises the PR branch. Drop the suffix when it
             # merges (same flip as MARKETPLACE_BRANCH in cli/commands.py).
             "claude plugin marketplace add"

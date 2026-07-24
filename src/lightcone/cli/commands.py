@@ -592,7 +592,7 @@ def _marketplace_arg() -> str:
     Claude Code and Codex both accept the ``owner/repo`` form (and an optional
     ``@ref`` suffix), so a single argument serves both registrations.
     """
-    # INTERIM — revert to `MARKETPLACE_REPO` when agent-skills#15 merges.
+    # INTERIM — revert to `MARKETPLACE_REPO` when agent-skills#17 merges (the stacked lightcone CLI-compat PR).
     # The `@branch` suffix pins `<harness> plugin marketplace add` to a branch.
     return f"{MARKETPLACE_REPO}@{MARKETPLACE_BRANCH}"
 
