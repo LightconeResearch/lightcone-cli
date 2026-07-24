@@ -12,6 +12,11 @@ lc init [OPTIONS] [DIRECTORY]
 
 ## What it creates
 
+`DIRECTORY` must not exist yet, or must be empty — `lc init` scaffolds new
+projects only. Running it against a non-empty directory (including one that
+already has an `astra.yaml`) fails cleanly before writing anything;
+re-running init or adopting an existing project is not supported.
+
 Inside `DIRECTORY` (creating it if needed):
 
 ```text
@@ -27,11 +32,10 @@ universes/                    # placeholder; populate via `astra universe genera
 .venv/                        # empty Python venv (skipped with --no-venv)
 ```
 
-`lc init` is convergent: it checks each artifact above independently and
-adds whatever is missing, leaving whatever is already present alone. Running
-it against a directory that already has `astra.yaml` never touches the spec
-— it just fills in any of the other files that aren't there yet. Running it
-again once everything is present is a no-op ("Nothing to do").
+`lc init` writes this scaffold in a single pass onto an empty directory.
+There is no re-run or adoption mode — running it a second time, or against
+a directory that already has an `astra.yaml`, fails with a clean error
+before touching anything.
 
 ## Options
 
@@ -50,9 +54,10 @@ again once everything is present is a no-op ("Nothing to do").
 > The historical `--target`, `--existing-project`, `--sub-analysis`, and
 > `--permissions` flags have been removed; today's `lc init` only knows
 > `--no-git`, `--no-venv`, and `--scratch`. To bring an existing codebase
-> under ASTRA, run `lc init` in that directory (it converges the lightcone
-> integration onto it without touching any code) and use the
-> `/lightcone-experimental:from-code` skill from inside your agent.
+> under ASTRA, scaffold a fresh project with `lc init` and use the
+> `/lightcone-experimental:from-code` skill from inside your agent to port
+> the code in; `lc init` cannot be run against a directory the codebase
+> already occupies.
 
 ## Permissions
 

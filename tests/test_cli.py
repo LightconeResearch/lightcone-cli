@@ -109,21 +109,6 @@ def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None
     assert "_build/" in (project / ".gitignore").read_text()
 
 
-def test_init_gitignore_append_is_idempotent(runner: CliRunner, tmp_path: Path) -> None:
-    """Running `lc init` twice must not duplicate the lightcone `.gitignore`
-    block — it's detected by a distinctive line, not an exact-string match."""
-    project = tmp_path / "proj"
-    first = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert first.exit_code == 0, first.output
-
-    second = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert second.exit_code == 0, second.output
-
-    gitignore = (project / ".gitignore").read_text()
-    assert gitignore.count("# lightcone-cli") == 1
-    assert "skipped (already present) .gitignore (lightcone entries)" in second.output
-
-
 def test_init_writes_marketplace_settings(
     runner: CliRunner, tmp_path: Path
 ) -> None:
@@ -149,97 +134,64 @@ def test_init_writes_marketplace_settings(
     assert not (project / ".claude" / "hooks.json").exists()
 
 
-# ---- lc init (convergent on an existing ASTRA project) --------------------
+# ---- lc init (non-empty directory) -----------------------------------------
 
 
-def test_init_is_idempotent_on_fresh_scaffold(
+def test_init_refuses_non_empty_directory(
     runner: CliRunner, tmp_path: Path
 ) -> None:
-    """Running `lc init` twice on the same dir must not error — the second run
-    converges rather than refusing that astra.yaml now exists."""
-    project = tmp_path / "proj"
-    first = runner.invoke(main, ["init", str(project), "--no-git"])
-    assert first.exit_code == 0, first.output
-    scaffold_astra = (project / "astra.yaml").read_text()
-
-    second = runner.invoke(main, ["init", str(project), "--no-git"])
-    assert second.exit_code == 0, second.output
-    assert "Nothing to do" in second.output
-    # The spec is never rewritten.
-    assert (project / "astra.yaml").read_text() == scaffold_astra
-
-
-def test_init_layers_integration_onto_existing_project(
-    runner: CliRunner, tmp_path: Path
-) -> None:
-    """`lc init` converges item by item: an existing `astra.yaml` is left
-    alone, but every other artifact is added if missing, same as a from-
-    scratch run — there is no separate "adoption" mode that skips them."""
-    import json
-
+    """`lc init` scaffolds new projects only — a non-empty directory is a
+    clean error, and nothing is written."""
     project = tmp_path / "proj"
     project.mkdir()
     (project / "astra.yaml").write_text("# existing ASTRA project\n")
 
     result = runner.invoke(main, ["init", str(project)])
+    assert result.exit_code != 0
+    assert "not empty" in result.output
+    assert "lc init scaffolds new projects only" in result.output
+
+    # Nothing else was written.
+    assert [p.name for p in project.iterdir()] == ["astra.yaml"]
+    assert (project / "astra.yaml").read_text() == "# existing ASTRA project\n"
+
+
+def test_init_refuses_directory_with_hidden_file(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """Any entry, including a hidden file, counts as non-empty."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".env").write_text("SECRET=1\n")
+
+    result = runner.invoke(main, ["init", str(project)])
+    assert result.exit_code != 0
+    assert "not empty" in result.output
+
+
+def test_init_full_scaffold(runner: CliRunner, tmp_path: Path) -> None:
+    """A single `lc init` on an empty directory writes the full scaffold."""
+    import json
+
+    project = tmp_path / "proj"
+
+    result = runner.invoke(main, ["init", str(project)])
     assert result.exit_code == 0, result.output
 
-    # Integration bits are layered on...
+    assert (project / "astra.yaml").exists()
     assert (project / ".lightcone" / "lightcone.yaml").exists()
     assert (project / "results").is_dir()
     assert (project / "myst.yml").exists()
     assert (project / "index.md").exists()
-    settings = json.loads((project / ".claude" / "settings.json").read_text())
-    assert settings["enabledPlugins"] == {"lightcone@lightcone-research": True}
-    assert "extraKnownMarketplaces" not in settings
-
-    # ...and so are the artifacts that used to be scaffold-only: adopting a
-    # project with an existing astra.yaml still gets a Containerfile,
-    # CLAUDE.md, and a git repo if it's missing them.
     assert (project / "Containerfile").exists()
     assert (project / "requirements.txt").exists()
     assert (project / "CLAUDE.md").exists()
     assert (project / ".git").exists()
-    # The venv is per-checkout state every checkout needs, so adoption
-    # creates it too (a fresh clone converges to a working checkout).
     assert (project / ".venv").exists()
-    # The existing spec is left untouched — no repoint, no rewrite.
-    assert (project / "astra.yaml").read_text() == "# existing ASTRA project\n"
-    assert "skipped (already present)" in result.output
-    assert "astra.yaml" in result.output
 
-
-def test_init_converges_and_preserves_existing_files(
-    runner: CliRunner, tmp_path: Path
-) -> None:
-    import json
-
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "astra.yaml").write_text("# existing\n")
-
-    # Pre-existing settings.json with unrelated content must survive the merge.
-    claude_dir = project / ".claude"
-    claude_dir.mkdir()
-    (claude_dir / "settings.json").write_text(
-        json.dumps({"permissions": {"allow": ["Bash(ls:*)"]}})
-    )
-    # Pre-existing report file must not be clobbered.
-    (project / "index.md").write_text("# my real report\n")
-
-    result = runner.invoke(main, ["init", str(project)])
-    assert result.exit_code == 0, result.output
-    assert "skipped (already present) index.md" in result.output
-
-    settings = json.loads((claude_dir / "settings.json").read_text())
-    assert settings["permissions"] == {"allow": ["Bash(ls:*)"]}
+    settings = json.loads((project / ".claude" / "settings.json").read_text())
     assert settings["enabledPlugins"] == {"lightcone@lightcone-research": True}
-    assert (project / "index.md").read_text() == "# my real report\n"
-
-    # Re-running is a clean no-op — nothing new added.
-    again = runner.invoke(main, ["init", str(project)])
-    assert again.exit_code == 0, again.output
-    assert "Nothing to do" in again.output
+    assert "extraKnownMarketplaces" not in settings
 
 
 def test_init_venv_uses_uv_when_available(
@@ -311,40 +263,6 @@ def test_init_no_venv_skips_venv_creation(
 
     assert not (project / ".venv").exists()
     assert not any("venv" in c for c in calls)
-
-
-def test_init_skips_venv_when_already_present(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A pre-existing `.venv` is left alone — `lc init` must not silently wipe
-    and recreate it (mirrors the git-init guard). `astra init` requires an
-    empty/non-existing directory, so this exercises `_init_git_and_venv`
-    directly rather than round-tripping through the full CLI."""
-    from lightcone.cli.commands import _init_git_and_venv
-
-    calls: list[list[str]] = []
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
-        calls.append(list(cmd))
-        return MagicMock(returncode=0)
-
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(subprocess, "run", _fake_run)
-
-    project = tmp_path / "proj"
-    project.mkdir()
-    venv_dir = project / ".venv"
-    venv_dir.mkdir()
-    sentinel = venv_dir / "sentinel"
-    sentinel.write_text("do not touch")
-
-    added, skipped = _init_git_and_venv(project, no_git=True, no_venv=False)
-
-    assert not any("venv" in c for c in calls)
-    assert sentinel.exists()
-    assert sentinel.read_text() == "do not touch"
-    assert ".venv" in skipped
-    assert ".venv" not in added
 
 
 def test_init_has_no_venv_flag(runner: CliRunner) -> None:

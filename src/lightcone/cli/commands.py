@@ -6,8 +6,7 @@ The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 ``astra.yaml`` and shells out to ``snakemake``.
 
 Commands:
-- ``lc init``   — converge a project onto the lightcone integration (each
-  artifact: present, skip; missing, add).
+- ``lc init``   — scaffold a new project with the lightcone integration.
 - ``lc run``    — generate Snakefile and run snakemake.
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
@@ -143,121 +142,92 @@ def init(
     no_venv: bool,
     scratch_override: str | None,
 ) -> None:
-    """Initialize (or converge) an ASTRA project with agent-harness integration.
+    """Scaffold a new ASTRA project with agent-harness integration.
 
-    ``lc init`` is convergent, so it is safe to run anywhere, any number of
-    times: it walks a fixed set of artifacts (``astra.yaml``, the container
-    files, ``CLAUDE.md``, ``.gitignore`` entries, the ``.lightcone/`` and
-    ``results/`` dirs, the ``.claude/settings.json`` activation, the MyST
-    report, a git repo, a Python venv) and for each one applies the same
-    rule — present, skip it; missing, add it — then reports what it added
-    versus what it left alone. There is no separate mode for a fresh
-    directory versus an existing ASTRA project; the same convergence runs
-    either way, so running it against a project someone else scaffolded
-    fills in whatever integration pieces are missing rather than leaving
-    them out.
+    ``lc init`` only scaffolds fresh projects: ``directory`` must not exist,
+    or must be empty, before anything is written. Given that, it writes a
+    fixed set of artifacts in one pass — ``astra.yaml`` (via ``astra init``),
+    the container files, ``CLAUDE.md``, ``.gitignore`` entries, the
+    ``.lightcone/`` and ``results/`` dirs, the ``.claude/settings.json``
+    activation, the MyST report, a git repo, and a Python venv.
 
-    ``astra.yaml`` is the one item that only ever gets written once: if
-    absent, ``astra init`` scaffolds the spec (plus
-    ``universes/baseline.yaml``, base ``.gitignore``, ``src/``) and the
-    spec is repointed at the project-local ``Containerfile``; if present,
-    it is never touched.
+    Re-running ``lc init`` against an existing directory, or adopting a
+    project scaffolded some other way, is not supported: ``astra init``
+    hard-fails on any non-empty directory, so there is no working
+    convergence path today.
     """
+    directory = directory.resolve()
+    _check_empty(directory)
+
     console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
 
-    directory = directory.resolve()
+    _write_spec(directory)
+    _write_artifacts(directory, scratch_override)
 
-    added, skipped = _write_spec(directory)
-    more_added, more_skipped = _converge_artifacts(directory, scratch_override)
-    added += more_added
-    skipped += more_skipped
+    # git init last, so the initial commit captures the full scaffold.
+    _init_git_and_venv(directory, no_git=no_git, no_venv=no_venv)
 
-    # git init last, so a first-run repo's initial commit captures the full
-    # converged scaffold.
-    more_added, more_skipped = _init_git_and_venv(directory, no_git=no_git, no_venv=no_venv)
-    added += more_added
-    skipped += more_skipped
-
-    _report_init(
-        directory,
-        added=added,
-        skipped=skipped,
-        scratch_override=scratch_override,
-    )
+    _report_init(directory, scratch_override=scratch_override)
 
 
-def _write_spec(directory: Path) -> tuple[list[str], list[str]]:
-    """Converge ``astra.yaml``: present, skip; missing, scaffold it.
+def _check_empty(directory: Path) -> None:
+    """Refuse to scaffold onto a non-empty directory.
+
+    ``lc init`` only writes new projects, so this must run before anything
+    else is written. A nonexistent directory counts as empty; anything with
+    any entry — including a stray ``.DS_Store`` — does not: ``astra init``
+    itself hard-fails on any non-empty directory downstream, so there is no
+    point in special-casing entries here.
+    """
+    if directory.exists() and any(directory.iterdir()):
+        raise click.ClickException(
+            f"{directory} is not empty — lc init scaffolds new projects only. "
+            "Re-running init or adopting an existing project is not supported (yet)."
+        )
+
+
+def _write_spec(directory: Path) -> None:
+    """Scaffold ``astra.yaml`` via ``astra init``, then repoint the container.
 
     Delegates the scaffold to ``astra init`` (spec, ``universes/baseline.yaml``,
     base ``.gitignore``, ``src/``), then repoints the spec at our
     project-local ``Containerfile`` — the astra boilerplate ships
     ``container: python:3.12-slim`` so the scaffold is runnable as-is, but
     lightcone projects build their own image so dependencies can evolve
-    under content-addressed rebuilds. This repoint only ever happens on the
-    spec ``astra init`` just wrote; an existing ``astra.yaml`` is never
-    touched.
+    under content-addressed rebuilds.
     """
-    astra_yaml_path = directory / "astra.yaml"
-    if astra_yaml_path.is_file():
-        return [], ["astra.yaml"]
-
     from astra.cli import init as astra_init
 
-    # We hold off on git init until every other item has converged so the
+    # We hold off on git init until every other item is written so the
     # initial commit captures the full project state.
     try:
         astra_init.callback(directory=directory, no_git=True)  # type: ignore[misc]
     except SystemExit as e:
         raise click.ClickException(f"astra init failed (exit code {e.code}).") from e
 
+    astra_yaml_path = directory / "astra.yaml"
     astra_yaml_path.write_text(
         astra_yaml_path.read_text().replace(
             "container: python:3.12-slim", "container: Containerfile", 1
         )
     )
-    return ["astra.yaml"], []
 
 
-def _append_gitignore(directory: Path) -> bool:
-    """Append the lightcone ``.gitignore`` block if it isn't there yet.
-
-    Idempotent by content, not by full-string match: it checks for a
-    distinctive line from ``_GITIGNORE_APPEND`` rather than the exact
-    appended text, so it converges even if the surrounding file has since
-    changed. Creates ``.gitignore`` if absent. Returns ``True`` if the file
-    was created or the block was appended.
-    """
-    marker = "# lightcone-cli"
-    gitignore_path = directory / ".gitignore"
-    if gitignore_path.exists():
-        existing = gitignore_path.read_text()
-        if marker in existing:
-            return False
-        gitignore_path.write_text(existing + _GITIGNORE_APPEND)
-        return True
-    gitignore_path.write_text(_GITIGNORE_APPEND)
-    return True
+def _append_gitignore(directory: Path) -> None:
+    """Write the lightcone ``.gitignore`` block."""
+    (directory / ".gitignore").write_text(_GITIGNORE_APPEND)
 
 
-def _converge_artifacts(
-    directory: Path, scratch_override: str | None
-) -> tuple[list[str], list[str]]:
-    """Converge the remaining lightcone artifacts onto ``directory``.
+def _write_artifacts(directory: Path, scratch_override: str | None) -> None:
+    """Write the remaining lightcone artifacts into ``directory``.
 
-    Each item follows the same rule: present, skip; missing, add. This
-    covers the container files, ``CLAUDE.md``, the ``.gitignore`` entries,
+    Covers the container files, ``CLAUDE.md``, the ``.gitignore`` entries,
     ``.lightcone/`` state, ``results/``, the ``.claude/`` marketplace
-    activation, and the MyST report. Runs the same way whether ``directory``
-    was just scaffolded by :func:`_write_spec` or already had an
-    ``astra.yaml`` — an adopted project gains whichever of these pieces it
-    doesn't already have. Returns ``(added, skipped)`` for the caller to
-    report. ``astra.yaml`` is never touched here.
+    activation, and the MyST report. ``directory`` is guaranteed empty (save
+    for what ``_write_spec`` just wrote), so this is a plain single-pass
+    scaffold with no exists-checks.
     """
-    added: list[str] = []
-    skipped: list[str] = []
-
-    # Plain (path, content) writers: present, skip; missing, write + add.
+    # Plain (path, content) writers.
     writers = [
         ("Containerfile", _CONTAINERFILE),
         ("requirements.txt", _REQUIREMENTS),
@@ -266,82 +236,44 @@ def _converge_artifacts(
         ("index.md", f"# {directory.name or 'My Analysis'}\n" + _INDEX_MD_BODY),
     ]
     for label, content in writers:
-        path = directory / label
-        if path.exists():
-            skipped.append(label)
-        else:
-            path.write_text(content)
-            added.append(label)
+        (directory / label).write_text(content)
 
-    if _append_gitignore(directory):
-        added.append(".gitignore (lightcone entries)")
-    else:
-        skipped.append(".gitignore (lightcone entries)")
+    _append_gitignore(directory)
 
     # .lightcone/ project state dir + lightcone.yaml
-    lc_yaml = directory / ".lightcone" / "lightcone.yaml"
-    if lc_yaml.exists():
-        skipped.append(".lightcone/lightcone.yaml")
-    else:
-        (directory / ".lightcone").mkdir(exist_ok=True)
-        project_cfg: dict[str, object] = {"target": "local"}
-        if scratch_override:
-            project_cfg["scratch_root"] = scratch_override
-        lc_yaml.write_text(yaml.safe_dump(project_cfg))
-        added.append(".lightcone/lightcone.yaml")
+    (directory / ".lightcone").mkdir(exist_ok=True)
+    project_cfg: dict[str, object] = {"target": "local"}
+    if scratch_override:
+        project_cfg["scratch_root"] = scratch_override
+    (directory / ".lightcone" / "lightcone.yaml").write_text(yaml.safe_dump(project_cfg))
 
     # results/ directory placeholder
-    if (directory / "results").is_dir():
-        skipped.append("results/")
-    else:
-        (directory / "results").mkdir(exist_ok=True)
-        added.append("results/")
+    (directory / "results").mkdir(exist_ok=True)
 
-    # .claude/settings.json — activate the plugin non-destructively. Activation
-    # only: no marketplace source, no version. This is what keeps the plugin
-    # active only in lc-init'd folders (Claude Code loads it on folder trust).
-    if _merge_claude_settings(directory):
-        added.append(".claude/settings.json (plugin activation)")
-    else:
-        skipped.append(".claude/settings.json (already activated)")
+    # .claude/settings.json — activate the plugin. This is what keeps the
+    # plugin active only in lc-init'd folders (Claude Code loads it on folder
+    # trust).
+    _merge_claude_settings(directory)
 
-    # Register the marketplace globally with each harness on PATH. These are not
-    # project files, so they live outside the added/skipped report; each function
-    # prints its own status line. The commands are idempotent, so re-running
-    # ``lc init`` converges.
+    # Register the marketplace globally with each harness on PATH. These are
+    # not project files; each function prints its own status line. The
+    # commands are idempotent, so re-running ``lc init`` elsewhere converges.
     _register_claude_marketplace()
     _register_codex_plugin()
 
-    return added, skipped
 
+def _init_git_and_venv(directory: Path, *, no_git: bool, no_venv: bool) -> None:
+    """Initialize the git repo and the Python venv, honoring the skip flags.
 
-def _init_git_and_venv(
-    directory: Path, *, no_git: bool, no_venv: bool
-) -> tuple[list[str], list[str]]:
-    """Converge the git repo and the Python venv: present, skip; missing, add.
-
-    Both run on every ``lc init`` regardless of whether ``astra.yaml`` was
-    already there — a checkout without a ``.git`` gets one, and every
-    checkout gets its own ``.venv`` as its analysis environment, so both
-    converge to present the same way as any other artifact, feeding the
-    same ``(added, skipped)`` report as everything else. ``--no-git``/
-    ``--no-venv`` opt out of adding a missing artifact; they are not
-    reported either way, matching how a skipped-by-flag item is invisible
-    elsewhere in ``lc init``.
+    ``directory`` is guaranteed empty at the start of ``lc init``, so neither
+    needs an exists-check — this only runs when the corresponding flag
+    doesn't opt out.
     """
-    added: list[str] = []
-    skipped: list[str] = []
-
-    if (directory / ".git").exists():
-        skipped.append("git repo")
-    elif not no_git:
+    if not no_git:
         subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
         console.print("[green]✓[/green] Initialized git repository")
-        added.append("git repo")
 
-    if (directory / ".venv").exists():
-        skipped.append(".venv")
-    elif not no_venv:
+    if not no_venv:
         # The venv is deliberately empty: neither ``lc`` nor ``astra`` goes in
         # it (both are global installs — see the module comment above). It's
         # the analysis environment the agent populates as the project's
@@ -357,28 +289,13 @@ def _init_git_and_venv(
             f"[green]✓[/green] Virtual environment created (empty — analysis "
             f"dependencies install here) in [cyan]{directory}/.venv[/cyan]"
         )
-        added.append(".venv")
-
-    return added, skipped
 
 
-def _report_init(
-    directory: Path,
-    *,
-    added: list[str],
-    skipped: list[str],
-    scratch_override: str | None,
-) -> None:
-    """Print the closing report for ``lc init`` — what converged, what didn't."""
+def _report_init(directory: Path, *, scratch_override: str | None) -> None:
+    """Print the closing report for ``lc init``."""
     from lightcone.engine.site_registry import detect_current_site
 
-    console.print(f"\n[green]Converged lightcone project at[/green] {directory}")
-    for item in added:
-        console.print(f"  [green]✓ added[/green] {item}")
-    for item in skipped:
-        console.print(f"  [dim]• skipped (already present)[/dim] {item}")
-    if not added:
-        console.print("  [dim]Nothing to do — already fully converged.[/dim]")
+    console.print(f"\n[green]Scaffolded lightcone project at[/green] {directory}")
 
     # Surface the resolved scratch root if a known site was detected — gives
     # users early visibility into where lc run will keep its operational
@@ -456,7 +373,7 @@ _build/
 """
 
 
-# The MyST report is written by ``_converge_artifacts``. It references the
+# The MyST report is written by ``_write_artifacts``. It references the
 # boilerplate ``astra.yaml`` elements by path via the MySTRA plugin, so the ids
 # below must track the ``astra init`` boilerplate (``example_method``,
 # ``main_result``).
@@ -545,45 +462,21 @@ prose. Preview with `myst start` (requires the MyST CLI, `npm i -g mystmd`).
 """
 
 
-def _merge_claude_settings(project_dir: Path) -> bool:
-    """Non-destructively activate the ``lightcone`` plugin in ``.claude/settings.json``.
+def _merge_claude_settings(project_dir: Path) -> None:
+    """Activate the ``lightcone`` plugin in ``.claude/settings.json``.
 
     Activation only: sets ``enabledPlugins["lightcone@lightcone-research"] = true``
     so Claude Code loads the plugin when it trusts this folder. No marketplace
     source and no version live here — the marketplace is registered globally,
-    once, by :func:`_register_claude_marketplace`. Writing activation per project
-    is what keeps the plugin active only in lc-init'd folders.
+    once, by :func:`_register_claude_marketplace`.
 
-    Preserves any existing content: only the ``lightcone`` plugin key is touched.
-    The CLI writes no permission policy — permissions belong to the harness.
-    Returns ``True`` if the file was created or changed, ``False`` if the plugin
-    was already activated.
+    ``project_dir`` is guaranteed empty at the start of ``lc init``, so this
+    is a plain write rather than a merge.
     """
     claude_dir = project_dir / ".claude"
-    settings_path = claude_dir / "settings.json"
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text())
-        except json.JSONDecodeError as e:
-            raise click.ClickException(
-                f"{settings_path} is not valid JSON ({e}); fix or remove it "
-                "before running lc init."
-            )
-        if not isinstance(settings, dict):
-            raise click.ClickException(f"{settings_path} is not a JSON object.")
-    else:
-        settings = {}
-
-    changed = False
-    plugins = settings.setdefault("enabledPlugins", {})
-    if plugins.get(PLUGIN_REF) is not True:
-        plugins[PLUGIN_REF] = True
-        changed = True
-
-    if changed:
-        claude_dir.mkdir(exist_ok=True)
-        settings_path.write_text(json.dumps(settings, indent=2))
-    return changed
+    claude_dir.mkdir(exist_ok=True)
+    settings = {"enabledPlugins": {PLUGIN_REF: True}}
+    (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
 
 
 def _marketplace_arg() -> str:
@@ -592,7 +485,8 @@ def _marketplace_arg() -> str:
     Claude Code and Codex both accept the ``owner/repo`` form (and an optional
     ``@ref`` suffix), so a single argument serves both registrations.
     """
-    # INTERIM — revert to `MARKETPLACE_REPO` when agent-skills#17 merges (the stacked lightcone CLI-compat PR).
+    # INTERIM — revert to `MARKETPLACE_REPO` when agent-skills#17 merges
+    # (the stacked lightcone CLI-compat PR).
     # The `@branch` suffix pins `<harness> plugin marketplace add` to a branch.
     return f"{MARKETPLACE_REPO}@{MARKETPLACE_BRANCH}"
 

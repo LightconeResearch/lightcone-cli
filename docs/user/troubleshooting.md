@@ -35,10 +35,9 @@ lc init my-analysis
 cd my-analysis
 ```
 
-`lc init` is convergent — it adds whatever artifact is missing and leaves
-whatever is present alone, so it is safe to run in a new or existing
-directory. It never rewrites `astra.yaml`. See
-[The upgrade model](upgrading.md).
+`lc init` scaffolds new projects only — it must be pointed at a directory
+that doesn't exist yet, or is empty; it fails cleanly (writing nothing) on a
+directory that already has content. See [The upgrade model](upgrading.md).
 
 ## "lc: command not found" or `lc` prints a directory listing
 
@@ -169,10 +168,10 @@ trust level. Either move the work elsewhere or relax the rule.
 
 ## I deleted `.claude/settings.json` by accident
 
-This file activates the `lightcone` plugin in the project. Run `lc init` inside
-the project. It is convergent: it re-adds the activation non-destructively and
-leaves `astra.yaml` alone. Or write the file back by hand — it enables the plugin
-that the global marketplace registration provides:
+This file activates the `lightcone` plugin in the project. `lc init` can't be
+re-run against an existing project to restore it — write the file back by
+hand instead. It enables the plugin that the global marketplace registration
+provides:
 
 ```json
 {
