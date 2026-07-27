@@ -406,7 +406,7 @@ project:
   toc:
     - file: index.md
 site:
-  template: book-theme
+  template: https://github.com/LightconeResearch/astra-article-theme.git
 """
 
 

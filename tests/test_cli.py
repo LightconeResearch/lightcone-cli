@@ -82,6 +82,7 @@ def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None
 
     myst_yml = (project / "myst.yml").read_text()
     assert "mystra.mjs" in myst_yml
+    assert "https://github.com/LightconeResearch/astra-article-theme.git" in myst_yml
     assert "index.md" in myst_yml
 
     index_md = (project / "index.md").read_text()
