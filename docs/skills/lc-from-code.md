@@ -58,6 +58,9 @@ Hard conventions enforced by the prompt:
   inside it (`{output}/data.parquet`).
 - Don't refactor, restructure, or "improve" existing code — parameter
   plumbing only.
+- Prefer a single shared container image unless recipes genuinely need
+  different stacks: on a JupyterHub/Dask Gateway deployment, `lc run`
+  rejects a spec resolving to more than one image per run.
 
 ### Phase 3 — Run & debug
 
@@ -66,7 +69,8 @@ shows every output `ok`. If the scan surfaced existing results
 elsewhere in the project, compare them against the new
 `results/baseline/<output_id>/` to confirm the migration preserved
 behavior. Re-validate with `astra validate astra.yaml` and present
-the summary.
+the summary — flagging, for an `lc init`-scaffolded project, that the
+MyST report (`index.md`) still references the boilerplate element ids.
 
 ## Hard rules
 

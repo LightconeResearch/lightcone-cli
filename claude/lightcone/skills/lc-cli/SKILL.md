@@ -4,8 +4,8 @@ description: >
   Reference for `lc` CLI execution: commands (init/run/status/verify/build/export),
   the Spec-Code Invariant (`astra.yaml` and code never diverge), status
   interpretation (ok/stale/missing/alias), failure diagnosis, multiverse
-  runs, scratch overrides for HPC, sub-analysis scaffolding, publishing
-  via WRROC. Invoke whenever running, debugging, or diagnosing `lc`
+  runs, scratch overrides for HPC, JupyterHub/Dask Gateway deployments,
+  sub-analysis scaffolding, publishing via WRROC. Invoke whenever running, debugging, or diagnosing `lc`
   workflows; whenever interpreting `lc status` / `lc verify` output; or
   whenever the user asks about the development workflow surrounding
   `astra.yaml`.
@@ -19,24 +19,32 @@ Reference for lightcone-cli execution: CLI commands, development workflow, statu
 ## CLI Reference
 
 ```bash
-lc init [DIR] [--permissions yolo|recommended|minimal] [--scratch PATH]  # Scaffold a new ASTRA project
-lc run [OUTPUTS...] [--universe NAME] [--force] [--verbose] [--rerun-triggers TRIGGERS]  # Materialize outputs
-lc build [--force] [--runtime docker]                             # Build container images from specs
+lc init [DIR] [--no-git] [--no-venv] [--permissions yolo|recommended|minimal] [--scratch PATH]  # Scaffold a new ASTRA project
+lc run [OUTPUTS...] [--universe NAME] [--jobs N] [--force] [--verbose] [--rerun-triggers TRIGGERS]  # Materialize outputs
+lc build [--force] [--runtime docker|podman|podman-hpc|kubernetes]  # Build container images from specs
 lc status [--universe NAME] [--json]                              # Materialization status (text or JSON)
 lc verify [--universe NAME]                                       # Recompute hashes and walk the provenance chain
 lc export wrroc [--output PATH] [--universe NAME] [--zip] [--metadata-only] [--author "NAME <EMAIL>"]  # Export Workflow Run RO-Crate bundle
 ```
 
-`lc run` is quiet by default — pass `--verbose` to see worker output. `--scratch` is only relevant on HPC sites where `$HOME` doesn't honor `flock` (NERSC etc.); it redirects Snakemake state and Dask spill onto the named filesystem.
+`lc run` is quiet by default — pass `--verbose` to see worker output. `--jobs` bounds parallel dispatch (default: local CPU count). `--scratch` is only relevant on HPC sites where `$HOME` doesn't honor `flock` (NERSC etc.); it redirects Snakemake state and Dask spill onto the named filesystem.
+
+`lc init` also scaffolds a template MyST report (`myst.yml` + `index.md`; `_build/` is gitignored) — preview it with `myst start` (requires the MyST CLI: `npm i -g mystmd`).
 
 The first `lc` invocation auto-creates `~/.lightcone/config.yaml`:
 
 ```yaml
 container:
-  runtime: auto    # or: docker | podman | podman-hpc | none
+  runtime: auto    # or: docker | podman | podman-hpc | kubernetes | none
 ```
 
+On the `kubernetes` runtime there is no local OCI runtime: `lc build` submits each Containerfile to the deployment's GCP Cloud Build service (running under the deployment's service account) and pushes `<registry>/lc-<project>:<hash>` — same content-addressed identity. Freshness is a registry check, not a local image-store check.
+
 **Always run via `lc`.** Recipes must execute through `lc run` so that container builds, option resolution, resource limits, and result paths are applied. Treat the underlying execution engine as a black box — never invoke schedulers or container runtimes directly, that will bypass reproducibility guarantees.
+
+## JupyterHub Deployments (Dask Gateway)
+
+A lightcone JupyterHub is detected via `DASK_GATEWAY__ADDRESS` (site `jupyterhub` in the site registry); the container runtime resolves to `kubernetes` — the worker pod *is* the container, and recipes run natively inside it. `lc run` pre-flight-builds images through Cloud Build, then creates a run-scoped Gateway cluster sized by `--jobs`, with workers running the project image; the cluster is torn down when the run finishes. Constraint: every output in one run must resolve to a single container image, or `lc run` fails — consolidate on one Containerfile (or one shared prebuilt image). If a run sits at zero workers (e.g. a slow first-time image pull), the wait for the first worker is bounded by `LIGHTCONE_GATEWAY_WORKER_TIMEOUT` (seconds, default 600).
 
 ## Creating Sub-Analyses
 

@@ -51,6 +51,24 @@ A cluster's image is fixed at creation, so create-per-run is also what
 keeps the environment fresh: edit the Containerfile, `lc run`, and the
 next cluster runs the rebuilt image.
 
+The cluster scales adaptively from 1 up to your `--jobs` bound, and
+`lc run` waits for the first worker before dispatching — bounded by
+`LIGHTCONE_GATEWAY_WORKER_TIMEOUT` (seconds, default `600`), so an image
+that can't be pulled fails with a message instead of hanging at zero
+workers.
+
+!!! warning "One image per run on this backend"
+    Because the worker pod *is* the container, the whole run executes in
+    a single image — there are no nested containers to wrap per rule. If
+    `astra.yaml` resolves to more than one distinct container image,
+    `lc run` refuses to start and asks you to consolidate on a single
+    Containerfile (or one shared prebuilt image). SLURM and local runs
+    wrap per rule and are unaffected.
+
+Every manifest written on this backend records a `worker_image` field —
+the image the pod reported it was actually running, alongside the
+`container_image` the spec declared.
+
 ## Pre-flight: pick the right container runtime
 
 On most HPC sites, docker isn't available on compute nodes. Most
@@ -264,6 +282,10 @@ scratch_root: $SCRATCH
 - `PermissionError` reading another user's symlinked `results/`.
   Cross-user scratch path without group ACLs — request access from
   the data owner, or copy the manifests into your own scratch.
+- On JupyterHub: no worker becomes ready, a Cloud Build fails, or
+  `lc run` rejects a multi-image spec. See the
+  [Troubleshooting](troubleshooting.md) page, which has a section for
+  each.
 
 For the wiring detail, see
 [engine/dask_cluster](../api/dask_cluster.md) in the maintainer docs.

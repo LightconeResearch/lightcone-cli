@@ -52,9 +52,10 @@ Materialization: ok=$ok_count stale=$stale_count missing=$missing_count alias=$a
 Substrate CLIs (use --help on any):
   lc init / lc run / lc status / lc verify / lc build / lc export wrroc
   astra validate / astra paper add / astra universe generate
+  myst start — preview the MyST report scaffolded by lc init (needs mystmd)
 
 Reference skills (invoke when the surface above isn't enough):
-  /astra   — astra.yaml spec: decisions, prior_insights, findings, evidence, sub-analyses, narrative anchors
+  /astra   — astra.yaml spec: decisions, prior_insights, findings, evidence, sub-analyses
   /lc-cli  — lc workflow: spec-code invariant, status interpretation, failure diagnosis"
 
 if [ "$validation_ok" -ne 0 ]; then

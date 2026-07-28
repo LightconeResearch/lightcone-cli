@@ -21,6 +21,7 @@ Code skills, with the CLI as the durable, scriptable backstop.
 | [`lc status`](status.md) | Manifest-driven status report. No Snakemake import needed. |
 | [`lc verify`](verify.md) | Recompute hashes, walk the input chain, surface tampering. |
 | [`lc export`](export.md) | Emit interoperable bundles (Workflow Run RO-Crate) for publication. |
+| [`lc eval`](eval.md) | Maintainer harness: score the agentic build loop against seed tasks. |
 
 ## Global options
 
@@ -35,7 +36,11 @@ Options:
 ## Removed commands
 
 For historical context: `lc dev`, `lc setup`, `lc target`, and `lc update` no
-longer exist as explicit commands. `lc eval` is available when the `eval`
-extra is installed (`pip install lightcone-cli[eval]`); without it the import
-is silently skipped and `lc eval` will fail with "No such command". See the
-removal pages for details.
+longer exist as explicit commands. See the removal pages for details.
+
+`lc eval` is not a removed command — it is registered only when its
+dependency group is installed. It is a PEP 735 `[dependency-groups]`
+entry, not a packaging extra, so `pip install lightcone-cli[eval]` does
+*not* work. From a source checkout: `uv sync --group eval`. Without it
+the import is silently skipped and `lc eval` fails with "No such
+command". See [`lc eval`](eval.md).

@@ -79,7 +79,7 @@ Read the paper's section(s) covering this sub-analysis. Author:
            # quote: omitted at SPECIFY time — LITERATURE fills the TextQuoteSelector in
    ```
 
-   Evidence with `doi:` and no `quote:` is structurally valid in 0.0.10 (`quote:` is optional on Evidence); the placeholder passes `astra validate` and waits for LITERATURE to fill the quote. `astra validate --verify-evidence` should only be run after LITERATURE has resolved every placeholder.
+   Evidence with `doi:` and no `quote:` is structurally valid (`quote:` is optional on Evidence); the placeholder passes `astra validate` and waits for LITERATURE to fill the quote. `astra validate --verify-evidence` should only be run after LITERATURE has resolved every placeholder.
 
    When the citation's DOI is unresolved (`citations[<key>].doi: null` — flagged in `extraction_warnings`), the placeholder still needs a `doi:` (Evidence requires exactly one of `doi` or `artifact`). In that case, omit the Evidence entry entirely or fall back to an artifact reference if the gap will be resolved internally — and log the unresolved citation to `open-questions.md` so the user can supply the DOI at REVIEW close-out. Don't pre-emptively fetch the cited paper or guess its content; LITERATURE does that with fresh context per paper.
 

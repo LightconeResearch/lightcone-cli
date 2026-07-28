@@ -40,7 +40,9 @@ Then tell the agent what you have to start from — a research question
 
 - **Multiverse analysis** — define methodological decisions with multiple options; `lc` runs your analysis across all defensible paths automatically
 - **Provenance integrity** — every output gets a content-addressed manifest; `lc verify` detects tampering or broken chains
-- **HPC-ready execution** — Snakemake-backed DAG dispatch with SLURM and container support (Docker, Podman, Apptainer) out of the box
+- **HPC-ready execution** — Snakemake-backed DAG dispatch with SLURM and container support (Docker, Podman, podman-hpc) out of the box
+- **Cloud-ready execution** — on a lightcone JupyterHub, `lc` builds images through GCP Cloud Build and runs the pipeline in a run-scoped Dask Gateway cluster, with nothing to configure
+- **Report from the spec** — `lc init` scaffolds a MyST report that references your analysis by path, so figures and numbers stay single-sourced
 - **Reproducible publishing** — `lc export wrroc` emits a [Workflow Run RO-Crate](https://www.researchobject.org/workflow-run-crate/) bundle ready for Zenodo or WorkflowHub
 
 → [Full documentation](https://docs.lightconeresearch.org)

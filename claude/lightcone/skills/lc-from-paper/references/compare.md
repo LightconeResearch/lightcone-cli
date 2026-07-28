@@ -20,11 +20,11 @@ COMPARE is what a ralph iteration does when the workdir signals "RUN done (`resu
 
 ## Result path convention
 
-For an output with `id: X`, the reproduced result lives at `results/<universe_id>/X.<ext>`:
+For an output with `id: X`, the reproduced result lives in the directory `results/<universe_id>/X/` — the artifact(s) the recipe wrote plus the run's `.lightcone-manifest.json`:
 
-- metrics: `.json` containing `{"value": ...}`
-- figures: `.png`
-- tables: `.csv`
+- metrics: a `.json` containing `{"value": ...}`
+- figures: a `.png`
+- tables: a `.csv`
 
 ## Task
 

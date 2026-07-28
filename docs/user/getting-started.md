@@ -33,6 +33,8 @@ r2-decision-demo/
 ├── .lightcone/         # internal scratchpad — don't edit by hand
 ├── Containerfile       # build instructions for a local testing container
 ├── requirements.txt    # software dependencies
+├── myst.yml            # config for the report (see below)
+├── index.md            # the report itself — a template to fill in
 ├── universes/
 ├── src/
 └── results/
@@ -49,6 +51,20 @@ materialize, but not yet a real analysis.
 **`CLAUDE.md`** — a short note that tells Claude Code about the project. The
 skills will update this as you go (filling in working notes, design context).
 You can edit it by hand whenever you want.
+
+And one you'll come back to at the end:
+
+**`index.md`** — a template [MyST](https://mystmd.org/) report. It's a
+TODO-driven skeleton (Introduction / Methods / Results) that references
+your analysis *by path* rather than by value: `{astra}` for inline
+mentions and block embeds, `{astra:value}` for live numbers pulled from
+materialized outputs. That way a re-run updates the write-up instead of
+silently contradicting it. Preview it any time with:
+
+```bash
+npm i -g mystmd   # one-off, if you don't have it
+myst start
+```
 
 ## 2. Open Claude Code
 
@@ -200,6 +216,20 @@ This recomputes data hashes for every output and walks the input chain back to
 declare whether anything has been tampered with since materialization. Useful
 pre-publication, when archiving a project, or any time you want a stronger
 guarantee than `lc status`.
+
+## 7. Write it up
+
+Now that the outputs exist, fill in `index.md` and watch it render:
+
+```bash
+myst start       # requires the MyST CLI: npm i -g mystmd
+```
+
+Replace the `TODO:` prose with your own, and reference the analysis
+instead of retyping it — `{astra}` to mention a decision or embed the
+outputs, `{astra:value}` to pull a materialized number straight out of
+`results/`. Re-run the analysis and the report follows along. Builds
+land in `_build/`, which is already git-ignored.
 
 ## What just happened
 

@@ -38,9 +38,12 @@ files. The `lc-extractor` subagent is dispatched via `Agent`.
 4. **Finalize.** `astra validate astra.yaml`; `astra validate
    --verify-evidence` if quotes exist; `astra universe generate -n
    baseline`. Author a short `description:` on the root analysis (one or
-   two paragraphs orienting a reader), then fill the `## Working Notes`
-   section of `CLAUDE.md` with conversational context the spec doesn't
-   carry.
+   two paragraphs orienting a reader), then append a `## Project Notes`
+   section to `CLAUDE.md` with conversational context the spec doesn't
+   carry, and update the scaffolded intro's "has not been scoped yet"
+   framing. The scaffolded MyST report (`index.md`) still references the
+   boilerplate ids (`example_method`, `main_result`) and is flagged to
+   the user as needing an update.
 
 Writes happen at the end of each phase, not in bulk — the user always
 has something visible to review.

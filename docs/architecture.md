@@ -13,7 +13,8 @@ Snakemake that owns provenance.** This page expands that sentence.
    contract lives here.
 3. **Cluster management** — `lc run` always dispatches through a Dask
    scheduler whose lifetime equals the run's lifetime. The cluster
-   manager picks the right shape (local / SLURM / external) on the fly.
+   manager picks the right shape (external scheduler / Dask Gateway /
+   SLURM / local) on the fly.
 
 The Claude Code plugin (skills + hooks + agents) is the agentic surface
 layered on top.
@@ -37,11 +38,18 @@ rule <name>:
     params:
         cfg=lambda wc: CFG["<rule_key>"][wc.universe],
     run:
-        shell('printf "▶ <rule_key> [%s]\\n" "{wildcards.universe}" >&2')
-        shell(params.cfg["shell_command"])           # the recipe (already container-wrapped)
-        write_manifest(output_dir=Path(output.data), inputs={...}, cfg=params.cfg)
-        for w in validate_output(...): print(f"⚠ {w}", file=sys.stderr)
+        run_rule(                                   # engine.runner
+            rule_key="<rule_key>",
+            universe=wildcards.universe,
+            output_dir=Path(output.data),
+            inputs={...},
+            cfg=dict(params.cfg),
+        )
 ```
+
+`run_rule` runs the pre-rendered (already container-wrapped) shell
+command, emits the sentinel-framed narrative lines `lc run` forwards,
+writes the manifest on success, and runs the validation hook.
 
 ### What goes in `cfg`
 
@@ -98,16 +106,23 @@ re-runs the rule on the next `lc run`.
   "code_version":  "sha256:…",
   "data_version":  "sha256:…",
   "container_image": "lc-myproject-abc123" ,
+  "worker_image": null,
   "recipe": "python scripts/compute.py",
   "decisions": {...},
   "input_versions": { "<inp_id>": "sha256:…" },
   "git_sha": "...",
+  "git_remote": "...",
   "lc_version": "...",
   "host": "...",
   "slurm_job_id": "...",
   "finished_at": 1700000000.0
 }
 ```
+
+`container_image` is what the spec *declared*. `worker_image` is the
+image the Dask Gateway pod that actually ran the recipe was started from
+(`LIGHTCONE_WORKER_IMAGE`, provisioned by `lc run`) — `null` on every
+other backend. Both fields are additive; older manifests still parse.
 
 ### `data_version` exclusions
 
@@ -152,22 +167,39 @@ directory required, works on a fresh clone or frozen archive.
 
 Module: [`lightcone.engine.dask_cluster`](api/dask_cluster.md).
 
-`cluster_for_run()` is the only entry point. It is a context manager
-that yields a Dask scheduler address valid for the duration of the run,
-across three branches:
+`cluster_for_run()` is the only entry point. It is a context manager that
+yields the **env overlay** the child snakemake needs to reach the cluster
+(the executor plugin lives in a different process), valid for the
+duration of the run, across four branches:
 
 1. `DASK_SCHEDULER_ADDRESS` already set → yield as-is. We don't own the
    cluster, we don't tear it down.
-2. `SLURM_JOB_ID` set → start an in-process scheduler bound to the
+2. `DASK_GATEWAY__ADDRESS` set (a JupyterHub / Dask Gateway deployment)
+   → **create** a run-scoped Gateway cluster running the project's
+   image, scale it adaptively up to the job bound, and shut it down on
+   exit. Create-per-run is what makes image updates seamless: a Gateway
+   cluster's image is fixed at creation. Gateway schedulers speak a
+   `gateway://` comm scheme a bare `Client` can't dial, so this branch
+   yields the *cluster name* (`LIGHTCONE_GATEWAY_CLUSTER`) and the
+   executor rejoins through the authenticated Gateway API.
+3. `SLURM_JOB_ID` set → start an in-process scheduler bound to the
    driver hostname (`SLURMD_NODENAME` or `gethostname()`), then `srun`
    one `dask worker` per node across the allocation. Workers advertise
    the node's resources via Dask abstract resources (`cpus`, `memory`,
    `gpus`). The Snakemake executor plugin maps per-rule
    `cpus_per_task` / `mem_mb` / `gpus_per_task` to per-task constraints.
-3. Neither → `LocalCluster()` sized to the local machine.
+4. None of the above → `LocalCluster()` sized to the local machine.
 
-The scheduler is always in-process so its lifetime equals the run's
-lifetime: no service to manage, no orphaned schedulers.
+Outside the Gateway branch the scheduler is always in-process so its
+lifetime equals the run's lifetime: no service to manage, no orphaned
+schedulers. The Gateway branch enforces the same contract server-side —
+created per run, culled on exit, with the deployment's idle timeout as
+the backstop.
+
+Because the Gateway branch realizes containers as *pod images* rather
+than by wrapping recipes, one run can honour only one image: `lc run`
+rejects a spec resolving to more than one distinct container image there
+(`gateway_branch_active()` is the pre-flight predicate).
 
 ### The Snakemake executor
 
@@ -190,26 +222,67 @@ generation time, so the worker just runs them.
 
 ---
 
+## Scratch & run locking
+
+Module: [`lightcone.engine.scratch`](api/scratch.md).
+
+Before anything else, `lc run` resolves a **scratch root** — where
+Snakemake metadata, Dask spill, and the run lock live — in this order:
+`LIGHTCONE_SCRATCH`, then `scratch_root` in
+`.lightcone/lightcone.yaml`, then the detected site's declared
+`scratch_root` (a shell expression like `$SCRATCH`), then the tempdir.
+
+`<project>/.snakemake` is then repointed there by symlink. This matters
+on NERSC, where `$HOME` and CFS are DVS-mounted and silently swallow
+`flock`, and on a JupyterHub deployment, where a pod's `/tmp` is
+pod-local while every worker pod mounts the same NFS `$HOME`.
+
+A non-blocking `flock` on `<scratch>/.lightcone/locks/<project-hash>.run-lock`
+is held for the whole run: a second `lc run` on the same project fails
+cleanly instead of interleaving Snakemake state updates, and acquiring
+it clears any workflow lock a previously crashed run left behind.
+
+---
+
 ## Container layer
 
 Module: [`lightcone.engine.container`](api/container.md).
 
 Two surfaces:
 
-- **Build** — `compute_image_tag()` + `build_image()`. Tags are
-  `lc-<project>-<sha256[:12]>` over the Containerfile and dependency
-  files (`requirements.txt`, `pyproject.toml`, `poetry.lock`,
-  `Pipfile.lock`, …). Rebuilds happen only when the hash changes.
+- **Build** — `image_identity()` + `build_image()`. The 12-char sha256
+  digest covers the Containerfile, every dependency file
+  (`requirements.txt`, `pyproject.toml`, `poetry.lock`, `uv.lock`,
+  `environment.yml`, …), **and the contents of every `COPY`/`ADD` source
+  the Containerfile references** — files hashed directly, directories
+  walked recursively (skipping `.git`, `.venv`, `results/`, caches, …).
+  A `COPY .` therefore hashes the whole build context. Rebuilds happen
+  only when the digest changes.
 - **Run-time wrap** — `wrap_recipe()` produces the command string that
   the Snakefile generator embeds into each rule.
 
+One identity, two spellings: `lc-<project>-<digest>` in a local image
+store (`compute_image_tag()`), `<registry>/lc-<project>:<digest>` in a
+registry (`registry_image_ref()`). `runtime_registry()` decides which
+one a runtime uses, so the Snakefile generator and the status walker can
+never disagree about an image identity.
+
 Runtime resolution: `~/.lightcone/config.yaml` carries
-`container.runtime` (`auto | docker | podman | podman-hpc | none`).
-`auto` picks the first usable in `(podman, docker, podman-hpc)`,
-skipping docker if its daemon is unreachable. `none` is an explicit
-opt-out — recipes run on the host. When `auto` falls back to `none`
-silently, `lc run` warns that the manifest's `container_image` field
-will misrepresent what actually executed.
+`container.runtime`
+(`auto | docker | podman | podman-hpc | kubernetes | none`). `auto` picks
+the first usable in `(podman-hpc, podman, docker)`, skipping docker if
+its daemon is unreachable, with the detected site's declared
+`container_runtime` moved to the front. `none` is an explicit opt-out —
+recipes run on the host. When `auto` falls back to `none` silently,
+`lc run` warns that the manifest's `container_image` field will
+misrepresent what actually executed.
+
+`kubernetes` is the odd one out and never comes from PATH detection: it
+is selected by the `jupyterhub` site (or pinned explicitly), the worker
+pod *is* the container so `wrap_recipe()` is a passthrough, images
+resolve to registry refs, and builds go through
+[`engine.cloudbuild`](api/cloudbuild.md) — GCP Cloud Build, authenticated
+by the pod's Workload Identity — instead of a local OCI CLI.
 
 For `podman-hpc`, the build path also runs `podman-hpc migrate <tag>`
 so compute nodes can read the image without a registry.
@@ -275,13 +348,16 @@ src/lightcone/                  # PEP 420 namespace package — NO __init__.py
 ├── engine/                     # execution substrate
 │   ├── manifest.py             # write_manifest, sha256_dir, code_version
 │   ├── snakefile.py            # generate .lightcone/Snakefile from astra.yaml
-│   ├── container.py            # docker/podman/podman-hpc build + recipe wrap
-│   ├── dask_cluster.py         # cluster lifecycle (local/SLURM/external)
+│   ├── container.py            # image identity, local build + recipe wrap
+│   ├── cloudbuild.py           # GCP Cloud Build backend (no local OCI runtime)
+│   ├── dask_cluster.py         # cluster lifecycle (external/Gateway/SLURM/local)
+│   ├── scratch.py              # scratch root, per-run dirs, run lock
 │   ├── status.py               # manifest-driven status walker (no Snakemake)
 │   ├── verify.py               # recompute hashes, walk the chain
 │   ├── tree.py                 # sub-analysis tree helpers
 │   ├── validation.py           # post-recipe output sanity checks
-│   └── site_registry.py        # vestigial; not imported by active code
+│   ├── wrroc.py                # Workflow Run RO-Crate exporter
+│   └── site_registry.py        # known-site defaults; drives scratch + runtime
 └── eval/                       # evaluation harness for the agent loop
     ├── cli.py harness.py sandbox.py graders.py build.py report.py models.py
 
@@ -319,11 +395,17 @@ astra.yaml ── snakefile.generate() ──► .lightcone/Snakefile + .lightco
                   DAG resolution         per-rule run:           dask scheduler
                   (Snakemake)            shell(recipe)           (LocalCluster /
                                          + write_manifest()       SLURM-srun /
+                                                                  Dask Gateway /
                                                                   external)
                        │
                        └─► results/<u>/<o>/data
                            results/<u>/<o>/.lightcone-manifest.json
 ```
+
+The Gateway branch differs in where the container comes from: the worker
+pod is started *from* the project image, so the recipe is not wrapped —
+`lc run` builds the image (Cloud Build), creates the cluster with it, and
+the pod executes the recipe natively.
 
 What Snakemake owns (we don't write it): DAG construction, topological
 execution, parallelism, dry-run, locking, retry, log capture,
@@ -343,8 +425,8 @@ each rule to a Dask scheduler.
 | `astra.yaml` | Project | The spec. Inputs, outputs, recipes, decisions, sub-analyses. |
 | `.lightcone/Snakefile` | Project (generated) | Auto-generated by `lc run`. Don't edit. |
 | `.lightcone/snakefile-config.json` | Project (generated) | Per-`(rule, universe)` config. |
-| `.lightcone/lightcone.yaml` | Project | Tiny scratchpad — currently writes only `target: local`. Not consumed by today's code. |
-| `~/.lightcone/config.yaml` | User | `container.runtime`. |
+| `.lightcone/lightcone.yaml` | Project | Written by `lc init` (`target: local`, plus `scratch_root` when `--scratch` is passed). `scratch_root` is read by [`engine.scratch`](api/scratch.md) on every `lc run`; `target` is inert. |
+| `~/.lightcone/config.yaml` | User | `container.runtime`. Auto-created with `auto` on the first `lc` invocation. |
 | `.claude/settings.json` | Project | Claude Code permissions. |
 
 The `dagster.yaml` and `~/.lightcone/targets/*.yaml` files referenced in

@@ -53,7 +53,7 @@ The iteration merges scripts and recipes after the per-output sub-agents finish.
 ### Rules for the first pass
 
 1. **One script per output** (or a shared script for tightly-coupled outputs).
-2. **Parameterize by decisions.** Each decision is a CLI argument; scripts also receive `--universe <universe_id>`. See lightcone-cli's `CLAUDE.md` for the full convention.
+2. **Parameterize by decisions.** Each decision the output declares becomes a CLI argument, wired explicitly in the recipe via `{decisions.<id>}`; paths flow via `{output}` and `{inputs}` / `{inputs.<id>}`. Nothing is auto-injected — the recipe's `command:` must pass everything the script needs, and any other placeholder is rejected at run time.
 3. **Add recipes** to each output in `astra.yaml` with `command:` and `inputs:` (dependencies). Recipe inputs use the `<analysis>.<output>` tree-path form that wires outputs to downstream inputs.
 4. **Create `requirements.txt`** with needed packages. Do not install them — the RUN phase manages environments.
 5. **Do not execute scripts** — the RUN phase handles execution via `lc run`.

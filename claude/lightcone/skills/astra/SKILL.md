@@ -156,7 +156,7 @@ outputs:
       resources: { cpus: 4, memory: "32GB", gpus: 1, time_limit: "2h" }
 ```
 
-Set `container:` at analysis level (all recipes inherit); per-recipe `container:` overrides. Pass either a container image name (e.g., `python:3.12-slim`, `ghcr.io/org/img:latest`) or a path to a Containerfile (e.g., `Containerfile`, `containers/Dockerfile`). The runtime figures out whether to pull or build.
+Set `container:` at analysis level (all recipes inherit); per-recipe `container:` overrides. Pass either a container image name (e.g., `python:3.12-slim`, `ghcr.io/org/img:latest`) or a path to a Containerfile (e.g., `Containerfile`, `containers/Dockerfile`). The runtime figures out whether to pull or build. Note: on a JupyterHub/Dask-Gateway deployment, `lc run` requires the whole run to resolve to a single container image — a spec declaring several distinct images is rejected there, so consolidate on one Containerfile (or one shared prebuilt image).
 
 ### Command Template Substitution
 
@@ -372,15 +372,21 @@ description: |
 astra init [DIRECTORY]                          # Scaffold a new analysis
 astra validate astra.yaml                       # Validate (run after every change)
 astra validate astra.yaml --verify-evidence     # + verify insight quotes against PDFs
+astra validate astra.yaml --skip-evidence       # Skip evidence checks even when insights exist
+astra spec [TERM] [--full]                      # Agent-friendly schema reference (concept summary, one entry, or full dump)
 astra info [--decisions|--inputs|--outputs]     # Analysis summary / element details
 astra universe generate -n NAME [-d "desc"]     # Generate universe from defaults
 astra universe check universes/x.yaml           # Check universe constraints
-astra viz [--fmt ascii|mermaid]                 # Visualize decision space
-astra schema show analysis|universe|insights    # Show JSON schema
+astra viz [--format mermaid|ascii]              # Visualize decision space
+astra schema show analysis|universe|insights    # Print a LinkML schema
+astra schema export [-o DIR]                    # Export LinkML schemas to files
 astra paper add DOI [--version N] [--pdf PATH]  # Cache a paper for evidence checks
 astra paper list                                # List cached papers
 astra paper show DOI                            # Show metadata for a cached paper
 astra paper path DOI [--version N]              # Print the cached PDF's path
+astra paper remove DOI                          # Remove a paper from the cache
+astra paper fetch-metadata [DOI|--all]          # Fetch title/authors for cached papers
+astra paper verify-quote DOI -q "TEXT"          # Verify a single quote
 astra paper verify-quotes DOI                   # Batch-verify quotes; reads {"quotes":[...]} JSON from stdin
 ```
 

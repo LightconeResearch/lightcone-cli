@@ -30,7 +30,7 @@ Read `constitution.md`, `CLAUDE.md`, `work/reference/index.json`, `work/referenc
 2. **Choose: one analysis or sub-analyses?** If the paper has only one stage end-to-end (no clean intermediate handoffs), write a single analysis. If it has genuinely independent stages (each stage's output flows as the next's input), write sub-analyses. Sub-analysis IDs must be noun phrases: `reconstruction`, `clustering`, `bao_fit`. Avoid reserved names: `inputs`, `outputs`, `decisions`, `findings`, `prior_insights`, `analyses`, `options`, `content`.
 3. **Wire inputs and outputs at the sub-analysis level.** For each sub-analysis:
    - Declare `inputs:` from `code-index.md`'s External-data-dependencies plus any paper-named external datasets. The depth (acquisition path, selection criteria) is SPECIFY's; ARCHITECT names the input and gives it a stable id.
-   - Declare `outputs:` matching the result loci from `index.json` (figures + tables) plus any intermediate artifacts a downstream sub-analysis consumes. Tag each output's `priority:` from the paper's emphasis (primary / secondary). **The reproduction's targeted scope from `constitution.md`'s Scope takes precedence** — if the user only wants Figure 3 and Table 2, only those land as `outputs:`; the rest are out-of-scope and noted as such.
+   - Declare `outputs:` matching the result loci from `index.json` (figures + tables) plus any intermediate artifacts a downstream sub-analysis consumes. Note each output's priority (primary / secondary, from the paper's emphasis) in its `description:` — there is no `priority:` slot in the schema; SPECIFY carries the priority formally into `targets/targets.md`. **The reproduction's targeted scope from `constitution.md`'s Scope takes precedence** — if the user only wants Figure 3 and Table 2, only those land as `outputs:`; the rest are out-of-scope and noted as such.
 4. **Author the root and per-analysis `description`.** Write a short `description:` (one or two paragraphs) on the root analysis and on each sub-analysis — enough to orient a reader on what the analysis is and what it produces. The root `description:` should give a top-down, end-to-end sketch of how the sub-analyses' outputs flow into one another when sub-analyses exist. Keep it high-level; per-decision and per-finding prose lives on those entries' own `rationale:` / `notes:` fields, authored in SPECIFY.
 5. **Validate.** `astra validate astra.yaml` must return clean — even with empty `decisions:` / `prior_insights:` / `findings:` blocks, the structural fields and descriptions must pass schema checks.
 
@@ -38,27 +38,33 @@ Read `constitution.md`, `CLAUDE.md`, `work/reference/index.json`, `work/referenc
 
 ```yaml
 # Stub: structure + descriptions. SPECIFY fills decisions/findings/prior_insights.
-id: <paper-slug>
-title: "<paper title>"
-doi: <doi>
+# Paper: "<paper title>" — DOI <doi> (cached via `astra paper add <doi>`;
+# title/doi are not Analysis slots, so they live here and in constitution.md)
+version: "0.0.12"
+name: <paper-slug>
 
 description: |
   <high-level paragraph for the root analysis; sketch the end-to-end
   data flow across sub-analyses when they exist>
+
+inputs: []           # externals live on the sub-analyses that consume them
+
+outputs:             # root-level re-exports of the replication targets
+  - id: <output-id>
+    from: <sub-analysis-id-1>.<output-id>
 
 analyses:
   <sub-analysis-id-1>:
     description: |
       <short paragraph orienting a reader on this sub-analysis>
     inputs:
-      <input-id>:
-        <stable name; depth lives in SPECIFY>
+      - id: <input-id>
+        type: data
+        description: "<stable name; acquisition depth lives in SPECIFY>"
     outputs:
-      <output-id>:
-        type: figure | table | metric | data-product
-        priority: primary | secondary
-        description: |
-          <one-line on what this output is>
+      - id: <output-id>
+        type: figure   # figure | table | metric | data | report
+        description: "<one-line on what this output is; note primary / secondary emphasis>"
     decisions: {}      # SPECIFY fills
     prior_insights: {} # SPECIFY records placeholders (Evidence with doi:, no quote: yet), LITERATURE fills the quote: selectors
     findings: {}       # SPECIFY fills

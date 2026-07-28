@@ -10,13 +10,23 @@ Source: `src/lightcone/engine/container.py`.
 
 | Constant | Value |
 |----------|-------|
-| `RUNTIMES` | `("podman", "docker", "podman-hpc")` — detection priority order |
-| `DEPENDENCY_FILES` | `("requirements.txt", "requirements-dev.txt", "requirements-test.txt", "pyproject.toml", "setup.py", "setup.cfg", "poetry.lock", "Pipfile.lock")` |
+| `RUNTIMES` | `("podman-hpc", "podman", "docker")` — detection priority order |
+| `KUBERNETES` | `"kubernetes"` — deliberately **not** in `RUNTIMES` |
+| `REGISTRY_ENV` | `"LIGHTCONE_REGISTRY"` — deployment-injected registry prefix |
+| `DEPENDENCY_FILES` | `requirements{,-dev,-test}.txt`, `pyproject.toml`, `setup.py`, `setup.cfg`, `poetry.lock`, `Pipfile.lock`, `uv.lock`, `conda-lock.yml`, `environment.y{a,}ml` |
 
-Detection priority is podman before docker for two reasons: it's
-rootless (less surprising on shared machines), and the docker probe
-includes `docker info` so a stopped daemon doesn't silently win over a
+Detection order: `podman-hpc` first, because anyone who installed the HPC
+wrapper did so on purpose and plain podman would build images compute
+nodes can't read; then podman (rootless, no daemon); docker last, gated
+behind a `docker info` probe so a down daemon doesn't silently win over a
 healthy podman.
+
+`kubernetes` is separate from `RUNTIMES` because it names no binary and
+is never found on PATH. It is selected only by site detection (a Dask
+Gateway deployment — see [api/site_registry](site_registry.md)) or by an
+explicit pin in `~/.lightcone/config.yaml`, and it takes a different code
+path throughout: no local build, no recipe wrap, registry refs instead of
+local-store tags.
 
 ## Runtime detection
 
@@ -25,6 +35,12 @@ healthy podman.
 Returns the first usable runtime in `RUNTIMES`. "Usable" means the
 binary is on PATH and (for docker) `docker info` succeeds. Returns
 `None` if nothing's available.
+
+The host site's declared `container_runtime` is moved to the front of the
+order (`_detection_order()`), but it is only a *hint* — a
+missing-from-PATH preference falls through to the next candidate. The one
+exception: a site declaring `container_runtime: kubernetes` short-circuits
+PATH probing entirely, since there is no binary to find.
 
 ### `load_runtime(*, project_path=None) → RuntimeChoice`
 
@@ -49,7 +65,7 @@ consulted today.
 ```python
 @dataclass(frozen=True)
 class RuntimeChoice:
-    runtime: str         # docker | podman | podman-hpc | none
+    runtime: str         # docker | podman | podman-hpc | kubernetes | none
     explicit: bool       # True if pinned, False if `auto` produced this
 ```
 
@@ -57,24 +73,72 @@ class RuntimeChoice:
 should warn — that case mismatches the manifest's recorded
 `container_image` against what actually executed.
 
-## Image tag computation
+## Image identity
+
+There is **one** content-addressed identity, spelled two ways depending
+on where the image lives. Both spellings carry the same digest on every
+backend, so a `code_version` computed by the Snakefile generator and one
+computed by the status walker can never disagree.
+
+### `image_identity(project_name, containerfile, project_path) → (safe_name, digest)`
+
+The source of truth. The 12-char sha256 digest covers:
+
+1. The **Containerfile** contents.
+2. Every **dependency file** from `DEPENDENCY_FILES` present at the
+   project root.
+3. The contents of every **`COPY`/`ADD` source** referenced from the
+   Containerfile — files hashed directly, directories walked recursively
+   in sorted relative-path order. `COPY .` therefore hashes the whole
+   build context.
+
+Each entry is framed with a kind label and its project-relative path
+before its bytes, so moving a line between files (or renaming a file)
+changes the digest.
+
+`_parse_copy_sources()` handles backslash continuations and the JSON exec
+form (`COPY ["src", "dest"]`), and skips what isn't in the host build
+context: `--from=<stage>` copies, URLs, and `git@` arguments. Heredoc
+`COPY <<EOF` is not interpreted. Paths that escape the project root are
+dropped. Directory walks skip `_COPY_DIR_EXCLUDE` subtrees (`.git`,
+`.venv`, `results`, `.lightcone`, `.snakemake`, caches, `node_modules`,
+`dist`, …) so the tag doesn't churn when someone touches `results/` or
+runs the tests.
+
+The same iteration (`_iter_build_context_entries`) is used to *stage* the
+build context in `_populate_build_context()`, which guarantees by
+construction that the hashed set and the built set are identical.
 
 ### `compute_image_tag(project_name, containerfile, project_path) → str`
 
-Returns `lc-<sanitized-name>-<sha256[:12]>`. The hash covers the
-Containerfile contents plus every dependency file from `DEPENDENCY_FILES`
-that exists at the project root.
+The local-image-store spelling: `lc-<sanitized-name>-<digest>`.
+Sanitization is lowercase + spaces → hyphens.
 
-Sanitization: lowercase + spaces → hyphens.
+### `registry_image_ref(project_name, containerfile, project_path, *, registry) → str`
+
+The registry spelling: `<registry>/lc-<name>:<digest>` — the digest moves
+into the tag position so one repository per project accumulates its image
+history.
+
+### `deployment_registry() → str | None`
+
+The deployment-injected `LIGHTCONE_REGISTRY` prefix (trailing slash
+stripped), or `None` off-deployment.
+
+### `runtime_registry(runtime) → str | None`
+
+Which spelling a given runtime resolves identities against: the
+deployment registry on `kubernetes`, `None` (local-store tags)
+everywhere else. Shared by the Snakefile generator and the status walker.
 
 ### `find_dependency_files(project_path) → list[Path]`
 
-Sorted list of dependency files actually present. Used by
-`compute_image_tag`.
+Sorted list of dependency files actually present.
 
 ### `hash_file_contents(files) → str`
 
-Concatenated SHA-256 hex digest of the listed files. Internal helper.
+Framed SHA-256 digest over a list of files. A standalone helper — the
+image digest uses the richer `image_identity()` path above.
 
 ### `is_containerfile(spec, project_path) → bool`
 
@@ -85,9 +149,16 @@ not a registry image).
 
 ### `build_image(tag, containerfile, context, *, runtime, build_args=None) → ContainerBuildResult`
 
-Run `<runtime> build -t <tag> -f <containerfile> [--build-arg …] <context>`.
-For `podman-hpc`, also runs `podman-hpc migrate <tag>` so compute nodes
-can read the image. Raises `ContainerBuildError` on any failure.
+Run `<runtime> build -t <tag> -f <containerfile> [--build-arg …] <context>`
+against a **staged** context (`_populate_build_context()` mirrors the
+Containerfile and its `COPY`/`ADD` sources into a tempdir — NERSC's DVS
+mounts don't implement `llistxattr`, which buildah calls unconditionally
+on every `COPY` source). For `podman-hpc`, also runs
+`podman-hpc migrate <tag>` so compute nodes can read the image.
+
+Raises `ContainerBuildError` on any failure, and immediately for a
+`runtime` outside `RUNTIMES` — `kubernetes` has no local builder and goes
+through [`engine.cloudbuild`](cloudbuild.md) instead.
 
 ### `pull_image(image, *, runtime) → None`
 
@@ -140,12 +211,13 @@ Snakemake placeholders inside `recipe` (`{output[0]}`, `{input.X}`,
 `{wildcards.universe}`) are preserved — they substitute through Python's
 `str.format` at execution time, after wrapping.
 
-### `make_image_tag_resolver(project_path, project_name) → Callable`
+### `make_image_tag_resolver(project_path, project_name, *, registry=None) → Callable`
 
 Returns a memoizing wrapper around `resolve_image_for_run`. Multiple
-outputs typically share a Containerfile; resolving re-hashes the file
-plus all dependency files (lockfiles can be megabytes), so caching by
-spec string for the lifetime of the caller's loop matters.
+outputs typically share a Containerfile; resolving re-hashes the file,
+all dependency files (lockfiles can be megabytes), and every `COPY`
+source, so caching by spec string for the lifetime of the caller's loop
+matters. Pass `registry=runtime_registry(runtime)` to get registry refs.
 
 ### `resolve_image_for_run(spec, *, project_path, project_name, registry=None) → str | None`
 
@@ -164,7 +236,10 @@ runtime will execute:
 ### `get_container_status(spec, project_path, project_name, *, runtime) → ContainerStatus`
 
 Without building or pulling, return a `ContainerStatus` describing what
-would happen.
+would happen. On the `kubernetes` runtime with a deployment registry set,
+`exists` comes from
+[`cloudbuild.registry_image_exists()`](cloudbuild.md) — a registry HEAD
+rather than a local image-store probe — and `image` is the registry ref.
 
 ### `ContainerStatus` (dataclass)
 
