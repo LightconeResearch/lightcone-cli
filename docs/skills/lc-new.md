@@ -11,7 +11,7 @@ Source: [`claude/lightcone/skills/lc-new/SKILL.md`](https://github.com/Lightcone
 
 ```text
 Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md),
-Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md),
+Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md), Edit(index.md),
 Glob, Grep, Bash(astra:*), Bash(lc:*),
 WebSearch, WebFetch, AskUserQuestion, Agent
 ```
@@ -42,8 +42,9 @@ files. The `lc-extractor` subagent is dispatched via `Agent`.
    section to `CLAUDE.md` with conversational context the spec doesn't
    carry, and update the scaffolded intro's "has not been scoped yet"
    framing. The scaffolded MyST report (`index.md`) still references the
-   boilerplate ids (`example_method`, `main_result`) and is flagged to
-   the user as needing an update.
+   boilerplate ids (`example_method`, `main_result`); swap those for a
+   real decision ID and output ID from the finalized spec so the report
+   doesn't ship with dangling references.
 
 Writes happen at the end of each phase, not in bulk — the user always
 has something visible to review.
@@ -51,8 +52,8 @@ has something visible to review.
 ## Hard restrictions (from the SKILL.md)
 
 - Specification agent only. No Python, no R, no implementation code.
-- Touchable files: `astra.yaml`, `universes/*.yaml`, and `CLAUDE.md`
-  (Finalize only).
+- Touchable files: `astra.yaml`, `universes/*.yaml`, `CLAUDE.md`
+  (Finalize only), and `index.md` (Finalize only, reference IDs only).
 - Quotes are never fabricated; every evidence entry must pass
   `astra validate --verify-evidence`.
 - PDFs stay inside `lc-extractor` subagents — the main agent never

@@ -1,7 +1,7 @@
 ---
 name: lc-new
 description: Use this skill whenever the user starts a new ASTRA analysis from a research question — scoping the question, structuring inputs and outputs, identifying decisions through literature, and landing astra.yaml + project CLAUDE.md. Triggers on verbs (`new`, `start`, `scope`) combined with nouns (`analysis`, `project`, `question`, `research`) — e.g. "new analysis", "start project", "scope research question" — even if the user doesn't say "project" explicitly. Don't use this for working inside an existing ASTRA project; this is for fresh scoping only.
-allowed-tools: Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md), Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md), Glob, Grep, Bash(astra:*), Bash(lc:*), WebSearch, WebFetch, AskUserQuestion, Agent
+allowed-tools: Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md), Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md), Edit(index.md), Glob, Grep, Bash(astra:*), Bash(lc:*), WebSearch, WebFetch, AskUserQuestion, Agent
 ---
 
 # /lc-new
@@ -123,6 +123,10 @@ Replace the TODO `description:` in `astra.yaml` with a short one-or-two-paragrap
 
 Read the existing `CLAUDE.md` (created by `lc init` — an orientation intro, an `lc run`/`lc status`/`lc verify` quick reference, and a `## Report` section). Append a `## Project Notes` section capturing the scoping outcome — context from the conversation that's not in `astra.yaml` and would be lost after `/clear` — and update the intro's "has not been scoped yet" framing now that the spec is real. The spec is the source of truth for structure, decisions, and evidence.
 
+### Populate Report
+
+`lc init` scaffolds `index.md` with references to the boilerplate `astra.yaml` elements — `decisions.example_method` (an inline `{astra}` mention and a `:::{astra} decisions.example_method\n:::` block) and `outputs.main_result` (an `{astra:value}` mention). Those IDs no longer exist once the boilerplate is replaced, which breaks the MyST build. Swap them for one representative top-level decision ID and one representative top-level output ID from the finalized spec. Only fix the reference IDs — leave the surrounding TODO narrative (Introduction/Methods/Results prose) for the user to fill in.
+
 ### Review with User
 
 > "Anything you'd like to change? Otherwise the specification is ready."
@@ -144,7 +148,7 @@ Show summary table:
 | sub_analysis  | ...       | ...     | ...      |
 ```
 
-Then tell the user the spec is ready and they can begin implementation. Also flag that the scaffolded MyST report (`index.md`) still references the boilerplate ids (`example_method`, `main_result`) and needs updating to the new spec's element paths — the user or a follow-up session can edit it. Recommend running `/clear` first — the scoping conversation consumes significant context, and everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
+Then tell the user the spec is ready and they can begin implementation. Recommend running `/clear` first — the scoping conversation consumes significant context, and everything needed to continue is captured in `astra.yaml` and `CLAUDE.md`.
 
 ---
 
@@ -154,7 +158,7 @@ Then tell the user the spec is ready and they can begin implementation. Also fla
 
 You MUST NOT write Python, R, or other implementation code.
 
-You MUST ONLY create/modify: `astra.yaml`, `universes/*.yaml`, `CLAUDE.md` (Finalize only).
+You MUST ONLY create/modify: `astra.yaml`, `universes/*.yaml`, `CLAUDE.md` (Finalize only), `index.md` (Finalize only, reference IDs only).
 
 You MUST NOT fabricate quotes -- all evidence must pass `astra validate --verify-evidence`.
 

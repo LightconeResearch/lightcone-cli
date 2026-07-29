@@ -156,7 +156,7 @@ outputs:
       resources: { cpus: 4, memory: "32GB", gpus: 1, time_limit: "2h" }
 ```
 
-Set `container:` at analysis level (all recipes inherit); per-recipe `container:` overrides. Pass either a container image name (e.g., `python:3.12-slim`, `ghcr.io/org/img:latest`) or a path to a Containerfile (e.g., `Containerfile`, `containers/Dockerfile`). The runtime figures out whether to pull or build. Note: on a JupyterHub/Dask-Gateway deployment, `lc run` requires the whole run to resolve to a single container image — a spec declaring several distinct images is rejected there, so consolidate on one Containerfile (or one shared prebuilt image).
+Set `container:` at analysis level (all recipes inherit); per-recipe `container:` overrides. Pass either a container image name (e.g., `python:3.12-slim`, `ghcr.io/org/img:latest`) or a path to a Containerfile (e.g., `Containerfile`, `containers/Dockerfile`). The runtime figures out whether to pull or build.
 
 ### Command Template Substitution
 
