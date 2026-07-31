@@ -43,9 +43,9 @@ logger = logging.getLogger(__name__)
 # is only active in lc-init'd folders the harness trusts).
 MARKETPLACE_NAME = "lightcone-research"
 MARKETPLACE_REPO = "LightconeResearch/agent-skills"
-# INTERIM — the marketplace tracks the agent-skills#15 branch until it merges;
+# INTERIM — the marketplace tracks the agent-skills#17 branch until it merges;
 # flip back to the default branch (drop the suffix) when it does.
-MARKETPLACE_BRANCH = "astra-plugin-rework"
+MARKETPLACE_BRANCH = "lightcone-cli-compat"
 PLUGIN_NAME = "lightcone"
 PLUGIN_REF = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 
