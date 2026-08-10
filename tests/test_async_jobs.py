@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -18,12 +19,14 @@ from lightcone.engine.async_jobs import (
     aggregate_job_resources,
     cancel_job,
     job_display_state,
+    pending_subdag_outputs,
     query_job_states,
     render_sbatch_script,
     resolve_subdag_outputs,
     select_slurm_policy,
     submit_job,
 )
+from lightcone.engine.manifest import code_version, write_manifest
 from lightcone.engine.site_registry import SITE_DEFAULTS, HostSite
 
 
@@ -33,6 +36,37 @@ def _write_project(path: Path, outputs: list[dict[str, Any]]) -> None:
     universes = path / "universes"
     universes.mkdir()
     (universes / "baseline.yaml").write_text("decisions: {}\n")
+
+
+def _materialize(
+    project: Path,
+    output_id: str,
+    *,
+    recipe: str,
+    inputs: dict[str, Path] | None = None,
+) -> Path:
+    output_dir = project / "results" / "baseline" / output_id
+    output_dir.mkdir(parents=True)
+    (output_dir / "data.txt").write_text(f"materialized {output_id}\n")
+    write_manifest(
+        output_dir=output_dir,
+        inputs=inputs or {},
+        cfg={
+            "output_id": output_id,
+            "universe_id": "baseline",
+            "recipe": recipe,
+            "container_image": None,
+            "decisions": {},
+            "code_version": code_version(
+                recipe=recipe,
+                container_image=None,
+                decisions={},
+            ),
+            "git_sha": None,
+            "lc_version": "test",
+        },
+    )
+    return output_dir
 
 
 def _perlmutter() -> HostSite:
@@ -106,6 +140,107 @@ def test_async_requires_time_limit_on_every_dependency(tmp_path: Path) -> None:
     _, subdag = resolve_subdag_outputs(project, ("fit",))
     with pytest.raises(AsyncJobError, match="prepare"):
         aggregate_job_resources(subdag, time_padding=1.5)
+
+
+def test_pending_subdag_excludes_current_upstream(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _write_project(
+        project,
+        [
+            {"id": "prepare", "recipe": {"command": "echo prepare"}},
+            {
+                "id": "fit",
+                "inputs": ["prepare"],
+                "recipe": {
+                    "command": "echo fit",
+                    "resources": {"cpus": 8, "time_limit": "1h"},
+                },
+            },
+        ],
+    )
+    _materialize(project, "prepare", recipe="echo prepare")
+    _, subdag = resolve_subdag_outputs(project, ("fit",))
+
+    pending = pending_subdag_outputs(project, subdag, universe="baseline")
+
+    assert [output.output_id for output in pending] == ["fit"]
+    assert aggregate_job_resources(pending, time_padding=1.5).rule_count == 1
+
+
+def test_pending_subdag_propagates_stale_upstream(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _write_project(
+        project,
+        [
+            {
+                "id": "prepare",
+                "recipe": {
+                    "command": "echo new",
+                    "resources": {"time_limit": "10m"},
+                },
+            },
+            {
+                "id": "fit",
+                "inputs": ["prepare"],
+                "recipe": {
+                    "command": "echo fit",
+                    "resources": {"time_limit": "1h"},
+                },
+            },
+        ],
+    )
+    prepare_dir = _materialize(project, "prepare", recipe="echo old")
+    _materialize(
+        project,
+        "fit",
+        recipe="echo fit",
+        inputs={"prepare": prepare_dir},
+    )
+    _, subdag = resolve_subdag_outputs(project, ("fit",))
+
+    pending = pending_subdag_outputs(project, subdag, universe="baseline")
+
+    assert [output.output_id for output in pending] == ["prepare", "fit"]
+
+
+def test_pending_subdag_detects_changed_external_input(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _write_project(
+        project,
+        [
+            {
+                "id": "fit",
+                "inputs": ["catalog"],
+                "recipe": {
+                    "command": "echo fit",
+                    "resources": {"time_limit": "1h"},
+                },
+            }
+        ],
+    )
+    spec = yaml.safe_load((project / "astra.yaml").read_text())
+    spec["inputs"] = [{"id": "catalog", "source": "data/catalog.txt"}]
+    (project / "astra.yaml").write_text(yaml.safe_dump(spec))
+    source = project / "data" / "catalog.txt"
+    source.parent.mkdir()
+    source.write_text("old\n")
+    _materialize(
+        project,
+        "fit",
+        recipe="echo fit",
+        inputs={"catalog": source},
+    )
+    source.write_text("new and different\n")
+    _, subdag = resolve_subdag_outputs(project, ("fit",))
+
+    pending = pending_subdag_outputs(project, subdag, universe="baseline")
+
+    assert [output.output_id for output in pending] == ["fit"]
+
+
+def test_submit_job_requires_explicit_output(tmp_path: Path) -> None:
+    with pytest.raises(AsyncJobError, match="explicit output"):
+        submit_job(tmp_path, output_ids=(), universe="baseline")
 
 
 def test_policy_prefers_cpu_shared() -> None:
@@ -197,17 +332,29 @@ def test_submit_job_writes_script_and_record(
     monkeypatch.setattr(async_jobs, "resolve_scratch_root", lambda _: tmp_path / "scratch")
 
     calls: list[list[str]] = []
+    submitted_environments: list[dict[str, str]] = []
 
-    def fake_run(command: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(command)
+        submitted_environments.append(kwargs["env"])
         return subprocess.CompletedProcess(command, 0, stdout="12345;perlmutter\n", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv("SLURM_JOB_ID", "parent-job")
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "2")
+    monkeypatch.setenv("SLURM_TRES_PER_TASK", "cpu=2")
+    monkeypatch.setenv("SLURM_CONF", "/etc/slurm/slurm.conf")
     record = submit_job(project, output_ids=("fit",), universe="baseline")
 
     assert record.job_id == "12345"
     assert record.qos == "shared"
     assert calls == [["sbatch", "--parsable", record.sbatch_path]]
+    submission_env = submitted_environments[0]
+    assert "SLURM_JOB_ID" not in submission_env
+    assert "SLURM_CPUS_PER_TASK" not in submission_env
+    assert "SLURM_TRES_PER_TASK" not in submission_env
+    assert submission_env["SLURM_CONF"] == "/etc/slurm/slurm.conf"
+    assert submission_env["PATH"] == os.environ["PATH"]
     assert Path(record.sbatch_path).is_file()
     assert Path(record.sbatch_path).read_text().count("lc") > 0
     saved = json.loads((project / ".lightcone" / "jobs" / "12345.json").read_text())

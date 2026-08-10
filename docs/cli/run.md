@@ -9,8 +9,9 @@ and dispatches through Snakemake on a Dask cluster.
 lc run [OPTIONS] [OUTPUTS]...
 ```
 
-`OUTPUTS` is zero or more output ids. With no arguments, materializes
-everything (Snakemake's `rule all`).
+`OUTPUTS` is zero or more output ids. With no arguments, a synchronous run
+materializes everything (Snakemake's `rule all`). An asynchronous run requires
+at least one explicit output.
 
 ## Options
 
@@ -21,7 +22,7 @@ everything (Snakemake's `rule all`).
 | `--rerun-triggers TRIGGERS` | `code,input,mtime,params` | Comma-separated rerun triggers (forwarded to Snakemake). |
 | `--force`, `-f` | off | `--force` when targets are named, `--forceall` otherwise. |
 | `--verbose`, `-v` | off | Show the underlying Snakemake / executor chatter and the spawned `snakemake` invocation. |
-| `--async` | off | Submit one coarse SLURM job per selected universe instead of executing immediately. Perlmutter only in v1. |
+| `--async` | off | Submit explicit output(s) in one coarse SLURM job per selected universe instead of executing immediately. Requires at least one `OUTPUT`; Perlmutter only in v1. |
 | `--account NAME` | `slurm.account` in `~/.lightcone/config.yaml` | Override the SLURM account for this async submission. Requires `--async`. |
 
 ## What happens, step by step
@@ -46,9 +47,10 @@ everything (Snakemake's `rule all`).
    error content always passes through.
 
 With `--async`, steps 3–8 happen later inside the batch allocation. The
-submission process instead resolves the requested sub-DAG, validates its
-resources, chooses `shared` or `regular`, renders an sbatch script, submits
-it, and writes `.lightcone/jobs/<job-id>.json`.
+submission process instead resolves the requested sub-DAG, removes recipes
+whose manifests and input provenance are already current, validates resources
+for the remaining work, chooses `shared` or `regular`, renders an sbatch
+script, submits it, and writes `.lightcone/jobs/<job-id>.json`.
 
 ## Output qualification
 
@@ -92,8 +94,9 @@ slurm:
   time_padding: 1.5
 ```
 
-Every recipe in the selected output's resolved sub-DAG must declare a
-`time_limit`. Other resources default to one CPU, no requested memory, and
+Every recipe in the unresolved portion of the selected output's sub-DAG must
+declare a `time_limit`. Already-current upstream recipes do not contribute to
+the allocation. Other resources default to one CPU, no requested memory, and
 no GPU:
 
 ```yaml
@@ -106,18 +109,27 @@ recipe:
     time_limit: 2h
 ```
 
-The allocation shape is the element-wise maximum across those recipes. The
-walltime is their serial sum multiplied by `slurm.time_padding`. On
+The allocation shape is the element-wise maximum across those pending recipes.
+The walltime is their serial sum multiplied by `slurm.time_padding`. On
 Perlmutter, a job fitting the shared CPU/GPU profile uses `shared`; anything
 larger uses `regular`, up to the 48-hour cap. A recipe larger than one node or
 a padded walltime beyond the cap is rejected.
 
-Submission is allowed from both login and compute nodes. If `-u` is omitted,
-Lightcone submits one job per discovered universe. The generated script
-activates the environment containing the current Python executable and runs
-plain `lc run ...` inside the allocation. It therefore uses the same Dask,
-Snakemake, validation, manifest, and container path as a synchronous run,
-including `podman-hpc`; it never installs packages on a compute node.
+Submission is allowed from both login and compute nodes. Parent-allocation
+`SLURM_*` variables are removed from the environment passed to `sbatch`, so
+the child allocation supplies a consistent CPU/TRES environment for its own
+`srun` workers. If `-u` is omitted, Lightcone submits one job per discovered
+universe. The generated script activates the environment containing the
+current Python executable and runs plain `lc run ...` inside the allocation.
+It therefore uses the same Dask, Snakemake, validation, manifest, and container
+path as a synchronous run, including `podman-hpc`; it never installs packages
+on a compute node.
+
+Use async execution for an explicit expensive materialized boundary, for
+example `lc run --async expensive_fit -u baseline`. Once it finishes, run any
+cheap downstream outputs normally. Bare `lc run --async` is rejected rather
+than submitting the whole analysis implicitly. If every selected output is
+already current, Lightcone reports that there is nothing to submit.
 
 Use `lc status` to poll and [`lc cancel`](cancel.md) to cancel a recorded job.
 

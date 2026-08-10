@@ -616,7 +616,7 @@ def _abort_if_sync_resources_exceed_allocation(
     "--async",
     "asynchronous",
     is_flag=True,
-    help="Submit one SLURM batch job per selected universe.",
+    help="Submit explicit output(s) in one SLURM batch job per selected universe.",
 )
 @click.option(
     "--account",
@@ -646,6 +646,11 @@ def run(
 
     universes = [universe] if universe else discover_universes(project)
     if asynchronous:
+        if not outputs:
+            raise click.ClickException(
+                "--async requires at least one explicit output. "
+                "Use `lc run --async <output>` for an expensive materialized boundary."
+            )
         from lightcone.engine.async_jobs import AsyncJobError, format_slurm_time, submit_job
 
         try:

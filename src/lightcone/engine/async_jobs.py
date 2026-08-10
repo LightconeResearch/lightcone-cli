@@ -24,10 +24,17 @@ from typing import Any, Literal
 import yaml
 from astra.helpers import load_yaml, resolve_analysis_tree
 
+from lightcone.engine.manifest import fingerprint_external
 from lightcone.engine.resources import RecipeResources, ResourceValueError, parse_recipe_resources
 from lightcone.engine.scratch import project_hash, resolve_scratch_root
 from lightcone.engine.site_registry import HostSite, detect_current_site
-from lightcone.engine.tree import TreeOutput, collect_tree_outputs, find_upstream_output
+from lightcone.engine.status import get_output_status
+from lightcone.engine.tree import (
+    TreeOutput,
+    collect_tree_outputs,
+    find_upstream_output,
+    resolve_external_input,
+)
 
 
 class AsyncJobError(RuntimeError):
@@ -179,6 +186,83 @@ def resolve_subdag_outputs(
         if _qualified_output_id(tree_output) in required
     ]
     return requested, resolved
+
+
+def pending_subdag_outputs(
+    project_path: Path,
+    tree_outputs: list[TreeOutput],
+    *,
+    universe: str,
+    forced_outputs: set[str] | None = None,
+) -> list[TreeOutput]:
+    """Return recipes that may run for one universe in dependency order.
+
+    A recipe is pending when its own manifest is missing or stale, when a
+    declared input has changed, or when one of its upstream recipes is
+    pending.  This mirrors the provenance chain used by the synchronous run
+    path while avoiding resource requests for already-materialized upstream
+    work.
+    """
+    project_path = project_path.resolve()
+    spec = resolve_analysis_tree(load_yaml(project_path / "astra.yaml"), project_path)
+    all_outputs = collect_tree_outputs(spec)
+    statuses = {
+        (
+            f"{status.analysis_id}.{status.output_id}" if status.analysis_id else status.output_id
+        ): status
+        for status in get_output_status(project_path, universe_id=universe)
+    }
+    forced = forced_outputs or set()
+    pending: dict[str, bool] = {}
+    visiting: set[str] = set()
+
+    def needs_run(tree_output: TreeOutput) -> bool:
+        key = _qualified_output_id(tree_output)
+        if key in pending:
+            return pending[key]
+        if key in visiting:
+            raise AsyncJobError(f"Cycle detected while checking the sub-DAG at {key!r}.")
+        visiting.add(key)
+
+        status = statuses.get(key)
+        required = key in forced or status is None or status.status != "ok"
+        manifest = status.manifest if status is not None else None
+        recorded_inputs = (manifest or {}).get("input_versions") or {}
+
+        for input_id in tree_output.output_def.get("inputs") or []:
+            upstream = find_upstream_output(tree_output, input_id, all_outputs)
+            if upstream is not None:
+                upstream_key = _qualified_output_id(upstream)
+                if needs_run(upstream):
+                    required = True
+                    continue
+                upstream_status = statuses.get(upstream_key)
+                upstream_manifest = (
+                    upstream_status.manifest if upstream_status is not None else None
+                )
+                current_version = (upstream_manifest or {}).get("data_version")
+            else:
+                source = resolve_external_input(tree_output, input_id, spec)
+                if source is None:
+                    required = True
+                    continue
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    source_path = project_path / source_path
+                current_version = fingerprint_external(source_path)
+
+            if not current_version or recorded_inputs.get(input_id) != current_version:
+                required = True
+
+        visiting.remove(key)
+        pending[key] = required
+        return required
+
+    for tree_output in tree_outputs:
+        needs_run(tree_output)
+    return [
+        tree_output for tree_output in tree_outputs if pending[_qualified_output_id(tree_output)]
+    ]
 
 
 def aggregate_job_resources(
@@ -392,6 +476,25 @@ def _environment_commands() -> tuple[list[str], str]:
     return lines, str(lc_executable)
 
 
+_SLURM_SUBMISSION_ENV_PASSTHROUGH = frozenset({"SLURM_CLUSTERS", "SLURM_CONF", "SLURM_CONF_SERVER"})
+
+
+def _submission_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Drop the parent allocation's job-scoped variables before ``sbatch``.
+
+    Submitting from a compute node otherwise exports values such as
+    ``SLURM_CPUS_PER_TASK`` into the child job.  They can conflict with the
+    allocation that ``sbatch`` creates (notably ``SLURM_TRES_PER_TASK``) and
+    make the child job's ``srun`` fail before any worker starts.
+    """
+    environment = dict(os.environ if source is None else source)
+    return {
+        key: value
+        for key, value in environment.items()
+        if not key.startswith("SLURM_") or key in _SLURM_SUBMISSION_ENV_PASSTHROUGH
+    }
+
+
 def render_sbatch_script(
     *,
     project_path: Path,
@@ -461,9 +564,26 @@ def submit_job(
 ) -> JobRecord:
     """Resolve, render, submit, and record one universe-scoped async job."""
     project_path = project_path.resolve()
+    if not output_ids:
+        raise AsyncJobError(
+            "Async submission requires at least one explicit output. "
+            "Use `lc run --async <output>` for an expensive materialized boundary."
+        )
     settings = load_slurm_settings(account_override=account_override)
     requested, subdag = resolve_subdag_outputs(project_path, output_ids)
-    resources = aggregate_job_resources(subdag, time_padding=settings.time_padding)
+    pending_subdag = pending_subdag_outputs(
+        project_path,
+        subdag,
+        universe=universe,
+        forced_outputs=set(requested) if force else None,
+    )
+    if not pending_subdag:
+        names = ", ".join(requested)
+        raise AsyncJobError(
+            f"Selected output(s) {names} are already up to date for universe "
+            f"{universe!r}; there is nothing to submit."
+        )
+    resources = aggregate_job_resources(pending_subdag, time_padding=settings.time_padding)
     selection = select_slurm_policy(resources)
 
     directory = jobs_dir(project_path)
@@ -509,6 +629,7 @@ def submit_job(
             capture_output=True,
             text=True,
             check=False,
+            env=_submission_environment(),
         )
     except FileNotFoundError as exc:
         raise AsyncJobError("`sbatch` was not found on PATH.") from exc
@@ -525,7 +646,9 @@ def submit_job(
     record = JobRecord(
         job_id=job_id,
         targets=requested,
-        resolved_targets=[_qualified_output_id(tree_output) for tree_output in subdag],
+        resolved_targets=[
+            _qualified_output_id(tree_output) for tree_output in pending_subdag
+        ],
         universe=universe,
         qos=selection.qos,
         resources={
@@ -740,6 +863,7 @@ __all__ = [
     "latest_job_for_output",
     "load_job_records",
     "load_slurm_settings",
+    "pending_subdag_outputs",
     "query_job_states",
     "refresh_job_records",
     "render_sbatch_script",

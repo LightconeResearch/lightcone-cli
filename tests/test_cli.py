@@ -404,6 +404,27 @@ def test_async_run_submits_each_discovered_universe(
     assert result.output.count("Submitted job") == 2
 
 
+def test_async_run_requires_explicit_output(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "outputs:\n"
+        "  - id: foo\n"
+        "    recipe:\n"
+        "      command: echo foo\n"
+        "      resources:\n"
+        "        time_limit: 10m\n"
+    )
+    monkeypatch.chdir(project)
+
+    result = runner.invoke(main, ["run", "--async"])
+
+    assert result.exit_code != 0
+    assert "requires at least one explicit output" in result.output
+
+
 def test_status_json_includes_async_job(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

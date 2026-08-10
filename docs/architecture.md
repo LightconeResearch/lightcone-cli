@@ -175,8 +175,9 @@ lifetime: no service to manage, no orphaned schedulers.
 
 Module: [`lightcone.engine.async_jobs`](api/async_jobs.md).
 
-`lc run --async` resolves one requested universe's sub-DAG, aggregates
-portable ASTRA resources, selects a site policy, and submits one coarse
+`lc run --async <output>` resolves one requested universe's sub-DAG, filters
+out already-current recipes, aggregates the remaining work's portable ASTRA
+resources, selects a site policy, and submits one coarse
 sbatch job. The rendered script activates the submitting Python environment
 and invokes plain `lc run`; once running, it follows branch 2 above and keeps
 all container and provenance behavior identical to synchronous execution.
