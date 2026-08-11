@@ -214,8 +214,6 @@ eval-results
 ## lockfile should be versioned for applications but not for libraries
 uv.lock
 
-# wrangler files
-.wrangler
 .dev.vars*
 !.dev.vars.example
 !.env.example

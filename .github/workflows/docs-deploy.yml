@@ -1,12 +1,17 @@
 name: Deploy Docs
 
+# Deploys the docs site to GitHub Pages, which serves
+# docs.lightconeresearch.org (custom domain configured in the repo's
+# Pages settings). The site tracks the *released* CLI, not main:
+# deploys happen on the same trigger as the PyPI publish, so the docs
+# never document behavior that `pip install lightcone-cli` can't
+# deliver yet. For an intermediate deploy (typo fix, clarification),
+# trigger manually from the Actions tab (workflow_dispatch runs
+# against the selected branch, main by default).
+
 on:
-  push:
-    branches: [main]
-    paths:
-      - "docs/**"
-      - "zensical.toml"
-      - ".github/workflows/docs-deploy.yml"
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
