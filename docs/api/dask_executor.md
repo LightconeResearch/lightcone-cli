@@ -36,9 +36,13 @@ Inherits from `snakemake_interface_executor_plugins.executors.remote.RemoteExecu
 ### `__init__(workflow, logger)`
 
 Imports `dask.distributed` lazily; raises `WorkflowError` if missing
-("`pip install distributed`"). Reads `DASK_SCHEDULER_ADDRESS` from the
-environment and opens a `Client(addr)`. Raises `WorkflowError` if the
-env var is unset — `lc run` is responsible for setting it.
+("`pip install distributed`"). Connects via `_connect_client()`: if
+`LIGHTCONE_GATEWAY_CLUSTER` is set, rejoins that Dask Gateway cluster
+through `Gateway().connect(name)` (with `shutdown_on_close=False` —
+the executor is a guest; `lc run` owns the cluster lifecycle);
+otherwise dials `DASK_SCHEDULER_ADDRESS` with a bare `Client`. Raises
+`WorkflowError` if neither is set — `lc run` is responsible for
+setting one.
 
 ### `run_job(job)`
 
@@ -53,18 +57,29 @@ client.submit(
 )
 ```
 
-`_run_shell` just runs `subprocess.run(cmd, shell=True, check=False)`
-on the worker and returns the exit code. The recipe is already
-container-wrapped at Snakefile generation time, so the worker has no
-runtime logic of its own.
+`_run_shell` runs `subprocess.run(cmd, shell=True, check=False)` on
+the worker and returns `(exit_code, output_block)`. The block is the
+child snakemake's sentinel-prefixed lines (see
+`lightcone.engine.runner.SENTINEL`), kept verbatim; on a failure that
+produced no sentinel line at all (the child died before the rule body
+— import error, missing package in the worker image) a bounded raw
+tail is sentinel-framed instead so bootstrap failures don't vanish
+into worker logs. Returning output through the task result is the only
+channel that works uniformly across LocalCluster threads, srun-launched
+workers, and Gateway worker pods (whose stdout goes to pod logs). The
+recipe is already container-wrapped at Snakefile generation time, so
+the worker has no runtime logic of its own.
 
 ### `check_active_jobs(active_jobs)`
 
 Async generator: for each submitted job, check `future.done()`. Yield
-back jobs that are still in flight. For finished jobs:
+back jobs that are still in flight. For finished jobs, unpack the
+result via `_unpack_result` (which also accepts the bare-int result of
+a worker running an older lightcone-cli release), write the output
+block to stdout — `lc run` filters and forwards it — then:
 
 - `future.exception() is not None` → `report_job_error(...)`
-- `future.result() != 0` → `report_job_error(...)`
+- exit code `!= 0` → `report_job_error(...)`
 - otherwise → `report_job_success(...)`
 
 ### `cancel_jobs(active_jobs)`

@@ -32,8 +32,12 @@ Resolve the runtime to use. Reads `container.runtime` from
 `~/.lightcone/config.yaml`:
 
 - `auto` (default) → first available, else `"none"` with `explicit=False`.
+  On a site declaring `container_runtime: kubernetes` (a Dask Gateway
+  deployment), auto resolves to `kubernetes` with no PATH probing.
 - `docker | podman | podman-hpc` → explicit; binary must exist or
   raises `ContainerBuildError`.
+- `kubernetes` → explicit; no binary involved (the worker pod is the
+  container).
 - `none` → explicit opt-out.
 - Anything else → `ContainerBuildError`.
 
@@ -111,6 +115,9 @@ No-op cases (`recipe` returned unchanged):
 
 - `image is None`
 - `runtime == "none"`
+- `runtime == "kubernetes"` — the Dask worker pod executing the recipe
+  was started from `image`; wrapping would containerize twice. The
+  image still flows into `code_version` and the manifest.
 
 Otherwise produces:
 
@@ -140,14 +147,16 @@ outputs typically share a Containerfile; resolving re-hashes the file
 plus all dependency files (lockfiles can be megabytes), so caching by
 spec string for the lifetime of the caller's loop matters.
 
-### `resolve_image_for_run(spec, *, project_path, project_name) → str | None`
+### `resolve_image_for_run(spec, *, project_path, project_name, registry=None) → str | None`
 
 Translate an `astra.yaml` `container:` value into the image tag the
 runtime will execute:
 
 - `None` / empty → `None`
 - Containerfile path → `lc-<name>-<hash>` (the tag `lc build` would
-  produce)
+  produce), or `<registry>/lc-<name>:<hash>` when `registry` is given
+  (a deployment with a remote builder — same content-addressed
+  identity, spelled for a registry)
 - Anything else → returned as-is
 
 ## Status
