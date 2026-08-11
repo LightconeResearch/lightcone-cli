@@ -425,6 +425,43 @@ def test_async_run_requires_explicit_output(
     assert "requires at least one explicit output" in result.output
 
 
+def test_async_run_on_local_host_explains_that_detach_is_unsupported(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine import async_jobs
+    from lightcone.engine.site_registry import HostSite
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "outputs:\n"
+        "  - id: foo\n"
+        "    recipe:\n"
+        "      command: echo foo\n"
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    monkeypatch.setattr(
+        async_jobs,
+        "detect_current_site",
+        lambda: HostSite(key=None, defaults={}),
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "_probe_slurm_availability",
+        lambda: (False, "`sinfo` was not found on PATH"),
+    )
+
+    result = runner.invoke(main, ["run", "--async", "foo"])
+
+    assert result.exit_code != 0
+    assert "no configured async SLURM site was detected" in result.output
+    assert "SLURM is unavailable" in result.output
+    assert "sinfo" in result.output
+    assert "does not provide detached local execution" in result.output
+    assert "No SLURM account configured" not in result.output
+
+
 def test_status_json_includes_async_job(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

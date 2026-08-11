@@ -317,19 +317,67 @@ def aggregate_job_resources(
     )
 
 
+def _probe_slurm_availability() -> tuple[bool, str]:
+    """Probe a SLURM controller without relying on allocation variables."""
+    try:
+        result = subprocess.run(
+            ["sinfo", "--noheader", "--format=%P"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return False, "`sinfo` was not found on PATH"
+    except subprocess.TimeoutExpired:
+        return False, "`sinfo` timed out while contacting the SLURM controller"
+    if result.returncode != 0:
+        output = result.stderr.strip() or result.stdout.strip()
+        detail = output.splitlines()[0][:200] if output else "no diagnostic output"
+        return False, f"`sinfo` exited with status {result.returncode}: {detail}"
+
+    partitions = [line.strip().rstrip("*") for line in result.stdout.splitlines() if line.strip()]
+    visible = ", ".join(dict.fromkeys(partitions[:5]))
+    detail = f"visible partitions: {visible}" if visible else "no visible partitions"
+    return True, detail
+
+
+def _require_async_site(site: HostSite | None = None) -> HostSite:
+    """Return a site with async policy or explain why submission is unavailable."""
+    current_site = detect_current_site() if site is None else site
+    if current_site and isinstance(current_site.get("async_slurm"), dict):
+        return current_site
+
+    slurm_reachable, probe_detail = _probe_slurm_availability()
+    site_detail = (
+        f"the detected site {current_site.display_name!r} has no async policy"
+        if current_site
+        else "no configured async SLURM site was detected"
+    )
+    if slurm_reachable:
+        raise AsyncJobError(
+            f"`lc run --async` found a reachable SLURM controller "
+            f"({probe_detail}), but {site_detail}. Async v1 requires the "
+            "configured NERSC Perlmutter policy; scheduler reachability alone "
+            "does not guarantee compatible QoS, node shapes, or shared paths."
+        )
+    raise AsyncJobError(
+        f"`lc run --async` cannot run on this host: {site_detail}, and SLURM "
+        f"is unavailable ({probe_detail}). `--async` does not provide detached "
+        "local execution; use plain `lc run` if the work fits locally or move "
+        "the project to NERSC Perlmutter."
+    )
+
+
 def select_slurm_policy(
     resources: JobResources,
     *,
     site: HostSite | None = None,
 ) -> SlurmSelection:
     """Map aggregate resources to the site's deterministic QoS policy."""
-    current_site = site or detect_current_site()
+    current_site = _require_async_site(site)
     policy = current_site.get("async_slurm")
-    if not current_site or not isinstance(policy, dict):
-        raise AsyncJobError(
-            "Automatic async submission is currently supported only on a "
-            "configured SLURM site (v1: NERSC Perlmutter)."
-        )
+    assert isinstance(policy, dict)
 
     profile_name = "gpu" if resources.gpus else "cpu"
     profiles = policy.get("profiles") or {}
@@ -569,6 +617,7 @@ def submit_job(
             "Async submission requires at least one explicit output. "
             "Use `lc run --async <output>` for an expensive materialized boundary."
         )
+    site = _require_async_site()
     settings = load_slurm_settings(account_override=account_override)
     requested, subdag = resolve_subdag_outputs(project_path, output_ids)
     pending_subdag = pending_subdag_outputs(
@@ -584,7 +633,7 @@ def submit_job(
             f"{universe!r}; there is nothing to submit."
         )
     resources = aggregate_job_resources(pending_subdag, time_padding=settings.time_padding)
-    selection = select_slurm_policy(resources)
+    selection = select_slurm_policy(resources, site=site)
 
     directory = jobs_dir(project_path)
     directory.mkdir(parents=True, exist_ok=True)

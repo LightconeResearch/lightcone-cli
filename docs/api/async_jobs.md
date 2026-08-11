@@ -21,8 +21,11 @@ Important entry points:
   serial walltime.
 - `select_slurm_policy()` — deterministic site profile to `shared` or
   `regular`.
-- `submit_job()` — require explicit targets, render, call `sbatch --parsable`
-  without inherited parent-allocation variables, and persist a `JobRecord`.
+- `submit_job()` — require explicit targets and a configured async site before
+  reading submission configuration or recipe resources. Unknown sites are
+  probed with `sinfo` to distinguish unavailable SLURM from a reachable but
+  unsupported scheduler; then render, call `sbatch --parsable` without inherited
+  parent-allocation variables, and persist a `JobRecord`.
 - `refresh_job_records()` — batch-query `squeue`, then `sacct`.
 - `cancel_job()` — resolve an active record, call `scancel`, and update it.
 

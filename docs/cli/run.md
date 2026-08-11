@@ -131,6 +131,15 @@ cheap downstream outputs normally. Bare `lc run --async` is rejected rather
 than submitting the whole analysis implicitly. If every selected output is
 already current, Lightcone reports that there is nothing to submit.
 
+On a non-cluster local machine, `--async` does not provide background or
+detached local execution. If no configured async site is detected, Lightcone
+uses a five-second `sinfo` probe rather than `SLURM_JOB_ID` to distinguish an
+unavailable scheduler from a reachable but unsupported SLURM site. It rejects
+both cases before requesting an account or validating recipe walltimes, with
+guidance to use plain `lc run` locally or move the project to Perlmutter. A
+successful `sinfo` probe alone does not enable submission because it cannot
+establish compatible QoS policy, node shapes, or shared project paths.
+
 Use `lc status` to poll and [`lc cancel`](cancel.md) to cancel a recorded job.
 
 ## Inside SLURM

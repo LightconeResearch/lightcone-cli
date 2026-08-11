@@ -243,6 +243,84 @@ def test_submit_job_requires_explicit_output(tmp_path: Path) -> None:
         submit_job(tmp_path, output_ids=(), universe="baseline")
 
 
+def test_submit_job_rejects_local_host_before_config_or_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        async_jobs,
+        "detect_current_site",
+        lambda: HostSite(key=None, defaults={}),
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "_probe_slurm_availability",
+        lambda: (False, "`sinfo` was not found on PATH"),
+    )
+
+    with pytest.raises(AsyncJobError, match="SLURM is unavailable") as exc_info:
+        submit_job(tmp_path / "missing-project", output_ids=("fit",), universe="baseline")
+
+    assert "does not provide detached local execution" in str(exc_info.value)
+    assert "`sinfo` was not found on PATH" in str(exc_info.value)
+    assert "plain `lc run`" in str(exc_info.value)
+    assert "SLURM account" not in str(exc_info.value)
+
+
+def test_submit_job_explains_reachable_but_unsupported_slurm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    monkeypatch.setattr(
+        async_jobs,
+        "detect_current_site",
+        lambda: HostSite(key=None, defaults={}),
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "_probe_slurm_availability",
+        lambda: (True, "visible partitions: debug, regular"),
+    )
+
+    with pytest.raises(AsyncJobError, match="reachable SLURM controller") as exc_info:
+        submit_job(tmp_path / "missing-project", output_ids=("fit",), universe="baseline")
+
+    assert "visible partitions: debug, regular" in str(exc_info.value)
+    assert "scheduler reachability alone" in str(exc_info.value)
+    assert "SLURM_JOB_ID" not in str(exc_info.value)
+
+
+def test_probe_slurm_availability_reports_visible_partitions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], int]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs["timeout"]))
+        return subprocess.CompletedProcess(command, 0, stdout="debug*\nregular\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert async_jobs._probe_slurm_availability() == (
+        True,
+        "visible partitions: debug, regular",
+    )
+    assert calls == [(["sinfo", "--noheader", "--format=%P"], 5)]
+
+
+def test_probe_slurm_availability_handles_missing_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*_: Any, **__: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert async_jobs._probe_slurm_availability() == (
+        False,
+        "`sinfo` was not found on PATH",
+    )
+
+
 def test_policy_prefers_cpu_shared() -> None:
     selection = select_slurm_policy(
         JobResources(32, 128000, 0, 3600, 1), site=_perlmutter()
