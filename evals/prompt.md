@@ -22,6 +22,31 @@ This project is driven by two CLIs — use them rather than improvising:
     - When `lc run` fails, read the error and the Snakemake log it points
       to, fix the script or spec, and re-run.
 
+## Recipe template grammar
+
+A recipe's `command` is a template. The engine substitutes these
+placeholders before invoking it:
+
+- `{output}` — the directory the output is materialized into
+  (`results/<universe>/<output_id>/`). The engine creates it; your script
+  must write its artifact file(s) inside it.
+- `{inputs.<id>}` — the named input's resolved path: an analysis-level
+  `Input`'s `source` (e.g. a file under `data/`), or, for an upstream
+  output, that output's results directory (your script reads the file(s)
+  inside it).
+- `{inputs}` — space-separated paths of all declared inputs, in
+  declaration order.
+- `{decisions.<id>}` — the active option ID for the named decision in the
+  current universe (e.g. `nelder_mead`), which your script should accept
+  as an argparse choice.
+- `{{` and `}}` emit literal braces. Format specs (`{x:>8}`) are rejected.
+
+Provenance is declared on the Output, not inside the recipe: every
+`{inputs.<id>}` / `{decisions.<id>}` the command references must be listed
+in that output's `inputs:` / `decisions:` lists, or validation fails.
+Dependencies between outputs come from these `inputs:` declarations — that
+is how the engine orders the build.
+
 ## Environment
 
 You are in an activated Python virtual environment managed by uv. Common

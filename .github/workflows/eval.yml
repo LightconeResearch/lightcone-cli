@@ -21,7 +21,7 @@ jobs:
   eval:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -53,7 +53,8 @@ jobs:
         run: |
           project="$RUNNER_TEMP/eval-project"
           echo "PROJECT=$project" >> "$GITHUB_ENV"
-          lc init "$project" --no-git --no-venv
+          git config user.name Eval && git config user.email eval@lightcone
+          lc init "$project"
           # Overlay the task seed (astra.yaml, data/) on the scaffold
           cp -r evals/tasks/snae/. "$project"/
           cd "$project"
@@ -62,8 +63,6 @@ jobs:
           rm -f universes/baseline.yaml
           astra universe generate -n baseline \
             -d 'Default configuration using standard practices'
-          git init -q
-          git config user.name Eval && git config user.email eval@lightcone
           git add -A && git commit -qm seed
 
       - name: Run Claude Code
