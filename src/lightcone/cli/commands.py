@@ -175,15 +175,23 @@ def init(
         directory.mkdir(parents=True, exist_ok=True)
 
     # Spec scaffold: astra.yaml, universes/baseline.yaml, src/. astra's
-    # public init callback refuses non-empty directories and overwrites
-    # .gitignore — both wrong for convergence — so use the boilerplate
-    # helper directly and manage .gitignore ourselves below.
+    # init *command* refuses non-empty directories and overwrites
+    # .gitignore — both wrong for convergence — so use the bare scaffold
+    # API and manage .gitignore ourselves below.
     def _scaffold_spec() -> None:
-        from astra.cli import _create_boilerplate_astra_yaml
+        try:
+            # Public API (LightconeResearch/astra-tools#99). The ignore
+            # is for astra-tools releases that predate it; mypy will
+            # flag it as unused once the dependency pin catches up.
+            from astra.cli import create_boilerplate  # type: ignore[attr-defined]
 
-        (directory / "universes").mkdir(exist_ok=True)
-        (directory / "src").mkdir(exist_ok=True)
-        _create_boilerplate_astra_yaml(directory)
+            create_boilerplate(directory)
+        except ImportError:  # astra-tools ≤ 0.2.x without the public API
+            from astra.cli import _create_boilerplate_astra_yaml
+
+            (directory / "universes").mkdir(exist_ok=True)
+            (directory / "src").mkdir(exist_ok=True)
+            _create_boilerplate_astra_yaml(directory)
         # Point the spec at our project-local Containerfile. The astra
         # boilerplate ships ``container: python:3.12-slim`` so the
         # scaffold is runnable as-is, but we want lightcone projects to
