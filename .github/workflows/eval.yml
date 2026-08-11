@@ -1,5 +1,10 @@
 name: Eval
 
+# Minimal agentic eval: scaffold a project from the eval seed on the
+# runner, let Claude Code (with the astra plugin) build it using the
+# branch's lc/astra, then check the results with astra validate and
+# lc status.
+
 on:
   pull_request:
   workflow_dispatch:
@@ -11,18 +16,14 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   eval:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
@@ -31,101 +32,74 @@ jobs:
           enable-cache: true
           activate-environment: true
 
-      - name: Install dependencies
-        run: uv sync --group eval
+      - name: Install lightcone-cli (branch under test)
+        run: |
+          uv sync
+          # Scientific deps the task's analysis scripts will need — the
+          # agent can add more with `uv pip install`
+          uv pip install numpy scipy matplotlib
 
-      - name: Run eval
-        id: eval
+      - name: Install Claude Code + astra plugin
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          # Skip first-run onboarding in headless mode
+          echo '{"hasCompletedOnboarding": true}' > "$HOME/.claude.json"
+          claude plugin marketplace add LightconeResearch/agent-skills
+          claude plugin install astra@lightcone-research
+
+      - name: Set up eval project
+        run: |
+          project="$RUNNER_TEMP/eval-project"
+          echo "PROJECT=$project" >> "$GITHUB_ENV"
+          lc init "$project" --no-git --no-venv
+          # Overlay the task seed (astra.yaml, data/) on the scaffold
+          cp -r evals/tasks/snae/. "$project"/
+          cd "$project"
+          # Regenerate baseline.yaml from the task astra.yaml's defaults —
+          # the scaffolded one matches the boilerplate spec, not the task's
+          rm -f universes/baseline.yaml
+          astra universe generate -n baseline \
+            -d 'Default configuration using standard practices'
+          git init -q
+          git config user.name Eval && git config user.email eval@lightcone
+          git add -A && git commit -qm seed
+
+      - name: Run Claude Code
+        working-directory: ${{ env.PROJECT }}
         env:
-          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        shell: bash
         run: |
           set -o pipefail
-          lc eval run evals/build.yaml --num-trials 1 --concurrency 1 2>&1 | tee eval-output.txt
+          claude -p "$(cat "$GITHUB_WORKSPACE/evals/prompt.md")" \
+            --output-format stream-json --verbose \
+            --dangerously-skip-permissions \
+            --max-turns 200 \
+            | tee claude-transcript.jsonl
 
-          # Find the results JSON and extract key metrics
-          results_json=$(find eval-results -name results.json -type f | head -1)
-          python3 .github/scripts/parse_eval_results.py "$results_json"
+      - name: Check results
+        working-directory: ${{ env.PROJECT }}
+        run: |
+          astra validate astra.yaml
+          {
+            echo '## Eval: lc status'
+            echo '```'
+            lc status --universe baseline
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          lc status --universe baseline
+          # Fail unless every materializable output is ok
+          lc status --json | jq -e \
+            '[.universes[].outputs[] | select(.status != "alias")]
+             | length > 0 and all(.status == "ok")'
 
-      - name: Upload results artifact
-        id: upload
+      - name: Upload eval project
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: eval-results
-          path: eval-results/
-
-      - name: Comment on PR
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const score = '${{ steps.eval.outputs.score }}' || 'N/A';
-            const cost = '${{ steps.eval.outputs.cost }}' || 'N/A';
-            const turns = '${{ steps.eval.outputs.turns }}' || 'N/A';
-            const duration = '${{ steps.eval.outputs.duration }}' || 'N/A';
-            const buildComplete = '${{ steps.eval.outputs.build_complete }}';
-            const lightconeVersion = '${{ steps.eval.outputs.lightcone_version }}' || 'unknown';
-            const lightconeCommit = '${{ steps.eval.outputs.lightcone_commit }}' || 'unknown';
-            const outcome = '${{ steps.eval.outcome }}';
-            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-            const artifactId = '${{ steps.upload.outputs.artifact-id }}';
-            const artifactUrl = artifactId ? `${runUrl}/artifacts/${artifactId}` : '';
-
-            let graders = '';
-            try { graders = fs.readFileSync('grader-details.txt', 'utf8'); } catch {}
-
-            const icon = outcome === 'success' ? '✅' : '❌';
-            const body = [
-              `## ${icon} Eval Results`,
-              '',
-              `| Metric | Value |`,
-              `|--------|-------|`,
-              `| Score | **${score}** |`,
-              `| Build complete | ${buildComplete === 'True' ? '✅' : '❌'} |`,
-              `| Cost | $${cost} |`,
-              `| Turns | ${turns} |`,
-              `| Duration | ${duration}s |`,
-              `| lightcone-cli | \`${lightconeVersion}\` (\`${lightconeCommit}\`) |`,
-              artifactUrl ? `| Results | [Download](${artifactUrl}) |` : '',
-              '',
-              '### Graders',
-              graders || '_No grader results_',
-              '',
-              `<details><summary>Full output</summary>`,
-              '',
-              '```',
-              fs.readFileSync('eval-output.txt', 'utf8').slice(-3000),
-              '```',
-              '</details>',
-            ].join('\n');
-
-            // Find and update existing comment, or create new one
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const marker = '## ✅ Eval Results';
-            const marker2 = '## ❌ Eval Results';
-            const existing = comments.find(c =>
-              c.body.startsWith(marker) || c.body.startsWith(marker2)
-            );
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
+          name: eval-project
+          path: ${{ env.PROJECT }}
+          # Keep .lightcone-manifest.json provenance files in the artifact
+          include-hidden-files: true
+          if-no-files-found: warn

@@ -255,8 +255,6 @@ src/lightcone/                  # PEP 420 namespace package — NO __init__.py
 │   ├── validation.py           # post-recipe output sanity checks
 │   ├── wrroc.py                # Workflow Run RO-Crate export
 │   └── site_registry.py        # known-site defaults (scratch root, runtime)
-└── eval/                       # quantitative eval harness (`lc eval`)
-    ├── cli.py harness.py sandbox.py graders.py build.py report.py models.py
 
 src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
 

@@ -36,7 +36,4 @@ Options:
 ## Removed commands
 
 For historical context: `lc dev`, `lc setup`, `lc target`, and `lc update` no
-longer exist as explicit commands. `lc eval` is available when the `eval`
-extra is installed (`pip install lightcone-cli[eval]`); without it the import
-is silently skipped and `lc eval` will fail with "No such command". See the
-removal pages for details.
+longer exist as explicit commands. See the removal pages for details.

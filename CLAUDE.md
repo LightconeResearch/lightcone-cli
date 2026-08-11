@@ -61,10 +61,9 @@ src/lightcone/              # namespace — NO __init__.py
 │   ├── tree.py             # Sub-analysis tree traversal (kept from before)
 │   ├── validation.py       # Post-materialization output shape checks
 │   └── site_registry.py    # Known HPC site defaults (Perlmutter, etc.)
-└── eval/                   # Quantitative eval harness (top-level; peer of cli/engine)
-    ├── cli.py              # `lc eval` subcommand group
-    ├── harness.py, sandbox.py, graders.py, build.py, report.py, models.py
 
+evals/                      # Agentic eval: prompt.md + tasks/<id>/ seed files;
+                            # driven by .github/workflows/eval.yml (no Python harness)
 tests/                      # pytest — mirrors src/ structure
 pyproject.toml              # hatchling + hatch-vcs, ASTRA + Snakemake as deps
 ```

@@ -1410,12 +1410,3 @@ def export_wrroc_cmd(
             f"  Captured [bold]{result.runs_included}[/bold] runs across "
             f"universes: [cyan]{u_list}[/cyan]"
         )
-
-
-# Register eval subgroup (requires optional 'eval' extra)
-try:
-    from lightcone.eval.cli import eval_group
-
-    main.add_command(eval_group, "eval")
-except ImportError:
-    pass

@@ -9,7 +9,7 @@ tests/
 ├── test_container.py       # detection, image tag, build_image, wrap_recipe, RuntimeChoice
 ├── test_dask_cluster.py    # cluster_for_run branches & resource keys
 ├── test_dask_plugin.py     # snakemake_executor_plugin_dask
-├── test_eval_*.py          # eval harness (graders, harness, models, report)
+├── test_eval_tasks.py      # eval task seed specs validate against astra
 ├── test_manifest.py        # write_manifest, sha256_dir, code_version
 ├── test_snakefile.py       # generator + final `snakemake -n` parse test
 ├── test_status.py          # OutputStatus across ok/stale/missing/alias
@@ -67,13 +67,16 @@ test scope.
 
 ## Eval harness (separate)
 
-Agent-loop performance evals live in `evals/` with their fixtures in
-`evals/tasks/`. The harness lives at `lightcone.eval.harness`, and the
-`lc eval` subgroup is registered when the `eval` dependency group is
-installed:
+The agentic eval is a plain GitHub Actions workflow —
+`.github/workflows/eval.yml` — with no Python harness behind it. On
+each PR it scaffolds a project with `lc init`, overlays the seed files
+from `evals/tasks/snae/` (`astra.yaml`, `data/`), runs Claude Code
+headlessly with `evals/prompt.md` (the astra skill is installed from
+the `LightconeResearch/agent-skills` plugin marketplace), and then
+checks the outcome with `astra validate` and `lc status --json` — the
+job fails unless every declared output is materialized. The built
+project (including the agent transcript) is uploaded as a workflow
+artifact.
 
-```bash
-lc eval run evals/example-run.yaml
-lc eval report eval-results/<run>/results.json
-lc eval compare eval-results/<run1>.json eval-results/<run2>.json
-```
+To reproduce locally, run the same commands the workflow does with
+`claude`, `lc`, and `astra` on PATH.
