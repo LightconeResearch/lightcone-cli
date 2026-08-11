@@ -26,7 +26,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "astra-tools>=0.2.10",
+    # Pinned: astra-tools 0.2.14 made `astra init` idempotent, changing
+    # the callback signature this release's `lc init` delegates to.
+    "astra-tools==0.2.11",
     "click>=8.0",
     "pyyaml>=6.0",
     "rich>=13.0",
