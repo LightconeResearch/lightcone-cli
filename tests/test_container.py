@@ -111,30 +111,22 @@ class TestComputeImageTag:
         tag2 = compute_image_tag("test", cf, project)
         assert tag1 != tag2
 
-    def test_changes_with_copied_directory(self, project: Path) -> None:
+    def test_directory_copy_source_is_rejected(self, project: Path) -> None:
+        """The image is an environment, not a code snapshot: directory
+        COPY sources (COPY src/, COPY . .) raise with guidance instead
+        of silently baking in a copy nothing executes."""
         cf = project / "Containerfile"
         cf.write_text("FROM python:3.12-slim\nCOPY src/ /app/src/\n")
         (project / "src").mkdir()
         (project / "src" / "a.py").write_text("a = 1\n")
-        tag1 = compute_image_tag("test", cf, project)
-        (project / "src" / "b.py").write_text("b = 2\n")
-        tag2 = compute_image_tag("test", cf, project)
-        assert tag1 != tag2
+        with pytest.raises(ContainerBuildError, match="directory"):
+            compute_image_tag("test", cf, project)
 
-    def test_copy_dir_ignores_results(self, project: Path) -> None:
+    def test_copy_dot_is_rejected(self, project: Path) -> None:
         cf = project / "Containerfile"
         cf.write_text("FROM python:3.12-slim\nCOPY . /app/\n")
-        (project / "src").mkdir()
-        (project / "src" / "a.py").write_text("a = 1\n")
-        tag1 = compute_image_tag("test", cf, project)
-        # Touching results/ or .lightcone/ must not invalidate the tag —
-        # they aren't in the build context for any sane Containerfile.
-        (project / "results").mkdir()
-        (project / "results" / "out.txt").write_text("data\n")
-        (project / ".lightcone").mkdir()
-        (project / ".lightcone" / "Snakefile").write_text("rule x:\n")
-        tag2 = compute_image_tag("test", cf, project)
-        assert tag1 == tag2
+        with pytest.raises(ContainerBuildError, match="not supported"):
+            compute_image_tag("test", cf, project)
 
     def test_skips_from_stage_copy(self, project: Path) -> None:
         cf = project / "Containerfile"
@@ -312,37 +304,13 @@ class TestBuildImage:
         assert "Containerfile" in captured["files"]
         assert "app.py" in captured["files"]
 
-    def test_build_stages_copy_dot_with_excludes(self, project: Path) -> None:
-        """``COPY .`` mirrors the project but skips excluded subtrees."""
+    def test_build_rejects_copy_dot(self, project: Path) -> None:
+        """A ``COPY . .`` Containerfile fails the build with guidance
+        before any runtime is invoked."""
         cf = project / "Containerfile"
         cf.write_text("FROM python:3.12-slim\nCOPY . /app/\n")
-        (project / "src").mkdir()
-        (project / "src" / "main.py").write_text("x = 1\n")
-        (project / ".git").mkdir()
-        (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-        (project / "results").mkdir()
-        (project / "results" / "out.txt").write_text("data\n")
-
-        captured: dict = {}
-
-        def fake_run(cmd, **kwargs):
-            ctx = Path(cmd[-1])
-            captured["files"] = sorted(
-                p.relative_to(ctx).as_posix()
-                for p in ctx.rglob("*")
-                if p.is_file()
-            )
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch(
-            "lightcone.engine.container.subprocess.run", side_effect=fake_run
-        ):
+        with pytest.raises(ContainerBuildError, match="environment"):
             build_image("lc-test", cf, project, runtime="podman")
-
-        assert "src/main.py" in captured["files"]
-        assert "Containerfile" in captured["files"]
-        assert not any(f.startswith(".git/") for f in captured["files"])
-        assert not any(f.startswith("results/") for f in captured["files"])
 
     @patch("lightcone.engine.container.subprocess.run")
     def test_build_cleans_stage_on_failure(
