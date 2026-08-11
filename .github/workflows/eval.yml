@@ -52,6 +52,10 @@ jobs:
 
       - name: Set up eval project
         run: |
+          # Global git identity so any repo the agent commits in works
+          # (ephemeral runner — nothing to pollute)
+          git config --global user.name Eval
+          git config --global user.email eval@lightcone
           project="$RUNNER_TEMP/eval-project"
           echo "PROJECT=$project" >> "$GITHUB_ENV"
           lc init "$project"
@@ -174,7 +178,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: eval-project
-          path: ${{ env.PROJECT }}
-          # Keep .lightcone-manifest.json provenance files in the artifact
+          # include-hidden-files keeps the .lightcone-manifest.json
+          # provenance files; the venv and snakemake scratch are excluded
+          path: |
+            ${{ env.PROJECT }}
+            !${{ env.PROJECT }}/.venv/**
+            !${{ env.PROJECT }}/.snakemake/**
           include-hidden-files: true
           if-no-files-found: warn
