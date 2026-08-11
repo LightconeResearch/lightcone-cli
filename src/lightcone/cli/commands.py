@@ -443,7 +443,10 @@ RUN pip install --no-cache-dir {lc_requirement}
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# No COPY of the project source: recipes run against the live project
+# tree (bind-mounted locally, shared filesystem on a hub), so the image
+# is a pure environment — it only rebuilds when dependencies change,
+# never on code edits.
 """
 
 
