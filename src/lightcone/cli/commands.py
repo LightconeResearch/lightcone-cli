@@ -190,7 +190,6 @@ def init(
             from astra.cli import _create_boilerplate_astra_yaml
 
             (directory / "universes").mkdir(exist_ok=True)
-            (directory / "src").mkdir(exist_ok=True)
             _create_boilerplate_astra_yaml(directory)
         # Point the spec at our project-local Containerfile. The astra
         # boilerplate ships ``container: python:3.12-slim`` so the

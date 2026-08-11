@@ -46,7 +46,7 @@ workable.
 ## What it creates
 
 The spec scaffold follows the `astra init` boilerplate
-(`astra.yaml`, `universes/baseline.yaml`, `src/`), with the
+(`astra.yaml`, `universes/baseline.yaml`), with the
 lightcone-specific pieces layered on top. Inside `DIRECTORY`
 (creating it if needed):
 
@@ -54,7 +54,6 @@ lightcone-specific pieces layered on top. Inside `DIRECTORY`
 astra.yaml                    # tiny boilerplate spec with one example output
 universes/
   baseline.yaml               # the default universe
-src/                          # analysis code lives here
 Containerfile                 # project image; referenced by `container:` in astra.yaml
 requirements.txt              # numpy, pandas, and a pinned lightcone-cli
 .gitignore                    # Python + lightcone state + MyST build output

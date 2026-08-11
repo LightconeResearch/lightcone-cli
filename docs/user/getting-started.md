@@ -19,8 +19,9 @@ lc init r2-decision-demo
 cd r2-decision-demo
 ```
 
-`lc init` is a one-shot setup. It creates a small, opinionated directory
-layout and stops; it doesn't ask any questions.
+`lc init` converges the directory to a small, opinionated layout and
+stops; it doesn't ask any questions, and it's idempotent — re-running
+it later only fills in whatever is missing.
 
 ```
 r2-decision-demo/
@@ -35,7 +36,6 @@ r2-decision-demo/
 ├── index.md            # template report that references the spec
 ├── universes/
 │   └── baseline.yaml   # one universe, built from decision defaults
-├── src/
 └── results/
 ```
 
@@ -110,8 +110,10 @@ lightcone-cli.)
 
 ## 3. Write the scripts
 
-Two short scripts. First `src/fit.py` — fits the model, writes the R² metric
-and the test-set predictions:
+Two short scripts, in a `src/` directory (`mkdir src` — the scaffold
+doesn't create it; where code lives is your choice, the recipes above
+just happen to point there). First `src/fit.py` — fits the model,
+writes the R² metric and the test-set predictions:
 
 ```python
 import argparse
