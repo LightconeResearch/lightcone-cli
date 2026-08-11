@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -164,6 +165,166 @@ def test_init_check_passes_on_converged_project(
         main, ["init", str(project), "--no-git", "--no-venv", "--check"]
     )
     assert result.exit_code == 0, result.output
+
+
+_LEGACY_CONTAINERFILE = """\
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+"""
+
+
+def test_init_migrates_legacy_containerfile(runner: CliRunner, tmp_path: Path) -> None:
+    """A Containerfile written verbatim by an older release is upgraded to
+    the current template (no COPY . ., execution stack as its own layer)."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "Containerfile").write_text(_LEGACY_CONTAINERFILE)
+
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert "Containerfile" in report["repaired"]
+    containerfile = (project / "Containerfile").read_text()
+    assert "COPY . ." not in containerfile
+    assert "lightcone-cli" in containerfile
+
+
+def test_init_warns_on_custom_directory_copy(runner: CliRunner, tmp_path: Path) -> None:
+    """A hand-edited Containerfile with a directory COPY is never rewritten,
+    but the drift is surfaced through the warnings channel."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    custom = "FROM python:3.12-slim\nRUN apt-get update\nCOPY src/ /app/src/\n"
+    (project / "Containerfile").write_text(custom)
+    (project / "src").mkdir()
+    (project / "src" / "a.py").write_text("a = 1\n")
+
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert (project / "Containerfile").read_text() == custom
+    assert any("COPY/ADD of a directory" in w for w in report["warnings"])
+
+
+def test_init_strips_legacy_lightcone_pin(runner: CliRunner, tmp_path: Path) -> None:
+    """The lightcone-cli pin older scaffolds wrote into requirements.txt is
+    removed (it would shadow the external lc inside the venv); user deps stay."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "requirements.txt").write_text(
+        "numpy\npandas\nastropy\n"
+        "\n# Execution stack — lets this image run rules on any backend,\n"
+        "# including as a Dask Gateway worker pod.\n"
+        "lightcone-cli==0.4.0\n"
+    )
+
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert "requirements.txt" in report["repaired"]
+    requirements = (project / "requirements.txt").read_text()
+    assert "lightcone-cli" not in requirements
+    assert "astropy" in requirements and "numpy" in requirements
+
+
+def test_init_repairs_legacy_results_gitignore(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The legacy blanket results/ rule is narrowed so results/README.md can
+    be tracked — a negation after a blanket directory exclude is powerless."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".gitignore").write_text(
+        "*.log\n\n# lightcone-cli\n.snakemake/\nresults/\n"
+    )
+
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert ".gitignore" in report["repaired"]
+    gitignore = (project / ".gitignore").read_text()
+    assert "results/*" in gitignore
+    assert "!results/README.md" in gitignore
+    assert not re.search(r"(?m)^results/\s*$", gitignore)
+    # User content and the rest of the legacy block survive.
+    assert gitignore.startswith("*.log\n")
+    assert ".snakemake/" in gitignore
+
+
+def test_init_survives_malformed_lightcone_yaml(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """'Safe to re-run at any time' includes a corrupted project config:
+    warn and leave it alone rather than crashing with a YAML traceback."""
+    project = tmp_path / "proj"
+    (project / ".lightcone").mkdir(parents=True)
+    (project / ".lightcone" / "lightcone.yaml").write_text("target: [unclosed\n")
+
+    result = runner.invoke(
+        main,
+        ["init", str(project), "--no-git", "--no-venv", "--scratch", "$SCRATCH", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert any("lightcone.yaml" in w for w in report["warnings"])
+    assert (project / ".lightcone" / "lightcone.yaml").read_text() == "target: [unclosed\n"
+
+    # A non-mapping file must not crash the --scratch merge either.
+    (project / ".lightcone" / "lightcone.yaml").write_text("local\n")
+    result = runner.invoke(
+        main,
+        ["init", str(project), "--no-git", "--no-venv", "--scratch", "$SCRATCH", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_init_points_spec_at_containerfile(runner: CliRunner, tmp_path: Path) -> None:
+    """The scaffolded spec must reference the project Containerfile — pins
+    the rewrite against drift in astra's boilerplate image name."""
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+    assert "container: Containerfile" in (project / "astra.yaml").read_text()
+
+
+def test_engine_errors_render_cleanly(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ContainerBuildError from any command surfaces as a one-line CLI error
+    (exit 1), not a traceback — the group boundary translates it."""
+    from lightcone.cli import commands
+    from lightcone.engine.container import ContainerBuildError
+
+    def _boom(*args: object, **kwargs: object) -> Path:
+        raise ContainerBuildError("COPY of a directory is not supported")
+
+    monkeypatch.setattr(commands, "_project_root", _boom)
+    result = runner.invoke(main, ["status"])
+    assert result.exit_code == 1
+    assert "not supported" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_cloudbuild_error_is_a_container_build_error() -> None:
+    """One boundary handler must cover both local and Cloud Build failures."""
+    from lightcone.engine.cloudbuild import CloudBuildError
+    from lightcone.engine.container import ContainerBuildError
+
+    assert issubclass(CloudBuildError, ContainerBuildError)
 
 
 def test_init_repairs_missing_piece(runner: CliRunner, tmp_path: Path) -> None:

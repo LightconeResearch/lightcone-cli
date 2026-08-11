@@ -46,6 +46,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from lightcone.engine.container import (
+    ContainerBuildError,
     _populate_build_context,
     deployment_registry,
     image_identity,
@@ -75,8 +76,12 @@ _METADATA_TOKEN_URL = (
 ProgressFn = Callable[[str, str], None]
 
 
-class CloudBuildError(RuntimeError):
-    """An image could not be produced through Cloud Build."""
+class CloudBuildError(ContainerBuildError):
+    """An image could not be produced through Cloud Build.
+
+    Subclasses :class:`ContainerBuildError` so one handler covers every
+    way an image can fail to materialize, local or cloud.
+    """
 
 
 def cloudbuild_available() -> bool:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,8 +34,27 @@ import click
 import yaml
 from rich.console import Console
 
+from lightcone.engine.container import ContainerBuildError
+
 console = Console()
 logger = logging.getLogger(__name__)
+
+
+class _EngineErrorGroup(click.Group):
+    """Render engine errors as clean CLI errors instead of tracebacks.
+
+    The engine raises :class:`ContainerBuildError` (and its subclass
+    ``CloudBuildError``) from many entry points — tag hashing, builds,
+    status walks. Translating once at the group boundary keeps every
+    command, present and future, from leaking a raw traceback; click
+    prints ``ClickException`` messages cleanly and exits 1.
+    """
+
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except ContainerBuildError as e:
+            raise click.ClickException(str(e)) from e
 
 
 def _config_path() -> Path:
@@ -61,7 +81,7 @@ def _ensure_global_config() -> None:
     )
 
 
-@click.group()
+@click.group(cls=_EngineErrorGroup)
 @click.version_option(package_name="lightcone-cli")
 @click.pass_context
 def main(ctx: click.Context) -> None:
@@ -139,13 +159,16 @@ def init(
     """Converge DIRECTORY into an ASTRA project (idempotent).
 
     Safe to re-run at any time: creates whatever is missing, repairs the
-    pieces lightcone manages, and never overwrites files you own. A
+    pieces lightcone manages — including migrating scaffold files older
+    lightcone releases wrote — and never overwrites files you own.
+    Problems it can see but must not fix (e.g. an unsupported directory
+    COPY in a hand-edited Containerfile) are reported as warnings. A
     directory that already holds an ``astra.yaml`` is adopted, not
     rejected.
 
-    The spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
-    ``src/``) follows the ``astra init`` boilerplate; on top of it sit
-    the lightcone pieces: ``Containerfile`` + ``requirements.txt``,
+    The spec scaffold (``astra.yaml``, ``universes/baseline.yaml``)
+    follows the ``astra init`` boilerplate; on top of it sit the
+    lightcone pieces: ``Containerfile`` + ``requirements.txt``,
     ``.gitignore`` entries, ``.lightcone/`` project state, a template
     MyST report (``myst.yml`` + ``index.md``), and an optional venv.
     """
@@ -169,39 +192,75 @@ def init(
             if write:
                 apply()
 
+    def _converge_file(
+        name: str,
+        path: Path,
+        template: str,
+        repair: Callable[[str], str | None] | None = None,
+    ) -> None:
+        """Create *path* from *template* if missing; else offer it to *repair*.
+
+        ``repair`` receives the current text and returns the fixed text,
+        or ``None`` when the file is already fine. This is how legacy
+        artifacts that lightcone itself wrote get migrated forward;
+        user-authored content is never touched (repairs must be
+        conservative by construction).
+        """
+        if not path.exists():
+            report["created"].append(name)
+            if write:
+                path.write_text(template)
+        elif repair is not None and (fixed := repair(path.read_text())) is not None:
+            report["repaired"].append(name)
+            if write:
+                path.write_text(fixed)
+        else:
+            report["unchanged"].append(name)
+
     if write:
         if not as_json:
             console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
         directory.mkdir(parents=True, exist_ok=True)
 
-    # Spec scaffold: astra.yaml, universes/baseline.yaml, src/. astra's
-    # init *command* refuses non-empty directories and overwrites
-    # .gitignore — both wrong for convergence — so use the bare scaffold
-    # API and manage .gitignore ourselves below.
+    # Spec scaffold: astra.yaml + universes/baseline.yaml. astra's init
+    # *command* refuses non-empty directories and overwrites .gitignore
+    # — both wrong for convergence — so use the bare scaffold API and
+    # manage .gitignore ourselves below.
     def _scaffold_spec() -> None:
         try:
             # Public API (LightconeResearch/astra-tools#99). The ignore
             # is for astra-tools releases that predate it; mypy will
             # flag it as unused once the dependency pin catches up.
             from astra.cli import create_boilerplate  # type: ignore[attr-defined]
-
-            create_boilerplate(directory)
         except ImportError:  # astra-tools ≤ 0.2.x without the public API
+            create_boilerplate = None
+        if create_boilerplate is not None:
+            create_boilerplate(directory)
+        else:
             from astra.cli import _create_boilerplate_astra_yaml
 
             (directory / "universes").mkdir(exist_ok=True)
             _create_boilerplate_astra_yaml(directory)
         # Point the spec at our project-local Containerfile. The astra
-        # boilerplate ships ``container: python:3.12-slim`` so the
-        # scaffold is runnable as-is, but we want lightcone projects to
-        # build their own image so dependencies can evolve under
-        # content-addressed rebuilds.
+        # boilerplate ships a registry image so the scaffold is runnable
+        # as-is, but we want lightcone projects to build their own image
+        # so dependencies can evolve under content-addressed rebuilds.
+        # Rewrite the top-level ``container:`` line whatever image the
+        # boilerplate names, so astra bumping its default doesn't
+        # silently disable the rewrite.
         astra_yaml_path = directory / "astra.yaml"
-        astra_yaml_path.write_text(
-            astra_yaml_path.read_text().replace(
-                "container: python:3.12-slim", "container: Containerfile", 1
-            )
+        rewritten = re.sub(
+            r"(?m)^container:.*$",
+            "container: Containerfile",
+            astra_yaml_path.read_text(),
+            count=1,
         )
+        if "container: Containerfile" not in rewritten:
+            report["warnings"].append(
+                "astra.yaml: no top-level `container:` line found to point "
+                "at the Containerfile; set it manually."
+            )
+        astra_yaml_path.write_text(rewritten)
 
     _converge("astra.yaml", (directory / "astra.yaml").exists(), _scaffold_spec)
 
@@ -214,40 +273,54 @@ def init(
     # stays free of it — `lc` lives outside the venv. Anything
     # pod-specific (uid, mounts) is deployment configuration, not image
     # content.
-    _converge(
+    cf_path = directory / "Containerfile"
+    _converge_file(
         "Containerfile",
-        (directory / "Containerfile").exists(),
-        lambda: (directory / "Containerfile").write_text(
-            _CONTAINERFILE_TEMPLATE.format(lc_requirement=_lightcone_requirement())
-        ),
+        cf_path,
+        _CONTAINERFILE_TEMPLATE.format(lc_requirement=_lightcone_requirement()),
+        repair=_migrate_legacy_containerfile,
     )
-    _converge(
+    # Advisory: a user-edited Containerfile with directory COPY sources
+    # can't be repaired safely (we only rewrite files we authored
+    # verbatim), but lc build / lc run will reject it — say so now.
+    if "Containerfile" not in report["repaired"] and cf_path.is_file():
+        from lightcone.engine.container import directory_copy_sources
+
+        if bad := directory_copy_sources(cf_path, directory):
+            report["warnings"].append(
+                "Containerfile: COPY/ADD of a directory "
+                f"({', '.join(repr(s) for s in bad)}) is not supported and "
+                "lc build/run will fail. The image is an environment — "
+                "recipes run against the live project tree, so remove the "
+                "line(s)."
+            )
+    _converge_file(
         "requirements.txt",
-        (directory / "requirements.txt").exists(),
-        lambda: (directory / "requirements.txt").write_text(_REQUIREMENTS),
+        directory / "requirements.txt",
+        _REQUIREMENTS,
+        repair=_strip_lightcone_requirement,
     )
 
-    # .gitignore: create with base + lightcone entries if absent; if the
-    # user already has one, append the lightcone block exactly once
-    # (detected via its "# lightcone-cli" marker line).
-    gitignore_path = directory / ".gitignore"
-    if not gitignore_path.exists():
-        report["created"].append(".gitignore")
-        if write:
-            gitignore_path.write_text(_GITIGNORE_BASE + _GITIGNORE_APPEND)
-    elif "# lightcone-cli" not in gitignore_path.read_text():
-        report["repaired"].append(".gitignore")
-        if write:
-            gitignore_path.write_text(gitignore_path.read_text() + _GITIGNORE_APPEND)
-    else:
-        report["unchanged"].append(".gitignore")
+    # .gitignore: create with base + lightcone entries if absent; append
+    # the block once to a user-owned file (keyed on the "# lightcone-cli"
+    # marker); migrate the legacy blanket ``results/`` rule, which would
+    # keep results/README.md unignorable forever (git never descends
+    # into an excluded directory, so a later negation can't rescue it).
+    _converge_file(
+        ".gitignore",
+        directory / ".gitignore",
+        _GITIGNORE_BASE + _GITIGNORE_APPEND,
+        repair=_repair_gitignore,
+    )
 
     # .lightcone/ project state dir + lightcone.yaml. An explicit
     # --scratch converges the stored scratch_root; without it an
-    # existing config is left alone.
+    # existing config is left alone. A file we can't parse is left
+    # untouched and reported — init must stay safe to re-run.
     cfg_path = directory / ".lightcone" / "lightcone.yaml"
+    cfg_name = ".lightcone/lightcone.yaml"
     if not cfg_path.exists():
-        report["created"].append(".lightcone/lightcone.yaml")
+        report["created"].append(cfg_name)
         if write:
             cfg_path.parent.mkdir(exist_ok=True)
             project_cfg: dict[str, object] = {"target": "local"}
@@ -255,30 +328,44 @@ def init(
                 project_cfg["scratch_root"] = scratch_override
             cfg_path.write_text(yaml.safe_dump(project_cfg))
     else:
-        existing_cfg = yaml.safe_load(cfg_path.read_text()) or {}
-        if scratch_override and existing_cfg.get("scratch_root") != scratch_override:
-            report["repaired"].append(".lightcone/lightcone.yaml")
+        try:
+            existing_cfg = yaml.safe_load(cfg_path.read_text())
+        except yaml.YAMLError:
+            existing_cfg = None
+        if not isinstance(existing_cfg, dict):
+            report["unchanged"].append(cfg_name)
+            report["warnings"].append(
+                f"{cfg_name} is not a valid YAML mapping; left untouched"
+                + (" (--scratch not applied)" if scratch_override else "")
+                + "."
+            )
+        elif scratch_override and existing_cfg.get("scratch_root") != scratch_override:
+            report["repaired"].append(cfg_name)
             if write:
                 existing_cfg["scratch_root"] = scratch_override
                 cfg_path.write_text(yaml.safe_dump(existing_cfg))
         else:
-            report["unchanged"].append(".lightcone/lightcone.yaml")
+            report["unchanged"].append(cfg_name)
 
     # results/ ships with a README explaining the materialization
     # contract — the placeholder directory alone is invisible in git
     # (empty + ignored), so the README is what actually tells a human
     # or agent opening the project where outputs land and that they
     # must come from `lc run`, not be written by hand.
-    _converge(
-        "results/",
-        (directory / "results").is_dir(),
-        lambda: (directory / "results").mkdir(),
-    )
-    _converge(
-        "results/README.md",
-        (directory / "results" / "README.md").exists(),
-        lambda: (directory / "results" / "README.md").write_text(_RESULTS_README),
-    )
+    results_dir = directory / "results"
+    if results_dir.exists() and not results_dir.is_dir():
+        report["unchanged"].extend(["results/", "results/README.md"])
+        report["warnings"].append(
+            "results exists but is not a directory; outputs cannot "
+            "materialize until it is one."
+        )
+    else:
+        _converge("results/", results_dir.is_dir(), results_dir.mkdir)
+        _converge(
+            "results/README.md",
+            (results_dir / "README.md").exists(),
+            lambda: (results_dir / "README.md").write_text(_RESULTS_README),
+        )
 
     # Template MyST report. MyST support is a recommended add-on on top of
     # the spec, not part of it — which is why the report scaffold lives here
@@ -322,11 +409,15 @@ def init(
                 console.print(f"  [yellow]would create[/yellow] {item}")
             for item in report["repaired"]:
                 console.print(f"  [yellow]would repair[/yellow] {item}")
+        for warning in report["warnings"]:
+            console.print(f"  [yellow]![/yellow] {warning}")
     else:
         for item in report["created"]:
             console.print(f"[green]✓[/green] created {item}")
         for item in report["repaired"]:
             console.print(f"[green]✓[/green] repaired {item}")
+        for warning in report["warnings"]:
+            console.print(f"[yellow]![/yellow] {warning}")
         if converged:
             console.print(f"\n[green]Project already converged at[/green] {directory}")
         else:
@@ -454,6 +545,90 @@ _REQUIREMENTS = """\
 numpy
 pandas
 """
+
+
+# ---------------------------------------------------------------------------
+# Legacy scaffold migrations — repair hooks for `lc init`'s converger.
+#
+# Each takes the current file text and returns the fixed text, or None
+# when nothing needs doing. They repair only content lightcone itself
+# wrote: known templates are replaced verbatim-for-verbatim, known
+# lines are filtered; anything the user authored stays untouched.
+# ---------------------------------------------------------------------------
+
+#: Containerfile templates written by previous releases, verbatim. A
+#: project whose Containerfile matches one was never hand-edited, so
+#: replacing it with the current template is lossless.
+_LEGACY_CONTAINERFILES = (
+    """\
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+""",
+)
+
+#: Comment lines previous releases wrote above the lightcone-cli pin in
+#: requirements.txt; removed together with the pin.
+_LEGACY_REQUIREMENT_COMMENTS = frozenset({
+    "# Execution stack — lets this image run rules on any backend,",
+    "# including as a Dask Gateway worker pod.",
+})
+
+#: A lightcone-cli requirement line (bare, pinned, extras, ...).
+_LC_REQUIREMENT_RE = re.compile(r"^lightcone-cli\s*($|[=<>~!\[;@ ])")
+
+
+def _migrate_legacy_containerfile(text: str) -> str | None:
+    """Replace a Containerfile from an older scaffold with the current one.
+
+    Older scaffolds baked the project source in (``COPY . .``) — now
+    rejected — and pulled the execution stack via requirements.txt.
+    """
+    if text in _LEGACY_CONTAINERFILES:
+        return _CONTAINERFILE_TEMPLATE.format(lc_requirement=_lightcone_requirement())
+    return None
+
+
+def _strip_lightcone_requirement(text: str) -> str | None:
+    """Drop the lightcone-cli pin older scaffolds put in requirements.txt.
+
+    The pin now lives in the Containerfile; inside requirements.txt it
+    would be installed into the project venv, shadowing the external
+    ``lc``.
+    """
+    lines = text.splitlines()
+    if not any(_LC_REQUIREMENT_RE.match(line.strip()) for line in lines):
+        return None
+    kept = [
+        line
+        for line in lines
+        if not _LC_REQUIREMENT_RE.match(line.strip())
+        and line.strip() not in _LEGACY_REQUIREMENT_COMMENTS
+    ]
+    return "\n".join(kept).rstrip("\n") + "\n"
+
+
+def _repair_gitignore(text: str) -> str | None:
+    """Converge a user-owned .gitignore.
+
+    Appends the managed block once (keyed on its ``# lightcone-cli``
+    marker); replaces the legacy blanket ``results/`` rule with
+    ``results/*`` + ``!results/README.md`` so the README stays tracked
+    (git never descends into an excluded directory, so a negation after
+    a blanket exclude is powerless).
+    """
+    if "# lightcone-cli" not in text:
+        return text + _GITIGNORE_APPEND
+    if re.search(r"(?m)^results/\s*$", text):
+        return re.sub(
+            r"(?m)^results/\s*$", "results/*\n!results/README.md", text, count=1
+        )
+    return None
 
 
 def _lightcone_requirement() -> str:

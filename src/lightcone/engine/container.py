@@ -317,24 +317,44 @@ def _iter_build_context_entries(
     source directories in would only force pointless rebuilds and go
     stale between them.
     """
+    if bad := directory_copy_sources(containerfile, project_path):
+        raise ContainerBuildError(
+            f"{containerfile.name}: COPY/ADD of a directory "
+            f"({', '.join(repr(s) for s in bad)}) is not supported. The "
+            "image is a pure environment — recipes run against the live "
+            "project tree (bind-mounted locally, shared filesystem on a "
+            "hub), so project source never needs to be baked in. Remove "
+            "the line (e.g. `COPY . .`), or COPY individual files if the "
+            "build itself needs them. `lc init` repairs the legacy "
+            "scaffold automatically."
+        )
     yield "containerfile", containerfile
     for dep in find_dependency_files(project_path):
         yield "dep", dep
     text = containerfile.read_text(errors="replace")
     for src_str in _parse_copy_sources(text):
         for resolved in _expand_copy_source(src_str, project_path):
-            if resolved.is_dir():
-                raise ContainerBuildError(
-                    f"{containerfile.name}: COPY/ADD of a directory "
-                    f"({src_str!r}) is not supported. The image is a pure "
-                    "environment — recipes run against the live project "
-                    "tree (bind-mounted locally, shared filesystem on a "
-                    "hub), so project source never needs to be baked in. "
-                    "Remove the line (e.g. `COPY . .`), or COPY individual "
-                    "files if the build itself needs them."
-                )
             if resolved.is_file():
                 yield "copy_file", resolved
+
+
+def directory_copy_sources(containerfile: Path, project_path: Path) -> list[str]:
+    """``COPY``/``ADD`` sources in *containerfile* that resolve to directories.
+
+    Directory sources are unsupported (the image is an environment, not
+    a code snapshot); this is the shared detector behind the build-time
+    rejection in :func:`_iter_build_context_entries` and the advisory
+    warning in ``lc init``.
+    """
+    text = containerfile.read_text(errors="replace")
+    bad: list[str] = []
+    for src_str in _parse_copy_sources(text):
+        if any(
+            resolved.is_dir()
+            for resolved in _expand_copy_source(src_str, project_path)
+        ):
+            bad.append(src_str)
+    return bad
 
 
 def image_identity(

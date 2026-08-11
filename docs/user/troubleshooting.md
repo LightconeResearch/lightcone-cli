@@ -121,8 +121,9 @@ mv astra.yaml astra.previous.yaml
 $EDITOR astra.yaml
 ```
 
-`lc init` won't re-scaffold inside an existing project, so keep the
-rest of the layout (`universes/`, `src/`, `.lightcone/`) as is.
+Re-running `lc init` afterwards is safe — it only fills in whatever is
+missing and leaves the rest of the layout (`universes/`, `.lightcone/`)
+as is.
 
 ## Filing a bug
 

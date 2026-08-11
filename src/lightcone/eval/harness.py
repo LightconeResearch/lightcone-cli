@@ -31,15 +31,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_LOOP_PROMPT = """\
 Build the analysis specified in `astra.yaml` for universe `{{UNIVERSE}}`.
 
-Invoke the `/lc-cli` skill for the lc workflow (spec-code invariant, status \
-interpretation, failure diagnosis) and `/astra` for spec syntax (decisions, \
-inputs/outputs, sub-analyses). Then for each output that needs materializing:
+`astra.yaml` is the single source of truth: inputs, outputs, recipes, and \
+methodological decisions all live there — read it first (`astra info` \
+summarizes it, `astra validate` checks it). For each output that needs \
+materializing:
 
 1. Read the recipe's `command` to see what script and arguments it expects.
-2. Write the script under `src/`, parameterizing every decision via argparse \
-   — never hardcode option values.
+2. Write the script at the path the command names, parameterizing every \
+   decision via argparse — never hardcode option values.
 3. Run `lc run <output_id> --universe {{UNIVERSE}}` to materialize it through \
-   the engine.
+   the engine. Never write to `results/` by hand — outputs must come from \
+   `lc run` or verification will fail.
 4. Commit progress as you go.
 
 Build iteratively from upstream outputs to downstream. \
