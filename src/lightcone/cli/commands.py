@@ -433,13 +433,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
 # Execution stack — lets this image run rules on any backend, including
 # as a Dask Gateway worker pod. Kept out of requirements.txt so the
-# project venv stays free of it (`lc` lives outside the venv).
+# project venv stays free of it (`lc` lives outside the venv), and
+# installed first so this heavy layer stays cached across
+# requirements.txt edits.
 RUN pip install --no-cache-dir {lc_requirement}
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 """
