@@ -37,6 +37,7 @@ r2-decision-demo/
 ├── universes/
 │   └── baseline.yaml   # one universe, built from decision defaults
 └── results/
+    └── README.md       # outputs materialize here via `lc run`
 ```
 
 The file you'll actually work in:

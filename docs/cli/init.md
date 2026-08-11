@@ -59,7 +59,8 @@ requirements.txt              # numpy, pandas, and a pinned lightcone-cli
 .gitignore                    # Python + lightcone state + MyST build output
 .lightcone/
   lightcone.yaml              # project config: { target: local } (+ scratch_root if --scratch)
-results/                      # placeholder; populated by `lc run`
+results/
+  README.md                   # the materialization contract; outputs land here via `lc run`
 myst.yml                      # MyST report configuration (MySTRA plugin)
 index.md                      # template report referencing astra.yaml elements
 .venv/                        # Python venv with lightcone-cli installed (skipped with --no-venv)

@@ -73,6 +73,13 @@ def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     assert (project / ".lightcone").is_dir()
     assert (project / "results").is_dir()
     assert (project / "universes").is_dir()
+    # The README is the durable hint that outputs materialize here via
+    # lc run — and the one file in results/ that stays tracked by git.
+    readme = (project / "results" / "README.md").read_text()
+    assert "lc run" in readme
+    gitignore = (project / ".gitignore").read_text()
+    assert "results/*" in gitignore
+    assert "!results/README.md" in gitignore
 
 
 def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None:

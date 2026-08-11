@@ -261,10 +261,20 @@ def init(
         else:
             report["unchanged"].append(".lightcone/lightcone.yaml")
 
+    # results/ ships with a README explaining the materialization
+    # contract — the placeholder directory alone is invisible in git
+    # (empty + ignored), so the README is what actually tells a human
+    # or agent opening the project where outputs land and that they
+    # must come from `lc run`, not be written by hand.
     _converge(
         "results/",
         (directory / "results").is_dir(),
         lambda: (directory / "results").mkdir(),
+    )
+    _converge(
+        "results/README.md",
+        (directory / "results" / "README.md").exists(),
+        lambda: (directory / "results" / "README.md").write_text(_RESULTS_README),
     )
 
     # Template MyST report. MyST support is a recommended add-on on top of
@@ -462,10 +472,31 @@ _GITIGNORE_APPEND = """
 .lightcone/snakefile-config.json
 .snakemake/
 .snakemake.legacy/
-results/
+results/*
+!results/README.md
 
 # MyST build output
 _build/
+"""
+
+
+_RESULTS_README = """\
+# results/
+
+Materialized outputs land here, one directory per universe and output:
+
+    results/<universe>/<output_id>/
+
+Each output directory carries a `.lightcone-manifest.json` sidecar
+recording exactly how it was produced: recipe, container image,
+decisions, input hashes, and the output's content hash.
+
+- Produce or refresh outputs with `lc run` — never write files here by
+  hand. Hand-placed or edited files fail `lc verify` (the content hash
+  won't match, and a missing manifest forces a re-run).
+- `lc status` shows what is materialized, stale, or missing.
+- Everything in this directory except this README is git-ignored;
+  outputs are reproducible from `astra.yaml`, not versioned.
 """
 
 
