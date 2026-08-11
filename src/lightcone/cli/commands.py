@@ -206,22 +206,25 @@ def init(
     _converge("astra.yaml", (directory / "astra.yaml").exists(), _scaffold_spec)
 
     # One scaffold everywhere — the Containerfile is agnostic to the
-    # execution environment. lightcone-cli in requirements.txt brings
-    # the whole execution stack (snakemake, dask, distributed,
-    # dask-gateway) so the same image can wrap recipes locally or run
-    # as a Dask Gateway worker pod on a hub; anything pod-specific
-    # (uid, mounts) is deployment configuration, not image content.
+    # execution environment. requirements.txt holds only the analysis
+    # dependencies; the execution stack (lightcone-cli, which carries
+    # snakemake, dask, distributed, dask-gateway) is a separate
+    # Containerfile layer so the same image can wrap recipes locally or
+    # run as a Dask Gateway worker pod on a hub, while the project venv
+    # stays free of it — `lc` lives outside the venv. Anything
+    # pod-specific (uid, mounts) is deployment configuration, not image
+    # content.
     _converge(
         "Containerfile",
         (directory / "Containerfile").exists(),
-        lambda: (directory / "Containerfile").write_text(_CONTAINERFILE),
+        lambda: (directory / "Containerfile").write_text(
+            _CONTAINERFILE_TEMPLATE.format(lc_requirement=_lightcone_requirement())
+        ),
     )
     _converge(
         "requirements.txt",
         (directory / "requirements.txt").exists(),
-        lambda: (directory / "requirements.txt").write_text(
-            _REQUIREMENTS + _lightcone_requirement()
-        ),
+        lambda: (directory / "requirements.txt").write_text(_REQUIREMENTS),
     )
 
     # .gitignore: create with base + lightcone entries if absent; if the
@@ -365,7 +368,14 @@ def init(
 
 
 def _create_venv(directory: Path, quiet: bool = False) -> None:
-    """Create ``.venv`` in ``directory`` and install lightcone-cli into it."""
+    """Create ``.venv`` in ``directory`` with the analysis dependencies.
+
+    Installs ``requirements.txt`` only — deliberately *not*
+    lightcone-cli. The venv exists to run the analysis code; ``lc``
+    itself lives outside it (e.g. ``uv tool install lightcone-cli``),
+    and a second copy inside the venv would shadow it with whatever
+    version PyPI resolves.
+    """
 
     def _status(msg: str) -> AbstractContextManager[object]:
         return nullcontext() if quiet else console.status(msg)
@@ -378,7 +388,7 @@ def _create_venv(directory: Path, quiet: bool = False) -> None:
                 check=False,
                 capture_output=True,
             )
-        with _status("[dim]Installing lightcone-cli…[/dim]"):
+        with _status("[dim]Installing project requirements…[/dim]"):
             subprocess.run(
                 [
                     "uv",
@@ -386,7 +396,8 @@ def _create_venv(directory: Path, quiet: bool = False) -> None:
                     "install",
                     "--python",
                     ".venv/bin/python",
-                    "lightcone-cli",
+                    "-r",
+                    "requirements.txt",
                 ],
                 cwd=directory,
                 check=False,
@@ -400,22 +411,35 @@ def _create_venv(directory: Path, quiet: bool = False) -> None:
                 check=False,
                 capture_output=True,
             )
-        with _status("[dim]Installing lightcone-cli…[/dim]"):
+        with _status("[dim]Installing project requirements…[/dim]"):
             subprocess.run(
-                [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"],
+                [
+                    ".venv/bin/python",
+                    "-m",
+                    "pip",
+                    "install",
+                    "-q",
+                    "-r",
+                    "requirements.txt",
+                ],
                 cwd=directory,
                 check=False,
                 capture_output=True,
             )
 
 
-_CONTAINERFILE = """\
+_CONTAINERFILE_TEMPLATE = """\
 FROM python:3.12-slim
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Execution stack — lets this image run rules on any backend, including
+# as a Dask Gateway worker pod. Kept out of requirements.txt so the
+# project venv stays free of it (`lc` lives outside the venv).
+RUN pip install --no-cache-dir {lc_requirement}
 
 COPY . .
 """
@@ -428,15 +452,16 @@ pandas
 
 
 def _lightcone_requirement() -> str:
-    """Requirements lines pinning lightcone-cli into the project image.
+    """The lightcone-cli requirement pinned into the project image.
 
     The project image must be able to execute rules on any backend —
     including as a Dask Gateway worker pod, where the dask worker and
     the child snakemake run *inside* the image. lightcone-cli carries
     that whole stack (snakemake, dask, distributed, dask-gateway) as
-    normal dependencies, so one line covers it. The pin mirrors the
-    version running ``lc init`` to keep driver and image in lockstep;
-    dev builds fall back to unpinned (their version isn't published).
+    normal dependencies, so one requirement covers it. The pin mirrors
+    the version running ``lc init`` to keep driver and image in
+    lockstep; dev builds fall back to unpinned (their version isn't
+    published).
     """
     from importlib.metadata import PackageNotFoundError, version
 
@@ -444,12 +469,7 @@ def _lightcone_requirement() -> str:
         v = version("lightcone-cli")
     except PackageNotFoundError:
         v = ""
-    pin = f"lightcone-cli=={v}" if v and "dev" not in v else "lightcone-cli"
-    return (
-        "\n# Execution stack — lets this image run rules on any backend,\n"
-        "# including as a Dask Gateway worker pod.\n"
-        f"{pin}\n"
-    )
+    return f"lightcone-cli=={v}" if v and "dev" not in v else "lightcone-cli"
 
 
 # Written when the project has no .gitignore of its own; mirrors the base

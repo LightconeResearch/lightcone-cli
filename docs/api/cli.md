@@ -72,7 +72,7 @@ Map a status literal to the Rich-formatted display label:
 
 ## Boilerplate text
 
-`_CONTAINERFILE`, `_REQUIREMENTS`, `_GITIGNORE_BASE`,
+`_CONTAINERFILE_TEMPLATE`, `_REQUIREMENTS`, `_GITIGNORE_BASE`,
 `_GITIGNORE_APPEND`, `_MYST_YML`, and `_INDEX_MD_BODY` are multi-line
 strings written at `lc init` time (the spec boilerplate itself comes
 from astra's boilerplate helper). Edit them to change what new

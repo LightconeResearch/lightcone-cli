@@ -28,7 +28,7 @@ r2-decision-demo/
 ├── astra.yaml          # the spec — this is where everything lives
 ├── .gitignore
 ├── .git                # initialized git repository (skip with --no-git)
-├── .venv/              # Python virtual env with lightcone-cli installed (skip with --no-venv)
+├── .venv/              # Python virtual env with the analysis dependencies (skip with --no-venv)
 ├── .lightcone/         # internal scratchpad — don't edit by hand
 ├── Containerfile       # build instructions for the project container
 ├── requirements.txt    # software dependencies

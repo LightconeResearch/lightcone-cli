@@ -200,7 +200,9 @@ def test_init_venv_uses_uv_when_available(
     assert result.exit_code == 0, result.output
 
     assert ["uv", "venv", "--python", "3.12", ".venv"] in calls
-    assert ["uv", "pip", "install", "--python", ".venv/bin/python", "lightcone-cli"] in calls
+    assert [
+        "uv", "pip", "install", "--python", ".venv/bin/python", "-r", "requirements.txt",
+    ] in calls
 
 
 def test_init_venv_falls_back_to_python_when_uv_missing(
@@ -220,7 +222,9 @@ def test_init_venv_falls_back_to_python_when_uv_missing(
     assert result.exit_code == 0, result.output
 
     assert ["python", "-m", "venv", ".venv"] in calls
-    assert [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"] in calls
+    assert [
+        ".venv/bin/python", "-m", "pip", "install", "-q", "-r", "requirements.txt",
+    ] in calls
 
 
 # ---- lc verify ------------------------------------------------------------
@@ -347,9 +351,8 @@ def test_init_scaffold_is_environment_agnostic(
 ) -> None:
     """The scaffold is identical on and off a hub: the Containerfile
     carries no environment-specific content (pod identity is deployment
-    config, not image content), and lightcone-cli in requirements.txt
-    brings the whole execution stack — including dask-gateway — as
-    normal dependencies."""
+    config, not image content), and the image gets the execution stack
+    — including dask-gateway — via a dedicated lightcone-cli layer."""
     monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
     hub_project = tmp_path / "hub"
     result = runner.invoke(main, ["init", str(hub_project), "--no-git", "--no-venv"])
@@ -365,7 +368,10 @@ def test_init_scaffold_is_environment_agnostic(
     assert containerfile == (local_project / "Containerfile").read_text()
     assert requirements == (local_project / "requirements.txt").read_text()
     assert "useradd" not in containerfile and "USER" not in containerfile
-    assert "lightcone-cli" in requirements
+    # The execution stack goes in the image, never the venv's
+    # requirements — `lc` lives outside the project venv.
+    assert "lightcone-cli" in containerfile
+    assert "lightcone-cli" not in requirements
 
 
 def test_lightcone_requirement_pins_running_version() -> None:
@@ -377,9 +383,9 @@ def test_lightcone_requirement_pins_running_version() -> None:
     v = version("lightcone-cli")
     if "dev" in v:
         # Dev builds aren't published — unpinned fallback.
-        assert req.strip().splitlines()[-1] == "lightcone-cli"
+        assert req == "lightcone-cli"
     else:
-        assert f"lightcone-cli=={v}" in req
+        assert req == f"lightcone-cli=={v}"
 
 
 def test_ensure_images_none_runtime_returns_empty(tmp_path: Path) -> None:

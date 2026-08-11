@@ -55,7 +55,7 @@ astra.yaml                    # tiny boilerplate spec with one example output
 universes/
   baseline.yaml               # the default universe
 Containerfile                 # project image; referenced by `container:` in astra.yaml
-requirements.txt              # numpy, pandas, and a pinned lightcone-cli
+requirements.txt              # analysis dependencies (numpy, pandas to start)
 .gitignore                    # Python + lightcone state + MyST build output
 .lightcone/
   lightcone.yaml              # project config: { target: local } (+ scratch_root if --scratch)
@@ -63,7 +63,7 @@ results/
   README.md                   # the materialization contract; outputs land here via `lc run`
 myst.yml                      # MyST report configuration (MySTRA plugin)
 index.md                      # template report referencing astra.yaml elements
-.venv/                        # Python venv with lightcone-cli installed (skipped with --no-venv)
+.venv/                        # Python venv with the analysis dependencies (skipped with --no-venv)
 ```
 
 The boilerplate `container: python:3.12-slim` from the astra
