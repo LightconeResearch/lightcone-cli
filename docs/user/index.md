@@ -1,22 +1,22 @@
 # Welcome to the user guide
 
 `lightcone-cli` is a small toolchain that turns a research question into
-a reproducible analysis. You describe what you're trying to learn,
-a cli agent helps you turn that into a precise specification, and the
-`lc` command line keeps the resulting code, decisions, and outputs in
-sync thanks to the [**ASTRA**][astra] specification.
+a reproducible analysis. You describe what you're trying to learn as a
+precise specification — an `astra.yaml` file following the
+[**ASTRA**][astra] schema — and the `lc` command line keeps the
+resulting code, decisions, and outputs in sync.
 
-No need to write code by hand, **you stay in charge of the scientific choices**, the agent handles the implementation.
+ASTRA specs are plain YAML, designed to be easy for both humans and AI
+assistants to write. However the spec gets written, **you stay in charge
+of the scientific choices** — every methodological decision is declared
+in the open, and `lc` records exactly what produced every result.
 
 ## What this guide covers
 
-- [Install](install.md) — get the `lc` command line and Claude Code running on your
+- [Install](install.md) — get the `lc` command line running on your
   machine or on a cluster.
 - [Getting Started](getting-started.md) — create your first project,
   run it end-to-end, and understand what each piece does.
-- [The Agentic Workflow](agent-workflow.md) — `/lc-new`,
-  `/lc-from-code`, `/lc-from-paper`, and `/lc-feedback` — what each
-  command does and when to reach for it.
 - [Running on a Cluster](cluster.md) — taking your analysis to a SLURM
   HPC system, including Perlmutter-specific notes.
 - [Troubleshooting](troubleshooting.md) — common issues and how to
@@ -32,16 +32,16 @@ No need to write code by hand, **you stay in charge of the scientific choices**,
         ```bash
         uv tool install lightcone-cli
         lc init my-analysis && cd my-analysis
-        claude
-        # then, inside Claude Code,  run /lc-new
+        # describe your analysis in astra.yaml, then:
+        lc run
         ```
 
     === "pip"
         ```bash
         pip install lightcone-cli
         lc init my-analysis && cd my-analysis
-        claude 
-        # then, inside Claude Code: /lc-new
+        # describe your analysis in astra.yaml, then:
+        lc run
         ```
 
 That's the shortest possible path. The rest of the guide is the unhurried version.
@@ -53,8 +53,8 @@ That's the shortest possible path. The rest of the guide is the unhurried versio
 - **A workflow language.** Recipes in `astra.yaml` are short shell or
   Python commands, not a DSL. There's no learning curve beyond what's
   in [Getting Started](getting-started.md).
-- **An IDE.** `lc` is a command-line tool; the agent surface lives
-  inside the agent harness (Claude Code for now).
+- **An IDE.** `lc` is a command-line tool; write `astra.yaml` and your
+  analysis code with whatever editor or tooling you prefer.
 
 If you'd rather skim the design and architecture, the
 [maintainer docs](../maintainer.md) are the other half of this site.

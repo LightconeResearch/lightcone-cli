@@ -68,7 +68,6 @@ def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
     assert result.exit_code == 0, result.output
     assert (project / "astra.yaml").exists()
-    assert (project / "CLAUDE.md").exists()
     assert (project / ".gitignore").exists()
     assert (project / ".lightcone").is_dir()
     assert (project / "results").is_dir()

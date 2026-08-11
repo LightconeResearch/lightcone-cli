@@ -161,11 +161,11 @@ class EvalSandbox:
     ) -> None:
         """Scaffold the project via ``lc init`` and overlay task seed files.
 
-        The scaffold (``.claude/``, ``CLAUDE.md``, ``Containerfile``,
-        ``requirements.txt``, ``.lightcone/``, ``.gitignore``, default
+        The scaffold (``Containerfile``, ``requirements.txt``,
+        ``.lightcone/``, ``.gitignore``, default
         ``universes/baseline.yaml``) is produced by the same ``lc init``
-        command users run — no separate uploaded copies of skills/hooks
-        to drift out of sync. The task seed dir contributes only the
+        command users run — nothing separate to drift out of sync.
+        The task seed dir contributes only the
         bits that ``lc init`` cannot generate: ``astra.yaml``, ``data/``,
         and ``task.yaml``.
         """

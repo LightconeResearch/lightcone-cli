@@ -1,7 +1,7 @@
 # Glossary
 
-The terms you'll see all over the docs and the agent output, in plain
-language.
+The terms you'll see all over the docs and the `lc` command output, in
+plain language.
 
 ## ASTRA
 
@@ -22,18 +22,19 @@ nested via `analyses:` references.
 ## Recipe
 
 A short shell or Python command that produces an output. Lives inside
-an output's `recipe:` block in `astra.yaml`. Recipes can declare
-which sibling outputs they depend on:
+an output's `recipe:` block in `astra.yaml`. Outputs declare which
+sibling outputs they depend on, and the recipe references them through
+placeholders:
 
 ```yaml
 outputs:
   - id: r2
     recipe:
-      command: python scripts/fit.py --output {output[0]}
+      command: python src/fit.py --output {output}
   - id: fit_plot
+    inputs: [r2]
     recipe:
-      command: python scripts/plot.py --r2_dir {input.r2} --output {output[0]}
-      inputs: [r2]
+      command: python src/plot.py --r2_dir {inputs.r2} --output {output}
 ```
 
 ## Decision
@@ -137,23 +138,6 @@ laptop it's a `LocalCluster` sized to your machine; inside a SLURM
 allocation it's an in-process scheduler with one `dask worker` per
 node launched via `srun`.
 
-## Skill
-
-A Claude Code slash command bundled with the lightcone-cli plugin.
-The `/lc-from-*` family is parallel by what you start from — a question
-(`/lc-new`), code (`/lc-from-code`), or a paper
-(`/lc-from-paper`). `/lc-feedback` files upstream issues from inside
-the session. Each one is a structured prompt that drives the agent
-through a specific phased workflow.
-
-## Subagent
-
-A Claude Code agent invoked by another agent via the `Task` tool. The
-`lc-extractor` subagent reads PDFs and pulls verifiable quotes; it's
-spawned by `/lc-new` during the literature deep-dive phase.
-Subagents have isolated context, which is why `/lc-new` uses
-one per paper — PDFs are big.
-
 ## Prior insight
 
 A piece of evidence from the literature that informs a decision.
@@ -189,22 +173,3 @@ The three labels `lc verify` produces when something's wrong:
   whose `data_version` drifted.
 - `missing_manifest` — output directory exists but the manifest is
   missing or unparseable.
-
-## Ralph loop
-
-A reusable autonomous iteration pattern for long-running agent work.
-Each iteration surveys state, decides what to do next, writes or runs
-code, commits, and exits. A bundled tmux runner spawns a fresh worker
-per iteration with the *constitution* — a markdown file describing what
-"done" looks like — as system prompt; the constitution stays editable
-across iterations. Stop the loop by setting `status: closed` in the
-constitution's frontmatter (the next iteration sees it and exits) or by
-killing the tmux session.
-
-## Permission tier
-
-The set of tools and bash patterns Claude Code is allowed to use in
-your project. Three tiers ship: `yolo` (everything), `recommended`
-(default — full access minus dangerous patterns), `minimal` (read
-only). Selected at `lc init` time and stored in
-`.claude/settings.json`.

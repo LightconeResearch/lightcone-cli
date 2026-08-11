@@ -1,4 +1,4 @@
-"""Command-line interface for lightcone-cli — the ASTRA-compliant agentic layer.
+"""Command-line interface for lightcone-cli — the ASTRA execution layer.
 
 The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 (per-output content-addressed manifests) is implemented in
@@ -6,8 +6,7 @@ The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 ``astra.yaml`` and shells out to ``snakemake``.
 
 Commands:
-- ``lc init``   — scaffold a project (CLAUDE.md, .claude/, venv, gitignore,
-  MyST report template).
+- ``lc init``   — scaffold a project (venv, gitignore, MyST report template).
 - ``lc run``    — generate Snakefile and run snakemake.
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
@@ -31,51 +30,8 @@ import click
 import yaml
 from rich.console import Console
 
-from lightcone.cli.plugin import get_plugin_source_dir
-
 console = Console()
 logger = logging.getLogger(__name__)
-
-
-PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
-    "yolo": {
-        "allow": [
-            "Bash(*)",
-            "Edit",
-            "Read",
-            "Write",
-            "WebSearch",
-            "WebFetch",
-            "mcp__*",
-        ],
-    },
-    "recommended": {
-        "allow": ["Read", "Edit", "Write", "Bash(*)", "WebSearch", "WebFetch"],
-        # Patterns under "ask" prompt the user before the agent can act,
-        # but don't block outright the way "deny" does. Use "ask" for
-        # paths the agent legitimately *might* need to write to but
-        # where a stray edit would be expensive — scratch filesystems
-        # being the obvious case on HPC, where projects often live in
-        # $SCRATCH and a careless edit could trash someone else's data.
-        "ask": [
-            "Edit(//scratch/**)",
-            "Edit(//pscratch/**)",
-            "Write(//scratch/**)",
-            "Write(//pscratch/**)",
-        ],
-        "deny": [
-            "Edit(~/.ssh/**)",
-            "Edit(~/.aws/**)",
-            "Edit(~/.gnupg/**)",
-            "Bash(sudo *)",
-            "Bash(rm -rf *)",
-            "Bash(rm -fr *)",
-            "Bash(git push *)",
-            "Bash(git push)",
-        ],
-    },
-    "minimal": {"allow": ["Read"]},
-}
 
 
 def _config_path() -> Path:
@@ -106,7 +62,7 @@ def _ensure_global_config() -> None:
 @click.version_option(package_name="lightcone-cli")
 @click.pass_context
 def main(ctx: click.Context) -> None:
-    """lightcone-cli — ASTRA-compliant agentic layer CLI."""
+    """lightcone-cli — execution layer for ASTRA projects."""
     ctx.ensure_object(dict)
     _ensure_global_config()
 
@@ -144,12 +100,6 @@ _____|_________________
 @click.option("--no-git", is_flag=True, help="Skip git init")
 @click.option("--no-venv", is_flag=True, help="Skip Python venv creation")
 @click.option(
-    "--permissions",
-    type=click.Choice(["yolo", "recommended", "minimal"]),
-    default="recommended",
-    help="Claude Code permission tier",
-)
-@click.option(
     "--scratch",
     "scratch_override",
     default=None,
@@ -164,17 +114,15 @@ def init(
     directory: Path,
     no_git: bool,
     no_venv: bool,
-    permissions: str,
     scratch_override: str | None,
 ) -> None:
-    """Scaffold a new ASTRA project with Claude Code integration.
+    """Scaffold a new ASTRA project.
 
     Delegates the spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
     base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
     lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
-    ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
-    a template MyST report (``myst.yml`` + ``index.md``), and an optional
-    Python venv.
+    ``.lightcone/`` project state, a template MyST report (``myst.yml`` +
+    ``index.md``), and an optional Python venv.
     """
     console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
 
@@ -233,14 +181,6 @@ def init(
 
     # results/ directory placeholder
     (directory / "results").mkdir(exist_ok=True)
-
-    # Claude Code plugin bundle
-    plugin_source = get_plugin_source_dir()
-    if plugin_source is not None and plugin_source.exists():
-        _install_claude_plugin(directory, plugin_source, permissions)
-
-    # Project CLAUDE.md (a stub)
-    (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
 
     # Template MyST report. MyST support is a recommended add-on on top of
     # the spec, not part of it — which is why the report scaffold lives here
@@ -314,11 +254,9 @@ def init(
 
     console.print("\nNext steps:")
     console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
-    console.print("  • Start [cyan]claude[/cyan]")
     console.print(
-        "  • Run [cyan]/lc-new[/cyan] to scope a new analysis, "
-        "[cyan]/lc-from-code[/cyan] to port existing code, "
-        "or [cyan]/lc-from-paper[/cyan] to reproduce a paper"
+        "  • Describe your analysis in [cyan]astra.yaml[/cyan], "
+        "then materialize it with [cyan]lc run[/cyan]"
     )
     console.print(
         "  • Preview the report with [cyan]myst start[/cyan] "
@@ -439,69 +377,6 @@ numbers in live, e.g.:
 :::{astra} outputs
 :::
 """
-
-_PROJECT_CLAUDE_MD = """# Project Notes for Claude
-
-This is an ASTRA project orchestrated by `lightcone-cli`. It was just
-scaffolded by `lc init` and has not been scoped yet — `astra.yaml` holds
-the placeholder example, not real science.
-
-The three entry skills cover the common starting points:
-
-- `/lc-new` — scope from a research question (empty `astra.yaml`).
-- `/lc-from-code` — wrap an existing codebase in ASTRA.
-- `/lc-from-paper` — reproduce a published paper end-to-end.
-
-Once scoped, the `lc` CLI keeps the substrate in sync:
-
-```
-lc run                    # all outputs in the default universe
-lc run output_id          # one specific output
-lc status                 # show what's materialized vs stale vs missing
-lc verify                 # validate the provenance chain
-```
-
-Outputs land in `results/<universe>/<output_id>/` along with a sidecar
-`.lightcone-manifest.json` recording the recipe, container, decisions,
-input hashes, and output hash.
-
-## Report
-
-`index.md` + `myst.yml` are a template MyST report wired to the MySTRA
-plugin. The report references analysis elements by path — inline mentions
-with the `{astra}` role, block embeds with the `{astra}` directive, live
-numbers with `{astra:value}` — so never hard-type a measured value in the
-prose. Preview with `myst start` (requires the MyST CLI, `npm i -g mystmd`).
-"""
-
-
-def _install_claude_plugin(
-    project_dir: Path,
-    plugin_source: Path,
-    permissions: str,
-) -> None:
-    """Copy the bundled Claude Code plugin into the project's ``.claude/``.
-
-    The hook configuration ships with the plugin as ``hooks.json`` so
-    that hook entries live next to the scripts they reference. The CLI
-    only owns the ``--permissions`` tier selection.
-    """
-    claude_dir = project_dir / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    for sub in ("skills", "agents", "scripts", "guides", "templates"):
-        src = plugin_source / sub
-        if src.exists():
-            dest = claude_dir / sub
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest)
-    hooks = json.loads((plugin_source / "hooks.json").read_text())
-    settings = {
-        "permissions": PERMISSION_TIERS[permissions],
-        "hooks": hooks,
-    }
-    (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
-
 
 # =============================================================================
 # lc run

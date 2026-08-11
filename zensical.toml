@@ -1,6 +1,6 @@
 [project]
 site_name = "lightcone-cli"
-site_description = "Agentic execution layer for ASTRA research pipelines"
+site_description = "Execution layer for ASTRA research pipelines"
 site_author = "Lightcone Research Team"
 repo_url = "https://github.com/LightconeResearch/lightcone-cli"
 repo_name = "LightconeResearch/lightcone-cli"
@@ -14,7 +14,6 @@ nav = [
     {"Welcome" = "user/index.md"},
     {"Install" = "user/install.md"},
     {"Getting Started" = "user/getting-started.md"},
-    {"The Agent Workflow" = "user/agent-workflow.md"},
     {"Running on a Cluster" = "user/cluster.md"},
     {"Troubleshooting" = "user/troubleshooting.md"},
     {"Glossary" = "user/glossary.md"},
@@ -44,18 +43,6 @@ nav = [
       {"engine/validation" = "api/validation.md"},
       {"engine/dask_cluster" = "api/dask_cluster.md"},
       {"snakemake_executor_plugin_dask" = "api/dask_executor.md"},
-    ]},
-    {"Skills" = [
-      {"Overview" = "skills/index.md"},
-      {"lc-new" = "skills/lc-new.md"},
-      {"lc-from-code" = "skills/lc-from-code.md"},
-      {"lc-from-paper" = "skills/lc-from-paper.md"},
-      {"lc-feedback" = "skills/lc-feedback.md"},
-      {"ralph" = "skills/ralph.md"},
-      {"paper-extraction" = "skills/paper-extraction.md"},
-      {"figure-comparison" = "skills/figure-comparison.md"},
-      {"check-sentence-by-sentence" = "skills/check-sentence-by-sentence.md"},
-      {"Authoring Skills" = "skills/authoring.md"},
     ]},
     {"Contributing" = [
       {"Development Setup" = "contributing/setup.md"},

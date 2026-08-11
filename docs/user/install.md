@@ -1,7 +1,6 @@
 # Install
 
-To get started on a lightcone project, you need three things on your machine: Python 3.11+, the lightcone command line tool `lc`, and
-an agent-based CLI (currently supporting Claude Code).  
+To get started on a lightcone project, you need two things on your machine: Python 3.11+ and the lightcone command line tool `lc`.  
 A container runtime is optional but recommended.
 
 ## 1. Python
@@ -144,42 +143,7 @@ container:
 `auto` detects whichever of `podman`, `docker`, or `podman-hpc` is on
 your PATH (and skips docker if its daemon isn't running). Feel free to pin the runtime later by editing this file directly.
 
-## 4. Agentic CLI
-
-Most of your interactions with a lightcone project happen *through* an
-agent-based CLI. Any agent that can drive a project shell works — the
-choice is yours.
-
-=== "Claude Code"
-    ```bash
-    curl -fsSL https://claude.ai/install.sh | bash
-    ```
-
-    Make sure `~/.local/bin` is on your `PATH`, then verify and
-    authenticate:
-
-    ```bash
-    claude --version
-    claude        # first run prompts for login (claude.ai or API key)
-    ```
-
-    Other install routes (npm, native package managers) are documented
-    in the [Claude Code installation docs](https://docs.claude.com/en/docs/claude-code/setup).
-
-=== "OpenAI Codex"
-    See the [openai/codex](https://github.com/openai/codex) repo README
-    for install options.
-
-=== "opencode"
-    ```bash
-    curl -fsSL https://opencode.ai/install | bash
-    ```
-
-Open a project in your terminal or editor (see [Getting Started](getting-started.md)) and run your agent CLI from inside it. Inside Claude Code you'll type slash commands like `/lc-new`,
-`/lc-from-code`, and `/lc-from-paper` — see
-[The Agentic Workflow](agent-workflow.md).
-
-## 5. (Optional) Docker or Podman
+## 4. (Optional) Docker or Podman
 
 If your analysis declares a `container:` (which it usually should — it
 makes the result reproducible across machines), you need a container

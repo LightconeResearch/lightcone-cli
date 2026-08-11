@@ -1,6 +1,6 @@
 # lightcone-cli
 
-**lightcone-cli** is [Lightcone Research][lr]'s agentic execution layer for
+**lightcone-cli** is [Lightcone Research][lr]'s execution layer for
 [**ASTRA**][astra] (Agentic Schema for Transparent Research Analysis).  
 It serves as the machinery that ties an analysis `astra.yaml` specification to a tree
 of materialized outputs.
@@ -13,7 +13,7 @@ of materialized outputs.
 
     ---
 
-    Installation instructions, step-by-step tutorial, and fast tour of the lightcone framework and its agentic and workflow capabilities.
+    Installation instructions, step-by-step tutorial, and fast tour of the lightcone framework and its workflow capabilities.
 
     [User Guide](user/index.md){ .md-button .md-button--primary }
 
@@ -21,7 +21,7 @@ of materialized outputs.
 
     ---
 
-    In depth tour of the software architecture, agentic skills and API docs, as well as contribution instructions, aimed for
+    In depth tour of the software architecture and API docs, as well as contribution instructions, aimed for
     contributors and maintainers.
 
     [Developer corner](maintainer.md){ .md-button .md-button--primary }
@@ -36,7 +36,7 @@ of materialized outputs.
 
 -   __lightcone-cli__
 
-    The library that ships the `lc` CLI which handle the agent surface (skills, plugins, guardrails) as well as the workflow execution layer. Depends on [**astra-tools**][astra-tools], the SDK for working with ASTRA analysis specifications.
+    The library that ships the `lc` CLI: the workflow execution layer and the provenance integrity layer. Depends on [**astra-tools**][astra-tools], the SDK for working with ASTRA analysis specifications.
 
     [:fontawesome-brands-github: Repository][cli]{ .md-button }
 

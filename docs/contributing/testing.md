@@ -67,22 +67,10 @@ test scope.
 
 ## Eval harness (separate)
 
-Skill performance evals live in `evals/` with their fixtures in
-`evals/tasks/`. The harness lives at `lightcone.eval.harness`. **The
-`lc eval` CLI subgroup is currently not registered on `main`** — the
-top-level `lc` invocation will fail with "No such command: eval". To
-run evals today, invoke the harness in Python directly:
-
-```python
-from pathlib import Path
-from lightcone.eval.harness import load_run_config, run_eval
-
-config = load_run_config(Path("evals/example-run.yaml"))
-result = run_eval(config, Path("evals"))
-```
-
-When the eval CLI is rewired (it should be a one-line `add_command` in
-`lightcone.cli.commands`), the documented incantation will be:
+Agent-loop performance evals live in `evals/` with their fixtures in
+`evals/tasks/`. The harness lives at `lightcone.eval.harness`, and the
+`lc eval` subgroup is registered when the `eval` dependency group is
+installed:
 
 ```bash
 lc eval run evals/example-run.yaml

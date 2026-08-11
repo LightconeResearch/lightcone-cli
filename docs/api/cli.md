@@ -1,7 +1,9 @@
 # lightcone.cli.commands
 
 The Click surface. Defined in `src/lightcone/cli/commands.py`. Six
-public commands: `init`, `run`, `status`, `verify`, `build`, `setup`.
+public commands: `init`, `run`, `status`, `verify`, `build`, `export`
+(plus the `eval` group, registered when the `eval` extra is
+installed).
 
 The user-facing reference is in [CLI Overview](../cli/index.md). This
 page is a tour of the module internals.
@@ -14,10 +16,7 @@ page is a tour of the module internals.
 @click.pass_context
 def main(ctx: click.Context) -> None:
     ctx.ensure_object(dict)
-    if ctx.invoked_subcommand in ("setup", "init", "eval"):
-        return
-    if not _config_path().exists():
-        # print friendly error, sys.exit(1)
+    _ensure_global_config()   # auto-create ~/.lightcone/config.yaml with defaults
 ```
 
 `main` is exposed as `lightcone.cli.main` (re-exported from
@@ -29,23 +28,13 @@ def main(ctx: click.Context) -> None:
 lc = "lightcone.cli:main"
 ```
 
-## `PERMISSION_TIERS`
-
-```python
-PERMISSION_TIERS: dict[str, dict[str, list[str]]] = { "yolo": {...}, "recommended": {...}, "minimal": {...} }
-```
-
-Used by `lc init --permissions` to populate `.claude/settings.json`.
-The constant lives at module top so tests and external tools can read
-it directly. To add a new tier, edit this dict and update the
-`click.Choice` on `lc init`.
-
 ## Helpers
 
 ### `_config_path() → Path`
 
-Returns `~/.lightcone/config.yaml`. Used by the `main` group's
-auto-init check and by `setup`.
+Returns `~/.lightcone/config.yaml`. Used by `_ensure_global_config()`,
+which the `main` group calls to create the file with defaults
+(`container: {runtime: auto}`) on first invocation.
 
 ### `_project_root(start: Path | None = None) → Path`
 
@@ -60,11 +49,15 @@ the Snakemake target path that materializes it — specifically the
 manifest file `results/<universe>/<output_id>/.lightcone-manifest.json`.
 Raises `click.ClickException` if the id is unknown or ambiguous.
 
-### `_run_filtered(cmd, *, env)`
+### `_run_snakemake(cmd, *, env, scratch_root, verbose)`
 
-Spawn `snakemake`, line-filter its stdout/stderr to suppress executor
-banner chatter, and return the exit code. The recipe's own output
-streams through untouched, as do unfamiliar diagnostic lines.
+Spawn `snakemake` and forward the run's narrative output: lines the
+executor plugin prefixes with the sentinel
+(`lightcone.engine.runner.SENTINEL`) stream to the terminal with the
+prefix stripped; everything else (DAG chatter, job stats) is dropped
+unless `verbose`. stderr is tailed into a bounded ring buffer and, on
+failure, dumped to `snakemake-stderr-<pid>.log` under the scratch
+root. Returns the exit code.
 
 ### `_status_label(s: str) → str`
 
@@ -79,14 +72,7 @@ Map a status literal to the Rich-formatted display label:
 
 ## Boilerplate text
 
-`_BOILERPLATE_ASTRA`, `_GITIGNORE`, and `_PROJECT_CLAUDE_MD` are
-multi-line strings written at `lc init` time. Edit them to change what
-new projects look like.
-
-## Plugin install
-
-`_install_claude_plugin(project_dir, plugin_source, permissions)` copies
-the bundled plugin into `project_dir/.claude/` (`skills`, `agents`,
-`scripts`, `guides`, `templates`) and writes `.claude/settings.json`
-from the chosen permission tier. Existing subdirectories are removed
-before copying.
+`_CONTAINERFILE`, `_REQUIREMENTS`, `_GITIGNORE_APPEND`, `_MYST_YML`,
+and `_INDEX_MD_BODY` are multi-line strings written at `lc init` time
+(the spec boilerplate itself comes from `astra init`). Edit them to
+change what new projects look like.
