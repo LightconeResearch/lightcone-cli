@@ -20,21 +20,14 @@ manages, and never overwrites files you own:
 - **Created if missing** — every item in the tree below. A directory
   that already holds an `astra.yaml` is *adopted*: the spec is left
   untouched and only the missing lightcone pieces are added.
-- **Repaired** — content lightcone itself wrote that later releases
-  superseded: a Containerfile matching an old scaffold template verbatim
-  is upgraded to the current one, the legacy `lightcone-cli` pin is
-  stripped from `requirements.txt`, the legacy blanket `results/`
-  gitignore rule is narrowed so `results/README.md` stays tracked, the
-  managed `.gitignore` block is appended exactly once (keyed on its
-  `# lightcone-cli` marker), and the stored scratch root is converged
-  when `--scratch` differs from the project config.
+- **Repaired** — the managed `.gitignore` block (appended exactly once,
+  keyed on its `# lightcone-cli` marker), and the stored scratch root
+  when `--scratch` is passed and differs from the project config.
 - **Warned about** — problems `lc` can see but must not fix, reported
-  in the `warnings` list: an unsupported directory `COPY` in a
-  hand-edited Containerfile, an unparseable `.lightcone/lightcone.yaml`.
-  Warnings don't affect the exit code.
-- **Never touched** — anything you authored. Repairs are conservative
-  by construction: templates are replaced only verbatim-for-verbatim,
-  known lines are filtered, everything else is left alone.
+  in the `warnings` list: an unsupported directory `COPY` in your
+  Containerfile, an unparseable `.lightcone/lightcone.yaml`. Warnings
+  don't affect the exit code.
+- **Never touched** — anything you authored.
 
 `--check` reports what a run *would* create or repair, writes nothing,
 and exits `1` when the project is not converged. `--json` prints the

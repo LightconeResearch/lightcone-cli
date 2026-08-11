@@ -79,13 +79,12 @@ from astra's boilerplate helper). Edit them to change what new
 projects look like.
 
 `init` is a convergence loop, not a one-shot scaffolder: each managed
-item is created if missing, offered to a `repair(text) -> str | None`
-hook otherwise (the `_migrate_legacy_containerfile`,
-`_strip_lightcone_requirement`, and `_repair_gitignore` functions —
-conservative migrations of content lightcone itself wrote), and left
+item is created if missing, offered to an optional
+`repair(text) -> str | None` hook otherwise (today only
+`_repair_gitignore`, which appends the managed block once), and left
 alone when the hook returns `None`. `--check` computes the same report
 without writing (exit 1 when not converged); `--json` prints it as
 `{converged, created, repaired, unchanged, warnings}`. Warnings carry
-problems init can see but must not fix (e.g. a directory `COPY` in a
-hand-edited Containerfile, detected via
+problems init can see but must not fix (e.g. a directory `COPY` in the
+Containerfile, detected via
 `lightcone.engine.container.directory_copy_sources`).

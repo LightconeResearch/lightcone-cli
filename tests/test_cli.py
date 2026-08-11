@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -167,39 +166,9 @@ def test_init_check_passes_on_converged_project(
     assert result.exit_code == 0, result.output
 
 
-_LEGACY_CONTAINERFILE = """\
-FROM python:3.12-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-"""
-
-
-def test_init_migrates_legacy_containerfile(runner: CliRunner, tmp_path: Path) -> None:
-    """A Containerfile written verbatim by an older release is upgraded to
-    the current template (no COPY . ., execution stack as its own layer)."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "Containerfile").write_text(_LEGACY_CONTAINERFILE)
-
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
-    )
-    assert result.exit_code == 0, result.output
-    report = json.loads(result.output)
-    assert "Containerfile" in report["repaired"]
-    containerfile = (project / "Containerfile").read_text()
-    assert "COPY . ." not in containerfile
-    assert "lightcone-cli" in containerfile
-
-
-def test_init_warns_on_custom_directory_copy(runner: CliRunner, tmp_path: Path) -> None:
-    """A hand-edited Containerfile with a directory COPY is never rewritten,
-    but the drift is surfaced through the warnings channel."""
+def test_init_warns_on_directory_copy(runner: CliRunner, tmp_path: Path) -> None:
+    """A user Containerfile with a directory COPY is never rewritten, but
+    the drift is surfaced through the warnings channel."""
     project = tmp_path / "proj"
     project.mkdir()
     custom = "FROM python:3.12-slim\nRUN apt-get update\nCOPY src/ /app/src/\n"
@@ -214,55 +183,6 @@ def test_init_warns_on_custom_directory_copy(runner: CliRunner, tmp_path: Path) 
     report = json.loads(result.output)
     assert (project / "Containerfile").read_text() == custom
     assert any("COPY/ADD of a directory" in w for w in report["warnings"])
-
-
-def test_init_strips_legacy_lightcone_pin(runner: CliRunner, tmp_path: Path) -> None:
-    """The lightcone-cli pin older scaffolds wrote into requirements.txt is
-    removed (it would shadow the external lc inside the venv); user deps stay."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "requirements.txt").write_text(
-        "numpy\npandas\nastropy\n"
-        "\n# Execution stack — lets this image run rules on any backend,\n"
-        "# including as a Dask Gateway worker pod.\n"
-        "lightcone-cli==0.4.0\n"
-    )
-
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
-    )
-    assert result.exit_code == 0, result.output
-    report = json.loads(result.output)
-    assert "requirements.txt" in report["repaired"]
-    requirements = (project / "requirements.txt").read_text()
-    assert "lightcone-cli" not in requirements
-    assert "astropy" in requirements and "numpy" in requirements
-
-
-def test_init_repairs_legacy_results_gitignore(
-    runner: CliRunner, tmp_path: Path
-) -> None:
-    """The legacy blanket results/ rule is narrowed so results/README.md can
-    be tracked — a negation after a blanket directory exclude is powerless."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / ".gitignore").write_text(
-        "*.log\n\n# lightcone-cli\n.snakemake/\nresults/\n"
-    )
-
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
-    )
-    assert result.exit_code == 0, result.output
-    report = json.loads(result.output)
-    assert ".gitignore" in report["repaired"]
-    gitignore = (project / ".gitignore").read_text()
-    assert "results/*" in gitignore
-    assert "!results/README.md" in gitignore
-    assert not re.search(r"(?m)^results/\s*$", gitignore)
-    # User content and the rest of the legacy block survive.
-    assert gitignore.startswith("*.log\n")
-    assert ".snakemake/" in gitignore
 
 
 def test_init_survives_malformed_lightcone_yaml(

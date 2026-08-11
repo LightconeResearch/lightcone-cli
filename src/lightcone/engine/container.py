@@ -325,8 +325,7 @@ def _iter_build_context_entries(
             "project tree (bind-mounted locally, shared filesystem on a "
             "hub), so project source never needs to be baked in. Remove "
             "the line (e.g. `COPY . .`), or COPY individual files if the "
-            "build itself needs them. `lc init` repairs the legacy "
-            "scaffold automatically."
+            "build itself needs them."
         )
     yield "containerfile", containerfile
     for dep in find_dependency_files(project_path):

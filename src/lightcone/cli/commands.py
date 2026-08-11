@@ -159,12 +159,10 @@ def init(
     """Converge DIRECTORY into an ASTRA project (idempotent).
 
     Safe to re-run at any time: creates whatever is missing, repairs the
-    pieces lightcone manages — including migrating scaffold files older
-    lightcone releases wrote — and never overwrites files you own.
+    pieces lightcone manages, and never overwrites files you own.
     Problems it can see but must not fix (e.g. an unsupported directory
-    COPY in a hand-edited Containerfile) are reported as warnings. A
-    directory that already holds an ``astra.yaml`` is adopted, not
-    rejected.
+    COPY in your Containerfile) are reported as warnings. A directory
+    that already holds an ``astra.yaml`` is adopted, not rejected.
 
     The spec scaffold (``astra.yaml``, ``universes/baseline.yaml``)
     follows the ``astra init`` boilerplate; on top of it sit the
@@ -201,10 +199,9 @@ def init(
         """Create *path* from *template* if missing; else offer it to *repair*.
 
         ``repair`` receives the current text and returns the fixed text,
-        or ``None`` when the file is already fine. This is how legacy
-        artifacts that lightcone itself wrote get migrated forward;
-        user-authored content is never touched (repairs must be
-        conservative by construction).
+        or ``None`` when the file is already fine. Repairs must be
+        conservative by construction — user-authored content is never
+        touched.
         """
         if not path.exists():
             report["created"].append(name)
@@ -278,12 +275,11 @@ def init(
         "Containerfile",
         cf_path,
         _CONTAINERFILE_TEMPLATE.format(lc_requirement=_lightcone_requirement()),
-        repair=_migrate_legacy_containerfile,
     )
-    # Advisory: a user-edited Containerfile with directory COPY sources
-    # can't be repaired safely (we only rewrite files we authored
-    # verbatim), but lc build / lc run will reject it — say so now.
-    if "Containerfile" not in report["repaired"] and cf_path.is_file():
+    # Advisory: a Containerfile with directory COPY sources belongs to
+    # the user, so init won't edit it — but lc build / lc run will
+    # reject it, so say so now rather than at build time.
+    if cf_path.is_file():
         from lightcone.engine.container import directory_copy_sources
 
         if bad := directory_copy_sources(cf_path, directory):
@@ -298,14 +294,11 @@ def init(
         "requirements.txt",
         directory / "requirements.txt",
         _REQUIREMENTS,
-        repair=_strip_lightcone_requirement,
     )
 
     # .gitignore: create with base + lightcone entries if absent; append
     # the block once to a user-owned file (keyed on the "# lightcone-cli"
-    # marker); migrate the legacy blanket ``results/`` rule, which would
-    # keep results/README.md unignorable forever (git never descends
-    # into an excluded directory, so a later negation can't rescue it).
+    # marker).
     _converge_file(
         ".gitignore",
         directory / ".gitignore",
@@ -547,87 +540,15 @@ pandas
 """
 
 
-# ---------------------------------------------------------------------------
-# Legacy scaffold migrations — repair hooks for `lc init`'s converger.
-#
-# Each takes the current file text and returns the fixed text, or None
-# when nothing needs doing. They repair only content lightcone itself
-# wrote: known templates are replaced verbatim-for-verbatim, known
-# lines are filtered; anything the user authored stays untouched.
-# ---------------------------------------------------------------------------
-
-#: Containerfile templates written by previous releases, verbatim. A
-#: project whose Containerfile matches one was never hand-edited, so
-#: replacing it with the current template is lossless.
-_LEGACY_CONTAINERFILES = (
-    """\
-FROM python:3.12-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-""",
-)
-
-#: Comment lines previous releases wrote above the lightcone-cli pin in
-#: requirements.txt; removed together with the pin.
-_LEGACY_REQUIREMENT_COMMENTS = frozenset({
-    "# Execution stack — lets this image run rules on any backend,",
-    "# including as a Dask Gateway worker pod.",
-})
-
-#: A lightcone-cli requirement line (bare, pinned, extras, ...).
-_LC_REQUIREMENT_RE = re.compile(r"^lightcone-cli\s*($|[=<>~!\[;@ ])")
-
-
-def _migrate_legacy_containerfile(text: str) -> str | None:
-    """Replace a Containerfile from an older scaffold with the current one.
-
-    Older scaffolds baked the project source in (``COPY . .``) — now
-    rejected — and pulled the execution stack via requirements.txt.
-    """
-    if text in _LEGACY_CONTAINERFILES:
-        return _CONTAINERFILE_TEMPLATE.format(lc_requirement=_lightcone_requirement())
-    return None
-
-
-def _strip_lightcone_requirement(text: str) -> str | None:
-    """Drop the lightcone-cli pin older scaffolds put in requirements.txt.
-
-    The pin now lives in the Containerfile; inside requirements.txt it
-    would be installed into the project venv, shadowing the external
-    ``lc``.
-    """
-    lines = text.splitlines()
-    if not any(_LC_REQUIREMENT_RE.match(line.strip()) for line in lines):
-        return None
-    kept = [
-        line
-        for line in lines
-        if not _LC_REQUIREMENT_RE.match(line.strip())
-        and line.strip() not in _LEGACY_REQUIREMENT_COMMENTS
-    ]
-    return "\n".join(kept).rstrip("\n") + "\n"
-
-
 def _repair_gitignore(text: str) -> str | None:
-    """Converge a user-owned .gitignore.
+    """Append the managed block once to a user-owned .gitignore.
 
-    Appends the managed block once (keyed on its ``# lightcone-cli``
-    marker); replaces the legacy blanket ``results/`` rule with
-    ``results/*`` + ``!results/README.md`` so the README stays tracked
-    (git never descends into an excluded directory, so a negation after
-    a blanket exclude is powerless).
+    Keyed on the block's ``# lightcone-cli`` marker so re-runs never
+    duplicate it. This is `lc init`'s only repair hook: adoption of a
+    project that already has its own .gitignore.
     """
     if "# lightcone-cli" not in text:
         return text + _GITIGNORE_APPEND
-    if re.search(r"(?m)^results/\s*$", text):
-        return re.sub(
-            r"(?m)^results/\s*$", "results/*\n!results/README.md", text, count=1
-        )
     return None
 
 
