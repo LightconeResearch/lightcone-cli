@@ -74,9 +74,12 @@ from `evals/tasks/snae/` (`astra.yaml`, `data/`), runs Claude Code
 headlessly with `evals/prompt.md` (the astra skill is installed from
 the `LightconeResearch/agent-skills` plugin marketplace), and then
 checks the outcome with `astra validate` and `lc status --json` — the
-job fails unless every declared output is materialized. The built
-project (including the agent transcript) is uploaded as a workflow
-artifact.
+job fails unless every declared output is materialized. Run metrics
+(turns, tool calls, cost, wall time) are extracted from the transcript
+by `.github/scripts/trace_digest.py` and posted as a sticky PR comment
+and job summary. Two artifacts are uploaded: `agent-trace` (the raw
+stream-json transcript plus a human-readable markdown digest) and
+`eval-project` (the built project with its provenance manifests).
 
 To reproduce locally, run the same commands the workflow does with
 `claude`, `lc`, and `astra` on PATH.
