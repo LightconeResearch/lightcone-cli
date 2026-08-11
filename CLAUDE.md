@@ -123,7 +123,7 @@ astra.yaml ── snakefile.generate() ──> .lightcone/Snakefile + .lightcone
 - `lc status` reads only manifests — works offline, no Snakemake or DB needed
 
 **CLI surface:**
-- `lc init` — scaffold project with astra.yaml, .gitignore, .lightcone/, results/, universes/, Containerfile, MyST report template
+- `lc init` — idempotently converge a project (astra.yaml, .gitignore, .lightcone/, results/, universes/, Containerfile, MyST report template); `--check` reports drift without writing, `--json` emits the report
 - `lc run [outputs...]` — generate Snakefile, invoke snakemake
 - `lc status` — manifest-driven status report
 - `lc verify` — chain integrity check

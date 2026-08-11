@@ -72,7 +72,16 @@ Map a status literal to the Rich-formatted display label:
 
 ## Boilerplate text
 
-`_CONTAINERFILE`, `_REQUIREMENTS`, `_GITIGNORE_APPEND`, `_MYST_YML`,
-and `_INDEX_MD_BODY` are multi-line strings written at `lc init` time
-(the spec boilerplate itself comes from `astra init`). Edit them to
-change what new projects look like.
+`_CONTAINERFILE`, `_REQUIREMENTS`, `_GITIGNORE_BASE`,
+`_GITIGNORE_APPEND`, `_MYST_YML`, and `_INDEX_MD_BODY` are multi-line
+strings written at `lc init` time (the spec boilerplate itself comes
+from astra's boilerplate helper). Edit them to change what new
+projects look like.
+
+`init` is a convergence loop, not a one-shot scaffolder: each managed
+item is created if missing and left alone otherwise, so re-running is
+always safe. `--check` computes the same report without writing (exit
+1 when not converged); `--json` prints it as
+`{converged, created, repaired, unchanged, warnings}`. The
+`.gitignore` block and the `--scratch` override are the two items that
+can be *repaired* on an existing project.

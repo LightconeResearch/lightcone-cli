@@ -1,6 +1,7 @@
 """Tests for the redesigned lightcone CLI."""
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -92,15 +93,87 @@ def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None
     assert "_build/" in (project / ".gitignore").read_text()
 
 
-def test_init_refuses_when_astra_yaml_exists(
+def test_init_adopts_existing_project(runner: CliRunner, tmp_path: Path) -> None:
+    """A directory that already holds an astra.yaml is converged, not rejected,
+    and user-owned files are never overwritten."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "astra.yaml").write_text("# user spec\n")
+    (project / ".gitignore").write_text("*.log\n")
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+    # User files untouched (gitignore gains the managed block, keeps content).
+    assert (project / "astra.yaml").read_text() == "# user spec\n"
+    gitignore = (project / ".gitignore").read_text()
+    assert gitignore.startswith("*.log\n")
+    assert "# lightcone-cli" in gitignore
+    # Missing lightcone pieces were created.
+    assert (project / "Containerfile").exists()
+    assert (project / ".lightcone" / "lightcone.yaml").exists()
+
+
+def test_init_is_idempotent(runner: CliRunner, tmp_path: Path) -> None:
+    """A second run reports everything unchanged and rewrites nothing."""
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+    before = {p: p.read_text() for p in project.rglob("*") if p.is_file()}
+
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["converged"] is True
+    assert report["created"] == []
+    assert report["repaired"] == []
+    assert {p: p.read_text() for p in project.rglob("*") if p.is_file()} == before
+
+    # Gitignore block must not be duplicated across runs.
+    assert (project / ".gitignore").read_text().count("# lightcone-cli") == 1
+
+
+def test_init_check_reports_drift_without_writing(
     runner: CliRunner, tmp_path: Path
 ) -> None:
     project = tmp_path / "proj"
-    project.mkdir()
-    (project / "astra.yaml").write_text("# already here\n")
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--check", "--json"]
+    )
+    assert result.exit_code == 1
+    report = json.loads(result.output)
+    assert report["converged"] is False
+    assert "astra.yaml" in report["created"]
+    assert not project.exists()  # --check writes nothing, not even the dir
+
+
+def test_init_check_passes_on_converged_project(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    project = tmp_path / "proj"
     result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert result.exit_code != 0
-    assert "already exists" in result.output
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--check"]
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_init_repairs_missing_piece(runner: CliRunner, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    assert result.exit_code == 0, result.output
+    (project / "Containerfile").unlink()
+
+    result = runner.invoke(
+        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert "Containerfile" in report["created"]
+    assert (project / "Containerfile").exists()
+    # The rest was left alone.
+    assert "astra.yaml" in report["unchanged"]
 
 
 def test_init_venv_uses_uv_when_available(

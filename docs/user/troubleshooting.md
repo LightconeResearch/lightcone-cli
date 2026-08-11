@@ -35,8 +35,9 @@ lc init my-analysis
 cd my-analysis
 ```
 
-`lc init` won't run inside an existing project (it refuses if
-`astra.yaml` already exists).
+`lc init` is idempotent — re-running it inside an existing project is
+safe and just fills in anything missing (`lc init --check` tells you
+whether it would change anything).
 
 ## "lc: command not found" or `lc` prints a directory listing
 
