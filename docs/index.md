@@ -5,6 +5,13 @@
 It serves as the machinery that ties an analysis `astra.yaml` specification to a tree
 of materialized outputs.
 
+!!! warning "Alpha development"
+    lightcone-cli is in **early alpha**. The CLI, skills, and execution layer are all
+    still moving — expect breaking changes between minor versions. Bug reports, design
+    challenges, and use cases the tooling doesn't yet cover are exactly what we want to
+    hear at this stage; please open an issue on the
+    [GitHub repo](https://github.com/LightconeResearch/lightcone-cli/issues).
+
 ## Choose your path to the documentation
 
 <div class="grid cards" markdown>
