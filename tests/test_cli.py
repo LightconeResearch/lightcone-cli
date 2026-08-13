@@ -33,7 +33,7 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_help_lists_core_commands(runner: CliRunner) -> None:
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("init", "run", "status", "verify", "build"):
+    for cmd in ("init", "run", "status", "verify", "build", "cancel"):
         assert cmd in result.output
 
 
@@ -58,6 +58,8 @@ def test_first_invocation_auto_creates_global_config(
     assert result.exit_code == 0, result.output
     assert config.exists()
     assert "runtime: auto" in config.read_text()
+    assert "account: null" in config.read_text()
+    assert "time_padding: 1.5" in config.read_text()
 
 
 # ---- lc init --------------------------------------------------------------
@@ -307,3 +309,194 @@ def test_ensure_images_none_runtime_returns_empty(tmp_path: Path) -> None:
     from lightcone.cli.commands import _ensure_images
 
     assert _ensure_images(tmp_path, runtime="none") == []
+
+
+# ---- asynchronous SLURM execution -----------------------------------------
+
+
+def test_sync_run_on_perlmutter_login_hints_async(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "outputs:\n  - id: foo\n    recipe:\n      command: echo foo\n"
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("NERSC_HOST", "perlmutter")
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    monkeypatch.delenv("DASK_SCHEDULER_ADDRESS", raising=False)
+    result = runner.invoke(main, ["run", "foo"])
+    assert result.exit_code != 0
+    assert "lc run --async" in result.output
+
+
+def test_sync_run_rejects_rule_larger_than_current_allocation(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "outputs:\n"
+        "  - id: fit\n"
+        "    recipe:\n"
+        "      command: echo fit\n"
+        "      resources:\n"
+        "        cpus: 16\n"
+        "        memory: 64GB\n"
+        "        gpus: 2\n"
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("SLURM_JOB_ID", "999")
+    monkeypatch.setenv("SLURM_CPUS_ON_NODE", "32")
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "128000")
+    monkeypatch.setenv("SLURM_GPUS_ON_NODE", "1")
+    result = runner.invoke(main, ["run", "fit"])
+    assert result.exit_code != 0
+    assert "GPUs 2 > 1" in result.output
+    assert "lc run --async" in result.output
+
+
+def test_async_run_submits_each_discovered_universe(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine import async_jobs
+    from lightcone.engine.async_jobs import JobRecord
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "outputs:\n"
+        "  - id: foo\n"
+        "    recipe:\n"
+        "      command: echo foo\n"
+        "      resources:\n"
+        "        time_limit: 10m\n"
+    )
+    universes = project / "universes"
+    universes.mkdir()
+    (universes / "baseline.yaml").write_text("decisions: {}\n")
+    (universes / "alternate.yaml").write_text("decisions: {}\n")
+    monkeypatch.chdir(project)
+
+    submitted: list[str] = []
+
+    def fake_submit(project_path: Path, **kwargs: object) -> JobRecord:
+        universe = str(kwargs["universe"])
+        submitted.append(universe)
+        return JobRecord(
+            job_id=str(len(submitted)),
+            targets=["foo"],
+            resolved_targets=["foo"],
+            universe=universe,
+            qos="shared",
+            resources={"time_limit_seconds": 900},
+            sbatch_path=str(project_path / f"{universe}.sbatch"),
+            log_path=str(project_path / f"{universe}.log"),
+            submitted_at="2026-07-16T00:00:00+00:00",
+            last_state="PENDING",
+        )
+
+    monkeypatch.setattr(async_jobs, "submit_job", fake_submit)
+    result = runner.invoke(main, ["run", "--async", "foo", "--account", "m1234"])
+    assert result.exit_code == 0, result.output
+    assert submitted == ["alternate", "baseline"]
+    assert result.output.count("Submitted job") == 2
+
+
+def test_async_run_requires_explicit_output(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "outputs:\n"
+        "  - id: foo\n"
+        "    recipe:\n"
+        "      command: echo foo\n"
+        "      resources:\n"
+        "        time_limit: 10m\n"
+    )
+    monkeypatch.chdir(project)
+
+    result = runner.invoke(main, ["run", "--async"])
+
+    assert result.exit_code != 0
+    assert "requires at least one explicit output" in result.output
+
+
+def test_async_run_on_local_host_explains_that_detach_is_unsupported(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine import async_jobs
+    from lightcone.engine.site_registry import HostSite
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "outputs:\n"
+        "  - id: foo\n"
+        "    recipe:\n"
+        "      command: echo foo\n"
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    monkeypatch.setattr(
+        async_jobs,
+        "detect_current_site",
+        lambda: HostSite(key=None, defaults={}),
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "_probe_slurm_availability",
+        lambda: (False, "`sinfo` was not found on PATH"),
+    )
+
+    result = runner.invoke(main, ["run", "--async", "foo"])
+
+    assert result.exit_code != 0
+    assert "no configured async SLURM site was detected" in result.output
+    assert "SLURM is unavailable" in result.output
+    assert "sinfo" in result.output
+    assert "does not provide detached local execution" in result.output
+    assert "No SLURM account configured" not in result.output
+
+
+def test_status_json_includes_async_job(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from lightcone.engine import async_jobs
+    from lightcone.engine.async_jobs import JobRecord
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "outputs:\n  - id: foo\n    recipe:\n      command: echo foo\n"
+    )
+    monkeypatch.chdir(project)
+    record = JobRecord(
+        job_id="123",
+        targets=["foo"],
+        resolved_targets=["foo"],
+        universe="default",
+        qos="shared",
+        resources={},
+        sbatch_path="job.sbatch",
+        log_path="job.log",
+        submitted_at="2026-07-16T00:00:00+00:00",
+        last_state="RUNNING",
+    )
+    monkeypatch.setattr(async_jobs, "refresh_job_records", lambda _: [record])
+    result = runner.invoke(main, ["status", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    job = payload["universes"][0]["outputs"][0]["job"]
+    assert job == {
+        "job_id": "123",
+        "state": "running",
+        "slurm_state": "RUNNING",
+        "qos": "shared",
+        "log_path": "job.log",
+    }

@@ -19,6 +19,8 @@ def fake_hostname(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
     """Return a setter that pins ``socket.gethostname`` for the test."""
 
     def _set(name: str) -> None:
+        monkeypatch.delenv("LIGHTCONE_SITE", raising=False)
+        monkeypatch.delenv("NERSC_HOST", raising=False)
         monkeypatch.setattr(site_registry.socket, "gethostname", lambda: name)
 
     return _set
@@ -69,6 +71,14 @@ class TestHostSite:
 
 
 class TestDetectCurrentSite:
+    def test_nersc_host_detects_site_on_compute_node(
+        self, fake_hostname: Callable[[str], None], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake_hostname("nid001234")
+        monkeypatch.setenv("NERSC_HOST", "perlmutter")
+        site = detect_current_site()
+        assert site.key == "perlmutter"
+
     def test_known_host_returns_populated_site(
         self, fake_hostname: Callable[[str], None]
     ) -> None:

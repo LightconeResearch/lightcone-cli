@@ -42,6 +42,35 @@ def test_generate_simple_spec(tmp_path: Path) -> None:
     assert "results/{universe}/foo" in snake_text
 
 
+def test_generate_maps_astra_recipe_resources_to_snakemake(tmp_path: Path) -> None:
+    _spec(
+        tmp_path,
+        {
+            "outputs": [
+                {
+                    "id": "fit",
+                    "recipe": {
+                        "command": "python fit.py",
+                        "resources": {
+                            "cpus": 8,
+                            "memory": "16GB",
+                            "gpus": 1,
+                            "time_limit": "2h",
+                        },
+                    },
+                }
+            ]
+        },
+    )
+    snakefile, _ = generate(tmp_path, universes=["baseline"])
+    text = snakefile.read_text()
+    assert "    threads: 8" in text
+    assert "        cpus_per_task=8," in text
+    assert "        mem_mb=16000," in text
+    assert "        gpus_per_task=1," in text
+    assert "        runtime=120," in text
+
+
 def test_generate_universe_expansion(tmp_path: Path) -> None:
     _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]})
     _, cfg_path = generate(tmp_path, universes=["u1", "u2"])

@@ -133,16 +133,22 @@ Get a confirmation of the proper installation by running
 ## 3. Global configuration
 
 `~/.lightcone/config.yaml` is created automatically the first time you
-run any `lc` command. No manual setup step is needed. The file starts
+run an `lc` subcommand. No manual setup step is needed. The file starts
 as:
 
 ```yaml
 container:
   runtime: auto
+slurm:
+  account: null
+  time_padding: 1.5
 ```
 
 `auto` detects whichever of `podman`, `docker`, or `podman-hpc` is on
-your PATH (and skips docker if its daemon isn't running). Feel free to pin the runtime later by editing this file directly.
+your PATH (and skips docker if its daemon isn't running). Feel free to pin the
+runtime later by editing this file directly. Before the first
+`lc run --async`, replace `slurm.account: null` with the SLURM project to
+charge; synchronous and local work do not require it.
 
 ## 4. Agentic CLI
 

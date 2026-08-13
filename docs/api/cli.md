@@ -1,7 +1,8 @@
 # lightcone.cli.commands
 
-The Click surface. Defined in `src/lightcone/cli/commands.py`. Six
-public commands: `init`, `run`, `status`, `verify`, `build`, `setup`.
+The Click surface. Defined in `src/lightcone/cli/commands.py`. Public
+commands include `init`, `run`, `status`, `cancel`, `verify`, `build`, and
+`export`.
 
 The user-facing reference is in [CLI Overview](../cli/index.md). This
 page is a tour of the module internals.
@@ -14,10 +15,7 @@ page is a tour of the module internals.
 @click.pass_context
 def main(ctx: click.Context) -> None:
     ctx.ensure_object(dict)
-    if ctx.invoked_subcommand in ("setup", "init", "eval"):
-        return
-    if not _config_path().exists():
-        # print friendly error, sys.exit(1)
+    _ensure_global_config()
 ```
 
 `main` is exposed as `lightcone.cli.main` (re-exported from
@@ -44,8 +42,8 @@ it directly. To add a new tier, edit this dict and update the
 
 ### `_config_path() → Path`
 
-Returns `~/.lightcone/config.yaml`. Used by the `main` group's
-auto-init check and by `setup`.
+Returns `~/.lightcone/config.yaml`. The main group creates it on first use
+with container and SLURM defaults.
 
 ### `_project_root(start: Path | None = None) → Path`
 
@@ -76,6 +74,9 @@ Map a status literal to the Rich-formatted display label:
 | `stale` | `[yellow]✸ stale[/yellow]` |
 | `missing` | `[red]✗ miss[/red]` |
 | `alias` | `[dim]→ alias[/dim]` |
+| `queued` | `[blue]◷ queued[/blue]` |
+| `running` | `[cyan]▶ running[/cyan]` |
+| `failed` | `[red]✗ failed[/red]` |
 
 ## Boilerplate text
 

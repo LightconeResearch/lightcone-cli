@@ -12,7 +12,7 @@ without a registry.
 
 ```bash
 # On a login node, with podman-hpc on PATH:
-lc setup                              # writes ~/.lightcone/config.yaml
+lc status                             # creates ~/.lightcone/config.yaml
 $EDITOR ~/.lightcone/config.yaml      # set container.runtime: podman-hpc
 lc build                              # builds + migrates each image
 ```

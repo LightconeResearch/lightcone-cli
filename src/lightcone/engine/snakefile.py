@@ -35,6 +35,7 @@ from lightcone.engine.container import (
     wrap_recipe,
 )
 from lightcone.engine.manifest import code_version
+from lightcone.engine.resources import parse_recipe_resources
 from lightcone.engine.tree import (
     TreeOutput,
     collect_tree_outputs,
@@ -256,7 +257,8 @@ def _render_snakefile(
     """Render the Snakefile string from rule descriptors.
 
     Each rule descriptor has ``name`` (Snakemake-safe), ``key`` (cfg
-    lookup), ``output_dir`` (wildcard pattern), and ``inputs`` (list of
+    lookup), ``output_dir`` (wildcard pattern), ``resources`` (canonical
+    Snakemake names), and ``inputs`` (list of
     ``(raw_id, safe_key, path_pattern)`` triples — both sibling outputs
     and analysis-level Inputs, in declaration order). External Input
     patterns are static source strings; sibling-output patterns carry a
@@ -302,6 +304,10 @@ def _render_snakefile(
         lines.append("    output:")
         lines.append(f'        data=directory("{r["output_dir"]}"),')
         lines.append(f'        manifest="{r["output_dir"]}/.lightcone-manifest.json",')
+        lines.append(f'    threads: {r["resources"]["cpus_per_task"]}')
+        lines.append("    resources:")
+        for resource_name, value in r["resources"].items():
+            lines.append(f"        {resource_name}={value},")
         lines.append("    params:")
         lines.append(f'        cfg=lambda wc: CFG["{r["key"]}"][wc.universe],')
         lines.append("    run:")
@@ -370,6 +376,7 @@ def generate(
         rule_key = _rule_key(to)
         rule_name = _rule_name(to)
         out_dir_pattern = _output_dir_pattern(to)
+        resources = parse_recipe_resources(recipe, label=f"output {rule_key!r}")
 
         # v0.0.7: declared upstream inputs live on the Output, not the
         # Recipe. Each ID resolves to either a sibling output (a
@@ -401,6 +408,7 @@ def generate(
                 "key": rule_key,
                 "output_dir": out_dir_pattern,
                 "inputs": rule_inputs,
+                "resources": resources.snakemake(),
             }
         )
 
