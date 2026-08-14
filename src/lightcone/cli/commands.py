@@ -197,7 +197,9 @@ def init(
     # src/. We hold off on git init until our own files are in place so
     # the initial commit captures the full project state.
     try:
-        astra_init.callback(directory=directory, no_git=True)  # type: ignore[misc]
+        astra_init.callback(  # type: ignore[misc]
+            directory=directory, no_git=True, check_only=False, as_json=False
+        )
     except SystemExit as e:
         raise click.ClickException(f"astra init failed (exit code {e.code}).") from e
 
