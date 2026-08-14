@@ -541,17 +541,33 @@ def _repair_gitignore(text: str) -> str | None:
     """
     if "# lightcone-cli" not in text:
         return text + _GITIGNORE_APPEND
-    # Legacy managed block: a bare ``results/`` rule ignores the whole
-    # directory, and git cannot re-include results/README.md beneath an
-    # excluded directory. Upgrade the rule in place; everything else in
-    # the file is user territory.
-    lines = text.splitlines()
-    for i, line in enumerate(lines):
-        if line.strip() == "results/":
-            lines[i] = "results/*"
+    # Legacy managed-block upgrades, applied line-by-line so everything
+    # else in the file stays user territory:
+    # * a bare ``results/`` rule ignores the whole directory, and git
+    #   cannot re-include results/README.md beneath an excluded
+    #   directory;
+    # * trailing-slash ``.snakemake/`` entries never match the symlink
+    #   that ``.snakemake`` becomes under a scratch root.
+    slash_fixes = {
+        ".snakemake/": ".snakemake",
+        ".snakemake.legacy/": ".snakemake.legacy",
+    }
+    out: list[str] = []
+    changed = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "results/":
+            out.append("results/*")
             if "!results/README.md" not in text:
-                lines.insert(i + 1, "!results/README.md")
-            return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+                out.append("!results/README.md")
+            changed = True
+        elif stripped in slash_fixes:
+            out.append(slash_fixes[stripped])
+            changed = True
+        else:
+            out.append(line)
+    if changed:
+        return "\n".join(out) + ("\n" if text.endswith("\n") else "")
     return None
 
 
@@ -589,13 +605,17 @@ __pycache__/
 
 
 # Managed block appended to any pre-existing .gitignore; the
-# "# lightcone-cli" marker keeps the append idempotent.
+# "# lightcone-cli" marker keeps the append idempotent. The
+# ``.snakemake`` entries have no trailing slash on purpose: when a
+# scratch root is active the project's ``.snakemake`` is a *symlink*
+# into scratch, and a trailing-slash pattern matches only real
+# directories.
 _GITIGNORE_APPEND = """
 # lightcone-cli
 .lightcone/Snakefile
 .lightcone/snakefile-config.json
-.snakemake/
-.snakemake.legacy/
+.snakemake
+.snakemake.legacy
 results/*
 !results/README.md
 
