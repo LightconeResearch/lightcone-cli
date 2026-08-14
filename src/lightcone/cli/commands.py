@@ -1,4 +1,4 @@
-"""Command-line interface for lightcone-cli — the ASTRA-compliant agentic layer.
+"""Command-line interface for lightcone-cli — the ASTRA execution layer.
 
 The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 (per-output content-addressed manifests) is implemented in
@@ -6,8 +6,8 @@ The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 ``astra.yaml`` and shells out to ``snakemake``.
 
 Commands:
-- ``lc init``   — scaffold a project (CLAUDE.md, .claude/, venv, gitignore,
-  MyST report template).
+- ``lc init``   — idempotently converge a project scaffold (spec, Containerfile,
+  gitignore, MyST report template, venv); ``--check``/``--json`` for agents.
 - ``lc run``    — generate Snakefile and run snakemake.
 - ``lc status`` — manifest-driven status walk (no Snakemake needed).
 - ``lc verify`` — recompute hashes and validate the provenance chain.
@@ -22,60 +22,39 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 
 import click
 import yaml
 from rich.console import Console
 
-from lightcone.cli.plugin import get_plugin_source_dir
+from lightcone.engine.container import ContainerBuildError
 
 console = Console()
 logger = logging.getLogger(__name__)
 
 
-PERMISSION_TIERS: dict[str, dict[str, list[str]]] = {
-    "yolo": {
-        "allow": [
-            "Bash(*)",
-            "Edit",
-            "Read",
-            "Write",
-            "WebSearch",
-            "WebFetch",
-            "mcp__*",
-        ],
-    },
-    "recommended": {
-        "allow": ["Read", "Edit", "Write", "Bash(*)", "WebSearch", "WebFetch"],
-        # Patterns under "ask" prompt the user before the agent can act,
-        # but don't block outright the way "deny" does. Use "ask" for
-        # paths the agent legitimately *might* need to write to but
-        # where a stray edit would be expensive — scratch filesystems
-        # being the obvious case on HPC, where projects often live in
-        # $SCRATCH and a careless edit could trash someone else's data.
-        "ask": [
-            "Edit(//scratch/**)",
-            "Edit(//pscratch/**)",
-            "Write(//scratch/**)",
-            "Write(//pscratch/**)",
-        ],
-        "deny": [
-            "Edit(~/.ssh/**)",
-            "Edit(~/.aws/**)",
-            "Edit(~/.gnupg/**)",
-            "Bash(sudo *)",
-            "Bash(rm -rf *)",
-            "Bash(rm -fr *)",
-            "Bash(git push *)",
-            "Bash(git push)",
-        ],
-    },
-    "minimal": {"allow": ["Read"]},
-}
+class _EngineErrorGroup(click.Group):
+    """Render engine errors as clean CLI errors instead of tracebacks.
+
+    The engine raises :class:`ContainerBuildError` (and its subclass
+    ``CloudBuildError``) from many entry points — tag hashing, builds,
+    status walks. Translating once at the group boundary keeps every
+    command, present and future, from leaking a raw traceback; click
+    prints ``ClickException`` messages cleanly and exits 1.
+    """
+
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except ContainerBuildError as e:
+            raise click.ClickException(str(e)) from e
 
 
 def _config_path() -> Path:
@@ -102,11 +81,11 @@ def _ensure_global_config() -> None:
     )
 
 
-@click.group()
+@click.group(cls=_EngineErrorGroup)
 @click.version_option(package_name="lightcone-cli")
 @click.pass_context
 def main(ctx: click.Context) -> None:
-    """lightcone-cli — ASTRA-compliant agentic layer CLI."""
+    """lightcone-cli — execution layer for ASTRA projects."""
     ctx.ensure_object(dict)
     _ensure_global_config()
 
@@ -140,14 +119,23 @@ _____|_________________
 
 
 @main.command()
-@click.argument("directory", type=click.Path(path_type=Path), default=".")
+@click.argument("directory", type=click.Path(file_okay=False, path_type=Path), default=".")
 @click.option("--no-git", is_flag=True, help="Skip git init")
 @click.option("--no-venv", is_flag=True, help="Skip Python venv creation")
 @click.option(
-    "--permissions",
-    type=click.Choice(["yolo", "recommended", "minimal"]),
-    default="recommended",
-    help="Claude Code permission tier",
+    "--check",
+    "check_only",
+    is_flag=True,
+    help=(
+        "Report what would be created or repaired without writing anything; "
+        "exit 1 if the project is not converged."
+    ),
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the convergence report as JSON on stdout.",
 )
 @click.option(
     "--scratch",
@@ -164,177 +152,377 @@ def init(
     directory: Path,
     no_git: bool,
     no_venv: bool,
-    permissions: str,
+    check_only: bool,
+    as_json: bool,
     scratch_override: str | None,
 ) -> None:
-    """Scaffold a new ASTRA project with Claude Code integration.
+    """Converge DIRECTORY into an ASTRA project (idempotent).
 
-    Delegates the spec scaffold (``astra.yaml``, ``universes/baseline.yaml``,
-    base ``.gitignore``, ``src/``) to ``astra init``, then layers on the
-    lightcone-specific bits: ``Containerfile`` + ``requirements.txt``,
-    ``.lightcone/`` project state, ``.claude/`` plugin bundle, ``CLAUDE.md``,
-    a template MyST report (``myst.yml`` + ``index.md``), and an optional
-    Python venv.
+    Safe to re-run at any time: creates whatever is missing, repairs the
+    pieces lightcone manages, and never overwrites files you own.
+    Problems it can see but must not fix (e.g. an unsupported directory
+    COPY in your Containerfile) are reported as warnings. A directory
+    that already holds an ``astra.yaml`` is adopted, not rejected.
+
+    The spec scaffold (``astra.yaml``, ``universes/baseline.yaml``)
+    follows the ``astra init`` boilerplate; on top of it sit the
+    lightcone pieces: ``Containerfile`` + ``requirements.txt``,
+    ``.gitignore`` entries, ``.lightcone/`` project state, a template
+    MyST report (``myst.yml`` + ``index.md``), and an optional venv.
     """
-    console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
-
-    from astra.cli import init as astra_init
-
     from lightcone.engine.site_registry import detect_current_site
 
-    site = detect_current_site()
     directory = directory.resolve()
+    write = not check_only
 
-    if (directory / "astra.yaml").exists():
-        raise click.ClickException(f"{directory}/astra.yaml already exists.")
+    report: dict[str, list[str]] = {
+        "created": [],
+        "repaired": [],
+        "unchanged": [],
+        "warnings": [],
+    }
 
-    # Spec scaffold: astra.yaml, universes/baseline.yaml, base .gitignore,
-    # src/. We hold off on git init until our own files are in place so
-    # the initial commit captures the full project state.
-    try:
-        astra_init.callback(directory=directory, no_git=True)  # type: ignore[misc]
-    except SystemExit as e:
-        raise click.ClickException(f"astra init failed (exit code {e.code}).") from e
+    def _converge(name: str, present: bool, apply: Callable[[], object]) -> None:
+        if present:
+            report["unchanged"].append(name)
+        else:
+            report["created"].append(name)
+            if write:
+                apply()
 
-    # Point the spec at our project-local Containerfile. The astra
-    # boilerplate ships ``container: python:3.12-slim`` so the scaffold
-    # is runnable as-is, but we want lightcone projects to build their
-    # own image so dependencies can evolve under content-addressed
-    # rebuilds.
-    astra_yaml_path = directory / "astra.yaml"
-    astra_yaml_path.write_text(
-        astra_yaml_path.read_text().replace(
-            "container: python:3.12-slim", "container: Containerfile", 1
+    def _converge_file(
+        name: str,
+        path: Path,
+        template: str,
+        repair: Callable[[str], str | None] | None = None,
+    ) -> None:
+        """Create *path* from *template* if missing; else offer it to *repair*.
+
+        ``repair`` receives the current text and returns the fixed text,
+        or ``None`` when the file is already fine. Repairs must be
+        conservative by construction — user-authored content is never
+        touched.
+        """
+        if not path.exists():
+            report["created"].append(name)
+            if write:
+                path.write_text(template)
+        elif repair is not None and (fixed := repair(path.read_text())) is not None:
+            report["repaired"].append(name)
+            if write:
+                path.write_text(fixed)
+        else:
+            report["unchanged"].append(name)
+
+    if write:
+        if not as_json:
+            console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
+        directory.mkdir(parents=True, exist_ok=True)
+
+    # Spec scaffold: astra.yaml + universes/baseline.yaml. astra's init
+    # *command* refuses non-empty directories and overwrites .gitignore
+    # — both wrong for convergence — so use the bare scaffold API and
+    # manage .gitignore ourselves below.
+    def _scaffold_spec() -> None:
+        try:
+            # Public API (LightconeResearch/astra-tools#99). The ignore
+            # is for astra-tools releases that predate it; mypy will
+            # flag it as unused once the dependency pin catches up.
+            from astra.cli import create_boilerplate  # type: ignore[attr-defined]
+        except ImportError:  # astra-tools ≤ 0.2.x without the public API
+            create_boilerplate = None
+        if create_boilerplate is not None:
+            create_boilerplate(directory)
+        else:
+            from astra.cli import _create_boilerplate_astra_yaml
+
+            (directory / "universes").mkdir(exist_ok=True)
+            _create_boilerplate_astra_yaml(directory)
+        # The boilerplate recipes reference scripts under src/ (e.g.
+        # ``python src/main.py``); astra's own init creates the
+        # directory, so the scaffold must too.
+        (directory / "src").mkdir(exist_ok=True)
+        # Point the spec at our project-local Containerfile. The astra
+        # boilerplate ships a registry image so the scaffold is runnable
+        # as-is, but we want lightcone projects to build their own image
+        # so dependencies can evolve under content-addressed rebuilds.
+        # Rewrite the top-level ``container:`` line whatever image the
+        # boilerplate names, so astra bumping its default doesn't
+        # silently disable the rewrite.
+        astra_yaml_path = directory / "astra.yaml"
+        rewritten = re.sub(
+            r"(?m)^container:.*$",
+            "container: Containerfile",
+            astra_yaml_path.read_text(),
+            count=1,
         )
-    )
+        if "container: Containerfile" not in rewritten:
+            report["warnings"].append(
+                "astra.yaml: no top-level `container:` line found to point "
+                "at the Containerfile; set it manually."
+            )
+        astra_yaml_path.write_text(rewritten)
+
+    _converge("astra.yaml", (directory / "astra.yaml").exists(), _scaffold_spec)
+
     # One scaffold everywhere — the Containerfile is agnostic to the
-    # execution environment. lightcone-cli in requirements.txt brings
-    # the whole execution stack (snakemake, dask, distributed,
-    # dask-gateway) so the same image can wrap recipes locally or run
-    # as a Dask Gateway worker pod on a hub; anything pod-specific
-    # (uid, mounts) is deployment configuration, not image content.
-    (directory / "Containerfile").write_text(_CONTAINERFILE)
-    (directory / "requirements.txt").write_text(
-        _REQUIREMENTS + _lightcone_requirement()
+    # execution environment. requirements.txt holds only the analysis
+    # dependencies; the execution stack (lightcone-cli, which carries
+    # snakemake, dask, distributed, dask-gateway) is a separate
+    # Containerfile layer so the same image can wrap recipes locally or
+    # run as a Dask Gateway worker pod on a hub, while the project venv
+    # stays free of it — `lc` lives outside the venv. Anything
+    # pod-specific (uid, mounts) is deployment configuration, not image
+    # content.
+    cf_path = directory / "Containerfile"
+    _converge_file(
+        "Containerfile",
+        cf_path,
+        _CONTAINERFILE_TEMPLATE.format(lc_requirement=_lightcone_requirement()),
+    )
+    # Advisory: a Containerfile with directory COPY sources belongs to
+    # the user, so init won't edit it — but lc build / lc run will
+    # reject it, so say so now rather than at build time.
+    if cf_path.is_file():
+        from lightcone.engine.container import directory_copy_sources
+
+        if bad := directory_copy_sources(cf_path, directory):
+            report["warnings"].append(
+                "Containerfile: COPY/ADD of a directory "
+                f"({', '.join(repr(s) for s in bad)}) is not supported and "
+                "lc build/run will fail. The image is an environment — "
+                "recipes run against the live project tree, so remove the "
+                "line(s)."
+            )
+    _converge_file(
+        "requirements.txt",
+        directory / "requirements.txt",
+        _REQUIREMENTS,
     )
 
-    # Append lightcone-specific entries to the .gitignore astra wrote.
-    gitignore_path = directory / ".gitignore"
-    gitignore_path.write_text(gitignore_path.read_text() + _GITIGNORE_APPEND)
-
-    # .lightcone/ project state dir + lightcone.yaml
-    (directory / ".lightcone").mkdir(exist_ok=True)
-    project_cfg: dict[str, object] = {"target": "local"}
-    if scratch_override:
-        project_cfg["scratch_root"] = scratch_override
-    (directory / ".lightcone" / "lightcone.yaml").write_text(
-        yaml.safe_dump(project_cfg)
+    # .gitignore: create with base + lightcone entries if absent; append
+    # the block once to a user-owned file (keyed on the "# lightcone-cli"
+    # marker).
+    _converge_file(
+        ".gitignore",
+        directory / ".gitignore",
+        _GITIGNORE_BASE + _GITIGNORE_APPEND,
+        repair=_repair_gitignore,
     )
 
-    # results/ directory placeholder
-    (directory / "results").mkdir(exist_ok=True)
+    # .lightcone/ project state dir + lightcone.yaml. An explicit
+    # --scratch converges the stored scratch_root; without it an
+    # existing config is left alone. A file we can't parse is left
+    # untouched and reported — init must stay safe to re-run.
+    cfg_path = directory / ".lightcone" / "lightcone.yaml"
+    cfg_name = ".lightcone/lightcone.yaml"
+    if not cfg_path.exists():
+        report["created"].append(cfg_name)
+        if write:
+            cfg_path.parent.mkdir(exist_ok=True)
+            project_cfg: dict[str, object] = {"target": "local"}
+            if scratch_override:
+                project_cfg["scratch_root"] = scratch_override
+            cfg_path.write_text(yaml.safe_dump(project_cfg))
+    else:
+        try:
+            existing_cfg = yaml.safe_load(cfg_path.read_text())
+        except yaml.YAMLError:
+            existing_cfg = None
+        if not isinstance(existing_cfg, dict):
+            report["unchanged"].append(cfg_name)
+            report["warnings"].append(
+                f"{cfg_name} is not a valid YAML mapping; left untouched"
+                + (" (--scratch not applied)" if scratch_override else "")
+                + "."
+            )
+        elif scratch_override and existing_cfg.get("scratch_root") != scratch_override:
+            report["repaired"].append(cfg_name)
+            if write:
+                existing_cfg["scratch_root"] = scratch_override
+                cfg_path.write_text(yaml.safe_dump(existing_cfg))
+        else:
+            report["unchanged"].append(cfg_name)
 
-    # Claude Code plugin bundle
-    plugin_source = get_plugin_source_dir()
-    if plugin_source is not None and plugin_source.exists():
-        _install_claude_plugin(directory, plugin_source, permissions)
-
-    # Project CLAUDE.md (a stub)
-    (directory / "CLAUDE.md").write_text(_PROJECT_CLAUDE_MD)
+    # results/ ships with a README explaining the materialization
+    # contract — the placeholder directory alone is invisible in git
+    # (empty + ignored), so the README is what actually tells a human
+    # or agent opening the project where outputs land and that they
+    # must come from `lc run`, not be written by hand.
+    results_dir = directory / "results"
+    if results_dir.exists() and not results_dir.is_dir():
+        report["unchanged"].extend(["results/", "results/README.md"])
+        report["warnings"].append(
+            "results exists but is not a directory; outputs cannot "
+            "materialize until it is one."
+        )
+    else:
+        _converge("results/", results_dir.is_dir(), results_dir.mkdir)
+        _converge_file("results/README.md", results_dir / "README.md", _RESULTS_README)
 
     # Template MyST report. MyST support is a recommended add-on on top of
     # the spec, not part of it — which is why the report scaffold lives here
     # and not in `astra init`.
-    _create_report_template(directory)
+    _converge_file("myst.yml", directory / "myst.yml", _MYST_YML)
+    project_name = directory.name or "My Analysis"
+    _converge_file("index.md", directory / "index.md", f"# {project_name}\n" + _INDEX_MD_BODY)
 
-    # git init last so the initial commit captures every scaffolded file.
-    no_git = no_git or (directory / ".git").exists()
     if not no_git:
-        subprocess.run(["git", "init", "-q"], cwd=directory, check=False)
-        console.print("[green]✓[/green] Initialized git repository")
-
-    # venv
-    if not no_venv:
-        if shutil.which("uv"):
-            with console.status("[dim]Creating virtual environment…[/dim]"):
-                subprocess.run(
-                    ["uv", "venv", "--python", "3.12", ".venv"],
-                    cwd=directory,
-                    check=False,
-                    capture_output=True,
-                )
-            with console.status("[dim]Installing lightcone-cli…[/dim]"):
-                subprocess.run(
-                    [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--python",
-                        ".venv/bin/python",
-                        "lightcone-cli",
-                    ],
-                    cwd=directory,
-                    check=False,
-                    capture_output=True,
-                )
-        else:
-            with console.status("[dim]Creating virtual environment…[/dim]"):
-                subprocess.run(
-                    ["python", "-m", "venv", ".venv"],
-                    cwd=directory,
-                    check=False,
-                    capture_output=True,
-                )
-            with console.status("[dim]Installing lightcone-cli…[/dim]"):
-                subprocess.run(
-                    [".venv/bin/python", "-m", "pip", "install", "-q", "lightcone-cli"],
-                    cwd=directory,
-                    check=False,
-                    capture_output=True,
-                )
-        console.print(
-            f"[green]✓[/green] Virtual environment created in [cyan]{directory}/.venv[/cyan]"
+        _converge(
+            ".git",
+            (directory / ".git").exists(),
+            lambda: subprocess.run(["git", "init", "-q"], cwd=directory, check=False),
         )
 
-    console.print(f"\n[green]Project initialized at[/green] {directory}")
+    if not no_venv:
+        _converge(
+            ".venv",
+            (directory / ".venv").exists(),
+            lambda: _create_venv(directory, quiet=as_json),
+        )
 
-    # Surface the resolved scratch root if a known site was detected — gives
-    # users early visibility into where lc run will keep its operational
-    # state (snakemake metadata, dask spill, cross-node locks). On NERSC
-    # this is critical: $HOME and CFS are mounted via DVS (no flock, slow
-    # small-file I/O), so lightcone keeps everything on $SCRATCH (Lustre).
-    if site:
-        scratch_expr = scratch_override or site.get("scratch_root")
-        if scratch_expr:
-            console.print(f"\n[dim]Detected site:[/dim] {site.display_name}")
+    converged = not report["created"] and not report["repaired"]
+
+    if as_json:
+        payload: dict[str, object] = {"converged": converged, **report}
+        click.echo(json.dumps(payload, indent=2))
+    elif check_only:
+        if converged:
+            console.print(f"[green]✓[/green] {directory} is converged — nothing to do")
+        else:
+            for item in report["created"]:
+                console.print(f"  [yellow]would create[/yellow] {item}")
+            for item in report["repaired"]:
+                console.print(f"  [yellow]would repair[/yellow] {item}")
+        for warning in report["warnings"]:
+            console.print(f"  [yellow]![/yellow] {warning}")
+    else:
+        for item in report["created"]:
+            console.print(f"[green]✓[/green] created {item}")
+        for item in report["repaired"]:
+            console.print(f"[green]✓[/green] repaired {item}")
+        for warning in report["warnings"]:
+            console.print(f"[yellow]![/yellow] {warning}")
+        if converged:
+            console.print(f"\n[green]Project already converged at[/green] {directory}")
+        else:
+            console.print(f"\n[green]Project converged at[/green] {directory}")
+
+        # Surface the resolved scratch root if a known site was detected —
+        # gives users early visibility into where lc run will keep its
+        # operational state (snakemake metadata, dask spill, cross-node
+        # locks). On NERSC this is critical: $HOME and CFS are mounted via
+        # DVS (no flock, slow small-file I/O), so lightcone keeps
+        # everything on $SCRATCH (Lustre).
+        site = detect_current_site()
+        if site:
+            scratch_expr = scratch_override or site.get("scratch_root")
+            if scratch_expr:
+                console.print(f"\n[dim]Detected site:[/dim] {site.display_name}")
+                console.print(
+                    f"[dim]Scratch root for lc run:[/dim] [cyan]{scratch_expr}[/cyan] "
+                    f"[dim](resolved at run time)[/dim]"
+                )
+
+        # Next steps only make sense for a freshly scaffolded spec.
+        if "astra.yaml" in report["created"]:
+            console.print("\nNext steps:")
             console.print(
-                f"[dim]Scratch root for lc run:[/dim] [cyan]{scratch_expr}[/cyan] "
-                f"[dim](resolved at run time)[/dim]"
+                f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]"
+            )
+            console.print(
+                "  • Describe your analysis in [cyan]astra.yaml[/cyan], "
+                "then materialize it with [cyan]lc run[/cyan]"
+            )
+            console.print(
+                "  • Preview the report with [cyan]myst start[/cyan] "
+                "(requires the MyST CLI: [cyan]npm i -g mystmd[/cyan])"
             )
 
-    console.print("\nNext steps:")
-    console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
-    console.print("  • Start [cyan]claude[/cyan]")
-    console.print(
-        "  • Run [cyan]/lc-new[/cyan] to scope a new analysis, "
-        "[cyan]/lc-from-code[/cyan] to port existing code, "
-        "or [cyan]/lc-from-paper[/cyan] to reproduce a paper"
-    )
-    console.print(
-        "  • Preview the report with [cyan]myst start[/cyan] "
-        "(requires the MyST CLI: [cyan]npm i -g mystmd[/cyan])"
-    )
+    if check_only and not converged:
+        sys.exit(1)
 
 
-_CONTAINERFILE = """\
+def _create_venv(directory: Path, quiet: bool = False) -> None:
+    """Create ``.venv`` in ``directory`` with the analysis dependencies.
+
+    Installs ``requirements.txt`` only — deliberately *not*
+    lightcone-cli. The venv exists to run the analysis code; ``lc``
+    itself lives outside it (e.g. ``uv tool install lightcone-cli``),
+    and a second copy inside the venv would shadow it with whatever
+    version PyPI resolves.
+    """
+
+    def _status(msg: str) -> AbstractContextManager[object]:
+        return nullcontext() if quiet else console.status(msg)
+
+    if shutil.which("uv"):
+        with _status("[dim]Creating virtual environment…[/dim]"):
+            subprocess.run(
+                ["uv", "venv", "--python", "3.12", ".venv"],
+                cwd=directory,
+                check=False,
+                capture_output=True,
+            )
+        with _status("[dim]Installing project requirements…[/dim]"):
+            subprocess.run(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    ".venv/bin/python",
+                    "-r",
+                    "requirements.txt",
+                ],
+                cwd=directory,
+                check=False,
+                capture_output=True,
+            )
+    else:
+        with _status("[dim]Creating virtual environment…[/dim]"):
+            subprocess.run(
+                ["python", "-m", "venv", ".venv"],
+                cwd=directory,
+                check=False,
+                capture_output=True,
+            )
+        with _status("[dim]Installing project requirements…[/dim]"):
+            subprocess.run(
+                [
+                    ".venv/bin/python",
+                    "-m",
+                    "pip",
+                    "install",
+                    "-q",
+                    "-r",
+                    "requirements.txt",
+                ],
+                cwd=directory,
+                check=False,
+                capture_output=True,
+            )
+
+
+_CONTAINERFILE_TEMPLATE = """\
 FROM python:3.12-slim
 
 WORKDIR /app
 
+# Execution stack — lets this image run rules on any backend, including
+# as a Dask Gateway worker pod. Kept out of requirements.txt so the
+# project venv stays free of it (`lc` lives outside the venv), and
+# installed first so this heavy layer stays cached across
+# requirements.txt edits.
+RUN pip install --no-cache-dir {lc_requirement}
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# No COPY of the project source: recipes run against the live project
+# tree (bind-mounted locally, shared filesystem on a hub), so the image
+# is a pure environment — it only rebuilds when dependencies change,
+# never on code edits.
 """
 
 
@@ -344,16 +532,56 @@ pandas
 """
 
 
+def _repair_gitignore(text: str) -> str | None:
+    """Append the managed block once to a user-owned .gitignore.
+
+    Keyed on the block's ``# lightcone-cli`` marker so re-runs never
+    duplicate it. This is `lc init`'s only repair hook: adoption of a
+    project that already has its own .gitignore.
+    """
+    if "# lightcone-cli" not in text:
+        return text + _GITIGNORE_APPEND
+    # Legacy managed-block upgrades, applied line-by-line so everything
+    # else in the file stays user territory:
+    # * a bare ``results/`` rule ignores the whole directory, and git
+    #   cannot re-include results/README.md beneath an excluded
+    #   directory;
+    # * trailing-slash ``.snakemake/`` entries never match the symlink
+    #   that ``.snakemake`` becomes under a scratch root.
+    slash_fixes = {
+        ".snakemake/": ".snakemake",
+        ".snakemake.legacy/": ".snakemake.legacy",
+    }
+    out: list[str] = []
+    changed = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "results/":
+            out.append("results/*")
+            if "!results/README.md" not in text:
+                out.append("!results/README.md")
+            changed = True
+        elif stripped in slash_fixes:
+            out.append(slash_fixes[stripped])
+            changed = True
+        else:
+            out.append(line)
+    if changed:
+        return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+    return None
+
+
 def _lightcone_requirement() -> str:
-    """Requirements lines pinning lightcone-cli into the project image.
+    """The lightcone-cli requirement pinned into the project image.
 
     The project image must be able to execute rules on any backend —
     including as a Dask Gateway worker pod, where the dask worker and
     the child snakemake run *inside* the image. lightcone-cli carries
     that whole stack (snakemake, dask, distributed, dask-gateway) as
-    normal dependencies, so one line covers it. The pin mirrors the
-    version running ``lc init`` to keep driver and image in lockstep;
-    dev builds fall back to unpinned (their version isn't published).
+    normal dependencies, so one requirement covers it. The pin mirrors
+    the version running ``lc init`` to keep driver and image in
+    lockstep; dev builds fall back to unpinned (their version isn't
+    published).
     """
     from importlib.metadata import PackageNotFoundError, version
 
@@ -361,39 +589,64 @@ def _lightcone_requirement() -> str:
         v = version("lightcone-cli")
     except PackageNotFoundError:
         v = ""
-    pin = f"lightcone-cli=={v}" if v and "dev" not in v else "lightcone-cli"
-    return (
-        "\n# Execution stack — lets this image run rules on any backend,\n"
-        "# including as a Dask Gateway worker pod.\n"
-        f"{pin}\n"
-    )
+    return f"lightcone-cli=={v}" if v and "dev" not in v else "lightcone-cli"
 
 
+# Written when the project has no .gitignore of its own; mirrors the base
+# entries `astra init` would have written.
+_GITIGNORE_BASE = """\
+# ASTRA Analysis
+__pycache__/
+*.py[cod]
+.venv/
+.ipynb_checkpoints/
+.DS_Store
+"""
+
+
+# Managed block appended to any pre-existing .gitignore; the
+# "# lightcone-cli" marker keeps the append idempotent. The
+# ``.snakemake`` entries have no trailing slash on purpose: when a
+# scratch root is active the project's ``.snakemake`` is a *symlink*
+# into scratch, and a trailing-slash pattern matches only real
+# directories.
 _GITIGNORE_APPEND = """
 # lightcone-cli
 .lightcone/Snakefile
 .lightcone/snakefile-config.json
-.snakemake/
-.snakemake.legacy/
-results/
+.snakemake
+.snakemake.legacy
+results/*
+!results/README.md
 
 # MyST build output
 _build/
 """
 
 
-def _create_report_template(directory: Path) -> None:
-    """Write ``myst.yml`` + ``index.md`` — a starter report for the analysis.
+_RESULTS_README = """\
+# results/
 
-    The report references the boilerplate ``astra.yaml`` elements by path via
-    the MySTRA plugin, so the ids used below must track the ``astra init``
-    boilerplate (``example_method``, ``main_result``).
-    """
-    name = directory.name or "My Analysis"
-    (directory / "myst.yml").write_text(_MYST_YML)
-    (directory / "index.md").write_text(f"# {name}\n" + _INDEX_MD_BODY)
+Materialized outputs land here, one directory per universe and output:
+
+    results/<universe>/<output_id>/
+
+Each output directory carries a `.lightcone-manifest.json` sidecar
+recording exactly how it was produced: recipe, container image,
+decisions, input hashes, and the output's content hash.
+
+- Produce or refresh outputs with `lc run` — never write files here by
+  hand. Hand-placed or edited files fail `lc verify` (the content hash
+  won't match, and a missing manifest forces a re-run).
+- `lc status` shows what is materialized, stale, or missing.
+- Everything in this directory except this README is git-ignored;
+  outputs are reproducible from `astra.yaml`, not versioned.
+"""
 
 
+# The template report references the boilerplate ``astra.yaml`` elements by
+# path via the MySTRA plugin, so the ids used below must track the astra
+# boilerplate (``example_method``, ``main_result``).
 _MYST_YML = """\
 # MyST configuration for the analysis report (https://mystmd.org/).
 # The MySTRA plugin resolves {astra}`...` references against astra.yaml.
@@ -439,69 +692,6 @@ numbers in live, e.g.:
 :::{astra} outputs
 :::
 """
-
-_PROJECT_CLAUDE_MD = """# Project Notes for Claude
-
-This is an ASTRA project orchestrated by `lightcone-cli`. It was just
-scaffolded by `lc init` and has not been scoped yet — `astra.yaml` holds
-the placeholder example, not real science.
-
-The three entry skills cover the common starting points:
-
-- `/lc-new` — scope from a research question (empty `astra.yaml`).
-- `/lc-from-code` — wrap an existing codebase in ASTRA.
-- `/lc-from-paper` — reproduce a published paper end-to-end.
-
-Once scoped, the `lc` CLI keeps the substrate in sync:
-
-```
-lc run                    # all outputs in the default universe
-lc run output_id          # one specific output
-lc status                 # show what's materialized vs stale vs missing
-lc verify                 # validate the provenance chain
-```
-
-Outputs land in `results/<universe>/<output_id>/` along with a sidecar
-`.lightcone-manifest.json` recording the recipe, container, decisions,
-input hashes, and output hash.
-
-## Report
-
-`index.md` + `myst.yml` are a template MyST report wired to the MySTRA
-plugin. The report references analysis elements by path — inline mentions
-with the `{astra}` role, block embeds with the `{astra}` directive, live
-numbers with `{astra:value}` — so never hard-type a measured value in the
-prose. Preview with `myst start` (requires the MyST CLI, `npm i -g mystmd`).
-"""
-
-
-def _install_claude_plugin(
-    project_dir: Path,
-    plugin_source: Path,
-    permissions: str,
-) -> None:
-    """Copy the bundled Claude Code plugin into the project's ``.claude/``.
-
-    The hook configuration ships with the plugin as ``hooks.json`` so
-    that hook entries live next to the scripts they reference. The CLI
-    only owns the ``--permissions`` tier selection.
-    """
-    claude_dir = project_dir / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    for sub in ("skills", "agents", "scripts", "guides", "templates"):
-        src = plugin_source / sub
-        if src.exists():
-            dest = claude_dir / sub
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest)
-    hooks = json.loads((plugin_source / "hooks.json").read_text())
-    settings = {
-        "permissions": PERMISSION_TIERS[permissions],
-        "hooks": hooks,
-    }
-    (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
-
 
 # =============================================================================
 # lc run
@@ -992,13 +1182,10 @@ def build(force: bool, runtime: str | None) -> None:
     ``<registry>/lc-<project>:<hash>`` — same content-addressed
     identity, zero configuration.
     """
-    from lightcone.engine.container import ContainerBuildError, load_runtime
+    from lightcone.engine.container import load_runtime
 
     project = _project_root()
-    try:
-        resolved_runtime = runtime or load_runtime(project_path=project).runtime
-    except ContainerBuildError as e:
-        raise click.ClickException(str(e))
+    resolved_runtime = runtime or load_runtime(project_path=project).runtime
 
     if resolved_runtime == "none":
         console.print(
@@ -1034,7 +1221,6 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> list[
 
     from lightcone.engine.container import (
         KUBERNETES,
-        ContainerBuildError,
         build_image,
         compute_image_tag,
         image_exists_locally,
@@ -1069,10 +1255,7 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> list[
             if image_exists_locally(spec_str, runtime=runtime) and not force:
                 continue
             console.print(f"[cyan]Pulling[/cyan] {spec_str} [dim](via {runtime})[/dim]")
-            try:
-                pull_image(spec_str, runtime=runtime)
-            except ContainerBuildError as e:
-                raise click.ClickException(str(e))
+            pull_image(spec_str, runtime=runtime)
             continue
 
         if runtime == KUBERNETES:
@@ -1087,10 +1270,7 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> list[
         console.print(
             f"[cyan]Building[/cyan] {spec_str} → {tag} [dim](via {runtime})[/dim]"
         )
-        try:
-            build_image(tag, containerfile, project, runtime=runtime)
-        except ContainerBuildError as e:
-            raise click.ClickException(str(e))
+        build_image(tag, containerfile, project, runtime=runtime)
     return images
 
 
@@ -1243,12 +1423,3 @@ def export_wrroc_cmd(
             f"  Captured [bold]{result.runs_included}[/bold] runs across "
             f"universes: [cyan]{u_list}[/cyan]"
         )
-
-
-# Register eval subgroup (requires optional 'eval' extra)
-try:
-    from lightcone.eval.cli import eval_group
-
-    main.add_command(eval_group, "eval")
-except ImportError:
-    pass

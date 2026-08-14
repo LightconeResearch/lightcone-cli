@@ -15,8 +15,9 @@ Snakemake that owns provenance.** This page expands that sentence.
    scheduler whose lifetime equals the run's lifetime. The cluster
    manager picks the right shape (local / SLURM / external) on the fly.
 
-The Claude Code plugin (skills + hooks + agents) is the agentic surface
-layered on top.
+Everything the user touches is the `lc` CLI on top of these: the engine
+(Snakefile generation + cluster management) and the integrity layer
+(manifests, `lc status`, `lc verify`).
 
 ---
 
@@ -234,66 +235,28 @@ the qualified `<analysis_id>.<output_id>` form.
 
 ---
 
-## Claude Code plugin
-
-The plugin lives at `claude/lightcone/`. It is force-included into the
-installed wheel via `pyproject.toml` so `lc init` can find it whether
-you're running from source or from PyPI:
-
-```toml
-[tool.hatch.build.targets.wheel.force-include]
-"claude/lightcone" = "lightcone/cli/claude/lightcone"
-```
-
-`lightcone.cli.plugin.get_plugin_source_dir()` does the lookup: bundled
-location first, dev location (relative to the repo root) second.
-
-### Permission tiers
-
-`lc init --permissions {yolo,recommended,minimal}` writes a
-`.claude/settings.json` from the matching tier in
-`PERMISSION_TIERS`. `recommended` (the default) allows the agent to
-edit, write, and shell out, but blocks edits to dotfiles, scratch
-paths, and `git push`.
-
-### Hooks
-
-The plugin registers Claude Code hooks for venv activation,
-auto-validation on save, and integrity-aware "did you forget `lc run`?"
-warnings.
-
----
-
 ## Repository at a glance
 
 ```text
 src/lightcone/                  # PEP 420 namespace package — NO __init__.py
 ├── cli/                        # Click surface
 │   ├── __init__.py             # exposes main()
-│   ├── commands.py             # init, run, status, verify, build, export
-│   └── plugin.py               # plugin source-dir discovery
+│   └── commands.py             # init, run, status, verify, build, export
 ├── engine/                     # execution substrate
 │   ├── manifest.py             # write_manifest, sha256_dir, code_version
 │   ├── snakefile.py            # generate .lightcone/Snakefile from astra.yaml
 │   ├── container.py            # docker/podman/podman-hpc build + recipe wrap
-│   ├── dask_cluster.py         # cluster lifecycle (local/SLURM/external)
+│   ├── cloudbuild.py           # GCP Cloud Build backend (kubernetes runtime)
+│   ├── dask_cluster.py         # cluster lifecycle (local/SLURM/Gateway/external)
+│   ├── scratch.py              # scratch-root resolution, run dirs, run lock
 │   ├── status.py               # manifest-driven status walker (no Snakemake)
 │   ├── verify.py               # recompute hashes, walk the chain
 │   ├── tree.py                 # sub-analysis tree helpers
 │   ├── validation.py           # post-recipe output sanity checks
-│   └── site_registry.py        # vestigial; not imported by active code
-└── eval/                       # evaluation harness for the agent loop
-    ├── cli.py harness.py sandbox.py graders.py build.py report.py models.py
+│   ├── wrroc.py                # Workflow Run RO-Crate export
+│   └── site_registry.py        # known-site defaults (scratch root, runtime)
 
 src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
-
-claude/lightcone/               # Claude Code plugin (force-included into the wheel)
-├── skills/                     # lc-new, lc-from-code, lc-from-paper,
-│                                # lc-feedback, ralph (+ bundle siblings);
-│                                # reference skills: astra, lc-cli
-├── agents/                     # lc-extractor (literature subagent)
-├── templates/                  # project CLAUDE.md template
-└── scripts/                    # session hooks (bash): venv, validate-on-save, session-start primer
 
 tests/                          # pytest, mirrors src/
 pyproject.toml                  # hatchling + hatch-vcs; ASTRA + Snakemake as deps
@@ -345,7 +308,6 @@ each rule to a Dask scheduler.
 | `.lightcone/snakefile-config.json` | Project (generated) | Per-`(rule, universe)` config. |
 | `.lightcone/lightcone.yaml` | Project | Tiny scratchpad — currently writes only `target: local`. Not consumed by today's code. |
 | `~/.lightcone/config.yaml` | User | `container.runtime`. |
-| `.claude/settings.json` | Project | Claude Code permissions. |
 
 The `dagster.yaml` and `~/.lightcone/targets/*.yaml` files referenced in
 older docs are no longer used — historical residue.

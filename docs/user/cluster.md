@@ -157,22 +157,23 @@ The Snakemake-via-Dask executor maps these to per-task resource
 requests, so a rule that needs a GPU only schedules on nodes that
 advertise one.
 
-## Interactive: agent-driven runs
+## Interactive: iterating inside an allocation
 
-During development you're usually iterating — ask the agent to build
-something, check the result, adjust the spec, repeat. For that loop
-you want to run the agent itself from inside a SLURM allocation so
-that `lc run` executes on the compute node rather than the login node.
+During development you're usually iterating — run something, check the
+result, adjust the spec, repeat. For that loop you want an interactive
+shell inside a SLURM allocation, so that `lc run` executes on the
+compute node rather than the login node.
 
 ```bash
 salloc -A <your_project> -q interactive -C gpu --nodes=1 -t 00:30:00
 # salloc drops you onto a compute node; from there:
 cd /path/to/your-analysis
-claude                   # or whichever agent CLI you prefer
+lc run --universe baseline
+lc status
 ```
 
-Everything the agent triggers (`lc run`, scripts, etc.) now executes
-on the allocated node. When you're done iterating and want a
+Everything you launch from that shell (`lc run`, scripts, etc.)
+executes on the allocated node. When you're done iterating and want a
 hands-off sweep of all universes, submit `lc run` as a batch job
 instead (the sbatch template above).
 
@@ -206,8 +207,8 @@ own scheduler. It does *not* tear the scheduler down on exit.
 
 !!! note "Setting up on Perlmutter for the first time?"
     The [Install](install.md) page has NERSC-specific tabs for Python
-    (uv vs `module load python`, conda env storage), lightcone-cli, and
-    the agent CLI. Come back here once `lc --version` works.
+    (uv vs `module load python`, conda env storage) and lightcone-cli.
+    Come back here once `lc --version` works.
 
 ### Storage: keep Snakemake state on `$SCRATCH`
 

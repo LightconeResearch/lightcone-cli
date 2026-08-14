@@ -21,8 +21,6 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Scientific/Engineering",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Scientific/Engineering :: Human Machine Interfaces",
 ]
 
 dependencies = [
@@ -47,13 +45,6 @@ dependencies = [
 ]
 
 [dependency-groups]
-eval = [
-    "anthropic>=0.90",
-    "build>=1.0",
-    "daytona-sdk>=0.140",
-    "pydantic>=2.0",
-    "python-dotenv>=1.0",
-]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
@@ -82,14 +73,10 @@ packages = [
     "src/snakemake_executor_plugin_dask",
 ]
 
-[tool.hatch.build.targets.wheel.force-include]
-"claude/lightcone" = "lightcone/cli/claude/lightcone"
-
 [tool.hatch.build.targets.sdist]
 include = [
     "src/lightcone",
     "src/snakemake_executor_plugin_dask",
-    "claude/lightcone",
 ]
 
 [tool.ruff]
@@ -126,10 +113,6 @@ ignore_missing_imports = true
 module = ["astra.*"]
 ignore_missing_imports = true
 follow_untyped_imports = true
-
-[[tool.mypy.overrides]]
-module = ["daytona_sdk", "daytona_sdk.*", "dotenv", "dotenv.*"]
-ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

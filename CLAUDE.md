@@ -2,12 +2,12 @@
 
 ## Project Overview
 
-**lightcone-cli** is Lightcone Research's agentic layer for ASTRA (Agentic Schema for Transparent Research Analysis). It ships the `lc` executable and Claude Code skills/hooks used during interactive analysis work.
+**lightcone-cli** is Lightcone Research's execution layer for ASTRA (Agentic Schema for Transparent Research Analysis). It ships the `lc` executable — an agent-agnostic CLI; it bundles no agent-specific skills, hooks, or plugins.
 
 - **ASTRA** = pure specification: schema, validation, prior insights & findings, evidence verification, helpers, minimal CLI
-- **lightcone-cli** = agentic layer: Claude Code skills, project scaffolding, **Snakemake-based execution**, container builds
+- **lightcone-cli** = execution layer: project scaffolding, **Snakemake-based execution**, container builds
 
-lightcone-cli depends on ASTRA. The `astra` CLI handles spec operations; the `lc` CLI handles execution and agent operations.
+lightcone-cli depends on ASTRA. The `astra` CLI handles spec operations; the `lc` CLI handles execution.
 
 ### Namespace contract
 
@@ -49,9 +49,7 @@ astra.yaml ── snakefile generator ──> .lightcone/Snakefile
 src/lightcone/              # namespace — NO __init__.py
 ├── cli/                    # Click surface
 │   ├── __init__.py         # exposes main()
-│   ├── commands.py         # init, run, status, verify, build
-│   ├── plugin.py           # get_plugin_source_dir
-│   └── claude/             # force-included Claude plugin bundle (in installed wheel only)
+│   └── commands.py         # init, run, status, verify, build
 ├── engine/                 # execution substrate — Snakemake-based
 │   ├── __init__.py
 │   ├── manifest.py         # write_manifest, sha256_dir, code_version — the integrity layer
@@ -63,22 +61,9 @@ src/lightcone/              # namespace — NO __init__.py
 │   ├── tree.py             # Sub-analysis tree traversal (kept from before)
 │   ├── validation.py       # Post-materialization output shape checks
 │   └── site_registry.py    # Known HPC site defaults (Perlmutter, etc.)
-└── eval/                   # Quantitative eval harness (top-level; peer of cli/engine)
-    ├── cli.py              # `lc eval` subcommand group
-    ├── harness.py, sandbox.py, graders.py, build.py, report.py, models.py
 
-claude/lightcone/           # Claude plugin source — force-included into the wheel
-├── skills/                 # lc-new, lc-from-code, lc-from-paper,
-│                            # lc-feedback, ralph;
-│                            # paper-reproduction bundle: lc-from-paper (entry),
-│                            # ralph (loop substrate),
-│                            # paper-extraction, figure-comparison,
-│                            # check-sentence-by-sentence
-│                            # (see skills/README.md for the full bundle map)
-├── agents/                 # lc-extractor
-├── templates/              # Project CLAUDE.md template
-└── scripts/                # Session hooks (bash): venv activation, validate-on-save, session-start primer
-
+evals/                      # Agentic eval: prompt.md + tasks/<id>/ seed files;
+                            # driven by .github/workflows/eval.yml (no Python harness)
 tests/                      # pytest — mirrors src/ structure
 pyproject.toml              # hatchling + hatch-vcs, ASTRA + Snakemake as deps
 ```
@@ -137,7 +122,7 @@ astra.yaml ── snakefile.generate() ──> .lightcone/Snakefile + .lightcone
 - `lc status` reads only manifests — works offline, no Snakemake or DB needed
 
 **CLI surface:**
-- `lc init` — scaffold project with .claude/, CLAUDE.md, .gitignore, .lightcone/, results/, universes/
+- `lc init` — idempotently converge a project (astra.yaml, .gitignore, .lightcone/, results/, universes/, Containerfile, MyST report template); `--check` reports drift without writing, `--json` emits the report
 - `lc run [outputs...]` — generate Snakefile, invoke snakemake
 - `lc status` — manifest-driven status report
 - `lc verify` — chain integrity check
@@ -153,7 +138,6 @@ Global config (`~/.lightcone/config.yaml`) is auto-created with defaults on firs
 | Change manifest semantics | `src/lightcone/engine/manifest.py` + `tests/test_manifest.py` | Bump `SCHEMA_VERSION`; add a test |
 | Change Snakefile shape | `src/lightcone/engine/snakefile.py` + `tests/test_snakefile.py` | Includes a `snakemake -n` parse test |
 | Add container features | `src/lightcone/engine/container.py` | `compute_image_tag()`, build/resolve functions |
-| Create a skill | `claude/lightcone/skills/` | SKILL.md with YAML frontmatter (`name`, `description`, `allowed-tools`) |
 
 ## Test Patterns
 

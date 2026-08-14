@@ -35,8 +35,9 @@ lc init my-analysis
 cd my-analysis
 ```
 
-`lc init` won't run inside an existing project (it refuses if
-`astra.yaml` already exists).
+`lc init` is idempotent — re-running it inside an existing project is
+safe and just fills in anything missing (`lc init --check` tells you
+whether it would change anything).
 
 ## "lc: command not found" or `lc` prints a directory listing
 
@@ -110,57 +111,26 @@ no longer exists. Usually caused by:
 
 Fix: `lc run` the downstream output. The chain will re-anchor.
 
-## Claude Code says it can't write a file
-
-The default permission tier (`recommended`) blocks edits to a few
-sensitive places: `~/.ssh`, `~/.aws`, `~/.gnupg`, `/scratch`,
-`/pscratch`, plus `sudo`, `git push`, `rm -rf`, …
-
-If the file you're trying to edit isn't in those, check
-`.claude/settings.json`. If it is — your `recommended` tier is doing
-its job. Either move the work elsewhere or, knowing what you're doing,
-invoke `lc init … --permissions yolo` next time.
-
-## I deleted `.claude/` by accident
-
-`lc init` won't recreate it because `astra.yaml` exists. You can copy
-the plugin in by hand:
-
-```bash
-python - <<'PY'
-import shutil
-from pathlib import Path
-from lightcone.cli.plugin import get_plugin_source_dir
-src = get_plugin_source_dir()
-dst = Path(".claude")
-for sub in ("skills", "agents", "scripts", "guides", "templates"):
-    s, d = src / sub, dst / sub
-    if d.exists(): shutil.rmtree(d)
-    if s.exists(): shutil.copytree(s, d)
-PY
-```
-
 ## I want to start the spec over
 
-Move `astra.yaml` aside (don't delete it — agents like having context
-about what you tried), then `/lc-new` again:
+Move `astra.yaml` aside (don't delete it — it's useful context about
+what you tried), then write a fresh one:
 
 ```bash
 mv astra.yaml astra.previous.yaml
-claude
-# /lc-new
+$EDITOR astra.yaml
 ```
 
-## File a bug from inside the session
+Re-running `lc init` afterwards is safe — it only fills in whatever is
+missing and leaves the rest of the layout (`universes/`, `.lightcone/`)
+as is.
 
-Inside Claude Code:
+## Filing a bug
 
-```text
-/lc-feedback the lc-extractor agent crashed on PDF X
-```
-
-The skill files an issue with auto-collected versions and a trimmed
-error trace. See [`/lc-feedback`](../skills/lc-feedback.md).
+Open an issue at
+[github.com/LightconeResearch/lightcone-cli/issues](https://github.com/LightconeResearch/lightcone-cli/issues).
+Include the output of `lc --version`, the command you ran, and the
+error trace.
 
 ## When all else fails
 

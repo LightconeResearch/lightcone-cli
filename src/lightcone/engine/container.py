@@ -90,27 +90,6 @@ DEPENDENCY_FILES = (
     "environment.yaml",
 )
 
-#: Subdirectories ignored when hashing a ``COPY .`` of the build context.
-#: These won't be in the docker build context for any sane project (they're
-#: either VCS, caches, results, or virtualenvs); listing them here keeps the
-#: tag from churning every time someone touches ``results/`` or runs tests.
-_COPY_DIR_EXCLUDE: frozenset[str] = frozenset({
-    ".git",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "results",
-    ".lightcone",
-    ".snakemake",
-    "node_modules",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".tox",
-    ".eggs",
-    "dist",
-})
-
 #: Matches a Dockerfile-style flag like ``--from=builder`` or ``--chown=u:g``.
 _FLAG_RE = re.compile(r"^--[A-Za-z][A-Za-z0-9-]*(=\S+)?$")
 
@@ -323,27 +302,67 @@ def _iter_build_context_entries(
 ) -> Iterator[tuple[str, Path]]:
     """Yield ``(kind, path)`` for everything that contributes to a build.
 
-    ``kind`` is one of ``"containerfile"``, ``"dep"``, ``"copy_file"``,
-    ``"copy_dir"``. Sharing this iteration between :func:`compute_image_tag`
-    and :func:`_populate_build_context` guarantees by construction that
-    the hashed set and the staged set cover identical files — so the tag
+    ``kind`` is one of ``"containerfile"``, ``"dep"``, ``"copy_file"``.
+    Sharing this iteration between :func:`compute_image_tag` and
+    :func:`_populate_build_context` guarantees by construction that the
+    hashed set and the staged set cover identical files — so the tag
     can never invalidate against a stage that's missing inputs (or vice
     versa).
 
     Sources behind ``--from=<stage>`` and URL/git ``ADD`` arguments are
-    skipped — they're not part of the host build context. ``COPY .``
-    yields the project root as a single ``copy_dir`` entry.
+    skipped — they're not part of the host context. Directory sources
+    (including ``COPY . .``) are rejected: the image is an environment,
+    not a code snapshot — recipes run against the live project tree
+    (bind-mounted locally, shared filesystem on a hub), so baking
+    source directories in would only force pointless rebuilds and go
+    stale between them.
     """
+    text = containerfile.read_text(errors="replace")
+    copy_files: list[Path] = []
+    bad: list[str] = []
+    for src_str in _parse_copy_sources(text):
+        is_dir_source = False
+        for resolved in _expand_copy_source(src_str, project_path):
+            if resolved.is_dir():
+                is_dir_source = True
+            elif resolved.is_file():
+                copy_files.append(resolved)
+        if is_dir_source:
+            bad.append(src_str)
+    if bad:
+        raise ContainerBuildError(
+            f"{containerfile.name}: COPY/ADD of a directory "
+            f"({', '.join(repr(s) for s in bad)}) is not supported. The "
+            "image is a pure environment — recipes run against the live "
+            "project tree (bind-mounted locally, shared filesystem on a "
+            "hub), so project source never needs to be baked in. Remove "
+            "the line (e.g. `COPY . .`), or COPY individual files if the "
+            "build itself needs them."
+        )
     yield "containerfile", containerfile
     for dep in find_dependency_files(project_path):
         yield "dep", dep
+    for resolved in copy_files:
+        yield "copy_file", resolved
+
+
+def directory_copy_sources(containerfile: Path, project_path: Path) -> list[str]:
+    """``COPY``/``ADD`` sources in *containerfile* that resolve to directories.
+
+    Directory sources are unsupported (the image is an environment, not
+    a code snapshot); this is the shared detector behind the build-time
+    rejection in :func:`_iter_build_context_entries` and the advisory
+    warning in ``lc init``.
+    """
     text = containerfile.read_text(errors="replace")
+    bad: list[str] = []
     for src_str in _parse_copy_sources(text):
-        for resolved in _expand_copy_source(src_str, project_path):
-            if resolved.is_file():
-                yield "copy_file", resolved
-            elif resolved.is_dir():
-                yield "copy_dir", resolved
+        if any(
+            resolved.is_dir()
+            for resolved in _expand_copy_source(src_str, project_path)
+        ):
+            bad.append(src_str)
+    return bad
 
 
 def image_identity(
@@ -355,9 +374,9 @@ def image_identity(
 
     The digest (12-char sha256) covers the Containerfile, every
     dependency file in :data:`DEPENDENCY_FILES`, and the contents of
-    every ``COPY``/``ADD`` source path referenced from the Containerfile
-    (files hashed directly, directories walked recursively with stable
-    ordering and :data:`_COPY_DIR_EXCLUDE` subtrees skipped).
+    every ``COPY``/``ADD`` source file referenced from the
+    Containerfile (directory sources are rejected — the image is an
+    environment, not a code snapshot).
 
     The identity is spelled two ways downstream — ``lc-<name>-<digest>``
     in a local image store (:func:`compute_image_tag`), ``…/lc-<name>:
@@ -370,17 +389,12 @@ def image_identity(
             _hash_named_file(path, "containerfile", h)
         elif kind == "dep":
             _hash_named_file(path, "dep", h)
-        else:
+        else:  # copy_file
             rel = _safe_relpath(path, project_path)
             h.update(b"copy\0")
             h.update(rel.encode("utf-8"))
-            h.update(b"\0")
-            if kind == "copy_file":
-                h.update(b"file\0")
-                _hash_file_into(path, h)
-            else:
-                h.update(b"dir\0")
-                _hash_dir_into(path, h)
+            h.update(b"\0file\0")
+            _hash_file_into(path, h)
             h.update(b"\0")
 
     return project_name.lower().replace(" ", "-"), h.hexdigest()[:12]
@@ -440,28 +454,6 @@ def _safe_relpath(path: Path, root: Path) -> str:
         return path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
         return path.name
-
-
-def _hash_dir_into(directory: Path, h: hashlib._Hash) -> None:
-    """Hash *directory* recursively, skipping :data:`_COPY_DIR_EXCLUDE` subtrees.
-
-    Files are hashed in sorted relative-path order with path-prefix framing,
-    so renames and reorderings change the digest.
-    """
-    files: list[Path] = []
-    for p in directory.rglob("*"):
-        if not p.is_file():
-            continue
-        if any(part in _COPY_DIR_EXCLUDE for part in p.relative_to(directory).parts):
-            continue
-        files.append(p)
-    for p in sorted(files, key=lambda x: x.relative_to(directory).as_posix()):
-        rel = p.relative_to(directory).as_posix().encode("utf-8")
-        h.update(b"path\0")
-        h.update(rel)
-        h.update(b"\0data\0")
-        _hash_file_into(p, h)
-        h.update(b"\0")
 
 
 def _parse_copy_sources(containerfile_text: str) -> list[str]:
@@ -604,24 +596,13 @@ def _populate_build_context(
         if kind in ("containerfile", "dep"):
             shutil.copy2(path, staged / path.name)
             continue
-        try:
+        try:  # copy_file
             rel = path.resolve().relative_to(src_root)
         except ValueError:
             continue
-        dest = staged / rel if rel.parts else staged
-        if kind == "copy_file":
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, dest)
-        else:  # copy_dir
-            _copy_tree_filtered(path, dest)
-
-
-def _copy_tree_filtered(src: Path, dst: Path) -> None:
-    """Copy *src* into *dst* recursively, skipping :data:`_COPY_DIR_EXCLUDE`."""
-    def _ignore(_dir: str, names: list[str]) -> list[str]:
-        return [n for n in names if n in _COPY_DIR_EXCLUDE]
-
-    shutil.copytree(src, dst, ignore=_ignore, symlinks=True, dirs_exist_ok=True)
+        dest = staged / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest)
 
 
 def build_image(

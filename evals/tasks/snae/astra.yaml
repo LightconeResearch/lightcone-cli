@@ -1,7 +1,7 @@
 # ASTRA Analysis Specification
 # Documentation: https://github.com/LightconeResearch/ASTRA
 
-version: "1.0"
+version: "0.0.13"
 name: "snae"
 description: |
   Fit the Union2.1 Type Ia supernova distance modulus vs redshift data
@@ -27,16 +27,16 @@ outputs:
   - id: hubble_diagram
     type: figure
     description: "Hubble diagram: distance modulus vs redshift with best-fit model overlay"
+    inputs: [best_fit]
     recipe:
       command: python scripts/plot_hubble.py
-      inputs: [best_fit]
 
   - id: residuals
     type: figure
     description: "Residuals plot: data minus best-fit model vs redshift"
+    inputs: [best_fit]
     recipe:
       command: python scripts/plot_residuals.py
-      inputs: [best_fit]
 
 decisions:
   optimizer:

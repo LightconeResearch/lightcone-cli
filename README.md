@@ -7,34 +7,26 @@
 
 <!-- [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff) -->
 
-**lightcone-cli** (`lc`) is the agentic execution layer for
+**lightcone-cli** (`lc`) is the execution layer for
 [ASTRA](https://astra-spec.org/latest/) (Agentic Schema for Transparent
-Research Analysis). Describe your analysis to an AI agent and `lc` takes
-care of the rest — specification, execution, and provenance.
+Research Analysis). Describe your analysis in an `astra.yaml`
+specification and `lc` takes care of the rest — execution and
+provenance.
 
 ## Quick Start
 
 ```bash
-uv tool install lightcone-cli
+uv tool install lightcone-cli   # or: pip install lightcone-cli
 lc init my-analysis
 cd my-analysis
-claude
+# describe your analysis in astra.yaml, then:
+lc run
 ```
 
-Then tell the agent what you have to start from — a research question
-(`/lc-new`), existing code (`/lc-from-code`), or a paper to reproduce
-(`/lc-from-paper`).
+ASTRA specs are plain, structured YAML — they work well hand-written or
+drafted with any AI coding assistant.
 
 → [Full getting-started guide](https://docs.lightconeresearch.org/user/getting-started/)
-
-## Skills
-
-| Skill | What it does |
-|---|---|
-| [`/lc-new`](https://docs.lightconeresearch.org/skills/lc-new/) | Scope a new analysis from a research question into a full `astra.yaml` spec |
-| [`/lc-from-code`](https://docs.lightconeresearch.org/skills/lc-from-code/) | Bring an existing codebase into ASTRA |
-| [`/lc-from-paper`](https://docs.lightconeresearch.org/skills/lc-from-paper/) | Reproduce a published paper end-to-end |
-| [`/lc-feedback`](https://docs.lightconeresearch.org/skills/lc-feedback/) | File a bug report with version and error context auto-collected |
 
 ## Capabilities
 
