@@ -49,10 +49,20 @@ is how the engine orders the build.
 
 ## Environment
 
-You are in an activated Python virtual environment managed by uv. Common
-scientific packages (numpy, scipy, matplotlib) are pre-installed. If you
-need more, install them with `uv pip install <package>` — plain `pip` is
-not available in this venv.
+Recipes and your interactive shell run in two different environments —
+keep them straight:
+
+- **Recipe commands run by `lc run`** may execute inside a container
+  built from the project's `Containerfile` + `requirements.txt`
+  (whenever `astra.yaml` declares a `container:` and a runtime is
+  available). Every package a recipe script imports must therefore be
+  listed in `requirements.txt` — add it there *before* running, and the
+  engine rebuilds the content-addressed image automatically. Host-side
+  installs never reach the container.
+- **Your own shell commands** run on the host in an activated uv-managed
+  virtual environment with numpy, scipy, and matplotlib pre-installed.
+  For ad-hoc host tools use `uv pip install <package>` — plain `pip` is
+  not available in this venv.
 
 ## Build loop
 

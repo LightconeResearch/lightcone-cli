@@ -74,9 +74,11 @@ def main() -> None:
                             f"❌ **error result:**\n\n```\n{_fence(content[:ERROR_SNIPPET])}\n```\n"
                         )
                     elif content:
-                        snippet = content[:RESULT_SNIPPET]
+                        # Collapse to one line so the whole snippet stays
+                        # inside the blockquote
+                        snippet = " ".join(content[:RESULT_SNIPPET].split())
                         ellipsis = " …" if len(content) > RESULT_SNIPPET else ""
-                        body.append(f"> {_fence(snippet)}{ellipsis}\n".replace("\n>", " "))
+                        body.append(f"> {_fence(snippet)}{ellipsis}\n")
 
         elif t == "result":
             metrics = d

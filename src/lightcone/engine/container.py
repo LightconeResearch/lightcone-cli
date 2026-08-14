@@ -317,7 +317,19 @@ def _iter_build_context_entries(
     source directories in would only force pointless rebuilds and go
     stale between them.
     """
-    if bad := directory_copy_sources(containerfile, project_path):
+    text = containerfile.read_text(errors="replace")
+    copy_files: list[Path] = []
+    bad: list[str] = []
+    for src_str in _parse_copy_sources(text):
+        is_dir_source = False
+        for resolved in _expand_copy_source(src_str, project_path):
+            if resolved.is_dir():
+                is_dir_source = True
+            elif resolved.is_file():
+                copy_files.append(resolved)
+        if is_dir_source:
+            bad.append(src_str)
+    if bad:
         raise ContainerBuildError(
             f"{containerfile.name}: COPY/ADD of a directory "
             f"({', '.join(repr(s) for s in bad)}) is not supported. The "
@@ -330,11 +342,8 @@ def _iter_build_context_entries(
     yield "containerfile", containerfile
     for dep in find_dependency_files(project_path):
         yield "dep", dep
-    text = containerfile.read_text(errors="replace")
-    for src_str in _parse_copy_sources(text):
-        for resolved in _expand_copy_source(src_str, project_path):
-            if resolved.is_file():
-                yield "copy_file", resolved
+    for resolved in copy_files:
+        yield "copy_file", resolved
 
 
 def directory_copy_sources(containerfile: Path, project_path: Path) -> list[str]:

@@ -1,9 +1,7 @@
 # lightcone.cli.commands
 
 The Click surface. Defined in `src/lightcone/cli/commands.py`. Six
-public commands: `init`, `run`, `status`, `verify`, `build`, `export`
-(plus the `eval` group, registered when the `eval` extra is
-installed).
+public commands: `init`, `run`, `status`, `verify`, `build`, `export`.
 
 The user-facing reference is in [CLI Overview](../cli/index.md). This
 page is a tour of the module internals.

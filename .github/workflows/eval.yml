@@ -22,7 +22,10 @@ jobs:
   eval:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Step-level timeout on the agent step (below) is what actually
+    # bounds the run: a job-level timeout would cancel the always()
+    # report/comment/artifact steps along with it.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +73,7 @@ jobs:
 
       - name: Run Claude Code
         id: agent
+        timeout-minutes: 15
         working-directory: ${{ env.PROJECT }}
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

@@ -119,7 +119,7 @@ _____|_________________
 
 
 @main.command()
-@click.argument("directory", type=click.Path(path_type=Path), default=".")
+@click.argument("directory", type=click.Path(file_okay=False, path_type=Path), default=".")
 @click.option("--no-git", is_flag=True, help="Skip git init")
 @click.option("--no-venv", is_flag=True, help="Skip Python venv creation")
 @click.option(
@@ -238,6 +238,10 @@ def init(
 
             (directory / "universes").mkdir(exist_ok=True)
             _create_boilerplate_astra_yaml(directory)
+        # The boilerplate recipes reference scripts under src/ (e.g.
+        # ``python src/main.py``); astra's own init creates the
+        # directory, so the scaffold must too.
+        (directory / "src").mkdir(exist_ok=True)
         # Point the spec at our project-local Containerfile. The astra
         # boilerplate ships a registry image so the scaffold is runnable
         # as-is, but we want lightcone projects to build their own image
@@ -354,26 +358,14 @@ def init(
         )
     else:
         _converge("results/", results_dir.is_dir(), results_dir.mkdir)
-        _converge(
-            "results/README.md",
-            (results_dir / "README.md").exists(),
-            lambda: (results_dir / "README.md").write_text(_RESULTS_README),
-        )
+        _converge_file("results/README.md", results_dir / "README.md", _RESULTS_README)
 
     # Template MyST report. MyST support is a recommended add-on on top of
     # the spec, not part of it — which is why the report scaffold lives here
     # and not in `astra init`.
-    _converge(
-        "myst.yml",
-        (directory / "myst.yml").exists(),
-        lambda: (directory / "myst.yml").write_text(_MYST_YML),
-    )
+    _converge_file("myst.yml", directory / "myst.yml", _MYST_YML)
     project_name = directory.name or "My Analysis"
-    _converge(
-        "index.md",
-        (directory / "index.md").exists(),
-        lambda: (directory / "index.md").write_text(f"# {project_name}\n" + _INDEX_MD_BODY),
-    )
+    _converge_file("index.md", directory / "index.md", f"# {project_name}\n" + _INDEX_MD_BODY)
 
     if not no_git:
         _converge(
@@ -549,6 +541,17 @@ def _repair_gitignore(text: str) -> str | None:
     """
     if "# lightcone-cli" not in text:
         return text + _GITIGNORE_APPEND
+    # Legacy managed block: a bare ``results/`` rule ignores the whole
+    # directory, and git cannot re-include results/README.md beneath an
+    # excluded directory. Upgrade the rule in place; everything else in
+    # the file is user territory.
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == "results/":
+            lines[i] = "results/*"
+            if "!results/README.md" not in text:
+                lines.insert(i + 1, "!results/README.md")
+            return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     return None
 
 
@@ -1159,13 +1162,10 @@ def build(force: bool, runtime: str | None) -> None:
     ``<registry>/lc-<project>:<hash>`` — same content-addressed
     identity, zero configuration.
     """
-    from lightcone.engine.container import ContainerBuildError, load_runtime
+    from lightcone.engine.container import load_runtime
 
     project = _project_root()
-    try:
-        resolved_runtime = runtime or load_runtime(project_path=project).runtime
-    except ContainerBuildError as e:
-        raise click.ClickException(str(e))
+    resolved_runtime = runtime or load_runtime(project_path=project).runtime
 
     if resolved_runtime == "none":
         console.print(
@@ -1201,7 +1201,6 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> list[
 
     from lightcone.engine.container import (
         KUBERNETES,
-        ContainerBuildError,
         build_image,
         compute_image_tag,
         image_exists_locally,
@@ -1236,10 +1235,7 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> list[
             if image_exists_locally(spec_str, runtime=runtime) and not force:
                 continue
             console.print(f"[cyan]Pulling[/cyan] {spec_str} [dim](via {runtime})[/dim]")
-            try:
-                pull_image(spec_str, runtime=runtime)
-            except ContainerBuildError as e:
-                raise click.ClickException(str(e))
+            pull_image(spec_str, runtime=runtime)
             continue
 
         if runtime == KUBERNETES:
@@ -1254,10 +1250,7 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> list[
         console.print(
             f"[cyan]Building[/cyan] {spec_str} → {tag} [dim](via {runtime})[/dim]"
         )
-        try:
-            build_image(tag, containerfile, project, runtime=runtime)
-        except ContainerBuildError as e:
-            raise click.ClickException(str(e))
+        build_image(tag, containerfile, project, runtime=runtime)
     return images
 
 

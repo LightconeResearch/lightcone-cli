@@ -74,7 +74,7 @@ packages = ["src/lightcone", "src/snakemake_executor_plugin_dask"]
 src/lightcone/                       # main namespace (PEP 420; no __init__.py at the package root)
 src/snakemake_executor_plugin_dask/  # Snakemake → Dask executor plugin
 tests/                               # pytest tree, mirrors src/
-evals/                               # eval task fixtures (tasks/snae/)
+evals/                               # agentic eval: prompt.md + task seeds (tasks/snae/)
 docs/                                # docs site
 ```
 
