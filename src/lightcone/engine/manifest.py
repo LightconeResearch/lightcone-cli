@@ -62,8 +62,10 @@ __all__ = [
     "MANIFEST_FILENAME",
     "SCHEMA_VERSION",
     "UNSANDBOXED_HERMETICITY",
+    "canonical_json",
     "code_version",
     "fingerprint_external",
+    "frame",
     "is_pre_migration",
     "read_manifest",
     "sha256_dir",
@@ -104,6 +106,23 @@ def sha256_dir(path: Path) -> str:
 
 def _sha256_bytes(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def canonical_json(obj: Any) -> str:
+    """The one canonical JSON form for anything that feeds an identity
+    hash — a formatting drift here forks every hash downstream."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def frame(h: hashlib._Hash, label: str, data: bytes) -> None:
+    """Length-framed hash update — prevents boundary-shifting collisions
+    between concatenated identity inputs. Shared by ``env_version`` and
+    the image tag."""
+    h.update(label.encode("utf-8"))
+    h.update(b"\0")
+    h.update(str(len(data)).encode("ascii"))
+    h.update(b"\0")
+    h.update(data)
 
 
 def _sha256_file(path: Path) -> str:
@@ -151,9 +170,7 @@ def code_version(
         "env_version": env_version,
         "writable_project": writable_project,
     }
-    return _sha256_bytes(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    )
+    return _sha256_bytes(canonical_json(payload).encode("utf-8"))
 
 
 def is_pre_migration(manifest: dict[str, Any]) -> bool:

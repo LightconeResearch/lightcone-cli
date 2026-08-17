@@ -75,7 +75,7 @@ class TestRefusals:
                 'build-backend = "hatchling.build"\n'
             ),
         )
-        assert load_environment(project).packaged is True
+        assert load_environment(project).mode is Mode.DIRECT
 
     def test_missing_pyproject(self, tmp_path: Path) -> None:
         project = make_project(tmp_path / "p")

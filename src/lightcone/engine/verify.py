@@ -65,9 +65,17 @@ def verify_outputs(
     project_path: Path,
     *,
     universe_id: str,
+    spec: dict[str, Any] | None = None,
 ) -> Iterator[VerifyResult]:
-    """Yield a :class:`VerifyResult` for every output with a recipe."""
-    spec = resolve_analysis_tree(load_yaml(project_path / "astra.yaml"), project_path)
+    """Yield a :class:`VerifyResult` for every output with a recipe.
+
+    *spec* (the resolved analysis tree) is loaded when omitted; callers
+    iterating several universes pass it through.
+    """
+    if spec is None:
+        spec = resolve_analysis_tree(
+            load_yaml(project_path / "astra.yaml"), project_path
+        )
     all_outputs = collect_tree_outputs(spec)
 
     for tree_out in all_outputs:

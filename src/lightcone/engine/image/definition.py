@@ -10,11 +10,9 @@ locked sync → extra stage → final ENV contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from lightcone.engine.image import constants
 from lightcone.engine.image.declaration import BaseRef, ImageDeclaration
-from lightcone.engine.image.errors import DeclarationError
 
 
 @dataclass(frozen=True)
@@ -53,23 +51,16 @@ class ImageDefinition:
     env_version: str  # baked as a LABEL + /opt/lc/identity.json
 
     @classmethod
-    def from_project(
+    def from_declaration(
         cls,
-        project: Path,
         declaration: ImageDeclaration,
         *,
         env_version: str,
+        python_version: str,
     ) -> ImageDefinition:
-        pv_path = project / ".python-version"
-        if not pv_path.is_file():
-            raise DeclarationError(
-                f"{project}: no .python-version file — the image build "
-                "needs the exact interpreter pin. Run `lc init` to "
-                "scaffold it."
-            )
-        python_version = pv_path.read_text().strip()
-        if not python_version:
-            raise DeclarationError(f"{pv_path}: empty .python-version file.")
+        """*python_version* comes from the loaded
+        :class:`~lightcone.engine.environment.EnvironmentSpec` — the
+        environment layer already read and validated the pin."""
         return cls(
             base=declaration.base or DEFAULT_BASE,
             system_packages=declaration.system_packages,

@@ -11,27 +11,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from lightcone.engine.image.errors import DeclarationError
+from lightcone.engine.image.identity import EnvInputs
 
 
 @dataclass(frozen=True)
 class BuildContext:
     containerfile_text: str
-    pyproject: Path
-    uv_lock: Path
-
-    @classmethod
-    def from_project(cls, project: Path, containerfile_text: str) -> BuildContext:
-        pyproject = project / "pyproject.toml"
-        uv_lock = project / "uv.lock"
-        for p in (pyproject, uv_lock):
-            if not p.is_file():
-                raise DeclarationError(f"{p} is missing — run `uv lock` first.")
-        return cls(
-            containerfile_text=containerfile_text,
-            pyproject=pyproject,
-            uv_lock=uv_lock,
-        )
+    #: The exact bytes the tag was computed over — staged verbatim, so
+    #: the built image can never diverge from the hashed identity.
+    inputs: EnvInputs
 
     def stage(self, into: Path) -> Path:
         """Write the three files into *into*; returns the Containerfile
@@ -40,8 +28,8 @@ class BuildContext:
         into.mkdir(parents=True, exist_ok=True)
         containerfile = into / "Containerfile"
         containerfile.write_text(self.containerfile_text)
-        (into / "pyproject.toml").write_bytes(self.pyproject.read_bytes())
-        (into / "uv.lock").write_bytes(self.uv_lock.read_bytes())
+        (into / "pyproject.toml").write_bytes(self.inputs.pyproject_bytes)
+        (into / "uv.lock").write_bytes(self.inputs.uv_lock_bytes)
         for p in into.iterdir():
             p.chmod(0o644)
         return containerfile

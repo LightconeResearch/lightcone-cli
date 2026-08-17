@@ -68,7 +68,6 @@ def cluster_for_run(
     *,
     verbose: bool = False,
     local_directory: str | None = None,
-    max_workers: int | None = None,
 ) -> Iterator[dict[str, str]]:
     """Yield the env overlay the child snakemake needs to reach the cluster.
 
@@ -79,10 +78,6 @@ def cluster_for_run(
     *local_directory*, when given, is where dask workers stage their
     spilled task data and internal state files. ``lc materialize``
     resolves it to a path under :mod:`lightcone.engine.scratch`.
-
-    *max_workers* is currently unused on the local branch (one worker
-    with all cores); kept in the signature as the seam future venue
-    branches share.
     """
     from dask.distributed import LocalCluster
 

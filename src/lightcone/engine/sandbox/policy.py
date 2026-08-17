@@ -130,17 +130,13 @@ def build_policy(
             install_root = real.parent.parent
             execute.append(install_root)
             read.append(install_root)
-    unresolved: list[str] = []
     if image_is_exec_set:
         for p in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt"):
             if Path(p).exists():
                 execute.append(Path(p).resolve())
     else:
         for name in EXEC_ALLOWLIST_V1:
-            hit = shutil.which(name, path=_UTILITY_PATH)
-            if hit is None:
-                unresolved.append(name)
-            else:
+            if hit := shutil.which(name, path=_UTILITY_PATH):
                 execute.append(Path(hit).resolve())
     execute.extend(_elf_loaders())
 
@@ -166,5 +162,4 @@ def build_policy(
         exec_allowlist_version=(
             None if image_is_exec_set else EXEC_ALLOWLIST_VERSION
         ),
-        unresolved_utilities=tuple(unresolved),
     )

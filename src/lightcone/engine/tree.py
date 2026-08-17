@@ -47,6 +47,15 @@ class TreeOutput:
     analysis_path: str | None  # relative path, e.g. "./analyses/hod_fitting"
     analysis_spec: dict[str, Any]  # the sub-analysis spec dict
 
+    @property
+    def qualified_id(self) -> str:
+        """``analysis_id.output_id`` for sub-analysis outputs, the bare
+        ``output_id`` at root — the one spelling of an output's identity
+        (rule keys, writable-project matching, target resolution)."""
+        if self.analysis_id is None:
+            return self.output_id
+        return f"{self.analysis_id}.{self.output_id}"
+
 
 def collect_tree_outputs(spec: dict[str, Any]) -> list[TreeOutput]:
     """Walk the resolved tree and collect all outputs with context.
@@ -343,13 +352,60 @@ def resolve_external_input(
     return None
 
 
+
+def scoped_decisions_for_output(
+    tree_output: TreeOutput,
+    universe_decisions: dict[str, Any],
+) -> dict[str, Any]:
+    """The decisions visible to one output, for ``code_version``.
+
+    ``Output.decisions`` is the explicit provenance contract — the set
+    of decisions whose option choices can change this output. Both the
+    Snakefile generator (write path) and the status walker (read path)
+    call this one function, so their scoping can never disagree.
+    Outputs that declare no decisions hash an empty dict.
+    """
+    declared = tree_output.output_def.get("decisions") or []
+    if not declared:
+        return {}
+    scoped: dict[str, Any] = {}
+    prefix = f"{tree_output.analysis_id}." if tree_output.analysis_id else ""
+    for dec_id in declared:
+        if prefix and (qualified := f"{prefix}{dec_id}") in universe_decisions:
+            scoped[dec_id] = universe_decisions[qualified]
+        elif dec_id in universe_decisions:
+            scoped[dec_id] = universe_decisions[dec_id]
+    return scoped
+
+
+def load_universe_decisions(
+    project_path: Path,
+    spec: dict[str, Any],
+    universe_id: str,
+) -> dict[str, Any]:
+    """Merged universe decisions when the file exists; empty otherwise.
+
+    Universe files are optional during interactive work, so absence is
+    tolerated rather than an error.
+    """
+    universe_yaml = project_path / "universes" / f"{universe_id}.yaml"
+    if not universe_yaml.exists():
+        return {}
+    try:
+        return resolve_universe_decisions(project_path, spec, universe_id)
+    except (FileNotFoundError, KeyError):
+        return {}
+
+
 __all__ = [
     "TreeOutput",
     "collect_tree_inputs",
     "collect_tree_outputs",
     "find_upstream_output",
     "get_decisions_for_analysis",
+    "load_universe_decisions",
     "resolve_external_input",
     "resolve_output_path",
     "resolve_universe_decisions",
+    "scoped_decisions_for_output",
 ]

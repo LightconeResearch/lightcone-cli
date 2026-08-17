@@ -7,26 +7,25 @@ macOS; none elsewhere), the policy realizes spec §7's declared sets,
 the shim applies the restriction between fork and exec, and the
 attestation records exactly what ran. When the probe lands below the
 venue's expectation the exec still proceeds — recorded and announced,
-never silent, never pretended.
+never silent, never pretended. ``sandbox: off`` runs the command bare
+and attests to that honestly.
 """
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
 from pathlib import Path
 
+from lightcone._sandbox_exec import SETUP_FAILURE_EXIT
 from lightcone.engine.boundary import (
     BoundaryResult,
     ExecScope,
     SandboxAttestation,
 )
+from lightcone.engine.contract import in_container, recipe_env_prefix
 from lightcone.engine.sandbox import denial
 from lightcone.engine.sandbox import probe as probe_mod
 from lightcone.engine.sandbox.policy import EXEC_ALLOWLIST_VERSION, build_policy
-from lightcone.engine.sandbox.wrap import wrap_command
-
-_IN_IMAGE_VENV = Path("/opt/venv")
+from lightcone.engine.sandbox.wrap import run_wrapped, wrap_command
 
 
 class SandboxExecBoundary:
@@ -72,14 +71,12 @@ class SandboxExecBoundary:
                 attestation=attestation,
             )
 
-        in_container = (
-            os.environ.get(probe_mod.WORKER_RUNTIME_ENV) == "container"
-        )
+        inside = in_container()
         policy = build_policy(
             scope,
-            env_prefix=self._env_prefix(scope),
+            env_prefix=recipe_env_prefix(scope.project_root),
             scratch_dirs=self._scratch_dirs(scope),
-            image_is_exec_set=in_container,
+            image_is_exec_set=inside,
         )
         wrapped = wrap_command(command, policy, capability)
         attestation = probe_mod.compose_attestation(
@@ -98,25 +95,11 @@ class SandboxExecBoundary:
                 f"({capability.detail}) — running unsandboxed\033[0m"
             )
 
-        try:
-            proc = subprocess.run(
-                list(wrapped.argv),
-                capture_output=True,
-                text=True,
-                check=False,
-                cwd=scope.project_root,
-                env={**env, **wrapped.env},
-                pass_fds=wrapped.pass_fds,
-            )
-        finally:
-            for fd in wrapped.close_after_spawn:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            shutil.rmtree(policy.tmp_home, ignore_errors=True)
+        proc = run_wrapped(
+            wrapped, policy, cwd=scope.project_root, env=env, capture=True
+        )
 
-        if proc.returncode == 97:
+        if proc.returncode == SETUP_FAILURE_EXIT:
             # Reserved: sandbox-setup failure — attributed to lc, never
             # to the recipe.
             notes.append(
@@ -128,7 +111,6 @@ class SandboxExecBoundary:
                 stdout=proc.stdout,
                 stderr=proc.stderr,
                 policy=policy,
-                mechanism=attestation.mechanism,
             )
             notes.extend(explanation)
             if explanation:
@@ -145,12 +127,6 @@ class SandboxExecBoundary:
 
     def describe_host(self) -> str:
         return probe_mod.status_line()
-
-    @staticmethod
-    def _env_prefix(scope: ExecScope) -> Path:
-        if os.environ.get(probe_mod.WORKER_RUNTIME_ENV) == "container":
-            return _IN_IMAGE_VENV
-        return scope.project_root / ".venv"
 
     @staticmethod
     def _scratch_dirs(scope: ExecScope) -> tuple[Path, ...]:

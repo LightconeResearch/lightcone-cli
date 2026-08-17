@@ -74,7 +74,6 @@ def explain_failure(
     stdout: str,
     stderr: str,
     policy: SandboxPolicy,
-    mechanism: str,
 ) -> list[str]:
     """Render the denial message; empty when no denial is confirmed.
 

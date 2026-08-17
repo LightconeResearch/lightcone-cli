@@ -73,22 +73,39 @@ def compute_mount_set(
     )
 
 
-def external_input_paths(project: Path) -> tuple[Path, ...]:
-    """Union of resolved external input source paths across the analysis
-    tree (in-tree sources are covered by the project mount/grant)."""
+def external_input_paths(
+    project: Path, spec: dict[str, object] | None = None
+) -> tuple[Path, ...]:
+    """Union of resolved external input paths across every output's
+    declared inputs — what the container must mount RO and a probe may
+    read. Resolution goes through
+    :func:`lightcone.engine.tree.resolve_external_input`, the single
+    home for input-source semantics (it follows ``from:`` alias hops a
+    raw ``source:`` walk would miss). In-tree paths are covered by the
+    project mount/grant and skipped here.
+    """
     from astra.helpers import load_yaml, resolve_analysis_tree
 
-    from lightcone.engine.tree import collect_tree_inputs
+    from lightcone.engine.tree import (
+        collect_tree_outputs,
+        find_upstream_output,
+        resolve_external_input,
+    )
 
-    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
+    if spec is None:
+        spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
+    tree_outputs = collect_tree_outputs(spec)
     paths: list[Path] = []
-    for inp_def in collect_tree_inputs(spec).values():
-        source = inp_def.get("source")
-        if not source or not isinstance(source, str):
-            continue
-        p = Path(source)
-        if not p.is_absolute():
-            p = project / p
-        if p.exists():
-            paths.append(p.resolve())
-    return tuple(paths)
+    for to in tree_outputs:
+        for inp_id in to.output_def.get("inputs") or []:
+            if find_upstream_output(to, inp_id, tree_outputs) is not None:
+                continue  # sibling output — mounted with the project
+            source = resolve_external_input(to, inp_id, spec)
+            if not source:
+                continue
+            p = Path(source)
+            if not p.is_absolute():
+                p = project / p
+            if p.exists():
+                paths.append(p.resolve())
+    return tuple(dict.fromkeys(paths))

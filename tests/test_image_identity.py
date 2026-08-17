@@ -7,7 +7,6 @@ from pathlib import Path
 from conftest import make_project
 
 from lightcone.engine.environment import load_environment
-from lightcone.engine.image.declaration import load_image_declaration
 from lightcone.engine.image.definition import ImageDefinition
 from lightcone.engine.image.identity import EnvInputs, compute_tag
 from lightcone.engine.image.render import render
@@ -15,9 +14,12 @@ from lightcone.engine.image.render import render
 
 def _tag_of(project: Path) -> str:
     env = load_environment(project)
-    decl = load_image_declaration(project)
-    assert decl is not None
-    defn = ImageDefinition.from_project(project, decl, env_version=env.env_version)
+    assert env.image is not None
+    defn = ImageDefinition.from_declaration(
+        env.image,
+        env_version=env.env_version,
+        python_version=env.python_version,
+    )
     return compute_tag(render(defn), EnvInputs.read(project))
 
 

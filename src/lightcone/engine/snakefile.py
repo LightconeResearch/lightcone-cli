@@ -31,21 +31,24 @@ from typing import Any
 
 from astra.helpers import load_yaml, resolve_analysis_tree
 
+from lightcone.engine import lc_version
 from lightcone.engine.environment import (
     EnvironmentSpec,
+    LockScan,
     Mode,
     ProjectEnvironmentError,
     load_environment,
     scan_lock,
 )
 from lightcone.engine.job import RuleJob
-from lightcone.engine.manifest import code_version
+from lightcone.engine.manifest import MANIFEST_FILENAME, code_version
 from lightcone.engine.tree import (
     TreeOutput,
     collect_tree_outputs,
     find_upstream_output,
+    load_universe_decisions,
     resolve_external_input,
-    resolve_universe_decisions,
+    scoped_decisions_for_output,
 )
 
 LIGHTCONE_DIR = ".lightcone"
@@ -188,15 +191,6 @@ def _git_remote(project_path: Path) -> str | None:
         return None
 
 
-def _lc_version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("lightcone-cli")
-    except Exception:
-        return "unknown"
-
-
 def _output_dir_pattern(tree_out: TreeOutput) -> str:
     """Wildcard path to this output's directory.
 
@@ -209,18 +203,10 @@ def _output_dir_pattern(tree_out: TreeOutput) -> str:
     return f"results/{{universe}}/{tree_out.output_id}"
 
 
-def _rule_key(tree_out: TreeOutput) -> str:
-    """Unique key into the cfg JSON. Avoids collisions when two
-    sub-analyses share an output_id."""
-    if tree_out.analysis_id is None:
-        return tree_out.output_id
-    return f"{tree_out.analysis_id}.{tree_out.output_id}"
-
-
 def _rule_name(tree_out: TreeOutput) -> str:
-    """Snakemake rule name. Mirrors the cfg key but with
+    """Snakemake rule name. Mirrors ``qualified_id`` but with
     Snakemake-friendly identifier characters (``.`` → ``__``)."""
-    return _rule_key(tree_out).replace(".", "__")
+    return tree_out.qualified_id.replace(".", "__")
 
 
 def _safe_input_key(raw_id: str) -> str:
@@ -231,43 +217,6 @@ def _safe_input_key(raw_id: str) -> str:
     spelling the user wrote in ``Output.inputs``.
     """
     return raw_id.replace(".", "__")
-
-
-def _scoped_decisions_for_output(
-    tree_out: TreeOutput,
-    universe_decisions: dict[str, Any],
-) -> dict[str, Any]:
-    """Pick the active option ID for each decision the Output declares.
-
-    v0.0.7: ``Output.decisions`` lists the IDs of decisions that
-    parameterize this output. The runner only needs (and the recipe
-    template can only reference) those — anything else is out of scope.
-    """
-    declared = tree_out.output_def.get("decisions") or []
-    if not declared:
-        return {}
-    scoped: dict[str, Any] = {}
-    prefix = f"{tree_out.analysis_id}." if tree_out.analysis_id else ""
-    for dec_id in declared:
-        if prefix and (qualified := f"{prefix}{dec_id}") in universe_decisions:
-            scoped[dec_id] = universe_decisions[qualified]
-        elif dec_id in universe_decisions:
-            scoped[dec_id] = universe_decisions[dec_id]
-    return scoped
-
-
-def _universe_decisions(
-    universe_id: str,
-    project_path: Path,
-    spec: dict[str, Any],
-) -> dict[str, Any]:
-    universe_yaml = project_path / "universes" / f"{universe_id}.yaml"
-    if not universe_yaml.exists():
-        return {}
-    try:
-        return resolve_universe_decisions(project_path, spec, universe_id)
-    except (FileNotFoundError, KeyError):
-        return {}
 
 
 def _render_snakefile(
@@ -292,7 +241,7 @@ def _render_snakefile(
     rule_all_inputs = []
     for r in rules:
         rule_all_inputs.append(
-            f'        expand("{r["output_dir"]}/.lightcone-manifest.json", '
+            f'        expand("{r["output_dir"]}/{MANIFEST_FILENAME}", '
             f"universe=UNIVERSES),"
         )
     rule_all_block = "\n".join(rule_all_inputs) or "        []"
@@ -322,7 +271,7 @@ def _render_snakefile(
                 lines.append(f'        {safe}="{pattern}",')
         lines.append("    output:")
         lines.append(f'        data=directory("{r["output_dir"]}"),')
-        lines.append(f'        manifest="{r["output_dir"]}/.lightcone-manifest.json",')
+        lines.append(f'        manifest="{r["output_dir"]}/{MANIFEST_FILENAME}",')
         lines.append("    params:")
         lines.append(f'        cfg=lambda wc: CFG["{r["key"]}"][wc.universe],')
         lines.append("    run:")
@@ -350,6 +299,7 @@ def generate(
     *,
     universes: list[str],
     env: EnvironmentSpec | None = None,
+    scan: LockScan | None = None,
 ) -> tuple[Path, Path]:
     """Write ``.lightcone/Snakefile`` and ``.lightcone/snakefile-config.json``.
 
@@ -369,7 +319,8 @@ def generate(
     if env is None:
         env = load_environment(project_path)
 
-    scan = scan_lock(project_path)
+    if scan is None:
+        scan = scan_lock(project_path)
     if scan.refusals:
         raise ProjectEnvironmentError(
             "uv.lock contains unauditable dependencies:\n  "
@@ -382,10 +333,7 @@ def generate(
     tree_outputs = collect_tree_outputs(spec)
 
     # Validate the per-output sandbox escalations against declared ids.
-    declared_ids = {
-        f"{to.analysis_id}.{to.output_id}" if to.analysis_id else to.output_id
-        for to in tree_outputs
-    }
+    declared_ids = {to.qualified_id for to in tree_outputs}
     if unknown := env.writable_project_outputs - declared_ids:
         raise ProjectEnvironmentError(
             "[tool.lightcone.sandbox] writable-project names undeclared "
@@ -398,7 +346,12 @@ def generate(
     git_sha = _git_sha(project_path)
     git_dirty = _git_dirty(project_path)
     git_remote = _git_remote(project_path)
-    lc_version = _lc_version()
+    version = lc_version()
+    # Universe decisions depend only on (universe, spec) — resolve each
+    # once, not per rule (the resolution re-reads universe YAMLs).
+    decisions_by_universe = {
+        u: load_universe_decisions(project_path, spec, u) for u in universes
+    }
 
     # Containerized mode: pin every job to the image the driver resolved
     # — the digest travels in the job command and run_rule asserts it.
@@ -423,7 +376,7 @@ def generate(
         if recipe is None:
             continue  # alias output (re-export via ``from:``)
 
-        rule_key = _rule_key(to)
+        rule_key = to.qualified_id
         rule_name = _rule_name(to)
         out_dir_pattern = _output_dir_pattern(to)
 
@@ -461,8 +414,9 @@ def generate(
 
         cfg.setdefault(rule_key, {})
         for u in universes:
-            universe_decisions = _universe_decisions(u, project_path, spec)
-            scoped_decisions = _scoped_decisions_for_output(to, universe_decisions)
+            scoped_decisions = scoped_decisions_for_output(
+                to, decisions_by_universe[u]
+            )
 
             # Build the resolved input map in declaration order so
             # ``{inputs}`` joins paths in the same order the user wrote
@@ -508,7 +462,7 @@ def generate(
                 git_sha=git_sha,
                 git_dirty=git_dirty,
                 git_remote=git_remote,
-                lc_version=lc_version,
+                lc_version=version,
                 worker_runtime=(
                     "container" if env.mode is Mode.CONTAINERIZED else "host"
                 ),

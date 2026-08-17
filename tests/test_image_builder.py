@@ -18,7 +18,7 @@ from lightcone.engine.image.errors import (
     ImageBuildError,
     ImageMissingError,
     PodmanUnavailableError,
-)
+)  # noqa: F401  (PodmanUnavailableError used in patch-based tests)
 from lightcone.engine.image.record import (
     BuildRecord,
     read_record,
@@ -57,9 +57,14 @@ class TestRecord:
 
 class TestBuildContext:
     def test_stages_exactly_three_files(self, tmp_path: Path) -> None:
-        """G5 structural guarantee: no code path admits a fourth file."""
+        """G5 structural guarantee: no code path admits a fourth file —
+        and the staged bytes are exactly the bytes the tag hashed."""
+        from lightcone.engine.image.identity import EnvInputs
+
         project = make_project(tmp_path / "proj")
-        ctx = BuildContext.from_project(project, "FROM x\n")
+        ctx = BuildContext(
+            containerfile_text="FROM x\n", inputs=EnvInputs.read(project)
+        )
         staged = tmp_path / "staged"
         containerfile = ctx.stage(staged)
         assert sorted(p.name for p in staged.iterdir()) == [
@@ -178,17 +183,11 @@ class TestImageStatus:
 
 class TestPodmanBuilderErrors:
     def _builder(self) -> PodmanBuilder:
-        with patch(
-            "lightcone.engine.image.builder_podman.shutil.which",
-            return_value="/usr/bin/podman",
-        ):
+        with patch("shutil.which", return_value="/usr/bin/podman"):
             return PodmanBuilder()
 
     def test_missing_podman(self) -> None:
-        with patch(
-            "lightcone.engine.image.builder_podman.shutil.which",
-            return_value=None,
-        ):
+        with patch("shutil.which", return_value=None):
             with pytest.raises(PodmanUnavailableError, match="podman.io"):
                 PodmanBuilder()
 
@@ -220,9 +219,13 @@ class TestPodmanBuilderErrors:
         assert "line 0" not in str(exc.value)
 
     def test_build_argv(self, tmp_path: Path) -> None:
+        from lightcone.engine.image.identity import EnvInputs
+
         b = self._builder()
         project = make_project(tmp_path / "proj")
-        ctx = BuildContext.from_project(project, "FROM scratch\n")
+        ctx = BuildContext(
+            containerfile_text="FROM scratch\n", inputs=EnvInputs.read(project)
+        )
         calls: list[list[str]] = []
 
         def fake_run(cmd, **kwargs):

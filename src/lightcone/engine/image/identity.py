@@ -20,6 +20,7 @@ from pathlib import Path
 
 from lightcone.engine.image.errors import DeclarationError
 from lightcone.engine.image.render import RenderedContainerfile
+from lightcone.engine.manifest import frame
 
 TAG_PREFIX = "lc-env-"
 
@@ -47,18 +48,9 @@ class EnvInputs:
         )
 
 
-def _frame(h: hashlib._Hash, label: str, data: bytes) -> None:
-    """Length-framed update — stops boundary-shifting collisions."""
-    h.update(label.encode("utf-8"))
-    h.update(b"\0")
-    h.update(str(len(data)).encode("ascii"))
-    h.update(b"\0")
-    h.update(data)
-
-
 def compute_tag(rendered: RenderedContainerfile, inputs: EnvInputs) -> str:
     h = hashlib.sha256()
-    _frame(h, "containerfile", rendered.text.encode("utf-8"))
-    _frame(h, "pyproject", inputs.pyproject_bytes)
-    _frame(h, "uv.lock", inputs.uv_lock_bytes)
+    frame(h, "containerfile", rendered.text.encode("utf-8"))
+    frame(h, "pyproject", inputs.pyproject_bytes)
+    frame(h, "uv.lock", inputs.uv_lock_bytes)
     return f"{TAG_PREFIX}{h.hexdigest()[:16]}"

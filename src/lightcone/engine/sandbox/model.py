@@ -26,9 +26,6 @@ class SandboxPolicy:
     #: None ⇔ the allowlist did not apply (in-container: the image
     #: contents are the exec set).
     exec_allowlist_version: int | None
-    #: Allowlist names that did not resolve on this host (surfaced by
-    #: --sandbox-debug; never fatal).
-    unresolved_utilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

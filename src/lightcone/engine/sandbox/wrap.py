@@ -15,9 +15,18 @@ holds even through uv's spawn chain; the direct exec makes it moot.)
 """
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
+from lightcone._sandbox_exec import (
+    SANDBOX_FD_ENV,
+    SANDBOX_MODE_ENV,
+    SANDBOX_PROFILE_ENV,
+)
 from lightcone.engine.sandbox.model import (
     SandboxCapability,
     SandboxPolicy,
@@ -67,8 +76,8 @@ def wrap_argv(
             argv=argv,
             pass_fds=(fd,),
             env={
-                "LC_SANDBOX_MODE": "landlock",
-                "LC_SANDBOX_FD": str(fd),
+                SANDBOX_MODE_ENV: "landlock",
+                SANDBOX_FD_ENV: str(fd),
                 **policy.env,
             },
             close_after_spawn=(fd,),
@@ -86,8 +95,8 @@ def wrap_argv(
             argv=argv,
             pass_fds=(),
             env={
-                "LC_SANDBOX_MODE": "seatbelt",
-                "LC_SANDBOX_PROFILE": profile_path,
+                SANDBOX_MODE_ENV: "seatbelt",
+                SANDBOX_PROFILE_ENV: profile_path,
                 **policy.env,
             },
         )
@@ -95,8 +104,41 @@ def wrap_argv(
     return WrappedCommand(
         argv=argv,
         pass_fds=(),
-        env={"LC_SANDBOX_MODE": "none", **policy.env},
+        env={SANDBOX_MODE_ENV: "none", **policy.env},
     )
+
+
+def run_wrapped(
+    wrapped: WrappedCommand,
+    policy: SandboxPolicy,
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    capture: bool,
+) -> subprocess.CompletedProcess[str]:
+    """Spawn a wrapped exec and uphold its lifecycle invariants — close
+    the ruleset FD after spawn, reclaim the per-recipe HOME — in the one
+    place the rule path and the probe path share. With ``capture=False``
+    stdio is inherited (interactive probes/shells) and the returned
+    process carries no output.
+    """
+    try:
+        return subprocess.run(
+            list(wrapped.argv),
+            capture_output=capture,
+            text=True,
+            check=False,
+            cwd=cwd,
+            env={**env, **wrapped.env},
+            pass_fds=wrapped.pass_fds,
+        )
+    finally:
+        for fd in wrapped.close_after_spawn:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        shutil.rmtree(policy.tmp_home, ignore_errors=True)
 
 
 def _build_ruleset(policy: SandboxPolicy) -> int:

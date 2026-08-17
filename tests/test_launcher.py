@@ -172,3 +172,16 @@ class TestDelegation:
         err = capsys.readouterr().err
         assert "uv lock" in err
         assert "Traceback" not in err
+
+
+def test_tool_env_verbs_and_click_commands_agree() -> None:
+    """Parity pin: every Click command is either a tool-env verb or an
+    intentionally delegated one. A new command added to commands.py
+    without a routing decision here would delegate by default — into a
+    project-locked engine that may not know the verb, a confusing
+    failure far from its cause. (The launcher deliberately never
+    imports commands.py — this test is the link.)"""
+    from lightcone.cli.commands import main as click_main
+
+    delegated = {"materialize", "run"}
+    assert set(click_main.commands) == TOOL_ENV_VERBS | delegated

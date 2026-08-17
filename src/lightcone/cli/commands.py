@@ -98,9 +98,10 @@ def _assert_inside_image_for_containerized(mode: object) -> None:
     declared environment and record provenance that misrepresents what
     ran — refuse rather than pretend.
     """
+    from lightcone.engine.contract import in_container
     from lightcone.engine.environment import Mode
 
-    if mode is Mode.CONTAINERIZED and os.environ.get("LC_WORKER_RUNTIME") != "container":
+    if mode is Mode.CONTAINERIZED and not in_container():
         raise click.ClickException(
             "containerized projects execute inside the environment image "
             "— invoke `lc` normally (the launcher delegates into the "
@@ -707,10 +708,11 @@ def materialize(
             f"[yellow]environment changed:[/yellow] {n_stale} materialized "
             "output(s) are now stale"
         )
-    if groups := scan_lock(project).non_default_groups:
+    scan = scan_lock(project)
+    if scan.non_default_groups:
         console.print(
             f"[dim]note: non-default dependency group(s) "
-            f"{', '.join(groups)} are outside lc's guarantees[/dim]"
+            f"{', '.join(scan.non_default_groups)} are outside lc's guarantees[/dim]"
         )
 
     # Resolve scratch and prepare per-run directories before anything
@@ -722,14 +724,12 @@ def materialize(
     if verbose:
         console.print(f"[dim]Scratch root:[/dim] {resolve_scratch_root(project)}")
 
-    snakefile_path, _cfg_path = generate(project, universes=universes, env=env)
+    snakefile_path, _cfg_path = generate(
+        project, universes=universes, env=env, scan=scan
+    )
 
-    targets: list[str] = []
-    if outputs:
-        for o in outputs:
-            for u in universes:
-                targets.append(_target_for(project, o, u))
     # If no specific targets, pass nothing → snakemake runs `rule all`.
+    targets = _targets_for(project, outputs, universes) if outputs else []
 
     n = str(jobs or os.cpu_count() or 1)
     # Snakemake requires ``--cores`` to bound per-rule CPU; the dask
@@ -761,7 +761,6 @@ def materialize(
     with cluster_for_run(
         verbose=verbose,
         local_directory=str(rundirs.dask_local),
-        max_workers=int(n),
     ) as cluster_env:
         env_vars = {**os.environ, **cluster_env}
         # Per-run sandbox flags travel to workers via env, not cfg — a
@@ -906,12 +905,15 @@ def _build_snakemake_cmd(
     return cmd
 
 
-def _target_for(project: Path, output_id: str, universe: str) -> str:
-    """Translate an output id into a Snakemake target path (the manifest).
+def _targets_for(
+    project: Path, output_ids: tuple[str, ...], universes: list[str]
+) -> list[str]:
+    """Translate output ids into Snakemake target paths (the manifests).
 
-    Accepts either a bare ``output_id`` (root-level or unique sub-analysis
-    output) or a qualified ``analysis_id.output_id`` to disambiguate when
-    the same id appears in multiple sub-analyses.
+    Accepts bare ``output_id``s (root-level or unique sub-analysis
+    outputs) or qualified ``analysis_id.output_id`` to disambiguate when
+    the same id appears in multiple sub-analyses. The spec is parsed
+    once; matching is universe-independent, only the paths expand.
     """
     from astra.helpers import load_yaml, resolve_analysis_tree
 
@@ -919,51 +921,42 @@ def _target_for(project: Path, output_id: str, universe: str) -> str:
     from lightcone.engine.tree import collect_tree_outputs, resolve_output_path
 
     spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
-    matches = []
-    for to in collect_tree_outputs(spec):
-        if to.output_def.get("recipe") is None:
-            continue
-        qualified = (
-            f"{to.analysis_id}.{to.output_id}" if to.analysis_id else to.output_id
-        )
-        if qualified == output_id or to.output_id == output_id:
-            matches.append((qualified, to))
+    tree_outputs = [
+        to
+        for to in collect_tree_outputs(spec)
+        if to.output_def.get("recipe") is not None
+    ]
 
-    if not matches:
-        raise click.ClickException(
-            f"Output '{output_id}' not found in astra.yaml or has no recipe."
-        )
-    if len(matches) > 1:
-        opts = ", ".join(q for q, _ in matches)
-        raise click.ClickException(
-            f"Output '{output_id}' is ambiguous; qualify it as one of: {opts}"
-        )
-
-    _, to = matches[0]
-    target = (
-        resolve_output_path(project, to, universe) / to.output_id / MANIFEST_FILENAME
-    )
-    return str(target.relative_to(project))
+    targets: list[str] = []
+    for output_id in output_ids:
+        matches = [
+            to
+            for to in tree_outputs
+            if output_id in (to.qualified_id, to.output_id)
+        ]
+        if not matches:
+            raise click.ClickException(
+                f"Output '{output_id}' not found in astra.yaml or has no recipe."
+            )
+        if len(matches) > 1:
+            opts = ", ".join(to.qualified_id for to in matches)
+            raise click.ClickException(
+                f"Output '{output_id}' is ambiguous; qualify it as one of: {opts}"
+            )
+        (to,) = matches
+        for universe in universes:
+            target = (
+                resolve_output_path(project, to, universe)
+                / to.output_id
+                / MANIFEST_FILENAME
+            )
+            targets.append(str(target.relative_to(project)))
+    return targets
 
 
 # =============================================================================
 # lc run — the probe verb
 # =============================================================================
-
-
-def _declared_output_ids(project: Path) -> set[str]:
-    """All declared output ids, bare and ``analysis.output``-qualified."""
-    from astra.helpers import load_yaml, resolve_analysis_tree
-
-    from lightcone.engine.tree import collect_tree_outputs
-
-    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
-    ids: set[str] = set()
-    for to in collect_tree_outputs(spec):
-        ids.add(to.output_id)
-        if to.analysis_id:
-            ids.add(f"{to.analysis_id}.{to.output_id}")
-    return ids
 
 
 @main.command(context_settings={"ignore_unknown_options": True})
@@ -987,13 +980,22 @@ def run(no_sandbox: bool, sandbox_debug: bool, cmd: tuple[str, ...]) -> None:
     ``lc materialize`` for that. With no CMD, opens a shell in the
     recipe environment.
     """
+    from astra.helpers import load_yaml, resolve_analysis_tree
+
+    from lightcone.engine.tree import collect_tree_outputs
+
     project = _project_root()
+    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
+    tree_outputs = collect_tree_outputs(spec)
 
     # Rename guard (v6 reassigned `lc run` from pipeline execution to
     # probing): a first argument naming a declared output errors before
     # any exec — silently exec'ing `best_fit` as a command would be a
     # far worse failure mode than a pointed redirect.
-    if cmd and not cmd[0].startswith("-") and cmd[0] in _declared_output_ids(project):
+    declared_ids = {to.output_id for to in tree_outputs} | {
+        to.qualified_id for to in tree_outputs
+    }
+    if cmd and not cmd[0].startswith("-") and cmd[0] in declared_ids:
         raise click.ClickException(
             "outputs are materialized, not run — did you mean: "
             f"`lc materialize {cmd[0]}`?"
@@ -1023,12 +1025,12 @@ def run(no_sandbox: bool, sandbox_debug: bool, cmd: tuple[str, ...]) -> None:
     # the project plus the union of declared external inputs, write
     # scope is the tmp scope only (never in-tree). uv stays trusted
     # plumbing outside the boundary; the shim restricts, then execs CMD.
-    import shutil as _shutil
-
     from lightcone.engine.boundary import ExecScope
+    from lightcone.engine.contract import recipe_env_prefix
+    from lightcone.engine.image.mounts import external_input_paths
     from lightcone.engine.sandbox.policy import build_policy
     from lightcone.engine.sandbox.probe import probe as _capability_probe
-    from lightcone.engine.sandbox.wrap import wrap_argv
+    from lightcone.engine.sandbox.wrap import run_wrapped, wrap_argv
 
     if sandbox_debug:
         console.print("[dim]opening a shell inside the sandbox[/dim]")
@@ -1037,10 +1039,10 @@ def run(no_sandbox: bool, sandbox_debug: bool, cmd: tuple[str, ...]) -> None:
     scope = ExecScope(
         project_root=project,
         output_dir=None,
-        read_paths=_external_inputs(project),
+        read_paths=external_input_paths(project, spec),
     )
     capability = _capability_probe()
-    policy = build_policy(scope, env_prefix=project / ".venv")
+    policy = build_policy(scope, env_prefix=recipe_env_prefix(project))
     wrapped = wrap_argv(
         tuple(cmd),
         policy,
@@ -1050,29 +1052,10 @@ def run(no_sandbox: bool, sandbox_debug: bool, cmd: tuple[str, ...]) -> None:
             "--project", str(project), "--", "python",
         ),
     )
-    try:
-        proc = subprocess.run(
-            list(wrapped.argv),
-            cwd=project,
-            env={**os.environ, **wrapped.env},
-            pass_fds=wrapped.pass_fds,
-        )
-    finally:
-        for fd in wrapped.close_after_spawn:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        _shutil.rmtree(policy.tmp_home, ignore_errors=True)
-    sys.exit(proc.returncode)
-
-
-def _external_inputs(project: Path) -> tuple[Path, ...]:
-    """Union of resolved external input paths — a probe has no output,
-    so its read allowlist is every declared input."""
-    from lightcone.engine.image.mounts import external_input_paths
-
-    return external_input_paths(project)
+    result = run_wrapped(
+        wrapped, policy, cwd=project, env=dict(os.environ), capture=False
+    )
+    sys.exit(result.returncode)
 
 
 # =============================================================================
@@ -1090,12 +1073,21 @@ def _external_inputs(project: Path) -> tuple[Path, ...]:
 )
 def status(universe: str | None, as_json: bool) -> None:
     """Report materialization status for every declared output."""
+    from astra.helpers import load_yaml, resolve_analysis_tree
+
     from lightcone.engine.snakefile import discover_universes
-    from lightcone.engine.status import env_blast_radius, get_output_status
+    from lightcone.engine.status import get_output_status
 
     project = _project_root()
     env = _load_env(project)
     universes = [universe] if universe else discover_universes(project)
+    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
+
+    # One walk serves display, JSON, and the blast-radius count alike.
+    statuses = {
+        u: list(get_output_status(project, universe_id=u, env=env, spec=spec))
+        for u in universes
+    }
 
     if as_json:
         payload = {
@@ -1111,7 +1103,7 @@ def status(universe: str | None, as_json: bool) -> None:
                             "status": s.status,
                             "recipe_command": s.recipe_command,
                         }
-                        for s in get_output_status(project, universe_id=u, env=env)
+                        for s in statuses[u]
                     ],
                 }
                 for u in universes
@@ -1124,12 +1116,19 @@ def status(universe: str | None, as_json: bool) -> None:
 
     for u in universes:
         console.print(f"\n[bold]Universe[/bold] [cyan]{u}[/cyan]")
-        for s in get_output_status(project, universe_id=u, env=env):
+        for s in statuses[u]:
             label = _status_label(s.status)
             scope = f"[dim]{s.analysis_id}.[/dim]" if s.analysis_id else ""
             console.print(f"  {label}  {scope}{s.output_id}")
 
-    if (n_stale := env_blast_radius(project, universes=universes, env=env)) > 0:
+    n_stale = sum(
+        1
+        for per_universe in statuses.values()
+        for s in per_universe
+        if s.manifest is not None
+        and s.manifest.get("env_version") not in (None, env.env_version)
+    )
+    if n_stale > 0:
         console.print(
             f"\n[yellow]environment changed:[/yellow] {n_stale} materialized "
             "output(s) are now stale"
@@ -1188,16 +1187,19 @@ def _status_label(s: str) -> str:
 @click.option("--universe", "-u", default=None)
 def verify(universe: str | None) -> None:
     """Validate the provenance chain by recomputing hashes."""
+    from astra.helpers import load_yaml, resolve_analysis_tree
+
     from lightcone.engine.snakefile import discover_universes
     from lightcone.engine.verify import verify_outputs
 
     project = _project_root()
     universes = [universe] if universe else discover_universes(project)
+    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
 
     failed = 0
     for u in universes:
         console.print(f"\n[bold]Universe[/bold] [cyan]{u}[/cyan]")
-        for r in verify_outputs(project, universe_id=u):
+        for r in verify_outputs(project, universe_id=u, spec=spec):
             notes = f"  [dim]({', '.join(r.notes)})[/dim]" if r.notes else ""
             if r.passed:
                 console.print(f"  [green]✓ ok[/green]    {r.output_id}{notes}")

@@ -53,10 +53,18 @@ class MachinePreflightError(ImageError):
 
 
 class ImageMissingError(ImageError):
-    """The pinned image tag is absent from the local store. The message
+    """The pinned image is absent from the local store. The message
     embeds the exact ``lc build`` command — ``lc run`` never builds."""
 
 
-class DigestMismatchError(ImageError):
-    """The tag resolves to a different image than the build record —
-    a loud error, never a silent substitution."""
+def require_podman(podman: str = "podman") -> None:
+    """One podman-availability gate for builder and runtime alike."""
+    import shutil
+
+    if shutil.which(podman) is None:
+        raise PodmanUnavailableError(
+            "podman is not on PATH — containerized projects build and "
+            "execute inside their environment image. Install podman "
+            "(https://podman.io/docs/installation); `lc status` shows "
+            "this host's readiness."
+        )

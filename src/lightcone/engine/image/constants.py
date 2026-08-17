@@ -22,6 +22,8 @@ pinning.
 """
 from __future__ import annotations
 
+from lightcone.engine.uv_env import OFFLINE_OVERLAY as _OFFLINE_OVERLAY
+
 #: Default base image (used when ``[tool.lightcone.image]`` declares no
 #: ``base``). Digest is the manifest-LIST digest — one spelling covers
 #: amd64 and arm64.
@@ -63,9 +65,8 @@ EXIT_NO_APT = 44
 
 #: The offline overlay baked into the image's FINAL stage only — the
 #: build's own ``uv sync`` layer must keep network (spec §11 step 6;
-#: ordering pinned by golden tests).
-OFFLINE_ENV = {
-    "UV_OFFLINE": "1",
-    "UV_PYTHON_DOWNLOADS": "never",
-    "UV_NO_SYNC": "1",
-}
+#: ordering pinned by golden tests). Derived from the worker-exec
+#: overlay so the direct and containerized offline postures can never
+#: drift; ``UV_NO_SYNC`` is image-only (nothing inside an image ever
+#: syncs).
+OFFLINE_ENV = {**_OFFLINE_OVERLAY, "UV_NO_SYNC": "1"}

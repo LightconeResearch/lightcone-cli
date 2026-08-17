@@ -15,12 +15,8 @@ import subprocess
 from functools import cache
 
 from lightcone.engine.boundary import SandboxAttestation
+from lightcone.engine.contract import CONTAINER_NETWORK_ENV, in_container
 from lightcone.engine.sandbox.model import SandboxCapability
-
-#: Set by the containerized run wrapper — the honest source for the
-#: composed mechanism (podman / podman+landlock) and network posture.
-WORKER_RUNTIME_ENV = "LC_WORKER_RUNTIME"
-CONTAINER_NETWORK_ENV = "LC_CONTAINER_NETWORK"
 
 
 @cache
@@ -77,11 +73,11 @@ def compose_attestation(
     ``denied``; a container run under ``--net=none`` ⇒ ``denied``;
     no restriction applied ⇒ ``allowed``.
     """
-    in_container = os.environ.get(WORKER_RUNTIME_ENV) == "container"
+    inside = in_container()
     container_network = os.environ.get(CONTAINER_NETWORK_ENV)
 
     if disabled or capability.kind == "none":
-        if in_container:
+        if inside:
             # The mount set still bounds the world even without an
             # in-container Landlock tier.
             return SandboxAttestation(
@@ -92,8 +88,8 @@ def compose_attestation(
         return SandboxAttestation(mechanism="none", fs="open", network="allowed")
 
     if capability.kind == "landlock":
-        mechanism = "podman+landlock" if in_container else "landlock"
-        if in_container:
+        mechanism = "podman+landlock" if inside else "landlock"
+        if inside:
             network = "denied" if container_network == "none" else "allowed"
         else:
             network = "unenforced"

@@ -161,12 +161,3 @@ def add_path_rule(ruleset_fd: int, path: Path, access: int) -> None:
     finally:
         os.close(parent_fd)
 
-
-def restrict_self(ruleset_fd: int) -> None:
-    """Apply the ruleset to the calling process (test helper — the
-    production restrict step happens in the exec shim)."""
-    libc = _libc()
-    if libc.prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
-        raise OSError(ctypes.get_errno(), "prctl(PR_SET_NO_NEW_PRIVS) failed")
-    if libc.syscall(SYS_LANDLOCK_RESTRICT_SELF, ruleset_fd, 0) != 0:
-        raise OSError(ctypes.get_errno(), "landlock_restrict_self failed")

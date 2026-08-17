@@ -79,10 +79,7 @@ class TestMountSet:
 
 class TestRunArgv:
     def _runtime(self) -> PodmanRuntime:
-        with patch(
-            "lightcone.engine.image.runtime_podman.shutil.which",
-            return_value="/usr/bin/podman",
-        ):
+        with patch("shutil.which", return_value="/usr/bin/podman"):
             return PodmanRuntime()
 
     def _argv(self, tmp_path: Path, **kwargs) -> list[str]:  # type: ignore[no-untyped-def]

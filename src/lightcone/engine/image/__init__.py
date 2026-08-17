@@ -17,21 +17,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lightcone.engine.image.declaration import (
-    EMPTY_CANONICAL_JSON,
-    BaseRef,
-    ImageDeclaration,
-    load_image_declaration,
-)
+from lightcone.engine import lc_version
+from lightcone.engine.image import constants
 from lightcone.engine.image.definition import ImageDefinition
 from lightcone.engine.image.errors import (
-    BaseContractError,
     DeclarationError,
-    DigestMismatchError,
-    ImageBuildError,
     ImageError,
     ImageMissingError,
-    MachinePreflightError,
     PodmanUnavailableError,
 )
 from lightcone.engine.image.identity import EnvInputs, compute_tag
@@ -41,21 +33,24 @@ from lightcone.engine.image.record import (
     snapshot_sha256,
     write_record,
 )
-from lightcone.engine.image.render import RenderedContainerfile, render
+from lightcone.engine.image.render import render
 
 if TYPE_CHECKING:
     from lightcone.engine.environment import EnvironmentSpec
     from lightcone.engine.image.builder import Builder
 
 
-def _project_tag(project: Path, env: EnvironmentSpec) -> str:
+def _definition(env: EnvironmentSpec) -> ImageDefinition:
     if env.image is None:
         raise DeclarationError(
             "direct-mode project has no image — declare "
             "[tool.lightcone.image] to containerize."
         )
-    defn = ImageDefinition.from_project(project, env.image, env_version=env.env_version)
-    return compute_tag(render(defn), EnvInputs.read(project))
+    return ImageDefinition.from_declaration(
+        env.image,
+        env_version=env.env_version,
+        python_version=env.python_version,
+    )
 
 
 def ensure_image(
@@ -71,10 +66,10 @@ def ensure_image(
     from lightcone.engine.image.builder import BuildContext
     from lightcone.engine.image.builder_podman import PodmanBuilder
 
-    assert env.image is not None
-    defn = ImageDefinition.from_project(project, env.image, env_version=env.env_version)
+    defn = _definition(env)
     rendered = render(defn)
-    tag = compute_tag(rendered, EnvInputs.read(project))
+    inputs = EnvInputs.read(project)
+    tag = compute_tag(rendered, inputs)
 
     b = builder or PodmanBuilder()
     existing = read_record(project)
@@ -84,7 +79,7 @@ def ensure_image(
     on_progress(
         f"building {tag} — first run after an environment change; ~minutes"
     )
-    context = BuildContext.from_project(project, rendered.text)
+    context = BuildContext(containerfile_text=rendered.text, inputs=inputs)
     result = b.build(context, tag=tag)
     record = BuildRecord(
         tag=result.tag,
@@ -92,7 +87,7 @@ def ensure_image(
         digest=result.digest,
         platform=result.platform,
         env_version=env.env_version,
-        lc_version=_lc_version(),
+        lc_version=lc_version(),
         base=str(defn.base),
         built_at=datetime.now(UTC).isoformat(timespec="seconds"),
         dpkg_snapshot_sha256=snapshot_sha256(result.dpkg_snapshot_text),
@@ -107,17 +102,17 @@ def resolve_pinned(
     *,
     builder: Builder | None = None,
 ) -> BuildRecord:
-    """Resolve tag → build record for execution, verifying the local
-    store still holds the recorded image. ``lc run`` never builds — a
-    missing image errors with the exact command; a tag that resolves
-    differently than the record is a loud error, never a silent
-    substitution."""
+    """Resolve the current environment to its build record, verifying
+    the local store still holds the recorded image *id* (execution pins
+    by id, so a retagged store can never substitute — the missing-image
+    error is the only failure mode). ``lc run`` never builds — the
+    message embeds the exact command."""
     from lightcone.engine.image.builder_podman import PodmanBuilder
 
-    tag = _project_tag(project, env)
+    tag = compute_tag(render(_definition(env)), EnvInputs.read(project))
     record = read_record(project)
     b = builder or PodmanBuilder()
-    if record is None or record.tag != tag or not b.exists(tag):
+    if record is None or record.tag != tag or not b.exists(record.image_id):
         raise ImageMissingError(
             f"the environment image {tag} is not built — run: lc build"
         )
@@ -140,7 +135,7 @@ def image_status(
     """The ``lc status`` header's image line — offline and local-only
     (reads the build record and the local image store, never the
     network)."""
-    tag = _project_tag(project, env)
+    tag = compute_tag(render(_definition(env)), EnvInputs.read(project))
     record = read_record(project)
     built = False
     if record is not None and record.tag == tag:
@@ -158,38 +153,15 @@ def image_status(
     )
 
 
-def _lc_version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("lightcone-cli")
-    except Exception:
-        return "unknown"
-
-
 __all__ = [
-    "EMPTY_CANONICAL_JSON",
-    "BaseContractError",
-    "BaseRef",
     "BuildRecord",
-    "DeclarationError",
-    "DigestMismatchError",
-    "EnvInputs",
-    "ImageBuildError",
-    "ImageDeclaration",
-    "ImageDefinition",
     "ImageError",
     "ImageMissingError",
     "ImageStatus",
-    "MachinePreflightError",
     "PodmanUnavailableError",
-    "RenderedContainerfile",
-    "compute_tag",
+    "constants",
     "ensure_image",
     "image_status",
-    "load_image_declaration",
     "read_record",
-    "render",
     "resolve_pinned",
-    "write_record",
 ]

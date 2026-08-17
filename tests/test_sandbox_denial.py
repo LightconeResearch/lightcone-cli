@@ -28,7 +28,6 @@ class TestExplainFailure:
             stdout="",
             stderr="bash: line 1: /usr/bin/id: Permission denied",
             policy=_policy(tmp_path),
-            mechanism="landlock",
         )
         joined = "\n".join(lines)
         assert "blocked by lc sandbox" in joined
@@ -54,7 +53,6 @@ class TestExplainFailure:
             stdout="",
             stderr=f"bash: line 1: {target}: Permission denied",
             policy=_policy(tmp_path),
-            mechanism="landlock",
         )
         assert any("r-base-core" in line for line in lines)
 
@@ -66,7 +64,6 @@ class TestExplainFailure:
             stdout=f"PermissionError: [Errno 13] Permission denied: '{data}'",
             stderr="",
             policy=_policy(tmp_path),
-            mechanism="landlock",
         )
         joined = "\n".join(lines)
         assert f"cannot read {data}" in joined
@@ -81,7 +78,6 @@ class TestExplainFailure:
             stdout=f"FileNotFoundError: '{inside}'",
             stderr="",
             policy=policy,
-            mechanism="landlock",
         )
         assert lines == []
 
@@ -92,7 +88,6 @@ class TestExplainFailure:
             stdout="FileNotFoundError: '/no/such/path/anywhere'",
             stderr="",
             policy=_policy(tmp_path),
-            mechanism="landlock",
         )
         assert lines == []
 
@@ -103,7 +98,6 @@ class TestExplainFailure:
             stdout="",
             stderr="bash: line 1: id: command not found",
             policy=_policy(tmp_path),
-            mechanism="landlock",
         )
         assert any("blocked by lc sandbox" in line for line in lines)
 

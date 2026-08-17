@@ -31,13 +31,21 @@ import sys
 
 _SYS_LANDLOCK_RESTRICT_SELF = 446
 _PR_SET_NO_NEW_PRIVS = 38
-_SETUP_FAILURE_EXIT = 97
+
+#: Reserved exit code for sandbox-setup failure (never a recipe's).
+SETUP_FAILURE_EXIT = 97
+
+#: The wrap→shim env contract. Defined here (the shim must stay
+#: stdlib-only) and imported by the engine's wrap layer.
+SANDBOX_MODE_ENV = "LC_SANDBOX_MODE"
+SANDBOX_FD_ENV = "LC_SANDBOX_FD"
+SANDBOX_PROFILE_ENV = "LC_SANDBOX_PROFILE"
 
 
 def _fail(message: str) -> None:
     sys.stderr.write(f"lc sandbox setup failed: {message}\n")
     sys.stderr.flush()
-    raise SystemExit(_SETUP_FAILURE_EXIT)
+    raise SystemExit(SETUP_FAILURE_EXIT)
 
 
 def main() -> None:
@@ -47,22 +55,22 @@ def main() -> None:
     if not argv:
         _fail("no command after --")
 
-    mode = os.environ.pop("LC_SANDBOX_MODE", None)
+    mode = os.environ.pop(SANDBOX_MODE_ENV, None)
     if mode == "landlock":
         _restrict_landlock()
     elif mode == "seatbelt":
         _exec_seatbelt(argv)
         return  # unreachable
     elif mode != "none":
-        _fail(f"unknown LC_SANDBOX_MODE {mode!r}")
+        _fail(f"unknown {SANDBOX_MODE_ENV} {mode!r}")
 
     os.execvp(argv[0], argv)
 
 
 def _restrict_landlock() -> None:
-    fd_str = os.environ.pop("LC_SANDBOX_FD", None)
+    fd_str = os.environ.pop(SANDBOX_FD_ENV, None)
     if fd_str is None:
-        _fail("LC_SANDBOX_FD not set")
+        _fail(f"{SANDBOX_FD_ENV} not set")
     try:
         fd = int(fd_str)  # type: ignore[arg-type]
         os.fstat(fd)
@@ -78,7 +86,7 @@ def _restrict_landlock() -> None:
 
 
 def _exec_seatbelt(argv: list[str]) -> None:
-    profile = os.environ.pop("LC_SANDBOX_PROFILE", None)
+    profile = os.environ.pop(SANDBOX_PROFILE_ENV, None)
     if not profile or not os.path.isfile(profile):
         _fail(f"seatbelt profile missing: {profile!r}")
         return

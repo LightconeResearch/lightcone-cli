@@ -11,7 +11,6 @@ tail.
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import tempfile
 from collections import deque
@@ -23,7 +22,7 @@ from lightcone.engine.image.errors import (
     AptPackageNotFoundError,
     BaseContractError,
     ImageBuildError,
-    PodmanUnavailableError,
+    require_podman,
 )
 
 _APT_NOT_FOUND_RE = re.compile(r"E: Unable to locate package (\S+)")
@@ -52,13 +51,8 @@ _CONTRACT_MESSAGES = {
 
 class PodmanBuilder:
     def __init__(self, podman: str = "podman") -> None:
+        require_podman(podman)
         self._podman = podman
-        if shutil.which(podman) is None:
-            raise PodmanUnavailableError(
-                "podman is not on PATH — the container hatch needs rootless "
-                "podman. Install it (https://podman.io/docs/installation); "
-                "`lc status` shows this host's readiness."
-            )
 
     def exists(self, tag: str) -> bool:
         proc = subprocess.run(

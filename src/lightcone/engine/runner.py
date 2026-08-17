@@ -33,7 +33,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from lightcone.engine.contract import (
+    IMAGE_DIGEST_ENV,
+    NO_SANDBOX_ENV,
+    REQUIRE_SANDBOX_ENV,
+)
 
 #: Lines from the runner are prefixed with this so ``_run_shell`` in the
 #: dask executor can distinguish them from snakemake/dask noise. Chosen
@@ -41,15 +47,6 @@ from typing import Any
 #: column-0 anchored, distinctive). Kept short to minimise capture cost.
 SENTINEL = "__LCSTREAM__::"
 
-#: Per-run sandbox-flag channel, set by ``lc materialize`` for every
-#: worker (env, not cfg: run flags must not perturb the
-#: content-addressed job identity).
-NO_SANDBOX_ENV = "LC_NO_SANDBOX"
-REQUIRE_SANDBOX_ENV = "LC_REQUIRE_SANDBOX"
-
-#: Containerized-mode identity pins (set by the podman run wrapper).
-IMAGE_DIGEST_ENV = "LC_IMAGE_DIGEST"
-_BAKED_IDENTITY_PATH = "/opt/lc/identity.json"
 
 
 def _emit(line: str = "") -> None:
@@ -87,11 +84,13 @@ def _gate_env(root: Path, expected: str, *, when: str) -> None:
 def _env_check(root: Path, job: Any) -> None:
     """Step 2: verify the execution environment matches the job's pins."""
     if job.worker_runtime == "container":
+        from lightcone.engine.image.constants import IDENTITY_PATH
+
         try:
-            baked = json.loads(Path(_BAKED_IDENTITY_PATH).read_text())
+            baked = json.loads(Path(IDENTITY_PATH).read_text())
         except (OSError, json.JSONDecodeError) as e:
             raise RuleGateError(
-                f"containerized job outside an lc image ({_BAKED_IDENTITY_PATH} "
+                f"containerized job outside an lc image ({IDENTITY_PATH} "
                 f"unreadable: {e})"
             ) from e
         if baked.get("env_version") != job.env_version:
@@ -177,8 +176,6 @@ def run_rule(
     except RuleGateError as e:
         _emit(f"  \033[31m{e}\033[0m")
         raise
-
-    from typing import Literal
 
     sandbox_mode: Literal["on", "off"] = (
         "off" if os.environ.get(NO_SANDBOX_ENV) == "1" else "on"

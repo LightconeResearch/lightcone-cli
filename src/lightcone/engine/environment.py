@@ -18,7 +18,6 @@ files plus the closed ``[tool.lightcone]`` surface:
 from __future__ import annotations
 
 import hashlib
-import json
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
@@ -30,6 +29,7 @@ from lightcone.engine.image.declaration import (
     ImageDeclaration,
     load_image_declaration,
 )
+from lightcone.engine.manifest import canonical_json, frame
 
 
 class ProjectEnvironmentError(Exception):
@@ -73,12 +73,11 @@ class InstallSettings:
     def from_tool_uv(cls, tool_uv: dict[str, Any]) -> InstallSettings:
         pairs = []
         for key in _INSTALL_SETTING_KEYS:
-            value = tool_uv.get(key)
-            pairs.append((key, json.dumps(value, sort_keys=True, separators=(",", ":"))))
+            pairs.append((key, canonical_json(tool_uv.get(key))))
         return cls(values=tuple(pairs))
 
     def canonical_json(self) -> str:
-        return json.dumps(dict(self.values), sort_keys=True, separators=(",", ":"))
+        return canonical_json(dict(self.values))
 
 
 @dataclass(frozen=True)
@@ -88,9 +87,7 @@ class EnvironmentSpec:
     root: Path
     mode: Mode
     python_version: str
-    packaged: bool  # [build-system] present in pyproject
     image: ImageDeclaration | None  # None ⇔ direct mode
-    install_settings: InstallSettings
     env_version: str  # "sha256:<hex>"
     writable_project_outputs: frozenset[str]
 
@@ -135,6 +132,8 @@ def load_environment(root: Path) -> EnvironmentSpec:
             "part of the environment identity. Run `lc init` to scaffold it."
         )
     python_version = pv_path.read_text().strip()
+    if not python_version:
+        raise ProjectEnvironmentError(f"{pv_path}: empty .python-version file.")
 
     if not (root / "uv.lock").is_file():
         raise ProjectEnvironmentError(
@@ -152,7 +151,7 @@ def load_environment(root: Path) -> EnvironmentSpec:
             f"{', '.join(sorted(_LIGHTCONE_KEYS))}."
         )
 
-    image = load_image_declaration(root)
+    image = load_image_declaration(root, pyproject)
     mode = Mode.CONTAINERIZED if image is not None else Mode.DIRECT
     packaged = "build-system" in pyproject
 
@@ -180,9 +179,7 @@ def load_environment(root: Path) -> EnvironmentSpec:
         root=root,
         mode=mode,
         python_version=python_version,
-        packaged=packaged,
         image=image,
-        install_settings=install_settings,
         env_version=env_version,
         writable_project_outputs=_writable_project_outputs(tool_lightcone),
     )
@@ -207,15 +204,6 @@ def _writable_project_outputs(tool_lightcone: dict[str, Any]) -> frozenset[str]:
     return frozenset(raw)
 
 
-def _frame(h: hashlib._Hash, label: str, data: bytes) -> None:
-    """Length-framed update — prevents boundary-shifting collisions."""
-    h.update(label.encode("utf-8"))
-    h.update(b"\0")
-    h.update(str(len(data)).encode("ascii"))
-    h.update(b"\0")
-    h.update(data)
-
-
 def compute_env_version(
     *,
     uv_lock_bytes: bytes,
@@ -231,13 +219,13 @@ def compute_env_version(
     hashes the empty image shape and a null extra.
     """
     h = hashlib.sha256()
-    _frame(h, "uv.lock", uv_lock_bytes)
-    _frame(h, "python-version", python_version_bytes)
-    _frame(h, "install-settings", install_settings.canonical_json().encode("utf-8"))
+    frame(h, "uv.lock", uv_lock_bytes)
+    frame(h, "python-version", python_version_bytes)
+    frame(h, "install-settings", install_settings.canonical_json().encode("utf-8"))
     image_json = image.canonical_json() if image else EMPTY_CANONICAL_JSON
-    _frame(h, "image", image_json.encode("utf-8"))
+    frame(h, "image", image_json.encode("utf-8"))
     extra = image.extra_sha256 if image and image.extra_sha256 else "null"
-    _frame(h, "containerfile-extra", extra.encode("utf-8"))
+    frame(h, "containerfile-extra", extra.encode("utf-8"))
     return f"sha256:{h.hexdigest()}"
 
 

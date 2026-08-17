@@ -20,13 +20,13 @@ the generated Containerfile.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 from lightcone.engine.image.errors import DeclarationError
+from lightcone.engine.manifest import canonical_json
 
 EXTRA_FILENAME = "Containerfile.extra"
 
@@ -81,39 +81,44 @@ class ImageDeclaration:
         the ``env_version`` formula stays one formula (spec §3) —
         callers with no declaration use :data:`EMPTY_CANONICAL_JSON`.
         """
-        return json.dumps(
+        return canonical_json(
             {
                 "base": str(self.base) if self.base else None,
                 "system-packages": list(self.system_packages),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
+            }
         )
 
 
 #: What a direct-mode project hashes in the image-declaration slot.
-EMPTY_CANONICAL_JSON = json.dumps(
-    {"base": None, "system-packages": []}, sort_keys=True, separators=(",", ":")
-)
+EMPTY_CANONICAL_JSON = canonical_json({"base": None, "system-packages": []})
 
 
-def load_image_declaration(project: Path) -> ImageDeclaration | None:
+def load_image_declaration(
+    project: Path, pyproject: dict[str, object] | None = None
+) -> ImageDeclaration | None:
     """Parse the project's image declaration; ``None`` ⇔ direct mode.
 
     Containerized mode is derived, never configured: the presence of
     the ``[tool.lightcone.image]`` table (even empty) OR a
-    ``Containerfile.extra`` file is the escalation.
+    ``Containerfile.extra`` file is the escalation. *pyproject* accepts
+    an already-parsed ``pyproject.toml`` dict (the environment loader
+    passes its own parse through).
 
     Raises :class:`DeclarationError` on any static violation.
     """
     table: dict[str, object] | None = None
-    pyproject = project / "pyproject.toml"
-    if pyproject.is_file():
-        try:
-            data = tomllib.loads(pyproject.read_text())
-        except tomllib.TOMLDecodeError as e:
-            raise DeclarationError(f"{pyproject}: invalid TOML: {e}") from e
-        raw = data.get("tool", {}).get("lightcone", {}).get("image")
+    if pyproject is None:
+        pyproject_path = project / "pyproject.toml"
+        if pyproject_path.is_file():
+            try:
+                pyproject = tomllib.loads(pyproject_path.read_text())
+            except tomllib.TOMLDecodeError as e:
+                raise DeclarationError(
+                    f"{pyproject_path}: invalid TOML: {e}"
+                ) from e
+    if pyproject is not None:
+        tool = pyproject.get("tool", {})
+        raw = tool.get("lightcone", {}).get("image") if isinstance(tool, dict) else None
         if raw is not None:
             if not isinstance(raw, dict):
                 raise DeclarationError(

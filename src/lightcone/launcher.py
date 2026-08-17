@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 from lightcone.engine import uv_env
+from lightcone.engine.contract import DELEGATED_ENV
 from lightcone.engine.environment import (
     EnvironmentSpec,
     Mode,
@@ -34,8 +35,6 @@ from lightcone.engine.project import find_root
 
 #: Verbs that never delegate.
 TOOL_ENV_VERBS = frozenset({"init", "status", "verify", "build", "export"})
-
-DELEGATED_ENV = "LC_DELEGATED"
 
 
 def _fail(message: str) -> None:

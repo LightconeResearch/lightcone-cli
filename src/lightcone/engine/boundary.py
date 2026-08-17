@@ -2,15 +2,13 @@
 
 ``run_rule`` never runs a recipe directly: it hands the command and its
 declared scope to an :class:`ExecBoundary`. The sandbox layer provides
-the real boundary (Landlock on Linux, Seatbelt on macOS, in-container
-Landlock under podman); until it is wired in, the
-:class:`HostPassthroughBoundary` runs the command bare and attests
-honestly to ``mechanism: none`` — a manifest must never claim
+the implementation (Landlock on Linux, Seatbelt on macOS, in-container
+Landlock under podman); a scope with ``sandbox: "off"`` runs bare and
+attests honestly to ``mechanism: none`` — a manifest must never claim
 enforcement that did not happen.
 """
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -24,7 +22,7 @@ class ExecScope:
     output_dir: Path | None  # None for probes (no in-tree write scope)
     read_paths: tuple[Path, ...]  # declared inputs
     writable_project: bool = False
-    sandbox: Literal["on", "off", "debug"] = "on"
+    sandbox: Literal["on", "off"] = "on"
 
 
 @dataclass(frozen=True)
@@ -81,46 +79,8 @@ class ExecBoundary(Protocol):
         ...
 
 
-class HostPassthroughBoundary:
-    """No enforcement: run the command bare, attest to none."""
-
-    _ATTESTATION = SandboxAttestation(mechanism="none", fs="open", network="allowed")
-
-    def probe(self, scope: ExecScope) -> SandboxAttestation:
-        return self._ATTESTATION
-
-    def execute(
-        self,
-        command: str,
-        scope: ExecScope,
-        env: dict[str, str],
-    ) -> BoundaryResult:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=scope.project_root,
-            env=env,
-        )
-        return BoundaryResult(
-            returncode=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            attestation=self._ATTESTATION,
-        )
-
-    def describe_host(self) -> str:
-        return "none (fs: open)"
-
-
 def get_boundary() -> ExecBoundary:
-    """The active exec boundary: the sandbox layer's implementation.
-
-    (The passthrough survives as the explicit ``sandbox: off`` path and
-    for tests that need enforcement-free execution.)
-    """
+    """The active exec boundary (the sandbox layer's implementation)."""
     from lightcone.engine.sandbox import SandboxExecBoundary
 
     return SandboxExecBoundary()

@@ -22,10 +22,10 @@ from astra.helpers import load_yaml, resolve_analysis_tree
 from lightcone.engine.environment import EnvironmentSpec, load_environment
 from lightcone.engine.manifest import code_version, is_pre_migration, read_manifest
 from lightcone.engine.tree import (
-    TreeOutput,
     collect_tree_outputs,
+    load_universe_decisions,
     resolve_output_path,
-    resolve_universe_decisions,
+    scoped_decisions_for_output,
 )
 
 StatusLiteral = Literal["ok", "stale", "missing", "alias", "pre_migration"]
@@ -42,69 +42,30 @@ class OutputStatus:
     recipe_command: str | None
 
 
-def _decisions_for(
-    tree_output: TreeOutput,
-    universe_decisions: dict[str, Any],
-) -> dict[str, Any]:
-    """Return the decisions visible to a given output for code_version
-    computation.
-
-    ``Output.decisions`` is the explicit provenance contract — the set
-    of decisions whose option choices can change this output. The
-    Snakefile generator hashes only those into ``code_version``; we
-    mirror that scoping here so ``lc status`` stays in sync. Outputs
-    that do not declare decisions hash an empty dict.
-    """
-    declared = tree_output.output_def.get("decisions") or []
-    if not declared:
-        return {}
-    scoped: dict[str, Any] = {}
-    prefix = f"{tree_output.analysis_id}." if tree_output.analysis_id else ""
-    for dec_id in declared:
-        if prefix and (qualified := f"{prefix}{dec_id}") in universe_decisions:
-            scoped[dec_id] = universe_decisions[qualified]
-        elif dec_id in universe_decisions:
-            scoped[dec_id] = universe_decisions[dec_id]
-    return scoped
-
-
-def _load_universe_decisions(
-    project_path: Path,
-    spec: dict[str, Any],
-    universe_id: str,
-) -> dict[str, Any]:
-    """Load merged universe decisions if the file exists; empty dict otherwise.
-
-    Universe files are optional during interactive work, so we tolerate
-    their absence rather than erroring.
-    """
-    universe_yaml = project_path / "universes" / f"{universe_id}.yaml"
-    if not universe_yaml.exists():
-        return {}
-    try:
-        return resolve_universe_decisions(project_path, spec, universe_id)
-    except (FileNotFoundError, KeyError):
-        return {}
-
-
 def get_output_status(
     project_path: Path,
     *,
     universe_id: str,
     env: EnvironmentSpec | None = None,
+    spec: dict[str, Any] | None = None,
 ) -> Iterator[OutputStatus]:
     """Yield an :class:`OutputStatus` for every declared output in the project.
 
     The recomputed ``code_version`` mirrors the Snakefile generator's
     exactly — both call the one shared
-    :func:`lightcone.engine.manifest.code_version` with the environment's
-    current ``env_version``, so they can never disagree.
+    :func:`lightcone.engine.manifest.code_version` (via the shared
+    decision scoping in :mod:`lightcone.engine.tree`), so they can
+    never disagree. *env* and *spec* are loaded when omitted; callers
+    iterating several universes pass them through to avoid re-parsing
+    per universe.
     """
     if env is None:
         env = load_environment(project_path)
-    spec_path = project_path / "astra.yaml"
-    spec = resolve_analysis_tree(load_yaml(spec_path), project_path)
-    universe_decisions = _load_universe_decisions(project_path, spec, universe_id)
+    if spec is None:
+        spec = resolve_analysis_tree(
+            load_yaml(project_path / "astra.yaml"), project_path
+        )
+    universe_decisions = load_universe_decisions(project_path, spec, universe_id)
 
     for tree_out in collect_tree_outputs(spec):
         out_dir = resolve_output_path(project_path, tree_out, universe_id) / tree_out.output_id
@@ -135,16 +96,15 @@ def get_output_status(
             # stale by materialize.
             status = "pre_migration"
         else:
-            rule_key = (
-                f"{tree_out.analysis_id}.{tree_out.output_id}"
-                if tree_out.analysis_id
-                else tree_out.output_id
-            )
             current_cv = code_version(
                 recipe=recipe_command,
-                decisions=_decisions_for(tree_out, universe_decisions),
+                decisions=scoped_decisions_for_output(
+                    tree_out, universe_decisions
+                ),
                 env_version=env.env_version,
-                writable_project=rule_key in env.writable_project_outputs,
+                writable_project=(
+                    tree_out.qualified_id in env.writable_project_outputs
+                ),
             )
             status = "ok" if manifest.get("code_version") == current_cv else "stale"
 

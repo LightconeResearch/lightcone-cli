@@ -17,11 +17,11 @@ Invariants pinned by golden tests:
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 from lightcone.engine.image import constants
 from lightcone.engine.image.definition import ImageDefinition
+from lightcone.engine.manifest import canonical_json
 
 
 @dataclass(frozen=True)
@@ -114,14 +114,12 @@ def _apt_layer(defn: ImageDefinition) -> str:
 
 
 def _final_stage(defn: ImageDefinition, final_from: str) -> str:
-    identity = json.dumps(
+    identity = canonical_json(
         {
             "env_version": defn.env_version,
             "python_version": defn.python_version,
             "uv_version": defn.uv.version,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
+        }
     )
     offline_env = " ".join(f"{k}={v}" for k, v in constants.OFFLINE_ENV.items())
     path = (
