@@ -11,6 +11,14 @@ except Exception:
 
 
 def main() -> None:
+    import sys
+
+    from lightcone.launcher import maybe_delegate
+
+    # Execs the project-locked engine and never returns when it
+    # delegates; otherwise falls through to normal Click dispatch.
+    maybe_delegate(sys.argv[1:])
+
     from lightcone.cli.commands import main as _main
 
     _main()
