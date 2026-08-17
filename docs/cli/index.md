@@ -1,39 +1,22 @@
-# CLI Reference
+# CLI reference
 
-The `lc` CLI is a thin wrapper around the engine. The user-facing
-surface is small on purpose — `astra.yaml` carries the analysis
-description, and the CLI is the durable, scriptable way to execute
-and audit it.
+Bare `lc <verb>` is the canonical invocation on every machine — no
+activation, no `python -m`, no per-venue spelling. The launcher
+discovers the project (nearest `astra.yaml` walking up), detects the
+mode, converges the environment, and delegates execution verbs to the
+project's own locked engine.
 
-## Global behavior
+| Verb | Runs in | Does |
+|---|---|---|
+| [`lc init`](init.md) | tool env | idempotently converge the project scaffold |
+| [`lc materialize`](materialize.md) | project engine | execute recipes, write manifests |
+| [`lc run`](run.md) | project engine | probe: arbitrary commands in the recipe environment |
+| [`lc status`](status.md) | tool env | offline, manifest-driven status report |
+| [`lc verify`](verify.md) | tool env | recompute hashes, audit the provenance chain |
+| [`lc build`](build.md) | tool env | build the environment image (containerized mode) |
+| [`lc export`](export.md) | tool env | publishable RO-Crate bundles |
 
-- `~/.lightcone/config.yaml` is created automatically on first use of
-  any `lc` command. You do not need to create it manually.
-- All commands except `init` walk up from the cwd looking for
-  `astra.yaml`. If none is found, the command errors out.
-
-## Commands
-
-| Command | Purpose |
-|---------|---------|
-| [`lc init`](init.md) | Scaffold a new ASTRA project (`astra.yaml`, `Containerfile`, `.lightcone/`, MyST report template, optional venv & git). |
-| [`lc run`](run.md) | Generate the Snakefile and dispatch through Snakemake + Dask. |
-| [`lc build`](build.md) | Build container images declared in `astra.yaml`. |
-| [`lc status`](status.md) | Manifest-driven status report. No Snakemake import needed. |
-| [`lc verify`](verify.md) | Recompute hashes, walk the input chain, surface tampering. |
-| [`lc export`](export.md) | Emit interoperable bundles (Workflow Run RO-Crate) for publication. |
-
-## Global options
-
-```text
-lc [OPTIONS] COMMAND [ARGS]...
-
-Options:
-  --version  Show the version and exit.
-  --help     Show this message and exit.
-```
-
-## Removed commands
-
-For historical context: `lc dev`, `lc setup`, `lc target`, and `lc update` no
-longer exist as explicit commands. See the removal pages for details.
+"Tool env" verbs work before a lock exists (or offline on a frozen
+archive); execution verbs run from the engine version pinned inside the
+project's own `uv.lock` — in containerized mode, from inside the
+project image.

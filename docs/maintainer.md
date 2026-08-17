@@ -9,14 +9,12 @@ If you're looking for the user-facing docs, the
 
 ## What this covers
 
-- [Architecture](architecture.md) — the three subsystems (Snakefile generation,
-  manifest layer, cluster management) and the invariants that hold them together.
-- [CLI Reference](cli/index.md) — every `lc` command: flags, options, and the
-  exact Snakemake invocation each one triggers.
-- [Python API](api/index.md) — the `lightcone.engine.*` modules: public
-  signatures, common entry points, and module responsibilities.
-- [HPC & SLURM](hpc/index.md) — how the Dask cluster manager adapts to local,
-  SLURM, and external schedulers.
+- [Architecture](architecture.md) — the environment, integrity, and
+  hermeticity layers, the image hatch, and the invariants that hold
+  them together.
+- [CLI Reference](cli/index.md) — every `lc` command: flags, options,
+  and what each one actually does.
+- [Python API](api/index.md) — the `lightcone.*` module map.
 - [Contributing](contributing/setup.md) — clone, install, run the test suite,
   lint, and build the docs locally.
 

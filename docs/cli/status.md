@@ -1,67 +1,37 @@
 # lc status
 
-Manifest-driven status report for every output declared in
-`astra.yaml`.
+```text
+lc status [-u UNIVERSE] [--json]
+```
 
-## Synopsis
+Report materialization status for every declared output — **offline and
+local-only** by invariant: it reads manifests, `pyproject.toml`, and
+the local image record; never the network, never Snakemake state. A
+fresh clone of a finished project reports its state with no setup.
+
+## The header
+
+Three lines answer the questions nothing else surfaces:
 
 ```text
-lc status [OPTIONS]
+mode:    containerized (3 system packages)        # or: direct
+image:   lc-env-9f2c81d44a1b03e7 — built (sha256:…)   # or: needs build
+sandbox: landlock (fs: declared, network: unenforced) # this host
 ```
 
-## Options
+## Per-output states
 
-| Option | Default | Effect |
-|--------|---------|--------|
-| `--universe`, `-u NAME` | every universe in `universes/*.yaml` | Restrict to one universe. |
-| `--json` | off | Emit machine-readable JSON instead of a styled table. |
+| State | Meaning | What to do |
+|---|---|---|
+| `ok` | manifest matches the current `code_version` | nothing |
+| `stale` | recipe, decisions, or **environment** drifted since materialization | `lc materialize` re-runs it |
+| `missing` | no manifest — never materialized (or produced outside `lc`) | `lc materialize` |
+| `pre-v2` | manifest from an earlier schema — not comparable to the current identity | re-materialize when convenient |
+| `alias` | a `from:` re-export; no independent state | — |
 
-## Output
+After the listing, an environment edit's blast radius is stated
+explicitly: `environment changed: N materialized output(s) are now
+stale`.
 
-Per universe, one line per declared output:
-
-```
-Universe baseline
-  ✓ ok    accuracy
-  ✸ stale precision
-  ✗ miss  recall
-  → alias inference
-```
-
-Statuses (defined in `lightcone.engine.status.StatusLiteral`):
-
-| Status | Meaning | When you see it |
-|--------|---------|-----------------|
-| `ok` | Manifest present, recomputed `code_version` matches what the manifest recorded. | The output is up to date. |
-| `stale` | Manifest present, but `code_version` drifted. | You changed the recipe, image, or a decision since the last run. `lc run` will re-execute. |
-| `missing` | No manifest at the expected output path. | Never built, or the directory was deleted. |
-| `alias` | The output has no `recipe:` of its own — it's just a name pointing at a sibling output (typical for ASTRA "promoted" outputs from sub-analyses). | Status is implicitly determined by the upstream. |
-
-## Why it doesn't import Snakemake
-
-`lc status` reads only the per-output `.lightcone-manifest.json` files
-and recomputes `code_version` against the current spec. It never
-imports Snakemake or touches `.snakemake/`. That makes it usable on:
-
-- A fresh clone before any `lc run`.
-- A frozen archive copied off a cluster.
-- A read-only workspace.
-
-If a manifest is missing, the output reports `missing`. If a manifest is
-unparseable, `read_manifest` returns `None` and you also see `missing`
-— that is the agent-forged-file scenario; investigate with `lc verify`.
-
-## Examples
-
-```bash
-lc status                       # every output, every universe
-lc status --universe baseline   # just baseline
-lc status --json                # machine-readable JSON output
-```
-
-## Related
-
-- [`lc verify`](verify.md) — recomputes data hashes too (slower; catches
-  tampering and broken chains).
-- [api/status](../api/status.md) — the Python API.
-- [api/manifest](../api/manifest.md) — the manifest schema.
+`--json` emits the same information machine-readably (used by CI and
+agents).

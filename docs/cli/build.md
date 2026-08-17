@@ -1,90 +1,41 @@
 # lc build
 
-Build container images declared in `astra.yaml` (or pre-pull registry
-images so `lc run` can use `--pull=never`).
-
-## Synopsis
-
 ```text
-lc build [OPTIONS]
+lc build [--force]
 ```
 
-## Options
+Build the project's environment image (containerized mode). On a
+direct-mode project this is an explanatory no-op — there is no image to
+build until `[tool.lightcone.image]` is declared.
 
-| Option | Default | Effect |
-|--------|---------|--------|
-| `--force` | off | Rebuild / re-pull even if the tag already exists locally. |
-| `--runtime {docker,podman,podman-hpc,kubernetes}` | resolved from `~/.lightcone/config.yaml` | Override the runtime for this build. |
+## What it builds
 
-## What it does
+The image is **generated, never authored**: the locked environment plus
+the declared system layer render to a Containerfile with a fixed
+layering —
 
-For every distinct `container:` value found in the project (root,
-sub-analysis, or recipe-level):
+1. the digest-pinned base (the engine's default Debian base, or the
+   project's declared `base`);
+2. the base-contract checks (glibc, `/bin/sh`, apt when
+   `system-packages` are declared) — each violation is a pointed
+   build-time refusal, never a raw build log;
+3. the apt layer (sorted `system-packages`), **before** the
+   environment sync, so lock-level system dependencies (sdist builds,
+   rpy2-style imports) resolve where the system layer actually is;
+4. the pinned uv binary and the exact `.python-version` interpreter;
+5. `uv sync --locked --exact --no-install-project --compile-bytecode`
+   into `/opt/venv` — the build context is exactly the rendered
+   Containerfile, `pyproject.toml`, and `uv.lock`; **project code never
+   enters an image**;
+6. the optional `Containerfile.extra` stage;
+7. the final ENV contract (offline overlay — nothing inside a running
+   image ever touches the network for packages).
 
-- **Path to a Containerfile** → compute the content-addressed tag
-  `lc-<project>-<sha256[:12]>`, build the image, and (for `podman-hpc`)
-  migrate it into the per-node container cache.
-- **Anything else** (e.g. `python:3.12-slim`, `ghcr.io/foo/bar:tag`) →
-  pull it into the local image store. This is what lets `lc run` pass
-  `--pull=never` to the runtime, sidestepping `unqualified-search-registries`
-  resolution issues with content-addressed tags.
+## Identity
 
-On the `kubernetes` runtime (a lightcone JupyterHub deployment, where
-no local OCI runtime exists) the same command builds through the
-deployment's **GCP Cloud Build** service instead: the staged build
-context is uploaded to the deployment's build bucket and the resulting
-image is pushed as `$LIGHTCONE_REGISTRY/lc-<project>:<sha256[:12]>` —
-the same content-addressed identity, so an unchanged environment is a
-single registry check and no build at all. Pre-built registry images
-are left alone (worker pods pull them directly). Auth is the pod's
-Workload Identity; nothing to configure.
-
-If the runtime is `none` (either by config or because `auto` couldn't
-find one), `lc build` prints a friendly note and exits 0. There is
-nothing to build.
-
-## Tag computation
-
-```text
-lc-<sanitized-project-name>-<sha256[:12]>
-```
-
-The hash covers the Containerfile contents plus any of these dependency
-files at the project root:
-
-- `requirements.txt`
-- `requirements-dev.txt`
-- `requirements-test.txt`
-- `pyproject.toml`
-- `setup.py`
-- `setup.cfg`
-- `poetry.lock`
-- `Pipfile.lock`
-
-Edit any one of those and the tag changes. That, in turn, changes
-`code_version` in every recipe that uses the image, which marks all
-downstream outputs `stale` in `lc status`.
-
-## Examples
-
-```bash
-lc build                       # build / pull whatever's missing
-lc build --force               # rebuild / re-pull everything
-lc build --runtime podman-hpc  # force the HPC runtime
-```
-
-## Pre-staging for HPC
-
-On a login node:
-
-```bash
-$EDITOR ~/.lightcone/config.yaml      # container.runtime: podman-hpc
-lc build                              # builds + migrates everything
-```
-
-Then submit a SLURM job for `lc run`. The compute nodes will find every
-image already cached.
-
-See [api/container](../api/container.md) for the implementation and
-[Architecture](../architecture.md) for why we wrap recipes ourselves
-instead of using Snakemake's `container:` directive.
+The tag `lc-env-<hash>` is a pure function of the repo plus the engine:
+code edits never move it, environment edits always do. Builds are
+incremental — a tag hit is a no-op; `--force` rebuilds anyway. The
+build records the produced image id and a snapshot of the installed
+system packages (`.lightcone/image/`, machine-local); execution is
+pinned to that record.

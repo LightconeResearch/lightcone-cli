@@ -1,61 +1,70 @@
-# Python API Reference
+# Python API
 
-The interesting public surface lives in `lightcone.engine.*`. The CLI
-is a thin Click wrapper around these modules.
+The `lightcone.*` namespace, module by module. Signatures live in the
+source docstrings — this page is the map. (For the subsystem view, see
+[Architecture](../architecture.md).)
 
-## Module map
+## Top level
 
-| Module | Role |
-|--------|------|
-| [`lightcone.cli.commands`](cli.md) | Click CLI: `init`, `run`, `build`, `status`, `verify`, `setup`. |
-| [`lightcone.engine.manifest`](manifest.md) | Per-output `.lightcone-manifest.json` write/read; `code_version`, `sha256_dir`. The integrity layer. |
-| [`lightcone.engine.snakefile`](snakefile.md) | Generate `.lightcone/Snakefile` and `snakefile-config.json` from `astra.yaml`. |
-| [`lightcone.engine.container`](container.md) | Runtime detection, content-addressed image tags, `wrap_recipe`. |
-| [`lightcone.engine.dask_cluster`](dask_cluster.md) | Cluster lifecycle for `lc run` (local / SLURM / external). |
-| [`lightcone.engine.status`](status.md) | Manifest-driven status walker. |
-| [`lightcone.engine.verify`](verify.md) | Recompute hashes; walk the input chain. |
-| [`lightcone.engine.tree`](tree.md) | Sub-analysis tree helpers — outputs, decisions, `from:` resolution. |
-| [`lightcone.engine.validation`](validation.md) | Post-recipe sanity checks (empty dir, all-NaN columns, …). |
-| [`snakemake_executor_plugin_dask`](dask_executor.md) | Snakemake executor plugin → `dask.distributed`. |
-| `lightcone.engine.site_registry` | Vestigial — no active code path imports it. See [api/site_registry](site_registry.md). |
+| Module | Responsibility |
+|---|---|
+| `lightcone.launcher` | the tool-env launcher: discover → mode-detect → scrub → converge → delegate (frozen interface: argv + `LC_DELEGATED=1`) |
+| `lightcone._sandbox_exec` | the exec shim (`python -m lightcone._sandbox_exec`) — stdlib-only, applies Landlock/Seatbelt between fork and exec; exit 97 = setup failure |
+| `lightcone.cli.commands` | the Click surface: `init`, `materialize`, `run`, `status`, `verify`, `build`, `export` |
 
-## Common entry points
+## Engine — environment & identity
 
-```python
-from pathlib import Path
-from lightcone.engine.snakefile import generate, discover_universes
-from lightcone.engine.container import load_runtime
+| Module | Responsibility |
+|---|---|
+| `engine.environment` | `Mode`, `EnvironmentSpec`, `load_environment()`, `compute_env_version()`, `scan_lock()` — the single parse point for the closed `[tool.lightcone]` surface |
+| `engine.uv_env` | the closed ambient `UV_*` scrub list + the offline overlay |
+| `engine.project` | `find_root()` — the `astra.yaml` walk-up |
+| `engine.manifest` | `SCHEMA_VERSION`, `code_version()`, `sha256_dir()`, `write_manifest()`, `is_pre_migration()` |
+| `engine.attestation` | `capture_runtime_attestation()` — worker-side platform/interpreter/uv/GPU capture |
 
-project = Path("my-analysis")
-runtime = load_runtime(project_path=project).runtime
-universes = discover_universes(project)        # ['baseline', 'experiment']
-snakefile, cfg = generate(project, universes=universes, runtime=runtime)
-# Now invoke `snakemake -s snakefile -d project --executor dask ...`
-```
+## Engine — execution
 
-```python
-from lightcone.engine.status import get_output_status
+| Module | Responsibility |
+|---|---|
+| `engine.snakefile` | `generate()` — astra.yaml → Snakefile + per-(rule, universe) `RuleJob` cfg; `render_recipe()` template substitution |
+| `engine.job` | `RuleJob` — the typed generator→worker contract |
+| `engine.runner` | `run_rule()` — the worker sequence (gates, env check, boundary exec, manifest) |
+| `engine.boundary` | `ExecBoundary` protocol, `ExecScope`, `SandboxAttestation`, `get_boundary()` |
+| `engine.dask_cluster` | `cluster_for_run()` — the run-scoped LocalCluster |
+| `snakemake_executor_plugin_dask` | rules dispatched as dask tasks; SENTINEL-framed output |
+| `engine.scratch` | scratch-root resolution, run dirs, the run lock |
 
-for s in get_output_status(project, universe_id="baseline"):
-    print(s.status, s.output_id)        # 'ok', 'stale', 'missing', or 'alias'
-```
+## Engine — sandbox
 
-```python
-from lightcone.engine.verify import verify_outputs
+| Module | Responsibility |
+|---|---|
+| `engine.sandbox.policy` | `build_policy()` — the §7 read/write/exec sets, HOME/XDG contract, `EXEC_ALLOWLIST_VERSION` |
+| `engine.sandbox._landlock` | vendored ctypes bindings + `abi()` probe |
+| `engine.sandbox.wrap` | `wrap_command()`/`wrap_argv()` — ruleset FD + shim argv assembly |
+| `engine.sandbox.probe` | capability probe, hermeticity composition, `status_line()` |
+| `engine.sandbox.seatbelt` | the generated SBPL profile (macOS) |
+| `engine.sandbox.denial` / `hints` | the denial UX: re-stat, classify, two-remedy render, trailer |
+| `engine.sandbox.exec_boundary` | `SandboxExecBoundary` — the enforced `ExecBoundary` |
 
-failed = [r for r in verify_outputs(project, universe_id="baseline") if not r.passed]
-for r in failed:
-    print(r.failure, r.output_id, r.detail)
-```
+## Engine — images
 
-```python
-from lightcone.engine.container import (
-    detect_runtime,
-    compute_image_tag,
-    build_image,
-)
+| Module | Responsibility |
+|---|---|
+| `engine.image.declaration` | `[tool.lightcone.image]` parsing + static refusals; `ImageDeclaration` |
+| `engine.image.definition` / `render` | `ImageDefinition` → deterministic Containerfile text (fixed layering) |
+| `engine.image.identity` | `compute_tag()` — `lc-env-<hash>` |
+| `engine.image.builder` / `builder_podman` | `Builder` protocol; the three-file `BuildContext`; podman with pointed error mapping |
+| `engine.image.record` | the build record + dpkg snapshot attestation |
+| `engine.image.runtime_podman` / `mounts` | the digest-pinned full-stack run wrapper + the mount set |
+| `engine.image.machine` | macOS `podman machine` preflight |
+| `engine.image` (package) | `ensure_image()`, `resolve_pinned()`, `image_status()` |
 
-runtime = detect_runtime()                                   # 'podman' / 'docker' / 'podman-hpc' / None
-tag = compute_image_tag("my-project", Path("Containerfile"), Path("."))
-build_image(tag, Path("Containerfile"), Path("."), runtime=runtime)
-```
+## Engine — readers & export
+
+| Module | Responsibility |
+|---|---|
+| `engine.status` | `get_output_status()`, `env_blast_radius()` — offline by invariant |
+| `engine.verify` | `verify_outputs()` — tamper/chain checks + provenance notes |
+| `engine.tree` | analysis-tree traversal over the resolved ASTRA spec |
+| `engine.validation` | post-materialization output shape checks |
+| `engine.wrroc` | Workflow Run RO-Crate export |

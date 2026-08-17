@@ -1,175 +1,68 @@
 # Glossary
 
-The terms you'll see all over the docs and the `lc` command output, in
-plain language.
+**ASTRA** — the specification language (`astra.yaml`): inputs, outputs,
+recipes, decisions, universes. lightcone-cli is its execution layer.
+ASTRA carries analysis structure only; the environment lives in the uv
+project files.
 
-## ASTRA
+**direct mode** — the default execution mode: the locked environment
+lives in the project tree (`.venv`), recipes run on the host inside the
+OS sandbox, no image exists.
 
-**A**gentic **S**chema for **T**ransparent **R**esearch **A**nalysis.
-The schema lightcone-cli is built around. ASTRA's job is to capture an
-analysis's inputs, outputs, and methodological decisions in a single
-file (`astra.yaml`); lightcone-cli's job is to execute that spec
-reproducibly. ASTRA ships separately as the `astra-tools` package and
-the `astra` CLI handles the spec itself (validation, paper management,
-evidence verification).
+**containerized mode** — entered by declaring `[tool.lightcone.image]`
+(or a `Containerfile.extra`): the generated, content-addressed image
+becomes the execution world for engine, workers, recipes, and probes.
 
-## astra.yaml
+**env_version** — the environment identity: a hash of `uv.lock`,
+`.python-version`, the uv install settings, and the declared system
+layer. Part of every output's `code_version`; an environment edit
+stales every materialized output, visibly.
 
-Your project's spec file. The single source of truth — every input,
-output, recipe, and decision is declared here. Sub-analyses can be
-nested via `analyses:` references.
+**code_version** — the identity of one output's materialization
+semantics: recipe text, active decisions, `env_version`, and the
+output's sandbox escalation. `lc status` compares it against manifests.
 
-## Recipe
+**data_version** — the content hash of an output directory. `lc verify`
+recomputes it to detect tampering.
 
-A short shell or Python command that produces an output. Lives inside
-an output's `recipe:` block in `astra.yaml`. Outputs declare which
-sibling outputs they depend on, and the recipe references them through
-placeholders:
+**manifest** — `.lightcone-manifest.json`, written beside every
+materialized output: the versions above plus input hashes, git state,
+runtime attestation, image identity, and the hermeticity record. The
+provenance chain is manifests referencing manifests.
 
-```yaml
-outputs:
-  - id: r2
-    recipe:
-      command: python src/fit.py --output {output}
-  - id: fit_plot
-    inputs: [r2]
-    recipe:
-      command: python src/plot.py --r2_dir {inputs.r2} --output {output}
-```
+**hermeticity** — the manifest field recording what enforcement a
+recipe *actually* ran under: mechanism (`landlock`, `seatbelt`,
+`podman+landlock`, `none`), file scope (`declared`, `project-rw`,
+`open`), and network posture (`denied`, `allowed`, `unenforced`).
 
-## Decision
+**sandbox** — the OS enforcement (Landlock on Linux, Seatbelt on macOS)
+that restricts each recipe to its declared set: own output dir
+writable, project + declared inputs readable, locked environment plus a
+versioned utility allowlist executable.
 
-A methodological choice with multiple defensible options (e.g.
-"standardize features?", "what outlier threshold?"). Decisions live
-in the `decisions:` section of `astra.yaml` along with their `default`,
-their `options`, and their `rationale`.
+**system layer** — apt packages (and optionally a digest-pinned base
+image) declared in `[tool.lightcone.image]`; what flips a project into
+containerized mode.
 
-## Universe
+**image tag (`lc-env-<hash>`)** — the content-addressed identity of the
+generated image: a pure function of the rendered Containerfile,
+`pyproject.toml`, and `uv.lock`. Code edits never move it.
 
-One specific selection of decision values. Universes live as YAML
-files in `universes/` (e.g. `universes/baseline.yaml`,
-`universes/permissive.yaml`). Each universe materializes its results
-to its own directory: `results/<universe>/<output_id>/`.
+**probe (`lc run`)** — an arbitrary command run in byte-for-byte the
+recipe environment (lock, interpreter, sandbox included), with writes
+confined to the tmp scope. Probes never materialize outputs.
 
-If your spec has no universes, `lc run` materializes against a
-universe called `"default"` with all decisions at their declared
-defaults.
+**universe** — one assignment of options to the analysis's declared
+decisions (`universes/<id>.yaml`). Outputs materialize per universe
+under `results/<universe>/<output>/`.
 
-## Sub-analysis
+**decision** — a declared methodological choice with enumerated
+options; the multiverse is the set of defensible option combinations.
 
-A nested ASTRA analysis with its own inputs, outputs, and decisions,
-referenced from a parent's `analyses:` section. The full tree shares
-one set of universes; sub-analyses can reference parent decisions
-with `from:` references. Sub-analyses are useful when an analysis has
-genuinely different stages (training vs. inference, fit vs. evaluate);
-keep things in one analysis when they share the same product.
+**blast radius** — the count of materialized outputs an environment
+edit stales, printed at decision time: "environment changed: N
+materialized output(s) are now stale".
 
-## Manifest
-
-The per-output sidecar JSON file
-(`<output_dir>/.lightcone-manifest.json`) that records what produced
-the output and what's inside it. Fields include `code_version`,
-`data_version`, `container_image`, `recipe`, `decisions`,
-`input_versions`, `git_sha`, `host`, `lc_version`, and a few more.
-Manifests are written atomically by `lc run` and read by `lc status`
-and `lc verify`.
-
-## code_version
-
-A SHA-256 over `(recipe + container_image + decisions)`. The
-fingerprint of "what does this rule do?" When it drifts, downstream
-outputs go `stale` in `lc status`.
-
-## data_version
-
-A SHA-256 over the contents of an output directory (excluding the
-manifest itself). The fingerprint of "what bytes were produced?"
-`lc verify` recomputes this and compares to the recorded value to
-catch tampering.
-
-## input_versions
-
-Inside a manifest, a dict mapping each declared input id to its
-version: the upstream output's `data_version` when the input is
-another materialized output, or an `mtime-size`/`sha256`
-fingerprint when the input is an external file. This is the chain
-`lc verify` walks back through.
-
-## Container
-
-A Docker / Podman / podman-hpc image used to execute a recipe in
-isolation. Declared at the analysis level (`container: Containerfile`)
-or per-recipe (`recipe: { container: python:3.12-slim }`). Recipe-level
-overrides win.
-
-## Containerfile
-
-A Dockerfile by another name (the syntax is identical). lightcone-cli
-calls them Containerfiles to make clear they work with podman as well
-as docker.
-
-## Image tag
-
-The string the runtime uses to identify a built image. lightcone-cli
-generates content-addressed tags for Containerfile builds:
-`lc-<project>-<sha256[:12]>`. The hash covers the Containerfile and
-your dependency files, so tags only change when the inputs to the
-build change.
-
-## Runtime
-
-The OCI tool that actually executes containers: `docker`, `podman`,
-or `podman-hpc`. Set in `~/.lightcone/config.yaml` under
-`container.runtime`. `auto` picks the first usable; `none` opts out
-(runs recipes directly on the host).
-
-## Snakemake
-
-The workflow engine `lc run` shells out to. You don't need to learn
-Snakemake to use lightcone-cli — the Snakefile at `.lightcone/Snakefile`
-is auto-generated from your `astra.yaml`. If you're curious, peek at
-it; just don't edit it (your changes will get overwritten on the
-next `lc run`).
-
-## Dask
-
-The distributed scheduler `lc run` dispatches jobs through. On a
-laptop it's a `LocalCluster` sized to your machine; inside a SLURM
-allocation it's an in-process scheduler with one `dask worker` per
-node launched via `srun`.
-
-## Prior insight
-
-A piece of evidence from the literature that informs a decision.
-Lives in the `prior_insights:` section of `astra.yaml`. Each insight
-has a `claim`, one or more `evidence` entries with verbatim quotes,
-and a list of decision options it supports. Quotes are
-machine-verified against the source PDF.
-
-## Finding
-
-A conclusion drawn *from* the analysis (as opposed to a prior
-insight, which comes *into* the analysis). Findings live in the
-`findings:` section, can cite specific outputs as evidence, and act
-as the bridge between materialized results and the eventual paper.
-
-## Status (`ok`, `stale`, `missing`, `alias`)
-
-The four labels `lc status` produces:
-
-- `ok` — manifest present, recomputed `code_version` matches.
-- `stale` — manifest present but `code_version` drifted.
-- `missing` — no manifest at the expected output directory.
-- `alias` — output declared without a recipe; just a reference to
-  another output.
-
-## Failure kinds (`tampered_data`, `broken_chain`, `missing_manifest`)
-
-The three labels `lc verify` produces when something's wrong:
-
-- `tampered_data` — bytes on disk no longer match recorded
-  `data_version`.
-- `broken_chain` — recorded `input_versions` references an upstream
-  whose `data_version` drifted.
-- `missing_manifest` — output directory exists but the manifest is
-  missing or unparseable.
+**pre-migration** — a manifest written by an earlier schema version.
+Shown distinctly by `lc status`; `lc verify` still checks the hashes it
+carries.

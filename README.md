@@ -16,11 +16,12 @@ provenance.
 ## Quick Start
 
 ```bash
-uv tool install lightcone-cli   # or: pip install lightcone-cli
+uv tool install lightcone-cli   # uv is the only prerequisite
 lc init my-analysis
 cd my-analysis
+uv add numpy astropy            # dependencies live in the lock
 # describe your analysis in astra.yaml, then:
-lc run
+lc materialize
 ```
 
 ASTRA specs are plain, structured YAML — they work well hand-written or
@@ -31,8 +32,10 @@ drafted with any AI coding assistant.
 ## Capabilities
 
 - **Multiverse analysis** — define methodological decisions with multiple options; `lc` runs your analysis across all defensible paths automatically
+- **Locked environments** — uv is the only substrate: the exact interpreter, every dependency, and the engine itself are pinned in the project's lock, and that identity is recorded in every output
+- **Sandboxed execution** — every recipe runs inside an OS sandbox (Landlock/Seatbelt) restricted to its declared inputs and outputs; each manifest records the enforcement that actually ran
 - **Provenance integrity** — every output gets a content-addressed manifest; `lc verify` detects tampering or broken chains
-- **HPC-ready execution** — Snakemake-backed DAG dispatch with SLURM and container support (Docker, Podman, Apptainer) out of the box
+- **A container hatch, not a container tax** — projects that need system dependencies (R, TeX, CUDA userlands) declare one TOML table; `lc` generates a content-addressed podman image from the lock — never a hand-written Containerfile, and code edits never trigger rebuilds
 - **Reproducible publishing** — `lc export wrroc` emits a [Workflow Run RO-Crate](https://www.researchobject.org/workflow-run-crate/) bundle ready for Zenodo or WorkflowHub
 
 → [Full documentation](https://docs.lightconeresearch.org)

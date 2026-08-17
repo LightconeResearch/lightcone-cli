@@ -1,62 +1,33 @@
-# Welcome to the user guide
+# User guide
 
-`lightcone-cli` is a small toolchain that turns a research question into
-a reproducible analysis. You describe what you're trying to learn as a
-precise specification — an `astra.yaml` file following the
-[**ASTRA**][astra] schema — and the `lc` command line keeps the
-resulting code, decisions, and outputs in sync.
+lightcone-cli (`lc`) turns an `astra.yaml` analysis specification into
+a tree of materialized, provenance-tracked outputs — with the
+environment locked, the execution sandboxed, and every result carrying
+a manifest that says exactly how it was made.
 
-ASTRA specs are plain YAML, designed to be easy for both humans and AI
-assistants to write. However the spec gets written, **you stay in charge
-of the scientific choices** — every methodological decision is declared
-in the open, and `lc` records exactly what produced every result.
+- [Install](install.md) — uv is the only prerequisite.
+- [Getting Started](getting-started.md) — from empty directory to
+  verified outputs.
+- [The Environment](environment.md) — the locked environment, the
+  sandbox, and the container hatch.
+- [Troubleshooting](troubleshooting.md) — the errors you may meet and
+  what they're telling you.
+- [Glossary](glossary.md) — the vocabulary in one place.
 
-## What this guide covers
+## The workflow at a glance
 
-- [Install](install.md) — get the `lc` command line running on your
-  machine or on a cluster.
-- [Getting Started](getting-started.md) — create your first project,
-  run it end-to-end, and understand what each piece does.
-- [Running on a Cluster](cluster.md) — taking your analysis to a SLURM
-  HPC system, including Perlmutter-specific notes.
-- [Troubleshooting](troubleshooting.md) — common issues and how to
-  unstick them.
-- [Glossary](glossary.md) — the terms that show up everywhere
-  (universe, decision, manifest, …) explained in plain language.
+!!! example "A complete session"
 
-## What you'll do, in three lines
+    ```bash
+    lc init my-analysis && cd my-analysis
+    uv add numpy astropy          # dependencies: always uv
+    $EDITOR astra.yaml            # describe the analysis
+    lc run python src/explore.py  # probe in the recipe environment
+    lc materialize                # produce outputs + manifests
+    lc status                     # what exists, what's stale
+    lc verify                     # audit the provenance chain
+    lc export wrroc -o out.zip --zip   # publishable bundle
+    ```
 
-!!! tip "Quick start"
-
-    === "uv"
-        ```bash
-        uv tool install lightcone-cli
-        lc init my-analysis && cd my-analysis
-        # describe your analysis in astra.yaml, then:
-        lc run
-        ```
-
-    === "pip"
-        ```bash
-        pip install lightcone-cli
-        lc init my-analysis && cd my-analysis
-        # describe your analysis in astra.yaml, then:
-        lc run
-        ```
-
-That's the shortest possible path. The rest of the guide is the unhurried version.
-
-## What lightcone-cli is *not*
-
-- **A statistics package.** It runs your code; it doesn't compute
-  things itself.
-- **A workflow language.** Recipes in `astra.yaml` are short shell or
-  Python commands, not a DSL. There's no learning curve beyond what's
-  in [Getting Started](getting-started.md).
-- **An IDE.** `lc` is a command-line tool; write `astra.yaml` and your
-  analysis code with whatever editor or tooling you prefer.
-
-If you'd rather skim the design and architecture, the
-[maintainer docs](../maintainer.md) are the other half of this site.
-
-[astra]: https://astra-spec.org/latest/
+Four verbs: **`lc run` probes, `lc materialize` executes, `lc status`
+reports, `lc verify` audits.**

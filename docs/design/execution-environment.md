@@ -18,7 +18,16 @@
   visibility, command spelling, and `lc run` rename guard are
   specified as the primary UI they are; and the review's
   simplifications land (per-output `network:` deferred, two flags
-  deleted). Scale (>~10 nodes) remains out of scope. Evidence:
+  deleted). Scale (>~10 nodes) remains out of scope.
+  **Implementation record (2026-08):** the first implementation round
+  deviates from this spec in three recorded ways — (1) ASTRA carries
+  no container/sandbox keys at all (the `sandbox: writable-project`
+  escalation lives in pyproject under `[tool.lightcone.sandbox]`, and
+  BYO per-output containers are deferred); (2) venue scope is
+  local-only with podman as the sole container backend (Perlmutter,
+  hub/GKE, and Cloud Build return behind the Builder/runtime/boundary
+  protocols); (3) §7 gains the `PYTHONPYCACHEPREFIX` amendment noted
+  in place. Evidence:
   [execution-environment-rationale.md](execution-environment-rationale.md),
   [uv-vs-pixi-adoption.md](uv-vs-pixi-adoption.md),
   [hermeticity-enforcement.md](hermeticity-enforcement.md),
@@ -457,11 +466,13 @@ manifest records exactly what ran. Research:
   execs a dynamically linked binary. In **containerized mode the
   image contents are the exec set** — everything present was
   declared.
-- Known consequence, stated: env-RO denies `__pycache__` writes
-  **for project-tree sources** (the env itself is pre-compiled:
+- *(Amended at implementation, 2026-08:)* the boundary additionally
+  sets **`PYTHONPYCACHEPREFIX`** to the per-recipe tmp scope, so
+  in-tree bytecode caches redirect there — the env-RO `__pycache__`
+  consequence this bullet originally accepted is eliminated without
+  widening any grant. (The env itself remains pre-compiled:
   `--compile-bytecode` in both the direct-mode converge and the
-  image build) — residual first-run slowdown for in-tree modules,
-  visible in `--sandbox-debug`.
+  image build.)
 
 **Boundary placement — direct mode: the exec-shim.** The sandbox
 wraps **the recipe, not uv**: step 3's command is

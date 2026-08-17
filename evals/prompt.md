@@ -8,19 +8,25 @@ This project is driven by two CLIs — use them rather than improvising:
   `astra validate astra.yaml` checks it against the schema. If an `astra`
   skill or plugin is available in your environment, load it before reading
   or editing `astra.yaml` — it documents the full spec format.
-- `lc` (lightcone-cli) is the execution layer, a thin shim over Snakemake:
-    - `lc run <output_id> --universe baseline` materializes an output (and
-      anything upstream of it) by running the recipe commands declared in
-      `astra.yaml`. With no output ids it builds everything. It is
+- `lc` (lightcone-cli) is the execution layer. Four verbs:
+    - `lc materialize <output_id> --universe baseline` produces an output
+      (and anything upstream of it) by running the recipe commands declared
+      in `astra.yaml`. With no output ids it builds everything. It is
       idempotent: re-running only rebuilds what is stale or missing.
+    - `lc run <cmd…>` probes: it runs an arbitrary command inside exactly
+      the recipe environment (same interpreter, same locked packages, same
+      sandbox). Use it to test imports or try a script before wiring it
+      into a recipe. Outputs are materialized, not run — `lc run
+      <output_id>` is an error.
     - `lc status --universe baseline` reports each output as `ok`, `stale`,
       or `missing`; `lc status --json` is the machine-readable form.
+    - `lc verify` audits the provenance chain.
     - Outputs land in `results/baseline/<output_id>/`, each with a
       `.lightcone-manifest.json` provenance manifest written by the engine.
       Files placed in `results/` by hand have no manifest and fail
       verification — never write there yourself.
-    - When `lc run` fails, read the error and the Snakemake log it points
-      to, fix the script or spec, and re-run.
+    - When `lc materialize` fails, read the error (and the log it points
+      to), fix the script or spec, and re-run.
 
 ## Recipe template grammar
 
@@ -49,20 +55,21 @@ is how the engine orders the build.
 
 ## Environment
 
-Recipes and your interactive shell run in two different environments —
-keep them straight:
+There is exactly one environment: the project's locked uv environment
+(`pyproject.toml` + `uv.lock`). Recipes, probes, and your scripts all use
+it.
 
-- **Recipe commands run by `lc run`** may execute inside a container
-  built from the project's `Containerfile` + `requirements.txt`
-  (whenever `astra.yaml` declares a `container:` and a runtime is
-  available). Every package a recipe script imports must therefore be
-  listed in `requirements.txt` — add it there *before* running, and the
-  engine rebuilds the content-addressed image automatically. Host-side
-  installs never reach the container.
-- **Your own shell commands** run on the host in an activated uv-managed
-  virtual environment with numpy, scipy, and matplotlib pre-installed.
-  For ad-hoc host tools use `uv pip install <package>` — plain `pip` is
-  not available in this venv.
+- A `ModuleNotFoundError` always means the same thing: add the package
+  with `uv add <package>` — never install into any environment by hand,
+  and never use pip.
+- Every recipe runs inside a sandbox restricted to its declared set: it
+  can write only its own output directory, read only the project and its
+  declared inputs, and execute only the locked environment plus basic
+  shell tools. If the sandbox blocks something, the error message itself
+  states the remedy (declare a data file as an input in `astra.yaml`, or
+  a system tool in `[tool.lightcone.image]`).
+- `lc run --sandbox-debug` opens a shell inside the sandbox when you need
+  to see exactly what a recipe can see.
 
 ## Build loop
 
@@ -73,9 +80,10 @@ that needs materializing:
 1. Read the recipe's `command` to see what script and arguments it expects.
 2. Write the script at the path the command names, parameterizing every
    decision via argparse — never hardcode option values.
-3. Run `lc run <output_id> --universe baseline` to materialize it through
-   the engine.
-4. Commit progress as you go.
+3. `uv add` any packages the script imports.
+4. Run `lc materialize <output_id> --universe baseline` to produce it
+   through the engine.
+5. Commit progress as you go.
 
 Build iteratively from upstream outputs to downstream. `lc status
 --universe baseline` shows you what's `ok`, `stale`, or `missing` — you're

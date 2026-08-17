@@ -65,7 +65,7 @@ contains the workflow definition, and a warning is printed:
 ✓ Wrote WRROC directory: ./wrroc
 Warning: no materialized outputs were found — the bundle contains only
   the workflow definition.
-  This usually means recipes haven't been run yet (try lc run) or the
+  This usually means recipes haven't been run yet (try lc materialize) or the
   .lightcone-manifest.json sidecars are missing.
   Workflow-only bundles will not pass strict Provenance Run Crate
   validation; that profile requires at least one materialized run.

@@ -1,313 +1,124 @@
 # Architecture
 
-The whole story in one sentence: **lightcone-cli is a thin shim over
-Snakemake that owns provenance.** This page expands that sentence.
-
-## Three subsystems
-
-1. **Snakefile generation** — translate `astra.yaml` into a
-   `.lightcone/Snakefile` and a sidecar `snakefile-config.json` keyed by
-   `(rule, universe)`. Snakemake handles the rest of execution.
-2. **Manifest layer** — a per-output sidecar JSON written *by us* on the
-   host immediately after each rule's recipe shell exits. The integrity
-   contract lives here.
-3. **Cluster management** — `lc run` always dispatches through a Dask
-   scheduler whose lifetime equals the run's lifetime. The cluster
-   manager picks the right shape (local / SLURM / external) on the fly.
-
-Everything the user touches is the `lc` CLI on top of these: the engine
-(Snakefile generation + cluster management) and the integrity layer
-(manifests, `lc status`, `lc verify`).
-
----
-
-## 1. Snakefile generation
-
-Generator: [`lightcone.engine.snakefile.generate`](api/snakefile.md).
-
-For each output in the resolved analysis tree (root + sub-analyses,
-expanded by `astra.helpers.resolve_analysis_tree`), the generator emits
-one Snakemake rule per output. The rule body is a `run:` block:
-
-```python
-rule <name>:
-    input:  ...                     # from upstream outputs (sibling rules)
-    output:
-        data=directory("results/{universe}/<output_id>"),
-        manifest="results/{universe}/<output_id>/.lightcone-manifest.json",
-    params:
-        cfg=lambda wc: CFG["<rule_key>"][wc.universe],
-    run:
-        shell('printf "▶ <rule_key> [%s]\\n" "{wildcards.universe}" >&2')
-        shell(params.cfg["shell_command"])           # the recipe (already container-wrapped)
-        write_manifest(output_dir=Path(output.data), inputs={...}, cfg=params.cfg)
-        for w in validate_output(...): print(f"⚠ {w}", file=sys.stderr)
-```
-
-### What goes in `cfg`
-
-`snakefile-config.json` is keyed by `<rule_key> → <universe> → cfg` where
-the inner dict carries:
-
-- `shell_command` — the recipe pre-wrapped at generation time. When
-  containers are configured, this looks like
-  `<runtime> run --rm --pull=never -v "$PWD":"$PWD" -w "$PWD" <image> bash -c '<recipe>'`.
-  Snakemake's own `container:` directive and `--sdm apptainer` are
-  intentionally *not* used — we own the runtime end-to-end.
-- `code_version` — `sha256(recipe + container_image + decisions)`.
-  Embedded as a `: lc_code_version=…;` no-op prefix on the shell command
-  so it lands in any shell trace.
-- `recipe`, `container_image`, `decisions`, `output_id`, `output_type`,
-  `universe_id`, `git_sha`, `lc_version`, resolved input paths.
-
-### Why pre-wrap, not Snakemake's `container:`?
-
-Two reasons. First, `--sdm apptainer` adds an extra container layer that
-defeats podman-hpc's migrate workflow. Second, registry image resolution
-on podman fails for our content-addressed `lc-<name>-<hash>` tags
-because they trip `unqualified-search-registries` in `registries.conf`.
-We pass `--pull=never` to skip the lookup entirely; that requires
-images to be present locally, which is what `lc build` does.
-
-### Staleness detection
-
-The generator does *not* override Snakemake's rerun logic — it just
-makes sure drift is visible to it. We default to
-`--rerun-triggers code,input,mtime,params`. The `params` trigger is the
-one that fires today: `cfg` is per-universe and contains
-`code_version`, so any change to recipe / container image / decisions
-flows through.
-
----
-
-## 2. The manifest layer
-
-Module: [`lightcone.engine.manifest`](api/manifest.md). Filename:
-`.lightcone-manifest.json` (constant; `SCHEMA_VERSION = 1`).
-
-Every successful rule writes a manifest to its output directory. The
-write is atomic (`os.replace` rename); a missing or unparseable manifest
-re-runs the rule on the next `lc run`.
-
-### Fields
-
-```json
-{
-  "schema_version": 1,
-  "output_id": "...",
-  "universe_id": "baseline",
-  "code_version":  "sha256:…",
-  "data_version":  "sha256:…",
-  "container_image": "lc-myproject-abc123" ,
-  "recipe": "python scripts/compute.py",
-  "decisions": {...},
-  "input_versions": { "<inp_id>": "sha256:…" },
-  "git_sha": "...",
-  "lc_version": "...",
-  "host": "...",
-  "slurm_job_id": "...",
-  "finished_at": 1700000000.0
-}
-```
-
-### `data_version` exclusions
-
-`sha256_dir()` skips two filenames: `.lightcone-manifest.json` (chicken
-and egg) and `.snakemake_timestamp` (Snakemake touches the directory
-*after* the rule body completes — including it would make every hash
-unreproducible).
-
-### `input_versions` semantics
-
-For each declared recipe input:
-- If the input is a sibling output (has its own manifest) →
-  `data_version` from that manifest.
-- Otherwise treated as external →
-  `mtime-size:<ns>-<bytes>` for files, `sha256_dir(...)` for
-  directories, `"missing"` for absent paths.
-
-### What `lc verify` checks
-
-- **`tampered_data`** — `sha256_dir()` of the on-disk output no longer
-  matches the recorded `data_version`.
-- **`broken_chain`** — a recorded `input_versions[id]` no longer matches
-  the upstream output's current `data_version`.
-- **`missing_manifest`** — the output directory exists but has no
-  manifest, or the manifest fails to parse.
-
-### What `lc status` checks
-
-- **`ok`** — manifest present, recomputed `code_version` matches.
-- **`stale`** — manifest present but `code_version` drifted (recipe,
-  image, or decisions changed).
-- **`missing`** — no manifest.
-- **`alias`** — output declared without a recipe; materialized only as a
-  side effect of an upstream.
-
-`status` reads only manifests. No Snakemake import, no `.snakemake/`
-directory required, works on a fresh clone or frozen archive.
-
----
-
-## 3. Cluster management
-
-Module: [`lightcone.engine.dask_cluster`](api/dask_cluster.md).
-
-`cluster_for_run()` is the only entry point. It is a context manager
-that yields a Dask scheduler address valid for the duration of the run,
-across three branches:
-
-1. `DASK_SCHEDULER_ADDRESS` already set → yield as-is. We don't own the
-   cluster, we don't tear it down.
-2. `SLURM_JOB_ID` set → start an in-process scheduler bound to the
-   driver hostname (`SLURMD_NODENAME` or `gethostname()`), then `srun`
-   one `dask worker` per node across the allocation. Workers advertise
-   the node's resources via Dask abstract resources (`cpus`, `memory`,
-   `gpus`). The Snakemake executor plugin maps per-rule
-   `cpus_per_task` / `mem_mb` / `gpus_per_task` to per-task constraints.
-3. Neither → `LocalCluster()` sized to the local machine.
-
-The scheduler is always in-process so its lifetime equals the run's
-lifetime: no service to manage, no orphaned schedulers.
-
-### The Snakemake executor
-
-Module: [`snakemake_executor_plugin_dask`](api/dask_executor.md).
-
-Snakemake calls `run_job(job)`, we translate it to:
-
-```python
-client.submit(
-    _run_shell, cmd,
-    resources=_build_resources(job),
-    pure=False,
-    key=f"snakejob-{job.name}-{job.jobid}",
-)
-```
-
-The worker shells out to the (already container-wrapped) command. There
-is no per-rule "executor logic" to write — recipes are wrapped at
-generation time, so the worker just runs them.
-
----
-
-## Container layer
-
-Module: [`lightcone.engine.container`](api/container.md).
-
-Two surfaces:
-
-- **Build** — `compute_image_tag()` + `build_image()`. Tags are
-  `lc-<project>-<sha256[:12]>` over the Containerfile and dependency
-  files (`requirements.txt`, `pyproject.toml`, `poetry.lock`,
-  `Pipfile.lock`, …). Rebuilds happen only when the hash changes.
-- **Run-time wrap** — `wrap_recipe()` produces the command string that
-  the Snakefile generator embeds into each rule.
-
-Runtime resolution: `~/.lightcone/config.yaml` carries
-`container.runtime` (`auto | docker | podman | podman-hpc | none`).
-`auto` picks the first usable in `(podman, docker, podman-hpc)`,
-skipping docker if its daemon is unreachable. `none` is an explicit
-opt-out — recipes run on the host. When `auto` falls back to `none`
-silently, `lc run` warns that the manifest's `container_image` field
-will misrepresent what actually executed.
-
-For `podman-hpc`, the build path also runs `podman-hpc migrate <tag>`
-so compute nodes can read the image without a registry.
-
----
-
-## Sub-analysis tree
-
-`astra.yaml` can declare nested `analyses:` pointing to sub-directories
-each with their own `astra.yaml`. The full tree is resolved by
-`astra.helpers.resolve_analysis_tree()` before any operation.
-
-Output paths follow the analysis layout:
-
-- Root + inline sub-analyses: `results/<universe>/<output_id>/`
-- Path-rooted sub-analyses: `<sub_path>/results/<universe>/<output_id>/`
-
-`from:` references on inputs and decisions are resolved by helpers in
-[`engine.tree`](api/tree.md). When an output id is ambiguous (the same
-name appears in multiple sub-analyses), `lc run` errors and asks for
-the qualified `<analysis_id>.<output_id>` form.
-
----
-
-## Repository at a glance
+lightcone-cli is a thin shim over Snakemake plus three layers it owns
+substantively: the **environment model** (uv as the only substrate,
+identity, the container hatch), the **integrity layer** (per-output
+content-addressed manifests), and the **hermeticity layer** (the
+sandbox). Everything else — DAG resolution, staleness, parallelism,
+retry, locking — is Snakemake's.
 
 ```text
-src/lightcone/                  # PEP 420 namespace package — NO __init__.py
-├── cli/                        # Click surface
-│   ├── __init__.py             # exposes main()
-│   └── commands.py             # init, run, status, verify, build, export
-├── engine/                     # execution substrate
-│   ├── manifest.py             # write_manifest, sha256_dir, code_version
-│   ├── snakefile.py            # generate .lightcone/Snakefile from astra.yaml
-│   ├── container.py            # docker/podman/podman-hpc build + recipe wrap
-│   ├── cloudbuild.py           # GCP Cloud Build backend (kubernetes runtime)
-│   ├── dask_cluster.py         # cluster lifecycle (local/SLURM/Gateway/external)
-│   ├── scratch.py              # scratch-root resolution, run dirs, run lock
-│   ├── status.py               # manifest-driven status walker (no Snakemake)
-│   ├── verify.py               # recompute hashes, walk the chain
-│   ├── tree.py                 # sub-analysis tree helpers
-│   ├── validation.py           # post-recipe output sanity checks
-│   ├── wrroc.py                # Workflow Run RO-Crate export
-│   └── site_registry.py        # known-site defaults (scratch root, runtime)
-
-src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
-
-tests/                          # pytest, mirrors src/
-pyproject.toml                  # hatchling + hatch-vcs; ASTRA + Snakemake as deps
+        lc <verb>  (uv tool shim — the launcher)
+             │  discover → mode-detect → UV_* scrub → converge → delegate
+             ▼
+   <project>/.venv/bin/lc          direct mode: the engine from the
+             │                     project's own lock (LC_DELEGATED=1)
+             │      — or —
+   podman run … /opt/venv/bin/lc   containerized: the whole stack inside
+             │                     the digest-pinned image
+             ▼
+astra.yaml ── snakefile.generate() ──► .lightcone/Snakefile + snakefile-config.json
+             │
+      snakemake --executor dask   (run-scoped LocalCluster)
+             │
+        run_rule()  — the worker sequence:
+          1. pre-gate      env_version(tree) == job's baked env_version
+          2. env check     uv sync --check   /  image identity assert
+          3. boundary exec sandbox (Landlock/Seatbelt) + offline overlay
+          4. post-gate     then write_manifest()
+             │
+   results/<u>/<o>/…  +  .lightcone-manifest.json
 ```
 
-The `lightcone.*` namespace is a PEP 420 implicit namespace package.
-**Do not add `src/lightcone/__init__.py`** — that would turn it into a
-regular package and break coexistence with future sibling distributions
-(`lightcone-ui`, etc.). Any new `lightcone-*` package must live under
-`src/lightcone/<name>/` and ship only its own subpackage.
+## The layers
 
----
+### Environment (`engine/environment.py`, `engine/uv_env.py`, `launcher.py`)
 
-## Execution flow
+A project is `pyproject.toml` + `uv.lock` + `.python-version`. Mode is
+derived: the presence of `[tool.lightcone.image]` (or
+`Containerfile.extra`) *is* the escalation into containerized mode.
+`env_version` — one length-framed hash over the lock, the interpreter
+pin, the closed install-settings list, and the system-layer declaration
+— is the environment identity; it sits inside every output's
+`code_version`, so environment edits stale exactly what they can
+affect. The launcher (`lightcone/launcher.py`) owns the two-hop
+delegation: tool env → project-locked engine, with the frozen interface
+(argv passthrough + `LC_DELEGATED=1`).
+
+### Integrity (`engine/manifest.py`, `engine/status.py`, `engine/verify.py`)
+
+`code_version = sha256({recipe, decisions, env_version,
+writable_project})`; `data_version = sha256_dir(output)`. The manifest
+(SCHEMA_VERSION 2) is a declared Snakemake output of every rule — a
+missing manifest forces a re-run, closing the agent-faked-file
+scenario. `status` and `verify` read only manifests and the repo:
+offline by invariant. The one shared `code_version()` function is
+called by both the generator (write path) and status (read path), so
+they can never disagree.
+
+### Hermeticity (`engine/sandbox/`, `lightcone/_sandbox_exec.py`, `engine/boundary.py`)
+
+Every recipe and probe executes through the `ExecBoundary`: a
+per-job capability probe picks the mechanism (Landlock on Linux —
+including inside containers; Seatbelt on macOS), `policy.py` realizes
+the declared sets (own-output write, project+inputs read, env +
+versioned allowlist + ELF loaders exec, fresh per-recipe HOME/XDG),
+and the stdlib-only shim applies the restriction between fork and
+exec. The manifest's `hermeticity` field records the *applied* flags —
+downgrades are announced, never silent; `--no-sandbox` is recorded as
+`{none, open}`.
+
+### Images (`engine/image/`)
+
+Modal-inspired internals behind a one-TOML-table user surface:
+`declaration.py` parses and statically refuses; `definition.py` +
+`render.py` produce a deterministic Containerfile (fixed layering, apt
+before sync, offline ENV only in the final stage); `identity.py`
+computes `lc-env-<hash>` as a pure function of rendered text +
+`pyproject.toml` + `uv.lock` (code edits move nothing);
+`builder_podman.py` builds with pointed error mapping;
+`runtime_podman.py` runs the full stack digest-pinned under
+`--net=none`/`--userns=keep-id`; `record.py` keeps the build record
+and the dpkg snapshot attestation. `Builder` and the runtime are
+protocols — remote builders and other venues return behind them.
+
+## Repository structure
 
 ```text
-astra.yaml ── snakefile.generate() ──► .lightcone/Snakefile + .lightcone/snakefile-config.json
-                                              │
-                                       snakemake -s … -d … --executor dask
-                                              │
-                       ┌──────────────────────┼──────────────────────┐
-                       │                      │                      │
-                  DAG resolution         per-rule run:           dask scheduler
-                  (Snakemake)            shell(recipe)           (LocalCluster /
-                                         + write_manifest()       SLURM-srun /
-                                                                  external)
-                       │
-                       └─► results/<u>/<o>/data
-                           results/<u>/<o>/.lightcone-manifest.json
+src/lightcone/              # PEP 420 namespace — NO __init__.py
+├── _sandbox_exec.py        # the exec shim (stdlib-only)
+├── launcher.py             # tool-env launcher / delegation
+├── cli/                    # Click surface (init, materialize, run, status, verify, build, export)
+├── engine/
+│   ├── environment.py      # Mode, EnvironmentSpec, env_version, lock scan
+│   ├── manifest.py         # the integrity layer (SCHEMA_VERSION 2)
+│   ├── job.py              # RuleJob — the generator→worker contract
+│   ├── snakefile.py        # Snakefile generator
+│   ├── runner.py           # run_rule: the worker sequence
+│   ├── boundary.py         # ExecBoundary seam
+│   ├── sandbox/            # Landlock/Seatbelt policy, wrap, probe, denial UX
+│   ├── image/              # declaration → render → identity → build → run
+│   ├── attestation.py      # worker-side runtime capture
+│   ├── status.py verify.py # offline readers
+│   ├── dask_cluster.py     # run-scoped LocalCluster
+│   ├── scratch.py tree.py validation.py wrroc.py
+│   └── project.py uv_env.py
+└── snakemake_executor_plugin_dask/   # rules as dask tasks
 ```
 
-What Snakemake owns (we don't write it): DAG construction, topological
-execution, parallelism, dry-run, locking, retry, log capture,
-per-rule resources, `--rerun-triggers` for staleness detection.
+## Key invariants
 
-What we own: a Snakefile generator, the manifest layer (write/read/verify),
-a status walker, a verify routine, the Dask cluster manager, the
-container-runtime layer, and a Snakemake executor plugin that submits
-each rule to a Dask scheduler.
-
---- 
-
-## Configuration files
-
-| File | Scope | Purpose |
-|------|-------|---------|
-| `astra.yaml` | Project | The spec. Inputs, outputs, recipes, decisions, sub-analyses. |
-| `.lightcone/Snakefile` | Project (generated) | Auto-generated by `lc run`. Don't edit. |
-| `.lightcone/snakefile-config.json` | Project (generated) | Per-`(rule, universe)` config. |
-| `.lightcone/lightcone.yaml` | Project | Tiny scratchpad — currently writes only `target: local`. Not consumed by today's code. |
-| `~/.lightcone/config.yaml` | User | `container.runtime`. |
-
-The `dagster.yaml` and `~/.lightcone/targets/*.yaml` files referenced in
-older docs are no longer used — historical residue.
+- `astra.yaml` carries analysis structure only; the environment lives
+  in the uv project files. Legacy `container:` keys are ignored.
+- The Snakefile and `snakefile-config.json` are regenerated on every
+  `lc materialize` — never edit them.
+- A failing recipe writes no manifest; the `os.replace` in
+  `write_manifest` is the atomic commit point.
+- Recipes are never wrapped at generation time: enforcement happens at
+  exec time (the boundary), containerization at delegation time (the
+  launcher).
+- Run flags (`--no-sandbox`, `--require-sandbox`) travel to workers via
+  environment variables, never via cfg — they must not perturb the
+  content-addressed job identity.
+- The manifest records what *actually* ran — mechanism, image digest,
+  platform — never what documentation says should have run.
