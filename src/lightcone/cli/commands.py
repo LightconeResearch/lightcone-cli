@@ -1161,9 +1161,18 @@ def _print_status_header(env) -> None:  # type: ignore[no-untyped-def]
     from lightcone.engine.environment import Mode
 
     if env.mode is Mode.CONTAINERIZED:
+        from lightcone.engine.image import image_status
+
         n = len(env.image.system_packages) if env.image else 0
         mode_line = f"containerized ({n} system package{'s' if n != 1 else ''})"
-        image_line = "declared — build backend lands in a later phase"
+        try:
+            info = image_status(env.root, env)
+            if info.built:
+                image_line = f"{info.tag} — built [dim]({info.image_id})[/dim]"
+            else:
+                image_line = f"{info.tag} — needs build (run `lc build`)"
+        except ImageError as e:
+            image_line = f"[yellow]{e}[/yellow]"
     else:
         mode_line = "direct"
         image_line = "—"
@@ -1236,6 +1245,7 @@ def build(force: bool) -> None:
     content-addressed tag. Direct-mode projects have no image.
     """
     from lightcone.engine.environment import Mode
+    from lightcone.engine.image import ensure_image
 
     project = _project_root()
     env = _load_env(project)
@@ -1248,7 +1258,16 @@ def build(force: bool) -> None:
         )
         return
 
-    _refuse_containerized_interim(env.mode)
+    record = ensure_image(
+        project,
+        env,
+        force=force,
+        on_progress=lambda msg: console.print(f"[cyan]{msg}[/cyan]"),
+    )
+    console.print(
+        f"[green]✓[/green] {record.tag} — built "
+        f"[dim](image id {record.image_id[:19]}…, {record.platform})[/dim]"
+    )
 
 
 # =============================================================================
