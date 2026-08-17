@@ -91,21 +91,20 @@ def _load_env(project: Path):  # type: ignore[no-untyped-def]
     return load_environment(project)
 
 
-def _refuse_containerized_interim(mode: object) -> None:
-    """Temporary gate while the podman image backend lands.
-
-    Direct mode is fully functional; running a containerized project's
-    recipes on the host instead would record provenance that
-    misrepresents what executed — refuse rather than pretend.
+def _assert_inside_image_for_containerized(mode: object) -> None:
+    """A containerized project's execution verbs run *inside* the image
+    — the launcher delegates there. Reaching this code on the host with
+    ``LC_DELEGATED=1`` set by hand would execute recipes outside the
+    declared environment and record provenance that misrepresents what
+    ran — refuse rather than pretend.
     """
     from lightcone.engine.environment import Mode
 
-    if mode is Mode.CONTAINERIZED:
+    if mode is Mode.CONTAINERIZED and os.environ.get("LC_WORKER_RUNTIME") != "container":
         raise click.ClickException(
-            "containerized mode ([tool.lightcone.image]) is not executable "
-            "yet in this development build — the podman image backend "
-            "lands in a later migration phase. Remove the declaration to "
-            "run in direct mode."
+            "containerized projects execute inside the environment image "
+            "— invoke `lc` normally (the launcher delegates into the "
+            "image); do not set LC_DELEGATED by hand."
         )
 
 
@@ -698,7 +697,7 @@ def materialize(
 
     project = _project_root()
     env = _load_env(project)
-    _refuse_containerized_interim(env.mode)
+    _assert_inside_image_for_containerized(env.mode)
     universes = [universe] if universe else discover_universes(project)
 
     # Blast radius: surfaced before anything runs, so an environment
@@ -1001,7 +1000,7 @@ def run(no_sandbox: bool, sandbox_debug: bool, cmd: tuple[str, ...]) -> None:
         )
 
     env = _load_env(project)
-    _refuse_containerized_interim(env.mode)
+    _assert_inside_image_for_containerized(env.mode)
 
     if not cmd:
         note = " (sandboxed)" if not no_sandbox else ""
@@ -1038,7 +1037,7 @@ def run(no_sandbox: bool, sandbox_debug: bool, cmd: tuple[str, ...]) -> None:
     scope = ExecScope(
         project_root=project,
         output_dir=None,
-        read_paths=_declared_external_inputs(project),
+        read_paths=_external_inputs(project),
     )
     capability = _capability_probe()
     policy = build_policy(scope, env_prefix=project / ".venv")
@@ -1068,26 +1067,12 @@ def run(no_sandbox: bool, sandbox_debug: bool, cmd: tuple[str, ...]) -> None:
     sys.exit(proc.returncode)
 
 
-def _declared_external_inputs(project: Path) -> tuple[Path, ...]:
-    """Union of resolved external input paths across the analysis tree —
-    a probe has no output, so its read allowlist is every declared
-    input (in-tree ones are covered by the project grant)."""
-    from astra.helpers import load_yaml, resolve_analysis_tree
+def _external_inputs(project: Path) -> tuple[Path, ...]:
+    """Union of resolved external input paths — a probe has no output,
+    so its read allowlist is every declared input."""
+    from lightcone.engine.image.mounts import external_input_paths
 
-    from lightcone.engine.tree import collect_tree_inputs
-
-    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
-    paths: list[Path] = []
-    for inp_def in collect_tree_inputs(spec).values():
-        source = inp_def.get("source")
-        if not source or not isinstance(source, str):
-            continue
-        p = Path(source)
-        if not p.is_absolute():
-            p = project / p
-        if p.exists():
-            paths.append(p.resolve())
-    return tuple(paths)
+    return external_input_paths(project)
 
 
 # =============================================================================

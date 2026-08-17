@@ -25,6 +25,7 @@ from pathlib import Path
 
 from lightcone.engine import uv_env
 from lightcone.engine.environment import (
+    EnvironmentSpec,
     Mode,
     ProjectEnvironmentError,
     load_environment,
@@ -69,10 +70,8 @@ def maybe_delegate(argv: list[str]) -> None:
     uv_env.scrub(os.environ)
 
     if env.mode is Mode.CONTAINERIZED:
-        # The containerized delegation (podman full-stack) lands with the
-        # image runtime backend; until then Click's interim refusal
-        # explains the state.
-        return
+        _delegate_containerized(root, env, argv, verb)
+        return  # unreachable (exec or SystemExit)
 
     _converge_direct(root)
 
@@ -90,6 +89,52 @@ def maybe_delegate(argv: list[str]) -> None:
         ["lc", *argv],
         {**os.environ, DELEGATED_ENV: "1"},
     )
+
+
+def _delegate_containerized(
+    root: Path, env: EnvironmentSpec, argv: list[str], verb: str
+) -> None:
+    """Full-stack delegation: one ``podman run`` hosts the delegated
+    engine, its dask workers, the child snakemake, and every recipe —
+    all from the image's baked ``/opt/venv``. There is no host ``.venv``
+    for the project at all.
+
+    ``lc materialize`` builds a missing image (announced); ``lc run``
+    never builds — it errors with the exact ``lc build`` command.
+    """
+    from lightcone.engine.image import (
+        ImageError,
+        ensure_image,
+        resolve_pinned,
+    )
+    from lightcone.engine.image.machine import machine_preflight
+    from lightcone.engine.image.mounts import (
+        compute_mount_set,
+        external_input_paths,
+    )
+    from lightcone.engine.image.runtime_podman import PodmanRuntime
+
+    try:
+        runtime = PodmanRuntime()
+        if verb == "materialize":
+            record = ensure_image(
+                root,
+                env,
+                on_progress=lambda msg: print(msg, file=sys.stderr),
+            )
+        else:
+            record = resolve_pinned(root, env)
+        mounts = compute_mount_set(
+            root,
+            external_inputs=external_input_paths(root),
+            readonly_project=(verb == "run"),
+        )
+        machine_preflight(mounts.sources())
+    except ImageError as e:
+        _fail(str(e))
+        return  # unreachable
+
+    runtime.exec_full_stack(record=record, mounts=mounts, lc_argv=argv)
 
 
 def _converge_direct(root: Path) -> None:

@@ -23,7 +23,9 @@ class SandboxPolicy:
     tmp_home: Path  # fresh per-recipe HOME under the writable tmp scope
     env: dict[str, str]  # HOME/XDG/MPLCONFIGDIR/PYTHONPYCACHEPREFIX
     fs_scope: Literal["declared", "project-rw"]
-    exec_allowlist_version: int
+    #: None ⇔ the allowlist did not apply (in-container: the image
+    #: contents are the exec set).
+    exec_allowlist_version: int | None
     #: Allowlist names that did not resolve on this host (surfaced by
     #: --sandbox-debug; never fatal).
     unresolved_utilities: tuple[str, ...] = ()

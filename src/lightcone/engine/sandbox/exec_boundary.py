@@ -72,10 +72,14 @@ class SandboxExecBoundary:
                 attestation=attestation,
             )
 
+        in_container = (
+            os.environ.get(probe_mod.WORKER_RUNTIME_ENV) == "container"
+        )
         policy = build_policy(
             scope,
             env_prefix=self._env_prefix(scope),
             scratch_dirs=self._scratch_dirs(scope),
+            image_is_exec_set=in_container,
         )
         wrapped = wrap_command(command, policy, capability)
         attestation = probe_mod.compose_attestation(

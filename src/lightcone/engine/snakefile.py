@@ -400,6 +400,24 @@ def generate(
     git_remote = _git_remote(project_path)
     lc_version = _lc_version()
 
+    # Containerized mode: pin every job to the image the driver resolved
+    # — the digest travels in the job command and run_rule asserts it.
+    image_tag: str | None = None
+    image_digest: str | None = None
+    dpkg_snapshot_sha256: str | None = None
+    if env.mode is Mode.CONTAINERIZED:
+        from lightcone.engine.image import read_record
+
+        record = read_record(project_path)
+        if record is None or record.env_version != env.env_version:
+            raise ProjectEnvironmentError(
+                "the environment image is not built for the current "
+                "environment — run `lc build`."
+            )
+        image_tag = record.tag
+        image_digest = record.image_id
+        dpkg_snapshot_sha256 = record.dpkg_snapshot_sha256
+
     for to in tree_outputs:
         recipe = to.output_def.get("recipe")
         if recipe is None:
@@ -494,6 +512,9 @@ def generate(
                 worker_runtime=(
                     "container" if env.mode is Mode.CONTAINERIZED else "host"
                 ),
+                image_tag=image_tag,
+                image_digest=image_digest,
+                dpkg_snapshot_sha256=dpkg_snapshot_sha256,
             ).to_cfg()
 
     lightcone_dir = project_path / LIGHTCONE_DIR

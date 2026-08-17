@@ -133,18 +133,27 @@ class TestDelegation:
         assert "uv add lightcone-cli" in capsys.readouterr().err
         assert exec_calls == []
 
-    def test_containerized_returns_to_click(
+    def test_containerized_delegates_into_image(
         self,
         tmp_path: Path,
         exec_calls: list,
         sync_calls: list,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Interim: the containerized branch falls through to Click's
-        refusal (the podman runtime backend replaces this)."""
+        """The containerized branch hands off to the podman full-stack
+        delegation — never a host sync, never a host .venv exec."""
+        delegations: list[tuple[Path, list[str], str]] = []
+
+        def fake_delegate(root: Path, env, argv: list[str], verb: str) -> None:
+            delegations.append((root, argv, verb))
+            raise SystemExit(0)
+
+        monkeypatch.setattr(launcher, "_delegate_containerized", fake_delegate)
         p = make_project(tmp_path / "proj", containerized=True)
         monkeypatch.chdir(p)
-        maybe_delegate(["materialize"])
+        with pytest.raises(SystemExit):
+            maybe_delegate(["materialize", "-u", "baseline"])
+        assert delegations == [(p, ["materialize", "-u", "baseline"], "materialize")]
         assert exec_calls == []
         assert sync_calls == []
 

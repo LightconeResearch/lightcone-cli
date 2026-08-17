@@ -78,12 +78,20 @@ def build_policy(
     *,
     env_prefix: Path,
     scratch_dirs: tuple[Path, ...] = (),
+    image_is_exec_set: bool = False,
 ) -> SandboxPolicy:
     """Realize the §7 policy for one exec.
 
     *env_prefix* is the recipe environment's prefix (``<project>/.venv``
     in direct mode, ``/opt/venv`` in an image); its ``bin`` gets a
     directory EXECUTE grant.
+
+    *image_is_exec_set* (containerized mode): everything present in the
+    image WAS declared — the apt layer and extra stage are hashed into
+    the environment identity — so the whole OS gets the EXECUTE grant
+    and the utility allowlist is moot. The write/read scoping is
+    unchanged: in-container Landlock still fences recipes to their own
+    output.
     """
     tmp_home = Path(tempfile.mkdtemp(prefix="lc-home-"))
     for sub in (".config", ".cache", ".local/share", ".mplconfig", ".pycache"):
@@ -123,12 +131,17 @@ def build_policy(
             execute.append(install_root)
             read.append(install_root)
     unresolved: list[str] = []
-    for name in EXEC_ALLOWLIST_V1:
-        hit = shutil.which(name, path=_UTILITY_PATH)
-        if hit is None:
-            unresolved.append(name)
-        else:
-            execute.append(Path(hit).resolve())
+    if image_is_exec_set:
+        for p in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt"):
+            if Path(p).exists():
+                execute.append(Path(p).resolve())
+    else:
+        for name in EXEC_ALLOWLIST_V1:
+            hit = shutil.which(name, path=_UTILITY_PATH)
+            if hit is None:
+                unresolved.append(name)
+            else:
+                execute.append(Path(hit).resolve())
     execute.extend(_elf_loaders())
 
     env = {
@@ -147,6 +160,11 @@ def build_policy(
         tmp_home=tmp_home,
         env=env,
         fs_scope=fs_scope,  # type: ignore[arg-type]
-        exec_allowlist_version=EXEC_ALLOWLIST_VERSION,
+        # In-container the image contents are the exec set — recording
+        # an allowlist version there would claim a policy that didn't
+        # apply.
+        exec_allowlist_version=(
+            None if image_is_exec_set else EXEC_ALLOWLIST_VERSION
+        ),
         unresolved_utilities=tuple(unresolved),
     )
