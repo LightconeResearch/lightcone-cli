@@ -82,30 +82,6 @@ def test_project_config_expands(
     assert resolve_scratch_root(project) == tmp_path / "expanded"
 
 
-def test_site_default_resolves_when_env_set(
-    monkeypatch: pytest.MonkeyPatch, project: Path, tmp_path: Path
-) -> None:
-    monkeypatch.delenv(LIGHTCONE_SCRATCH_ENV, raising=False)
-    monkeypatch.setenv("SCRATCH", str(tmp_path / "lustre"))
-    import socket
-    monkeypatch.setattr(socket, "gethostname", lambda: "perlmutter-login01")
-    assert resolve_scratch_root(project) == tmp_path / "lustre"
-
-
-def test_site_default_falls_through_when_env_missing(
-    monkeypatch: pytest.MonkeyPatch, project: Path
-) -> None:
-    """If a known site's scratch_root is ``$SCRATCH`` and ``SCRATCH`` is
-    not set, the unexpanded ``$SCRATCH`` mustn't become a literal path —
-    we fall through to the tempdir fallback instead.
-    """
-    monkeypatch.delenv(LIGHTCONE_SCRATCH_ENV, raising=False)
-    monkeypatch.delenv("SCRATCH", raising=False)
-    import socket
-    monkeypatch.setattr(socket, "gethostname", lambda: "perlmutter-login01")
-    resolved = resolve_scratch_root(project)
-    assert "$" not in str(resolved)
-    assert resolved == Path(tempfile.gettempdir())
 
 
 def test_fallback_to_tempdir(monkeypatch: pytest.MonkeyPatch, project: Path) -> None:

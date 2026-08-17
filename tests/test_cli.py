@@ -45,24 +45,6 @@ def test_help_does_not_advertise_removed_commands(runner: CliRunner) -> None:
     assert "  setup " not in result.output
 
 
-def test_first_invocation_auto_creates_global_config(
-    runner: CliRunner, _isolated_home: Path, tmp_path: Path
-) -> None:
-    config = _isolated_home / ".lightcone" / "config.yaml"
-    assert not config.exists()
-    # Any real subcommand triggers the group callback; ``init`` runs cleanly
-    # without a pre-existing project.
-    project = tmp_path / "proj"
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv"]
-    )
-    assert result.exit_code == 0, result.output
-    assert config.exists()
-    assert "runtime: auto" in config.read_text()
-
-
-# ---- lc init --------------------------------------------------------------
-
 
 def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
@@ -239,13 +221,6 @@ def test_engine_errors_render_cleanly(
     assert "Traceback" not in result.output
 
 
-def test_cloudbuild_error_is_a_container_build_error() -> None:
-    """One boundary handler must cover both local and Cloud Build failures."""
-    from lightcone.engine.cloudbuild import CloudBuildError
-    from lightcone.engine.container import ContainerBuildError
-
-    assert issubclass(CloudBuildError, ContainerBuildError)
-
 
 def test_init_repairs_missing_piece(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
@@ -353,16 +328,6 @@ def test_run_rename_guard_fires_on_output_id(
     assert result.exit_code != 0
     assert "lc materialize best_fit" in result.output
     assert "materialized, not run" in result.output
-
-
-def test_run_rename_guard_fires_on_old_flags(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project = _probe_project(tmp_path)
-    monkeypatch.chdir(project)
-    result = runner.invoke(main, ["run", "--universe", "baseline"])
-    assert result.exit_code != 0
-    assert "lc materialize" in result.output
 
 
 def test_run_requires_uv_project(

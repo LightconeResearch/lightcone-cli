@@ -17,17 +17,7 @@ Two surfaces:
   inside the configured container runtime.
 
 Supported runtimes:
-    * ``docker`` / ``podman`` — local desktop or build host
-    * ``podman-hpc`` — NERSC-style login nodes; ``build`` migrates the
-      image so compute-node apptainer can read it. ``run`` still uses
-      ``podman-hpc`` directly.
-    * ``kubernetes`` — the execution environment (a Dask Gateway worker
-      pod) already *is* the container: ``lc run`` starts the cluster
-      with the project's image, so ``wrap_recipe`` is a passthrough and
-      images resolve to registry refs (``<registry>/lc-<name>:<hash>``)
-      instead of local-store tags. Building goes through a remote
-      builder (:mod:`lightcone.engine.cloudbuild`), never a local OCI
-      CLI.
+    * ``podman`` — rootless, daemonless; the only container engine.
     * ``none`` — no container; recipe runs on the host. Useful for
       development and for projects that don't need isolation.
 """
@@ -36,7 +26,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import shlex
 import shutil
@@ -48,31 +37,10 @@ from pathlib import Path
 
 import yaml
 
-from lightcone.engine.site_registry import detect_current_site
-
 logger = logging.getLogger(__name__)
 
-#: Supported runtimes, in fallback detection order. The site registry can
-#: move a site's declared ``container_runtime`` to the front (see
-#: :func:`detect_runtime`). Order rationale: podman-hpc first because
-#: anyone who installed the HPC wrapper did so on purpose and plain
-#: podman would build images compute nodes can't read; then podman
-#: (rootless, no daemon); docker last, gated behind a ``docker info``
-#: probe so a down daemon doesn't silently win over a healthy podman.
-RUNTIMES: tuple[str, ...] = ("podman-hpc", "podman", "docker")
-
-#: The non-OCI-CLI runtime: recipes run directly inside a worker pod
-#: that was started from the project's image. Never auto-detected from
-#: PATH — it is selected by site detection (a Dask Gateway deployment)
-#: or pinned explicitly in ``~/.lightcone/config.yaml``.
-KUBERNETES = "kubernetes"
-
-#: Registry prefix images are pushed to / pulled from on a deployment
-#: with a remote builder (e.g. ``europe-west1-docker.pkg.dev/<project>/
-#: <repo>`` on a lightcone JupyterHub). Injected into user pods by the
-#: deployment; its presence is half of the Cloud Build contract (see
-#: :mod:`lightcone.engine.cloudbuild`).
-REGISTRY_ENV = "LIGHTCONE_REGISTRY"
+#: Supported container runtimes. podman only: rootless, no daemon.
+RUNTIMES: tuple[str, ...] = ("podman",)
 
 #: Files whose contents contribute to the image tag hash.
 DEPENDENCY_FILES = (
@@ -123,19 +91,10 @@ class ContainerStatus:
 class RuntimeChoice:
     """Result of resolving the container runtime to use.
 
-    ``runtime`` is the resolved value (``docker | podman | podman-hpc | none``).
-    ``explicit`` is ``True`` when the user pinned this value in
-    ``~/.lightcone/config.yaml`` — i.e. they typed ``runtime: docker``,
-    ``runtime: podman``, … or ``runtime: none``. ``False`` means
-    ``runtime: auto`` (or no config), and the runtime is whatever
-    detection produced — including ``none`` as a silent fallback.
-
-    Callers use ``explicit`` to decide whether silently running without
-    isolation is acceptable. When the user explicitly opted out, no
-    surprise. When auto fell back to ``none`` against the spec's
-    declared containers, the manifest's ``container_image`` field would
-    misrepresent what actually executed — that is a provenance hazard
-    and the caller should warn or refuse to proceed.
+    ``runtime`` is the resolved value (``podman | none``). ``explicit``
+    is ``True`` when the user pinned this value in
+    ``~/.lightcone/config.yaml``; ``False`` means detection produced it
+    — including ``none`` as a silent fallback when podman is absent.
     """
 
     runtime: str
@@ -148,58 +107,8 @@ class RuntimeChoice:
 
 
 def detect_runtime() -> str | None:
-    """Return the first usable runtime in :func:`_detection_order`, or ``None``.
-
-    "Usable" means the binary is on PATH and (for docker) its daemon
-    answers ``docker info``. Site-declared preferences (e.g. Perlmutter
-    → podman-hpc) are *hints* — missing-from-PATH falls through to the
-    next candidate. Errors on missing-but-explicit user config are
-    :func:`load_runtime`'s job.
-
-    A site that declares ``container_runtime: kubernetes`` (a Dask
-    Gateway deployment) short-circuits the PATH probing entirely —
-    there is no binary to find; the pod itself is the container.
-    """
-    if _site_preferred_runtime() == KUBERNETES:
-        return KUBERNETES
-    for runtime in _detection_order():
-        if shutil.which(runtime) is None:
-            continue
-        if runtime == "docker" and not _docker_daemon_up():
-            continue
-        return runtime
-    return None
-
-
-def _detection_order() -> tuple[str, ...]:
-    """RUNTIMES with the host site's preferred runtime moved to the front."""
-    preferred = _site_preferred_runtime()
-    if preferred is None:
-        return RUNTIMES
-    return (preferred, *(r for r in RUNTIMES if r != preferred))
-
-
-def _site_preferred_runtime() -> str | None:
-    """Return the host site's declared ``container_runtime``, else ``None``.
-
-    Returns ``None`` when no site matches, no preference is declared, or
-    the declared value is not a known runtime — never raises.
-    """
-    preferred = detect_current_site().get("container_runtime")
-    return preferred if preferred in (*RUNTIMES, KUBERNETES) else None
-
-
-def _docker_daemon_up() -> bool:
-    try:
-        result = subprocess.run(
-            ["docker", "info"],
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
-    return result.returncode == 0
+    """Return ``"podman"`` when it is on PATH, else ``None``."""
+    return "podman" if shutil.which("podman") else None
 
 
 def _global_config_path() -> Path:
@@ -209,17 +118,10 @@ def _global_config_path() -> Path:
 def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
     """Resolve the container runtime to use.
 
-    Reads ``container.runtime`` from ``~/.lightcone/config.yaml`` (the
-    project_path is accepted for future per-project overrides but is not
-    consulted today). Values:
-
-    * ``auto`` (default) — first available runtime in :data:`RUNTIMES`,
-      else falls back to ``"none"`` with ``explicit=False``. On a site
-      that declares ``container_runtime: kubernetes``, auto resolves to
-      :data:`KUBERNETES` without any PATH probing.
-    * ``docker | podman | podman-hpc`` — explicit; binary must exist.
-    * ``kubernetes`` — explicit; no binary involved.
-    * ``none`` — explicit opt-out; recipes run on the host.
+    Reads ``container.runtime`` from ``~/.lightcone/config.yaml`` when
+    present. Values: ``auto`` (default — podman if on PATH, else
+    ``none``), ``podman`` (explicit; binary must exist), ``none``
+    (explicit opt-out; recipes run on the host).
 
     Raises :class:`ContainerBuildError` if an explicit runtime is
     configured but its binary is missing on PATH, or if the configured
@@ -237,12 +139,12 @@ def load_runtime(*, project_path: Path | None = None) -> RuntimeChoice:
 
     if requested == "auto":
         return RuntimeChoice(runtime=detect_runtime() or "none", explicit=False)
-    if requested in ("none", KUBERNETES):
-        return RuntimeChoice(runtime=requested, explicit=True)
+    if requested == "none":
+        return RuntimeChoice(runtime="none", explicit=True)
     if requested not in RUNTIMES:
         raise ContainerBuildError(
             f"Unknown container.runtime {requested!r} in {cfg_path}. "
-            f"Expected one of: auto, none, {KUBERNETES}, {', '.join(RUNTIMES)}."
+            f"Expected one of: auto, none, {', '.join(RUNTIMES)}."
         )
     if shutil.which(requested) is None:
         raise ContainerBuildError(
@@ -413,42 +315,6 @@ def compute_image_tag(
     return f"lc-{safe_name}-{digest}"
 
 
-def registry_image_ref(
-    project_name: str,
-    containerfile: Path,
-    project_path: Path,
-    *,
-    registry: str,
-) -> str:
-    """Content-addressed registry ref: ``<registry>/lc-<name>:<digest>``.
-
-    Same identity as :func:`compute_image_tag`, spelled for a registry:
-    the digest moves into the tag position so one repository per project
-    accumulates its image history.
-    """
-    safe_name, digest = image_identity(project_name, containerfile, project_path)
-    return f"{registry.rstrip('/')}/lc-{safe_name}:{digest}"
-
-
-def deployment_registry() -> str | None:
-    """The deployment-injected registry prefix, or ``None`` off-deployment."""
-    registry = (os.environ.get(REGISTRY_ENV) or "").strip()
-    return registry.rstrip("/") or None
-
-
-def runtime_registry(runtime: str) -> str | None:
-    """Registry prefix image identities resolve against under *runtime*.
-
-    The single source of truth for "which spelling of the image identity
-    does this runtime use": the deployment registry on
-    :data:`KUBERNETES` (worker pods pull from a registry), ``None`` —
-    local-store tags — everywhere else. Shared by the Snakefile
-    generator and the status walker so their ``code_version``s can
-    never disagree about the image identity.
-    """
-    return deployment_registry() if runtime == KUBERNETES else None
-
-
 def _safe_relpath(path: Path, root: Path) -> str:
     try:
         return path.resolve().relative_to(root.resolve()).as_posix()
@@ -549,23 +415,9 @@ def is_containerfile(spec: str, project_path: Path) -> bool:
 
 def image_exists_locally(tag: str, *, runtime: str) -> bool:
     """Check whether *tag* exists in the runtime's local image store."""
-    if runtime == "podman-hpc":
-        return image_exists_podman_hpc(tag)
     try:
         result = subprocess.run(
             [runtime, "image", "inspect", tag],
-            capture_output=True,
-            check=False,
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
-
-
-def image_exists_podman_hpc(tag: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["podman-hpc", "image", "exists", tag],
             capture_output=True,
             check=False,
         )
@@ -616,8 +468,7 @@ def build_image(
     """Build a container image with the given *runtime*.
 
     The build context is staged into a fresh tempdir before invocation
-    (see :func:`_populate_build_context`). For ``podman-hpc``, the image
-    is automatically migrated after build so compute nodes can access it.
+    (see :func:`_populate_build_context`).
 
     Raises :class:`ContainerBuildError` on failure.
     """
@@ -648,9 +499,6 @@ def build_image(
                 f"{runtime} build failed (exit code {proc.returncode}):\n{proc.stderr}"
             )
 
-        if runtime == "podman-hpc":
-            _podman_hpc_migrate(tag)
-
         return ContainerBuildResult(
             tag=tag,
             already_existed=False,
@@ -664,8 +512,8 @@ def pull_image(image: str, *, runtime: str) -> None:
     """Pull *image* into the runtime's local image store.
 
     Used by ``lc build`` so that pre-built registry images (e.g.
-    ``python:3.12-slim``) are present before ``lc run`` invokes the
-    runtime with ``--pull=never``.
+    ``python:3.12-slim``) are present before ``lc materialize`` invokes
+    the runtime with ``--pull=never``.
 
     Raises :class:`ContainerBuildError` on failure or if *runtime* isn't
     on PATH.
@@ -690,26 +538,6 @@ def pull_image(image: str, *, runtime: str) -> None:
             f"{runtime} pull {image} failed (exit code {proc.returncode}):\n"
             f"{proc.stderr}"
         )
-    if runtime == "podman-hpc":
-        _podman_hpc_migrate(image)
-
-
-def _podman_hpc_migrate(tag: str) -> None:
-    """Run ``podman-hpc migrate <tag>`` to make image available on compute nodes."""
-    try:
-        proc = subprocess.run(
-            ["podman-hpc", "migrate", tag],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        raise ContainerBuildError("podman-hpc not found — cannot migrate image.")
-    if proc.returncode != 0:
-        raise ContainerBuildError(
-            f"podman-hpc migrate failed (exit code {proc.returncode}):\n{proc.stderr}"
-        )
-    logger.info("podman-hpc migrate %s succeeded.", tag)
 
 
 # ---------------------------------------------------------------------------
@@ -722,16 +550,13 @@ def resolve_image_for_run(
     *,
     project_path: Path,
     project_name: str,
-    registry: str | None = None,
 ) -> str | None:
     """Translate an astra.yaml ``container:`` value into the image tag
     that the runtime will execute.
 
     * ``None`` / empty → ``None`` (no container).
     * Path to a Containerfile in the project → the content-addressed
-      identity ``lc build`` produces: a local-store tag
-      (``lc-<name>-<hash>``), or with *registry* set (a deployment with
-      a remote builder) the registry ref (``<registry>/lc-<name>:<hash>``).
+      local-store tag ``lc build`` produces (``lc-<name>-<hash>``).
     * Anything else (registry image, e.g. ``python:3.12-slim``, or a
       pre-namespaced ``ghcr.io/foo/bar:tag``) → returned as-is for the
       runtime to pull.
@@ -740,10 +565,6 @@ def resolve_image_for_run(
         return None
     if is_containerfile(spec, project_path):
         containerfile = project_path / spec
-        if registry is not None:
-            return registry_image_ref(
-                project_name, containerfile, project_path, registry=registry
-            )
         return compute_image_tag(project_name, containerfile, project_path)
     return spec
 
@@ -751,8 +572,6 @@ def resolve_image_for_run(
 def make_image_tag_resolver(
     project_path: Path,
     project_name: str,
-    *,
-    registry: str | None = None,
 ) -> Callable[[str | None], str | None]:
     """Memoizing wrapper around :func:`resolve_image_for_run`.
 
@@ -770,7 +589,6 @@ def make_image_tag_resolver(
             spec,
             project_path=project_path,
             project_name=project_name,
-            registry=registry,
         )
         cache[spec] = tag
         return tag
@@ -794,18 +612,13 @@ def wrap_recipe(
     No-op cases:
         * *image* is ``None`` → recipe returned unchanged
         * *runtime* is ``"none"`` → recipe returned unchanged
-        * *runtime* is :data:`KUBERNETES` → recipe returned unchanged:
-          the Dask worker pod executing it was started from *image*, so
-          wrapping would be containerizing twice. The image still flows
-          into ``code_version`` and the manifest — provenance records
-          the pod's image, which is what actually ran the recipe.
 
     The recipe is shell-quoted with :func:`shlex.quote` and passed as the
     argument to ``bash -c`` inside the container, which keeps single
     quotes, dollar signs, and other shell metacharacters intact across
     the host bash → runtime CLI → container bash boundaries.
     """
-    if image is None or runtime in ("none", KUBERNETES):
+    if image is None or runtime == "none":
         return recipe
     if runtime not in RUNTIMES:
         raise ContainerBuildError(
@@ -816,10 +629,8 @@ def wrap_recipe(
     # short-name resolution against ``unqualified-search-registries``
     # in registries.conf — that fails for ``lc-<project>-<hash>`` tags
     # produced by ``lc build`` even though the image sits in local
-    # storage. Telling the runtime not to fetch sidesteps the issue and
-    # is the same semantics on docker and podman-hpc. Registry images
-    # (``python:3.12-slim``, ``ghcr.io/...``) must be pulled in advance
-    # by ``lc build``.
+    # storage. Registry images (``python:3.12-slim``, ``ghcr.io/...``)
+    # must be pulled in advance by ``lc build``.
     #
     # Bind-mount and chdir to $PWD so recipes that write to relative
     # paths land in the project tree. Snakemake invokes us with
@@ -851,23 +662,9 @@ def get_container_status(
         return ContainerStatus(type="prebuilt", image=spec)
 
     containerfile = project_path / spec
-    if runtime == KUBERNETES and (registry := deployment_registry()) is not None:
-        from lightcone.engine.cloudbuild import registry_image_exists
-
-        ref = registry_image_ref(
-            project_name, containerfile, project_path, registry=registry
-        )
-        return ContainerStatus(
-            type="build",
-            image=ref,
-            exists=registry_image_exists(ref),
-            containerfile=spec,
-        )
     tag = compute_image_tag(project_name, containerfile, project_path)
     exists = (
-        image_exists_locally(tag, runtime=runtime)
-        if runtime not in ("none", KUBERNETES)
-        else None
+        image_exists_locally(tag, runtime=runtime) if runtime != "none" else None
     )
     return ContainerStatus(
         type="build",

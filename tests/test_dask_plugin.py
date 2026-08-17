@@ -137,13 +137,6 @@ def test_run_shell_success_drops_noise() -> None:
     assert block == ""
 
 
-def test_unpack_result_accepts_legacy_int() -> None:
-    """Workers running an older lightcone-cli release return a bare int."""
-    from snakemake_executor_plugin_dask.executor import _unpack_result
-
-    assert _unpack_result(1) == (1, "")
-    assert _unpack_result((0, "block\n")) == (0, "block\n")
-
 
 def test_connect_client_requires_rendezvous(
     monkeypatch: object,
@@ -154,54 +147,9 @@ def test_connect_client_requires_rendezvous(
     from snakemake_executor_plugin_dask.executor import _connect_client
 
     monkeypatch.delenv("DASK_SCHEDULER_ADDRESS", raising=False)  # type: ignore[attr-defined]
-    monkeypatch.delenv("LIGHTCONE_GATEWAY_CLUSTER", raising=False)  # type: ignore[attr-defined]
-    with pytest.raises(WorkflowError, match="LIGHTCONE_GATEWAY_CLUSTER"):
+    with pytest.raises(WorkflowError, match="DASK_SCHEDULER_ADDRESS"):
         _connect_client()
 
-
-def test_connect_client_gateway_rendezvous_by_name(
-    monkeypatch: object,
-) -> None:
-    """With LIGHTCONE_GATEWAY_CLUSTER set, the executor rejoins the run's
-    cluster through the Gateway API — never dials gateway:// directly."""
-    import sys
-    from types import SimpleNamespace
-
-    from snakemake_executor_plugin_dask.executor import _connect_client
-
-    record: dict[str, object] = {}
-
-    class _FakeClient:
-        def close(self) -> None:
-            record["client_closed"] = True
-
-    class _FakeCluster:
-        def get_client(self) -> _FakeClient:
-            return _FakeClient()
-
-        def close(self) -> None:
-            record["cluster_closed"] = True
-
-    class _FakeGateway:
-        def connect(self, name: str, shutdown_on_close: bool = True):
-            record["connected"] = name
-            record["shutdown_on_close"] = shutdown_on_close
-            return _FakeCluster()
-
-    monkeypatch.setitem(  # type: ignore[attr-defined]
-        sys.modules, "dask_gateway", SimpleNamespace(Gateway=_FakeGateway)
-    )
-    monkeypatch.setenv("LIGHTCONE_GATEWAY_CLUSTER", "hub.abc")  # type: ignore[attr-defined]
-    monkeypatch.delenv("DASK_SCHEDULER_ADDRESS", raising=False)  # type: ignore[attr-defined]
-
-    client, closer = _connect_client()
-    assert record["connected"] == "hub.abc"
-    assert record["shutdown_on_close"] is False, (
-        "the executor is a guest — closing it must not cull the run's cluster"
-    )
-    closer()
-    assert record.get("client_closed") is True
-    assert record.get("cluster_closed") is True
 
 
 def test_job_exec_prefix_cds_into_workdir() -> None:

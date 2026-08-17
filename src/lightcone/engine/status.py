@@ -16,11 +16,7 @@ from typing import Any, Literal
 
 from astra.helpers import load_yaml, resolve_analysis_tree
 
-from lightcone.engine.container import (
-    load_runtime,
-    make_image_tag_resolver,
-    runtime_registry,
-)
+from lightcone.engine.container import make_image_tag_resolver
 from lightcone.engine.manifest import code_version, read_manifest
 from lightcone.engine.tree import (
     TreeOutput,
@@ -99,11 +95,8 @@ def get_output_status(
     spec = resolve_analysis_tree(load_yaml(spec_path), project_path)
     universe_decisions = _load_universe_decisions(project_path, spec, universe_id)
     project_name = (spec.get("name") or project_path.name).lower().replace(" ", "-")
-    # Resolve image identities exactly as `lc run` would right now —
-    # on a kubernetes deployment that's the registry ref, not the local
-    # tag, or every freshly materialized output would read as stale.
-    registry = runtime_registry(load_runtime(project_path=project_path).runtime)
-    resolve_image = make_image_tag_resolver(project_path, project_name, registry=registry)
+    # Resolve image identities exactly as `lc materialize` would.
+    resolve_image = make_image_tag_resolver(project_path, project_name)
 
     for tree_out in collect_tree_outputs(spec):
         out_dir = resolve_output_path(project_path, tree_out, universe_id) / tree_out.output_id

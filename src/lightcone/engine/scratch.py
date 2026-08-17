@@ -2,24 +2,15 @@
 
 A single concept: where lightcone keeps its operational state — snakemake
 metadata, dask worker spill, the run-exclusion lock. Resolved at the
-start of every ``lc run``. Resolution precedence (first hit wins):
+start of every ``lc materialize``. Resolution precedence (first hit wins):
 
 1. ``LIGHTCONE_SCRATCH`` env var (escape hatch / CI override).
 2. ``scratch_root`` in ``<project>/.lightcone/lightcone.yaml`` (per-project pin).
-3. ``scratch_root`` from the detected site in
-   :mod:`lightcone.engine.site_registry`. Stored as a shell expression
-   (e.g. ``$SCRATCH``) and expanded with :func:`os.path.expandvars`.
-4. :func:`tempfile.gettempdir` fallback (single-node only).
+3. :func:`tempfile.gettempdir` fallback.
 
 The resolved path is then used as the parent of ``.lightcone/`` —
 multiple projects can share one scratch root without colliding because
 snakemake state is keyed by a hash of the project's absolute path.
-
-Why this matters on NERSC: ``$HOME`` and ``/global/cfs`` are mounted on
-compute nodes via DVS, which `does not support file locking
-<https://docs.nersc.gov/performance/io/dvs/>`_. Snakemake's workflow
-lock, our run-exclusion lock, and any future coordination primitive
-silently fail there. ``$SCRATCH`` is Lustre, which works correctly.
 """
 from __future__ import annotations
 
@@ -34,8 +25,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-
-from lightcone.engine.site_registry import detect_current_site
 
 LIGHTCONE_SCRATCH_ENV = "LIGHTCONE_SCRATCH"
 
@@ -71,13 +60,6 @@ def resolve_scratch_root(project_path: Path) -> Path:
             data = {}
         if val := data.get("scratch_root"):
             return Path(os.path.expandvars(str(val))).expanduser()
-
-    if val := detect_current_site().get("scratch_root"):
-        expanded = os.path.expandvars(str(val))
-        # ``$VAR`` left intact means the env wasn't set — don't write
-        # to a literal path called ``$SCRATCH``. Fall through.
-        if not expanded.startswith("$") and "$" not in expanded:
-            return Path(expanded).expanduser()
 
     return Path(tempfile.gettempdir())
 

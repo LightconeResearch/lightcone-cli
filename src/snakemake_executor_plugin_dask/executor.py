@@ -19,7 +19,6 @@ from snakemake_interface_executor_plugins.jobs import (  # type: ignore[import-u
 )
 
 from lightcone.engine.dask_cluster import (
-    GATEWAY_CLUSTER_ENV,
     RESOURCE_CPUS,
     RESOURCE_GPUS,
     RESOURCE_MEMORY,
@@ -70,16 +69,6 @@ def _run_shell(cmd: str) -> tuple[int, str]:
     return p.returncode, block
 
 
-def _unpack_result(result: object) -> tuple[int, str]:
-    """Accept both the current ``(exit_code, block)`` result and the
-    bare ``int`` a worker running an older lightcone-cli release returns
-    (dask resolves ``_run_shell`` by module path on the worker, so
-    driver and worker versions can skew on image-based deployments)."""
-    if isinstance(result, tuple) and len(result) == 2:
-        return int(result[0]), str(result[1])
-    return int(result), ""  # type: ignore[call-overload]
-
-
 def _build_resources(job: JobExecutorInterface) -> dict[str, float]:
     """Translate Snakemake resources to Dask abstract resource units."""
     res: dict[str, float] = {}
@@ -96,41 +85,18 @@ def _build_resources(job: JobExecutorInterface) -> dict[str, float]:
 
 
 def _connect_client():  # type: ignore[no-untyped-def]
-    """Connect to the run's cluster.
+    """Connect to the run's cluster via ``DASK_SCHEDULER_ADDRESS``.
 
-    Two rendezvous modes, both set up by ``lc run``:
-
-    - :data:`GATEWAY_CLUSTER_ENV` names a Dask Gateway cluster the
-      parent created. Gateway schedulers speak a ``gateway://`` comm
-      scheme with per-cluster TLS credentials held by the Gateway API —
-      a bare ``Client`` cannot dial them, so we rejoin through
-      ``Gateway().connect(name)``.
-    - Otherwise ``DASK_SCHEDULER_ADDRESS`` is a plain scheduler address.
-
-    Returns ``(client, closer)`` where *closer* releases everything the
-    rendezvous opened.
+    The address is set up by ``lc materialize`` (the run-scoped
+    LocalCluster's scheduler). Returns ``(client, closer)`` where
+    *closer* releases everything the rendezvous opened.
     """
     from dask.distributed import Client
-
-    if name := os.environ.get(GATEWAY_CLUSTER_ENV):
-        from dask_gateway import Gateway
-
-        # shutdown_on_close=False: the parent lc run owns the cluster
-        # lifecycle; the executor is a guest.
-        cluster = Gateway().connect(name, shutdown_on_close=False)
-        client = cluster.get_client()
-
-        def closer() -> None:
-            client.close()
-            cluster.close()
-
-        return client, closer
 
     addr = os.environ.get("DASK_SCHEDULER_ADDRESS")
     if not addr:
         raise WorkflowError(
-            "Neither DASK_SCHEDULER_ADDRESS nor "
-            f"{GATEWAY_CLUSTER_ENV} is set. `lc run` should set one "
+            "DASK_SCHEDULER_ADDRESS is not set. `lc materialize` sets it "
             "before invoking snakemake; if you're calling snakemake "
             "directly, point it at a running dask scheduler."
         )
@@ -193,7 +159,7 @@ class DaskExecutor(RemoteExecutor):  # type: ignore[misc]
                 )
                 continue
 
-            exit_code, block = _unpack_result(future.result())
+            exit_code, block = future.result()
             if block:
                 # One atomic write per finished rule. We run inside the
                 # parent snakemake process, so this is naturally

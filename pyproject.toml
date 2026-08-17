@@ -36,11 +36,6 @@ dependencies = [
     "snakemake-interface-common>=1.14",
     "dask>=2024.1",
     "distributed>=2024.1",
-    # Dask Gateway client for JupyterHub/Kubernetes deployments. A
-    # normal dependency (not an extra) so `lc run` works out of the box
-    # on a hub and scaffolded project images inherit it via their
-    # lightcone-cli pin.
-    "dask-gateway>=2024.1",
     "rocrate>=0.11",
 ]
 
@@ -97,13 +92,6 @@ mypy_path = "src"
 module = ["dask.*", "distributed.*"]
 ignore_missing_imports = true
 follow_untyped_imports = true
-
-[[tool.mypy.overrides]]
-# Untyped and without explicit re-exports; skip so `from dask_gateway
-# import Gateway` doesn't trip strict no_implicit_reexport.
-module = ["dask_gateway", "dask_gateway.*"]
-ignore_missing_imports = true
-follow_imports = "skip"
 
 [[tool.mypy.overrides]]
 module = ["rocrate.*"]

@@ -4,7 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
 import yaml
 
 from lightcone.engine.manifest import code_version, write_manifest
@@ -166,38 +165,4 @@ def test_status_universe_specific(tmp_path: Path) -> None:
     assert statuses[0].status == "missing"
 
 
-def test_status_ok_on_kubernetes_deployment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """On a hub, `lc run` hashes the registry ref into code_version;
-    status must resolve the image identity the same way or every
-    freshly materialized output reads as stale (live-hub regression)."""
-    from lightcone.engine.container import registry_image_ref
 
-    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
-    monkeypatch.setenv(
-        "LIGHTCONE_REGISTRY", "europe-west1-docker.pkg.dev/hub/images"
-    )
-
-    _write_spec(
-        tmp_path,
-        {
-            "name": "proj",
-            "container": "Containerfile",
-            "outputs": [{"id": "foo", "recipe": {"command": "echo foo"}}],
-        },
-    )
-    (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
-    ref = registry_image_ref(
-        "proj",
-        tmp_path / "Containerfile",
-        tmp_path,
-        registry="europe-west1-docker.pkg.dev/hub/images",
-    )
-    _materialize(
-        tmp_path, "foo", "baseline", recipe="echo foo", container_image=ref
-    )
-
-    statuses = list(get_output_status(tmp_path, universe_id="baseline"))
-    assert [s.status for s in statuses] == ["ok"]

@@ -14,9 +14,6 @@ Commands:
 - ``lc status``      — manifest-driven status walk (no Snakemake needed).
 - ``lc verify``      — recompute hashes and validate the provenance chain.
 - ``lc build``       — build container images.
-
-The global config at ``~/.lightcone/config.yaml`` is auto-created with
-defaults on first invocation if missing.
 """
 
 from __future__ import annotations
@@ -45,11 +42,11 @@ logger = logging.getLogger(__name__)
 class _EngineErrorGroup(click.Group):
     """Render engine errors as clean CLI errors instead of tracebacks.
 
-    The engine raises :class:`ContainerBuildError` (and its subclass
-    ``CloudBuildError``) from many entry points — tag hashing, builds,
-    status walks. Translating once at the group boundary keeps every
-    command, present and future, from leaking a raw traceback; click
-    prints ``ClickException`` messages cleanly and exits 1.
+    The engine raises :class:`ContainerBuildError` from many entry
+    points — tag hashing, builds, status walks. Translating once at the
+    group boundary keeps every command, present and future, from leaking
+    a raw traceback; click prints ``ClickException`` messages cleanly
+    and exits 1.
     """
 
     def invoke(self, ctx: click.Context) -> object:
@@ -59,37 +56,12 @@ class _EngineErrorGroup(click.Group):
             raise click.ClickException(str(e)) from e
 
 
-def _config_path() -> Path:
-    return Path.home() / ".lightcone" / "config.yaml"
-
-
-def _ensure_global_config() -> None:
-    """Create ``~/.lightcone/config.yaml`` with defaults if missing."""
-    config = _config_path()
-    if config.exists():
-        return
-    config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(
-        yaml.safe_dump(
-            {
-                # Container runtime used by `lc build` and embedded in every
-                # recipe by `lc run`. ``auto`` picks the first of
-                # podman/docker/podman-hpc found on PATH (skipping docker if
-                # its daemon is unreachable); set explicitly to pin. ``none``
-                # disables containerization entirely.
-                "container": {"runtime": "auto"},
-            }
-        )
-    )
-
-
 @click.group(cls=_EngineErrorGroup)
 @click.version_option(package_name="lightcone-cli")
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """lightcone-cli — execution layer for ASTRA projects."""
     ctx.ensure_object(dict)
-    _ensure_global_config()
 
 
 # =============================================================================
@@ -172,8 +144,6 @@ def init(
     ``.gitignore`` entries, ``.lightcone/`` project state, a template
     MyST report (``myst.yml`` + ``index.md``), and an optional venv.
     """
-    from lightcone.engine.site_registry import detect_current_site
-
     directory = directory.resolve()
     write = not check_only
 
@@ -409,22 +379,6 @@ def init(
             console.print(f"\n[green]Project already converged at[/green] {directory}")
         else:
             console.print(f"\n[green]Project converged at[/green] {directory}")
-
-        # Surface the resolved scratch root if a known site was detected —
-        # gives users early visibility into where lc run will keep its
-        # operational state (snakemake metadata, dask spill, cross-node
-        # locks). On NERSC this is critical: $HOME and CFS are mounted via
-        # DVS (no flock, slow small-file I/O), so lightcone keeps
-        # everything on $SCRATCH (Lustre).
-        site = detect_current_site()
-        if site:
-            scratch_expr = scratch_override or site.get("scratch_root")
-            if scratch_expr:
-                console.print(f"\n[dim]Detected site:[/dim] {site.display_name}")
-                console.print(
-                    f"[dim]Scratch root for lc run:[/dim] [cyan]{scratch_expr}[/cyan] "
-                    f"[dim](resolved at run time)[/dim]"
-                )
 
         # Next steps only make sense for a freshly scaffolded spec.
         if "astra.yaml" in report["created"]:
@@ -700,37 +654,6 @@ numbers in live, e.g.:
 # =============================================================================
 
 
-def _abort_on_perlmutter_login() -> None:
-    """Stop-gap: refuse ``lc run`` on a Perlmutter login node.
-
-    NERSC sets ``NERSC_HOST=perlmutter`` on every node; SLURM sets
-    ``SLURM_JOB_ID`` only inside an allocation. Their conjunction (NERSC
-    host + no allocation) unambiguously marks a login node, where shared
-    CPU and the absence of compute resources make a real run a bad idea.
-
-    Bypassed when ``DASK_SCHEDULER_ADDRESS`` is set, matching the branch
-    in ``cluster_for_run``: if the user is targeting an external
-    scheduler the login-node CPU does not matter.
-
-    Remove once proper site-backend gating exists.
-    """
-    if os.environ.get("LIGHTCONE_ALLOW_LOGIN_NODE"):
-        return
-    if os.environ.get("NERSC_HOST") != "perlmutter":
-        return
-    if "SLURM_JOB_ID" in os.environ:
-        return
-    if os.environ.get("DASK_SCHEDULER_ADDRESS"):
-        return
-    raise click.ClickException(
-        "Refusing to run on a Perlmutter login node — compute work must "
-        "run inside a SLURM allocation.\n"
-        "  Start one with, e.g.:\n"
-        "    salloc -N 1 -C gpu -q interactive -t 1:00:00 -A <account>\n"
-        "  then re-run `lc materialize` from inside."
-    )
-
-
 @main.command()
 @click.argument("outputs", nargs=-1)
 @click.option("--universe", "-u", default=None, help="Universe to materialize")
@@ -752,15 +675,10 @@ def materialize(
 ) -> None:
     """Materialize outputs declared in astra.yaml.
 
-    Always dispatches through a Dask cluster: a ``LocalCluster`` on a
-    workstation, srun-launched workers inside a SLURM allocation, a
-    run-scoped Dask Gateway cluster on a JupyterHub deployment, or an
-    existing scheduler if ``DASK_SCHEDULER_ADDRESS`` is set.
+    Dispatches through a run-scoped Dask ``LocalCluster``.
     """
-    _abort_on_perlmutter_login()
-
     from lightcone.engine.container import load_runtime
-    from lightcone.engine.dask_cluster import cluster_for_run, gateway_branch_active
+    from lightcone.engine.dask_cluster import cluster_for_run
     from lightcone.engine.scratch import (
         RunLockBusyError,
         acquire_run_lock,
@@ -775,67 +693,18 @@ def materialize(
 
     # Resolve scratch and prepare per-run directories before anything
     # else. Snakemake's ``.snakemake/`` is redirected via symlink so its
-    # workflow lock and metadata land on a filesystem that honours
-    # ``flock`` (Lustre on NERSC) rather than DVS-mounted home/CFS where
-    # locks are silent no-ops. Dask spill and our cross-node stdout lock
-    # live alongside it.
+    # workflow lock and metadata land under the scratch root; dask spill
+    # and the run lock live alongside it.
     rundirs = prepare_run_dirs(project)
     ensure_snakemake_symlink(project, rundirs.snakemake_state)
     if verbose:
         console.print(f"[dim]Scratch root:[/dim] {resolve_scratch_root(project)}")
 
     choice = load_runtime(project_path=project)
-    images = _ensure_images(project, runtime=choice.runtime)
-    snakefile_path, cfg_path = generate(
+    _ensure_images(project, runtime=choice.runtime)
+    snakefile_path, _cfg_path = generate(
         project, universes=universes, runtime=choice.runtime
     )
-
-    # On the Gateway branch the cluster is created with one image — the
-    # worker pod is the container for every rule, so a spec declaring
-    # several distinct containers cannot be honoured per-rule.
-    worker_image: str | None = None
-    if gateway_branch_active():
-        if len(images) > 1:
-            raise click.ClickException(
-                "This deployment runs recipes natively in worker pods, "
-                "which supports one container image per run; astra.yaml "
-                "declares several: " + ", ".join(images) + ". "
-                "Consolidate on a single Containerfile (or one shared "
-                "prebuilt image)."
-            )
-        worker_image = images[0] if images else None
-
-    # Provenance guard: when ``runtime: auto`` silently fell back to
-    # ``none`` and the spec declares any containers, the recipe will run
-    # on the host while the manifest's ``container_image`` field still
-    # records the declared image — i.e. a provenance lie. Warn loudly so
-    # the user installs a runtime, sets ``runtime: none`` explicitly, or
-    # removes the container declarations.
-    if choice.runtime == "none" and not choice.explicit:
-        cfg_data = json.loads(cfg_path.read_text())
-        declared = sorted(
-            {
-                entry["container_image"]
-                for rule_entries in cfg_data.values()
-                for entry in rule_entries.values()
-                if entry.get("container_image")
-            }
-        )
-        if declared:
-            console.print(
-                "[yellow]⚠ No container runtime found on PATH "
-                "(checked docker, podman, podman-hpc).[/yellow]\n"
-                "  The following declared containers will be ignored:\n"
-                + "\n".join(f"    [dim]•[/dim] {c}" for c in declared)
-                + "\n  Recipes will run on the host without isolation, "
-                "but each manifest will still record\n"
-                "  the declared [cyan]container_image[/cyan] — recorded "
-                "provenance will not match what executed.\n"
-                "  Install [cyan]docker[/cyan], [cyan]podman[/cyan], or "
-                "[cyan]podman-hpc[/cyan], or set\n"
-                "  [cyan]container: {runtime: none}[/cyan] in "
-                "[cyan]~/.lightcone/config.yaml[/cyan] to silence.\n"
-            )
 
     targets: list[str] = []
     if outputs:
@@ -872,7 +741,6 @@ def materialize(
     with cluster_for_run(
         verbose=verbose,
         local_directory=str(rundirs.dask_local),
-        worker_image=worker_image,
         max_workers=int(n),
     ) as cluster_env:
         env = {**os.environ, **cluster_env}
@@ -1078,14 +946,6 @@ def _declared_output_ids(project: Path) -> set[str]:
     return ids
 
 
-#: Flags the old pipeline-execution ``lc run`` accepted. A probe invocation
-#: leading with one of these is almost certainly muscle memory for what is
-#: now ``lc materialize`` — steer there instead of exec'ing a flag.
-_MATERIALIZE_FLAGS = {
-    "-u", "--universe", "-j", "--jobs", "--rerun-triggers", "-f", "--force",
-}
-
-
 @main.command(context_settings={"ignore_unknown_options": True})
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
 def run(cmd: tuple[str, ...]) -> None:
@@ -1103,11 +963,6 @@ def run(cmd: tuple[str, ...]) -> None:
     # probing): a first argument naming a declared output errors before
     # any exec — silently exec'ing `best_fit` as a command would be a
     # far worse failure mode than a pointed redirect.
-    if cmd and cmd[0] in _MATERIALIZE_FLAGS:
-        raise click.ClickException(
-            "outputs are materialized, not run — did you mean: "
-            f"`lc materialize {' '.join(cmd)}`?"
-        )
     if cmd and not cmd[0].startswith("-") and cmd[0] in _declared_output_ids(project):
         raise click.ClickException(
             "outputs are materialized, not run — did you mean: "
@@ -1234,41 +1089,23 @@ def verify(universe: str | None) -> None:
 
 @main.command()
 @click.option("--force", is_flag=True, help="Rebuild all images even if cached")
-@click.option(
-    "--runtime",
-    default=None,
-    help=(
-        "docker | podman | podman-hpc | kubernetes "
-        "(overrides ~/.lightcone/config.yaml)"
-    ),
-)
-def build(force: bool, runtime: str | None) -> None:
+def build(force: bool) -> None:
     """Build container images declared in astra.yaml.
 
-    Containerfile syntax is Dockerfile syntax — we use ``docker``,
-    ``podman``, or ``podman-hpc`` directly. Each Containerfile builds to
-    an OCI image tagged ``lc-<project>-<hash>`` in the runtime's local
-    image store. Pre-built registry images (``python:3.12-slim``,
-    ``ghcr.io/foo/bar:tag``) are skipped — the runtime pulls them at
-    ``lc run`` time.
-
-    On a deployment without a local OCI runtime (the ``kubernetes``
-    runtime on a lightcone JupyterHub), the same command builds through
-    the deployment's GCP Cloud Build service instead and pushes
-    ``<registry>/lc-<project>:<hash>`` — same content-addressed
-    identity, zero configuration.
+    Containerfile syntax is Dockerfile syntax — built with ``podman``.
+    Each Containerfile builds to an OCI image tagged
+    ``lc-<project>-<hash>`` in the local image store. Pre-built registry
+    images (``python:3.12-slim``, ``ghcr.io/foo/bar:tag``) are pulled.
     """
     from lightcone.engine.container import load_runtime
 
     project = _project_root()
-    resolved_runtime = runtime or load_runtime(project_path=project).runtime
+    resolved_runtime = load_runtime(project_path=project).runtime
 
     if resolved_runtime == "none":
         console.print(
-            "[yellow]No container runtime available "
-            "(checked docker, podman, podman-hpc). "
-            "Install one to build images, or set [cyan]container.runtime[/cyan] "
-            "in [cyan]~/.lightcone/config.yaml[/cyan].[/yellow]"
+            "[yellow]podman is not on PATH — install it to build "
+            "container images.[/yellow]"
         )
         return
 
@@ -1280,15 +1117,13 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> list[
     """Build/pull every container image referenced in astra.yaml.
 
     Returns the distinct resolved images, in declaration order (local
-    tags or registry refs for Containerfile specs, prebuilt specs
-    as-is). No-op (and empty) when *runtime* is ``"none"``.
+    tags for Containerfile specs, prebuilt specs as-is). No-op (and
+    empty) when *runtime* is ``"none"``.
 
-    Idempotent: skips images already present (local image store, or the
-    deployment registry on the ``kubernetes`` runtime — where builds go
-    through Cloud Build instead of a local OCI CLI). Used by ``lc build``
-    (with ``--force`` exposed) and as a pre-flight by ``lc run`` so the
-    first invocation after editing a Containerfile doesn't fail mid-DAG
-    with a missing image.
+    Idempotent: skips images already present in the local image store.
+    Used by ``lc build`` (with ``--force`` exposed) and as a pre-flight
+    by ``lc materialize`` so the first invocation after editing a
+    Containerfile doesn't fail mid-DAG with a missing image.
     """
     if runtime == "none":
         return []
@@ -1296,7 +1131,6 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> list[
     from astra.helpers import load_yaml, resolve_analysis_tree
 
     from lightcone.engine.container import (
-        KUBERNETES,
         build_image,
         compute_image_tag,
         image_exists_locally,
@@ -1322,20 +1156,12 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> list[
         seen.add(spec_str)
         if not is_containerfile(spec_str, project):
             images.append(spec_str)
-            if runtime == KUBERNETES:
-                # Nothing to materialize: worker pods pull registry
-                # images straight from their source.
-                continue
-            # Pull so ``lc run`` can use ``--pull=never`` without
+            # Pull so ``lc materialize`` can use ``--pull=never`` without
             # depending on the runtime's registry resolution.
             if image_exists_locally(spec_str, runtime=runtime) and not force:
                 continue
             console.print(f"[cyan]Pulling[/cyan] {spec_str} [dim](via {runtime})[/dim]")
             pull_image(spec_str, runtime=runtime)
-            continue
-
-        if runtime == KUBERNETES:
-            images.append(_cloudbuild_image(project, spec_str, project_name, force))
             continue
 
         containerfile = project / spec_str
@@ -1348,50 +1174,6 @@ def _ensure_images(project: Path, *, runtime: str, force: bool = False) -> list[
         )
         build_image(tag, containerfile, project, runtime=runtime)
     return images
-
-
-def _cloudbuild_image(
-    project: Path, spec_str: str, project_name: str, force: bool
-) -> str:
-    """Ensure one Containerfile's image via GCP Cloud Build; return its ref."""
-    from lightcone.engine.cloudbuild import (
-        CloudBuildError,
-        cloudbuild_available,
-        ensure_image,
-    )
-
-    if not cloudbuild_available():
-        raise click.ClickException(
-            "No image build backend on this host: the kubernetes runtime "
-            "has no local OCI CLI and this environment does not provide "
-            "the Cloud Build contract (LIGHTCONE_REGISTRY + "
-            "LIGHTCONE_BUILD_BUCKET). On a lightcone JupyterHub these are "
-            "injected into every user pod — ask the hub admin."
-        )
-
-    status = console.status(f"[cyan]Ensuring image for[/cyan] {spec_str} …")
-    status.start()
-
-    def on_progress(phase: str, detail: str) -> None:
-        note = f" [dim]{detail}[/dim]" if detail else ""
-        status.update(
-            f"[cyan]Ensuring image for[/cyan] {spec_str}: {phase}{note}"
-        )
-
-    try:
-        ref = ensure_image(
-            project,
-            spec_str,
-            project_name=project_name,
-            force=force,
-            on_progress=on_progress,
-        )
-    except CloudBuildError as e:
-        raise click.ClickException(str(e))
-    finally:
-        status.stop()
-    console.print(f"[green]✓[/green] Worker image: [cyan]{ref}[/cyan]")
-    return ref
 
 
 # =============================================================================

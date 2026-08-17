@@ -563,37 +563,4 @@ class TestGitRemote:
         assert git_remote("\n") is None
 
 
-def test_generate_kubernetes_runtime_unwrapped_with_registry_ref(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """On the kubernetes runtime the worker pod runs the project image:
-    recipes stay unwrapped, and the image identity that flows into
-    code_version is the registry ref, so a Containerfile edit (new ref)
-    still triggers reruns."""
-    (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
-    _spec(
-        tmp_path,
-        {
-            "name": "proj",
-            "container": "Containerfile",
-            "outputs": [{"id": "foo", "recipe": {"command": "echo foo"}}],
-        },
-    )
-    monkeypatch.setenv(
-        "LIGHTCONE_REGISTRY", "europe-west1-docker.pkg.dev/hub/images"
-    )
-    _, cfg_path = generate(tmp_path, universes=["u1"], runtime="kubernetes")
-    entry = json.loads(cfg_path.read_text())["foo"]["u1"]
 
-    assert "docker run" not in entry["shell_command"]
-    assert "podman" not in entry["shell_command"]
-    assert "echo foo" in entry["shell_command"]
-    # The declared spec is what the manifest records — unchanged.
-    assert entry["container_image"] == "Containerfile"
-
-    # Same spec, docker runtime (local tag, no registry): different
-    # image identity → different code_version.
-    monkeypatch.delenv("LIGHTCONE_REGISTRY")
-    _, cfg_path2 = generate(tmp_path, universes=["u1"], runtime="docker")
-    entry2 = json.loads(cfg_path2.read_text())["foo"]["u1"]
-    assert entry["code_version"] != entry2["code_version"]
