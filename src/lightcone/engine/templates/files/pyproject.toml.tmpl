@@ -2,9 +2,6 @@
 name = "${name}"
 version = "0.0.1"
 requires-python = ">=${python_floor}"
-# Analysis dependencies: add with `uv add <package>` — never install into
-# another environment by hand. The engine (lightcone-cli) is a normal
-# locked dependency: the experiment pins its own execution layer.
 dependencies = [
     "${lc_requirement}",
 ]
