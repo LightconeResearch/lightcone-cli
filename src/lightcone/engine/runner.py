@@ -1,29 +1,33 @@
 """Per-rule execution helper invoked from the generated Snakefile.
 
-Each rule's ``run:`` block boils down to one call to :func:`run_rule`.
-The helper:
+Each rule's ``run:`` block boils down to one call to :func:`run_rule`,
+which implements the worker sequence (spec §6):
 
-* executes the rule's pre-rendered shell command through the exec
-  boundary (:mod:`lightcone.engine.boundary` — template substitution
-  happens at Snakefile-generation time, enforcement at exec time) with
-  stdout and stderr captured,
-* emits a ``▶ rule [universe]`` header, the recipe's output, and a
-  ``✓ rule [universe]   <duration>`` (or ``✗ … exit=N``) trailer,
-  each line framed with a sentinel prefix the executor extracts,
-* writes the per-output manifest on success,
-* runs the validation hook on the materialized output,
-* raises :class:`subprocess.CalledProcessError` on non-zero exit so
-  Snakemake records the job as failed and halts the DAG.
+1. **pre-gate** — recompute ``env_version`` from the project tree and
+   compare against the value baked into the job at generation time; a
+   mid-run relock aborts loudly instead of materializing under a
+   different environment than the manifest will claim.
+2. **env check** — direct mode: the env prefix exists and
+   ``uv sync --locked --exact --check`` passes (a true no-write
+   env-vs-lock verification); containerized mode: the baked image
+   identity and the driver-resolved digest match the job's pins.
+3. **boundary exec** — the recipe runs through the exec boundary
+   (:mod:`lightcone.engine.boundary`) with the offline overlay
+   (converge once, then never write to the environment) and the
+   ambient ``UV_*`` scrub; ``--require-sandbox`` is enforced here,
+   worker-side, against the *probed* enforcement level.
+4. **post-gate** — ``env_version`` re-checked before
+   :func:`~lightcone.engine.manifest.write_manifest` commits, so the
+   double gate brackets the recipe.
 
-The sentinel prefix (:data:`SENTINEL`) is what the dask executor's
-``_run_shell`` looks for when it filters worker subprocess output —
-anything else (snakemake bootstrap, dask logs, stray prints) is dropped
-on the floor. This is the entire mechanism by which lc run shows clean,
-narrative output without ever filtering against a moving target of
-upstream log strings.
+Output is emitted as sentinel-prefixed lines (:data:`SENTINEL`) the
+dask executor extracts; on non-zero exit the manifest is **not**
+written and :class:`subprocess.CalledProcessError` propagates so
+Snakemake records the job as failed.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -36,6 +40,16 @@ from typing import Any
 #: to be vanishingly unlikely in real recipe output (printable ASCII,
 #: column-0 anchored, distinctive). Kept short to minimise capture cost.
 SENTINEL = "__LCSTREAM__::"
+
+#: Per-run sandbox-flag channel, set by ``lc materialize`` for every
+#: worker (env, not cfg: run flags must not perturb the
+#: content-addressed job identity).
+NO_SANDBOX_ENV = "LC_NO_SANDBOX"
+REQUIRE_SANDBOX_ENV = "LC_REQUIRE_SANDBOX"
+
+#: Containerized-mode identity pins (set by the podman run wrapper).
+IMAGE_DIGEST_ENV = "LC_IMAGE_DIGEST"
+_BAKED_IDENTITY_PATH = "/opt/lc/identity.json"
 
 
 def _emit(line: str = "") -> None:
@@ -50,6 +64,83 @@ def _emit(line: str = "") -> None:
     sys.stdout.flush()
 
 
+class RuleGateError(RuntimeError):
+    """A worker-side integrity gate refused to run (or commit) the rule."""
+
+
+def _current_env_version(root: Path) -> str:
+    from lightcone.engine.environment import load_environment
+
+    return load_environment(root).env_version
+
+
+def _gate_env(root: Path, expected: str, *, when: str) -> None:
+    actual = _current_env_version(root)
+    if actual != expected:
+        raise RuleGateError(
+            f"environment changed mid-run ({when}): the lock/pyproject "
+            "no longer matches the environment this run started with — "
+            "re-run `lc materialize`."
+        )
+
+
+def _env_check(root: Path, job: Any) -> None:
+    """Step 2: verify the execution environment matches the job's pins."""
+    if job.worker_runtime == "container":
+        try:
+            baked = json.loads(Path(_BAKED_IDENTITY_PATH).read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            raise RuleGateError(
+                f"containerized job outside an lc image ({_BAKED_IDENTITY_PATH} "
+                f"unreadable: {e})"
+            ) from e
+        if baked.get("env_version") != job.env_version:
+            raise RuleGateError(
+                "image/environment mismatch: the running image was baked "
+                f"for env_version {baked.get('env_version')}, the job "
+                f"expects {job.env_version} — run `lc build`."
+            )
+        running = os.environ.get(IMAGE_DIGEST_ENV)
+        if job.image_digest and running != job.image_digest:
+            raise RuleGateError(
+                f"image digest mismatch: driver pinned {job.image_digest}, "
+                f"running container reports {running!r}."
+            )
+        return
+
+    venv = root / ".venv"
+    if not venv.is_dir():
+        raise RuleGateError(
+            f"{venv} does not exist — the environment was never converged."
+        )
+    proc = subprocess.run(
+        [
+            "uv", "sync", "--locked", "--exact", "--check",
+            "--project", str(root),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuleGateError(
+            "the environment does not match the lock "
+            f"(`uv sync --check` failed):\n{proc.stderr.strip()}"
+        )
+
+
+def _exec_env() -> dict[str, str]:
+    """The recipe's process environment: ambient minus the UV_* steering
+    surface, plus the offline overlay — converge once, then never write
+    to the environment."""
+    from lightcone.engine import uv_env
+
+    env = dict(os.environ)
+    uv_env.scrub(env)
+    env.update(uv_env.OFFLINE_OVERLAY)
+    return env
+
+
 def run_rule(
     *,
     rule_key: str,
@@ -58,12 +149,11 @@ def run_rule(
     inputs: dict[str, Path],
     cfg: dict[str, Any],
 ) -> None:
-    """Execute one rule's pre-rendered shell command and write its manifest.
+    """Execute one rule through the worker sequence; write its manifest.
 
-    Called from the generated Snakefile's ``run:`` block. Recipe stdout
-    and stderr are interleaved by capture order (stdout first, then
-    stderr) — Snakemake's own output capture has the same property and
-    most recipes are well-behaved enough that this is fine.
+    Called from the generated Snakefile's ``run:`` block with
+    ``cwd == project root`` (snakemake ``-d``). Recipe stdout and
+    stderr are interleaved by capture order.
 
     On non-zero exit, the manifest is **not** written. Snakemake will
     treat the rule as failed; ``lc verify`` won't see a stale manifest
@@ -71,21 +161,53 @@ def run_rule(
     """
     from lightcone.engine.attestation import capture_runtime_attestation
     from lightcone.engine.boundary import ExecScope, get_boundary
+    from lightcone.engine.job import RuleJob
     from lightcone.engine.manifest import write_manifest
     from lightcone.engine.validation import validate_output
+
+    job = RuleJob.from_cfg(cfg)
+    root = Path.cwd()
 
     t0 = time.monotonic()
     _emit(f"\033[2m▶\033[0m {rule_key} \033[2m[{universe}]\033[0m")
 
+    try:
+        _gate_env(root, job.env_version, when="pre-recipe")
+        _env_check(root, job)
+    except RuleGateError as e:
+        _emit(f"  \033[31m{e}\033[0m")
+        raise
+
+    from typing import Literal
+
+    sandbox_mode: Literal["on", "off"] = (
+        "off" if os.environ.get(NO_SANDBOX_ENV) == "1" else "on"
+    )
     scope = ExecScope(
-        project_root=Path.cwd(),
+        project_root=root,
         output_dir=Path(output_dir),
         read_paths=tuple(Path(p) for p in inputs.values()),
-        writable_project=bool(cfg.get("writable_project")),
+        writable_project=job.writable_project,
+        sandbox=sandbox_mode,
     )
-    result = get_boundary().execute(
-        cfg["shell_command"], scope, env=dict(os.environ)
-    )
+    boundary = get_boundary()
+
+    # --require-sandbox is enforced worker-side against the probed
+    # enforcement level — the driver's kernel is not the worker's.
+    if requirement := os.environ.get(REQUIRE_SANDBOX_ENV):
+        probed = boundary.probe(scope)
+        if probed.mechanism == "none":
+            raise RuleGateError(
+                "--require-sandbox: no sandbox mechanism is available on "
+                f"this worker (probed: {probed.mechanism})."
+            )
+        if requirement == "declared-fs" and probed.fs != "declared":
+            raise RuleGateError(
+                "--require-sandbox=declared-fs: this worker can only "
+                f"provide fs: {probed.fs}."
+            )
+
+    result = boundary.execute(job.shell_command, scope, env=_exec_env())
 
     for line in result.stdout.splitlines():
         _emit(f"  {line}")
@@ -100,18 +222,24 @@ def run_rule(
             f"\033[31m✗\033[0m {rule_key} \033[2m[{universe}]\033[0m   "
             f"exit={result.returncode}   {dt:.1f}s"
         )
-        raise subprocess.CalledProcessError(result.returncode, cfg["shell_command"])
+        raise subprocess.CalledProcessError(result.returncode, job.shell_command)
+
+    try:
+        _gate_env(root, job.env_version, when="post-recipe")
+    except RuleGateError as e:
+        _emit(f"  \033[31m{e}\033[0m")
+        raise
 
     write_manifest(
         output_dir=output_dir,
         inputs=inputs,
-        cfg=cfg,
+        cfg=job.to_cfg(),
         hermeticity=result.attestation.to_manifest(),
         attestation=capture_runtime_attestation(),
     )
 
     for warning in validate_output(
-        output_dir, cfg.get("output_type"), cfg["output_id"]
+        output_dir, job.output_type, job.output_id
     ):
         _emit(f"  \033[33m⚠\033[0m {warning}")
 
@@ -120,4 +248,11 @@ def run_rule(
     )
 
 
-__all__ = ["SENTINEL", "run_rule"]
+__all__ = [
+    "IMAGE_DIGEST_ENV",
+    "NO_SANDBOX_ENV",
+    "REQUIRE_SANDBOX_ENV",
+    "SENTINEL",
+    "RuleGateError",
+    "run_rule",
+]

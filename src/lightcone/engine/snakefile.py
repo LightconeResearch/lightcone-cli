@@ -33,10 +33,12 @@ from astra.helpers import load_yaml, resolve_analysis_tree
 
 from lightcone.engine.environment import (
     EnvironmentSpec,
+    Mode,
     ProjectEnvironmentError,
     load_environment,
     scan_lock,
 )
+from lightcone.engine.job import RuleJob
 from lightcone.engine.manifest import code_version
 from lightcone.engine.tree import (
     TreeOutput,
@@ -474,24 +476,25 @@ def generate(
             # per-universe and contains ``shell_command``) — see
             # ``lc materialize --rerun-triggers``.
             shell_command = f": lc_code_version={cv};\n{rendered}"
-            cfg[rule_key][u] = {
-                "output_id": to.output_id,
-                "output_type": to.output_def.get("type"),
-                "universe_id": u,
-                # Raw template, preserved so the manifest's ``recipe``
-                # field records what the user authored.
-                "recipe": recipe_command,
-                "shell_command": shell_command,
-                "decisions": scoped_decisions,
-                "code_version": cv,
-                "env_version": env.env_version,
-                "writable_project": writable_project,
-                "sdist_built": list(scan.sdist_built),
-                "git_sha": git_sha,
-                "git_dirty": git_dirty,
-                "git_remote": git_remote,
-                "lc_version": lc_version,
-            }
+            cfg[rule_key][u] = RuleJob(
+                output_id=to.output_id,
+                output_type=to.output_def.get("type"),
+                universe_id=u,
+                recipe=recipe_command,
+                shell_command=shell_command,
+                decisions=scoped_decisions,
+                code_version=cv,
+                env_version=env.env_version,
+                writable_project=writable_project,
+                sdist_built=list(scan.sdist_built),
+                git_sha=git_sha,
+                git_dirty=git_dirty,
+                git_remote=git_remote,
+                lc_version=lc_version,
+                worker_runtime=(
+                    "container" if env.mode is Mode.CONTAINERIZED else "host"
+                ),
+            ).to_cfg()
 
     lightcone_dir = project_path / LIGHTCONE_DIR
     lightcone_dir.mkdir(parents=True, exist_ok=True)

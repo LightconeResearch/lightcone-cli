@@ -653,6 +653,23 @@ pull numbers in live, e.g.:
 )
 @click.option("--force", "-f", is_flag=True, help="Force re-materialization")
 @click.option("--verbose", "-v", is_flag=True, help="Show full executor output")
+@click.option(
+    "--require-sandbox",
+    "require_sandbox",
+    is_flag=False,
+    flag_value="any",
+    default=None,
+    help=(
+        "Refuse to run recipes without a sandbox mechanism; "
+        "--require-sandbox=declared-fs additionally requires "
+        "declared-file scoping."
+    ),
+)
+@click.option(
+    "--no-sandbox",
+    is_flag=True,
+    help="Run recipes without the sandbox (recorded as unsandboxed).",
+)
 def materialize(
     outputs: tuple[str, ...],
     universe: str | None,
@@ -660,6 +677,8 @@ def materialize(
     rerun_triggers: str,
     force: bool,
     verbose: bool,
+    require_sandbox: str | None,
+    no_sandbox: bool,
 ) -> None:
     """Materialize outputs declared in astra.yaml.
 
@@ -738,12 +757,20 @@ def materialize(
     except RunLockBusyError as e:
         raise click.ClickException(str(e))
 
+    from lightcone.engine.runner import NO_SANDBOX_ENV, REQUIRE_SANDBOX_ENV
+
     with cluster_for_run(
         verbose=verbose,
         local_directory=str(rundirs.dask_local),
         max_workers=int(n),
     ) as cluster_env:
         env_vars = {**os.environ, **cluster_env}
+        # Per-run sandbox flags travel to workers via env, not cfg — a
+        # run flag must never perturb the content-addressed job identity.
+        if no_sandbox:
+            env_vars[NO_SANDBOX_ENV] = "1"
+        if require_sandbox:
+            env_vars[REQUIRE_SANDBOX_ENV] = require_sandbox
         if verbose:
             console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
         sys.exit(
@@ -941,8 +968,18 @@ def _declared_output_ids(project: Path) -> set[str]:
 
 
 @main.command(context_settings={"ignore_unknown_options": True})
+@click.option(
+    "--no-sandbox",
+    is_flag=True,
+    help="Run the probe without the sandbox (recorded as unsandboxed).",
+)
+@click.option(
+    "--sandbox-debug",
+    is_flag=True,
+    help="Open a shell inside the sandbox to diagnose denials.",
+)
 @click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
-def run(cmd: tuple[str, ...]) -> None:
+def run(no_sandbox: bool, sandbox_debug: bool, cmd: tuple[str, ...]) -> None:
     """Run CMD inside the recipe environment (a probe).
 
     The command executes with the project's locked environment — the
@@ -970,9 +1007,18 @@ def run(cmd: tuple[str, ...]) -> None:
         console.print("[dim]opening a shell inside the recipe environment[/dim]")
         cmd = (os.environ.get("SHELL") or "bash",)
 
+    # The sandbox wrap for probes lands with the sandbox layer; the
+    # flags are plumbed through env so the boundary sees one channel.
+    from lightcone.engine.runner import NO_SANDBOX_ENV
+
+    probe_env = dict(os.environ)
+    if no_sandbox:
+        probe_env[NO_SANDBOX_ENV] = "1"
+
     proc = subprocess.run(
         ["uv", "run", "--locked", "--exact", "--project", str(project), "--", *cmd],
         cwd=project,
+        env=probe_env,
     )
     sys.exit(proc.returncode)
 

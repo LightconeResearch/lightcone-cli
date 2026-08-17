@@ -63,6 +63,12 @@ class BoundaryResult:
 
 
 class ExecBoundary(Protocol):
+    def probe(self, scope: ExecScope) -> SandboxAttestation:
+        """What enforcement WOULD apply to this scope on this host —
+        checked worker-side per job (the driver's kernel is not the
+        worker's), and how ``--require-sandbox`` refuses before exec."""
+        ...
+
     def execute(
         self,
         command: str,
@@ -79,6 +85,9 @@ class HostPassthroughBoundary:
     """No enforcement: run the command bare, attest to none."""
 
     _ATTESTATION = SandboxAttestation(mechanism="none", fs="open", network="allowed")
+
+    def probe(self, scope: ExecScope) -> SandboxAttestation:
+        return self._ATTESTATION
 
     def execute(
         self,
