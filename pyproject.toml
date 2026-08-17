@@ -106,4 +106,6 @@ follow_untyped_imports = true
 testpaths = ["tests"]
 markers = [
     "slow: tests that spin up real subsystems (dask cluster, etc.) — opt-in via -m slow",
+    "darwin: macOS-only enforcement smoke (runs in the macOS CI workflow)",
+    "podman: needs a working rootless podman — opt-in via -m podman",
 ]

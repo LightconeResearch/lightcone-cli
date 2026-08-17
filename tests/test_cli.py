@@ -48,7 +48,11 @@ def _fake_uv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     from lightcone.cli import commands
 
     monkeypatch.setattr(commands, "_run_uv", fake_run_uv)
-    monkeypatch.setattr(commands.shutil, "which", lambda name: f"/usr/bin/{name}")
+    # NB: commands.shutil IS the global shutil module — accept the
+    # path= kwarg the sandbox policy's which() calls use.
+    monkeypatch.setattr(
+        commands.shutil, "which", lambda name, path=None: f"/usr/bin/{name}"
+    )
     return calls
 
 

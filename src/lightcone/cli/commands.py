@@ -1004,23 +1004,90 @@ def run(no_sandbox: bool, sandbox_debug: bool, cmd: tuple[str, ...]) -> None:
     _refuse_containerized_interim(env.mode)
 
     if not cmd:
-        console.print("[dim]opening a shell inside the recipe environment[/dim]")
+        note = " (sandboxed)" if not no_sandbox else ""
+        console.print(
+            f"[dim]opening a shell inside the recipe environment{note}[/dim]"
+        )
         cmd = (os.environ.get("SHELL") or "bash",)
 
-    # The sandbox wrap for probes lands with the sandbox layer; the
-    # flags are plumbed through env so the boundary sees one channel.
-    from lightcone.engine.runner import NO_SANDBOX_ENV
-
-    probe_env = dict(os.environ)
     if no_sandbox:
-        probe_env[NO_SANDBOX_ENV] = "1"
+        proc = subprocess.run(
+            [
+                "uv", "run", "--locked", "--exact",
+                "--project", str(project), "--", *cmd,
+            ],
+            cwd=project,
+        )
+        sys.exit(proc.returncode)
 
-    proc = subprocess.run(
-        ["uv", "run", "--locked", "--exact", "--project", str(project), "--", *cmd],
-        cwd=project,
-        env=probe_env,
+    # Sandboxed probe: byte-for-byte the recipe boundary — read scope is
+    # the project plus the union of declared external inputs, write
+    # scope is the tmp scope only (never in-tree). uv stays trusted
+    # plumbing outside the boundary; the shim restricts, then execs CMD.
+    import shutil as _shutil
+
+    from lightcone.engine.boundary import ExecScope
+    from lightcone.engine.sandbox.policy import build_policy
+    from lightcone.engine.sandbox.probe import probe as _capability_probe
+    from lightcone.engine.sandbox.wrap import wrap_argv
+
+    if sandbox_debug:
+        console.print("[dim]opening a shell inside the sandbox[/dim]")
+        cmd = (os.environ.get("SHELL") or "bash",)
+
+    scope = ExecScope(
+        project_root=project,
+        output_dir=None,
+        read_paths=_declared_external_inputs(project),
     )
+    capability = _capability_probe()
+    policy = build_policy(scope, env_prefix=project / ".venv")
+    wrapped = wrap_argv(
+        tuple(cmd),
+        policy,
+        capability,
+        interpreter=(
+            "uv", "run", "--locked", "--exact",
+            "--project", str(project), "--", "python",
+        ),
+    )
+    try:
+        proc = subprocess.run(
+            list(wrapped.argv),
+            cwd=project,
+            env={**os.environ, **wrapped.env},
+            pass_fds=wrapped.pass_fds,
+        )
+    finally:
+        for fd in wrapped.close_after_spawn:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        _shutil.rmtree(policy.tmp_home, ignore_errors=True)
     sys.exit(proc.returncode)
+
+
+def _declared_external_inputs(project: Path) -> tuple[Path, ...]:
+    """Union of resolved external input paths across the analysis tree —
+    a probe has no output, so its read allowlist is every declared
+    input (in-tree ones are covered by the project grant)."""
+    from astra.helpers import load_yaml, resolve_analysis_tree
+
+    from lightcone.engine.tree import collect_tree_inputs
+
+    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
+    paths: list[Path] = []
+    for inp_def in collect_tree_inputs(spec).values():
+        source = inp_def.get("source")
+        if not source or not isinstance(source, str):
+            continue
+        p = Path(source)
+        if not p.is_absolute():
+            p = project / p
+        if p.exists():
+            paths.append(p.resolve())
+    return tuple(paths)
 
 
 # =============================================================================

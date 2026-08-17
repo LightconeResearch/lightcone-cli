@@ -165,9 +165,12 @@ def test_recipe_stdout_and_stderr_both_forwarded(project: Path) -> None:
 
 
 def test_manifest_records_hermeticity_and_attestation(project: Path) -> None:
-    """run_rule executes through the boundary and records what actually
-    ran: the passthrough boundary attests mechanism none, and the
-    worker-side runtime attestation is merged into the manifest."""
+    """run_rule executes through the sandbox boundary and records what
+    actually ran; the worker-side runtime attestation is merged in."""
+    from lightcone.engine.sandbox import _landlock
+
+    if _landlock.abi() == 0:
+        pytest.skip("landlock unavailable on this kernel")
     out_dir = project / "out"
     out_dir.mkdir()
     _, err = _capture(
@@ -181,12 +184,36 @@ def test_manifest_records_hermeticity_and_attestation(project: Path) -> None:
     )
     assert err is None
     m = json.loads((out_dir / ".lightcone-manifest.json").read_text())
-    assert m["hermeticity"] == {
-        "mechanism": "none", "fs": "open", "network": "allowed",
-    }
+    h = m["hermeticity"]
+    assert h["mechanism"] == "landlock"
+    assert h["fs"] == "declared"
+    # Landlock cannot express a useful network deny — recorded, not
+    # pretended (spec's honest enum).
+    assert h["network"] == "unenforced"
+    assert h["landlock_abi"] >= 1
+    assert h["exec_allowlist_version"] == 1
     assert m["platform"]["arch"]
     assert m["python_build"].startswith("CPython")
     assert m["worker_runtime"] == "host"
+
+
+def test_no_sandbox_records_honestly(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(runner.NO_SANDBOX_ENV, "1")
+    out_dir = project / "out"
+    out_dir.mkdir()
+    _, err = _capture(
+        lambda: run_rule(
+            rule_key="foo", universe="u1", output_dir=out_dir,
+            inputs={},
+            cfg=_cfg(project, shell_command=f"touch {out_dir}/data.txt"),
+        )
+    )
+    assert err is None
+    m = json.loads((out_dir / ".lightcone-manifest.json").read_text())
+    assert m["hermeticity"]["mechanism"] == "none"
+    assert m["hermeticity"]["fs"] == "open"
 
 
 # ---- the gates -------------------------------------------------------------
@@ -298,9 +325,16 @@ def test_recipe_env_has_offline_overlay_and_scrub(
 def test_require_sandbox_refuses_before_exec(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Worker-side enforcement: with only the passthrough boundary
-    available, --require-sandbox must refuse (mechanism is none) and the
-    recipe must never run."""
+    """Worker-side enforcement: when no mechanism is available,
+    --require-sandbox must refuse and the recipe must never run."""
+    import lightcone.engine.sandbox.probe as probe_mod
+    from lightcone.engine.sandbox.model import SandboxCapability
+
+    monkeypatch.setattr(
+        probe_mod,
+        "probe",
+        lambda: SandboxCapability(kind="none", detail="test"),
+    )
     monkeypatch.setenv(runner.REQUIRE_SANDBOX_ENV, "any")
     out_dir = project / "out"
     out_dir.mkdir()

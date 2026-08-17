@@ -1,0 +1,34 @@
+name: sandbox-macos
+
+# The Seatbelt realization of the lc sandbox can only be verified on
+# macOS — this smoke is its single verification path (the dev loop and
+# the main test matrix run Linux/Landlock).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/lightcone/engine/sandbox/**"
+      - "src/lightcone/_sandbox_exec.py"
+      - "tests/test_seatbelt.py"
+      - ".github/workflows/sandbox-macos.yml"
+  pull_request:
+    paths:
+      - "src/lightcone/engine/sandbox/**"
+      - "src/lightcone/_sandbox_exec.py"
+      - "tests/test_seatbelt.py"
+      - ".github/workflows/sandbox-macos.yml"
+  workflow_dispatch:
+
+jobs:
+  seatbelt-smoke:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        run: uv sync --group dev
+      - name: Seatbelt enforcement smoke
+        run: uv run pytest tests/test_seatbelt.py -v -m darwin
+      - name: Sandbox unit tests (mechanism-neutral)
+        run: uv run pytest tests/test_sandbox_policy.py tests/test_sandbox_shim.py tests/test_sandbox_denial.py -q

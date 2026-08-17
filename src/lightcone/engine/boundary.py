@@ -116,9 +116,11 @@ class HostPassthroughBoundary:
 
 
 def get_boundary() -> ExecBoundary:
-    """The active exec boundary.
+    """The active exec boundary: the sandbox layer's implementation.
 
-    Returns the sandbox layer's boundary once it lands; the passthrough
-    until then.
+    (The passthrough survives as the explicit ``sandbox: off`` path and
+    for tests that need enforcement-free execution.)
     """
-    return HostPassthroughBoundary()
+    from lightcone.engine.sandbox import SandboxExecBoundary
+
+    return SandboxExecBoundary()
