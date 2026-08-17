@@ -34,7 +34,7 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_help_lists_core_commands(runner: CliRunner) -> None:
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("init", "run", "status", "verify", "build"):
+    for cmd in ("init", "materialize", "run", "status", "verify", "build"):
         assert cmd in result.output
 
 
@@ -74,9 +74,9 @@ def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     assert (project / "results").is_dir()
     assert (project / "universes").is_dir()
     # The README is the durable hint that outputs materialize here via
-    # lc run — and the one file in results/ that stays tracked by git.
+    # lc materialize — and the one file in results/ that stays tracked by git.
     readme = (project / "results" / "README.md").read_text()
-    assert "lc run" in readme
+    assert "lc materialize" in readme
     gitignore = (project / ".gitignore").read_text()
     assert "results/*" in gitignore
     assert "!results/README.md" in gitignore
@@ -326,7 +326,78 @@ def test_verify_clean_project_returns_zero(
     assert result.exit_code == 0
 
 
-# ---- lc run command building ------------------------------------------------
+# ---- lc run (probe verb) ---------------------------------------------------
+
+
+def _probe_project(tmp_path: Path, *, with_pyproject: bool = True) -> Path:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "astra.yaml").write_text(
+        "outputs:\n  - id: best_fit\n    recipe:\n      command: echo hi\n"
+    )
+    if with_pyproject:
+        (project / "pyproject.toml").write_text(
+            '[project]\nname = "proj"\nversion = "0"\n'
+        )
+    return project
+
+
+def test_run_rename_guard_fires_on_output_id(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lc run <output_id>` is the old pipeline grammar — it must error
+    with the materialize hint before exec'ing anything."""
+    project = _probe_project(tmp_path)
+    monkeypatch.chdir(project)
+    result = runner.invoke(main, ["run", "best_fit"])
+    assert result.exit_code != 0
+    assert "lc materialize best_fit" in result.output
+    assert "materialized, not run" in result.output
+
+
+def test_run_rename_guard_fires_on_old_flags(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _probe_project(tmp_path)
+    monkeypatch.chdir(project)
+    result = runner.invoke(main, ["run", "--universe", "baseline"])
+    assert result.exit_code != 0
+    assert "lc materialize" in result.output
+
+
+def test_run_requires_uv_project(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _probe_project(tmp_path, with_pyproject=False)
+    monkeypatch.chdir(project)
+    result = runner.invoke(main, ["run", "python", "-V"])
+    assert result.exit_code != 0
+    assert "pyproject.toml" in result.output
+
+
+def test_run_probes_through_uv_run(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The probe delegates to `uv run --locked --exact` from the project
+    root — byte-for-byte the recipe environment."""
+    project = _probe_project(tmp_path)
+    monkeypatch.chdir(project)
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    result = runner.invoke(main, ["run", "python", "-V"])
+    assert result.exit_code == 0, result.output
+    assert calls, "probe never exec'd"
+    argv = calls[0]
+    assert argv[:5] == ["uv", "run", "--locked", "--exact", "--project"]
+    assert argv[-3:] == ["--", "python", "-V"]
+
+
+# ---- lc materialize command building ---------------------------------------
 
 
 def test_run_cmd_inserts_separator_before_targets() -> None:

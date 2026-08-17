@@ -2,16 +2,18 @@
 
 The redesigned CLI is a thin shim over Snakemake. Provenance integrity
 (per-output content-addressed manifests) is implemented in
-:mod:`lightcone.engine.manifest`; ``lc run`` generates a Snakefile from
-``astra.yaml`` and shells out to ``snakemake``.
+:mod:`lightcone.engine.manifest`; ``lc materialize`` generates a
+Snakefile from ``astra.yaml`` and shells out to ``snakemake``.
 
 Commands:
-- ``lc init``   — idempotently converge a project scaffold (spec, Containerfile,
-  gitignore, MyST report template, venv); ``--check``/``--json`` for agents.
-- ``lc run``    — generate Snakefile and run snakemake.
-- ``lc status`` — manifest-driven status walk (no Snakemake needed).
-- ``lc verify`` — recompute hashes and validate the provenance chain.
-- ``lc build``  — build containers from Containerfiles.
+- ``lc init``        — idempotently converge a project scaffold;
+  ``--check``/``--json`` for agents.
+- ``lc materialize`` — generate Snakefile and run snakemake.
+- ``lc run``         — probe: run an arbitrary command in the recipe
+  environment (never materializes outputs).
+- ``lc status``      — manifest-driven status walk (no Snakemake needed).
+- ``lc verify``      — recompute hashes and validate the provenance chain.
+- ``lc build``       — build container images.
 
 The global config at ``~/.lightcone/config.yaml`` is auto-created with
 defaults on first invocation if missing.
@@ -432,7 +434,7 @@ def init(
             )
             console.print(
                 "  • Describe your analysis in [cyan]astra.yaml[/cyan], "
-                "then materialize it with [cyan]lc run[/cyan]"
+                "then materialize it with [cyan]lc materialize[/cyan]"
             )
             console.print(
                 "  • Preview the report with [cyan]myst start[/cyan] "
@@ -635,9 +637,9 @@ Each output directory carries a `.lightcone-manifest.json` sidecar
 recording exactly how it was produced: recipe, container image,
 decisions, input hashes, and the output's content hash.
 
-- Produce or refresh outputs with `lc run` — never write files here by
-  hand. Hand-placed or edited files fail `lc verify` (the content hash
-  won't match, and a missing manifest forces a re-run).
+- Produce or refresh outputs with `lc materialize` — never write files
+  here by hand. Hand-placed or edited files fail `lc verify` (the
+  content hash won't match, and a missing manifest forces a re-run).
 - `lc status` shows what is materialized, stale, or missing.
 - Everything in this directory except this README is git-ignored;
   outputs are reproducible from `astra.yaml`, not versioned.
@@ -694,7 +696,7 @@ numbers in live, e.g.:
 """
 
 # =============================================================================
-# lc run
+# lc materialize
 # =============================================================================
 
 
@@ -725,7 +727,7 @@ def _abort_on_perlmutter_login() -> None:
         "run inside a SLURM allocation.\n"
         "  Start one with, e.g.:\n"
         "    salloc -N 1 -C gpu -q interactive -t 1:00:00 -A <account>\n"
-        "  then re-run `lc run` from inside."
+        "  then re-run `lc materialize` from inside."
     )
 
 
@@ -740,7 +742,7 @@ def _abort_on_perlmutter_login() -> None:
 )
 @click.option("--force", "-f", is_flag=True, help="Force re-materialization")
 @click.option("--verbose", "-v", is_flag=True, help="Show full executor output")
-def run(
+def materialize(
     outputs: tuple[str, ...],
     universe: str | None,
     jobs: int | None,
@@ -1054,6 +1056,80 @@ def _target_for(project: Path, output_id: str, universe: str) -> str:
         resolve_output_path(project, to, universe) / to.output_id / MANIFEST_FILENAME
     )
     return str(target.relative_to(project))
+
+
+# =============================================================================
+# lc run — the probe verb
+# =============================================================================
+
+
+def _declared_output_ids(project: Path) -> set[str]:
+    """All declared output ids, bare and ``analysis.output``-qualified."""
+    from astra.helpers import load_yaml, resolve_analysis_tree
+
+    from lightcone.engine.tree import collect_tree_outputs
+
+    spec = resolve_analysis_tree(load_yaml(project / "astra.yaml"), project)
+    ids: set[str] = set()
+    for to in collect_tree_outputs(spec):
+        ids.add(to.output_id)
+        if to.analysis_id:
+            ids.add(f"{to.analysis_id}.{to.output_id}")
+    return ids
+
+
+#: Flags the old pipeline-execution ``lc run`` accepted. A probe invocation
+#: leading with one of these is almost certainly muscle memory for what is
+#: now ``lc materialize`` — steer there instead of exec'ing a flag.
+_MATERIALIZE_FLAGS = {
+    "-u", "--universe", "-j", "--jobs", "--rerun-triggers", "-f", "--force",
+}
+
+
+@main.command(context_settings={"ignore_unknown_options": True})
+@click.argument("cmd", nargs=-1, type=click.UNPROCESSED)
+def run(cmd: tuple[str, ...]) -> None:
+    """Run CMD inside the recipe environment (a probe).
+
+    The command executes with the project's locked environment — the
+    same interpreter and packages recipes see — via
+    ``uv run --locked --exact``. Probes never materialize outputs; use
+    ``lc materialize`` for that. With no CMD, opens a shell in the
+    recipe environment.
+    """
+    project = _project_root()
+
+    # Rename guard (v6 reassigned `lc run` from pipeline execution to
+    # probing): a first argument naming a declared output errors before
+    # any exec — silently exec'ing `best_fit` as a command would be a
+    # far worse failure mode than a pointed redirect.
+    if cmd and cmd[0] in _MATERIALIZE_FLAGS:
+        raise click.ClickException(
+            "outputs are materialized, not run — did you mean: "
+            f"`lc materialize {' '.join(cmd)}`?"
+        )
+    if cmd and not cmd[0].startswith("-") and cmd[0] in _declared_output_ids(project):
+        raise click.ClickException(
+            "outputs are materialized, not run — did you mean: "
+            f"`lc materialize {cmd[0]}`?"
+        )
+
+    if not (project / "pyproject.toml").is_file():
+        raise click.ClickException(
+            "lc run needs a uv project (pyproject.toml + uv.lock) to know "
+            "the recipe environment; this project predates the uv model. "
+            "Run `lc init` to scaffold it."
+        )
+
+    if not cmd:
+        console.print("[dim]opening a shell inside the recipe environment[/dim]")
+        cmd = (os.environ.get("SHELL") or "bash",)
+
+    proc = subprocess.run(
+        ["uv", "run", "--locked", "--exact", "--project", str(project), "--", *cmd],
+        cwd=project,
+    )
+    sys.exit(proc.returncode)
 
 
 # =============================================================================
@@ -1412,7 +1488,8 @@ def export_wrroc_cmd(
         console.print(
             "[yellow]Warning:[/yellow] no materialized outputs were found — "
             "the bundle contains only the workflow definition.\n"
-            "  This usually means recipes haven't been run yet (try [cyan]lc run[/cyan]) "
+            "  This usually means recipes haven't been run yet "
+            "(try [cyan]lc materialize[/cyan]) "
             "or the [cyan].lightcone-manifest.json[/cyan] sidecars are missing.\n"
             "  Workflow-only bundles will not pass strict Provenance Run Crate "
             "validation; that profile requires at least one materialized run."
