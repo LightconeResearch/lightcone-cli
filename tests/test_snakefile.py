@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 import yaml
+from conftest import PYPROJECT_MIN, PYTHON_VERSION_MIN, UV_LOCK_MIN
 
 from lightcone.engine.snakefile import generate, render_recipe
 
@@ -14,6 +15,12 @@ from lightcone.engine.snakefile import generate, render_recipe
 def _spec(project_root: Path, spec: dict[str, Any]) -> None:
     project_root.mkdir(parents=True, exist_ok=True)
     (project_root / "astra.yaml").write_text(yaml.safe_dump(spec))
+    # The generator loads the project environment: every fixture project
+    # carries the minimal uv scaffold.
+    if not (project_root / "pyproject.toml").exists():
+        (project_root / "pyproject.toml").write_text(PYPROJECT_MIN)
+        (project_root / "uv.lock").write_text(UV_LOCK_MIN)
+        (project_root / ".python-version").write_text(PYTHON_VERSION_MIN)
 
 
 def test_generate_simple_spec(tmp_path: Path) -> None:
@@ -97,73 +104,44 @@ def test_generate_includes_recipe_in_cfg(tmp_path: Path) -> None:
     assert f"lc_code_version={cfg['foo']['u1']['code_version']}" in sh
 
 
-def test_generate_no_container_directive_emitted(tmp_path: Path) -> None:
-    """We own container invocation; the Snakemake ``container:`` directive
-    must never be emitted (we don't use --sdm apptainer)."""
+def test_generate_ignores_legacy_container_keys(tmp_path: Path) -> None:
+    """ASTRA carries no container information — legacy ``container:``
+    keys (top-level, per-recipe) are ignored; the environment lives in
+    pyproject.toml. The Snakemake ``container:`` directive is never
+    emitted either."""
     _spec(
         tmp_path,
         {
+            "container": "Containerfile.legacy",
             "outputs": [
                 {
                     "id": "foo",
                     "recipe": {"command": "echo", "container": "python:3.12-slim"},
                 }
-            ]
+            ],
         },
     )
-    snakefile_path, _ = generate(tmp_path, universes=["u1"], runtime="podman")
+    snakefile_path, cfg_path = generate(tmp_path, universes=["u1"])
     text = snakefile_path.read_text()
     assert "container:" not in text
-
-
-def test_generate_wraps_recipe_with_runtime(tmp_path: Path) -> None:
-    """When a runtime is configured and the recipe has a container, the
-    wrapped shell command in cfg invokes the runtime with the image —
-    and the v0.0.7 ``{output}`` placeholder has been substituted to a
-    concrete per-universe path before the wrap."""
-    _spec(
-        tmp_path,
-        {
-            "outputs": [
-                {
-                    "id": "foo",
-                    "recipe": {
-                        "command": "echo hi > {output}/data.txt",
-                        "container": "python:3.12-slim",
-                    },
-                }
-            ]
-        },
-    )
-    _, cfg_path = generate(tmp_path, universes=["u1"], runtime="podman")
     cfg = json.loads(cfg_path.read_text())
-    sh = cfg["foo"]["u1"]["shell_command"]
-    assert "podman run --rm" in sh
-    assert "python:3.12-slim" in sh
-    # ``{output}`` is rendered at gen time to the concrete per-universe
-    # path; no placeholder survives the wrap.
-    assert "results/u1/foo/data.txt" in sh
-    assert "{output}" not in sh
-    # The code_version breadcrumb is prefixed onto the wrapped command.
-    assert f"lc_code_version={cfg['foo']['u1']['code_version']}" in sh
+    assert "container_image" not in cfg["foo"]["u1"]
+    assert "python:3.12-slim" not in cfg["foo"]["u1"]["shell_command"]
 
 
-def test_generate_no_wrap_for_runtime_none(tmp_path: Path) -> None:
+def test_generate_never_wraps_recipes(tmp_path: Path) -> None:
+    """Recipes are bare at generation time — enforcement is applied at
+    exec time by the boundary; in containerized mode the whole stack
+    already runs inside the image."""
     _spec(
         tmp_path,
-        {
-            "outputs": [
-                {
-                    "id": "foo",
-                    "recipe": {"command": "echo hi", "container": "python:3.12-slim"},
-                }
-            ]
-        },
+        {"outputs": [{"id": "foo", "recipe": {"command": "echo hi"}}]},
     )
-    _, cfg_path = generate(tmp_path, universes=["u1"], runtime="none")
+    _, cfg_path = generate(tmp_path, universes=["u1"])
     cfg = json.loads(cfg_path.read_text())
     sh = cfg["foo"]["u1"]["shell_command"]
     assert sh.endswith("echo hi")
+    assert "podman" not in sh
     assert f"lc_code_version={cfg['foo']['u1']['code_version']}" in sh
 
 
@@ -249,34 +227,73 @@ def test_recipe_edit_changes_params_for_rerun_trigger(tmp_path: Path) -> None:
     assert cfg_v1["shell_command"] != cfg_v2["shell_command"]
 
 
-def test_containerfile_edit_changes_code_version(tmp_path: Path) -> None:
-    """Editing a Containerfile changes ``code_version`` so ``lc status``
-    reports stale and the manifest records the image content faithfully.
-    """
-    containerfile = tmp_path / "Containerfile"
-    containerfile.write_text("FROM python:3.12-slim\n")
-    _spec(
-        tmp_path,
-        {
-            "outputs": [
-                {
-                    "id": "foo",
-                    "recipe": {"command": "echo", "container": "Containerfile"},
-                }
-            ]
-        },
-    )
-    _, cfg_path_v1 = generate(tmp_path, universes=["u1"], runtime="podman")
+def test_environment_edit_changes_code_version(tmp_path: Path) -> None:
+    """An environment edit (env_version moves) changes every output's
+    ``code_version`` so ``lc status`` reports stale — the environment is
+    inside the identity."""
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]})
+    _, cfg_path_v1 = generate(tmp_path, universes=["u1"])
     cv_v1 = json.loads(cfg_path_v1.read_text())["foo"]["u1"]["code_version"]
 
-    containerfile.write_text("FROM python:3.12-slim\nRUN pip install numpy\n")
-    _, cfg_path_v2 = generate(tmp_path, universes=["u1"], runtime="podman")
+    (tmp_path / "uv.lock").write_text(
+        (tmp_path / "uv.lock").read_text() + "\n# dependency drift\n"
+    )
+    _, cfg_path_v2 = generate(tmp_path, universes=["u1"])
     cv_v2 = json.loads(cfg_path_v2.read_text())["foo"]["u1"]["code_version"]
 
-    assert cv_v1 != cv_v2, (
-        "code_version must change when the Containerfile contents change "
-        "so that lc status correctly reports stale."
+    assert cv_v1 != cv_v2
+
+
+def test_cfg_carries_env_identity(tmp_path: Path) -> None:
+    """Every rule's cfg carries env_version (the mid-run gates' baseline)
+    plus the provenance capture fields."""
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]})
+    _, cfg_path = generate(tmp_path, universes=["u1"])
+    entry = json.loads(cfg_path.read_text())["foo"]["u1"]
+    assert entry["env_version"].startswith("sha256:")
+    assert entry["writable_project"] is False
+    assert "git_dirty" in entry
+    assert entry["sdist_built"] == []
+
+
+def test_writable_project_flows_into_cfg_and_cv(tmp_path: Path) -> None:
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]})
+    _, cfg_v1 = generate(tmp_path, universes=["u1"])
+    cv_plain = json.loads(cfg_v1.read_text())["foo"]["u1"]["code_version"]
+
+    (tmp_path / "pyproject.toml").write_text(
+        (tmp_path / "pyproject.toml").read_text()
+        + '\n[tool.lightcone.sandbox]\nwritable-project = ["foo"]\n'
     )
+    _, cfg_v2 = generate(tmp_path, universes=["u1"])
+    entry = json.loads(cfg_v2.read_text())["foo"]["u1"]
+    assert entry["writable_project"] is True
+    assert entry["code_version"] != cv_plain
+
+
+def test_writable_project_unknown_output_refused(tmp_path: Path) -> None:
+    from lightcone.engine.environment import ProjectEnvironmentError
+
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]})
+    (tmp_path / "pyproject.toml").write_text(
+        (tmp_path / "pyproject.toml").read_text()
+        + '\n[tool.lightcone.sandbox]\nwritable-project = ["nope"]\n'
+    )
+    with pytest.raises(ProjectEnvironmentError, match="undeclared"):
+        generate(tmp_path, universes=["u1"])
+
+
+def test_lock_refusal_blocks_generation(tmp_path: Path) -> None:
+    from lightcone.engine.environment import ProjectEnvironmentError
+
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]})
+    (tmp_path / "uv.lock").write_text(
+        (tmp_path / "uv.lock").read_text()
+        + '\n[[package]]\nname = "local-dep"\nversion = "0"\n'
+        + 'source = { directory = "../local-dep" }\n'
+    )
+    with pytest.raises(ProjectEnvironmentError, match="unauditable"):
+        generate(tmp_path, universes=["u1"])
 
 
 def test_validation_runs_via_run_rule(tmp_path: Path) -> None:

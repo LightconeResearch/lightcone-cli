@@ -4,21 +4,34 @@ The integrity layer of lightcone-cli. Every materialized output gets a
 sidecar JSON manifest at ``<output_dir>/.lightcone-manifest.json`` that
 records:
 
-- ``code_version``: sha256(recipe + container image + decisions). Stored
-  in each rule's per-universe ``params.cfg`` so Snakemake's ``params``
-  rerun-trigger detects drift automatically. (The ``code`` trigger only
-  sees the rule body source, which is universe-parameterized and never
-  changes — that is why ``lc run`` defaults to including ``params``.)
+- ``code_version``: sha256(recipe + decisions + env_version [+ the
+  output's writable-project sandbox escalation]). Stored in each rule's
+  per-universe ``params.cfg`` so Snakemake's ``params`` rerun-trigger
+  detects drift automatically. (The ``code`` trigger only sees the rule
+  body source, which is universe-parameterized and never changes — that
+  is why ``lc materialize`` defaults to including ``params``.)
+- ``env_version``: the environment identity (lock + interpreter pin +
+  install settings + system layer) — see
+  :mod:`lightcone.engine.environment`.
 - ``data_version``: sha256 of the output directory's contents. Lets
   ``lc verify`` prove the bytes on disk are what the manifest claims.
 - ``input_versions``: each declared input's ``data_version`` (if it's a
   materialized output) or ``(mtime, size)`` fingerprint (if it's an
   external file). This is the chain.
+- ``hermeticity``: what enforcement the recipe actually ran under
+  (mechanism, file scope, network posture) — recorded from the applied
+  flags, never from documentation.
+- runtime attestation: platform, interpreter build, uv version, env
+  snapshot, GPU driver — captured worker-side, inside the boundary.
 
 Manifests are written by :func:`write_manifest`, called from each rule's
-``run:`` block on the host immediately after the recipe shell exits. The
-``os.replace`` rename is the atomic commit point: either the rule produced
-both data and manifest, or it failed and Snakemake will rerun it.
+``run:`` block immediately after the recipe exits. The ``os.replace``
+rename is the atomic commit point: either the rule produced both data
+and manifest, or it failed and Snakemake will rerun it.
+
+Manifests from earlier schema versions read as *pre-migration*
+(:func:`is_pre_migration`): status shows them distinctly, verify still
+checks the hashes they carry.
 """
 from __future__ import annotations
 
@@ -31,18 +44,27 @@ from pathlib import Path
 from typing import Any
 
 MANIFEST_FILENAME = ".lightcone-manifest.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: Filenames inside an output directory that the data_version hash MUST
 #: ignore: the manifest itself (chicken-and-egg) and Snakemake's
 #: ``directory()`` mtime marker (touched AFTER the rule body completes).
 _HASH_EXCLUDE = frozenset({MANIFEST_FILENAME, ".snakemake_timestamp"})
 
+#: The honest record for an exec that ran with no enforcement mechanism.
+UNSANDBOXED_HERMETICITY = {
+    "mechanism": "none",
+    "fs": "open",
+    "network": "allowed",
+}
+
 __all__ = [
     "MANIFEST_FILENAME",
     "SCHEMA_VERSION",
+    "UNSANDBOXED_HERMETICITY",
     "code_version",
     "fingerprint_external",
+    "is_pre_migration",
     "read_manifest",
     "sha256_dir",
     "write_manifest",
@@ -110,25 +132,33 @@ def fingerprint_external(path: Path, *, strict: bool = False) -> str:
 def code_version(
     *,
     recipe: str,
-    container_image: str | None,
     decisions: dict[str, Any],
+    env_version: str,
+    writable_project: bool = False,
 ) -> str:
     """Compute a deterministic code version for an output.
 
-    Hashes the recipe text, container image identifier, and canonicalized
-    decisions. Anything that changes the materialization semantics flows
-    through this hash; the *runtime* used to invoke the container is
-    intentionally excluded — the same image produces the same data
-    regardless of which OCI tool launched it.
+    Hashes the recipe text, canonicalized decisions, the environment
+    identity, and the output's sandbox escalation (``writable-project``
+    widens what a recipe can read back from its own earlier writes, so
+    it is materialization-relevant — but per-output, so escalating one
+    output never stales its siblings). Anything that changes the
+    materialization semantics flows through this hash.
     """
     payload = {
         "recipe": recipe,
-        "container_image": container_image,
         "decisions": decisions,
+        "env_version": env_version,
+        "writable_project": writable_project,
     }
     return _sha256_bytes(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
+
+
+def is_pre_migration(manifest: dict[str, Any]) -> bool:
+    """True when *manifest* predates the v2 schema (no ``env_version``)."""
+    return manifest.get("schema_version") != SCHEMA_VERSION or "env_version" not in manifest
 
 
 def read_manifest(output_dir: Path) -> dict[str, Any] | None:
@@ -153,10 +183,12 @@ def write_manifest(
     output_dir: Path,
     inputs: dict[str, Path],
     cfg: dict[str, Any],
+    hermeticity: dict[str, Any] | None = None,
+    attestation: dict[str, Any] | None = None,
 ) -> Path:
     """Atomically write the manifest for an already-materialized output.
 
-    Called from each rule's ``run:`` block after the recipe shell exits.
+    Called from each rule's ``run:`` block after the recipe exits.
     Hashes the output dir, resolves input versions (chaining to upstream
     manifests when present, falling back to external fingerprints), and
     commits the manifest via ``os.replace``.
@@ -167,8 +199,18 @@ def write_manifest(
             either a directory containing a sibling manifest (upstream
             output) or an external file/dir.
         cfg: Per-rule configuration. Required keys: ``output_id``,
-            ``universe_id``, ``recipe``, ``container_image``, ``decisions``,
-            ``code_version``, ``git_sha``, ``lc_version``.
+            ``universe_id``, ``recipe``, ``decisions``, ``code_version``,
+            ``env_version``. Optional: ``git_sha``, ``git_dirty``,
+            ``git_remote``, ``lc_version``, ``worker_runtime``,
+            ``image_tag``, ``image_digest``, ``dpkg_snapshot_sha256``,
+            ``sdist_built``.
+        hermeticity: The enforcement record for the exec that produced
+            the data — the *applied* flags, never the documented matrix
+            row. Defaults to the honest unsandboxed record.
+        attestation: Runtime-environment capture from
+            :func:`lightcone.engine.attestation.capture_runtime_attestation`,
+            taken worker-side (hence inside the boundary in containerized
+            mode).
     """
     output_dir = Path(output_dir)
 
@@ -181,24 +223,34 @@ def write_manifest(
         else:
             input_versions[inp_id] = fingerprint_external(inp_path)
 
+    image = (
+        {"tag": cfg["image_tag"], "digest": cfg.get("image_digest")}
+        if cfg.get("image_tag")
+        else None
+    )
+
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "output_id": cfg["output_id"],
         "universe_id": cfg["universe_id"],
         "code_version": cfg["code_version"],
         "data_version": sha256_dir(output_dir),
-        "container_image": cfg.get("container_image"),
+        "env_version": cfg["env_version"],
         "recipe": cfg["recipe"],
         "decisions": cfg.get("decisions", {}),
         "input_versions": input_versions,
         "git_sha": cfg.get("git_sha"),
-        # URL of the git origin remote at the time of materialization.
-        # Optional/additive — older manifests without this field still
-        # parse. Surfaced by ``lc export wrroc`` as a CodeRepository entity.
+        "git_dirty": cfg.get("git_dirty"),
         "git_remote": cfg.get("git_remote"),
         "lc_version": cfg.get("lc_version"),
         "finished_at": time.time(),
         "host": socket.gethostname(),
+        "worker_runtime": cfg.get("worker_runtime", "host"),
+        "image": image,
+        "dpkg_snapshot_sha256": cfg.get("dpkg_snapshot_sha256"),
+        "sdist_built": cfg.get("sdist_built", []),
+        "hermeticity": hermeticity or dict(UNSANDBOXED_HERMETICITY),
+        **(attestation or {}),
     }
 
     final_path = output_dir / MANIFEST_FILENAME

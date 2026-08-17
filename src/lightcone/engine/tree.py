@@ -237,25 +237,6 @@ def resolve_output_path(
     return project_path / "results" / universe_id
 
 
-def resolve_container_spec(
-    tree_output: TreeOutput,
-    root_spec: dict[str, Any],
-) -> str | None:
-    """Pick the container declaration in priority order:
-    recipe-level > sub-analysis-level > root-level.
-    Returns the raw spec string (Containerfile path or registry image
-    tag), or ``None`` when no container is declared at any level.
-    """
-    recipe = tree_output.output_def.get("recipe") or {}
-    if "container" in recipe:
-        return recipe["container"]  # type: ignore[no-any-return]
-    if tree_output.analysis_id is not None:
-        sub = tree_output.analysis_spec.get("container")
-        if sub is not None:
-            return sub  # type: ignore[no-any-return]
-    return root_spec.get("container")
-
-
 def find_upstream_output(
     consumer: TreeOutput,
     inp_id: str,
@@ -368,7 +349,6 @@ __all__ = [
     "collect_tree_outputs",
     "find_upstream_output",
     "get_decisions_for_analysis",
-    "resolve_container_spec",
     "resolve_external_input",
     "resolve_output_path",
     "resolve_universe_decisions",

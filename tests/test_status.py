@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from conftest import PYPROJECT_MIN, PYTHON_VERSION_MIN, UV_LOCK_MIN
 
+from lightcone.engine.environment import load_environment
 from lightcone.engine.manifest import code_version, write_manifest
 from lightcone.engine.status import OutputStatus, get_output_status
 
@@ -13,6 +15,10 @@ from lightcone.engine.status import OutputStatus, get_output_status
 def _write_spec(project_root: Path, spec: dict[str, Any]) -> None:
     project_root.mkdir(parents=True, exist_ok=True)
     (project_root / "astra.yaml").write_text(yaml.safe_dump(spec))
+    if not (project_root / "pyproject.toml").exists():
+        (project_root / "pyproject.toml").write_text(PYPROJECT_MIN)
+        (project_root / "uv.lock").write_text(UV_LOCK_MIN)
+        (project_root / ".python-version").write_text(PYTHON_VERSION_MIN)
 
 
 def _materialize(
@@ -22,15 +28,15 @@ def _materialize(
     *,
     recipe: str,
     decisions: dict[str, Any] | None = None,
-    container_image: str | None = None,
 ) -> Path:
     out = project_root / "results" / universe_id / output_id
     out.mkdir(parents=True, exist_ok=True)
     (out / "data.txt").write_text("output bytes")
+    env_version = load_environment(project_root).env_version
     cv = code_version(
         recipe=recipe,
-        container_image=container_image,
         decisions=decisions or {},
+        env_version=env_version,
     )
     write_manifest(
         output_dir=out,
@@ -39,9 +45,9 @@ def _materialize(
             "output_id": output_id,
             "universe_id": universe_id,
             "recipe": recipe,
-            "container_image": container_image,
             "decisions": decisions or {},
             "code_version": cv,
+            "env_version": env_version,
             "git_sha": "abc",
             "lc_version": "0.0",
         },
@@ -166,3 +172,37 @@ def test_status_universe_specific(tmp_path: Path) -> None:
 
 
 
+
+
+def test_status_pre_migration_manifest(tmp_path: Path) -> None:
+    """An earlier-schema manifest surfaces distinctly — not ok, not a
+    bare stale."""
+    import json
+
+    _write_spec(
+        tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]}
+    )
+    out = tmp_path / "results" / "u1" / "foo"
+    out.mkdir(parents=True)
+    (out / "data.txt").write_text("x")
+    (out / ".lightcone-manifest.json").write_text(
+        json.dumps({"schema_version": 1, "code_version": "sha256:old"})
+    )
+    statuses = list(get_output_status(tmp_path, universe_id="u1"))
+    assert statuses[0].status == "pre_migration"
+
+
+def test_env_blast_radius_counts_env_drift(tmp_path: Path) -> None:
+    from lightcone.engine.status import env_blast_radius
+
+    _write_spec(
+        tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]}
+    )
+    _materialize(tmp_path, "foo", "u1", recipe="echo")
+    assert env_blast_radius(tmp_path, universes=["u1"]) == 0
+
+    # An environment edit stales every materialized output.
+    (tmp_path / "uv.lock").write_text(
+        (tmp_path / "uv.lock").read_text() + "# drift\n"
+    )
+    assert env_blast_radius(tmp_path, universes=["u1"]) == 1

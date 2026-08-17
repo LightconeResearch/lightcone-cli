@@ -46,9 +46,9 @@ def _cfg(output_id: str = "foo", *, shell_command: str = "echo hi") -> dict:
         "universe_id": "u1",
         "recipe": "echo hi",
         "shell_command": shell_command,
-        "container_image": None,
         "decisions": {},
         "code_version": "abc",
+        "env_version": "sha256:" + "ee" * 32,
         "git_sha": None,
         "lc_version": "test",
     }
@@ -147,3 +147,30 @@ def test_recipe_stdout_and_stderr_both_forwarded(tmp_path: Path) -> None:
     body = output
     assert "on-stdout" in body
     assert "on-stderr" in body
+
+
+def test_manifest_records_hermeticity_and_attestation(tmp_path: Path) -> None:
+    """run_rule executes through the boundary and records what actually
+    ran: the passthrough boundary attests mechanism none, and the
+    worker-side runtime attestation is merged into the manifest."""
+    import json
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _, err = _capture(
+        lambda: run_rule(
+            rule_key="foo",
+            universe="u1",
+            output_dir=out_dir,
+            inputs={},
+            cfg=_cfg(shell_command=f"touch {out_dir}/data.txt"),
+        )
+    )
+    assert err is None
+    m = json.loads((out_dir / ".lightcone-manifest.json").read_text())
+    assert m["hermeticity"] == {
+        "mechanism": "none", "fs": "open", "network": "allowed",
+    }
+    assert m["platform"]["arch"]
+    assert m["python_build"].startswith("CPython")
+    assert m["worker_runtime"] == "host"

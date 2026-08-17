@@ -1,11 +1,14 @@
 """Manifest-driven status walker.
 
-For each output declared in a project's ``astra.yaml``, determines whether
-it is materialized, stale, missing, or an alias — by reading the per-output
-manifest written at ``<output_dir>/.lightcone-manifest.json``.
+For each output declared in a project's ``astra.yaml``, determines
+whether it is materialized, stale, missing, pre-migration, or an alias —
+by reading the per-output manifest at
+``<output_dir>/.lightcone-manifest.json``.
 
-This module never imports Snakemake. ``lc status`` works on a fresh clone
-with no ``.snakemake/`` directory and on frozen archives.
+Offline and local-only by invariant: this module reads the project tree
+(spec, manifests, ``pyproject.toml``) and never the network. It never
+imports Snakemake — ``lc status`` works on a fresh clone with no
+``.snakemake/`` directory and on frozen archives.
 """
 from __future__ import annotations
 
@@ -16,17 +19,16 @@ from typing import Any, Literal
 
 from astra.helpers import load_yaml, resolve_analysis_tree
 
-from lightcone.engine.container import make_image_tag_resolver
-from lightcone.engine.manifest import code_version, read_manifest
+from lightcone.engine.environment import EnvironmentSpec, load_environment
+from lightcone.engine.manifest import code_version, is_pre_migration, read_manifest
 from lightcone.engine.tree import (
     TreeOutput,
     collect_tree_outputs,
-    resolve_container_spec,
     resolve_output_path,
     resolve_universe_decisions,
 )
 
-StatusLiteral = Literal["ok", "stale", "missing", "alias"]
+StatusLiteral = Literal["ok", "stale", "missing", "alias", "pre_migration"]
 
 
 @dataclass
@@ -47,11 +49,11 @@ def _decisions_for(
     """Return the decisions visible to a given output for code_version
     computation.
 
-    v0.0.7: ``Output.decisions`` is the explicit provenance contract —
-    the set of decisions whose option choices can change this output.
-    The Snakefile generator hashes only those into ``code_version``;
-    we mirror that scoping here so ``lc status`` stays in sync.
-    Outputs that do not declare decisions hash an empty dict.
+    ``Output.decisions`` is the explicit provenance contract — the set
+    of decisions whose option choices can change this output. The
+    Snakefile generator hashes only those into ``code_version``; we
+    mirror that scoping here so ``lc status`` stays in sync. Outputs
+    that do not declare decisions hash an empty dict.
     """
     declared = tree_output.output_def.get("decisions") or []
     if not declared:
@@ -89,14 +91,20 @@ def get_output_status(
     project_path: Path,
     *,
     universe_id: str,
+    env: EnvironmentSpec | None = None,
 ) -> Iterator[OutputStatus]:
-    """Yield an :class:`OutputStatus` for every declared output in the project."""
+    """Yield an :class:`OutputStatus` for every declared output in the project.
+
+    The recomputed ``code_version`` mirrors the Snakefile generator's
+    exactly — both call the one shared
+    :func:`lightcone.engine.manifest.code_version` with the environment's
+    current ``env_version``, so they can never disagree.
+    """
+    if env is None:
+        env = load_environment(project_path)
     spec_path = project_path / "astra.yaml"
     spec = resolve_analysis_tree(load_yaml(spec_path), project_path)
     universe_decisions = _load_universe_decisions(project_path, spec, universe_id)
-    project_name = (spec.get("name") or project_path.name).lower().replace(" ", "-")
-    # Resolve image identities exactly as `lc materialize` would.
-    resolve_image = make_image_tag_resolver(project_path, project_name)
 
     for tree_out in collect_tree_outputs(spec):
         out_dir = resolve_output_path(project_path, tree_out, universe_id) / tree_out.output_id
@@ -120,44 +128,59 @@ def get_output_status(
 
         manifest = read_manifest(out_dir)
         if manifest is None:
-            yield OutputStatus(
-                output_id=tree_out.output_id,
-                universe_id=universe_id,
-                analysis_id=tree_out.analysis_id,
-                output_dir=out_dir,
-                status="missing",
-                manifest=None,
-                recipe_command=recipe_command,
+            status: StatusLiteral = "missing"
+        elif is_pre_migration(manifest):
+            # An earlier-schema manifest cannot be compared against the
+            # current identity formula — surfaced distinctly, treated as
+            # stale by materialize.
+            status = "pre_migration"
+        else:
+            rule_key = (
+                f"{tree_out.analysis_id}.{tree_out.output_id}"
+                if tree_out.analysis_id
+                else tree_out.output_id
             )
-            continue
-
-        # Mirror the snakefile generator's image-tag resolution so the
-        # recomputed code_version matches what was written into the
-        # manifest at run time.
-        image_tag = resolve_image(resolve_container_spec(tree_out, spec))
-        current_cv = code_version(
-            recipe=recipe_command,
-            container_image=image_tag,
-            decisions=_decisions_for(tree_out, universe_decisions),
-        )
-        if manifest.get("code_version") != current_cv:
-            yield OutputStatus(
-                output_id=tree_out.output_id,
-                universe_id=universe_id,
-                analysis_id=tree_out.analysis_id,
-                output_dir=out_dir,
-                status="stale",
-                manifest=manifest,
-                recipe_command=recipe_command,
+            current_cv = code_version(
+                recipe=recipe_command,
+                decisions=_decisions_for(tree_out, universe_decisions),
+                env_version=env.env_version,
+                writable_project=rule_key in env.writable_project_outputs,
             )
-            continue
+            status = "ok" if manifest.get("code_version") == current_cv else "stale"
 
         yield OutputStatus(
             output_id=tree_out.output_id,
             universe_id=universe_id,
             analysis_id=tree_out.analysis_id,
             output_dir=out_dir,
-            status="ok",
+            status=status,
             manifest=manifest,
             recipe_command=recipe_command,
         )
+
+
+def env_blast_radius(
+    project_path: Path,
+    *,
+    universes: list[str],
+    env: EnvironmentSpec | None = None,
+) -> int:
+    """How many materialized outputs the current environment change stales.
+
+    Counts manifests whose recorded ``env_version`` differs from the
+    environment's current one — printed as
+    "environment changed: N materialized outputs are now stale" by
+    ``lc status`` and the materialize preflight, including at escalation
+    time (declaring the image table IS an environment edit).
+    """
+    if env is None:
+        env = load_environment(project_path)
+    count = 0
+    for u in universes:
+        for s in get_output_status(project_path, universe_id=u, env=env):
+            if s.manifest is None:
+                continue
+            recorded = s.manifest.get("env_version")
+            if recorded is not None and recorded != env.env_version:
+                count += 1
+    return count

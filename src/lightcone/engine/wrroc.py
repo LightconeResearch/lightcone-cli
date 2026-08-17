@@ -454,7 +454,7 @@ class WRROCBuilder:
 
         instrument_id = self._add_recipe_software(
             recipe_cmd,
-            manifest.get("container_image"),
+            (manifest.get("image") or {}).get("tag"),
             tool_name=(tree_out.output_def.get("recipe") or {}).get("tool_name"),
             output_id=tree_out.output_id,
         )

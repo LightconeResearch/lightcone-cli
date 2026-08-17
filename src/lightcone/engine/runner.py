@@ -3,10 +3,10 @@
 Each rule's ``run:`` block boils down to one call to :func:`run_rule`.
 The helper:
 
-* runs the rule's pre-rendered shell command (template substitution and
-  container wrapping happen at Snakefile-generation time — see
-  :func:`lightcone.engine.snakefile.render_recipe`) with stdout and
-  stderr captured,
+* executes the rule's pre-rendered shell command through the exec
+  boundary (:mod:`lightcone.engine.boundary` — template substitution
+  happens at Snakefile-generation time, enforcement at exec time) with
+  stdout and stderr captured,
 * emits a ``▶ rule [universe]`` header, the recipe's output, and a
   ``✓ rule [universe]   <duration>`` (or ``✗ … exit=N``) trailer,
   each line framed with a sentinel prefix the executor extracts,
@@ -24,6 +24,7 @@ upstream log strings.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -68,34 +69,46 @@ def run_rule(
     treat the rule as failed; ``lc verify`` won't see a stale manifest
     pointing at incomplete data.
     """
+    from lightcone.engine.attestation import capture_runtime_attestation
+    from lightcone.engine.boundary import ExecScope, get_boundary
     from lightcone.engine.manifest import write_manifest
     from lightcone.engine.validation import validate_output
 
     t0 = time.monotonic()
     _emit(f"\033[2m▶\033[0m {rule_key} \033[2m[{universe}]\033[0m")
 
-    proc = subprocess.run(
-        cfg["shell_command"],
-        shell=True,
-        capture_output=True,
-        text=True,
-        check=False,
+    scope = ExecScope(
+        project_root=Path.cwd(),
+        output_dir=Path(output_dir),
+        read_paths=tuple(Path(p) for p in inputs.values()),
+        writable_project=bool(cfg.get("writable_project")),
+    )
+    result = get_boundary().execute(
+        cfg["shell_command"], scope, env=dict(os.environ)
     )
 
-    for line in proc.stdout.splitlines():
+    for line in result.stdout.splitlines():
         _emit(f"  {line}")
-    for line in proc.stderr.splitlines():
+    for line in result.stderr.splitlines():
         _emit(f"  {line}")
+    for note in result.notes:
+        _emit(f"  {note}")
 
     dt = time.monotonic() - t0
-    if proc.returncode != 0:
+    if result.returncode != 0:
         _emit(
             f"\033[31m✗\033[0m {rule_key} \033[2m[{universe}]\033[0m   "
-            f"exit={proc.returncode}   {dt:.1f}s"
+            f"exit={result.returncode}   {dt:.1f}s"
         )
-        raise subprocess.CalledProcessError(proc.returncode, cfg["shell_command"])
+        raise subprocess.CalledProcessError(result.returncode, cfg["shell_command"])
 
-    write_manifest(output_dir=output_dir, inputs=inputs, cfg=cfg)
+    write_manifest(
+        output_dir=output_dir,
+        inputs=inputs,
+        cfg=cfg,
+        hermeticity=result.attestation.to_manifest(),
+        attestation=capture_runtime_attestation(),
+    )
 
     for warning in validate_output(
         output_dir, cfg.get("output_type"), cfg["output_id"]

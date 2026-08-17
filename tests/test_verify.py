@@ -13,6 +13,8 @@ from lightcone.engine.manifest import (
 )
 from lightcone.engine.verify import VerifyResult, verify_outputs
 
+_ENV = "sha256:" + "ee" * 32
+
 
 def _spec(project_root: Path, spec: dict[str, Any]) -> None:
     project_root.mkdir(parents=True, exist_ok=True)
@@ -37,11 +39,11 @@ def _materialize(
             "output_id": output_id,
             "universe_id": universe_id,
             "recipe": recipe,
-            "container_image": None,
             "decisions": {},
             "code_version": code_version(
-                recipe=recipe, container_image=None, decisions={}
+                recipe=recipe, decisions={}, env_version=_ENV
             ),
+            "env_version": _ENV,
             "git_sha": "g",
             "lc_version": "0.0",
         },
@@ -112,11 +114,11 @@ def test_verify_detects_broken_chain(tmp_path: Path) -> None:
             "output_id": "upstream",
             "universe_id": "u1",
             "recipe": "echo u",
-            "container_image": None,
             "decisions": {},
             "code_version": code_version(
-                recipe="echo u", container_image=None, decisions={}
+                recipe="echo u", decisions={}, env_version=_ENV
             ),
+            "env_version": _ENV,
             "git_sha": "g",
             "lc_version": "0.0",
         },
@@ -212,11 +214,11 @@ def test_verify_detects_broken_chain_for_qualified_input(tmp_path: Path) -> None
             "output_id": "real",
             "universe_id": "u1",
             "recipe": "echo r",
-            "container_image": None,
             "decisions": {},
             "code_version": code_version(
-                recipe="echo r", container_image=None, decisions={}
+                recipe="echo r", decisions={}, env_version=_ENV
             ),
+            "env_version": _ENV,
             "git_sha": "g",
             "lc_version": "0.0",
         },
@@ -236,11 +238,11 @@ def test_verify_detects_broken_chain_for_qualified_input(tmp_path: Path) -> None
             "output_id": "real",
             "universe_id": "u1",
             "recipe": "echo r",
-            "container_image": None,
             "decisions": {},
             "code_version": code_version(
-                recipe="echo r", container_image=None, decisions={}
+                recipe="echo r", decisions={}, env_version=_ENV
             ),
+            "env_version": _ENV,
             "git_sha": "g",
             "lc_version": "0.0",
         },
@@ -294,3 +296,80 @@ def test_verifyresult_dataclass(tmp_path: Path) -> None:
     assert r.output_id == "foo"
     assert r.passed
     assert r.failure is None
+
+
+def test_verify_notes_pre_migration_still_checks_hashes(tmp_path: Path) -> None:
+    """A v1-era manifest still carries data_version — verify checks it
+    and reports the pre_migration note rather than failing outright."""
+    import json
+
+    from lightcone.engine.manifest import sha256_dir
+
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo"}}]})
+    out = tmp_path / "results" / "u1" / "foo"
+    out.mkdir(parents=True)
+    (out / "data.txt").write_text("x")
+    (out / MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "code_version": "sha256:old",
+                "data_version": sha256_dir(out),
+                "input_versions": {},
+            }
+        )
+    )
+    results = list(verify_outputs(tmp_path, universe_id="u1"))
+    assert results[0].passed
+    assert "pre_migration" in results[0].notes
+    assert "unsandboxed" in results[0].notes
+
+
+def test_verify_notes_dirty_tree_and_unsandboxed(tmp_path: Path) -> None:
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo hi"}}]})
+    out = tmp_path / "results" / "u1" / "foo"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "data.txt").write_text("x")
+    write_manifest(
+        output_dir=out,
+        inputs={},
+        cfg={
+            "output_id": "foo",
+            "universe_id": "u1",
+            "recipe": "echo hi",
+            "decisions": {},
+            "code_version": "sha256:c",
+            "env_version": _ENV,
+            "git_dirty": True,
+        },
+    )
+    results = list(verify_outputs(tmp_path, universe_id="u1"))
+    assert results[0].passed
+    assert "dirty_tree" in results[0].notes
+    assert "unsandboxed" in results[0].notes
+
+
+def test_verify_no_notes_when_sandboxed_and_clean(tmp_path: Path) -> None:
+    _spec(tmp_path, {"outputs": [{"id": "foo", "recipe": {"command": "echo hi"}}]})
+    out = tmp_path / "results" / "u1" / "foo"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "data.txt").write_text("x")
+    write_manifest(
+        output_dir=out,
+        inputs={},
+        cfg={
+            "output_id": "foo",
+            "universe_id": "u1",
+            "recipe": "echo hi",
+            "decisions": {},
+            "code_version": "sha256:c",
+            "env_version": _ENV,
+            "git_dirty": False,
+        },
+        hermeticity={
+            "mechanism": "landlock", "fs": "declared", "network": "unenforced",
+        },
+    )
+    results = list(verify_outputs(tmp_path, universe_id="u1"))
+    assert results[0].passed
+    assert results[0].notes == ()

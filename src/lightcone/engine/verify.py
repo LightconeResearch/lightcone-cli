@@ -11,6 +11,12 @@ failure modes:
 - ``broken_chain``: the recorded ``input_versions`` reference an upstream
   output whose own ``data_version`` no longer matches.
 
+Orthogonal to pass/fail, verify surfaces provenance *notes* the hashes
+cannot express: ``pre_migration`` (an earlier-schema manifest — its
+hashes are still checked), ``dirty_tree`` (materialized from an
+uncommitted working tree), and ``unsandboxed`` (no enforcement
+mechanism ran).
+
 Like ``status``, this module never imports Snakemake.
 """
 from __future__ import annotations
@@ -18,11 +24,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from astra.helpers import load_yaml, resolve_analysis_tree
 
-from lightcone.engine.manifest import read_manifest, sha256_dir
+from lightcone.engine.manifest import is_pre_migration, read_manifest, sha256_dir
 from lightcone.engine.tree import (
     collect_tree_outputs,
     find_upstream_output,
@@ -40,6 +46,19 @@ class VerifyResult:
     passed: bool
     failure: FailureKind | None
     detail: str | None = None
+    notes: tuple[str, ...] = ()
+
+
+def _manifest_notes(manifest: dict[str, Any]) -> tuple[str, ...]:
+    notes: list[str] = []
+    if is_pre_migration(manifest):
+        notes.append("pre_migration")
+    if manifest.get("git_dirty"):
+        notes.append("dirty_tree")
+    hermeticity = manifest.get("hermeticity")
+    if not hermeticity or hermeticity.get("mechanism") in (None, "none"):
+        notes.append("unsandboxed")
+    return tuple(notes)
 
 
 def verify_outputs(
@@ -74,6 +93,8 @@ def verify_outputs(
             )
             continue
 
+        notes = _manifest_notes(manifest)
+
         actual_dv = sha256_dir(out_dir)
         if actual_dv != manifest.get("data_version"):
             yield VerifyResult(
@@ -86,6 +107,7 @@ def verify_outputs(
                     f"recorded {manifest.get('data_version')!r} != "
                     f"actual {actual_dv!r}"
                 ),
+                notes=notes,
             )
             continue
 
@@ -126,6 +148,7 @@ def verify_outputs(
                 passed=False,
                 failure="broken_chain",
                 detail=chain_failure,
+                notes=notes,
             )
             continue
 
@@ -135,6 +158,7 @@ def verify_outputs(
             output_dir=out_dir,
             passed=True,
             failure=None,
+            notes=notes,
         )
 
 

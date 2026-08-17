@@ -17,6 +17,8 @@ from lightcone.engine.wrroc import (
     export_wrroc,
 )
 
+_ENV = "sha256:" + "ee" * 32
+
 # ---------------------------------------------------------------------------
 # Fixtures: tiny project + materialized outputs
 # ---------------------------------------------------------------------------
@@ -51,8 +53,8 @@ def _materialize(
     (out / "data.txt").write_text(body)
     cv = code_version(
         recipe=recipe,
-        container_image=container_image,
         decisions=decisions or {},
+        env_version=_ENV,
     )
     write_manifest(
         output_dir=out,
@@ -61,9 +63,10 @@ def _materialize(
             "output_id": output_id,
             "universe_id": universe_id,
             "recipe": recipe,
-            "container_image": container_image,
+            "image_tag": container_image,
             "decisions": decisions or {},
             "code_version": cv,
+            "env_version": _ENV,
             "git_sha": "abc1234",
             "lc_version": "0.0.1",
         },
@@ -424,13 +427,13 @@ class TestSubAnalyses:
         sub_out_dir = sub_dir / "results" / "baseline" / "sub_out"
         sub_out_dir.mkdir(parents=True)
         (sub_out_dir / "data.txt").write_text("sub bytes")
-        cv = code_version(recipe="echo s", container_image=None, decisions={})
+        cv = code_version(recipe="echo s", decisions={}, env_version=_ENV)
         write_manifest(
             output_dir=sub_out_dir,
             inputs={},
             cfg={"output_id": "sub_out", "universe_id": "baseline",
-                 "recipe": "echo s", "container_image": None,
-                 "decisions": {}, "code_version": cv,
+                 "recipe": "echo s",
+                 "decisions": {}, "code_version": cv, "env_version": _ENV,
                  "git_sha": "abc", "lc_version": "0.0.1"},
         )
         return tmp_path
@@ -559,13 +562,13 @@ class TestGitRemote:
         out = tmp_path / "results" / "u1" / "foo"
         out.mkdir(parents=True)
         (out / "data.txt").write_text("bytes")
-        cv = code_version(recipe="echo foo", container_image=None, decisions={})
+        cv = code_version(recipe="echo foo", decisions={}, env_version=_ENV)
         write_manifest(
             output_dir=out, inputs={},
             cfg={
                 "output_id": "foo", "universe_id": "u1",
-                "recipe": "echo foo", "container_image": None,
-                "decisions": {}, "code_version": cv,
+                "recipe": "echo foo",
+                "decisions": {}, "code_version": cv, "env_version": _ENV,
                 "git_sha": "abc",
                 "git_remote": "https://github.com/dkn16/test-repo",
                 "lc_version": "0.0.1",

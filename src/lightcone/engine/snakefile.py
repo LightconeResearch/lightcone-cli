@@ -3,17 +3,19 @@
 The Snakefile is a thin shell over the astra spec: one rule per output
 with a recipe, parameterized by ``{universe}``. Each rule's body is a
 ``run:`` block that calls :func:`lightcone.engine.runner.run_rule` with
-the per-(rule, universe) cfg blob — which already contains the rendered
-and wrapped ``shell_command``. All template substitution and container
-wrapping happen here, at generation time, where every value is concrete
-for a given universe; the runner stays a thin executor.
+the per-(rule, universe) cfg blob. All template substitution happens
+here, at generation time, where every value is concrete for a given
+universe; the runner stays a thin executor.
 
-ASTRA v0.0.7 moved ``inputs`` and ``decisions`` declarations from
-``Recipe`` up to ``Output``. The recipe body is a *template* using a
-small placeholder grammar — see :func:`render_recipe`. We don't use
-Snakemake's ``container:`` directive or ``--sdm apptainer``: the
-generator wraps with the configured runtime end-to-end (see
-:mod:`lightcone.engine.container`).
+Recipes are **never wrapped** at generation time: enforcement (the
+sandbox) is applied at exec time by the boundary
+(:mod:`lightcone.engine.boundary`), and in containerized mode the
+entire stack already runs inside the project image — wrapping recipes
+individually would containerize twice.
+
+ASTRA carries only analysis structure (inputs/outputs/recipes/
+decisions/universes) — the environment lives in ``pyproject.toml`` +
+``uv.lock``. Legacy ``container:`` keys in astra.yaml are ignored.
 
 The ``os.replace`` rename inside ``write_manifest`` (called by
 ``run_rule``) is the atomic commit point — either the rule produced
@@ -29,13 +31,17 @@ from typing import Any
 
 from astra.helpers import load_yaml, resolve_analysis_tree
 
-from lightcone.engine.container import make_image_tag_resolver, wrap_recipe
+from lightcone.engine.environment import (
+    EnvironmentSpec,
+    ProjectEnvironmentError,
+    load_environment,
+    scan_lock,
+)
 from lightcone.engine.manifest import code_version
 from lightcone.engine.tree import (
     TreeOutput,
     collect_tree_outputs,
     find_upstream_output,
-    resolve_container_spec,
     resolve_external_input,
     resolve_universe_decisions,
 )
@@ -126,6 +132,23 @@ def _git_sha(project_path: Path) -> str | None:
         )
         if out.returncode == 0:
             return out.stdout.strip()
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def _git_dirty(project_path: Path) -> bool | None:
+    """True when the working tree differs from HEAD — a manifest whose
+    ``git_sha`` cannot fully reproduce the run. ``None`` outside git."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(project_path), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if out.returncode == 0:
+            return bool(out.stdout.strip())
     except FileNotFoundError:
         pass
     return None
@@ -324,34 +347,56 @@ def generate(
     project_path: Path,
     *,
     universes: list[str],
-    runtime: str = "none",
+    env: EnvironmentSpec | None = None,
 ) -> tuple[Path, Path]:
     """Write ``.lightcone/Snakefile`` and ``.lightcone/snakefile-config.json``.
 
     Args:
         project_path: Project root containing ``astra.yaml``.
         universes: Universe ids to expand rules over.
-        runtime: Container runtime to wrap recipes with — ``podman`` or
-            ``none`` (recipes run on the host without isolation).
-            Resolution is done here once, not per-rule, so all rules use
-            a consistent runtime. See
-            :func:`lightcone.engine.container.load_runtime`.
+        env: The loaded project environment (loaded here when omitted).
+            Its ``env_version`` flows into every rule's ``code_version``
+            and cfg — the identity every worker's mid-run gates re-check.
+
+    Raises :class:`~lightcone.engine.environment.ProjectEnvironmentError`
+    when the lock scan refuses (unauditable path/editable dependencies).
 
     Returns ``(snakefile_path, config_path)``.
     """
     project_path = Path(project_path).resolve()
+    if env is None:
+        env = load_environment(project_path)
+
+    scan = scan_lock(project_path)
+    if scan.refusals:
+        raise ProjectEnvironmentError(
+            "uv.lock contains unauditable dependencies:\n  "
+            + "\n  ".join(scan.refusals)
+            + "\nPin them to a registry (or vendor them as declared inputs)."
+        )
+
     spec = resolve_analysis_tree(load_yaml(project_path / "astra.yaml"), project_path)
-    project_name = (spec.get("name") or project_path.name).lower().replace(" ", "-")
 
     tree_outputs = collect_tree_outputs(spec)
+
+    # Validate the per-output sandbox escalations against declared ids.
+    declared_ids = {
+        f"{to.analysis_id}.{to.output_id}" if to.analysis_id else to.output_id
+        for to in tree_outputs
+    }
+    if unknown := env.writable_project_outputs - declared_ids:
+        raise ProjectEnvironmentError(
+            "[tool.lightcone.sandbox] writable-project names undeclared "
+            f"output(s): {', '.join(sorted(unknown))}."
+        )
 
     rules: list[dict[str, Any]] = []
     cfg: dict[str, dict[str, dict[str, Any]]] = {}
 
     git_sha = _git_sha(project_path)
+    git_dirty = _git_dirty(project_path)
     git_remote = _git_remote(project_path)
     lc_version = _lc_version()
-    resolve_image = make_image_tag_resolver(project_path, project_name)
 
     for to in tree_outputs:
         recipe = to.output_def.get("recipe")
@@ -383,8 +428,7 @@ def generate(
                 pattern = ext
             rule_inputs.append((inp_id, _safe_input_key(inp_id), pattern))
 
-        container_image = resolve_container_spec(to, spec)
-        image_tag = resolve_image(container_image)
+        writable_project = rule_key in env.writable_project_outputs
 
         rules.append(
             {
@@ -415,23 +459,21 @@ def generate(
                 decisions=scoped_decisions,
                 output=output_dir,
             )
-            wrapped = wrap_recipe(rendered, image=image_tag, runtime=runtime)
-            # ``image_tag`` (not the raw spec string) so a Containerfile
-            # edit propagates through ``code_version`` to ``lc status``.
             cv = code_version(
                 recipe=recipe_command,
-                container_image=image_tag,
                 decisions=scoped_decisions,
+                env_version=env.env_version,
+                writable_project=writable_project,
             )
             # Prefix the executed command with a no-op ``:`` builtin
-            # carrying the code_version. This makes the wrapped command
-            # differ when the recipe / container / decisions drift, so
+            # carrying the code_version. This makes the command differ
+            # when the recipe / environment / decisions drift, so
             # (a) Snakemake's ``shellcmd`` trigger sees the change and
             # (b) any shell trace carries a breadcrumb. The trigger
             # that actually fires today is ``params`` (cfg is
             # per-universe and contains ``shell_command``) — see
-            # ``lc run --rerun-triggers``.
-            shell_command = f": lc_code_version={cv};\n{wrapped}"
+            # ``lc materialize --rerun-triggers``.
+            shell_command = f": lc_code_version={cv};\n{rendered}"
             cfg[rule_key][u] = {
                 "output_id": to.output_id,
                 "output_type": to.output_def.get("type"),
@@ -440,10 +482,13 @@ def generate(
                 # field records what the user authored.
                 "recipe": recipe_command,
                 "shell_command": shell_command,
-                "container_image": container_image,
                 "decisions": scoped_decisions,
                 "code_version": cv,
+                "env_version": env.env_version,
+                "writable_project": writable_project,
+                "sdist_built": list(scan.sdist_built),
                 "git_sha": git_sha,
+                "git_dirty": git_dirty,
                 "git_remote": git_remote,
                 "lc_version": lc_version,
             }

@@ -11,10 +11,13 @@ from lightcone.engine.manifest import (
     SCHEMA_VERSION,
     code_version,
     fingerprint_external,
+    is_pre_migration,
     read_manifest,
     sha256_dir,
     write_manifest,
 )
+
+_ENV = "sha256:" + "ee" * 32
 
 
 def _write(path: Path, content: bytes | str) -> None:
@@ -136,39 +139,44 @@ def test_fingerprint_external_missing_returns_marker(tmp_path: Path) -> None:
 def test_code_version_deterministic() -> None:
     cv1 = code_version(
         recipe="python script.py --x 1",
-        container_image="lc-foo-abc123",
         decisions={"k": "a", "j": 1},
+        env_version=_ENV,
     )
     cv2 = code_version(
         recipe="python script.py --x 1",
-        container_image="lc-foo-abc123",
         decisions={"j": 1, "k": "a"},
+        env_version=_ENV,
     )
     assert cv1 == cv2
     assert cv1.startswith("sha256:")
 
 
 def test_code_version_changes_on_recipe() -> None:
-    cv1 = code_version(recipe="a", container_image="c", decisions={})
-    cv2 = code_version(recipe="b", container_image="c", decisions={})
+    cv1 = code_version(recipe="a", decisions={}, env_version=_ENV)
+    cv2 = code_version(recipe="b", decisions={}, env_version=_ENV)
     assert cv1 != cv2
 
 
-def test_code_version_changes_on_container() -> None:
-    cv1 = code_version(recipe="r", container_image="c1", decisions={})
-    cv2 = code_version(recipe="r", container_image="c2", decisions={})
+def test_code_version_changes_on_env_version() -> None:
+    cv1 = code_version(recipe="r", decisions={}, env_version=_ENV)
+    cv2 = code_version(recipe="r", decisions={}, env_version="sha256:" + "ff" * 32)
     assert cv1 != cv2
 
 
 def test_code_version_changes_on_decisions() -> None:
-    cv1 = code_version(recipe="r", container_image="c", decisions={"k": 1})
-    cv2 = code_version(recipe="r", container_image="c", decisions={"k": 2})
+    cv1 = code_version(recipe="r", decisions={"k": 1}, env_version=_ENV)
+    cv2 = code_version(recipe="r", decisions={"k": 2}, env_version=_ENV)
     assert cv1 != cv2
 
 
-def test_code_version_handles_none_container() -> None:
-    cv = code_version(recipe="r", container_image=None, decisions={})
-    assert cv.startswith("sha256:")
+def test_code_version_changes_on_writable_project() -> None:
+    """The per-output sandbox escalation is materialization-relevant —
+    but per-output: it moves only this output's code_version."""
+    cv1 = code_version(recipe="r", decisions={}, env_version=_ENV)
+    cv2 = code_version(
+        recipe="r", decisions={}, env_version=_ENV, writable_project=True
+    )
+    assert cv1 != cv2
 
 
 # ---- write_manifest -------------------------------------------------------
@@ -187,7 +195,7 @@ def test_write_manifest_basic(tmp_path: Path) -> None:
             "output_id": "foo",
             "universe_id": "u1",
             "recipe": "python script.py",
-            "container_image": "lc-foo-abc",
+            "env_version": _ENV,
             "decisions": {"k": 1},
             "code_version": "sha256:abc",
             "git_sha": "deadbeef",
@@ -204,7 +212,7 @@ def test_write_manifest_basic(tmp_path: Path) -> None:
     assert m["output_id"] == "foo"
     assert m["universe_id"] == "u1"
     assert m["recipe"] == "python script.py"
-    assert m["container_image"] == "lc-foo-abc"
+    assert m["env_version"] == _ENV
     assert m["decisions"] == {"k": 1}
     assert m["code_version"] == "sha256:abc"
     assert m["git_sha"] == "deadbeef"
@@ -215,6 +223,14 @@ def test_write_manifest_basic(tmp_path: Path) -> None:
     assert m["input_versions"]["raw_data"].startswith("mtime-size:")
     assert "finished_at" in m
     assert "host" in m
+    assert m["worker_runtime"] == "host"
+    assert m["image"] is None
+    assert m["dpkg_snapshot_sha256"] is None
+    assert m["sdist_built"] == []
+    # No enforcement ran and none was claimed — the honest default.
+    assert m["hermeticity"] == {
+        "mechanism": "none", "fs": "open", "network": "allowed",
+    }
 
 
 def test_write_manifest_chains_upstream_data_version(tmp_path: Path) -> None:
@@ -230,9 +246,9 @@ def test_write_manifest_chains_upstream_data_version(tmp_path: Path) -> None:
             "output_id": "upstream",
             "universe_id": "u1",
             "recipe": "echo",
-            "container_image": None,
             "decisions": {},
             "code_version": "sha256:up",
+            "env_version": _ENV,
             "git_sha": "g",
             "lc_version": "0.0",
         },
@@ -249,9 +265,9 @@ def test_write_manifest_chains_upstream_data_version(tmp_path: Path) -> None:
             "output_id": "downstream",
             "universe_id": "u1",
             "recipe": "echo",
-            "container_image": None,
             "decisions": {},
             "code_version": "sha256:dn",
+            "env_version": _ENV,
             "git_sha": "g",
             "lc_version": "0.0",
         },
@@ -269,9 +285,9 @@ def test_write_manifest_atomic(tmp_path: Path) -> None:
         "output_id": "o",
         "universe_id": "u",
         "recipe": "r",
-        "container_image": None,
         "decisions": {},
         "code_version": "sha256:c",
+        "env_version": _ENV,
         "git_sha": "g",
         "lc_version": "0.0",
     }
@@ -293,9 +309,9 @@ def test_write_manifest_data_version_matches_sha256_dir(tmp_path: Path) -> None:
             "output_id": "x",
             "universe_id": "u",
             "recipe": "r",
-            "container_image": None,
             "decisions": {},
             "code_version": "sha256:c",
+        "env_version": _ENV,
             "git_sha": "g",
             "lc_version": "0",
         },
@@ -317,9 +333,9 @@ def test_read_manifest_present(tmp_path: Path) -> None:
             "output_id": "o",
             "universe_id": "u",
             "recipe": "r",
-            "container_image": None,
             "decisions": {},
             "code_version": "sha256:c",
+        "env_version": _ENV,
             "git_sha": "g",
             "lc_version": "0.0",
         },
@@ -364,3 +380,84 @@ def test_read_manifest_propagates_oserror(tmp_path: Path) -> None:
 
 
 
+# ---- schema v2 ------------------------------------------------------------
+
+
+def test_manifest_v2_field_list_golden(tmp_path: Path) -> None:
+    """The normative field enumeration (spec §3) — the single list the
+    SCHEMA_VERSION bump implements. A failure here means the schema
+    changed without a conscious decision."""
+    out = tmp_path / "out"
+    _write(out / "x", b"1")
+    write_manifest(
+        output_dir=out,
+        inputs={},
+        cfg={
+            "output_id": "o", "universe_id": "u", "recipe": "r",
+            "decisions": {}, "code_version": "sha256:c", "env_version": _ENV,
+        },
+        attestation={
+            "uv_version": "0.12.3",
+            "platform": {"os_release": "x", "kernel": "k", "glibc": "g", "arch": "a"},
+            "python_build": "CPython 3.12.12",
+            "env_snapshot": {"locale": None, "tz": None},
+            "gpu_driver": None,
+        },
+    )
+    m = json.loads((out / MANIFEST_FILENAME).read_text())
+    assert sorted(m) == [
+        "code_version", "data_version", "decisions", "dpkg_snapshot_sha256",
+        "env_snapshot", "env_version", "finished_at", "git_dirty",
+        "git_remote", "git_sha", "gpu_driver", "hermeticity", "host",
+        "image", "input_versions", "lc_version", "output_id", "platform",
+        "python_build", "recipe", "schema_version", "sdist_built",
+        "universe_id", "uv_version", "worker_runtime",
+    ]
+
+
+def test_write_manifest_records_hermeticity(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    _write(out / "x", b"1")
+    write_manifest(
+        output_dir=out,
+        inputs={},
+        cfg={
+            "output_id": "o", "universe_id": "u", "recipe": "r",
+            "decisions": {}, "code_version": "sha256:c", "env_version": _ENV,
+        },
+        hermeticity={
+            "mechanism": "landlock", "fs": "declared",
+            "network": "unenforced", "landlock_abi": 9,
+        },
+    )
+    m = json.loads((out / MANIFEST_FILENAME).read_text())
+    assert m["hermeticity"]["mechanism"] == "landlock"
+    assert m["hermeticity"]["landlock_abi"] == 9
+
+
+def test_write_manifest_records_image(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    _write(out / "x", b"1")
+    write_manifest(
+        output_dir=out,
+        inputs={},
+        cfg={
+            "output_id": "o", "universe_id": "u", "recipe": "r",
+            "decisions": {}, "code_version": "sha256:c", "env_version": _ENV,
+            "worker_runtime": "container",
+            "image_tag": "lc-env-abcd", "image_digest": "sha256:dd",
+            "dpkg_snapshot_sha256": "ee",
+        },
+    )
+    m = json.loads((out / MANIFEST_FILENAME).read_text())
+    assert m["worker_runtime"] == "container"
+    assert m["image"] == {"tag": "lc-env-abcd", "digest": "sha256:dd"}
+    assert m["dpkg_snapshot_sha256"] == "ee"
+
+
+def test_is_pre_migration() -> None:
+    assert is_pre_migration({"schema_version": 1, "code_version": "x"})
+    assert is_pre_migration({})
+    assert not is_pre_migration(
+        {"schema_version": SCHEMA_VERSION, "env_version": _ENV}
+    )

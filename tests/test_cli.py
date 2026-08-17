@@ -1,14 +1,14 @@
-"""Tests for the redesigned lightcone CLI."""
+"""Tests for the lightcone CLI surface."""
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
+from conftest import PYPROJECT_MIN, PYTHON_VERSION_MIN, UV_LOCK_MIN
 
 from lightcone.cli.commands import main
 
@@ -20,12 +20,36 @@ def runner() -> CliRunner:
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Redirect ``~/.lightcone/`` to a temp dir so tests don't pollute the user's
-    real config. The global config is auto-created on first ``lc`` invocation."""
+    """Redirect ``~`` to a temp dir so tests can't touch the user's real
+    home."""
     fake_home = tmp_path / "_home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     return fake_home
+
+
+@pytest.fixture(autouse=True)
+def _fake_uv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Fake the uv seam so init tests are hermetic (no network, no real
+    resolution). Emulates the observable effects: ``uv lock`` writes
+    uv.lock, ``uv sync`` materializes .venv."""
+    calls: list[list[str]] = []
+
+    def fake_run_uv(args: list[str], *, cwd: Path) -> MagicMock:
+        calls.append(list(args))
+        if args[0] == "lock":
+            project = Path(args[args.index("--project") + 1])
+            (project / "uv.lock").write_text(UV_LOCK_MIN)
+        elif args[0] == "sync":
+            project = Path(args[args.index("--project") + 1])
+            (project / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    from lightcone.cli import commands
+
+    monkeypatch.setattr(commands, "_run_uv", fake_run_uv)
+    monkeypatch.setattr(commands.shutil, "which", lambda name: f"/usr/bin/{name}")
+    return calls
 
 
 # ---- top-level ------------------------------------------------------------
@@ -45,12 +69,38 @@ def test_help_does_not_advertise_removed_commands(runner: CliRunner) -> None:
     assert "  setup " not in result.output
 
 
+def test_engine_errors_render_cleanly(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ProjectEnvironmentError from any command surfaces as a one-line
+    CLI error (exit 1), not a traceback — the group boundary translates
+    it."""
+    from lightcone.cli import commands
+    from lightcone.engine.environment import ProjectEnvironmentError
+
+    def _boom(*args: object, **kwargs: object) -> Path:
+        raise ProjectEnvironmentError("no uv.lock — run `uv lock`")
+
+    monkeypatch.setattr(commands, "_project_root", _boom)
+    result = runner.invoke(main, ["status"])
+    assert result.exit_code == 1
+    assert "uv.lock" in result.output
+    assert "Traceback" not in result.output
+
+
+# ---- lc init --------------------------------------------------------------
+
 
 def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
     assert (project / "astra.yaml").exists()
+    assert (project / "pyproject.toml").exists()
+    assert (project / ".python-version").exists()
+    assert (project / "uv.lock").exists()
+    assert (project / ".venv").is_dir()
+    assert (project / "AGENTS.md").exists()
     assert (project / ".gitignore").exists()
     assert (project / ".lightcone").is_dir()
     assert (project / "results").is_dir()
@@ -62,24 +112,90 @@ def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
     gitignore = (project / ".gitignore").read_text()
     assert "results/*" in gitignore
     assert "!results/README.md" in gitignore
+    assert ".venv/" in gitignore
+    assert ".lightcone/image/" in gitignore
 
 
-def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None:
+def test_init_uv_scaffold_content(runner: CliRunner, tmp_path: Path) -> None:
+    """The scaffolded uv project: virtual (no build-system), the engine
+    inside the experiment's lock, an exact interpreter pin."""
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
 
-    myst_yml = (project / "myst.yml").read_text()
-    assert "mystra.mjs" in myst_yml
-    assert "index.md" in myst_yml
+    pyproject = (project / "pyproject.toml").read_text()
+    assert "lightcone-cli" in pyproject
+    assert "[build-system]" not in pyproject
+    assert "[tool.uv]" in pyproject
 
-    index_md = (project / "index.md").read_text()
-    assert index_md.startswith("# proj\n")
-    # References must track the astra init boilerplate element ids.
-    assert "{astra}`decisions.example_method`" in index_md
-    assert "{astra:value}`outputs.main_result`" in index_md
+    pin = (project / ".python-version").read_text().strip()
+    assert pin.count(".") == 2  # exact patch, e.g. 3.12.12
 
-    assert "_build/" in (project / ".gitignore").read_text()
+    agents = (project / "AGENTS.md").read_text()
+    assert "uv add" in agents
+    assert "lc materialize" in agents
+
+
+def test_init_no_containerfile_scaffolded(runner: CliRunner, tmp_path: Path) -> None:
+    """v6: images are generated from the lock — no authored Containerfile,
+    no requirements.txt."""
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    assert result.exit_code == 0, result.output
+    assert not (project / "Containerfile").exists()
+    assert not (project / "requirements.txt").exists()
+    # And the astra boilerplate's container: line is stripped.
+    assert "container:" not in (project / "astra.yaml").read_text()
+
+
+def test_init_refuses_authored_containerfile(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The user's own file operation is the consent to migrate — init
+    refuses with instructions, even under --check."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "Containerfile").write_text("FROM python:3.12-slim\n")
+    for extra in ([], ["--check"]):
+        result = runner.invoke(main, ["init", str(project), "--no-git", *extra])
+        assert result.exit_code != 0
+        assert "delete or rename" in result.output
+    assert (project / "Containerfile").read_text() == "FROM python:3.12-slim\n"
+
+
+def test_init_invokes_uv_lock_and_sync(
+    runner: CliRunner, tmp_path: Path, _fake_uv: list[list[str]]
+) -> None:
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    assert result.exit_code == 0, result.output
+    assert ["lock", "--project", str(project)] in _fake_uv
+    assert [
+        "sync", "--locked", "--exact", "--compile-bytecode",
+        "--project", str(project),
+    ] in _fake_uv
+
+
+def test_init_no_sync_skips_venv(
+    runner: CliRunner, tmp_path: Path, _fake_uv: list[list[str]]
+) -> None:
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-sync"])
+    assert result.exit_code == 0, result.output
+    assert (project / "uv.lock").exists()
+    assert not (project / ".venv").exists()
+    assert not any(args[0] == "sync" for args in _fake_uv)
+
+
+def test_init_requires_uv(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.cli import commands
+
+    monkeypatch.setattr(commands.shutil, "which", lambda _: None)
+    result = runner.invoke(main, ["init", str(tmp_path / "proj"), "--no-git"])
+    assert result.exit_code != 0
+    assert "uv is required" in result.output
 
 
 def test_init_adopts_existing_project(runner: CliRunner, tmp_path: Path) -> None:
@@ -89,28 +205,42 @@ def test_init_adopts_existing_project(runner: CliRunner, tmp_path: Path) -> None
     project.mkdir()
     (project / "astra.yaml").write_text("# user spec\n")
     (project / ".gitignore").write_text("*.log\n")
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    (project / "pyproject.toml").write_text(PYPROJECT_MIN)
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
     # User files untouched (gitignore gains the managed block, keeps content).
     assert (project / "astra.yaml").read_text() == "# user spec\n"
+    assert (project / "pyproject.toml").read_text() == PYPROJECT_MIN
     gitignore = (project / ".gitignore").read_text()
     assert gitignore.startswith("*.log\n")
     assert "# lightcone-cli" in gitignore
     # Missing lightcone pieces were created.
-    assert (project / "Containerfile").exists()
     assert (project / ".lightcone" / "lightcone.yaml").exists()
+    assert (project / ".python-version").exists()
+
+
+def test_init_warns_when_pyproject_lacks_engine(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0"\ndependencies = ["numpy"]\n'
+    )
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--json"])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert any("lightcone-cli" in w for w in report["warnings"])
 
 
 def test_init_is_idempotent(runner: CliRunner, tmp_path: Path) -> None:
     """A second run reports everything unchanged and rewrites nothing."""
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
     before = {p: p.read_text() for p in project.rglob("*") if p.is_file()}
 
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
-    )
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--json"])
     assert result.exit_code == 0, result.output
     report = json.loads(result.output)
     assert report["converged"] is True
@@ -118,8 +248,9 @@ def test_init_is_idempotent(runner: CliRunner, tmp_path: Path) -> None:
     assert report["repaired"] == []
     assert {p: p.read_text() for p in project.rglob("*") if p.is_file()} == before
 
-    # Gitignore block must not be duplicated across runs.
+    # Managed blocks must not be duplicated across runs.
     assert (project / ".gitignore").read_text().count("# lightcone-cli") == 1
+    assert (project / "AGENTS.md").read_text().count("<!-- lightcone-cli -->") == 1
 
 
 def test_init_check_reports_drift_without_writing(
@@ -127,12 +258,14 @@ def test_init_check_reports_drift_without_writing(
 ) -> None:
     project = tmp_path / "proj"
     result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--check", "--json"]
+        main, ["init", str(project), "--no-git", "--check", "--json"]
     )
     assert result.exit_code == 1
     report = json.loads(result.output)
     assert report["converged"] is False
     assert "astra.yaml" in report["created"]
+    assert "pyproject.toml" in report["created"]
+    assert "uv.lock" in report["created"]
     assert not project.exists()  # --check writes nothing, not even the dir
 
 
@@ -140,31 +273,10 @@ def test_init_check_passes_on_converged_project(
     runner: CliRunner, tmp_path: Path
 ) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--check"]
-    )
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--check"])
     assert result.exit_code == 0, result.output
-
-
-def test_init_warns_on_directory_copy(runner: CliRunner, tmp_path: Path) -> None:
-    """A user Containerfile with a directory COPY is never rewritten, but
-    the drift is surfaced through the warnings channel."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    custom = "FROM python:3.12-slim\nRUN apt-get update\nCOPY src/ /app/src/\n"
-    (project / "Containerfile").write_text(custom)
-    (project / "src").mkdir()
-    (project / "src" / "a.py").write_text("a = 1\n")
-
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
-    )
-    assert result.exit_code == 0, result.output
-    report = json.loads(result.output)
-    assert (project / "Containerfile").read_text() == custom
-    assert any("COPY/ADD of a directory" in w for w in report["warnings"])
 
 
 def test_init_survives_malformed_lightcone_yaml(
@@ -178,7 +290,7 @@ def test_init_survives_malformed_lightcone_yaml(
 
     result = runner.invoke(
         main,
-        ["init", str(project), "--no-git", "--no-venv", "--scratch", "$SCRATCH", "--json"],
+        ["init", str(project), "--no-git", "--scratch", "$SCRATCH", "--json"],
     )
     assert result.exit_code == 0, result.output
     report = json.loads(result.output)
@@ -189,131 +301,53 @@ def test_init_survives_malformed_lightcone_yaml(
     (project / ".lightcone" / "lightcone.yaml").write_text("local\n")
     result = runner.invoke(
         main,
-        ["init", str(project), "--no-git", "--no-venv", "--scratch", "$SCRATCH", "--json"],
+        ["init", str(project), "--no-git", "--scratch", "$SCRATCH", "--json"],
     )
     assert result.exit_code == 0, result.output
-
-
-def test_init_points_spec_at_containerfile(runner: CliRunner, tmp_path: Path) -> None:
-    """The scaffolded spec must reference the project Containerfile — pins
-    the rewrite against drift in astra's boilerplate image name."""
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-    assert "container: Containerfile" in (project / "astra.yaml").read_text()
-
-
-def test_engine_errors_render_cleanly(
-    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """ContainerBuildError from any command surfaces as a one-line CLI error
-    (exit 1), not a traceback — the group boundary translates it."""
-    from lightcone.cli import commands
-    from lightcone.engine.container import ContainerBuildError
-
-    def _boom(*args: object, **kwargs: object) -> Path:
-        raise ContainerBuildError("COPY of a directory is not supported")
-
-    monkeypatch.setattr(commands, "_project_root", _boom)
-    result = runner.invoke(main, ["status"])
-    assert result.exit_code == 1
-    assert "not supported" in result.output
-    assert "Traceback" not in result.output
-
 
 
 def test_init_repairs_missing_piece(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project), "--no-git"])
     assert result.exit_code == 0, result.output
-    (project / "Containerfile").unlink()
+    (project / ".python-version").unlink()
 
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
-    )
+    result = runner.invoke(main, ["init", str(project), "--no-git", "--json"])
     assert result.exit_code == 0, result.output
     report = json.loads(result.output)
-    assert "Containerfile" in report["created"]
-    assert (project / "Containerfile").exists()
+    assert ".python-version" in report["created"]
+    assert (project / ".python-version").exists()
     # The rest was left alone.
     assert "astra.yaml" in report["unchanged"]
 
 
-def test_init_venv_uses_uv_when_available(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[list[str]] = []
+def test_lightcone_requirement_pins_running_version() -> None:
+    from importlib.metadata import version
 
-    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
-        calls.append(list(cmd))
-        return MagicMock(returncode=0)
+    from lightcone.cli.commands import _lightcone_requirement
 
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(subprocess, "run", _fake_run)
-
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
-    assert result.exit_code == 0, result.output
-
-    assert ["uv", "venv", "--python", "3.12", ".venv"] in calls
-    assert [
-        "uv", "pip", "install", "--python", ".venv/bin/python", "-r", "requirements.txt",
-    ] in calls
-
-
-def test_init_venv_falls_back_to_python_when_uv_missing(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[list[str]] = []
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
-        calls.append(list(cmd))
-        return MagicMock(returncode=0)
-
-    monkeypatch.setattr(shutil, "which", lambda _: None)
-    monkeypatch.setattr(subprocess, "run", _fake_run)
-
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
-    assert result.exit_code == 0, result.output
-
-    assert ["python", "-m", "venv", ".venv"] in calls
-    assert [
-        ".venv/bin/python", "-m", "pip", "install", "-q", "-r", "requirements.txt",
-    ] in calls
-
-
-# ---- lc verify ------------------------------------------------------------
-
-
-def test_verify_clean_project_returns_zero(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An empty project (no materialized outputs yet) is a clean state, not
-    a verification failure."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "astra.yaml").write_text(
-        "outputs:\n  - id: foo\n    recipe:\n      command: echo\n"
-    )
-    monkeypatch.chdir(project)
-    result = runner.invoke(main, ["verify"])
-    assert result.exit_code == 0
+    req = _lightcone_requirement()
+    v = version("lightcone-cli")
+    if "dev" in v:
+        # Dev builds aren't published — unpinned fallback.
+        assert req == "lightcone-cli"
+    else:
+        assert req == f"lightcone-cli=={v}"
 
 
 # ---- lc run (probe verb) ---------------------------------------------------
 
 
-def _probe_project(tmp_path: Path, *, with_pyproject: bool = True) -> Path:
+def _probe_project(tmp_path: Path, *, with_env: bool = True) -> Path:
     project = tmp_path / "proj"
     project.mkdir()
     (project / "astra.yaml").write_text(
         "outputs:\n  - id: best_fit\n    recipe:\n      command: echo hi\n"
     )
-    if with_pyproject:
-        (project / "pyproject.toml").write_text(
-            '[project]\nname = "proj"\nversion = "0"\n'
-        )
+    if with_env:
+        (project / "pyproject.toml").write_text(PYPROJECT_MIN)
+        (project / "uv.lock").write_text(UV_LOCK_MIN)
+        (project / ".python-version").write_text(PYTHON_VERSION_MIN)
     return project
 
 
@@ -333,7 +367,7 @@ def test_run_rename_guard_fires_on_output_id(
 def test_run_requires_uv_project(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = _probe_project(tmp_path, with_pyproject=False)
+    project = _probe_project(tmp_path, with_env=False)
     monkeypatch.chdir(project)
     result = runner.invoke(main, ["run", "python", "-V"])
     assert result.exit_code != 0
@@ -362,10 +396,67 @@ def test_run_probes_through_uv_run(
     assert argv[-3:] == ["--", "python", "-V"]
 
 
+def test_run_refuses_containerized_interim(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _probe_project(tmp_path)
+    (project / "pyproject.toml").write_text(
+        PYPROJECT_MIN + "\n[tool.lightcone.image]\n"
+    )
+    monkeypatch.chdir(project)
+    result = runner.invoke(main, ["run", "python", "-V"])
+    assert result.exit_code != 0
+    assert "containerized" in result.output
+
+
+# ---- lc build --------------------------------------------------------------
+
+
+def test_build_direct_mode_is_explanatory_noop(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _probe_project(tmp_path)
+    monkeypatch.chdir(project)
+    result = runner.invoke(main, ["build"])
+    assert result.exit_code == 0, result.output
+    assert "direct mode" in result.output
+    assert "[tool.lightcone.image]" in result.output
+
+
+# ---- lc verify ------------------------------------------------------------
+
+
+def test_verify_clean_project_returns_zero(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty project (no materialized outputs yet) is a clean state, not
+    a verification failure."""
+    project = _probe_project(tmp_path)
+    monkeypatch.chdir(project)
+    result = runner.invoke(main, ["verify"])
+    assert result.exit_code == 0
+
+
+# ---- lc status header ------------------------------------------------------
+
+
+def test_status_header_lines(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _probe_project(tmp_path)
+    monkeypatch.chdir(project)
+    result = runner.invoke(main, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "mode:" in result.output
+    assert "direct" in result.output
+    assert "image:" in result.output
+    assert "sandbox:" in result.output
+
+
 # ---- lc materialize command building ---------------------------------------
 
 
-def test_run_cmd_inserts_separator_before_targets() -> None:
+def test_materialize_cmd_inserts_separator_before_targets() -> None:
     """Regression test for issue #87.
 
     snakemake's --rerun-triggers uses nargs=+ so it greedily consumes the
@@ -396,7 +487,7 @@ def test_run_cmd_inserts_separator_before_targets() -> None:
     assert target_idx > sep_idx, "target path must appear after '--'"
 
 
-def test_run_cmd_no_separator_when_no_targets() -> None:
+def test_materialize_cmd_no_separator_when_no_targets() -> None:
     """When no targets are supplied snakemake runs 'rule all'; '--' is unnecessary."""
     from lightcone.cli.commands import _build_snakemake_cmd
 
@@ -413,7 +504,7 @@ def test_run_cmd_no_separator_when_no_targets() -> None:
     assert "--" not in cmd
 
 
-def test_run_cmd_multiple_triggers_all_before_separator() -> None:
+def test_materialize_cmd_multiple_triggers_all_before_separator() -> None:
     """All four trigger tokens must precede the '--' separator."""
     from lightcone.cli.commands import _build_snakemake_cmd
 
@@ -434,15 +525,10 @@ def test_run_cmd_multiple_triggers_all_before_separator() -> None:
         assert cmd.index(trigger) < sep_idx, f"trigger '{trigger}' must come before '--'"
 
 
-# ---- JupyterHub deployment paths ------------------------------------------
-
-
-def test_run_cmd_uniform_across_backends() -> None:
-    """One invocation shape for every backend: --shared-fs-usage drops
-    software-deployment so spawned jobs run plain `python` from the
-    worker's own environment (the worker image on a gateway, the
-    driver's activated env locally / on SLURM) instead of embedding the
-    driver's sys.executable. No gateway-specific flags exist."""
+def test_materialize_cmd_shape() -> None:
+    """One invocation shape: --shared-fs-usage drops software-deployment
+    so spawned jobs run plain `python` from the worker's own environment
+    instead of embedding the driver's sys.executable."""
     from lightcone.cli.commands import _build_snakemake_cmd
 
     cmd = _build_snakemake_cmd(
@@ -463,49 +549,14 @@ def test_run_cmd_uniform_across_backends() -> None:
     assert cmd.index("--") < cmd.index("results/u/foo/.lightcone-manifest.json")
 
 
-def test_init_scaffold_is_environment_agnostic(
+def test_materialize_refuses_containerized_interim(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The scaffold is identical on and off a hub: the Containerfile
-    carries no environment-specific content (pod identity is deployment
-    config, not image content), and the image gets the execution stack
-    — including dask-gateway — via a dedicated lightcone-cli layer."""
-    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
-    hub_project = tmp_path / "hub"
-    result = runner.invoke(main, ["init", str(hub_project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-
-    monkeypatch.delenv("DASK_GATEWAY__ADDRESS")
-    local_project = tmp_path / "local"
-    result = runner.invoke(main, ["init", str(local_project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-
-    containerfile = (hub_project / "Containerfile").read_text()
-    requirements = (hub_project / "requirements.txt").read_text()
-    assert containerfile == (local_project / "Containerfile").read_text()
-    assert requirements == (local_project / "requirements.txt").read_text()
-    assert "useradd" not in containerfile and "USER" not in containerfile
-    # The execution stack goes in the image, never the venv's
-    # requirements — `lc` lives outside the project venv.
-    assert "lightcone-cli" in containerfile
-    assert "lightcone-cli" not in requirements
-
-
-def test_lightcone_requirement_pins_running_version() -> None:
-    from importlib.metadata import version
-
-    from lightcone.cli.commands import _lightcone_requirement
-
-    req = _lightcone_requirement()
-    v = version("lightcone-cli")
-    if "dev" in v:
-        # Dev builds aren't published — unpinned fallback.
-        assert req == "lightcone-cli"
-    else:
-        assert req == f"lightcone-cli=={v}"
-
-
-def test_ensure_images_none_runtime_returns_empty(tmp_path: Path) -> None:
-    from lightcone.cli.commands import _ensure_images
-
-    assert _ensure_images(tmp_path, runtime="none") == []
+    project = _probe_project(tmp_path)
+    (project / "pyproject.toml").write_text(
+        PYPROJECT_MIN + "\n[tool.lightcone.image]\n"
+    )
+    monkeypatch.chdir(project)
+    result = runner.invoke(main, ["materialize"])
+    assert result.exit_code != 0
+    assert "containerized" in result.output
