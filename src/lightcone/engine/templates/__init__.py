@@ -11,22 +11,17 @@ Placeholders use ``string.Template`` (``${name}``) rather than
 (TOML tables, MyST roles like ``{astra}``) that ``format`` would try to
 interpret. Substitution is strict: a missing key raises rather than
 silently emitting a placeholder.
+
+This module owns file *content*, including how content merges into a file
+the user already owns (:func:`gitignore_repair`). It knows nothing about
+convergence bookkeeping or the console.
 """
 
 from __future__ import annotations
 
+import sys
 from importlib import resources
 from string import Template
-
-from lightcone.engine.constants import (
-    DEFAULT_PYTHON_FLOOR,
-    MIN_UV_VERSION,
-)
-
-#: Comment introducing lightcone's entries in a ``.gitignore`` it did not
-#: author. Cosmetic only — what makes a repair idempotent is the entry set
-#: (:func:`gitignore_entries`), not this line.
-GITIGNORE_HEADER = "# lightcone-cli"
 
 #: Every template shipped, by file name. The loader checks membership so a
 #: typo fails loudly at the call site instead of as a packaging mystery.
@@ -68,10 +63,49 @@ def pyproject(*, name: str) -> str:
     return _render(
         "pyproject.toml.tmpl",
         name=name,
-        python_floor=DEFAULT_PYTHON_FLOOR,
-        min_uv=MIN_UV_VERSION,
+        requires_python=requires_python(),
         lc_requirement=lightcone_requirement(),
     )
+
+
+def python_version() -> str:
+    """``.python-version`` — the exact interpreter patch, taken from the
+    interpreter ``lc`` is running on.
+
+    Deliberately not an engine constant: a new project pins the python the
+    researcher actually has, rather than one lc would have to download to
+    honor a number baked into a release. Identity follows this file from
+    here on — ``env_version`` hashes its bytes, not anything in the engine
+    (spec §3) — so a project is free to repin it afterwards.
+    """
+    v = sys.version_info
+    return f"{v.major}.{v.minor}.{v.micro}\n"
+
+
+def requires_python() -> str:
+    """The scaffolded ``requires-python``, taken verbatim from
+    lightcone-cli's own ``Requires-Python``.
+
+    A scaffolded project depends on the engine, so uv enforces this bound
+    during resolution regardless; declaring the same specifier states it
+    rather than inventing a second, unrelated one. Verbatim, so a compound
+    specifier carries over intact.
+
+    It cannot conflict with :func:`python_version`: lc is only *able* to
+    run on an interpreter satisfying this specifier, so the ambient pin
+    always satisfies it. The fallback for a metadata-less install is the
+    running interpreter's own minor version, which holds that property too.
+    """
+    from importlib.metadata import PackageNotFoundError, metadata
+
+    try:
+        # Message-style lookup: absent keys come back as None, not KeyError.
+        declared = metadata("lightcone-cli")["Requires-Python"]
+    except PackageNotFoundError:
+        declared = None
+    if declared:
+        return str(declared)
+    return f">={sys.version_info.major}.{sys.version_info.minor}"
 
 
 def lightcone_requirement() -> str:
@@ -93,13 +127,23 @@ def lightcone_requirement() -> str:
 
 
 # =============================================================================
-# Managed files
+# .gitignore — converged entry-wise, not by marker
 # =============================================================================
 
 
 def gitignore() -> str:
     """The whole ``.gitignore``, for a project that has none."""
     return read("gitignore.tmpl")
+
+
+def gitignore_header() -> str:
+    """The template's own leading comment.
+
+    Read back out of the template rather than duplicated as a constant, so
+    rewording it there can never leave :func:`gitignore_repair` appending a
+    second header to a file that already carries the first.
+    """
+    return read("gitignore.tmpl").splitlines()[0]
 
 
 def gitignore_entries() -> tuple[str, ...]:
@@ -129,6 +173,40 @@ def missing_gitignore_entries(text: str) -> list[str]:
     return [e for e in gitignore_entries() if e not in present]
 
 
+def gitignore_repair(text: str) -> str | None:
+    """*text* with every managed pattern present, or ``None`` if it already
+    carries them all.
+
+    Only ever appends, and only what is missing — so idempotency is
+    structural: a pattern already in the file is never added again, whoever
+    put it there.
+
+    The append preserves template order, which is what keeps
+    ``!results/README.md`` after the ``results/*`` it negates. (A file
+    holding the negation *without* ``results/*`` would end up with them
+    inverted; that state can only be hand-written, and re-ordering
+    someone's ignores to fix it would be the more surprising behavior.)
+    """
+    missing = missing_gitignore_entries(text)
+    if not missing:
+        return None
+
+    block = "\n".join(missing) + "\n"
+    # The header is cosmetic, so add it only when it isn't already there;
+    # a later repair then appends bare patterns under the first one.
+    header = gitignore_header()
+    if header not in text:
+        block = header + "\n" + block
+    if not text.strip():
+        return block
+    return text.rstrip("\n") + "\n\n" + block
+
+
+# =============================================================================
+# results/ and the MyST report
+# =============================================================================
+
+
 def results_readme() -> str:
     """``results/README.md`` — where outputs land.
 
@@ -139,12 +217,8 @@ def results_readme() -> str:
     return read("results-README.md.tmpl")
 
 
-# =============================================================================
-# The MyST report
-# =============================================================================
-
-
 def myst_yml() -> str:
+    """``myst.yml`` — the report's MyST configuration."""
     return read("myst.yml.tmpl")
 
 

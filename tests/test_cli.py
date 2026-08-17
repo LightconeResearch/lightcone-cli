@@ -32,18 +32,19 @@ def test_help_does_not_advertise_unbuilt_verbs(runner: CliRunner) -> None:
         assert f"  {verb}" not in result.output
 
 
-def test_engine_errors_render_cleanly(runner: CliRunner, tmp_path: Path) -> None:
+def test_engine_errors_render_cleanly(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A ProjectError from anywhere in the engine surfaces as a one-line
     CLI error (exit 1), not a traceback — the group boundary translates
     it."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "Containerfile").write_text("FROM python:3.12-slim\n")
+    from lightcone.engine import project
 
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    monkeypatch.setattr(project.shutil, "which", lambda name, path=None: None)
+
+    result = runner.invoke(main, ["init", str(tmp_path / "proj")])
     assert result.exit_code == 1
-    assert "delete or rename it" in result.output
-    assert "[tool.lightcone.image]" in result.output
+    assert "uv is required" in result.output
     assert "Traceback" not in result.output
 
 
@@ -52,28 +53,18 @@ def test_engine_errors_render_cleanly(runner: CliRunner, tmp_path: Path) -> None
 
 def test_init_creates_a_project(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    result = runner.invoke(main, ["init", str(project)])
     assert result.exit_code == 0, result.output
     assert (project / "astra.yaml").exists()
     assert (project / ".venv").exists()
-    assert not (project / ".git").exists()
-
-
-def test_init_no_sync_skips_the_venv(
-    runner: CliRunner, tmp_path: Path, fake_uv: list[list[str]]
-) -> None:
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-sync"])
-    assert result.exit_code == 0
-    assert [c[0] for c in fake_uv] == ["lock"]
-    assert not (project / ".venv").exists()
+    assert (project / ".git").exists()
 
 
 def test_init_defaults_to_the_current_directory(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(main, ["init", "--no-git"])
+    result = runner.invoke(main, ["init"])
     assert result.exit_code == 0
     assert (tmp_path / "astra.yaml").exists()
 
@@ -82,23 +73,33 @@ def test_init_defaults_to_the_current_directory(
 
 
 def test_run_reports_what_it_created(runner: CliRunner, tmp_path: Path) -> None:
-    result = runner.invoke(main, ["init", str(tmp_path / "proj"), "--no-git"])
+    result = runner.invoke(main, ["init", str(tmp_path / "proj")])
     assert "created astra.yaml" in result.output
     assert "Project converged at" in result.output
-    # Next steps only make sense for a freshly scaffolded spec.
-    assert "Next steps" in result.output
 
 
-def test_run_on_a_converged_project_says_so_and_skips_next_steps(
-    runner: CliRunner, tmp_path: Path
-) -> None:
+def test_run_on_a_converged_project_says_so(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    assert runner.invoke(main, ["init", str(project), "--no-git"]).exit_code == 0
+    assert runner.invoke(main, ["init", str(project)]).exit_code == 0
 
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    result = runner.invoke(main, ["init", str(project)])
     assert result.exit_code == 0
     assert "already converged" in result.output
-    assert "Next steps" not in result.output
+
+
+def test_blocked_items_are_rendered(runner: CliRunner, tmp_path: Path) -> None:
+    """A blocked item is why a run can end unconverged, so it has to be
+    visible — its reason alone (carried as a warning) doesn't say which
+    item is missing."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "results").write_text("not a directory\n")
+
+    result = runner.invoke(main, ["init", str(project)])
+    assert result.exit_code == 0
+    assert "blocked results/" in result.output
+    # Rich wraps on the terminal width, so assert on an unwrappable fragment.
+    assert "✗" in result.output
 
 
 def test_run_surfaces_warnings(runner: CliRunner, tmp_path: Path) -> None:
@@ -106,7 +107,7 @@ def test_run_surfaces_warnings(runner: CliRunner, tmp_path: Path) -> None:
     project.mkdir()
     (project / "pyproject.toml").write_text('[project]\nname = "mine"\nversion = "0"\n')
 
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
+    result = runner.invoke(main, ["init", str(project)])
     assert result.exit_code == 0
     assert "does not depend on lightcone-cli" in result.output
 
@@ -116,7 +117,7 @@ def test_run_surfaces_warnings(runner: CliRunner, tmp_path: Path) -> None:
 
 def test_check_reports_drift_without_writing(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--check"])
+    result = runner.invoke(main, ["init", str(project), "--check"])
     assert result.exit_code == 1
     assert "would create" in result.output
     assert not project.exists()
@@ -124,9 +125,9 @@ def test_check_reports_drift_without_writing(runner: CliRunner, tmp_path: Path) 
 
 def test_check_passes_on_a_converged_project(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    assert runner.invoke(main, ["init", str(project), "--no-git"]).exit_code == 0
+    assert runner.invoke(main, ["init", str(project)]).exit_code == 0
 
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--check"])
+    result = runner.invoke(main, ["init", str(project), "--check"])
     assert result.exit_code == 0
     # Rich wraps on the terminal width, so assert on an unwrappable fragment.
     assert "nothing to do" in result.output
@@ -134,23 +135,18 @@ def test_check_passes_on_a_converged_project(runner: CliRunner, tmp_path: Path) 
 
 def test_json_report_is_machine_readable(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--json"])
+    result = runner.invoke(main, ["init", str(project), "--json"])
     assert result.exit_code == 0
 
+    # Parsed straight off stdout: --json suppresses the banner.
     payload = json.loads(result.output)
     assert payload["converged"] is False
     assert "astra.yaml" in payload["created"]
     assert payload["warnings"] == []
 
-    payload = json.loads(runner.invoke(main, ["init", str(project), "--no-git", "--json"]).output)
+    payload = json.loads(runner.invoke(main, ["init", str(project), "--json"]).output)
     assert payload["converged"] is True
     assert payload["created"] == [] and payload["repaired"] == []
-
-
-def test_json_suppresses_the_banner(runner: CliRunner, tmp_path: Path) -> None:
-    """The report has to be parseable straight off stdout."""
-    result = runner.invoke(main, ["init", str(tmp_path / "proj"), "--no-git", "--json"])
-    json.loads(result.output)
 
 
 def test_check_json_writes_nothing_and_exits_nonzero(
@@ -159,7 +155,7 @@ def test_check_json_writes_nothing_and_exits_nonzero(
     """`--check --json` together are the agent form: a drift report with no
     side effects and an exit code to branch on."""
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--check", "--json"])
+    result = runner.invoke(main, ["init", str(project), "--check", "--json"])
     assert result.exit_code == 1
     assert json.loads(result.output)["converged"] is False
     assert not project.exists()

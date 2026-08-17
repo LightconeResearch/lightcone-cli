@@ -1,32 +1,33 @@
 """Command-line interface for lightcone-cli — the ASTRA execution layer.
-
-This is a clean rebuild against the normative design spec, re-added layer
-by layer.
-
-**Layer 1 — project scaffolding.** The only verb is ``lc init``. What a
-project *is* and how one is converged lives in
-:mod:`lightcone.engine.project`; the file templates live in
-:mod:`lightcone.engine.templates`. This module owns only the CLI: flags,
-console rendering, and exit codes.
-
-The remaining verbs — ``lc materialize``, ``lc run``, ``lc status``,
-``lc verify``, ``lc build`` — arrive with their layers.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
-from rich.console import Console
 
-from lightcone.engine.project import ConvergenceReport, ProjectError, converge
+if TYPE_CHECKING:
+    from rich.console import Console
 
-console = Console()
+    from lightcone.engine.project import ConvergenceReport
+
 logger = logging.getLogger(__name__)
+
+
+@functools.cache
+def _console() -> Console:
+    """The rich console, built on first use to avoid startup cost at each
+    invocation of the cli even when the console is not needed.
+    """
+    from rich.console import Console
+
+    return Console()
 
 
 class _EngineErrorGroup(click.Group):
@@ -39,6 +40,8 @@ class _EngineErrorGroup(click.Group):
     """
 
     def invoke(self, ctx: click.Context) -> object:
+        from lightcone.engine.project import ProjectError
+
         try:
             return super().invoke(ctx)
         except ProjectError as e:
@@ -47,10 +50,8 @@ class _EngineErrorGroup(click.Group):
 
 @click.group(cls=_EngineErrorGroup)
 @click.version_option(package_name="lightcone-cli")
-@click.pass_context
-def main(ctx: click.Context) -> None:
+def main() -> None:
     """lightcone-cli — execution layer for ASTRA projects."""
-    ctx.ensure_object(dict)
 
 
 # =============================================================================
@@ -66,12 +67,6 @@ _____|_________________
 
 @main.command()
 @click.argument("directory", type=click.Path(file_okay=False, path_type=Path), default=".")
-@click.option("--no-git", is_flag=True, help="Skip git init")
-@click.option(
-    "--no-sync",
-    is_flag=True,
-    help="Skip materializing the .venv (uv lock still runs).",
-)
 @click.option(
     "--check",
     "check_only",
@@ -87,19 +82,11 @@ _____|_________________
     is_flag=True,
     help="Emit the convergence report as JSON on stdout.",
 )
-def init(
-    directory: Path,
-    no_git: bool,
-    no_sync: bool,
-    check_only: bool,
-    as_json: bool,
-) -> None:
-    """Converge DIRECTORY into an ASTRA project (idempotent).
+def init(directory: Path, check_only: bool, as_json: bool) -> None:
+    """Converge DIRECTORY into a standard Lightcone project (idempotent).
 
     Safe to re-run at any time: creates whatever is missing, repairs the
-    pieces lightcone manages, and never overwrites files you own. A
-    directory that already holds an ``astra.yaml`` is adopted, not
-    rejected.
+    pieces lightcone manages, and never overwrites files you own.
 
     The spec scaffold (``astra.yaml``, ``universes/baseline.yaml``)
     follows the ``astra init`` boilerplate; on top of it sit the uv
@@ -108,59 +95,60 @@ def init(
     ``results/``, and a template MyST report (``myst.yml`` +
     ``index.md``).
     """
+    from lightcone.engine.project import converge
+
     directory = directory.resolve()
     write = not check_only
 
     if write and not as_json:
-        console.print(f"[cyan]{_LIGHTCONE}[/cyan]")
+        _console().print(f"[cyan]{_LIGHTCONE}[/cyan]")
 
-    report = converge(directory, write=write, git=not no_git, sync=not no_sync)
+    report = converge(directory, write=write)
 
     if as_json:
         click.echo(json.dumps(report.as_dict(), indent=2))
-    elif check_only:
-        _render_check(report, directory)
     else:
-        _render_run(report, directory)
+        _render_init_output(report, directory, dry_run=check_only)
 
     if check_only and not report.converged:
         sys.exit(1)
 
 
-def _render_check(report: ConvergenceReport, directory: Path) -> None:
+def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: bool) -> None:
+    """Print a convergence report: the items, then the verdict.
+
+    ``--check`` and a real run print the *same* report — they disagree
+    only about tense — so ``dry_run`` selects the mood and nothing else,
+    mirroring the ``write`` flag convergence itself takes. Blocked items
+    are listed with created and repaired ones because they count the same
+    way: they are what lets a report say "not converged" (see
+    :class:`~lightcone.engine.project.ConvergenceReport`). Their reason
+    arrives separately, as a warning.
+    """
+    mark, style = ("·", "yellow") if dry_run else ("✓", "green")
+
+    lines: list[str] = []
+    for items, label, item_mark, item_style in (
+        (report.created, "would create" if dry_run else "created", mark, style),
+        (report.repaired, "would repair" if dry_run else "repaired", mark, style),
+        (report.blocked, "blocked", "✗", "red"),
+    ):
+        lines += [f"  [{item_style}]{item_mark}[/{item_style}] {label} {item}" for item in items]
+    lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
+
     if report.converged:
-        console.print(f"[green]✓[/green] {directory} is converged — nothing to do")
+        # A dry run over a converged project finds nothing to do because
+        # there is nothing to do — one line serves both moods.
+        verdict = f"[green]✓[/green] {directory} is already converged — nothing to do"
+    elif report.blocked:
+        # A write run that left an item blocked did not converge the
+        # project either; only a dry run gets to be neutral about it.
+        verdict = f"[red]✗[/red] {directory} is not converged"
+    elif dry_run:
+        verdict = f"[yellow]![/yellow] {directory} is not converged"
     else:
-        for item in report.created:
-            console.print(f"  [yellow]would create[/yellow] {item}")
-        for item in report.repaired:
-            console.print(f"  [yellow]would repair[/yellow] {item}")
-    for warning in report.warnings:
-        console.print(f"  [yellow]![/yellow] {warning}")
+        verdict = f"[green]✓[/green] Project converged at {directory}"
 
-
-def _render_run(report: ConvergenceReport, directory: Path) -> None:
-    for item in report.created:
-        console.print(f"[green]✓[/green] created {item}")
-    for item in report.repaired:
-        console.print(f"[green]✓[/green] repaired {item}")
-    for warning in report.warnings:
-        console.print(f"[yellow]![/yellow] {warning}")
-    if report.converged:
-        console.print(f"\n[green]Project already converged at[/green] {directory}")
-    else:
-        console.print(f"\n[green]Project converged at[/green] {directory}")
-
-    # Next steps only make sense for a freshly scaffolded spec.
-    if "astra.yaml" in report.created:
-        console.print("\nNext steps:")
-        console.print(f"  • Go to the newly created directory [cyan]cd {directory}[/cyan]")
-        console.print(
-            "  • Add analysis dependencies with [cyan]uv add[/cyan] "
-            "(e.g. [cyan]uv add numpy astropy[/cyan])"
-        )
-        console.print("  • Describe your analysis in [cyan]astra.yaml[/cyan]")
-        console.print(
-            "  • Preview the report with [cyan]myst start[/cyan] "
-            "(requires the MyST CLI: [cyan]npm i -g mystmd[/cyan])"
-        )
+    if lines:
+        lines.append("")  # space the verdict off the list
+    _console().print("\n".join([*lines, verdict]))
