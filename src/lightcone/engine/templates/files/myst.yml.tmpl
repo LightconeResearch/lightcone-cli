@@ -1,0 +1,12 @@
+# MyST configuration for the analysis report (https://mystmd.org/).
+# The MySTRA plugin resolves {astra}`...` references against astra.yaml.
+# `latest` always tracks the newest MySTRA release; for a reproducible
+# build, pin a tag instead, e.g. .../releases/download/v0.0.1/mystra.mjs
+version: 1
+project:
+  plugins:
+    - https://github.com/LightconeResearch/MySTRA/releases/latest/download/mystra.mjs
+  toc:
+    - file: index.md
+site:
+  template: book-theme

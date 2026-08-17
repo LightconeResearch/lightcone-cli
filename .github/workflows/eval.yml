@@ -6,7 +6,6 @@ name: Eval
 # lc status.
 
 on:
-  pull_request:
   workflow_dispatch:
 
 # Only one eval per PR at a time — cancel in-progress runs
