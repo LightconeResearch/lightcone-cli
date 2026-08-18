@@ -212,13 +212,15 @@ def _read_only_guard(policy: Policy) -> str:
     writes of their own, on shared scratch (``/tmp``, ``/var/tmp``) and
     on devices, and only a later ``deny`` can take one back.
 
-    **It currently denies nothing**, because every write those fragments
-    grant is already in our own write baseline. That is a property of
-    today's baseline, not a reason to drop the guard: narrow
-    ``_WRITE_BASELINE`` — dropping the host's ``/tmp`` to look more like
-    a container, say — and the upstream grant would silently reopen it.
-    The guard is computed from the policy, so it starts working again
-    the moment there is something to take back.
+It emits a ``deny`` over every read root that is not also writable —
+    ``/usr``, ``/etc``, the interpreter's stdlib root — but **none of
+    those is a write the fragments had granted**, so today it takes
+    nothing back that was not already denied by ``(deny default)``. That
+    is a property of the current baseline, not a reason to drop it:
+    narrow ``_WRITE_BASELINE`` — dropping the host's ``/tmp`` to look
+    more like a container, say — and the upstream ``/tmp`` grant would
+    silently reopen it. The guard is computed from the policy, so it
+    starts taking things back the moment there is something to take.
 
     Deliberately narrow: it names *our* read roots and nothing else, so
     the device and pty writes the upstream defaults grant survive. And it

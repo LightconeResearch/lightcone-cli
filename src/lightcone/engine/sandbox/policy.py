@@ -167,9 +167,14 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
 
     Note this cannot be narrowed to "everything but ``.venv``": Landlock
     unions rights over ancestors and has no way to subtract, so a
-    writable project is necessarily a writable ``.venv``. What keeps the
-    environment honest is ``uv sync --exact`` at the next convergence,
-    not the sandbox.
+    writable project is necessarily a writable ``.venv``. What that costs
+    is bounded deliberately rather than wished away — :func:`_exec_set`
+    grants ``.venv/bin`` per *file*, so a binary written there during a
+    run is not runnable. What remains is a module dropped into
+    site-packages, which imports; ``uv sync --exact`` does **not** clean
+    that up (measured: it prunes packages by RECORD and leaves unmanaged
+    files alone), so the honest statement is that a writable environment
+    is writable, exactly as it is in a container.
 
     Creates the per-run HOME on disk as a side effect; the caller owns
     removing it (see :func:`~lightcone.engine.sandbox.boundary.scope`).
@@ -290,7 +295,16 @@ def _exec_set(project: Path, python: Path | None) -> list[Path]:
     paths: list[Path] = []
     bin_dir = project / ".venv" / "bin"
     if bin_dir.is_dir():
-        paths.append(bin_dir)
+        # Per *file*, never the directory — for the same reason `/usr/bin`
+        # is per-file, and now for a sharper one. The project tree is
+        # writable, so a directory grant here is an exec grant on anything
+        # written into it *later*: `cp /usr/bin/git .venv/bin/ && git` runs
+        # a host tool the allowlist denies by name. Enumerating at
+        # policy-build time grants exactly what the converged environment
+        # shipped and nothing that appears afterwards.
+        paths.extend(
+            entry.resolve() for entry in bin_dir.iterdir() if os.access(entry, os.X_OK)
+        )
     if python is not None:
         paths.append(python)
         # macOS framework builds `posix_spawn` themselves into

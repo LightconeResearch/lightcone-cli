@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -90,10 +91,12 @@ def outside() -> Iterator[Path]:
     happened to keep `/tmp` out of the policy. The real home is outside
     every grant by construction — the boundary hands the command a
     private one — which is the property these tests actually need.
+
+    `mkdtemp`, not a fixed name: two suites sharing a home (xdist, two
+    checkouts, two CI jobs) would otherwise race on the same directory,
+    and a fixed name is also somebody's real path to delete.
     """
-    elsewhere = Path.home() / ".lc-enforcement-outside"
-    shutil.rmtree(elsewhere, ignore_errors=True)
-    elsewhere.mkdir()
+    elsewhere = Path(tempfile.mkdtemp(prefix="lc-enforcement-", dir=Path.home()))
     (elsewhere / "secret.txt").write_text("undeclared\n")
     (elsewhere / "sneaky.py").write_text("VALUE = 'undeclared import'\n")
     try:
@@ -368,15 +371,46 @@ def test_the_project_tree_can_be_written(backend: sandbox.Backend, project: Path
     assert (project / "data.txt").read_text() == "written"
 
 
-def test_a_system_path_is_still_not_writable(
+def test_a_declared_input_is_read_only(
+    backend: sandbox.Backend, project: Path, outside: Path
+) -> None:
+    """Declaring an input makes it readable, never writable — it is
+    somebody else's file.
+
+    Deliberately not a write to `/etc`: the OS denies that to any
+    non-root user on its own, so such a test passes with no sandbox at
+    all and pins nothing. This target is owned by the user running the
+    suite, so the *only* thing that can refuse the write is the
+    boundary.
+    """
+    target = outside / "secret.txt"
+    with sandbox.scope(project, read_paths=[outside]) as policy:
+        result = shell(backend, policy, f"printf clobbered > {target}", cwd=project)
+    assert result.returncode != 0
+    assert target.read_text() == "undeclared\n", "the file changed anyway"
+
+
+def test_a_binary_dropped_into_the_venv_cannot_be_executed(
     backend: sandbox.Backend, project: Path
 ) -> None:
-    """Readable and never writable: the OS baseline is what the image
-    would provide, and nothing a run does may edit it."""
+    """The exec allowlist has to survive a writable project.
+
+    `.venv/bin` is exec-granted, and the tree is writable, so a grant on
+    the *directory* would be a grant on whatever is written there next:
+    copying a host tool in would run it, and the by-name denial of that
+    same tool would mean nothing. The grants are per file, taken when the
+    policy is built.
+    """
+    host_tool = shutil.which("git") or shutil.which("id")
+    if host_tool is None:  # pragma: no cover - a host with neither
+        pytest.skip("no host tool to smuggle")
+    smuggled = project / ".venv" / "bin" / "smuggled"
     with sandbox.scope(project) as policy:
-        result = shell(backend, policy, "printf x > /etc/lc-should-never-exist", cwd=project)
-    assert result.returncode != 0
-    assert not Path("/etc/lc-should-never-exist").exists()
+        result = shell(
+            backend, policy, f"cp {host_tool} {smuggled} && {smuggled} --version", cwd=project
+        )
+    assert smuggled.exists(), "the copy itself should be allowed — the tree is writable"
+    assert result.returncode != 0, "a binary written into .venv/bin must not be executable"
 
 
 def test_the_private_scope_is_writable(backend: sandbox.Backend, project: Path) -> None:

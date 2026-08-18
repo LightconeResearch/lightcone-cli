@@ -261,13 +261,41 @@ def test_the_venv_and_the_interpreter_behind_it_are_granted(tmp_path: Path) -> N
 
     with scope(project) as built:
         install_root = store.parent.resolve()
-        assert bin_dir.resolve() in built.execute
+        # The *directory* is deliberately not granted: the tree is
+        # writable, so that would be an exec grant on whatever is written
+        # into `.venv/bin` next. See `test_the_venv_bin_is_granted_per_file`.
+        assert bin_dir.resolve() not in built.execute
         assert real.resolve() in built.execute
         assert install_root in built.read
         # Its own tree, so EXECUTE too: a framework build re-execs itself
         # into `Resources/Python.app/Contents/MacOS/Python`, which the
         # binary-only grant would miss.
         assert install_root in built.execute
+
+
+def test_the_venv_bin_is_granted_per_file_not_as_a_directory(tmp_path: Path) -> None:
+    """The exec allowlist has to survive a writable project.
+
+    `.venv/bin` is exec-granted and the tree is writable, so granting the
+    *directory* would grant whatever is written there next — copy a host
+    tool in and it runs, making the by-name denial of that same tool
+    meaningless. The grants are taken per file when the policy is built.
+    """
+    project = tmp_path / "proj"
+    bin_dir = project / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    script = bin_dir / "pytest"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+
+    with scope(project) as built:
+        assert script.resolve() in built.execute, "a console script that exists is granted"
+        assert bin_dir.resolve() not in built.execute, "but never the directory"
+        # What a run writes there afterwards is therefore not runnable.
+        later = bin_dir / "smuggled"
+        later.write_text("#!/bin/sh\n")
+        later.chmod(0o755)
+        assert not built.grants(later, built.execute)
 
 
 def test_a_system_interpreter_does_not_make_the_whole_prefix_executable(

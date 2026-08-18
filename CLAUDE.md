@@ -593,8 +593,19 @@ only checks that the guard is present. Verified empirically, not assumed.
   the design cares about, which is a reach *outside* the project. Note
   this cannot be narrowed to "everything but `.venv`": Landlock unions
   rights over ancestors and cannot subtract, so a writable project is
-  necessarily a writable `.venv`. `uv sync --exact` at the next
-  convergence is what puts the environment back, not the sandbox.
+  necessarily a writable `.venv`.
+  - **The exec allowlist has to survive that**, and it did not at first:
+    `.venv/bin` was granted as a *directory*, so `cp /usr/bin/git
+    .venv/bin/ && git` ran a host tool the allowlist denies by name.
+    Grants there are per *file* now, taken when the policy is built, so
+    what a run writes afterwards is not runnable. `_exec_set` grants no
+    directory anywhere; the rule is the same one `/usr/bin` has always
+    had, and now it is load-bearing twice over.
+  - What remains is a module dropped into site-packages, which imports.
+    That is inherent — Landlock cannot carve `.venv` out — and `uv sync
+    --exact` does **not** clean it up: measured, it prunes packages by
+    RECORD and leaves unmanaged files alone. Don't claim otherwise; a
+    writable environment is writable, exactly as in a container.
   - Two things went with it, both of which existed *only* to serve the
     read-only tree: the filter that dropped `/tmp` from the write scope
     when the project lived under it, and `PYTHONPYCACHEPREFIX`. The
@@ -602,6 +613,12 @@ only checks that the guard is present. Verified empirically, not assumed.
     so every in-tree module recompiled every time; a writable tree
     caches in place, which is what a container does and what the
     scaffolded `.gitignore` already expects.
+  - **A write-denial test must target a path the OS would let you
+    write.** `printf x > /etc/…` passes with no sandbox at all — the OS
+    refuses it for any non-root user — so it pins nothing. The sound
+    target is a user-owned path that the *policy* makes read-only: a
+    declared input. Mutation-check every denial test by running the same
+    command through `Unavailable()` and confirming it succeeds.
   - **Enforcement fixtures must not live under `/tmp`.** It is in the
     write baseline, so anything pytest's `tmp_path` hands you is
     *granted*. The old denial tests passed only because a project under

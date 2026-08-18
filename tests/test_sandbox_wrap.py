@@ -92,8 +92,8 @@ def test_the_landlock_policy_travels_as_json_the_shim_understands(policy: Policy
 def test_the_overlay_is_the_seam_s_job_not_each_backend_s(policy: Policy) -> None:
     """Composed once, inside the wrap, for *every* backend — including
     the null one, which must run in the same environment as a sandboxed
-    run (same private `$HOME`, same PYTHONPYCACHEPREFIX) or the two stop
-    being comparable."""
+    run (same private `$HOME`, same `TMPDIR`, same `PATH`) or the two
+    stop being comparable."""
     prefixed = [*env_argv(policy), "true"]
     # Deliberately not a literal path: the exec set grants whatever the
     # utility search path resolved, and a second answer to that question

@@ -5,9 +5,10 @@ converged ``.venv`` — under the same sandbox. That equivalence is the
 point: if a probe works, the recipe will, and if a probe
 is denied, the recipe would have been.
 
-A probe has no output, which is what makes it the strictest consumer of
-the boundary: it may read the project and the declared inputs, and write
-only its own tmp scope. Nothing it does can land in the project tree.
+What the boundary is for is catching a reach *outside* the project — a
+tool, a library, or a data file that is on this machine and would not be
+in the image. Inside the project it stays out of the way: the tree is
+writable, the way a container's bind-mounted working directory is.
 """
 
 from __future__ import annotations

@@ -164,9 +164,11 @@ def run(command: tuple[str, ...]) -> None:
     """Run COMMAND in the project environment, inside the sandbox.
 
     Byte-for-byte the environment recipes get — same lock, same
-    ``.venv``, same boundary — so a probe that works means a recipe
-    will. Reads the project tree and the inputs declared in
-    ``astra.yaml``; writes nowhere but its own temporary scope.
+    ``.venv``, same boundary — so a command that works here means a
+    recipe will. The project and the inputs declared in ``astra.yaml``
+    are readable, the project and scratch are writable, and anything
+    outside them — a host tool, a system library, an undeclared file —
+    is refused.
     """
     from lightcone.engine import run as engine_run
     from lightcone.engine.project import current_project
