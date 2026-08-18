@@ -47,14 +47,32 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
-      - name: Report the sandbox mechanism
+      - name: Report the sandbox this runner can build
         # Printed before the suite so a failure downstream can be read
-        # against what this runner could actually enforce.
+        # against what this host could actually enforce, and against the
+        # exec set it resolved. The allowlist resolves off a fixed search
+        # path, so where a tool lives differs per OS and a missing one is
+        # otherwise a very confusing "Operation not permitted".
         run: |
           python -c "
+          import shutil, tempfile
+          from pathlib import Path
           from lightcone.engine.sandbox import detect
+          from lightcone.engine.sandbox.policy import (
+              EXEC_ALLOWLIST, _UTILITY_PATH, probe_policy,
+          )
           c = detect().capability
           print(f'mechanism: {c.kind}  abi: {c.landlock_abi}  {c.detail}')
+          print(f'utility search path: {_UTILITY_PATH}')
+          policy = probe_policy(Path(tempfile.mkdtemp()) / 'proj')
+          granted = set(policy.execute)
+          for name in EXEC_ALLOWLIST:
+              found = shutil.which(name, path=_UTILITY_PATH)
+              if found is None:
+                  print(f'  {name:10} not on this host')
+              elif Path(found).resolve() not in granted:
+                  print(f'  {name:10} {found} -> {Path(found).resolve()}  NOT GRANTED')
+          print(f'exec set: {len(policy.execute)} paths, write: {len(policy.write)}')
           "
 
       - name: Run tests
