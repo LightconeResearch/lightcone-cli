@@ -7,6 +7,7 @@ import functools
 import json
 import logging
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,13 +22,16 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def _console() -> Console:
+def _console(*, stderr: bool = False) -> Console:
     """The rich console, built on first use to avoid startup cost at each
     invocation of the cli even when the console is not needed.
+
+    The stderr variant is what commentary uses when a command's stdout
+    belongs to the thing being run rather than to us.
     """
     from rich.console import Console
 
-    return Console()
+    return Console(stderr=stderr)
 
 
 class _EngineErrorGroup(click.Group):
@@ -152,3 +156,88 @@ def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: 
     if lines:
         lines.append("")  # space the verdict off the list
     _console().print("\n".join([*lines, verdict]))
+
+
+# =============================================================================
+# lc run
+# =============================================================================
+
+
+@main.command(context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
+@click.argument("command", nargs=-1, type=click.UNPROCESSED)
+@click.option(
+    "--no-sandbox",
+    "sandboxed",
+    flag_value=False,
+    default=True,
+    help="Run without enforcement. Recorded as unsandboxed — never silent.",
+)
+@click.option(
+    "--sandbox-debug",
+    "debug",
+    is_flag=True,
+    help="Print the policy and the exact command, then run it.",
+)
+@click.option(
+    "--require-sandbox",
+    "require",
+    is_flag=True,
+    help="Refuse to run at all unless this host can actually enforce.",
+)
+def run(command: tuple[str, ...], sandboxed: bool, debug: bool, require: bool) -> None:
+    """Run COMMAND in the project environment, inside the sandbox.
+
+    Byte-for-byte the environment recipes get — same lock, same
+    ``.venv``, same boundary — so a probe that works means a recipe
+    will. Reads the project tree and the inputs declared in
+    ``astra.yaml``; writes nowhere but its own temporary scope.
+
+    With no COMMAND, opens a shell in that environment.
+    """
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.project import find_project
+
+    project = find_project()
+
+    if not command and not debug:
+        _console().print(
+            "[cyan]opening a shell inside the recipe environment (sandboxed)[/cyan]"
+        )
+
+    outcome = engine_run.probe(
+        project,
+        command,
+        sandboxed=sandboxed,
+        require=require,
+        on_plan=_render_plan if debug else None,
+    )
+    _render_notes(outcome.notes)
+    sys.exit(outcome.returncode)
+
+
+def _render_plan(lines: Sequence[str]) -> None:
+    """The `--sandbox-debug` dump, on stderr with the rest of the commentary."""
+    console = _console(stderr=True)
+    for line in lines:
+        console.print(line, highlight=False, markup=False, crop=False, overflow="ignore")
+    console.print()
+
+
+def _render_notes(notes: Sequence[str]) -> None:
+    """Print the boundary's notes to stderr, unstyled and unwrapped.
+
+    stderr because the command's own stdout is a probe's actual result,
+    and these must not contaminate it. Unwrapped because the denial
+    message is built of copy-pasteable lines — rich reflowing a
+    ``uv add`` line would break the paste, which is the whole point of
+    the message.
+    """
+    if not notes:
+        return
+    console = _console(stderr=True)
+    console.print()
+    for note in notes:
+        # Blank separators stay blank: indenting them turns the copy of a
+        # remedy block into trailing whitespace on every empty line.
+        line = f"  {note}" if note else ""
+        console.print(line, highlight=False, markup=False, crop=False, overflow="ignore")

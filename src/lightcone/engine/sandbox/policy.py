@@ -1,0 +1,209 @@
+"""Building the policy a sandboxed command runs under (spec §7).
+
+One policy, both mechanisms. This module decides *what* a command may
+touch; :mod:`~lightcone.engine.sandbox.landlock` and
+:mod:`~lightcone.engine.sandbox.seatbelt` only decide how to say it.
+
+The shape it encodes is the design's filesystem policy: read the project
+and the declared inputs and the OS baseline; write only a private
+scratch scope; execute only the environment plus a versioned utility
+allowlist. Everything a recipe reaches for outside that set fails
+loudly, which is the point (G6).
+"""
+
+from __future__ import annotations
+
+import glob
+import shutil
+import sys
+import tempfile
+from collections.abc import Iterable, Sequence
+from pathlib import Path
+
+from lightcone.engine.sandbox.model import EXEC_ALLOWLIST_VERSION, Policy
+
+#: The utility tier of the exec allowlist (spec §7). A maintained policy
+#: surface, versioned by ``EXEC_ALLOWLIST_VERSION`` — recipes routinely
+#: shell out to these, and none of them is a scientific dependency in
+#: disguise, so admitting them costs nothing the design cares about.
+EXEC_ALLOWLIST: tuple[str, ...] = (
+    "sh", "bash", "env",
+    "grep", "egrep", "fgrep", "sed", "awk", "gawk", "mawk",
+    "tar", "gzip", "gunzip", "zcat", "bzip2", "xz",
+    "cat", "head", "tail", "ls", "cp", "mv", "rm", "mkdir", "rmdir", "ln",
+    "chmod", "touch", "date", "sort", "uniq", "cut", "tr", "wc", "tee",
+    "find", "xargs", "mktemp", "readlink", "realpath", "dirname", "basename",
+    "echo", "printf", "sleep", "true", "false", "test",
+)  # fmt: skip
+
+#: Where the allowlist is resolved from — deliberately *not* the ambient
+#: ``$PATH``. A user's PATH may front `/usr/bin` with a directory full of
+#: undeclared tools, and resolving through it would quietly admit them.
+_UTILITY_PATH = "/usr/local/bin:/usr/bin:/bin"
+
+#: Readable everywhere: the OS the interpreter and its libraries live in.
+#: Read, never execute — being able to *read* /usr is what lets the
+#: dynamic linker work; being able to *run* what is in it is the leak.
+_OS_READ_BASELINE = (
+    "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt", "/run",
+    "/proc", "/sys", "/dev/urandom", "/dev/random", "/dev/zero", "/dev/full",
+)  # fmt: skip
+
+#: Writable everywhere: the scratch surfaces a recipe legitimately uses.
+_TMP_WRITE_BASELINE = ("/tmp", "/var/tmp", "/dev/shm", "/dev/null")
+
+#: The ELF interpreter. Landlock checks EXECUTE on the *loader's* open,
+#: so without these every dynamically linked binary — bash and python
+#: included — fails EACCES and the sandbox is unusable (spec §7, and the
+#: v6 review's must-fix). Globbed rather than hardcoded: the path differs
+#: across glibc/musl and architectures.
+_ELF_LOADER_GLOBS = (
+    "/lib64/ld-linux-*.so.*",
+    "/lib/ld-linux*.so.*",
+    "/lib/ld-musl-*.so.*",
+    "/usr/lib/ld-linux*.so.*",
+    "/usr/lib64/ld-linux-*.so.*",
+)
+
+#: Created inside the per-run HOME so the tools that want them find them
+#: rather than failing on first import.
+_HOME_SUBDIRS = (".config", ".cache", ".local/share", ".mplconfig", ".pycache", ".tmp")
+
+
+def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
+    """The policy for ``lc run`` — a probe (spec §4).
+
+    A probe has no output, so it gets **no in-tree write scope at all**:
+    it may read the project and the declared inputs, and write only to
+    its own tmp scope. That is stricter than a recipe's policy, and it is
+    what stops a probe from quietly materializing something.
+
+    Creates the per-run HOME on disk as a side effect; the caller owns
+    removing it (see :func:`~lightcone.engine.sandbox.boundary.scope`).
+    """
+    tmp_home = Path(tempfile.mkdtemp(prefix="lc-home-")).resolve()
+    for sub in _HOME_SUBDIRS:
+        (tmp_home / sub).mkdir(parents=True, exist_ok=True)
+
+    execute, interpreter_root = _exec_set(project)
+    write = _existing([tmp_home, *_tmp_write_roots(project)])
+    read = _existing(
+        [project, *read_paths, *interpreter_root, *(Path(p) for p in _OS_READ_BASELINE)]
+    )
+
+    return Policy(
+        read=read,
+        write=write,
+        execute=_existing(execute),
+        tmp_home=tmp_home,
+        env=home_overlay(tmp_home),
+        exec_allowlist_version=EXEC_ALLOWLIST_VERSION,
+    )
+
+
+def _tmp_write_roots(project: Path) -> list[Path]:
+    """The scratch surfaces, minus any that would swallow the project.
+
+    ``/tmp`` is writable by design (spec §7) — but a project that
+    *lives* under it would then be writable too, which would silently
+    void the read-only-tree guarantee for exactly the people who keep
+    scratch analyses in ``/tmp``. Dropping the offending root is safe
+    because ``TMPDIR`` points at the private scope regardless, so
+    ``tempfile`` keeps working either way.
+    """
+    resolved = project.resolve()
+    return [
+        candidate
+        for root in _TMP_WRITE_BASELINE
+        if not resolved.is_relative_to(candidate := Path(root).resolve())
+    ]
+
+
+def home_overlay(tmp_home: Path) -> dict[str, str]:
+    """HOME and friends, pointed at a fresh directory (spec §7, normative).
+
+    The real ``$HOME`` is neither readable nor writable inside the
+    boundary. Left alone, that breaks matplotlib, astropy, and R on first
+    import — and the obvious patch, mounting ``$HOME`` read-only, would
+    reopen the dotfile-steering channel the whole layer exists to close.
+    Giving them a private HOME instead is the Bazel/nix move: they work,
+    and they cannot be steered.
+
+    ``PYTHONPYCACHEPREFIX`` is here for the same reason at the other end:
+    the project tree is read-only inside the boundary, so without it
+    every ``import`` of an in-tree module fails to write its
+    ``__pycache__``.
+    """
+    return {
+        "HOME": str(tmp_home),
+        "XDG_CONFIG_HOME": str(tmp_home / ".config"),
+        "XDG_CACHE_HOME": str(tmp_home / ".cache"),
+        "XDG_DATA_HOME": str(tmp_home / ".local/share"),
+        "MPLCONFIGDIR": str(tmp_home / ".mplconfig"),
+        "PYTHONPYCACHEPREFIX": str(tmp_home / ".pycache"),
+        # Pointed inside the private scope so `tempfile` works even where
+        # the shared /tmp had to be dropped from the write set — see
+        # :func:`_tmp_write_roots`.
+        "TMPDIR": str(tmp_home / ".tmp"),
+    }
+
+
+def _exec_set(project: Path) -> tuple[list[Path], list[Path]]:
+    """The exec tiers, and the extra read root the environment needs.
+
+    Grants are per *file* for the utilities, never per directory:
+    ``/usr/bin`` holds ``bash`` and ``latex`` alike, so a directory grant
+    there would admit every undeclared tool on the host and leave the
+    layer enforcing nothing.
+    """
+    paths: list[Path] = []
+    extra_read: list[Path] = []
+
+    bin_dir = project / ".venv" / "bin"
+    if bin_dir.is_dir():
+        paths.append(bin_dir)
+
+    # `.venv/bin/python` is a symlink into uv's managed interpreter store,
+    # which lives under the user's data dir — outside the project and
+    # outside the OS baseline. Landlock evaluates the *resolved* path, so
+    # that install root needs EXECUTE for the binary and, just as
+    # importantly, READ for the standard library beside it: without the
+    # read grant the interpreter dies before `main` with
+    # "Failed to import encodings module".
+    interpreter = bin_dir / "python"
+    if interpreter.exists():
+        install_root = interpreter.resolve().parent.parent
+        paths.append(install_root)
+        extra_read.append(install_root)
+
+    for name in EXEC_ALLOWLIST:
+        found = shutil.which(name, path=_UTILITY_PATH)
+        if found is not None:
+            paths.append(Path(found))
+
+    paths.extend(elf_loaders())
+    return paths, extra_read
+
+
+def elf_loaders() -> list[Path]:
+    """The dynamic loaders present on this host, realpath'd."""
+    if sys.platform == "darwin":
+        # dyld is not a path Seatbelt gates the way Landlock gates the
+        # ELF loader; the profile allows it explicitly instead.
+        return []
+    hits = (hit for pattern in _ELF_LOADER_GLOBS for hit in glob.glob(pattern))
+    return sorted({Path(hit).resolve() for hit in hits})
+
+
+def _existing(paths: Iterable[Path]) -> tuple[Path, ...]:
+    """Resolve, drop what is not there, de-duplicate, keep order.
+
+    A rule for a path that does not exist cannot be added, and a
+    baseline entry missing on this OS is normal rather than an error.
+    """
+    resolved: dict[Path, None] = {}
+    for path in paths:
+        candidate = Path(path).resolve()
+        if candidate.exists():
+            resolved.setdefault(candidate, None)
+    return tuple(resolved)

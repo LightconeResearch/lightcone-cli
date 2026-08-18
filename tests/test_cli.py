@@ -159,3 +159,138 @@ def test_check_json_writes_nothing_and_exits_nonzero(
     assert result.exit_code == 1
     assert json.loads(result.output)["converged"] is False
     assert not project.exists()
+
+
+# ---- lc run ---------------------------------------------------------------
+
+
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A minimal project, with the CLI's cwd pointed inside it."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "astra.yaml").write_text("title: T\noutputs:\n  - id: best_fit\n    type: metric\n")
+    (root / "pyproject.toml").write_text('[project]\nname = "proj"\n')
+    monkeypatch.chdir(root)
+    return root
+
+
+@pytest.fixture
+def spawned(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Record what the CLI asks the engine to do, without running anything."""
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
+
+    calls: list[dict[str, object]] = []
+
+    def fake_probe(project, command, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append({"project": project, "command": list(command), **kwargs})
+        return Outcome(
+            returncode=0,
+            attestation=Attestation(mechanism="landlock", fs="declared", landlock_abi=4),
+        )
+
+    monkeypatch.setattr(engine_run, "probe", fake_probe)
+    return calls
+
+
+def test_run_is_advertised(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["--help"])
+    assert "run" in result.output
+
+
+def test_run_passes_the_command_through_untouched(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    """A probe's command has its own flags, and they belong to it — not
+    to us. `--help` after the command must reach the command."""
+    result = runner.invoke(main, ["run", "python", "-c", "print(1)", "--help"])
+    assert result.exit_code == 0
+    assert spawned[0]["command"] == ["python", "-c", "print(1)", "--help"]
+
+
+def test_the_sandbox_is_on_by_default(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    runner.invoke(main, ["run", "true"])
+    assert spawned[0]["sandboxed"] is True
+    assert spawned[0]["require"] is False
+
+
+def test_no_sandbox_reaches_the_engine(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    runner.invoke(main, ["run", "--no-sandbox", "true"])
+    assert spawned[0]["sandboxed"] is False
+
+
+def test_require_sandbox_reaches_the_engine(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    runner.invoke(main, ["run", "--require-sandbox", "true"])
+    assert spawned[0]["require"] is True
+
+
+def test_the_childs_exit_code_is_the_cli_s(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe is a proxy for the command; swallowing its exit code would
+    make `lc run` useless in a script."""
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
+
+    monkeypatch.setattr(
+        engine_run,
+        "probe",
+        lambda *a, **k: Outcome(
+            returncode=42, attestation=Attestation(mechanism="none", fs="open")
+        ),
+    )
+    assert runner.invoke(main, ["run", "false"]).exit_code == 42
+
+
+def test_notes_are_rendered(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
+
+    monkeypatch.setattr(
+        engine_run,
+        "probe",
+        lambda *a, **k: Outcome(
+            returncode=1,
+            attestation=Attestation(mechanism="landlock", fs="declared"),
+            notes=("blocked by lc sandbox: cannot execute /usr/bin/latex —",),
+        ),
+    )
+    result = runner.invoke(main, ["run", "latex"])
+    assert "blocked by lc sandbox" in result.output
+
+
+def test_a_bare_run_announces_the_shell(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    """A shell that looks like your own but cannot write the project is
+    worse than no shell if you do not know it is there."""
+    result = runner.invoke(main, ["run"])
+    assert "sandboxed" in result.output
+    assert spawned[0]["command"] == []
+
+
+def test_the_rename_guard_renders_as_a_clean_error(runner: CliRunner, project: Path) -> None:
+    result = runner.invoke(main, ["run", "best_fit"])
+    assert result.exit_code == 1
+    assert "lc materialize best_fit" in result.output
+
+
+def test_outside_a_project_is_a_clean_error(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(main, ["run", "true"])
+    assert result.exit_code == 1
+    assert "lc init" in result.output

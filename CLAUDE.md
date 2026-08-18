@@ -42,10 +42,16 @@ speculatively.
 | 2 | Environment layer — `env_version`, lock scan, manifest schema | ⬜ |
 | 3 | The `lc` entrypoint — launcher: discover → mode-detect → scrub `UV_*` → converge → delegate | ⬜ |
 | 4 | Fabric — `lc materialize`, worker sequence, mid-run relock gate | ⬜ |
-| 5 | Sandbox layer — Landlock / Seatbelt, exec-shim, denial UX | ⬜ |
+| 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | Container hatch — `[tool.lightcone.image]`, generated Containerfile, `lc build` | ⬜ |
 | 7 | Venues — Perlmutter, hub/GKE, Cloud Build | ⬜ |
 | 8 | `lc status`, `lc verify`, WRROC export | ⬜ |
+
+Layer 5 landed **out of order**, ahead of 2–4: `lc run` is the spec's
+*probe* verb, and a probe has no output, so it needs neither manifests
+(layer 2) nor the fabric (layer 4) — only project discovery, which came
+with it. That makes it the smallest honest consumer of the exec boundary,
+and the boundary is what layer 4 will then plug recipes into.
 
 The spec's §11 (Migration) is the authoritative ordering; the table above
 is the working map. **Layer boundaries are also dependency boundaries** —
@@ -103,12 +109,22 @@ Any new `lightcone-*` package must:
 
 ```
 src/lightcone/              # namespace — NO __init__.py
+├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
 ├── cli/                    # the CLI only: flags, rendering, exit codes
 │   ├── __init__.py         # exposes main(); the launcher hooks in here (layer 3)
-│   └── commands.py         # lc init — the only verb so far
+│   └── commands.py         # lc init, lc run
 └── engine/
     ├── __init__.py         # docstring only
-    ├── project.py          # how a directory converges into a project
+    ├── project.py          # what a project is: convergence + discovery
+    ├── run.py              # what `lc run` is: mode check, rename guard, uv hop
+    ├── sandbox/            # the exec boundary
+    │   ├── __init__.py     # the public surface (detect, run, scope, the types)
+    │   ├── model.py        # Policy · Capability · Attestation · Backend protocol
+    │   ├── policy.py       # what a probe may touch
+    │   ├── boundary.py     # detect() + run(): the mechanism-blind half
+    │   ├── landlock.py     # Linux backend
+    │   ├── seatbelt.py     # macOS backend
+    │   └── denial.py       # the denial UX
     └── templates/          # the scaffold's file content
         ├── __init__.py     # loader + one renderer per scaffolded file
         └── files/*.tmpl    # the templates themselves, as real files
@@ -279,6 +295,70 @@ user owns:
   `--no-sync`'s real home is containerized mode (layer 6), where the host
   `.venv` is inert. Don't add a flag whose only user is a test — stub
   `project._run` instead.
+## Key Invariants (layer 5)
+
+**The seam is a pure argv rewrite.** Every mechanism is a
+`Backend.wrap(policy, argv) -> argv'` — a function turning a command into
+*a different command that sandboxes itself*. Seatbelt is natively that
+shape; Landlock is not (it is a self-restriction), which is exactly what
+`lightcone/_sandbox_exec.py` exists to fix. Because both reduce to argv,
+`boundary.run` never branches on platform, and **every backend is fully
+testable on a host that cannot run it** — `tests/test_sandbox_wrap.py`
+checks the Landlock wrap and the generated SBPL on whatever machine is
+running, with no privileges. Keep `wrap` pure: no temp files, no file
+descriptors, no global state. `tests/test_sandbox_wrap.py::test_wrap_is_pure`
+pins it.
+
+**`detect()` in `sandbox/boundary.py` holds the only `sys.platform`
+branch.** Everything downstream branches on `Capability.kind`, a *value*.
+Adding bubblewrap or podman later is one module plus one line there.
+
+**Three types, deliberately distinct** (`sandbox/model.py`): `Policy` is
+*what we will enforce* (mechanism-free path sets), `Capability` is *what
+this host can do* (the probe's answer), `Attestation` is *what was
+actually enforced* (spec §7's manifest field, derived from the flags
+applied — never from what the mechanism matrix says should have
+happened). Collapsing any two of them is how a sandbox starts lying.
+
+**`Unavailable` is a real backend, not a special case.** It satisfies the
+protocol, wraps to the argv it was given, and attests `fs: open`.
+Refusing to run is `--require-sandbox`'s job; saying so is the caller's;
+pretending is nobody's.
+
+**A denial is never invisible.** `denial.explain()` is a best-guess
+heuristic over the child's stderr and is *allowed to return nothing* —
+a command can swallow the `PermissionError` or rewrap it. That is why
+`denial.trailer()` fires on **every** nonzero sandboxed exit,
+unconditionally. Both fallbacks are pinned in `tests/test_sandbox_denial.py`.
+
+**The exec tier is per-file, and read ≠ execute.** `/usr` is readable (the
+dynamic linker needs it) and never executable — `/usr/bin` holds `bash`
+and `latex` alike, so a directory grant there would admit every
+undeclared tool on the host and leave the layer enforcing nothing.
+
+**Three things are load-bearing and non-obvious**, each found by a real
+failure and each now pinned by a test:
+
+| Grant | Without it |
+|---|---|
+| the realpath'd **ELF loader** in the exec set | *every* dynamically linked binary fails EACCES — bash and python included |
+| **read** on the uv-managed interpreter's install root | `Failed to import encodings module` — the stdlib sits beside the binary, outside the project and outside `/usr` |
+| **read** on `/dev/urandom` | `failed to get random numbers` — CPython seeds hash randomization before `main` |
+
+**The shim stays alone.** `lightcone/_sandbox_exec.py` imports nothing but
+the stdlib and nothing from lightcone — `lightcone` is a namespace package
+with no `__init__`, so `python -m lightcone._sandbox_exec` executes that
+file and nothing else. It runs on every sandboxed exec; an engine import
+there would put click, rich, and the astra stack on that path. Two tests
+pin it. Its setup failures exit the reserved code **97**, distinguishable
+from anything a command could return, and it never falls through to
+running the command unsandboxed.
+
+**Layer boundaries showed up as parameters we did *not* add.**
+`writable_project`, output-dir write scope, scratch dirs, `in_container()`,
+and the `podman*`/`pod*` attestation branches all belong to layers 4 and 6
+and are absent, not stubbed.
+
 ### Recorded decisions
 
 - **The ASTRA `container:` directive is ignored, entirely.** astra's
@@ -299,6 +379,38 @@ user owns:
   pins the absence, so re-adding it is a deliberate act.
 - Scaffolded file bodies stay descriptive of what works today — see the
   trimmed `results/README.md` for the same reason.
+- **The Landlock policy travels as JSON on argv, not as an inherited
+  ruleset FD** (spec §7 specifies the FD, built before fork and passed
+  with `pass_fds`). The shim builds and applies the ruleset itself, which
+  is also what the codex CLI does. This makes `wrap()` a pure function and
+  closes §11's own blocking spike — *"does the Landlock FD survive
+  `uv run`'s spawn/exec chain? an FD cannot be reopened"* — by making the
+  question moot. It also survives into a container later, where a host FD
+  cannot. The `--policy` document is versioned, because it is an interface
+  between two possibly different lightcone-cli versions.
+- **Network is not controlled, on either platform**, by decision. §7's
+  matrix has Seatbelt record `denied`; the generated SBPL explicitly
+  allows network and both platforms attest `network: allowed`. Symmetric
+  and honest — nothing pretends to a control it does not apply. (codex
+  ships a seccomp denylist for this; adding one is a live option, not a
+  gap we are hiding.)
+- **`--require-sandbox` is a bare flag**; §7's `=declared-fs` form is
+  absent. Every mechanism that exists today scopes the filesystem, so the
+  two forms would be the same flag. It arrives with the first mechanism
+  that doesn't (layer 6's pod, which bounds only the OS layer).
+- **The denial's system-layer remedy is trimmed** to what this release can
+  deliver — `uv add` for a Python package, plus the ASTRA input
+  declaration. §7's `[tool.lightcone.image]` TOML arrives with the
+  container hatch; printing it now would be a copy-pasteable fix that does
+  nothing.
+- **No manifest is written.** A probe has no output (§4), so the
+  `Attestation` is returned and printed rather than persisted.
+  `to_manifest()` exists and is tested; layer 4 is its first consumer.
+- **`/tmp` is dropped from the write scope when the project lives under
+  it**, which §7 does not contemplate. Granting `/tmp` unconditionally
+  would make the tree of a `/tmp`-hosted project writable and silently
+  void the read-only-tree guarantee. `TMPDIR` points into the private
+  scope regardless, so `tempfile` works either way.
 
 ## Extending the Codebase
 
@@ -309,6 +421,9 @@ user owns:
 | Add a value to the scaffold | `src/lightcone/engine/templates/__init__.py` | Derive it from the environment or our own metadata before introducing a constant |
 | Change what gets converged | `src/lightcone/engine/project.py` + `tests/test_project.py` | `_Converger.item` / `.file`; repairs only ever append |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
+| Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
+| Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |
+| Change a denial message | `sandbox/denial.py` + `tests/test_sandbox_denial.py` | Remedies must be copy-pasteable and real *today*; the trailer stays unconditional |
 
 ## Test Patterns
 
@@ -326,6 +441,30 @@ user owns:
   package data), strict substitution, and the `.gitignore` entry/repair
   logic. Content assertions live here; `test_project.py` asserts only that
   the file written *is* the template, so a template edit touches one file.
+
+The sandbox suite splits along the seam, which is what makes it cheap:
+
+- `tests/test_sandbox_policy.py`, `test_sandbox_wrap.py`,
+  `test_sandbox_denial.py` — **pure, and run on every OS.** The policy is
+  data, `wrap` is a function, and the denial renderer is a function, so
+  the Landlock wrap and the macOS SBPL are both checked on Linux CI with
+  no privileges and nothing spawned.
+- `tests/test_sandbox_shim.py` — the shim as a **real subprocess**,
+  because its contract *is* its argv and exit codes. Needs no kernel
+  support: every case here is a setup failure or a pure-function check.
+- `tests/test_sandbox_landlock.py` — **real enforcement, no fakes**, with
+  a module-level `skipif` on `_sandbox_exec.abi() == 0`. A mocked sandbox
+  proves nothing, so where the mechanism is absent the file skips whole.
+  Its policies are **built by hand**, not by `probe_policy` — a test
+  grants exactly what it is testing, which is also what lets fixtures live
+  under `tmp_path` instead of `$HOME`.
+- `tests/test_run.py` — what `lc run` decides *before* it execs:
+  discovery, the containerized refusal, the rename guard, declared
+  inputs, the uv hop. Nothing spawns.
+
+Note the autouse `tools` fixture stubs `engine.project._run` only —
+sandbox tests spawn real processes deliberately, and are the one place in
+the suite that does.
 
 ## Conventions
 

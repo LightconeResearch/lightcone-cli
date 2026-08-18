@@ -297,6 +297,27 @@ def project_name(directory: Path) -> str:
     return name or "analysis"
 
 
+def find_project(start: Path | None = None) -> Path:
+    """The project root containing *start*, by ``astra.yaml`` walk-up.
+
+    The spec is what makes a directory a project, so it is what
+    discovery looks for — not ``pyproject.toml``, which would find any
+    Python project, and not uv's own walk-up, which lc never trusts
+    (spec §4: every uv invocation carries an explicit ``--project``).
+
+    ``lc init`` is handed its directory and needs none of this; every
+    verb that *runs* something does.
+    """
+    start = (start or Path.cwd()).resolve()
+    for directory in [start, *start.parents]:
+        if (directory / SPEC_FILENAME).exists():
+            return directory
+    raise ProjectError(
+        f"no {SPEC_FILENAME} in {start} or any parent directory — "
+        f"not inside an ASTRA project. Create one with `lc init`."
+    )
+
+
 # =============================================================================
 # The external-tool seam
 # =============================================================================
