@@ -59,19 +59,29 @@ def test_a_subdirectory_is_not_the_project(project: Path) -> None:
     the directory that is used, or it is an error."""
     nested = project / "a" / "b"
     nested.mkdir(parents=True)
-    with pytest.raises(ProjectError, match="not a project"):
+    with pytest.raises(ProjectError, match="is not a Lightcone project"):
         current_project(nested)
 
 
-def test_the_missing_pieces_are_named(project: Path) -> None:
-    (project / "uv.lock").unlink()
-    with pytest.raises(ProjectError, match="missing uv.lock"):
+def test_an_unbuilt_project_is_told_to_build_it(project: Path) -> None:
+    """A fresh clone is exactly this — git carries no `.venv` — so here
+    `lc init` is the whole answer, and the missing pieces are named."""
+    (project / ".venv").rmdir()
+    with pytest.raises(ProjectError, match="not been built yet") as raised:
         current_project(project)
+    assert "missing .venv" in str(raised.value)
+    assert "lc init" in str(raised.value)
 
 
-def test_a_directory_without_an_environment_says_so(tmp_path: Path) -> None:
-    with pytest.raises(ProjectError, match="lc init"):
+def test_the_wrong_directory_is_told_to_move_not_to_scaffold(tmp_path: Path) -> None:
+    """The complaint that produced this split: standing in `$HOME`, being
+    told to run `lc init` is advice to scaffold a project in your home
+    directory. The wrong *place* deserves "go to the right one"."""
+    with pytest.raises(ProjectError, match="is not a Lightcone project") as raised:
         current_project(tmp_path)
+    message = str(raised.value)
+    assert "cd to the root of one" in message
+    assert "lc init" not in message
 
 
 def test_the_default_is_the_working_directory(

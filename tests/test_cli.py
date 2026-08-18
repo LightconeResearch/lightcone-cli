@@ -288,7 +288,7 @@ def test_outside_a_project_is_a_clean_error(
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(main, ["run", "true"])
     assert result.exit_code == 1
-    assert "lc init" in result.output
+    assert "not a Lightcone project" in result.output
 
 
 def test_a_subdirectory_of_a_project_is_not_the_project(
@@ -301,7 +301,7 @@ def test_a_subdirectory_of_a_project_is_not_the_project(
     monkeypatch.chdir(nested)
     result = runner.invoke(main, ["run", "true"])
     assert result.exit_code == 1
-    assert "not a project" in result.output
+    assert "not a Lightcone project" in result.output
 
 
 def test_run_needs_no_spec_file(

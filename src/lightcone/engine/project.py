@@ -298,26 +298,45 @@ def project_name(directory: Path) -> str:
     return name or "analysis"
 
 
+#: What makes a directory a project root: the environment ``lc run``
+#: enters. ``astra.yaml`` is deliberately not among them — a command can
+#: be probed in any uv project, spec or no spec.
+_ENVIRONMENT_FILES = ("pyproject.toml", "uv.lock", ".venv")
+
+
 def current_project(directory: Path | None = None) -> Path:
     """*directory* (default: the working directory), taken as the project root.
 
     ``lc run`` assumes it is invoked from the root, so the only check is
-    that the environment is actually there: ``pyproject.toml``,
-    ``uv.lock``, ``.venv``. An ``astra.yaml`` is deliberately not
-    required — a command can be probed in any uv project, spec or no
-    spec. There is no walk-up: the directory you are in is the directory
-    that is used, or it is an error.
+    that the environment is actually there. There is no walk-up: the
+    directory you are in is the directory that is used, or it is an
+    error.
+
+    The two ways that fails are different mistakes and get different
+    advice. A directory with no project markers at all is the wrong
+    *place* — the answer is to go to the right one, and telling someone
+    standing in ``$HOME`` to run ``lc init`` there would be telling them
+    to scaffold a project in their home directory. A directory that
+    holds a ``pyproject.toml`` or an ``astra.yaml`` but lacks the built
+    environment is the right place, not yet converged — a fresh clone is
+    exactly this, since git carries no ``.venv`` — and there ``lc init``
+    is the whole answer.
     """
     directory = (directory or Path.cwd()).resolve()
-    missing = [
-        name for name in ("pyproject.toml", "uv.lock", ".venv") if not (directory / name).exists()
-    ]
-    if missing:
+    missing = [name for name in _ENVIRONMENT_FILES if not (directory / name).exists()]
+    if not missing:
+        return directory
+    declared = (directory / "pyproject.toml").exists() or (directory / SPEC_FILENAME).exists()
+    if not declared:
         raise ProjectError(
-            f"{directory} is missing {', '.join(missing)} — not a project "
-            "root. Run `lc init` to converge one."
+            f"{directory} is not a Lightcone project — `lc run` uses the "
+            "directory it is invoked from, and there is no project here. "
+            "cd to the root of one and try again."
         )
-    return directory
+    raise ProjectError(
+        f"{directory} is a Lightcone project that has not been built yet "
+        f"— missing {', '.join(missing)}. Run `lc init` here first."
+    )
 
 
 # =============================================================================
