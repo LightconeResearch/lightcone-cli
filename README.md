@@ -37,6 +37,33 @@ drafted with any AI coding assistant.
 
 → [Full documentation](https://docs.lightconeresearch.org)
 
+## Developing with an AI assistant
+
+Ground rules for code written in this repository, human- or AI-authored.
+Each of these has been asked for in review at least once; none is optional:
+
+- **Never reference the design spec in code or comments.** No `spec §7`,
+  no section numbers, no "the spec says". Code and its comments must
+  stand on their own; design rationale lives in the design documents.
+- **No backward-compatibility code.** Nothing exists to honor the
+  behavior of an older CLI, an older wire format, or trained fingers.
+  If old behavior isn't promised, don't guard, version, or migrate it.
+- **No foreshadowing.** No code, comment, flag, or user-facing message
+  may mention a verb, layer, or feature that does not exist yet. The
+  codebase is consistent with the project *at this point in time*.
+- **No escape hatches around guarantees.** A feature that enforces
+  something ships without a flag to turn the enforcement off.
+- **Prefer literal behavior over invented convenience.** The current
+  directory is the project root; erroring beats walking up, guessing,
+  or auto-discovering.
+- **Streamline before shipping.** No small helper functions or
+  rendering layers where a few inline lines read fine; consolidate.
+- **Be honest about provenance.** Third-party material we adapt is
+  "inspired from" upstream, clearly marked — never passed off as
+  verbatim, never left unattributed.
+- **Leave working files alone.** Don't edit files that are fine just
+  because a change nearby made them look touchable.
+
 ## License
 
 BSD 3-Clause — see [LICENSE](LICENSE) for details.

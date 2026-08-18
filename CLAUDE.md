@@ -60,6 +60,11 @@ before.
 
 ### Rules while rebuilding
 
+- **Follow README's "Developing with an AI assistant" rules.** They are
+  review-enforced: no spec references in code or comments, no
+  backward-compatibility code, no foreshadowing of unbuilt features, no
+  escape hatches around guarantees.
+
 - **No dead code.** If nothing in the current layer calls it, it doesn't
   land yet. `lc --help` advertises only verbs that work.
 - **`docs/` is frozen at its pre-rebuild state, by decision.** It still
