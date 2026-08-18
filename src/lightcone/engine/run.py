@@ -19,28 +19,23 @@ from typing import Any
 from lightcone.engine import sandbox
 from lightcone.engine.project import SPEC_FILENAME, child_env, require_uv
 
-#: Opened by a bare ``lc run``. In the exec allowlist by construction.
-DEFAULT_SHELL = "bash"
-
 
 def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
     """Run *command* in the project environment, inside the boundary.
 
-    An empty *command* opens a shell, which is announced rather than
-    silent — a shell that looks like your own but cannot write the
-    project is worse than no shell if you do not know it is there.
+    *command* is required, and there is deliberately no bare-``lc run``
+    shell. A probe is run far more often by an agent than by a person,
+    and an agent that opens an interactive shell waits forever for input
+    nobody is going to type.
     """
     require_uv()
     spec = read_spec(project)
-
-    interactive = not command
-    argv = list(command) or [DEFAULT_SHELL]
 
     with sandbox.scope(project, read_paths=input_paths(project, spec)) as policy:
         return sandbox.run(
             sandbox.detect(),
             policy,
-            argv,
+            list(command),
             cwd=project,
             prefix=uv_prefix(project),
             # Same reason as convergence: this uv invocation names its
@@ -48,7 +43,6 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
             # is never what we mean — and uv says so, once per run, in
             # the middle of the probe's own output.
             env=child_env(),
-            explain=not interactive,
         )
 
 

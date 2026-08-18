@@ -114,7 +114,6 @@ def run(
     cwd: Path,
     env: dict[str, str],
     prefix: Sequence[str] = (),
-    explain: bool = True,
 ) -> Outcome:
     """Run *argv* through *backend*, and explain it if it fails.
 
@@ -128,11 +127,6 @@ def run(
     retained, because the denial classifier needs text and the user
     needs immediacy. (A denial printed only to stdout is therefore
     missed; the trailer still fires.)
-
-    ``explain=False`` inherits stderr instead, giving up classification.
-    That is the right trade for an interactive shell, whose prompt is
-    written to stderr without a newline and would sit invisible in a
-    line-buffered tee.
     """
     wrapped = [*prefix, *backend.wrap(policy, [*env_argv(policy), *argv])]
     attestation = backend.attest(policy)
@@ -152,17 +146,15 @@ def run(
         wrapped,
         cwd=cwd,
         env=child_env,
-        stderr=subprocess.PIPE if explain else None,
+        stderr=subprocess.PIPE,
         text=True,
         errors="replace",
     )
-    tail = None
-    if proc.stderr is not None:  # iff explain: Popen was given PIPE
-        tail = _Tail(proc.stderr)
-        tail.start()
+    assert proc.stderr is not None  # Popen was given PIPE
+    tail = _Tail(proc.stderr)
+    tail.start()
     returncode = proc.wait()
-    if tail is not None:
-        tail.join(timeout=5)
+    tail.join(timeout=5)
 
     # Imported here, not at module scope: `sandbox/__init__` loads this
     # module eagerly, and the shim drags ctypes in for one integer.
@@ -179,9 +171,8 @@ def run(
     elif returncode != 0 and attestation.mechanism != "none":
         from lightcone.engine.sandbox import denial
 
-        if tail is not None:
-            explanation = denial.explain(tail.text(), policy, cwd=cwd)
-            notes.extend([*explanation, ""] if explanation else [])
+        explanation = denial.explain(tail.text(), policy, cwd=cwd)
+        notes.extend([*explanation, ""] if explanation else [])
         notes.append(denial.trailer(attestation.mechanism))
 
     return Outcome(

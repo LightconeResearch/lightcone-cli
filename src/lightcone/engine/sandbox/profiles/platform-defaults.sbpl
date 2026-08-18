@@ -2,6 +2,11 @@
 ; Inspired from openai/codex — codex-rs/sandboxing/src/restricted_read_only_platform_defaults.sbpl
 ; upstream commit f5e9d66851 (retrieved 2026-08-18)
 ;
+; Copyright OpenAI, licensed under the Apache License 2.0
+;   https://github.com/openai/codex/blob/main/LICENSE
+; Upstream is itself derived from Chromium's macOS sandbox policy
+; (Copyright The Chromium Authors, BSD 3-Clause).
+;
 ; Kept close to the upstream text so it can be diffed when re-syncing.
 ; Local changes are marked `LIGHTCONE DELTA`.
 ; ---------------------------------------------------------------------------

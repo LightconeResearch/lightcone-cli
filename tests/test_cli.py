@@ -271,14 +271,15 @@ def test_notes_are_rendered(
     assert "blocked by lc sandbox" in result.output
 
 
-def test_a_bare_run_announces_the_shell(
+def test_a_bare_run_is_refused_rather_than_opening_a_shell(
     runner: CliRunner, project: Path, spawned: list[dict[str, object]]
 ) -> None:
-    """A shell that looks like your own but cannot write the project is
-    worse than no shell if you do not know it is there."""
+    """A probe is run by an agent far more often than by a person, and an
+    agent handed an interactive shell waits forever for input nobody is
+    going to type. Refusing is the only outcome that cannot hang."""
     result = runner.invoke(main, ["run"])
-    assert "opening a shell" in result.output
-    assert spawned[0]["command"] == []
+    assert result.exit_code != 0
+    assert spawned == []
 
 
 def test_outside_a_project_is_a_clean_error(

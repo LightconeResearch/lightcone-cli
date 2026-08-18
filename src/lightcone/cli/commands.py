@@ -159,7 +159,7 @@ def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: 
 
 
 @main.command(context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
-@click.argument("command", nargs=-1, type=click.UNPROCESSED)
+@click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
 def run(command: tuple[str, ...]) -> None:
     """Run COMMAND in the project environment, inside the sandbox.
 
@@ -167,22 +167,11 @@ def run(command: tuple[str, ...]) -> None:
     ``.venv``, same boundary — so a probe that works means a recipe
     will. Reads the project tree and the inputs declared in
     ``astra.yaml``; writes nowhere but its own temporary scope.
-
-    With no COMMAND, opens a shell in that environment.
     """
     from lightcone.engine import run as engine_run
     from lightcone.engine.project import current_project
 
-    project = current_project()
-
-    if not command:
-        # On stderr, like every other line lc says about a run: the
-        # command's stdout is the command's. This is the only signal
-        # before an interactive shell takes the terminal, since the
-        # boundary's own notes do not print until the shell exits.
-        click.echo("opening a shell inside the recipe environment", err=True)
-
-    outcome = engine_run.probe(project, command)
+    outcome = engine_run.probe(current_project(), command)
     if outcome.notes:
         # click.echo, not rich: these lines are built to be pasted, and
         # reflowing a `uv add` remedy would break the one thing the
