@@ -29,10 +29,9 @@ def capability() -> Capability:
     """Whether this kernel can enforce, and at which ABI.
 
     Cached: it is a syscall whose answer cannot change inside one
-    process. The ABI is carried through to the manifest rather than
-    merely gating — a "best effort" that succeeded against a kernel with
-    no Landlock at all is exactly the silent degradation this layer
-    exists to make impossible.
+    process. The ABI is *recorded*, not merely gated on — a "best
+    effort" that succeeded against a kernel with no Landlock at all is
+    exactly the silent degradation this layer exists to make impossible.
     """
     abi = _sandbox_exec.abi()
     if abi > 0:

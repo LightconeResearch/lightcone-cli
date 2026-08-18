@@ -503,6 +503,12 @@ only checks that the guard is present. Verified empirically, not assumed.
   and honest — nothing pretends to a control it does not apply. (codex
   ships a seccomp denylist for this; adding one is a live option, not a
   gap we are hiding.)
+- **The rename guard does not redirect to `lc materialize`.** §4 spells
+  the message "outputs are materialized, not run — did you mean:
+  `lc materialize best_fit`?", but that verb does not exist yet and
+  sending someone to a command that fails is worse than telling them the
+  truth. The guard still fires before any exec; only the second sentence
+  waits for layer 4.
 - **`--require-sandbox` is a bare flag**; §7's `=declared-fs` form is
   absent. Every mechanism that exists today scopes the filesystem, so the
   two forms would be the same flag. It arrives with the first mechanism
@@ -512,9 +518,11 @@ only checks that the guard is present. Verified empirically, not assumed.
   declaration. §7's `[tool.lightcone.image]` TOML arrives with the
   container hatch; printing it now would be a copy-pasteable fix that does
   nothing.
-- **No manifest is written.** A probe has no output (§4), so the
-  `Attestation` is returned and printed rather than persisted.
-  `to_manifest()` exists and is tested; layer 4 is its first consumer.
+- **No manifest is written, and no serializer for one.** A probe has no
+  output (§4), so the `Attestation` is returned and printed rather than
+  persisted. An earlier draft carried a `to_manifest()` with no caller —
+  deleted, because "no dead code" applies to this layer's own
+  conveniences too. It lands with layer 4, which is what needs it.
 - **`/tmp` is dropped from the write scope when the project lives under
   it**, which §7 does not contemplate. Granting `/tmp` unconditionally
   would make the tree of a `/tmp`-hosted project writable and silently

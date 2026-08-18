@@ -297,7 +297,7 @@ def test_an_unsandboxed_shell_does_not_claim_to_be_sandboxed(
 def test_the_rename_guard_renders_as_a_clean_error(runner: CliRunner, project: Path) -> None:
     result = runner.invoke(main, ["run", "best_fit"])
     assert result.exit_code == 1
-    assert "lc materialize best_fit" in result.output
+    assert "is a declared output" in result.output
 
 
 def test_outside_a_project_is_a_clean_error(

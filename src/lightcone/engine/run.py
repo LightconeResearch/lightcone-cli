@@ -161,17 +161,22 @@ def input_paths(project: Path, spec: dict[str, Any]) -> list[Path]:
 def _guard_output_name(command: Sequence[str], spec: dict[str, Any]) -> None:
     """Refuse ``lc run <output_id>`` before anything execs (spec §4).
 
-    ``lc run`` used to mean "materialize these outputs". Post-rename it
-    means "run this command", so trained fingers typing `lc run best_fit`
-    would otherwise get `command not found` for a habit that was correct
-    last release.
+    ``lc run`` used to mean "materialize these outputs". It now means
+    "run this command", so trained fingers typing `lc run best_fit` would
+    otherwise have the output name exec'd as a program.
+
+    Spec §4 wants this to redirect to ``lc materialize <id>``. That verb
+    does not exist yet, and sending someone to a command that will fail
+    is worse than telling them the truth — so the redirect arrives with
+    the fabric layer, and until then the message says what it can.
     """
     from astra.helpers import get_output_ids
 
     if not command or command[0] not in get_output_ids(spec):
         return
     raise ProjectError(
-        f"outputs are materialized, not run — did you mean: `lc materialize {command[0]}`?"
+        f"`{command[0]}` is a declared output, and `lc run` runs commands, "
+        "not outputs. Materializing outputs arrives with the fabric layer."
     )
 
 

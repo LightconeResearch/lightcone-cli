@@ -274,13 +274,3 @@ def test_unavailable_changes_nothing_and_admits_it(policy: Policy) -> None:
     attestation = backend.attest(policy)
     assert attestation.mechanism == "none"
     assert attestation.fs == "open"
-
-
-def test_the_attestation_is_manifest_ready(policy: Policy) -> None:
-    """Layer 4 writes this into every manifest; absent fields are omitted
-    rather than emitted as null."""
-    backend = LandlockBackend(capability=Capability(kind="landlock", landlock_abi=5))
-    record = backend.attest(policy).to_manifest()
-    assert record["mechanism"] == "landlock"
-    assert record["landlock_abi"] == 5
-    assert "landlock_abi" not in Unavailable().attest(policy).to_manifest()

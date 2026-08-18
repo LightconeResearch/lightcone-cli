@@ -102,19 +102,6 @@ class Attestation:
     landlock_abi: int | None = None
     exec_allowlist_version: int | None = None
 
-    def to_manifest(self) -> dict[str, object]:
-        """The record as JSON-ready data, absent fields omitted."""
-        record: dict[str, object] = {
-            "mechanism": self.mechanism,
-            "fs": self.fs,
-            "network": self.network,
-        }
-        if self.landlock_abi is not None:
-            record["landlock_abi"] = self.landlock_abi
-        if self.exec_allowlist_version is not None:
-            record["exec_allowlist_version"] = self.exec_allowlist_version
-        return record
-
     def summary(self) -> str:
         """One line, for ``lc run --sandbox-debug`` and later ``lc status``."""
         abi = f", abi {self.landlock_abi}" if self.landlock_abi is not None else ""

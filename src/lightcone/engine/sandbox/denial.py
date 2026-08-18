@@ -175,8 +175,6 @@ def _render_write(path: Path) -> list[str]:
             "  the project tree is read-only in here — nothing a probe does can",
             "  land in it. Write somewhere scratch instead:",
             "      import tempfile; tempfile.mkdtemp()      # or $TMPDIR, /tmp",
-            "    to produce a real result, declare it as an output in astra.yaml",
-            "    and materialize it.",
         ],
     )
 

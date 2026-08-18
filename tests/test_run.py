@@ -61,10 +61,12 @@ def test_discovery_outside_a_project_says_so(tmp_path: Path) -> None:
 
 def test_an_output_id_is_refused_before_anything_execs(project: Path) -> None:
     """`lc run` used to mean "materialize these outputs". Trained fingers
-    typing the old grammar must not get `command not found` — or worse,
-    have the output name run as a program."""
-    with pytest.raises(ProjectError, match="lc materialize best_fit"):
+    typing the old grammar must not have the output name exec'd as a
+    program — and must not be redirected to `lc materialize`, which does
+    not exist yet."""
+    with pytest.raises(ProjectError, match="is a declared output") as raised:
         engine_run.probe(project, ["best_fit"])
+    assert "lc materialize" not in str(raised.value)
 
 
 def test_a_command_that_is_not_an_output_passes_the_guard(project: Path) -> None:
