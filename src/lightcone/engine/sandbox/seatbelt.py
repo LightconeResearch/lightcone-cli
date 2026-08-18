@@ -32,12 +32,18 @@ implementations:
 
 from __future__ import annotations
 
+import functools
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from importlib import resources
 
-from lightcone.engine.sandbox.model import Attestation, Capability, Policy
+from lightcone.engine.sandbox.model import (
+    EXEC_ALLOWLIST_VERSION,
+    Attestation,
+    Capability,
+    Policy,
+)
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
@@ -46,19 +52,28 @@ BASE_PROFILE = "base.sbpl"
 PLATFORM_DEFAULTS = "platform-defaults.sbpl"
 
 
+@functools.cache
 def read_profile(name: str) -> str:
-    """The raw text of a vendored SBPL fragment."""
+    """The raw text of a vendored SBPL fragment.
+
+    Cached: the fragments are ~10 KB of immutable package data read on
+    every ``wrap``, which layer 4 will call once per output.
+    """
     if name not in (BASE_PROFILE, PLATFORM_DEFAULTS):
         raise KeyError(f"unknown profile fragment: {name!r}")
     return (resources.files(__package__) / "profiles" / name).read_text(encoding="utf-8")
 
 
+@functools.cache
 def capability() -> Capability:
     """Whether ``sandbox-exec`` is present and usable on this host.
 
     Seatbelt has been "deprecated" since 2012 and has never been given a
     removal date, but the profile dialect does drift across releases —
     so this runs a live canary rather than trusting the file's presence.
+
+    Cached like its Landlock twin: the canary is a subprocess, and the
+    answer cannot change inside one process.
     """
     if os.name != "posix" or not os.path.isfile(SANDBOX_EXEC):
         return Capability(kind="none", detail=f"{SANDBOX_EXEC} not present")
@@ -91,11 +106,6 @@ class SeatbeltBackend:
             generate_profile(policy),
             *(f"-D{name}={value}" for name, value in profile_params(policy)),
             "--",
-            # The overlay is applied *inside* the sandbox, so whatever the
-            # caller put outside the wrap — the `uv run` hop — keeps the
-            # real environment and finds its own cache. `env` is in the
-            # utility allowlist, so it is executable by construction.
-            *env_prefix(policy),
             *argv,
         ]
 
@@ -103,15 +113,8 @@ class SeatbeltBackend:
         return Attestation(
             mechanism="seatbelt",
             fs="declared",
-            exec_allowlist_version=policy.exec_allowlist_version,
+            exec_allowlist_version=EXEC_ALLOWLIST_VERSION,
         )
-
-
-def env_prefix(policy: Policy) -> list[str]:
-    """``env K=V …``, or nothing when the policy sets no overlay."""
-    if not policy.env:
-        return []
-    return ["/usr/bin/env", *(f"{k}={v}" for k, v in sorted(policy.env.items()))]
 
 
 def profile_params(policy: Policy) -> list[tuple[str, str]]:
@@ -130,10 +133,19 @@ def profile_params(policy: Policy) -> list[tuple[str, str]]:
 def generate_profile(policy: Policy) -> str:
     """The SBPL for *policy*: vendored base, our tiers, vendored defaults.
 
-    Order is load-bearing, because **SBPL is last-match-wins** — which is
-    why ``(deny default)`` can lead the base and still be overridden, and
-    why the read-only guard at the end can take back a write the
-    platform defaults granted.
+    Order is load-bearing, because **SBPL is last-match-wins**. That is
+    why ``(deny default)`` can lead the base and still be overridden, why
+    the read-only guard can take back the write the vendored defaults
+    hand out on ``/tmp`` — and why the write tier is restated *after* the
+    guard.
+
+    That last one is not cosmetic. Landlock unions rights, so a narrower
+    grant only ever widens: a writable output directory nested inside a
+    readable project tree works there for free. Reproducing that here
+    means the write set must have the final word, or the guard's
+    ``(deny file-write* PROJECT)`` would silently revoke the nested
+    output directory that layer 4's recipes write into — Linux would
+    materialize and macOS would refuse.
     """
     return "\n".join(
         [
@@ -143,12 +155,6 @@ def generate_profile(policy: Policy) -> str:
                 "(allow file-read* file-test-existence",
                 "READ",
                 len(policy.read),
-            ),
-            _tier(
-                "write: the per-run private scope and scratch — never the project tree",
-                "(allow file-read* file-write*",
-                "WRITE",
-                len(policy.write),
             ),
             _tier(
                 "execute: the environment + the versioned utility allowlist",
@@ -161,6 +167,13 @@ def generate_profile(policy: Policy) -> str:
             "",
             read_profile(PLATFORM_DEFAULTS),
             _read_only_guard(policy),
+            # Last, so a nested writable path beats the guard above it.
+            _tier(
+                "write: the per-run private scope and scratch — never the project tree",
+                "(allow file-read* file-write*",
+                "WRITE",
+                len(policy.write),
+            ),
         ]
     )
 
@@ -177,18 +190,22 @@ def _read_only_guard(policy: Policy) -> str:
     """Take back writes on everything readable that is not also writable.
 
     The vendored defaults grant write to shared scratch (``/tmp``,
-    ``/var/tmp``) unconditionally, which would otherwise re-open exactly
-    the hole :func:`~lightcone.engine.sandbox.policy._write_roots`
-    closes on Linux — a project living under ``/tmp`` becoming writable.
-    Emitting the deny **last** is what makes the two platforms agree,
-    and it is only expressible because SBPL is last-match-wins (Landlock,
-    which unions rights, cannot say this at all — which is why the Linux
-    side has to solve it by leaving the root out of the policy instead).
+    ``/var/tmp``) unconditionally, which would otherwise reopen exactly
+    the hole :func:`~lightcone.engine.sandbox.policy._write_roots` closes
+    on Linux — a project living under ``/tmp`` becoming writable. It is
+    only expressible because SBPL is last-match-wins; Landlock, which
+    unions rights, has to solve the same problem by leaving the root out
+    of the policy instead.
+
+    Deliberately narrow: it names *our* read roots and nothing else, so
+    the device and pty writes the vendored defaults grant survive. And it
+    is emitted before the write tier, which restates the grants that must
+    win — see :func:`generate_profile`.
     """
     unwritable = [
         index
         for index, path in enumerate(policy.read)
-        if not any(path == root or path.is_relative_to(root) for root in policy.write)
+        if not policy.grants(path, policy.write)
     ]
     if not unwritable:
         return ""

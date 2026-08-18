@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -78,7 +79,11 @@ def policy(sandbox_dirs: tuple[Path, Path]) -> Policy:
 def _bin(*names: str) -> list[str]:
     import shutil
 
-    return [found for name in names if (found := shutil.which(name, path="/usr/bin:/bin"))]
+    return [
+        found
+        for name in names
+        if (found := shutil.which(name, path=policy_module._UTILITY_PATH))
+    ]
 
 
 def run(policy: Policy, script: str, *, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -182,11 +187,8 @@ def test_allocating_a_pty_needs_devpts_and_says_so_badly(
     assert denied.returncode != 0
     assert "out of pty devices" in denied.stderr
 
-    widened = Policy(
-        **{
-            **policy.__dict__,
-            "write": (*policy.write, Path("/dev/pts"), Path("/dev/ptmx").resolve()),
-        }
+    widened = replace(
+        policy, write=(*policy.write, Path("/dev/pts"), Path("/dev/ptmx").resolve())
     )
     allowed = run(widened, script, cwd=project)
     assert allowed.returncode == 0, allowed.stderr

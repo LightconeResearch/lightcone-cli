@@ -16,7 +16,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from lightcone import _sandbox_exec
-from lightcone.engine.sandbox.model import Attestation, Capability, Policy
+from lightcone.engine.sandbox.model import (
+    EXEC_ALLOWLIST_VERSION,
+    Attestation,
+    Capability,
+    Policy,
+)
 
 
 @functools.cache
@@ -36,6 +41,22 @@ def capability() -> Capability:
         kind="none",
         detail="landlock unavailable (kernel < 5.13, blocked by seccomp, or unsupported arch)",
     )
+
+
+def _document(policy: Policy) -> dict[str, object]:
+    """*policy* as the shim's ``--policy`` JSON.
+
+    The shim's wire format, so it lives with the backend that speaks it
+    rather than on the mechanism-free :class:`Policy`. It is an interface
+    between two possibly different lightcone-cli versions — the launcher's
+    and the project's — so it carries a version and holds only strings.
+    """
+    return {
+        "version": _sandbox_exec.POLICY_VERSION,
+        "read": [str(p) for p in policy.read],
+        "write": [str(p) for p in policy.write],
+        "execute": [str(p) for p in policy.execute],
+    }
 
 
 @dataclass(frozen=True)
@@ -58,7 +79,7 @@ class LandlockBackend:
     interpreter: str = sys.executable
 
     def wrap(self, policy: Policy, argv: Sequence[str]) -> list[str]:
-        document = json.dumps(policy.as_document(), separators=(",", ":"), sort_keys=True)
+        document = json.dumps(_document(policy), separators=(",", ":"), sort_keys=True)
         return [
             self.interpreter,
             "-m",
@@ -74,5 +95,5 @@ class LandlockBackend:
             mechanism="landlock",
             fs="declared",
             landlock_abi=self.capability.landlock_abi,
-            exec_allowlist_version=policy.exec_allowlist_version,
+            exec_allowlist_version=EXEC_ALLOWLIST_VERSION,
         )

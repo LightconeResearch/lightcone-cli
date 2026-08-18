@@ -226,29 +226,35 @@ def _exit_status(returncode: int) -> int:
     return 128 - returncode if returncode < 0 else returncode
 
 
-def _render_plan(lines: Sequence[str]) -> None:
-    """The `--sandbox-debug` dump, on stderr with the rest of the commentary."""
+def _echo(lines: Sequence[str], *, indent: str = "") -> None:
+    """Commentary on stderr, unstyled and unwrapped.
+
+    stderr because a probe's stdout belongs to the command it ran. And
+    unwrapped because these lines are built to be pasted — rich reflowing
+    a `uv add` line would break the one thing the denial message is for.
+    Blank separators stay blank: indenting them turns every empty line of
+    a copied remedy into trailing whitespace.
+    """
     console = _console(stderr=True)
     for line in lines:
-        console.print(line, highlight=False, markup=False, crop=False, overflow="ignore")
-    console.print()
+        console.print(
+            f"{indent}{line}" if line else "",
+            highlight=False,
+            markup=False,
+            crop=False,
+            overflow="ignore",
+        )
+
+
+def _render_plan(lines: Sequence[str]) -> None:
+    """The `--sandbox-debug` dump, printed before the command runs."""
+    _echo(lines)
+    _console(stderr=True).print()
 
 
 def _render_notes(notes: Sequence[str]) -> None:
-    """Print the boundary's notes to stderr, unstyled and unwrapped.
-
-    stderr because the command's own stdout is a probe's actual result,
-    and these must not contaminate it. Unwrapped because the denial
-    message is built of copy-pasteable lines — rich reflowing a
-    ``uv add`` line would break the paste, which is the whole point of
-    the message.
-    """
+    """The boundary's notes: downgrade notice, denial, failure trailer."""
     if not notes:
         return
-    console = _console(stderr=True)
-    console.print()
-    for note in notes:
-        # Blank separators stay blank: indenting them turns the copy of a
-        # remedy block into trailing whitespace on every empty line.
-        line = f"  {note}" if note else ""
-        console.print(line, highlight=False, markup=False, crop=False, overflow="ignore")
+    _console(stderr=True).print()
+    _echo(notes, indent="  ")

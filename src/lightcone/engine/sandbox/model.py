@@ -53,29 +53,17 @@ class Policy:
     #: Environment the boundary overlays: HOME, the XDG trio,
     #: MPLCONFIGDIR, PYTHONPYCACHEPREFIX (spec §7, normative).
     env: dict[str, str] = field(default_factory=dict)
-    exec_allowlist_version: int = EXEC_ALLOWLIST_VERSION
 
-    def as_document(self) -> dict[str, object]:
-        """The policy as the shim's ``--policy`` JSON document.
+    def grants(self, path: Path, roots: tuple[Path, ...]) -> bool:
+        """Whether *path* lies under any of *roots*.
 
-        This is an interface between two possibly different
-        lightcone-cli versions — the one that built the argv and the one
-        the project's environment provides — so it carries a version and
-        holds nothing but strings.
-
-        ``env`` rides along because the overlay has to be applied *by the
-        wrap*, not by the parent: everything outside the rewrite — the
-        ``uv run`` hop in particular — must keep the real environment.
+        The one containment predicate for the layer. ``is_relative_to`` is
+        reflexive, so a root grants itself — spelling it `p == r or
+        p.is_relative_to(r)` is not just redundant, it teaches the next
+        reader that the stdlib does not do the obvious thing.
         """
-        from lightcone._sandbox_exec import POLICY_VERSION
-
-        return {
-            "version": POLICY_VERSION,
-            "read": [str(p) for p in self.read],
-            "write": [str(p) for p in self.write],
-            "execute": [str(p) for p in self.execute],
-            "env": dict(self.env),
-        }
+        resolved = path.resolve()
+        return any(resolved.is_relative_to(root) for root in roots)
 
 
 @dataclass(frozen=True)
@@ -89,6 +77,10 @@ class Capability:
 
     kind: Literal["landlock", "seatbelt", "none"]
     landlock_abi: int | None = None
+    #: Whether ``kind == "none"`` because the user said so, rather than
+    #: because the host cannot enforce. Both end up unsandboxed; only one
+    #: is a choice, and they must not read alike.
+    opted_out: bool = False
     #: Why, when ``kind`` is ``none``. Reaches the user — a downgrade is
     #: never silent.
     detail: str = ""

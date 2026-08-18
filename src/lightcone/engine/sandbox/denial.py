@@ -59,17 +59,21 @@ def explain(stderr: str, policy: Policy, *, cwd: Path) -> list[str]:
       it was allowed, can only have been a write attempt into the
       read-only project tree.
     """
+    # Access-aware, and that distinction is what keeps the message
+    # honest: every allowlisted binary lives under `/usr`, which the read
+    # baseline grants, so an executable being *readable* says nothing
+    # about whether running it was allowed.
     for raw in _candidates(stderr):
         path = _resolve(raw, cwd)
         if path is None or not path.exists():
             continue
         if _classify(path) == "tool":
-            if _within(path, policy.execute):
+            if policy.grants(path, policy.execute):
                 continue
             return _render_tool(path)
-        if _within(path, policy.write):
+        if policy.grants(path, policy.write):
             continue
-        if _within(path, policy.read):
+        if policy.grants(path, policy.read):
             return _render_write(path)
         return _render_data(path)
     return []
@@ -126,18 +130,6 @@ def _classify(path: Path) -> str:
     if str(path.parent).endswith(_BIN_DIR_HINTS):
         return "tool"
     return "data"
-
-
-def _within(path: Path, roots: tuple[Path, ...]) -> bool:
-    """Whether *path* lies under any of *roots*.
-
-    Access-aware use of this is what keeps the message honest: every
-    allowlisted binary lives under ``/usr``, which the read baseline
-    grants, so an executable being *readable* says nothing about whether
-    running it was allowed.
-    """
-    resolved = path.resolve()
-    return any(resolved.is_relative_to(root) for root in roots)
 
 
 def _render_tool(path: Path) -> list[str]:

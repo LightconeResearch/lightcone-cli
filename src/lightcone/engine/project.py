@@ -175,7 +175,7 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
 
     directory = directory.resolve()
 
-    _require_uv()
+    require_uv()
 
     c = _Converger(write=write)
 
@@ -228,7 +228,13 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     return c.report
 
 
-def _require_uv() -> None:
+def require_uv() -> None:
+    """Refuse early when uv is absent — it is the environment substrate.
+
+    Shared with ``lc run``: convergence needs uv to build the environment
+    and the probe needs it to enter one, and they must not drift into
+    telling the user two different things about the same missing tool.
+    """
     if shutil.which("uv") is None:
         raise ProjectError(
             "uv is required (the environment substrate). Install it: "
@@ -295,6 +301,30 @@ def project_name(directory: Path) -> str:
     """A PEP 503-ish project name derived from the directory name."""
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", directory.name).strip("-._").lower()
     return name or "analysis"
+
+
+def declares_system_layer(directory: Path) -> bool:
+    """Whether *directory* declares a system layer — spec §1's mode rule.
+
+    Mode is *derived, not configured*: declaring the layer **is** the
+    escalation to containerized mode. Lives here rather than with the
+    verb that refuses it, because the same two inputs are read by
+    ``env_version`` (layer 2), the launcher's mode detection (layer 3),
+    and ``lc build`` (layer 6) — and they must agree on the key name and
+    on what counts as a declaration.
+    """
+    import tomllib
+
+    if (directory / "Containerfile.extra").exists():
+        return True
+    pyproject = directory / "pyproject.toml"
+    if not pyproject.exists():
+        return False
+    try:
+        data = tomllib.loads(pyproject.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise ProjectError(f"{pyproject} is not valid TOML: {e}") from e
+    return "image" in data.get("tool", {}).get("lightcone", {})
 
 
 def find_project(start: Path | None = None) -> Path:

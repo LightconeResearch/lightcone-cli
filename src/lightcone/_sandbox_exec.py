@@ -32,11 +32,10 @@ Two properties of this module are load-bearing and pinned by tests:
 from __future__ import annotations
 
 import ctypes
-import ctypes.util
 import errno
+import functools
 import json
 import os
-import platform
 import stat
 import sys
 
@@ -101,8 +100,18 @@ class _PathBeneathAttr(ctypes.Structure):
     ]
 
 
+@functools.cache
 def _libc() -> ctypes.CDLL:
-    return ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    """The already-loaded libc.
+
+    Cached, and `CDLL(None)` rather than `find_library("c")`: this is
+    called once per rule, and `find_library` forks `ldconfig -p` every
+    time — 74 subprocesses for a 71-path policy, which measured at ~740 ms
+    of the shim's ~780 ms. `dlopen(NULL)` reaches the libc already mapped
+    into this process, needs no search, and drops `ctypes.util` (and the
+    `tempfile`/`random` chain behind it) off the import path.
+    """
+    return ctypes.CDLL(None, use_errno=True)
 
 
 def abi() -> int:
@@ -115,7 +124,7 @@ def abi() -> int:
     answer to it. Recording *which* ABI answered is the caller's job
     (spec §7 puts it in the manifest).
     """
-    if platform.machine() not in _SUPPORTED_ARCHES:
+    if os.uname().machine not in _SUPPORTED_ARCHES:
         return 0
     try:
         result = _libc().syscall(
@@ -254,23 +263,6 @@ def restrict_self(ruleset_fd: int) -> None:
 # --- the entry point -------------------------------------------------------
 
 
-def _overlay(policy: dict[str, object]) -> dict[str, str]:
-    """The environment the sandboxed command runs with, from the policy.
-
-    Applied here rather than by the parent because everything *outside*
-    the wrap — notably the ``uv run`` hop — must keep the real
-    environment: uv resolves its cache from ``XDG_CACHE_HOME`` and its
-    managed interpreters from ``XDG_DATA_HOME``, so redirecting those for
-    uv would send it to an empty, throwaway cache.
-    """
-    value = policy.get("env", {})
-    if not isinstance(value, dict) or not all(
-        isinstance(k, str) and isinstance(v, str) for k, v in value.items()
-    ):
-        raise ValueError("policy field 'env' must be an object of strings")
-    return dict(value)
-
-
 def _paths(policy: dict[str, object], key: str) -> list[str]:
     value = policy.get(key, [])
     if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
@@ -312,11 +304,9 @@ def main(argv: list[str] | None = None) -> None:
         abi_level = abi()
         if abi_level == 0:
             raise ValueError("landlock unavailable (kernel < 5.13, or blocked by seccomp)")
-        overlay = _overlay(policy)
         fd = build_ruleset(policy, abi_level)
         restrict_self(fd)
         os.close(fd)
-        os.environ.update(overlay)
     except (ValueError, OSError) as e:
         _fail(str(e))
 

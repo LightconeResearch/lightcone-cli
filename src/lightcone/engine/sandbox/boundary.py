@@ -9,17 +9,17 @@ if a third mechanism landed tomorrow.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
 import threading
+from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import IO
 
-from lightcone._sandbox_exec import SETUP_FAILURE_EXIT
 from lightcone.engine.sandbox import policy as policy_module
 from lightcone.engine.sandbox.model import Attestation, Backend, Capability, Policy
 
@@ -33,10 +33,15 @@ _STDERR_TAIL_BYTES = 64 * 1024
 #: and a Landlock domain can only be tightened.
 SANDBOX_ENV = "LC_SANDBOX"
 
-#: `Capability.detail` marking a deliberate opt-out rather than a host
-#: that cannot enforce. The two look identical to every other consumer
-#: and must not read identically to the user.
-DISABLED = "disabled by --no-sandbox"
+
+def disabled() -> Unavailable:
+    """The backend for a deliberate ``--no-sandbox``.
+
+    Distinct from a host that *cannot* enforce: both end up unsandboxed,
+    but only one is the user's choice, and telling them apart must not
+    depend on string-matching a field documented as prose.
+    """
+    return Unavailable(capability=Capability(kind="none", opted_out=True))
 
 
 @dataclass(frozen=True)
@@ -67,11 +72,6 @@ class Outcome:
     #: Console lines the caller prints verbatim: the downgrade notice,
     #: the denial explanation, the failure trailer.
     notes: tuple[str, ...] = ()
-    #: The argv actually spawned, and the policy it ran under — both for
-    #: ``--sandbox-debug``, which has to show what really happened rather
-    #: than what would have been built.
-    argv: tuple[str, ...] = ()
-    policy: Policy | None = None
 
 
 def detect() -> Backend:
@@ -122,10 +122,10 @@ def run(
     argv: Sequence[str],
     *,
     cwd: Path,
+    env: dict[str, str],
     prefix: Sequence[str] = (),
-    env: dict[str, str] | None = None,
     explain: bool = True,
-    announce: Callable[[Policy, Attestation, list[str]], None] | None = None,
+    announce: Callable[[Sequence[str]], None] | None = None,
 ) -> Outcome:
     """Run *argv* through *backend*, and explain it if it fails.
 
@@ -145,12 +145,13 @@ def run(
     written to stderr without a newline and would sit invisible in a
     line-buffered tee.
 
-    *announce* is called once the wrap is built and before anything is
-    spawned — the hook ``--sandbox-debug`` hangs on, so the policy is
-    printed while it can still be acted on rather than after a shell has
-    been exited.
+    *announce* receives the spawned argv once the wrap is built and
+    before anything runs — the hook ``--sandbox-debug`` hangs on, so the
+    plan is printed while it can still be acted on rather than after a
+    shell has been exited. It is handed only the argv: the caller already
+    holds the policy, and ``attest`` is pure.
     """
-    wrapped = [*prefix, *backend.wrap(policy, argv)]
+    wrapped = [*prefix, *backend.wrap(policy, [*env_argv(policy), *argv])]
     attestation = backend.attest(policy)
     # `policy.env` is deliberately **not** merged here. The overlay is
     # applied by the wrap — the shim on Linux, `env` inside `sandbox-exec`
@@ -159,16 +160,13 @@ def run(
     # managed interpreters from `XDG_DATA_HOME`, so redirecting those for
     # the `uv run` hop would point it at an empty, throwaway cache and
     # re-download the world on every probe (and fail outright offline).
-    child_env = {
-        **(os.environ if env is None else env),
-        SANDBOX_ENV: attestation.mechanism,
-    }
+    child_env = {**env, SANDBOX_ENV: attestation.mechanism}
 
     notes: list[str] = []
     if backend.capability.kind == "none":
         notes.append(_downgrade_note(backend.capability))
     if announce is not None:
-        announce(policy, attestation, wrapped)
+        announce(wrapped)
 
     proc = subprocess.Popen(
         wrapped,
@@ -178,10 +176,17 @@ def run(
         text=True,
         errors="replace",
     )
-    tail = _tee_stderr(proc) if explain else None
+    tail = None
+    if proc.stderr is not None:  # iff explain: Popen was given PIPE
+        tail = _Tail(proc.stderr)
+        tail.start()
     returncode = proc.wait()
     if tail is not None:
-        tail.thread.join(timeout=5)
+        tail.join(timeout=5)
+
+    # Imported here, not at module scope: `sandbox/__init__` loads this
+    # module eagerly, and the shim drags ctypes in for one integer.
+    from lightcone._sandbox_exec import SETUP_FAILURE_EXIT
 
     if returncode == SETUP_FAILURE_EXIT:
         # The shim's reserved code: the sandbox could not be *built*. Say
@@ -203,9 +208,26 @@ def run(
         returncode=returncode,
         attestation=attestation,
         notes=tuple(notes),
-        argv=tuple(wrapped),
-        policy=policy,
     )
+
+
+def env_argv(policy: Policy) -> list[str]:
+    """``env K=V …``, prefixed to the command *inside* the wrap.
+
+    One place, every backend — including :class:`Unavailable`, which
+    would otherwise silently run in a different environment than a
+    sandboxed run and make ``--no-sandbox`` change two variables at once.
+    Composed inside the wrap rather than around it so the ``prefix``
+    (the ``uv run`` hop) keeps the real environment: uv resolves its
+    cache from ``XDG_CACHE_HOME`` and its interpreters from
+    ``XDG_DATA_HOME``.
+
+    ``env`` is in the exec allowlist by construction, so it is runnable
+    under every mechanism.
+    """
+    if not policy.env:
+        return []
+    return ["/usr/bin/env", *(f"{k}={v}" for k, v in sorted(policy.env.items()))]
 
 
 def _downgrade_note(capability: Capability) -> str:
@@ -215,44 +237,39 @@ def _downgrade_note(capability: Capability) -> str:
     when you were not is the failure this layer exists to prevent, and
     it is the one shipped implementations are cited for.
     """
-    if capability.detail == DISABLED:
+    if capability.opted_out:
         return "sandbox disabled by --no-sandbox; recorded as `fs: open`"
     reason = f" — {capability.detail}" if capability.detail else ""
     return f"not sandboxed on this host{reason}; recorded as `fs: open`"
 
 
-def _tee_stderr(proc: subprocess.Popen[str]) -> _Tail:
-    """Start pumping the child's stderr to ours, retaining a bounded tail."""
-    stream = proc.stderr
-    if stream is None:  # pragma: no cover - Popen was given stderr=PIPE
-        raise RuntimeError("stderr was not piped")
-    tail = _Tail()
+class _Tail(threading.Thread):
+    """Pumps the child's stderr through to ours, keeping a bounded tail.
 
-    def pump() -> None:
-        for line in stream:
-            sys.stderr.write(line)
-            tail.add(line)
-        sys.stderr.flush()
+    Concurrent by necessity: the pipe has to be drained while the child
+    runs, or a chatty command blocks on a full buffer. Bounded because
+    the denial classifier only needs the last few lines of a traceback
+    and a recipe that prints megabytes must not be held whole.
+    """
 
-    tail.thread = threading.Thread(target=pump, daemon=True)
-    tail.thread.start()
-    return tail
-
-
-class _Tail:
-    """The last :data:`_STDERR_TAIL_BYTES` of a stream, cheaply."""
-
-    thread: threading.Thread
-
-    def __init__(self) -> None:
-        self._chunks: list[str] = []
+    def __init__(self, stream: IO[str]) -> None:
+        super().__init__(daemon=True)
+        self._stream = stream
+        # A deque because the bound is on *bytes*, so it cannot be
+        # delegated to `maxlen` — but eviction is from the left, and
+        # `list.pop(0)` is O(n) under exactly the load the bound exists
+        # to survive.
+        self._chunks: deque[str] = deque()
         self._size = 0
 
-    def add(self, chunk: str) -> None:
-        self._chunks.append(chunk)
-        self._size += len(chunk)
-        while self._size > _STDERR_TAIL_BYTES and len(self._chunks) > 1:
-            self._size -= len(self._chunks.pop(0))
+    def run(self) -> None:
+        for line in self._stream:
+            sys.stderr.write(line)
+            self._chunks.append(line)
+            self._size += len(line)
+            while self._size > _STDERR_TAIL_BYTES and len(self._chunks) > 1:
+                self._size -= len(self._chunks.popleft())
+        sys.stderr.flush()
 
     def text(self) -> str:
         return "".join(self._chunks)

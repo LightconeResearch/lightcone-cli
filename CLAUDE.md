@@ -358,17 +358,23 @@ interpreter **file**; only READ goes to the install root, for the stdlib.
 `test_a_system_interpreter_does_not_make_the_whole_prefix_executable`
 pins it.
 
-**The env overlay belongs to the wrap, not to the parent.** `policy.env`
-is applied by the shim (Linux) or by `env` inside `sandbox-exec` (macOS)
-— never merged into the `subprocess` environment, because everything
-*outside* the rewrite must keep the real environment. `uv` resolves its
-cache from `XDG_CACHE_HOME` and its managed interpreters from
-`XDG_DATA_HOME`; overlaying those for the `uv run` hop points it at a
-throwaway `mkdtemp` that `scope()` then deletes, so every probe
-re-downloads the world, air-gapped hosts fail outright, and
-`~/.config/uv/uv.toml` and `~/.netrc` go missing. The rule generalises:
-**if `prefix` is documented as outside the boundary, nothing the boundary
-imposes may reach it.**
+**The env overlay belongs to the seam, not to the parent and not to each
+backend.** `boundary.env_argv()` composes `policy.env` into an `env K=V …`
+prefix *inside* the wrap, once, for every mechanism — never merged into
+the `subprocess` environment, because everything *outside* the rewrite
+must keep the real one. `uv` resolves its cache from `XDG_CACHE_HOME` and
+its managed interpreters from `XDG_DATA_HOME`; overlaying those for the
+`uv run` hop points it at a throwaway `mkdtemp` that `scope()` then
+deletes, so every probe re-downloads the world, air-gapped hosts fail
+outright, and `~/.config/uv/uv.toml` and `~/.netrc` go missing.
+
+Two rules, and the second was learned the hard way. **If `prefix` is
+outside the boundary, nothing the boundary imposes may reach it.** And
+**anything every backend must do belongs to the seam, not to the
+backends** — while each applied its own overlay, `Unavailable` applied
+none, so `--no-sandbox` silently changed the environment as well as the
+enforcement and stopped being a diagnostic. A mechanism added later
+cannot forget what it never had to remember.
 
 **The shim stays alone.** `lightcone/_sandbox_exec.py` imports nothing but
 the stdlib and nothing from lightcone — `lightcone` is a namespace package
@@ -400,12 +406,19 @@ does not restrict exec — is pinned by a test so a re-sync cannot silently
 restore it.
 
 **SBPL is last-match-wins; Landlock unions.** This asymmetry decides
-where a rule can live. On macOS a later `(deny …)` can take back an
-earlier allow, which is how `_read_only_guard` claws back the write the
-vendored defaults grant on `/tmp`. Landlock has no equivalent — a
-narrower rule can only *add* rights — so the Linux side has to solve the
-same problem by leaving the root out of the policy
-(`policy._write_roots`). Verified empirically, not assumed.
+where a rule can live, and it cuts both ways. A later `(deny …)` can take
+back an earlier allow, which is how `_read_only_guard` claws back the
+write the vendored defaults grant on `/tmp`; Landlock has no equivalent —
+a narrower rule only ever *adds* — so the Linux side solves that by
+leaving the root out of the policy (`policy._write_roots`).
+
+But the same asymmetry means SBPL does **not** give nesting for free.
+Landlock unions, so a writable output directory inside a readable project
+tree just works. In SBPL the guard's `(deny file-write* PROJECT)` would
+revoke it — which is why `generate_profile` restates the **write tier
+last**, after the guard. Get that order wrong and layer 4 materializes on
+Linux and refuses on macOS, with the golden test still green because it
+only checks that the guard is present. Verified empirically, not assumed.
 
 ### Recorded decisions
 

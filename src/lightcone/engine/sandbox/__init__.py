@@ -21,17 +21,16 @@ unaddressed. All three are adversarial-only.
 from __future__ import annotations
 
 from lightcone.engine.sandbox.boundary import (
-    DISABLED,
     Outcome,
     Unavailable,
     detect,
+    disabled,
     run,
     scope,
 )
 from lightcone.engine.sandbox.model import Attestation, Backend, Capability, Policy
 
 __all__ = [
-    "DISABLED",
     "Attestation",
     "Backend",
     "Capability",
@@ -39,6 +38,7 @@ __all__ = [
     "Policy",
     "Unavailable",
     "detect",
+    "disabled",
     "run",
     "scope",
 ]

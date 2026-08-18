@@ -13,14 +13,15 @@ loudly, which is the point (G6).
 
 from __future__ import annotations
 
-import glob
+import functools
+import os
 import shutil
-import sys
 import tempfile
 from collections.abc import Iterable, Sequence
+from fnmatch import fnmatch
 from pathlib import Path
 
-from lightcone.engine.sandbox.model import EXEC_ALLOWLIST_VERSION, Policy
+from lightcone.engine.sandbox.model import Policy
 
 #: The utility tier of the exec allowlist (spec §7). A maintained policy
 #: surface, versioned by ``EXEC_ALLOWLIST_VERSION`` — recipes routinely
@@ -110,9 +111,17 @@ _ELF_LOADER_GLOBS = (
     "/usr/lib64/ld-linux-*.so.*",
 )
 
-#: Created inside the per-run HOME so the tools that want them find them
-#: rather than failing on first import.
-_HOME_SUBDIRS = (".config", ".cache", ".local/share", ".mplconfig", ".pycache", ".tmp")
+#: The redirected environment, as ``variable -> subdirectory of HOME``.
+#: One mapping, so the directories that get created and the variables
+#: that point at them cannot drift apart.
+_HOME_LAYOUT = {
+    "XDG_CONFIG_HOME": ".config",
+    "XDG_CACHE_HOME": ".cache",
+    "XDG_DATA_HOME": ".local/share",
+    "MPLCONFIGDIR": ".mplconfig",
+    "PYTHONPYCACHEPREFIX": ".pycache",
+    "TMPDIR": ".tmp",
+}
 
 
 def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
@@ -127,22 +136,22 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     removing it (see :func:`~lightcone.engine.sandbox.boundary.scope`).
     """
     tmp_home = Path(tempfile.mkdtemp(prefix="lc-home-")).resolve()
-    for sub in _HOME_SUBDIRS:
+    for sub in _HOME_LAYOUT.values():
         (tmp_home / sub).mkdir(parents=True, exist_ok=True)
 
-    execute, interpreter_root = _exec_set(project)
+    python = _venv_python(project)
+    # EXECUTE on the interpreter *file*; READ on the install root beside
+    # it, for the stdlib. See :func:`_venv_python`.
+    stdlib = [python.parent.parent] if python else []
     write = _existing([tmp_home, *_write_roots(project)])
-    read = _existing(
-        [project, *read_paths, *interpreter_root, *(Path(p) for p in _OS_READ_BASELINE)]
-    )
+    read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
     return Policy(
         read=read,
         write=write,
-        execute=_existing(execute),
+        execute=_existing(_exec_set(project, python)),
         tmp_home=tmp_home,
         env=home_overlay(tmp_home),
-        exec_allowlist_version=EXEC_ALLOWLIST_VERSION,
     )
 
 
@@ -158,11 +167,8 @@ def _write_roots(project: Path) -> list[Path]:
     contain a project, so the filter is a no-op for them.
     """
     resolved = project.resolve()
-    return [
-        candidate
-        for root in _WRITE_BASELINE
-        if not resolved.is_relative_to(candidate := Path(root).resolve())
-    ]
+    roots = tuple(Path(root).resolve() for root in _WRITE_BASELINE)
+    return [root for root in roots if not resolved.is_relative_to(root)]
 
 
 def home_overlay(tmp_home: Path) -> dict[str, str]:
@@ -178,24 +184,32 @@ def home_overlay(tmp_home: Path) -> dict[str, str]:
     ``PYTHONPYCACHEPREFIX`` is here for the same reason at the other end:
     the project tree is read-only inside the boundary, so without it
     every ``import`` of an in-tree module fails to write its
-    ``__pycache__``.
+    ``__pycache__``. ``TMPDIR`` points inside too, so ``tempfile`` works
+    even where the shared ``/tmp`` had to leave the write set.
     """
-    return {
-        "HOME": str(tmp_home),
-        "XDG_CONFIG_HOME": str(tmp_home / ".config"),
-        "XDG_CACHE_HOME": str(tmp_home / ".cache"),
-        "XDG_DATA_HOME": str(tmp_home / ".local/share"),
-        "MPLCONFIGDIR": str(tmp_home / ".mplconfig"),
-        "PYTHONPYCACHEPREFIX": str(tmp_home / ".pycache"),
-        # Pointed inside the private scope so `tempfile` works even where
-        # the shared /tmp had to be dropped from the write set — see
-        # :func:`_write_roots`.
-        "TMPDIR": str(tmp_home / ".tmp"),
-    }
+    return {"HOME": str(tmp_home), **{k: str(tmp_home / v) for k, v in _HOME_LAYOUT.items()}}
 
 
-def _exec_set(project: Path) -> tuple[list[Path], list[Path]]:
-    """The exec tiers, and the extra read root the environment needs.
+def _venv_python(project: Path) -> Path | None:
+    """The realpath of the venv's interpreter, if there is one.
+
+    ``.venv/bin/python`` is a symlink and Landlock evaluates the resolved
+    path, so the target is what needs granting — but the two grants are
+    emphatically different. EXECUTE goes on the **file alone**: the
+    install root may be a system prefix (a venv built against the system
+    python roots at ``/usr``), and since Landlock unions rights over
+    ancestors, granting EXECUTE there would make every binary on the host
+    runnable and silently outrank the whole per-file allowlist. READ goes
+    on the install root, for the standard library beside it — without it
+    the interpreter dies before ``main`` with "Failed to import encodings
+    module".
+    """
+    python = project / ".venv" / "bin" / "python"
+    return python.resolve() if python.exists() else None
+
+
+def _exec_set(project: Path, python: Path | None) -> list[Path]:
+    """The two exec tiers: the environment, and the utility allowlist.
 
     Grants are per *file* for the utilities, never per directory:
     ``/usr/bin`` holds ``bash`` and ``latex`` alike, so a directory grant
@@ -203,48 +217,52 @@ def _exec_set(project: Path) -> tuple[list[Path], list[Path]]:
     layer enforcing nothing.
     """
     paths: list[Path] = []
-    extra_read: list[Path] = []
-
     bin_dir = project / ".venv" / "bin"
     if bin_dir.is_dir():
         paths.append(bin_dir)
-
-    # `.venv/bin/python` is a symlink to the real interpreter, and Landlock
-    # evaluates the *resolved* path — so the target needs both grants, but
-    # emphatically not the same ones:
-    #
-    # - EXECUTE on the interpreter **file alone**. Its install root may be
-    #   a system prefix: a venv built against the system python resolves
-    #   to `/usr/bin/python3`, whose root is `/usr`. Granting EXECUTE
-    #   there would make every binary on the host runnable and leave this
-    #   layer enforcing nothing — Landlock unions rights over ancestors,
-    #   so one such grant silently outranks the whole per-file allowlist.
-    # - READ on the install root, for the standard library beside it.
-    #   Without it the interpreter dies before `main` with "Failed to
-    #   import encodings module".
-    interpreter = bin_dir / "python"
-    if interpreter.exists():
-        resolved = interpreter.resolve()
-        paths.append(resolved)
-        extra_read.append(resolved.parent.parent)
-
+    if python is not None:
+        paths.append(python)
     for name in EXEC_ALLOWLIST:
         found = shutil.which(name, path=_UTILITY_PATH)
         if found is not None:
             paths.append(Path(found))
-
     paths.extend(elf_loaders())
-    return paths, extra_read
+    return paths
 
 
-def elf_loaders() -> list[Path]:
-    """The dynamic loaders present on this host, realpath'd."""
-    if sys.platform == "darwin":
-        # dyld is not a path Seatbelt gates the way Landlock gates the
-        # ELF loader; the profile allows it explicitly instead.
-        return []
-    hits = (hit for pattern in _ELF_LOADER_GLOBS for hit in glob.glob(pattern))
-    return sorted({Path(hit).resolve() for hit in hits})
+@functools.cache
+def elf_loaders() -> tuple[Path, ...]:
+    """The dynamic loaders present on this host, realpath'd.
+
+    Scans each distinct directory once rather than globbing five
+    patterns: on a merged-``/usr`` system all five resolve to the same
+    directory, and `glob` re-lists and re-matches its ~8000 entries per
+    pattern — which measured as 95% of the whole policy build. Cached
+    because the answer cannot change while the process runs.
+    """
+    found: set[Path] = set()
+    for directory, patterns in _loader_patterns().items():
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            continue
+        for entry in entries:
+            # Cheap prefix reject before fnmatch: almost nothing in a
+            # library directory starts with `ld-`.
+            if entry.name.startswith("ld-") and any(
+                fnmatch(entry.name, pattern) for pattern in patterns
+            ):
+                found.add(Path(entry.path).resolve())
+    return tuple(sorted(found))
+
+
+def _loader_patterns() -> dict[str, set[str]]:
+    """The loader globs, grouped by the real directory they name."""
+    grouped: dict[str, set[str]] = {}
+    for pattern in _ELF_LOADER_GLOBS:
+        directory, _, name = pattern.rpartition("/")
+        grouped.setdefault(os.path.realpath(directory), set()).add(name)
+    return grouped
 
 
 def _existing(paths: Iterable[Path]) -> tuple[Path, ...]:

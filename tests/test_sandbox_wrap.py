@@ -15,7 +15,7 @@ import pytest
 
 from lightcone import _sandbox_exec
 from lightcone.engine.sandbox import seatbelt
-from lightcone.engine.sandbox.boundary import Unavailable
+from lightcone.engine.sandbox.boundary import Unavailable, env_argv
 from lightcone.engine.sandbox.landlock import LandlockBackend
 from lightcone.engine.sandbox.model import Capability, Policy
 from lightcone.engine.sandbox.seatbelt import SeatbeltBackend
@@ -91,23 +91,44 @@ def test_the_landlock_policy_travels_as_json_the_shim_understands(policy: Policy
     assert document["execute"] == [str(p) for p in policy.execute]
 
 
-def test_the_env_overlay_travels_inside_the_wrap(policy: Policy) -> None:
-    """It must not be applied to the whole child: everything outside the
-    rewrite — the `uv run` hop — needs the *real* environment, or uv
-    resolves its cache from the throwaway XDG_CACHE_HOME and re-downloads
-    the world on every probe."""
+def test_the_overlay_is_the_seam_s_job_not_each_backend_s(policy: Policy) -> None:
+    """Composed once, inside the wrap, for *every* backend — including the
+    null one. Per-backend application meant `--no-sandbox` silently ran in
+    a different environment (real `$HOME`, no PYTHONPYCACHEPREFIX), so it
+    changed two variables at once and stopped being a diagnostic."""
+    prefixed = [*env_argv(policy), "true"]
+    assert prefixed[0] == "/usr/bin/env"
+    assert f"HOME={policy.env['HOME']}" in prefixed
+
+    for name, backend in _backends(policy):
+        wrapped = backend.wrap(policy, prefixed)  # type: ignore[attr-defined]
+        assert wrapped[-len(prefixed) :] == prefixed, name
+
+
+def test_the_overlay_stays_out_of_the_landlock_document(policy: Policy) -> None:
+    """It must not reach the `uv run` prefix, which is outside the
+    boundary: uv resolves its cache from XDG_CACHE_HOME and would be sent
+    to a throwaway directory that `scope()` then deletes."""
     backend = LandlockBackend(capability=Capability(kind="landlock", landlock_abi=4))
-    document = json.loads(backend.wrap(policy, ["true"])[4])
-    assert document["env"] == policy.env
+    assert "env" not in json.loads(backend.wrap(policy, ["true"])[4])
 
 
-def test_seatbelt_applies_the_overlay_inside_the_sandbox(policy: Policy) -> None:
-    wrapped = SeatbeltBackend().wrap(policy, ["true"])
-    assert "/usr/bin/env" in wrapped
-    assert f"HOME={policy.env['HOME']}" in wrapped
-    # Still inside sandbox-exec, and still ahead of the command.
-    assert wrapped.index("/usr/bin/env") > wrapped.index("--")
-    assert wrapped.index("/usr/bin/env") < wrapped.index("true")
+def test_the_write_tier_is_restated_after_the_read_only_guard() -> None:
+    """Landlock unions rights, so a writable output directory nested in a
+    readable project tree works there for free. SBPL is last-match-wins,
+    so reproducing that needs the write set to have the final word — or
+    the guard's `(deny file-write* PROJECT)` revokes the output directory
+    layer 4's recipes write into, and macOS refuses what Linux allows."""
+    project = Path("/tmp/proj")
+    built = Policy(
+        read=(project,),
+        write=(project / "results" / "u" / "o",),
+        execute=(),
+        tmp_home=project,
+        env={},
+    )
+    profile = seatbelt.generate_profile(built)
+    assert profile.rindex("(allow file-read* file-write*") > profile.rindex("(deny file-write*")
 
 
 def test_landlock_attests_the_probed_abi(policy: Policy) -> None:

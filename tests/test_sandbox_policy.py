@@ -15,17 +15,22 @@ from pathlib import Path
 import pytest
 
 from lightcone.engine.sandbox import policy as policy_module
+from lightcone.engine.sandbox.boundary import scope
 from lightcone.engine.sandbox.model import EXEC_ALLOWLIST_VERSION
 
 
 @pytest.fixture
 def built(tmp_path: Path) -> Iterator[policy_module.Policy]:
-    """A probe policy over a bare project directory."""
+    """A probe policy over a bare project directory.
+
+    Through `boundary.scope`, which owns the per-run HOME's lifetime —
+    so the cleanup contract is exercised by the suite rather than
+    re-implemented seven times beside it.
+    """
     project = tmp_path / "proj"
     project.mkdir()
-    built = policy_module.probe_policy(project)
-    yield built
-    shutil.rmtree(built.tmp_home, ignore_errors=True)
+    with scope(project) as built:
+        yield built
 
 
 # ---- the write scope ------------------------------------------------------
@@ -43,11 +48,8 @@ def test_the_private_home_is_writable(built: policy_module.Policy) -> None:
 
 
 def test_the_shared_tmp_is_writable_for_a_project_outside_it() -> None:
-    built = policy_module.probe_policy(Path.home() / ".lc-policy-test-project")
-    try:
+    with scope(Path.home() / ".lc-policy-test-project") as built:
         assert Path(tempfile.gettempdir()).resolve() in built.write
-    finally:
-        shutil.rmtree(built.tmp_home, ignore_errors=True)
 
 
 def test_a_project_living_under_tmp_does_not_become_writable() -> None:
@@ -55,11 +57,8 @@ def test_a_project_living_under_tmp_does_not_become_writable() -> None:
     otherwise be writable too — voiding the read-only-tree guarantee for
     exactly the people who keep scratch analyses in /tmp."""
     shared = Path(tempfile.gettempdir()).resolve()
-    built = policy_module.probe_policy(shared / "lc-policy-under-tmp")
-    try:
+    with scope(shared / "lc-policy-under-tmp") as built:
         assert shared not in built.write
-    finally:
-        shutil.rmtree(built.tmp_home, ignore_errors=True)
 
 
 def test_tmpdir_always_points_into_the_private_scope(built: policy_module.Policy) -> None:
@@ -83,11 +82,8 @@ def test_declared_inputs_join_the_read_scope(tmp_path: Path) -> None:
     external.parent.mkdir()
     external.touch()
 
-    built = policy_module.probe_policy(project, read_paths=[external])
-    try:
+    with scope(project, read_paths=[external]) as built:
         assert external.resolve() in built.read
-    finally:
-        shutil.rmtree(built.tmp_home, ignore_errors=True)
 
 
 def test_the_os_baseline_is_readable_but_never_executable(built: policy_module.Policy) -> None:
@@ -208,11 +204,8 @@ def test_the_allowlist_is_resolved_off_the_ambient_path(
 
     project = tmp_path / "proj2"
     project.mkdir()
-    rebuilt = policy_module.probe_policy(project)
-    try:
+    with scope(project) as rebuilt:
         assert impostor.resolve() not in rebuilt.execute
-    finally:
-        shutil.rmtree(rebuilt.tmp_home, ignore_errors=True)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="the ELF loader tier is Linux-only")
@@ -239,15 +232,12 @@ def test_the_venv_and_the_interpreter_behind_it_are_granted(tmp_path: Path) -> N
     real.chmod(0o755)
     (bin_dir / "python").symlink_to(real)
 
-    built = policy_module.probe_policy(project)
-    try:
+    with scope(project) as built:
         install_root = store.parent.resolve()
         assert bin_dir.resolve() in built.execute
         assert real.resolve() in built.execute
         assert install_root in built.read
         assert install_root not in built.execute
-    finally:
-        shutil.rmtree(built.tmp_home, ignore_errors=True)
 
 
 def test_a_system_interpreter_does_not_make_the_whole_prefix_executable(
@@ -267,13 +257,10 @@ def test_a_system_interpreter_does_not_make_the_whole_prefix_executable(
         pytest.skip("no system python3")
     (bin_dir / "python").symlink_to(system)
 
-    built = policy_module.probe_policy(project)
-    try:
+    with scope(project) as built:
         assert Path("/usr") not in built.execute
         assert Path("/usr") in built.read
         assert system.resolve() in built.execute
-    finally:
-        shutil.rmtree(built.tmp_home, ignore_errors=True)
 
 
 def test_the_utility_path_covers_the_nix_system_profile() -> None:
@@ -322,7 +309,12 @@ def test_nonexistent_paths_are_dropped(built: policy_module.Policy) -> None:
         assert all(path.exists() for path in group)
 
 
-def test_the_allowlist_version_is_recorded(built: policy_module.Policy) -> None:
+def test_the_allowlist_version_reaches_the_attestation(built: policy_module.Policy) -> None:
     """The exec allowlist is a maintained surface; an output stays
-    interpretable after it grows only because the version rode along."""
-    assert built.exec_allowlist_version == EXEC_ALLOWLIST_VERSION
+    interpretable after it grows only because the version rode along into
+    the manifest."""
+    from lightcone.engine.sandbox.landlock import LandlockBackend
+    from lightcone.engine.sandbox.model import Capability
+
+    backend = LandlockBackend(capability=Capability(kind="landlock", landlock_abi=1))
+    assert backend.attest(built).exec_allowlist_version == EXEC_ALLOWLIST_VERSION

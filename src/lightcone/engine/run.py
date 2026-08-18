@@ -16,14 +16,18 @@ outside the boundary (spec §7).
 
 from __future__ import annotations
 
-import shutil
-import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from lightcone.engine import sandbox
-from lightcone.engine.project import SPEC_FILENAME, ProjectError, child_env
+from lightcone.engine.project import (
+    SPEC_FILENAME,
+    ProjectError,
+    child_env,
+    declares_system_layer,
+    require_uv,
+)
 
 #: Opened by a bare ``lc run``. In the exec allowlist by construction.
 DEFAULT_SHELL = "bash"
@@ -61,13 +65,7 @@ def probe(
             "--require-sandbox and --no-sandbox contradict each other: one "
             "insists on enforcement, the other turns it off."
         )
-    backend: sandbox.Backend = (
-        sandbox.detect()
-        if sandboxed
-        else sandbox.Unavailable(
-            capability=sandbox.Capability(kind="none", detail=sandbox.DISABLED)
-        )
-    )
+    backend: sandbox.Backend = sandbox.detect() if sandboxed else sandbox.disabled()
     _enforce_requirement(backend, require)
 
     with sandbox.scope(project, read_paths=input_paths(project, spec)) as policy:
@@ -86,8 +84,8 @@ def probe(
             announce=(
                 None
                 if on_plan is None
-                else lambda policy, attestation, argv: on_plan(
-                    describe(project, policy, attestation, argv)
+                else lambda wrapped: on_plan(
+                    describe(project, policy, backend.attest(policy), wrapped)
                 )
             ),
         )
@@ -107,19 +105,11 @@ def uv_prefix(project: Path) -> list[str]:
 def _refuse_containerized(project: Path) -> None:
     """Containerized mode is derived, not configured — and not built yet.
 
-    Declaring a system layer *is* the escalation (spec §1), so a project
-    that declares one must not quietly get a direct-mode run: the two
-    execute in different worlds and would attest different things.
+    A project that declares a system layer must not quietly get a
+    direct-mode run: the two execute in different worlds and would attest
+    different things.
     """
-    pyproject = project / "pyproject.toml"
-    declared = (project / "Containerfile.extra").exists()
-    if pyproject.exists():
-        try:
-            data = tomllib.loads(pyproject.read_text())
-        except tomllib.TOMLDecodeError as e:
-            raise ProjectError(f"{pyproject} is not valid TOML: {e}") from e
-        declared = declared or "image" in data.get("tool", {}).get("lightcone", {})
-    if declared:
+    if declares_system_layer(project):
         raise ProjectError(
             "this project declares a system layer, which puts it in "
             "containerized mode — not available in this release. Remove "
@@ -225,12 +215,3 @@ def describe(
     lines.append("command:")
     lines.append(f"             {' '.join(argv)}")
     return lines
-
-
-def require_uv() -> None:
-    """uv runs the command; without it there is nothing to probe."""
-    if shutil.which("uv") is None:
-        raise ProjectError(
-            "uv is required (the environment substrate). Install it: "
-            "https://docs.astral.sh/uv/getting-started/installation/"
-        )
