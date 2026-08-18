@@ -229,12 +229,7 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
 
 
 def require_uv() -> None:
-    """Refuse early when uv is absent — it is the environment substrate.
-
-    Shared with ``lc run``: convergence needs uv to build the environment
-    and the probe needs it to enter one, and they must not drift into
-    telling the user two different things about the same missing tool.
-    """
+    """Refuse early when uv is absent — it is the environment substrate."""
     if shutil.which("uv") is None:
         raise ProjectError(
             "uv is required (the environment substrate). Install it: "
@@ -303,49 +298,21 @@ def project_name(directory: Path) -> str:
     return name or "analysis"
 
 
-def declares_system_layer(directory: Path) -> bool:
-    """Whether *directory* declares a system layer — spec §1's mode rule.
+def current_project(directory: Path | None = None) -> Path:
+    """The project at *directory* (default: the working directory).
 
-    Mode is *derived, not configured*: declaring the layer **is** the
-    escalation to containerized mode. Lives here rather than with the
-    verb that refuses it, because the same two inputs are read by
-    ``env_version`` (layer 2), the launcher's mode detection (layer 3),
-    and ``lc build`` (layer 6) — and they must agree on the key name and
-    on what counts as a declaration.
+    A project is a directory holding ``astra.yaml``, and verbs operate on
+    the directory they are invoked from. There is deliberately no
+    walk-up: the directory you are in is the directory that is used, or
+    it is an error.
     """
-    import tomllib
-
-    if (directory / "Containerfile.extra").exists():
-        return True
-    pyproject = directory / "pyproject.toml"
-    if not pyproject.exists():
-        return False
-    try:
-        data = tomllib.loads(pyproject.read_text())
-    except tomllib.TOMLDecodeError as e:
-        raise ProjectError(f"{pyproject} is not valid TOML: {e}") from e
-    return "image" in data.get("tool", {}).get("lightcone", {})
-
-
-def find_project(start: Path | None = None) -> Path:
-    """The project root containing *start*, by ``astra.yaml`` walk-up.
-
-    The spec is what makes a directory a project, so it is what
-    discovery looks for — not ``pyproject.toml``, which would find any
-    Python project, and not uv's own walk-up, which lc never trusts
-    (spec §4: every uv invocation carries an explicit ``--project``).
-
-    ``lc init`` is handed its directory and needs none of this; every
-    verb that *runs* something does.
-    """
-    start = (start or Path.cwd()).resolve()
-    for directory in [start, *start.parents]:
-        if (directory / SPEC_FILENAME).exists():
-            return directory
-    raise ProjectError(
-        f"no {SPEC_FILENAME} in {start} or any parent directory — "
-        f"not inside an ASTRA project. Create one with `lc init`."
-    )
+    directory = (directory or Path.cwd()).resolve()
+    if not (directory / SPEC_FILENAME).exists():
+        raise ProjectError(
+            f"no {SPEC_FILENAME} in {directory} — not a project root. "
+            "Create one with `lc init`."
+        )
+    return directory
 
 
 # =============================================================================
@@ -371,8 +338,7 @@ def child_env() -> dict[str, str]:
     Every uv invocation names its project explicitly, so an activated
     environment elsewhere is never what we mean — uv agrees, ignoring it and
     warning that it did, once per invocation, which would otherwise land in
-    the report and in ``--json``. Explicit flags beat ambient variables
-    (spec §13); the launcher's broader ``UV_*`` scrub lands with layer 3.
+    the report and in ``--json``. Explicit flags beat ambient variables.
     """
     return {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
@@ -434,7 +400,7 @@ def _lock_is_current(directory: Path) -> bool:
 def _env_is_current(directory: Path) -> bool:
     """Whether ``.venv`` still satisfies ``uv.lock``.
 
-    Set-level, not byte-level, as spec §3 accepts: uv catches packages the
+    Set-level, not byte-level: uv catches packages the
     lock requires and the environment lacks, but not extras installed by
     hand, which leave ``--check`` reporting "would make no changes". What
     bounds what a recipe can import is the sandbox, not this probe.
@@ -446,7 +412,7 @@ def _env_is_current(directory: Path) -> bool:
 # --exact because a plain sync is additive; --compile-bytecode because the
 # environment is read-only at execution time, so a recipe cannot write .pyc
 # as it imports — paying compilation once here instead of on every recipe
-# run (spec §4, §6, §7).
+# run.
 _SYNC_ARGS = ["sync", "--locked", "--exact", "--compile-bytecode"]
 
 
@@ -454,11 +420,11 @@ def _uv(c: _Converger, args: list[str], *, directory: Path) -> None:
     """Run uv against *directory*, recording anything it warns about.
 
     Every invocation carries an explicit ``--project``: uv's own walk-up
-    discovery is never trusted (spec §4). Nothing about linking or caching
+    discovery is never trusted. Nothing about linking or caching
     is overridden — uv's defaults already share package content between
     projects — and ``--system-site-packages`` is never used, since it would
     make packages outside the lock importable, which is what the
-    environment model exists to prevent (spec §7, G6).
+    environment model exists to prevent.
     """
     for warning in _check_call(["uv", *args, "--project", str(directory)], cwd=directory):
         c.warn(f"uv: {warning}")

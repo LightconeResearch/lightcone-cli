@@ -46,12 +46,10 @@ def _document(policy: Policy) -> dict[str, object]:
     """*policy* as the shim's ``--policy`` JSON.
 
     The shim's wire format, so it lives with the backend that speaks it
-    rather than on the mechanism-free :class:`Policy`. It is an interface
-    between two possibly different lightcone-cli versions — the launcher's
-    and the project's — so it carries a version and holds only strings.
+    rather than on the mechanism-free :class:`Policy`. Strings only —
+    the shim parses it with nothing but the stdlib.
     """
     return {
-        "version": _sandbox_exec.POLICY_VERSION,
         "read": [str(p) for p in policy.read],
         "write": [str(p) for p in policy.write],
         "execute": [str(p) for p in policy.execute],
@@ -69,9 +67,8 @@ class LandlockBackend:
 
     The interpreter is **lc's own**, not the project's. It only has to
     live long enough to issue three syscalls before ``execvp``, and using
-    ours means the shim is always the same version as the engine that
-    wrote the policy — the ``--policy`` document never has to survive a
-    version gap.
+    ours means the shim is always the same lightcone-cli as the engine
+    that wrote the policy.
     """
 
     capability: Capability = field(default_factory=capability)

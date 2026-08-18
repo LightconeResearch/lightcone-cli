@@ -116,7 +116,7 @@ src/lightcone/              # namespace — NO __init__.py
 └── engine/
     ├── __init__.py         # docstring only
     ├── project.py          # what a project is: convergence + discovery
-    ├── run.py              # what `lc run` is: mode check, rename guard, uv hop
+    ├── run.py              # what `lc run` is: the probe + the uv hop
     ├── sandbox/            # the exec boundary
     │   ├── __init__.py     # the public surface (detect, run, scope, the types)
     │   ├── model.py        # Policy · Capability · Attestation · Backend protocol
@@ -174,9 +174,10 @@ convergence can see but must not fix (advisory — never affects
 does count, so a report can never claim a project is converged while
 something it owns is absent.
 
-**Project discovery** — the `astra.yaml` walk-up — arrives with the
-launcher (layer 3), the first thing that needs it. `lc init` is handed its
-directory.
+**There is no project discovery, by decision.** `lc init` and `lc run`
+operate on the current directory — `project.current_project()` errors
+unless `astra.yaml` is right there. No walk-up: the directory you invoke
+from is the project, or it is a clean error.
 
 **CLI startup stays cheap.** `commands.py` imports the engine *inside* the
 command callbacks and builds the rich console lazily, so `lc --help` and
@@ -321,9 +322,11 @@ applied — never from what the mechanism matrix says should have
 happened). Collapsing any two of them is how a sandbox starts lying.
 
 **`Unavailable` is a real backend, not a special case.** It satisfies the
-protocol, wraps to the argv it was given, and attests `fs: open`.
-Refusing to run is `--require-sandbox`'s job; saying so is the caller's;
-pretending is nobody's.
+protocol, wraps to the argv it was given, and attests `fs: open`. Saying
+so is the caller's job; pretending is nobody's. There is deliberately
+**no flag surface around the sandbox** — no opt-out, no require, no
+debug dump. Enforcement always happens where a mechanism exists, and a
+host without one gets the downgrade note, not a choice.
 
 **A denial is never invisible.** `denial.explain()` is a best-guess
 heuristic over the child's stderr and is *allowed to return nothing* —
@@ -372,9 +375,9 @@ Two rules, and the second was learned the hard way. **If `prefix` is
 outside the boundary, nothing the boundary imposes may reach it.** And
 **anything every backend must do belongs to the seam, not to the
 backends** — while each applied its own overlay, `Unavailable` applied
-none, so `--no-sandbox` silently changed the environment as well as the
-enforcement and stopped being a diagnostic. A mechanism added later
-cannot forget what it never had to remember.
+none, so an unenforced run silently got a different environment as well
+as no enforcement. A mechanism added later cannot forget what it never
+had to remember.
 
 **The shim stays alone.** `lightcone/_sandbox_exec.py` imports nothing but
 the stdlib and nothing from lightcone — `lightcone` is a namespace package
@@ -495,29 +498,29 @@ only checks that the guard is present. Verified empirically, not assumed.
   closes §11's own blocking spike — *"does the Landlock FD survive
   `uv run`'s spawn/exec chain? an FD cannot be reopened"* — by making the
   question moot. It also survives into a container later, where a host FD
-  cannot. The `--policy` document is versioned, because it is an interface
-  between two possibly different lightcone-cli versions.
+  cannot. The document is deliberately *not* versioned: the wrap always
+  invokes the shim on lc's own interpreter, so writer and reader are the
+  same lightcone-cli by construction, and a compatibility field would be
+  backward-compat machinery with no consumer.
 - **Network is not controlled, on either platform**, by decision. §7's
   matrix has Seatbelt record `denied`; the generated SBPL explicitly
   allows network and both platforms attest `network: allowed`. Symmetric
   and honest — nothing pretends to a control it does not apply. (codex
   ships a seccomp denylist for this; adding one is a live option, not a
   gap we are hiding.)
-- **The rename guard does not redirect to `lc materialize`.** §4 spells
-  the message "outputs are materialized, not run — did you mean:
-  `lc materialize best_fit`?", but that verb does not exist yet and
-  sending someone to a command that fails is worse than telling them the
-  truth. The guard still fires before any exec; only the second sentence
-  waits for layer 4.
-- **`--require-sandbox` is a bare flag**; §7's `=declared-fs` form is
-  absent. Every mechanism that exists today scopes the filesystem, so the
-  two forms would be the same flag. It arrives with the first mechanism
-  that doesn't (layer 6's pod, which bounds only the OS layer).
-- **The denial's system-layer remedy is trimmed** to what this release can
-  deliver — `uv add` for a Python package, plus the ASTRA input
-  declaration. §7's `[tool.lightcone.image]` TOML arrives with the
-  container hatch; printing it now would be a copy-pasteable fix that does
-  nothing.
+- **`lc run` has no rename guard and no sandbox flags.** §4's guard
+  against `lc run <output_id>` existed only for muscle memory from the
+  pre-rebuild CLI — backward compatibility we do not promise — and §7's
+  `--require-sandbox` / `--no-sandbox` / `--sandbox-debug` are all
+  absent: there is no hatch to escape the sandbox, so there is nothing
+  for the flags to switch. The verb takes a command and nothing else.
+- **`lc run` does not detect containerized mode.** The
+  `[tool.lightcone.image]` refusal was removed with the rest of the
+  future-facing surface; a system-layer declaration is currently inert,
+  like `astra.yaml`'s `container:` key.
+- **The denial's remedies are only what works today** — `uv add` for a
+  Python package, plus the ASTRA input declaration. Nothing in a denial
+  message names a verb, flag, or declaration that does not exist.
 - **No manifest is written, and no serializer for one.** A probe has no
   output (§4), so the `Attestation` is returned and printed rather than
   persisted. An earlier draft carried a `to_manifest()` with no caller —
@@ -571,9 +574,9 @@ The sandbox suite splits along the seam, which is what makes it cheap:
   support: every case here is a setup failure or a pure-function check.
 - `tests/test_sandbox_enforcement.py` — **the kernel's answer**, written
   once for both mechanisms. See below; this is the one that matters.
-- `tests/test_run.py` — what `lc run` decides *before* it execs:
-  discovery, the containerized refusal, the rename guard, declared
-  inputs, the uv hop. Nothing spawns.
+- `tests/test_run.py` — what `lc run` decides *before* it execs: the
+  current-directory project check, declared inputs, the uv hop. Nothing
+  spawns.
 
 Note the autouse `tools` fixture stubs `engine.project._run` only —
 sandbox tests spawn real processes deliberately, and are the one place in

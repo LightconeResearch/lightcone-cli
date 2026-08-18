@@ -7,7 +7,6 @@ import functools
 import json
 import logging
 import sys
-from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,16 +21,12 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def _console(*, stderr: bool = False) -> Console:
+def _console() -> Console:
     """The rich console, built on first use to avoid startup cost at each
-    invocation of the cli even when the console is not needed.
-
-    The stderr variant is what commentary uses when a command's stdout
-    belongs to the thing being run rather than to us.
-    """
+    invocation of the cli even when the console is not needed."""
     from rich.console import Console
 
-    return Console(stderr=stderr)
+    return Console()
 
 
 class _EngineErrorGroup(click.Group):
@@ -70,7 +65,6 @@ _____|_________________
 
 
 @main.command()
-@click.argument("directory", type=click.Path(file_okay=False, path_type=Path), default=".")
 @click.option(
     "--check",
     "check_only",
@@ -86,8 +80,8 @@ _____|_________________
     is_flag=True,
     help="Emit the convergence report as JSON on stdout.",
 )
-def init(directory: Path, check_only: bool, as_json: bool) -> None:
-    """Converge DIRECTORY into a standard Lightcone project (idempotent).
+def init(check_only: bool, as_json: bool) -> None:
+    """Converge the current directory into a Lightcone project (idempotent).
 
     Safe to re-run at any time: creates whatever is missing, repairs the
     pieces lightcone manages, and never overwrites files you own.
@@ -101,7 +95,7 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
     """
     from lightcone.engine.project import converge
 
-    directory = directory.resolve()
+    directory = Path.cwd().resolve()
     write = not check_only
 
     if write and not as_json:
@@ -165,26 +159,7 @@ def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: 
 
 @main.command(context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
 @click.argument("command", nargs=-1, type=click.UNPROCESSED)
-@click.option(
-    "--no-sandbox",
-    "sandboxed",
-    flag_value=False,
-    default=True,
-    help="Run without enforcement. Recorded as unsandboxed — never silent.",
-)
-@click.option(
-    "--sandbox-debug",
-    "debug",
-    is_flag=True,
-    help="Print the policy and the exact command, then run it.",
-)
-@click.option(
-    "--require-sandbox",
-    "require",
-    is_flag=True,
-    help="Refuse to run at all unless this host can actually enforce.",
-)
-def run(command: tuple[str, ...], sandboxed: bool, debug: bool, require: bool) -> None:
+def run(command: tuple[str, ...]) -> None:
     """Run COMMAND in the project environment, inside the sandbox.
 
     Byte-for-byte the environment recipes get — same lock, same
@@ -195,74 +170,25 @@ def run(command: tuple[str, ...], sandboxed: bool, debug: bool, require: bool) -
     With no COMMAND, opens a shell in that environment.
     """
     from lightcone.engine import run as engine_run
-    from lightcone.engine.project import find_project
+    from lightcone.engine.project import current_project
 
-    project = find_project()
+    project = current_project()
 
     if not command:
         # On stderr, like every other line lc says about a run: the
-        # command's stdout is the command's. And it must not claim
-        # enforcement it is about to switch off — this line is the only
-        # signal before an interactive shell takes the terminal, since
-        # the boundary's own notes do not print until the shell exits.
-        _echo(
-            [
-                "opening a shell inside the recipe environment "
-                + ("(sandboxed)" if sandboxed else "(NOT sandboxed — --no-sandbox)")
-            ]
-        )
+        # command's stdout is the command's. This is the only signal
+        # before an interactive shell takes the terminal, since the
+        # boundary's own notes do not print until the shell exits.
+        click.echo("opening a shell inside the recipe environment", err=True)
 
-    outcome = engine_run.probe(
-        project,
-        command,
-        sandboxed=sandboxed,
-        require=require,
-        on_plan=_render_plan if debug else None,
-    )
-    _render_notes(outcome.notes)
-    sys.exit(_exit_status(outcome.returncode))
-
-
-def _exit_status(returncode: int) -> int:
-    """The child's exit code, in the shell's spelling.
-
-    `Popen.returncode` is *negative* for a signal, and `sys.exit(-9)`
-    truncates to 247. `lc run` is a proxy for the command it runs, so an
-    OOM-killed probe has to come back as the conventional 137 that a
-    script would test for.
-    """
-    return 128 - returncode if returncode < 0 else returncode
-
-
-def _echo(lines: Sequence[str], *, indent: str = "") -> None:
-    """Commentary on stderr, unstyled and unwrapped.
-
-    stderr because a probe's stdout belongs to the command it ran. And
-    unwrapped because these lines are built to be pasted — rich reflowing
-    a `uv add` line would break the one thing the denial message is for.
-    Blank separators stay blank: indenting them turns every empty line of
-    a copied remedy into trailing whitespace.
-    """
-    console = _console(stderr=True)
-    for line in lines:
-        console.print(
-            f"{indent}{line}" if line else "",
-            highlight=False,
-            markup=False,
-            crop=False,
-            overflow="ignore",
-        )
-
-
-def _render_plan(lines: Sequence[str]) -> None:
-    """The `--sandbox-debug` dump, printed before the command runs."""
-    _echo(lines)
-    _console(stderr=True).print()
-
-
-def _render_notes(notes: Sequence[str]) -> None:
-    """The boundary's notes: downgrade notice, denial, failure trailer."""
-    if not notes:
-        return
-    _console(stderr=True).print()
-    _echo(notes, indent="  ")
+    outcome = engine_run.probe(project, command)
+    if outcome.notes:
+        # click.echo, not rich: these lines are built to be pasted, and
+        # reflowing a `uv add` remedy would break the one thing the
+        # denial message is for.
+        click.echo("\n".join(["", *outcome.notes]), err=True)
+    # `Popen.returncode` is negative for a signal, and `sys.exit(-9)`
+    # truncates to 247. `lc run` is a proxy for the command it runs, so
+    # an OOM-killed probe comes back as the shell's conventional 128+N.
+    code = outcome.returncode
+    sys.exit(128 - code if code < 0 else code)

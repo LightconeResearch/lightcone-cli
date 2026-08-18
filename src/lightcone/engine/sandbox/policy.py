@@ -1,4 +1,4 @@
-"""Building the policy a sandboxed command runs under (spec §7).
+"""Building the policy a sandboxed command runs under.
 
 One policy, both mechanisms. This module decides *what* a command may
 touch; :mod:`~lightcone.engine.sandbox.landlock` and
@@ -8,7 +8,7 @@ The shape it encodes is the design's filesystem policy: read the project
 and the declared inputs and the OS baseline; write only a private
 scratch scope; execute only the environment plus a versioned utility
 allowlist. Everything a recipe reaches for outside that set fails
-loudly, which is the point (G6).
+loudly, which is the point.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from pathlib import Path
 
 from lightcone.engine.sandbox.model import Policy
 
-#: The utility tier of the exec allowlist (spec §7). A maintained policy
+#: The utility tier of the exec allowlist. A maintained policy
 #: surface, versioned by ``EXEC_ALLOWLIST_VERSION`` — recipes routinely
 #: shell out to these, and none of them is a scientific dependency in
 #: disguise, so admitting them costs nothing the design cares about.
@@ -74,7 +74,7 @@ _OS_READ_BASELINE = (
 #: a terminal all do.
 #:
 #: Granting the whole devpts directory is deliberate. The threat model is
-#: accidental leakage, not a hostile recipe (spec §7), and terminals are
+#: accidental leakage, not a hostile recipe, and terminals are
 #: not a channel undeclared *inputs* arrive through. It is also less
 #: permissive than it reads: Landlock only ever removes access, never adds
 #: it, so ordinary Unix permissions still apply — devpts gives each pty to
@@ -100,8 +100,8 @@ _WRITE_BASELINE = (
 
 #: The ELF interpreter. Landlock checks EXECUTE on the *loader's* open,
 #: so without these every dynamically linked binary — bash and python
-#: included — fails EACCES and the sandbox is unusable (spec §7, and the
-#: v6 review's must-fix). Globbed rather than hardcoded: the path differs
+#: included — fails EACCES and the sandbox is unusable. Globbed rather
+#: than hardcoded: the path differs
 #: across glibc/musl and architectures.
 _ELF_LOADER_GLOBS = (
     "/lib64/ld-linux-*.so.*",
@@ -135,7 +135,7 @@ _HOME_LAYOUT = {
 
 
 def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
-    """The policy for ``lc run`` — a probe (spec §4).
+    """The policy for ``lc run`` — a probe.
 
     A probe has no output, so it gets **no in-tree write scope at all**:
     it may read the project and the declared inputs, and write only to
@@ -168,7 +168,7 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
 def _write_roots(project: Path) -> list[Path]:
     """The write baseline, minus any root that would swallow the project.
 
-    ``/tmp`` is writable by design (spec §7) — but a project that
+    ``/tmp`` is writable by design — but a project that
     *lives* under it would then be writable too, which would silently
     void the read-only-tree guarantee for exactly the people who keep
     scratch analyses in ``/tmp``. Dropping the offending root is safe
@@ -182,7 +182,7 @@ def _write_roots(project: Path) -> list[Path]:
 
 
 def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
-    """HOME and friends, pointed at a fresh directory (spec §7, normative).
+    """HOME and friends, pointed at a fresh directory.
 
     The real ``$HOME`` is neither readable nor writable inside the
     boundary. Left alone, that breaks matplotlib, astropy, and R on first

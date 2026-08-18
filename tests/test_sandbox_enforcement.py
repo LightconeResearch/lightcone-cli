@@ -16,7 +16,7 @@ Two deliberate choices:
   policy grants something else.
 - **Real leaks.** Undeclared *tools* are executed, undeclared *libraries*
   are imported, undeclared *data* is read. Those are the three channels
-  the design exists to close (spec §7, G6), so they are attempted
+  the design exists to close, so they are attempted
   literally rather than asserted about.
 
 Skipped whole where no mechanism exists — a mocked sandbox proves
@@ -349,7 +349,7 @@ def test_the_real_home_is_not_readable(backend: sandbox.Backend, project: Path) 
 def test_the_project_tree_cannot_be_written(
     backend: sandbox.Backend, project: Path
 ) -> None:
-    """A probe has no output (spec §4), so nothing it does may land in
+    """A probe has no output, so nothing it does may land in
     the tree — and the file has to be *unchanged*, not merely reported."""
     with sandbox.scope(project) as policy:
         result = shell(backend, policy, "printf clobbered > data.txt", cwd=project)

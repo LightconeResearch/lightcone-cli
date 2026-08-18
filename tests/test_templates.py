@@ -31,7 +31,7 @@ def test_pyproject_renders_every_placeholder() -> None:
     assert f'requires-python = "{templates.requires_python()}"' in rendered
     assert templates.lightcone_requirement() in rendered
     # Virtual by design: containerized mode builds `--no-install-project`,
-    # so a packaged project's own import would fail inside its image (§1).
+    # so a packaged project's own import would fail inside its image.
     assert "[build-system]" not in rendered
 
 

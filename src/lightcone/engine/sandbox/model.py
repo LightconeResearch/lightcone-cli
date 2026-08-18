@@ -4,9 +4,9 @@ Three types, and keeping them distinct is the whole design:
 
 - :class:`Policy` — *what we will enforce*. Mechanism-free path sets.
 - :class:`Capability` — *what this host can do*. The probe's answer.
-- :class:`Attestation` — *what was actually enforced*. Destined for the
-  manifest (spec §7), so its strings are the spec's enums, never a
-  paraphrase of what the mechanism matrix says should have happened.
+- :class:`Attestation` — *what was actually enforced*. Recorded with
+  every run, and derived from the flags actually applied — never a
+  paraphrase of what should have happened.
 
 :class:`Backend` is the seam. Every mechanism reduces to one pure
 function, ``wrap(policy, argv) -> argv``: turn a command into a
@@ -27,8 +27,8 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 #: Bumped when the meaning of the exec allowlist changes. It is recorded
-#: in the attestation, so an output stays interpretable after the list
-#: grows (spec §7: the allowlist is a maintained policy surface).
+#: in the attestation, so a run stays interpretable after the list
+#: grows — the allowlist is a maintained policy surface.
 EXEC_ALLOWLIST_VERSION = 1
 
 
@@ -51,7 +51,7 @@ class Policy:
     #: write scope; the caller owns removing it.
     tmp_home: Path
     #: Environment the boundary overlays: HOME, the XDG trio,
-    #: MPLCONFIGDIR, PYTHONPYCACHEPREFIX (spec §7, normative).
+    #: MPLCONFIGDIR, PYTHONPYCACHEPREFIX.
     env: dict[str, str] = field(default_factory=dict)
 
     def grants(self, path: Path, roots: tuple[Path, ...]) -> bool:
@@ -68,19 +68,10 @@ class Policy:
 
 @dataclass(frozen=True)
 class Capability:
-    """What enforcement this host can provide, as probed.
-
-    Probed per invocation rather than cached across hosts: the driver's
-    kernel is not the worker's (spec §7), and this type is what layer 4
-    will ask on the worker side.
-    """
+    """What enforcement this host can provide, as probed."""
 
     kind: Literal["landlock", "seatbelt", "none"]
     landlock_abi: int | None = None
-    #: Whether ``kind == "none"`` because the user said so, rather than
-    #: because the host cannot enforce. Both end up unsandboxed; only one
-    #: is a choice, and they must not read alike.
-    opted_out: bool = False
     #: Why, when ``kind`` is ``none``. Reaches the user — a downgrade is
     #: never silent.
     detail: str = ""
@@ -88,7 +79,7 @@ class Capability:
 
 @dataclass(frozen=True)
 class Attestation:
-    """The hermeticity record for one exec (spec §7's manifest field).
+    """The hermeticity record for one exec.
 
     Derived from the flags actually applied, never from the mechanism
     matrix's expectations. ``network`` is ``allowed`` on every path here
@@ -101,11 +92,6 @@ class Attestation:
     network: Literal["allowed"] = "allowed"
     landlock_abi: int | None = None
     exec_allowlist_version: int | None = None
-
-    def summary(self) -> str:
-        """One line, for ``lc run --sandbox-debug`` and later ``lc status``."""
-        abi = f", abi {self.landlock_abi}" if self.landlock_abi is not None else ""
-        return f"{self.mechanism} (fs: {self.fs}, network: {self.network}{abi})"
 
 
 class Backend(Protocol):

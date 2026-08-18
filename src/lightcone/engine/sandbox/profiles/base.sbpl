@@ -1,9 +1,9 @@
 ; ---------------------------------------------------------------------------
-; VENDORED from openai/codex — codex-rs/sandboxing/src/seatbelt_base_policy.sbpl
+; Inspired from openai/codex — codex-rs/sandboxing/src/seatbelt_base_policy.sbpl
 ; upstream commit f5e9d66851 (retrieved 2026-08-18)
 ;
-; Kept as close to verbatim as possible so it can be diffed against upstream
-; when re-syncing. Local deltas are marked `LIGHTCONE DELTA`.
+; Kept close to the upstream text so it can be diffed when re-syncing.
+; Local changes are marked `LIGHTCONE DELTA`.
 ; ---------------------------------------------------------------------------
 
 (version 1)

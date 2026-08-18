@@ -1,4 +1,4 @@
-"""Tests for the denial UX — the layer's primary user interface (spec §7).
+"""Tests for the denial UX — the sandbox's primary user interface.
 
 Pure functions over a captured stderr and a policy, so these run
 anywhere. The two cases that matter most are the ones where the
@@ -54,7 +54,6 @@ def test_an_undeclared_tool_is_named_with_its_remedy(policy: Policy, project: Pa
     joined = "\n".join(lines)
     assert f"cannot execute {tool}" in joined
     assert "uv add" in joined
-    assert "container hatch" in joined
 
 
 def test_an_undeclared_data_file_gets_the_astra_snippet(
@@ -105,7 +104,7 @@ def test_nothing_recognizable_explains_nothing(policy: Policy, project: Path) ->
     assert denial.explain("Traceback: ValueError: bad fit\n", policy, cwd=project) == []
 
 
-# ---- the fallbacks (spec §11's two required fixtures) ---------------------
+# ---- the fallbacks --------------------------------------------------------
 
 
 def test_a_swallowed_permission_error_still_gets_the_trailer() -> None:
@@ -114,7 +113,6 @@ def test_a_swallowed_permission_error_still_gets_the_trailer() -> None:
     nothing in its output says a sandbox was involved."""
     text = denial.trailer("landlock")
     assert "ran under the lc sandbox (landlock)" in text
-    assert "--sandbox-debug" in text
 
 
 def test_a_rewrapped_error_defeats_the_classifier_but_not_the_trailer(
@@ -149,14 +147,13 @@ def test_a_relative_path_is_resolved_against_the_working_directory(
     assert denial.explain(stderr, policy, cwd=project) != []
 
 
-def test_the_escape_hatches_stay_in_the_diagnostics_trailer(
-    policy: Policy, project: Path
-) -> None:
-    """--no-sandbox must never read as a peer remedy: it is the cheapest
-    answer to the exam and the wrong one."""
+def test_no_escape_hatch_is_ever_offered(policy: Policy, project: Path) -> None:
+    """There is no way to run outside the sandbox, so no message may
+    suggest one."""
     joined = "\n".join(
         denial.explain("PermissionError: [Errno 13] Permission denied: 'astra.yaml'\n", policy,
                        cwd=project)
     )
-    assert joined.index("read-only in here") < joined.index("--no-sandbox")
-    assert "diagnostics:" in joined
+    assert "read-only in here" in joined
+    assert "--no-sandbox" not in joined
+    assert "sandbox-debug" not in joined

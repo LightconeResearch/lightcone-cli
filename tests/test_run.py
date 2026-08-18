@@ -1,8 +1,7 @@
 """Tests for `lightcone.engine.run` — what `lc run` decides before it execs.
 
-Discovery, the containerized refusal, the rename guard, the declared
-inputs, and the uv hop. Nothing here spawns a command; the boundary is
-tested in `test_sandbox_*`.
+The project check, the declared inputs, and the uv hop. Nothing here
+spawns a command; the boundary is tested in `test_sandbox_*`.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from lightcone.engine import run as engine_run
-from lightcone.engine.project import ProjectError, find_project
+from lightcone.engine.project import ProjectError, current_project
 
 SPEC = """\
 title: Test
@@ -39,74 +38,32 @@ def project(tmp_path: Path) -> Path:
     return root
 
 
-# ---- discovery ------------------------------------------------------------
+# ---- the project check ----------------------------------------------------
 
 
-def test_discovery_walks_up_to_the_spec(project: Path) -> None:
-    """The spec is what makes a directory a project, so it is what the
-    walk-up looks for — not pyproject.toml, which would find any Python
-    project at all."""
+def test_the_directory_holding_the_spec_is_a_project(project: Path) -> None:
+    assert current_project(project) == project.resolve()
+
+
+def test_a_subdirectory_is_not_the_project(project: Path) -> None:
+    """No walk-up, deliberately: the directory a verb is invoked from is
+    the directory that is used, or it is an error."""
     nested = project / "a" / "b"
     nested.mkdir(parents=True)
-    assert find_project(nested) == project.resolve()
+    with pytest.raises(ProjectError, match="not a project root"):
+        current_project(nested)
 
 
-def test_discovery_outside_a_project_says_so(tmp_path: Path) -> None:
-    with pytest.raises(ProjectError, match="not inside an ASTRA project"):
-        find_project(tmp_path)
+def test_a_directory_without_a_spec_says_so(tmp_path: Path) -> None:
+    with pytest.raises(ProjectError, match="not a project root"):
+        current_project(tmp_path)
 
 
-# ---- the rename guard (spec §4) -------------------------------------------
-
-
-def test_an_output_id_is_refused_before_anything_execs(project: Path) -> None:
-    """`lc run` used to mean "materialize these outputs". Trained fingers
-    typing the old grammar must not have the output name exec'd as a
-    program — and must not be redirected to `lc materialize`, which does
-    not exist yet."""
-    with pytest.raises(ProjectError, match="is a declared output") as raised:
-        engine_run.probe(project, ["best_fit"])
-    assert "lc materialize" not in str(raised.value)
-
-
-def test_a_command_that_is_not_an_output_passes_the_guard(project: Path) -> None:
-    spec = engine_run.read_spec(project)
-    engine_run._guard_output_name(["python"], spec)  # does not raise
-
-
-def test_the_guard_only_looks_at_the_first_argument(project: Path) -> None:
-    spec = engine_run.read_spec(project)
-    engine_run._guard_output_name(["python", "best_fit"], spec)  # does not raise
-
-
-# ---- mode detection (spec §1) ---------------------------------------------
-
-
-def test_a_declared_system_layer_is_refused_not_silently_ignored(project: Path) -> None:
-    """Declaring a system layer *is* the escalation to containerized
-    mode. Running it in direct mode anyway would execute in a different
-    world than the declaration asks for and attest something untrue."""
-    (project / "pyproject.toml").write_text(
-        '[project]\nname = "proj"\n\n[tool.lightcone.image]\nsystem-packages = ["r-base-core"]\n'
-    )
-    with pytest.raises(ProjectError, match="containerized mode"):
-        engine_run.probe(project, ["true"])
-
-
-def test_a_containerfile_extra_triggers_the_same_refusal(project: Path) -> None:
-    (project / "Containerfile.extra").write_text("RUN echo hi\n")
-    with pytest.raises(ProjectError, match="containerized mode"):
-        engine_run.probe(project, ["true"])
-
-
-def test_a_direct_mode_project_is_not_refused(project: Path) -> None:
-    engine_run._refuse_containerized(project)  # does not raise
-
-
-def test_unreadable_toml_is_an_error_not_a_guess(project: Path) -> None:
-    (project / "pyproject.toml").write_text("[project\n")
-    with pytest.raises(ProjectError, match="not valid TOML"):
-        engine_run._refuse_containerized(project)
+def test_the_default_is_the_working_directory(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(project)
+    assert current_project() == project.resolve()
 
 
 # ---- declared inputs ------------------------------------------------------
@@ -143,58 +100,11 @@ def test_an_unresolvable_tree_degrades_to_the_top_level_document(project: Path) 
 
 
 def test_uv_is_pinned_to_the_project_and_refuses_to_drift(project: Path) -> None:
-    """uv's own walk-up discovery is never trusted (spec §4), and a
-    stale lock must be uv's loud error rather than a silent relock."""
+    """uv's own walk-up discovery is never trusted, and a stale lock must
+    be uv's loud error rather than a silent relock."""
     prefix = engine_run.uv_prefix(project)
     assert prefix[:2] == ["uv", "run"]
     assert "--locked" in prefix
     assert "--exact" in prefix
     assert prefix[prefix.index("--project") + 1] == str(project)
     assert prefix[-1] == "--"
-
-
-# ---- --require-sandbox ----------------------------------------------------
-
-
-def test_require_sandbox_refuses_where_nothing_can_enforce() -> None:
-    from lightcone.engine.sandbox.boundary import Unavailable
-    from lightcone.engine.sandbox.model import Capability
-
-    backend = Unavailable(capability=Capability(kind="none", detail="kernel too old"))
-    with pytest.raises(ProjectError, match="kernel too old"):
-        engine_run._enforce_requirement(backend, require=True)
-
-
-def test_requiring_and_disabling_the_sandbox_is_refused(project: Path) -> None:
-    """Otherwise `--no-sandbox --require-sandbox` blames the host for a
-    contradiction the user typed."""
-    with pytest.raises(ProjectError, match="contradict"):
-        engine_run.probe(project, ["true"], sandboxed=False, require=True)
-
-
-def test_without_the_flag_an_unenforced_run_is_allowed() -> None:
-    from lightcone.engine.sandbox.boundary import Unavailable
-
-    engine_run._enforce_requirement(Unavailable(), require=False)  # does not raise
-
-
-# ---- --sandbox-debug ------------------------------------------------------
-
-
-def test_the_debug_dump_names_every_granted_path(project: Path) -> None:
-    """`--sandbox-debug` answers "why was *that* denied", so a summary
-    will not do: every path the boundary grants has to appear."""
-    from lightcone.engine import sandbox
-
-    with sandbox.scope(project) as policy:
-        backend = sandbox.disabled()
-        lines = engine_run.describe(project, policy, backend.attest(policy), ["bash", "-c", "true"])
-
-    dump = "\n".join(lines)
-    assert str(project) in dump
-    for group in (policy.read, policy.write, policy.execute):
-        for path in group:
-            assert str(path) in dump, path
-    for key, value in policy.env.items():
-        assert f"{key}={value}" in dump
-    assert "bash -c true" in dump

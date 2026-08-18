@@ -28,7 +28,7 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _document(**overrides: object) -> str:
-    return json.dumps({"version": _sandbox_exec.POLICY_VERSION, **overrides})
+    return json.dumps(dict(overrides))
 
 
 # ---- never proceed unsandboxed --------------------------------------------
@@ -43,7 +43,6 @@ def _document(**overrides: object) -> str:
         (("--policy", _document(), "--"), "nothing after the `--`"),
         (("--policy", "{not json", "--", "true"), "a malformed document"),
         (("--policy", "[]", "--", "true"), "a document that is not an object"),
-        (("--policy", json.dumps({"version": 99}), "--", "true"), "a version it cannot speak"),
         (("--policy", _document(read="/usr"), "--", "true"), "a field that is not a list"),
     ],
 )
@@ -61,17 +60,6 @@ def test_the_command_never_runs_when_setup_fails(tmp_path: Path) -> None:
     canary = tmp_path / "canary"
     _run("--policy", "{bad", "--", "touch", str(canary))
     assert not canary.exists()
-
-
-# ---- the policy document is a versioned interface -------------------------
-
-
-def test_the_policy_version_is_checked_not_assumed() -> None:
-    """The document crosses between a launcher and a project environment
-    that need not be the same lightcone-cli. A version it cannot speak is
-    a refusal, not a best-effort parse."""
-    result = _run("--policy", json.dumps({"version": 99}), "--", "true")
-    assert "this shim speaks" in result.stderr
 
 
 # ---- the module stays alone -----------------------------------------------

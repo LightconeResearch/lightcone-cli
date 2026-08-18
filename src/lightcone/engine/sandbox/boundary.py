@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 from collections import deque
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,24 +34,14 @@ _STDERR_TAIL_BYTES = 64 * 1024
 SANDBOX_ENV = "LC_SANDBOX"
 
 
-def disabled() -> Unavailable:
-    """The backend for a deliberate ``--no-sandbox``.
-
-    Distinct from a host that *cannot* enforce: both end up unsandboxed,
-    but only one is the user's choice, and telling them apart must not
-    depend on string-matching a field documented as prose.
-    """
-    return Unavailable(capability=Capability(kind="none", opted_out=True))
-
-
 @dataclass(frozen=True)
 class Unavailable:
     """The honest null backend: no rewrite, and it says so.
 
     Not a special case for callers to branch on — it satisfies the same
     protocol, wraps to the same argv it was given, and attests
-    ``fs: open``. Refusing to run is ``--require-sandbox``'s job, and
-    telling the user is the caller's; pretending is nobody's.
+    ``fs: open``. Telling the user is the caller's job; pretending is
+    nobody's.
     """
 
     capability: Capability = field(default_factory=lambda: Capability(kind="none"))
@@ -79,7 +69,7 @@ def detect() -> Backend:
 
     The single platform branch. A backend that probes unavailable falls
     through to the next candidate and finally to :class:`Unavailable`,
-    so adding bubblewrap or podman later is one import and one line.
+    so adding another mechanism is one import and one line.
     """
     if sys.platform == "linux":
         from lightcone.engine.sandbox.landlock import LandlockBackend, capability
@@ -125,14 +115,13 @@ def run(
     env: dict[str, str],
     prefix: Sequence[str] = (),
     explain: bool = True,
-    announce: Callable[[Sequence[str]], None] | None = None,
 ) -> Outcome:
     """Run *argv* through *backend*, and explain it if it fails.
 
     *prefix* is spawned **outside** the rewrite — it is how the caller
     says "wrap the command, not this". ``lc run`` uses it for the
     ``uv run`` hop, because uv, its config, and its caches are trusted
-    plumbing that must stay outside the boundary (spec §7).
+    plumbing that must stay outside the boundary.
 
     stdout is inherited untouched, so a probe stays a probe — output
     arrives live. stderr is teed: written through as it arrives *and*
@@ -144,12 +133,6 @@ def run(
     That is the right trade for an interactive shell, whose prompt is
     written to stderr without a newline and would sit invisible in a
     line-buffered tee.
-
-    *announce* receives the spawned argv once the wrap is built and
-    before anything runs — the hook ``--sandbox-debug`` hangs on, so the
-    plan is printed while it can still be acted on rather than after a
-    shell has been exited. It is handed only the argv: the caller already
-    holds the policy, and ``attest`` is pure.
     """
     wrapped = [*prefix, *backend.wrap(policy, [*env_argv(policy), *argv])]
     attestation = backend.attest(policy)
@@ -164,8 +147,6 @@ def run(
     notes: list[str] = []
     if backend.capability.kind == "none":
         notes.append(_downgrade_note(backend.capability))
-    if announce is not None:
-        announce(wrapped)
 
     proc = subprocess.Popen(
         wrapped,
@@ -215,7 +196,7 @@ def env_argv(policy: Policy) -> list[str]:
 
     One place, every backend — including :class:`Unavailable`, which
     would otherwise silently run in a different environment than a
-    sandboxed run and make ``--no-sandbox`` change two variables at once.
+    sandboxed run.
     Composed inside the wrap rather than around it so the ``prefix``
     (the ``uv run`` hop) keeps the real environment: uv resolves its
     cache from ``XDG_CACHE_HOME`` and its interpreters from
@@ -232,12 +213,10 @@ def env_argv(policy: Policy) -> list[str]:
 def _downgrade_note(capability: Capability) -> str:
     """The line a user must see when they were not actually sandboxed.
 
-    Never silent (spec §7): finishing a run believing you were sandboxed
-    when you were not is the failure this layer exists to prevent, and
-    it is the one shipped implementations are cited for.
+    Never silent: finishing a run believing you were sandboxed when you
+    were not is the failure this design exists to prevent, and it is the
+    one shipped implementations are cited for.
     """
-    if capability.opted_out:
-        return "sandbox disabled by --no-sandbox; recorded as `fs: open`"
     reason = f" — {capability.detail}" if capability.detail else ""
     return f"not sandboxed on this host{reason}; recorded as `fs: open`"
 

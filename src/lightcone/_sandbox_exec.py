@@ -9,13 +9,11 @@ and ``execvp``'s the real command. That is what lets the engine treat
 Landlock and Seatbelt as the same thing — a pure argv rewrite (see
 :mod:`lightcone.engine.sandbox`).
 
-The policy arrives as **JSON on argv**, not as an inherited ruleset FD.
-Spec §7 describes building the ruleset before fork and passing it down
-with ``pass_fds``; we build it here instead, which is also what the codex
-CLI does. The reason is §11's own open spike — a Landlock FD cannot be
-reopened, and whether one survives ``uv run``'s spawn/exec chain was
-never verified. Serializing the policy makes the question moot, and it
-keeps working across a boundary an FD cannot cross (a container).
+The policy arrives as **JSON on argv**, not as an inherited ruleset FD —
+the shape the codex CLI uses. A Landlock FD cannot be reopened, so
+whether one would survive ``uv run``'s spawn/exec chain is a question
+serializing the policy never has to answer, and it is what keeps the
+engine's argv rewrite a pure function.
 
 Two properties of this module are load-bearing and pinned by tests:
 
@@ -76,12 +74,6 @@ _SUPPORTED_ARCHES = frozenset({"x86_64", "aarch64", "arm64"})
 #: command's own. The engine renders it as an lc problem, not a recipe's.
 SETUP_FAILURE_EXIT = 97
 
-#: The version of the ``--policy`` document this shim understands. It is
-#: an interface between two possibly different lightcone-cli versions
-#: (the launcher's and the project's), so it is checked, not assumed.
-POLICY_VERSION = 1
-
-
 class _RulesetAttr(ctypes.Structure):
     _fields_ = [
         ("handled_access_fs", ctypes.c_uint64),
@@ -121,8 +113,7 @@ def abi() -> int:
     mode — kernel < 5.13, the syscall blocked by seccomp, an
     architecture we do not vouch for — answers 0 rather than raising:
     the caller's question is "can I sandbox here", and "no" is a valid
-    answer to it. Recording *which* ABI answered is the caller's job
-    (spec §7 puts it in the manifest).
+    answer to it. Recording *which* ABI answered is the caller's job.
     """
     if os.uname().machine not in _SUPPORTED_ARCHES:
         return 0
@@ -297,10 +288,6 @@ def main(argv: list[str] | None = None) -> None:
         policy = json.loads(raw)
         if not isinstance(policy, dict):
             raise ValueError("policy must be a JSON object")
-        if policy.get("version") != POLICY_VERSION:
-            raise ValueError(
-                f"policy version {policy.get('version')!r} — this shim speaks {POLICY_VERSION}"
-            )
         abi_level = abi()
         if abi_level == 0:
             raise ValueError("landlock unavailable (kernel < 5.13, or blocked by seccomp)")

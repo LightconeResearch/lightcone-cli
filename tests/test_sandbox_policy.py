@@ -38,7 +38,7 @@ def built(tmp_path: Path) -> Iterator[policy_module.Policy]:
 
 def test_a_probe_never_writes_in_the_tree(built: policy_module.Policy, tmp_path: Path) -> None:
     """The invariant that makes `lc run` safe to hand to an agent: a probe
-    has no output (spec §4), so nothing it does can land in the project."""
+    has no output, so nothing it does can land in the project."""
     project = tmp_path / "proj"
     assert not any(root == project or project.is_relative_to(root) for root in built.write)
 
@@ -209,7 +209,7 @@ def test_the_allowlist_is_resolved_off_the_ambient_path(
 def test_the_elf_loader_is_in_the_exec_set(built: policy_module.Policy) -> None:
     """Landlock checks EXECUTE on the loader's own open, so without this
     every dynamically linked binary — bash and python included — fails
-    EACCES and the sandbox is unusable (spec §7)."""
+    EACCES and the sandbox is unusable."""
     loaders = policy_module.elf_loaders()
     assert loaders, "no ELF loader found on this host"
     assert all(loader in built.execute for loader in loaders)
@@ -277,7 +277,7 @@ def test_the_utility_path_covers_the_nix_system_profile() -> None:
 def test_home_and_friends_point_into_the_write_scope(built: policy_module.Policy) -> None:
     """matplotlib, astropy, and R all want a HOME. Giving them a private
     one is what lets them work without the real `$HOME` being readable
-    (spec §7, normative) — mounting `$HOME` RO instead would reopen the
+    — mounting `$HOME` RO instead would reopen the
     dotfile-steering channel the layer exists to close."""
     for key in ("HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "MPLCONFIGDIR"):
         assert Path(built.env[key]).is_relative_to(built.tmp_home), key

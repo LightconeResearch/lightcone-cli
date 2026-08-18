@@ -6,7 +6,7 @@ The work is generating the SBPL, which is ordinary string building and
 therefore testable (and golden-tested) on any OS.
 
 **Most of the profile is not ours.** ``profiles/base.sbpl`` and
-``profiles/platform-defaults.sbpl`` are vendored from the codex CLI
+``profiles/platform-defaults.sbpl`` are adapted from the codex CLI
 (itself derived from Chrome's macOS sandbox policy), because the macOS
 read baseline is not something to derive from first principles — it is a
 list of things that break, discovered one production failure at a time.
@@ -47,18 +47,15 @@ from lightcone.engine.sandbox.model import (
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
-#: The vendored fragments, in the order they are concatenated.
+#: The adapted upstream fragments, in the order they are concatenated.
 BASE_PROFILE = "base.sbpl"
 PLATFORM_DEFAULTS = "platform-defaults.sbpl"
 
 
 @functools.cache
 def read_profile(name: str) -> str:
-    """The raw text of a vendored SBPL fragment.
-
-    Cached: the fragments are ~10 KB of immutable package data read on
-    every ``wrap``, which layer 4 will call once per output.
-    """
+    """The raw text of an SBPL fragment, cached — it is immutable
+    package data read on every ``wrap``."""
     if name not in (BASE_PROFILE, PLATFORM_DEFAULTS):
         raise KeyError(f"unknown profile fragment: {name!r}")
     return (resources.files(__package__) / "profiles" / name).read_text(encoding="utf-8")
@@ -131,21 +128,20 @@ def profile_params(policy: Policy) -> list[tuple[str, str]]:
 
 
 def generate_profile(policy: Policy) -> str:
-    """The SBPL for *policy*: vendored base, our tiers, vendored defaults.
+    """The SBPL for *policy*: upstream base, our tiers, upstream defaults.
 
     Order is load-bearing, because **SBPL is last-match-wins**. That is
     why ``(deny default)`` can lead the base and still be overridden, why
-    the read-only guard can take back the write the vendored defaults
+    the read-only guard can take back the write the upstream defaults
     hand out on ``/tmp`` — and why the write tier is restated *after* the
     guard.
 
     That last one is not cosmetic. Landlock unions rights, so a narrower
-    grant only ever widens: a writable output directory nested inside a
-    readable project tree works there for free. Reproducing that here
-    means the write set must have the final word, or the guard's
-    ``(deny file-write* PROJECT)`` would silently revoke the nested
-    output directory that layer 4's recipes write into — Linux would
-    materialize and macOS would refuse.
+    grant only ever widens: a writable directory nested inside a readable
+    tree works there for free. Reproducing that here means the write set
+    must have the final word, or the guard's ``(deny file-write* …)``
+    over the read roots would silently revoke any nested writable path —
+    Linux would allow and macOS would refuse the same policy.
     """
     return "\n".join(
         [
@@ -201,7 +197,7 @@ def _tier(comment: str, opener: str, prefix: str, count: int) -> str:
 def _read_only_guard(policy: Policy) -> str:
     """Take back writes on everything readable that is not also writable.
 
-    The vendored defaults grant write to shared scratch (``/tmp``,
+    The upstream defaults grant write to shared scratch (``/tmp``,
     ``/var/tmp``) unconditionally, which would otherwise reopen exactly
     the hole :func:`~lightcone.engine.sandbox.policy._write_roots` closes
     on Linux — a project living under ``/tmp`` becoming writable. It is
@@ -210,7 +206,7 @@ def _read_only_guard(policy: Policy) -> str:
     of the policy instead.
 
     Deliberately narrow: it names *our* read roots and nothing else, so
-    the device and pty writes the vendored defaults grant survive. And it
+    the device and pty writes the upstream defaults grant survive. And it
     is emitted before the write tier, which restates the grants that must
     win — see :func:`generate_profile`.
     """

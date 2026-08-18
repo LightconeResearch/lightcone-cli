@@ -1,4 +1,4 @@
-"""The denial UX — the sandbox layer's primary user interface (spec §7).
+"""The denial UX — the sandbox's primary user interface.
 
 A sandbox that only says "permission denied" trains people to disable
 it. So when a sandboxed command fails, this module tries to name *what*
@@ -93,8 +93,9 @@ def trailer(mechanism: str) -> str:
     fighting an invisible wall.
     """
     return (
-        f"this ran under the lc sandbox ({mechanism}) — if the failure looks like a "
-        "permissions or missing-file error, try `lc run --sandbox-debug`"
+        f"this ran under the lc sandbox ({mechanism}) — a permissions or "
+        "missing-file error can mean the command reached for something "
+        "outside the declared environment"
     )
 
 
@@ -142,8 +143,6 @@ def _render_tool(path: Path) -> list[str]:
         [
             "  if this is a tool the command needs, declare it in the environment:",
             f"      uv add <package providing {path.name}>",
-            "    (only tools that ship as Python packages can be declared today —",
-            "    declaring a system package arrives with the container hatch.)",
         ],
     )
 
@@ -166,8 +165,8 @@ def _render_write(path: Path) -> list[str]:
 
     Reading it was allowed, so this can only have been a write. There is
     no declaration that makes the tree writable to a probe: a probe has
-    no output (spec §4), and that is the answer rather than a limitation
-    to work around.
+    no output, and that is the answer rather than a limitation to work
+    around.
     """
     return _message(
         f"cannot write {path}",
@@ -180,13 +179,10 @@ def _render_write(path: Path) -> list[str]:
 
 
 def _message(headline: str, remedy: list[str]) -> list[str]:
-    """One shape for every denial: what, why, the fix, then diagnostics."""
+    """One shape for every denial: what, why, then the fix."""
     return [
         f"blocked by lc sandbox: {headline} —",
         "not part of the declared environment.",
         "",
         *remedy,
-        "",
-        "  diagnostics: lc run --sandbox-debug (print the policy) · "
-        "lc run --no-sandbox (recorded as unsandboxed)",
     ]

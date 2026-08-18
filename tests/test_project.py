@@ -111,7 +111,7 @@ def test_converge_writes_the_templates_verbatim(tmp_path: Path) -> None:
 
 def test_converge_scaffolds_no_environment_escalation(tmp_path: Path) -> None:
     """Containerized mode is *derived* from a declaration the user makes, so
-    the scaffold never writes one (spec §1). What astra's boilerplate puts
+    the scaffold never writes one. What astra's boilerplate puts
     in `astra.yaml` is astra's business — reconciling that with the
     environment model belongs to the environment layer."""
     project = tmp_path / "proj"
@@ -282,7 +282,7 @@ def test_check_mode_agrees_with_a_real_run(tmp_path: Path) -> None:
 
 def test_warns_when_pyproject_lacks_the_engine(tmp_path: Path) -> None:
     """The engine belongs inside the experiment's lock; a pyproject we
-    didn't write is the user's, so warn rather than edit (spec §2)."""
+    didn't write is the user's, so warn rather than edit."""
     project = tmp_path / "proj"
     project.mkdir()
     (project / "pyproject.toml").write_text('[project]\nname = "mine"\nversion = "0"\n')
@@ -400,7 +400,7 @@ def test_requires_uv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_locks_then_syncs_exactly(tmp_path: Path, tools: list[list[str]]) -> None:
     """Converge once, with the flags the spec fixes: ``--locked --exact``
-    (no drift, no additive sync) and ``--compile-bytecode`` (§4, §6)."""
+    (no drift, no additive sync) and ``--compile-bytecode``."""
     project = tmp_path / "proj"
     converge(project)
 
@@ -409,7 +409,7 @@ def test_locks_then_syncs_exactly(tmp_path: Path, tools: list[list[str]]) -> Non
     assert sync[0] == "sync"
     for flag in ("--locked", "--exact", "--compile-bytecode"):
         assert flag in sync
-    # uv's own walk-up discovery is never trusted (spec §4).
+    # uv's own walk-up discovery is never trusted.
     assert lock[-2:] == ["--project", str(project.resolve())]
     assert sync[-2:] == ["--project", str(project.resolve())]
 

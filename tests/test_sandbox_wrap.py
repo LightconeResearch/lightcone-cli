@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from lightcone import _sandbox_exec
 from lightcone.engine.sandbox import seatbelt
 from lightcone.engine.sandbox.boundary import Unavailable, env_argv
 from lightcone.engine.sandbox.landlock import LandlockBackend
@@ -78,24 +77,22 @@ def test_landlock_wraps_through_the_shim(policy: Policy) -> None:
 
 
 def test_the_landlock_policy_travels_as_json_the_shim_understands(policy: Policy) -> None:
-    """The deliberate deviation from spec §7, which passes an inherited
-    ruleset FD instead. Serializing closes §11's own open spike — a
+    """Serialized rather than passed as an inherited ruleset FD: a
     Landlock FD cannot be reopened, and whether one survives `uv run`'s
-    spawn chain was never verified."""
+    spawn chain is a question JSON never has to answer."""
     backend = LandlockBackend(capability=Capability(kind="landlock", landlock_abi=4))
     document = json.loads(backend.wrap(policy, ["true"])[4])
 
-    assert document["version"] == _sandbox_exec.POLICY_VERSION
     assert document["read"] == [str(p) for p in policy.read]
     assert document["write"] == [str(p) for p in policy.write]
     assert document["execute"] == [str(p) for p in policy.execute]
 
 
 def test_the_overlay_is_the_seam_s_job_not_each_backend_s(policy: Policy) -> None:
-    """Composed once, inside the wrap, for *every* backend — including the
-    null one. Per-backend application meant `--no-sandbox` silently ran in
-    a different environment (real `$HOME`, no PYTHONPYCACHEPREFIX), so it
-    changed two variables at once and stopped being a diagnostic."""
+    """Composed once, inside the wrap, for *every* backend — including
+    the null one, which must run in the same environment as a sandboxed
+    run (same private `$HOME`, same PYTHONPYCACHEPREFIX) or the two stop
+    being comparable."""
     prefixed = [*env_argv(policy), "true"]
     assert prefixed[0] == "/usr/bin/env"
     assert f"HOME={policy.env['HOME']}" in prefixed
@@ -178,7 +175,7 @@ def test_the_profile_references_every_policy_path_once(policy: Policy) -> None:
             assert f'(param "{prefix}_{index}")' in seatbelt.generate_profile(policy), prefix
 
 
-def test_the_vendored_fragments_are_shipped() -> None:
+def test_the_upstream_fragments_are_shipped() -> None:
     """They are package *data*, so a packaging slip would only surface on a
     macOS host at run time. Read them here instead."""
     for name in (seatbelt.BASE_PROFILE, seatbelt.PLATFORM_DEFAULTS):
@@ -190,7 +187,7 @@ def test_an_unknown_fragment_fails_loudly() -> None:
         seatbelt.read_profile("nope.sbpl")
 
 
-def test_the_vendored_base_does_not_grant_blanket_exec() -> None:
+def test_the_upstream_base_does_not_grant_blanket_exec() -> None:
     """The one local delta. Upstream allows `process-exec` outright because
     codex does not restrict exec; restricting it is our whole guarantee, so
     the blanket allow must stay commented out however the file is re-synced."""
@@ -201,7 +198,7 @@ def test_the_vendored_base_does_not_grant_blanket_exec() -> None:
 
 def test_the_platform_defaults_carry_the_hard_won_entries(policy: Policy) -> None:
     """Spot-checks on entries nobody would derive from first principles —
-    the reason this file is vendored rather than written."""
+    the reason this file is adapted from upstream rather than written."""
     profile = seatbelt.generate_profile(policy)
     for needle in (
         "/dev/dtracehelper",            # debugger helpers
@@ -233,9 +230,8 @@ def test_the_loader_can_map_system_libraries(policy: Policy) -> None:
 
 
 def test_the_profile_does_not_restrict_the_network(policy: Policy) -> None:
-    """Recorded deviation from §7's matrix: lc controls no network on any
-    platform, so the profile says so rather than denying what the
-    attestation then calls `allowed`."""
+    """lc controls no network on any platform, so the profile says so
+    rather than denying what the attestation then calls `allowed`."""
     profile = seatbelt.generate_profile(policy)
     assert "(allow network*)" in profile
     assert "(deny network" not in profile
@@ -243,7 +239,7 @@ def test_the_profile_does_not_restrict_the_network(policy: Policy) -> None:
 
 
 def test_readable_but_unwritable_paths_are_denied_write_last(tmp_path: Path) -> None:
-    """SBPL is last-match-wins, so the guard has to come after the vendored
+    """SBPL is last-match-wins, so the guard has to come after the upstream
     defaults — which grant /tmp write unconditionally and would otherwise
     reopen the hole the Linux side closes by omitting the root."""
     built = Policy(
