@@ -42,6 +42,16 @@ def test_the_project_is_writable(built: policy_module.Policy, tmp_path: Path) ->
     assert built.grants(tmp_path / "proj" / "results" / "out.csv", built.write)
 
 
+def test_the_project_is_also_readable(built: policy_module.Policy, tmp_path: Path) -> None:
+    """Not redundant with the write grant. Landlock's write bits include
+    the read ones, but SBPL's write tier grants `file-read* file-write*`
+    and *not* `file-map-executable` — which macOS gates `dlopen` on, and
+    every compiled extension module under site-packages needs. Dropping
+    the project from `read` as duplication breaks `import numpy` on macOS
+    alone, with Linux CI still green."""
+    assert built.grants(tmp_path / "proj" / "astra.yaml", built.read)
+
+
 def test_the_private_home_is_writable(built: policy_module.Policy) -> None:
     assert built.tmp_home in built.write
 

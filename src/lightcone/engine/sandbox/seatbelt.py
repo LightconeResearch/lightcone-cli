@@ -135,17 +135,16 @@ def profile_params(policy: Policy) -> list[tuple[str, str]]:
 def generate_profile(policy: Policy) -> str:
     """The SBPL for *policy*: upstream base, our tiers, upstream defaults.
 
-    Order is load-bearing, because **SBPL is last-match-wins**. That is
-    why ``(deny default)`` can lead the base and still be overridden, why
-    the read-only guard can take back the write the upstream defaults
-    hand out on ``/tmp`` — and why the write tier is restated *after* the
-    guard.
+    Order is load-bearing, because **SBPL is last-match-wins**: it is
+    what lets ``(deny default)`` lead the base and still be overridden,
+    what lets :func:`_read_only_guard` take a write back, and why the
+    write tier is restated *after* that guard.
 
     That last one is not cosmetic. Landlock unions rights, so a narrower
     grant only ever widens: a writable directory nested inside a readable
     tree works there for free. Reproducing that here means the write set
     must have the final word, or the guard's ``(deny file-write* …)``
-    over the read roots would silently revoke any nested writable path —
+    over the read roots would revoke a writable path nested under one —
     Linux would allow and macOS would refuse the same policy.
     """
     return "\n".join(
@@ -160,7 +159,7 @@ def generate_profile(policy: Policy) -> str:
                 # fails on macOS alone. Landlock does not gate mmap at
                 # all, so read already implies it there: granting it here
                 # is what makes the two platforms mean the same thing.
-                "read: project tree + declared inputs",
+                "read: the project, the declared inputs, and the OS baseline",
                 "(allow file-read* file-test-existence file-map-executable",
                 "READ",
                 len(policy.read),
@@ -187,7 +186,7 @@ def generate_profile(policy: Policy) -> str:
             _read_only_guard(policy),
             # Last, so a nested writable path beats the guard above it.
             _tier(
-                "write: the per-run private scope and scratch — never the project tree",
+                "write: the project, the per-run private scope, and shared scratch",
                 "(allow file-read* file-write*",
                 "WRITE",
                 len(policy.write),
@@ -207,10 +206,19 @@ def _tier(comment: str, opener: str, prefix: str, count: int) -> str:
 def _read_only_guard(policy: Policy) -> str:
     """Take back writes on everything readable that is not also writable.
 
-    The upstream defaults grant write to shared scratch (``/tmp``,
-    ``/var/tmp``) unconditionally, which would otherwise reopen exactly
-    a hole Landlock does not have, since it grants only what the policy
-    names. It is only expressible because SBPL is last-match-wins.
+    This is what keeps the profile's write set equal to the *policy's*
+    write set. The Linux side gets that for free — Landlock grants only
+    what the policy names — but here the upstream fragments hand out
+    writes of their own, on shared scratch (``/tmp``, ``/var/tmp``) and
+    on devices, and only a later ``deny`` can take one back.
+
+    **It currently denies nothing**, because every write those fragments
+    grant is already in our own write baseline. That is a property of
+    today's baseline, not a reason to drop the guard: narrow
+    ``_WRITE_BASELINE`` — dropping the host's ``/tmp`` to look more like
+    a container, say — and the upstream grant would silently reopen it.
+    The guard is computed from the policy, so it starts working again
+    the moment there is something to take back.
 
     Deliberately narrow: it names *our* read roots and nothing else, so
     the device and pty writes the upstream defaults grant survive. And it

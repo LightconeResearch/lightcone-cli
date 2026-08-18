@@ -183,6 +183,12 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
     write = _existing([tmp_home, project, *(Path(p) for p in _WRITE_BASELINE)])
+    # The project is in *both* tiers, and that is not redundant. Landlock's
+    # write bits include the read ones, but SBPL's write tier grants
+    # `file-read* file-write*` and **not** `file-map-executable` — which is
+    # what macOS gates `dlopen` on, and every compiled extension module in
+    # `.venv/lib/.../site-packages` needs it. Drop the project from `read`
+    # and `import numpy` breaks on macOS alone, with Linux CI still green.
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
     return Policy(

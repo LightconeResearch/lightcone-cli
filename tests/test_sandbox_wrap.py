@@ -220,7 +220,9 @@ def test_the_read_tier_can_map_executables(policy: Policy) -> None:
     on mapping. Without this `import numpy` fails on macOS alone, while
     Landlock (which does not gate mmap) is fine either way."""
     profile = seatbelt.generate_profile(policy)
-    read_form = profile[profile.index(";; read: project tree") :].splitlines()[1]
+    # Anchored on the tier marker, not its prose: the comment is a label,
+    # not the contract.
+    read_form = profile[profile.index(";; read:") :].splitlines()[1]
     assert "file-map-executable" in read_form, read_form
 
 
