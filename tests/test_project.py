@@ -512,6 +512,22 @@ def test_a_stale_environment_is_repaired_not_ignored(
     assert tools_before.unchanged and "uv.lock" in tools_before.unchanged
 
 
+def test_ambient_virtualenv_is_not_passed_to_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every uv call names its project explicitly, so an activated
+    environment elsewhere is never what we mean — and leaving it set makes
+    uv warn, once per invocation, into a report agents read."""
+    from lightcone.engine.project import child_env
+
+    monkeypatch.setenv("VIRTUAL_ENV", "/somewhere/else/.venv")
+    monkeypatch.setenv("LC_TEST_CANARY", "kept")
+
+    env = child_env()
+    assert "VIRTUAL_ENV" not in env
+    assert env["LC_TEST_CANARY"] == "kept", "the rest of the environment is untouched"
+
+
 def test_relays_uv_warnings_into_the_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -550,6 +566,25 @@ def test_tool_warnings_ignores_progress_output() -> None:
 
     assert tool_warnings("Installed 3 packages\n + click==8.4\n") == []
     assert tool_warnings("warning: a\nwarning: b\n") == ["a", "b"]
+
+
+def test_tool_warnings_does_not_swallow_the_change_list() -> None:
+    """uv indents its change list by one space and its warning
+    continuations by nine, so the continuation rule has to tell them
+    apart — otherwise a hundred `+ pkg==ver` lines land inside the
+    warning text."""
+    from lightcone.engine.project import tool_warnings
+
+    found = tool_warnings(
+        "warning: first\n"
+        "Resolved 114 packages in 12ms\n"
+        " + aiohttp==3.14.3\n"
+        " - six==1.17.0\n"
+        " ~ click==8.4.2\n"
+        "warning: second\n"
+        "         continued here\n"
+    )
+    assert found == ["first", "second continued here"]
 
 
 def test_surfaces_a_lock_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

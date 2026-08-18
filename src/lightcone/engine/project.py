@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -306,8 +307,23 @@ def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
 
     Tests monkeypatch this, so the suite never shells out and every call is
     inspectable.
+
     """
-    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+    return subprocess.run(
+        argv, cwd=cwd, capture_output=True, text=True, check=False, env=child_env()
+    )
+
+
+def child_env() -> dict[str, str]:
+    """The environment external tools run in: ours, minus ``VIRTUAL_ENV``.
+
+    Every uv invocation names its project explicitly, so an activated
+    environment elsewhere is never what we mean — uv agrees, ignoring it and
+    warning that it did, once per invocation, which would otherwise land in
+    the report and in ``--json``. Explicit flags beat ambient variables
+    (spec §13); the launcher's broader ``UV_*`` scrub lands with layer 3.
+    """
+    return {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
 
 def _check_call(argv: list[str], *, cwd: Path) -> list[str]:
@@ -328,7 +344,11 @@ def tool_warnings(stderr: str) -> list[str]:
 
     uv interleaves warnings with progress on stderr, so relaying the whole
     stream would bury them under a line per installed package. A warning is
-    a line starting ``warning:`` plus any indented continuation.
+    a line starting ``warning:`` plus its continuations, which uv aligns
+    under the 9-character ``warning: `` prefix. The two-space floor is what
+    separates those from uv's own change list (`` + pkg==1.0``), which is
+    indented by exactly one — folding those in swallowed the whole install
+    list into the warning text.
 
     The one that has to reach the user: when the uv cache and the project
     are on different filesystems, uv cannot link and silently falls back to
@@ -339,7 +359,7 @@ def tool_warnings(stderr: str) -> list[str]:
     for line in stderr.splitlines():
         if line.startswith("warning:"):
             found.append(line.removeprefix("warning:").strip())
-        elif found and line.startswith((" ", "\t")) and line.strip():
+        elif found and line.startswith(("  ", "\t")) and line.strip():
             found[-1] += " " + line.strip()
     return found
 
