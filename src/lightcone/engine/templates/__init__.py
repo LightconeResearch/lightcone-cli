@@ -53,13 +53,7 @@ def _render(name: str, /, **values: str) -> str:
 
 
 def pyproject(*, name: str) -> str:
-    """The scaffolded ``pyproject.toml`` for a project called *name*.
-
-    Deliberately **virtual** — no ``[build-system]``. Containerized mode
-    builds the image ``--no-install-project`` (project code never enters
-    an image), so a packaged project's ``import my_analysis`` would fail
-    inside its own container (spec §1).
-    """
+    """The scaffolded ``pyproject.toml`` for a project called *name*."""
     return _render(
         "pyproject.toml.tmpl",
         name=name,
@@ -74,9 +68,7 @@ def python_version() -> str:
 
     Deliberately not an engine constant: a new project pins the python the
     researcher actually has, rather than one lc would have to download to
-    honor a number baked into a release. Identity follows this file from
-    here on — ``env_version`` hashes its bytes, not anything in the engine
-    (spec §3) — so a project is free to repin it afterwards.
+    honor a number baked into a release.
     """
     v = sys.version_info
     return f"{v.major}.{v.minor}.{v.micro}\n"

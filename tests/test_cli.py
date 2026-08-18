@@ -24,9 +24,8 @@ def test_help_lists_the_implemented_verb(runner: CliRunner) -> None:
 
 
 def test_help_does_not_advertise_unbuilt_verbs(runner: CliRunner) -> None:
-    """Layer 1 ships `lc init` alone. The other verbs return with their
-    layers — advertising them before they work would be a lie the whole
-    rebuild is meant to avoid."""
+    """`lc --help` advertises only verbs that work — advertising others
+    before they do would be a lie."""
     result = runner.invoke(main, ["--help"])
     for verb in ("materialize", "status", "verify", "build", "export"):
         assert f"  {verb}" not in result.output
@@ -72,19 +71,21 @@ def test_init_defaults_to_the_current_directory(
 # ---- rendering ------------------------------------------------------------
 
 
-def test_run_reports_what_it_created(runner: CliRunner, tmp_path: Path) -> None:
+def test_init_reports_what_it_created(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(main, ["init", str(tmp_path / "proj")])
     assert "created astra.yaml" in result.output
     assert "Project converged at" in result.output
 
 
-def test_run_on_a_converged_project_says_so(runner: CliRunner, tmp_path: Path) -> None:
+def test_init_on_a_converged_project_says_so(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
     assert runner.invoke(main, ["init", str(project)]).exit_code == 0
 
     result = runner.invoke(main, ["init", str(project)])
     assert result.exit_code == 0
-    assert "already converged" in result.output
+    # "already converged" straddles rich's wrap point once the tmp path is
+    # long enough — assert on a fragment that cannot wrap.
+    assert "nothing to do" in result.output
 
 
 def test_blocked_items_are_rendered(runner: CliRunner, tmp_path: Path) -> None:
@@ -102,7 +103,7 @@ def test_blocked_items_are_rendered(runner: CliRunner, tmp_path: Path) -> None:
     assert "✗" in result.output
 
 
-def test_run_surfaces_warnings(runner: CliRunner, tmp_path: Path) -> None:
+def test_init_surfaces_warnings(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()
     (project / "pyproject.toml").write_text('[project]\nname = "mine"\nversion = "0"\n')
@@ -159,3 +160,156 @@ def test_check_json_writes_nothing_and_exits_nonzero(
     assert result.exit_code == 1
     assert json.loads(result.output)["converged"] is False
     assert not project.exists()
+
+
+# ---- lc run ---------------------------------------------------------------
+
+
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A minimal project, with the CLI's cwd pointed at its root."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "pyproject.toml").write_text('[project]\nname = "proj"\n')
+    (root / "uv.lock").write_text("version = 1\n")
+    (root / ".venv").mkdir()
+    monkeypatch.chdir(root)
+    return root
+
+
+@pytest.fixture
+def spawned(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Record what the CLI asks the engine to do, without running anything."""
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
+
+    calls: list[dict[str, object]] = []
+
+    def fake_probe(project, command, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append({"project": project, "command": list(command), **kwargs})
+        return Outcome(
+            returncode=0,
+            attestation=Attestation(mechanism="landlock", fs="declared", landlock_abi=4),
+        )
+
+    monkeypatch.setattr(engine_run, "probe", fake_probe)
+    return calls
+
+
+def test_run_is_advertised(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["--help"])
+    assert "run" in result.output
+
+
+def test_run_passes_the_command_through_untouched(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    """A probe's command has its own flags, and they belong to it — not
+    to us. `--help` after the command must reach the command."""
+    result = runner.invoke(main, ["run", "python", "-c", "print(1)", "--help"])
+    assert result.exit_code == 0
+    assert spawned[0]["command"] == ["python", "-c", "print(1)", "--help"]
+    assert spawned[0]["project"] == project.resolve()
+
+
+def test_the_childs_exit_code_is_the_cli_s(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe is a proxy for the command; swallowing its exit code would
+    make `lc run` useless in a script."""
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
+
+    monkeypatch.setattr(
+        engine_run,
+        "probe",
+        lambda *a, **k: Outcome(
+            returncode=42, attestation=Attestation(mechanism="none", fs="open")
+        ),
+    )
+    assert runner.invoke(main, ["run", "false"]).exit_code == 42
+
+
+def test_a_signal_killed_command_reports_the_conventional_status(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Popen.returncode` is negative for a signal and `sys.exit(-9)`
+    truncates to 247. A script testing for 137 (SIGKILL) has to see 137."""
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
+
+    monkeypatch.setattr(
+        engine_run,
+        "probe",
+        lambda *a, **k: Outcome(
+            returncode=-9, attestation=Attestation(mechanism="landlock", fs="declared")
+        ),
+    )
+    assert runner.invoke(main, ["run", "sleep"]).exit_code == 137
+
+
+def test_notes_are_rendered(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
+
+    monkeypatch.setattr(
+        engine_run,
+        "probe",
+        lambda *a, **k: Outcome(
+            returncode=1,
+            attestation=Attestation(mechanism="landlock", fs="declared"),
+            notes=("blocked by lc sandbox: cannot execute /usr/bin/latex —",),
+        ),
+    )
+    result = runner.invoke(main, ["run", "latex"])
+    assert "blocked by lc sandbox" in result.output
+
+
+def test_a_bare_run_is_refused_rather_than_opening_a_shell(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    """A probe is run by an agent far more often than by a person, and an
+    agent handed an interactive shell waits forever for input nobody is
+    going to type. Refusing is the only outcome that cannot hang."""
+    result = runner.invoke(main, ["run"])
+    assert result.exit_code != 0
+    assert spawned == []
+
+
+def test_outside_a_project_is_a_clean_error(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(main, ["run", "true"])
+    assert result.exit_code == 1
+    assert "lc init" in result.output
+
+
+def test_a_subdirectory_of_a_project_is_not_the_project(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No walk-up: `lc run` uses the directory it is invoked from, or
+    errors."""
+    nested = project / "sub"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+    result = runner.invoke(main, ["run", "true"])
+    assert result.exit_code == 1
+    assert "not a project" in result.output
+
+
+def test_run_needs_no_spec_file(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    """The environment is what a probe needs; `astra.yaml` is not
+    required to run a command in it."""
+    assert not (project / "astra.yaml").exists()
+    result = runner.invoke(main, ["run", "true"])
+    assert result.exit_code == 0
+    assert spawned[0]["project"] == project.resolve()

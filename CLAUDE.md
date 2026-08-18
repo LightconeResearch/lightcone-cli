@@ -42,10 +42,16 @@ speculatively.
 | 2 | Environment layer — `env_version`, lock scan, manifest schema | ⬜ |
 | 3 | The `lc` entrypoint — launcher: discover → mode-detect → scrub `UV_*` → converge → delegate | ⬜ |
 | 4 | Fabric — `lc materialize`, worker sequence, mid-run relock gate | ⬜ |
-| 5 | Sandbox layer — Landlock / Seatbelt, exec-shim, denial UX | ⬜ |
+| 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | Container hatch — `[tool.lightcone.image]`, generated Containerfile, `lc build` | ⬜ |
 | 7 | Venues — Perlmutter, hub/GKE, Cloud Build | ⬜ |
 | 8 | `lc status`, `lc verify`, WRROC export | ⬜ |
+
+Layer 5 landed **out of order**, ahead of 2–4: `lc run` is the spec's
+*probe* verb, and a probe has no output, so it needs neither manifests
+(layer 2) nor the fabric (layer 4) — only project discovery, which came
+with it. That makes it the smallest honest consumer of the exec boundary,
+and the boundary is what layer 4 will then plug recipes into.
 
 The spec's §11 (Migration) is the authoritative ordering; the table above
 is the working map. **Layer boundaries are also dependency boundaries** —
@@ -53,6 +59,33 @@ a dependency enters `pyproject.toml` with the layer that needs it, not
 before.
 
 ### Rules while rebuilding
+
+Each of these has been asked for in review at least once; none is optional.
+
+- **Never reference the design spec in code or comments.** No `spec §7`,
+  no section numbers, no "the spec says". Code and its comments must
+  stand on their own; design rationale lives in the design documents.
+  (This file is the exception — it is *about* the design.)
+- **No backward-compatibility code.** Nothing exists to honor the
+  behavior of an older CLI, an older wire format, or trained fingers.
+  If old behavior isn't promised, don't guard, version, or migrate it.
+- **No foreshadowing.** No code, comment, flag, or user-facing message
+  may mention a verb, layer, or feature that does not exist yet. The
+  codebase is consistent with the project *at this point in time*.
+- **No escape hatches around guarantees.** A feature that enforces
+  something ships without a flag to turn the enforcement off.
+- **Prefer literal behavior over invented convenience.** The current
+  directory is the project root; erroring beats walking up or guessing.
+- **Nothing waits on a human.** A verb is run by an agent more often
+  than by a person, so no interactive prompt and no interactive shell —
+  either is a hang, not a UX choice.
+- **Streamline before shipping.** No small helper functions or
+  rendering layers where a few inline lines read fine; consolidate.
+- **Be honest about provenance.** Third-party material we adapt is
+  "inspired from" upstream, clearly marked, with its license named —
+  never passed off as verbatim, never left unattributed.
+- **Leave working files alone.** Don't edit files that are fine just
+  because a change nearby made them look touchable.
 
 - **No dead code.** If nothing in the current layer calls it, it doesn't
   land yet. `lc --help` advertises only verbs that work.
@@ -103,12 +136,22 @@ Any new `lightcone-*` package must:
 
 ```
 src/lightcone/              # namespace — NO __init__.py
+├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
 ├── cli/                    # the CLI only: flags, rendering, exit codes
 │   ├── __init__.py         # exposes main(); the launcher hooks in here (layer 3)
-│   └── commands.py         # lc init — the only verb so far
+│   └── commands.py         # lc init, lc run
 └── engine/
     ├── __init__.py         # docstring only
-    ├── project.py          # how a directory converges into a project
+    ├── project.py          # what a project is: convergence + discovery
+    ├── run.py              # what `lc run` is: the probe + the uv hop
+    ├── sandbox/            # the exec boundary
+    │   ├── __init__.py     # the public surface (detect, run, scope, the types)
+    │   ├── model.py        # Policy · Capability · Attestation · Backend protocol
+    │   ├── policy.py       # what a probe may touch
+    │   ├── boundary.py     # detect() + run(): the mechanism-blind half
+    │   ├── landlock.py     # Linux backend
+    │   ├── seatbelt.py     # macOS backend
+    │   └── denial.py       # the denial UX
     └── templates/          # the scaffold's file content
         ├── __init__.py     # loader + one renderer per scaffolded file
         └── files/*.tmpl    # the templates themselves, as real files
@@ -158,9 +201,12 @@ convergence can see but must not fix (advisory — never affects
 does count, so a report can never claim a project is converged while
 something it owns is absent.
 
-**Project discovery** — the `astra.yaml` walk-up — arrives with the
-launcher (layer 3), the first thing that needs it. `lc init` is handed its
-directory.
+**There is no project discovery, by decision.** `lc init` is handed its
+directory (defaulting to `.`); `lc run` assumes the current directory is
+the project root — `project.current_project()` checks only that the
+environment is there (`pyproject.toml`, `uv.lock`, `.venv`) and does not
+require an `astra.yaml`, so any uv project can be probed. No walk-up:
+the directory you invoke from is the project, or it is a clean error.
 
 **CLI startup stays cheap.** `commands.py` imports the engine *inside* the
 command callbacks and builds the rich console lazily, so `lc --help` and
@@ -279,8 +325,213 @@ user owns:
   `--no-sync`'s real home is containerized mode (layer 6), where the host
   `.venv` is inert. Don't add a flag whose only user is a test — stub
   `project._run` instead.
+## Key Invariants (layer 5)
+
+**The seam is a pure argv rewrite.** Every mechanism is a
+`Backend.wrap(policy, argv) -> argv'` — a function turning a command into
+*a different command that sandboxes itself*. Seatbelt is natively that
+shape; Landlock is not (it is a self-restriction), which is exactly what
+`lightcone/_sandbox_exec.py` exists to fix. Because both reduce to argv,
+`boundary.run` never branches on platform, and **every backend is fully
+testable on a host that cannot run it** — `tests/test_sandbox_wrap.py`
+checks the Landlock wrap and the generated SBPL on whatever machine is
+running, with no privileges. Keep `wrap` pure: no temp files, no file
+descriptors, no global state. `tests/test_sandbox_wrap.py::test_wrap_is_pure`
+pins it.
+
+**`detect()` in `sandbox/boundary.py` holds the only `sys.platform`
+branch.** Everything downstream branches on `Capability.kind`, a *value*.
+Adding bubblewrap or podman later is one module plus one line there.
+
+**Three types, deliberately distinct** (`sandbox/model.py`): `Policy` is
+*what we will enforce* (mechanism-free path sets), `Capability` is *what
+this host can do* (the probe's answer), `Attestation` is *what was
+actually enforced* (spec §7's manifest field, derived from the flags
+applied — never from what the mechanism matrix says should have
+happened). Collapsing any two of them is how a sandbox starts lying.
+
+**`Unavailable` is a real backend, not a special case.** It satisfies the
+protocol, wraps to the argv it was given, and attests `fs: open`. Saying
+so is the caller's job; pretending is nobody's. There is deliberately
+**no flag surface around the sandbox** — no opt-out, no require, no
+debug dump. Enforcement always happens where a mechanism exists, and a
+host without one gets the downgrade note, not a choice.
+
+**A denial is never invisible.** `denial.explain()` is a best-guess
+heuristic over the child's stderr and is *allowed to return nothing* —
+a command can swallow the `PermissionError` or rewrap it. That is why
+`denial.trailer()` fires on **every** nonzero sandboxed exit,
+unconditionally. Both fallbacks are pinned in `tests/test_sandbox_denial.py`.
+
+**The exec tier is per-file, and read ≠ execute.** `/usr` is readable (the
+dynamic linker needs it) and never executable — `/usr/bin` holds `bash`
+and `latex` alike, so a directory grant there would admit every
+undeclared tool on the host and leave the layer enforcing nothing.
+
+**Three things are load-bearing and non-obvious**, each found by a real
+failure and each now pinned by a test:
+
+| Grant | Without it |
+|---|---|
+| the realpath'd **ELF loader** in the exec set | *every* dynamically linked binary fails EACCES — bash and python included |
+| **read** on the uv-managed interpreter's install root | `Failed to import encodings module` — the stdlib sits beside the binary, outside the project and outside `/usr` |
+| **read** on `/dev/urandom` | `failed to get random numbers` — CPython seeds hash randomization before `main` |
+
+**Never grant EXECUTE on a directory that could be a system prefix.**
+Landlock unions rights over ancestors, so a single EXECUTE grant on
+`/usr` silently outranks the entire per-file allowlist and leaves the
+layer enforcing nothing — while every test still passes, because the
+allowlisted binaries are exactly the ones that were going to work. This
+shipped once: the venv interpreter's *install root* was granted EXECUTE
+so the resolved symlink target would be runnable, which is `/usr` for
+any venv built on a system python (`uv venv --python-preference
+only-system`, most CI images, HPC site pythons). The grant is on the
+interpreter **file**; only READ goes to the install root, for the stdlib.
+`test_a_system_interpreter_does_not_make_the_whole_prefix_executable`
+pins it.
+
+**The env overlay belongs to the seam, not to the parent and not to each
+backend.** `boundary.env_argv()` composes `policy.env` into an `env K=V …`
+prefix *inside* the wrap, once, for every mechanism — never merged into
+the `subprocess` environment, because everything *outside* the rewrite
+must keep the real one. `uv` resolves its cache from `XDG_CACHE_HOME` and
+its managed interpreters from `XDG_DATA_HOME`; overlaying those for the
+`uv run` hop points it at a throwaway `mkdtemp` that `scope()` then
+deletes, so every probe re-downloads the world, air-gapped hosts fail
+outright, and `~/.config/uv/uv.toml` and `~/.netrc` go missing.
+
+Two rules, and the second was learned the hard way. **If `prefix` is
+outside the boundary, nothing the boundary imposes may reach it.** And
+**anything every backend must do belongs to the seam, not to the
+backends** — while each applied its own overlay, `Unavailable` applied
+none, so an unenforced run silently got a different environment as well
+as no enforcement. A mechanism added later cannot forget what it never
+had to remember.
+
+**The shim stays alone.** `lightcone/_sandbox_exec.py` imports nothing but
+the stdlib and nothing from lightcone — `lightcone` is a namespace package
+with no `__init__`, so `python -m lightcone._sandbox_exec` executes that
+file and nothing else. It runs on every sandboxed exec; an engine import
+there would put click, rich, and the astra stack on that path. Two tests
+pin it. Its setup failures exit the reserved code **97**, distinguishable
+from anything a command could return, and it never falls through to
+running the command unsandboxed.
+
+**Layer boundaries showed up as parameters we did *not* add.**
+`writable_project`, output-dir write scope, scratch dirs, `in_container()`,
+and the `podman*`/`pod*` attestation branches all belong to layers 4 and 6
+and are absent, not stubbed.
+
+**The macOS profile is vendored, not authored.**
+`sandbox/profiles/{base,network,platform-defaults}.sbpl` come from the codex CLI
+(itself Chrome-derived), with a provenance header naming the upstream
+commit and a single `LIGHTCONE DELTA`. The macOS read baseline is not
+derivable from first principles — it is a list of things that break,
+found one production failure at a time: `/dev/dtracehelper`, the
+`/dev/fd` and pty regexes, firmlink-parent traversal under
+`/System/Volumes/Data`, the `opendirectoryd.libinfo` lookup without which
+`getpwuid()` raises `KeyError`, `/opt/homebrew/lib`. Keep them
+near-verbatim so `diff` against upstream stays the re-sync tool; put our
+own rules in the generator, not in the vendored text. The one delta —
+upstream's blanket `(allow process-exec)`, which exists because codex
+does not restrict exec — is pinned by a test so a re-sync cannot silently
+restore it.
+
+**Not controlling the network takes more than allowing sockets.** On
+macOS, name resolution and TLS trust go through *mach services*
+(`SystemConfiguration.DNSConfiguration`, `configd`, `SecurityServer`,
+`trustd.agent`, `ocspd`), which the base's `(deny default)` blocks —
+`(allow network*)` opens the socket families and nothing else. That is
+why `network.sbpl` is emitted unconditionally: without it the
+attestation reads `network: allowed` on a host where every lookup fails,
+which is worse than either honest answer. Linux needs no equivalent
+because Landlock gates the filesystem only.
+
+**One resolution rule for the utility allowlist**, `policy.utility()`.
+Anything that hardcodes a tool's path instead is a second answer to the
+same question, and the two diverge the moment a host keeps its copy
+somewhere else. `env` is the load-bearing case: the seam execs it to
+apply the overlay, so a stale `/usr/bin/env` is not a missing
+convenience but a denial on the first exec of *every* run — `/usr` is
+readable and never executable. Pinned by
+`test_the_env_the_seam_execs_is_one_the_policy_granted`, which points
+the search path at a copy, because a test against the real path passes
+on this host and ships the bug.
+
+**A derived read root may never be `$HOME` or above** (`_stdlib_root`).
+The interpreter's install root is granted READ for the stdlib beside it,
+and for an interpreter installed straight into `~/bin` that root *is*
+the home directory — silently undoing the private-`$HOME` design, which
+is the whole point of the environment overlay. Reading `pyvenv.cfg`'s
+`base-prefix` instead does not help: it reports the same directory. The
+guard is the fix; failing loudly on a layout nobody uses beats voiding
+the guarantee for the people who do.
+
+**SBPL is last-match-wins; Landlock unions.** This asymmetry decides
+where a rule can live, and it cuts both ways. A later `(deny …)` can take
+back an earlier allow, which is how `_read_only_guard` claws back the
+write the vendored defaults grant on `/tmp`; Landlock has no equivalent —
+a narrower rule only ever *adds* — so the Linux side solves that by
+leaving the root out of the policy (`policy._write_roots`).
+
+But the same asymmetry means SBPL does **not** give nesting for free.
+Landlock unions, so a writable output directory inside a readable project
+tree just works. In SBPL the guard's `(deny file-write* PROJECT)` would
+revoke it — which is why `generate_profile` restates the **write tier
+last**, after the guard. Get that order wrong and layer 4 materializes on
+Linux and refuses on macOS, with the golden test still green because it
+only checks that the guard is present. Verified empirically, not assumed.
+
 ### Recorded decisions
 
+- **Reads stay restricted, and the OS baseline is ours to maintain.**
+  Codex restricts reads too now, but its Linux read baseline is a *mount
+  table*, not a path list — there is nothing to adopt there. Keeping the
+  FHS allowlist is a deliberate choice about which way the failure
+  points: a missing allowlist entry is a **loud** `EACCES` that gets
+  reported and fixed once for everyone, while any exclusion-based scheme
+  fails **silently**, in exactly the thing the layer exists to prevent.
+  Worth remembering when the list next comes up short: none of the three
+  bugs we hit (ELF loader, interpreter root, `/dev/urandom`) came from
+  the list — two were derived paths and one was already in it.
+- **Devices, `/proc`, and `/sys` are granted generously, on purpose.**
+  Writable: the terminal set (`/dev/tty`, `/dev/pts`, `/dev/ptmx`), the
+  discard devices (`/dev/null`, `/dev/zero`, `/dev/full`), and `/proc`
+  and `/sys` whole. The threat model is accidental leakage, not a hostile
+  recipe (spec §7), and **none of these is a channel undeclared *inputs*
+  arrive through** — that is the test to apply when the next one comes
+  up. Tightening them buys nothing and costs real failures:
+  `pty.openpty()`, `/dev/full` ENOSPC handling, `oom_score_adj`, MPI and
+  CUDA runtimes poking `/sys`.
+  It also reads more permissive than it is — Landlock only ever *removes*
+  access, never adds it, so ordinary Unix permissions remain the real
+  gate (devpts hands each pty to its allocating user at 0620; nearly all
+  of `/proc` and `/sys` is root-owned). Granting them just stops lc
+  adding a second, more confusing denial on top of the OS's own.
+  The line is drawn at `/dev/urandom` and `/dev/random`, which stay
+  read-only: writing those seeds the *host's* pool — a side effect on
+  the machine rather than on the run.
+  The general rule, learned here: **a grant whose absence produces an
+  unattributable error is one to make freely.** Without devpts,
+  `pty.openpty()` raises `OSError: out of pty devices` — naming neither
+  a path nor the sandbox, so `denial.explain()` can extract nothing and
+  only the trailer fires. A denial the user cannot act on is worse than
+  the access it withheld.
+- **Landlock stays the Linux mechanism; bubblewrap is not adopted.**
+  Codex moved its Linux default to bwrap+seccomp (Landlock is now
+  `--use-legacy-landlock`) because it needs rights *subtraction*:
+  `read_only_subpaths` inside a writable root, to stop an agent writing
+  `.git/hooks` and escalating. Landlock cannot express that, and their
+  own older code silently dropped the carve-out on Linux as a result.
+  **That requirement is not ours** — spec §7's threat model is accidental
+  leakage, not a hostile recipe, and our policy's exceptions always
+  *widen* (a writable output dir inside a readable tree), which is
+  exactly the direction union semantics handle for free. The cost would
+  be real: a bundled `bwrap` binary, a user-namespace probe, a WSL1
+  refusal, and the Ubuntu 24.04 AppArmor wall that made
+  `hermeticity-enforcement.md` §3 call bwrap "an opportunistic upgrade,
+  never the requirement". Re-add triggers: a policy shape that genuinely
+  needs subtraction, or ambient `bwrap` becoming universal.
 - **The ASTRA `container:` directive is ignored, entirely.** astra's
   boilerplate writes `container: python:3.12-slim` into `astra.yaml`, and
   lightcone-cli does nothing with it: not read, not stripped, not
@@ -299,6 +550,59 @@ user owns:
   pins the absence, so re-adding it is a deliberate act.
 - Scaffolded file bodies stay descriptive of what works today — see the
   trimmed `results/README.md` for the same reason.
+- **The Landlock policy travels as JSON on argv, not as an inherited
+  ruleset FD** (spec §7 specifies the FD, built before fork and passed
+  with `pass_fds`). The shim builds and applies the ruleset itself, which
+  is also what the codex CLI does. This makes `wrap()` a pure function and
+  closes §11's own blocking spike — *"does the Landlock FD survive
+  `uv run`'s spawn/exec chain? an FD cannot be reopened"* — by making the
+  question moot. It also survives into a container later, where a host FD
+  cannot. The document is deliberately *not* versioned: the wrap always
+  invokes the shim on lc's own interpreter, so writer and reader are the
+  same lightcone-cli by construction, and a compatibility field would be
+  backward-compat machinery with no consumer.
+- **Network is not controlled, on either platform**, by decision. §7's
+  matrix has Seatbelt record `denied`; the generated SBPL explicitly
+  allows network and both platforms attest `network: allowed`. Symmetric
+  and honest — nothing pretends to a control it does not apply. (codex
+  ships a seccomp denylist for this; adding one is a live option, not a
+  gap we are hiding.)
+- **`lc run` has no rename guard and no sandbox flags.** §4's guard
+  against `lc run <output_id>` existed only for muscle memory from the
+  pre-rebuild CLI — backward compatibility we do not promise — and §7's
+  `--require-sandbox` / `--no-sandbox` / `--sandbox-debug` are all
+  absent: there is no hatch to escape the sandbox, so there is nothing
+  for the flags to switch. The verb takes a command and nothing else.
+- **`lc run` does not detect containerized mode.** The
+  `[tool.lightcone.image]` refusal was removed with the rest of the
+  future-facing surface; a system-layer declaration is currently inert,
+  like `astra.yaml`'s `container:` key.
+- **The denial's remedies are only what works today** — `uv add` for a
+  Python package, plus the ASTRA input declaration. Nothing in a denial
+  message names a verb, flag, or declaration that does not exist.
+- **No manifest is written, and no serializer for one.** A probe has no
+  output (§4), so the `Attestation` is returned and printed rather than
+  persisted. An earlier draft carried a `to_manifest()` with no caller —
+  deleted, because "no dead code" applies to this layer's own
+  conveniences too. It lands with layer 4, which is what needs it.
+- **`/tmp` is dropped from the write scope when the project lives under
+  it**, which §7 does not contemplate. Granting `/tmp` unconditionally
+  would make the tree of a `/tmp`-hosted project writable and silently
+  void the read-only-tree guarantee. `TMPDIR` points into the private
+  scope regardless, so `tempfile` works either way. The drop is
+  Linux-only in effect: on macOS the vendored defaults grant
+  `/private/tmp` write unconditionally and the guard only claws back our
+  *read* roots, so the surrounding `/tmp` stays writable there. The
+  project itself is protected on both — it is a read root, so the guard
+  names it — and `/tmp` writability is not a channel undeclared inputs
+  arrive through, so the asymmetry is recorded rather than closed.
+- **`/run` is granted whole**, where codex names only
+  `/run/current-system/sw`. It reaches `/run/user/$UID` — dconf, the
+  gnupg and keyring sockets, portal state. Kept deliberately: the test
+  is whether undeclared *inputs* arrive through a path, and runtime
+  sockets are not something a recipe accidentally reads data from.
+  `/etc/resolv.conf` is a symlink into `/run` wherever systemd-resolved
+  is in use, so the grant also keeps DNS working.
 
 ## Extending the Codebase
 
@@ -309,6 +613,9 @@ user owns:
 | Add a value to the scaffold | `src/lightcone/engine/templates/__init__.py` | Derive it from the environment or our own metadata before introducing a constant |
 | Change what gets converged | `src/lightcone/engine/project.py` + `tests/test_project.py` | `_Converger.item` / `.file`; repairs only ever append |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
+| Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
+| Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |
+| Change a denial message | `sandbox/denial.py` + `tests/test_sandbox_denial.py` | Remedies must be copy-pasteable and real *today*; the trailer stays unconditional |
 
 ## Test Patterns
 
@@ -326,6 +633,56 @@ user owns:
   package data), strict substitution, and the `.gitignore` entry/repair
   logic. Content assertions live here; `test_project.py` asserts only that
   the file written *is* the template, so a template edit touches one file.
+
+The sandbox suite splits along the seam, which is what makes it cheap:
+
+- `tests/test_sandbox_policy.py`, `test_sandbox_wrap.py`,
+  `test_sandbox_denial.py` — **pure, and run on every OS.** The policy is
+  data, `wrap` is a function, and the denial renderer is a function, so
+  the Landlock wrap and the macOS SBPL are both checked on Linux CI with
+  no privileges and nothing spawned.
+- `tests/test_sandbox_shim.py` — the shim as a **real subprocess**,
+  because its contract *is* its argv and exit codes. Needs no kernel
+  support: every case here is a setup failure or a pure-function check.
+- `tests/test_sandbox_enforcement.py` — **the kernel's answer**, written
+  once for both mechanisms. See below; this is the one that matters.
+- `tests/test_run.py` — what `lc run` decides *before* it execs: the
+  current-directory project check, declared inputs, the uv hop. Nothing
+  spawns.
+
+Note the autouse `tools` fixture stubs `engine.project._run` only —
+sandbox tests spawn real processes deliberately, and are the one place in
+the suite that does.
+
+### The enforcement suite, and why it is shaped that way
+
+`test_sandbox_enforcement.py` is the only file that can tell you the
+layer works. Four properties, each of which it would be easy to lose:
+
+1. **One suite, both mechanisms.** The same tests run Landlock on Linux
+   and Seatbelt on macOS, parameterised by `detect()` alone. That is the
+   seam paying rent — and it is the only way the two stay honest, since
+   *a leak only Linux catches is a leak*. macOS is in the CI matrix for
+   exactly this: it is the sole place the generated SBPL is ever
+   executed.
+2. **The real policy.** It runs against `probe_policy` — what an actual
+   `lc run` gets — never a policy hand-built to make the point. A test
+   that grants exactly what it is testing cannot discover that the
+   *shipped* policy grants something else. (This is how `/usr` sat in the
+   exec set through a full green suite.)
+3. **Real leaks, tried literally.** Undeclared *tools* are executed,
+   undeclared *libraries* are `dlopen`ed, undeclared *data* is read —
+   the three channels of spec §7. Assertions about path sets belong in
+   `test_sandbox_policy.py`; this file runs the command.
+4. **It cannot pass by not running.** `LC_SANDBOX_TESTS_REQUIRED=1` is
+   set in CI, which turns "no mechanism here, skip" into a hard failure.
+   Two tests cover the guard itself, because an unfailing guard is worse
+   than none.
+
+**When you add an enforcement test, mutation-check it**: run the same
+command through `Unavailable()` and confirm it *succeeds*. A denial test
+that would pass unsandboxed is testing nothing, and the failure mode is
+silent. Every leak case here was checked that way.
 
 ## Conventions
 

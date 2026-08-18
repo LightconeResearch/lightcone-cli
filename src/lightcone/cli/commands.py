@@ -23,8 +23,7 @@ logger = logging.getLogger(__name__)
 @functools.cache
 def _console() -> Console:
     """The rich console, built on first use to avoid startup cost at each
-    invocation of the cli even when the console is not needed.
-    """
+    invocation of the cli even when the console is not needed."""
     from rich.console import Console
 
     return Console()
@@ -152,3 +151,34 @@ def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: 
     if lines:
         lines.append("")  # space the verdict off the list
     _console().print("\n".join([*lines, verdict]))
+
+
+# =============================================================================
+# lc run
+# =============================================================================
+
+
+@main.command(context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
+@click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
+def run(command: tuple[str, ...]) -> None:
+    """Run COMMAND in the project environment, inside the sandbox.
+
+    Byte-for-byte the environment recipes get — same lock, same
+    ``.venv``, same boundary — so a probe that works means a recipe
+    will. Reads the project tree and the inputs declared in
+    ``astra.yaml``; writes nowhere but its own temporary scope.
+    """
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.project import current_project
+
+    outcome = engine_run.probe(current_project(), command)
+    if outcome.notes:
+        # click.echo, not rich: these lines are built to be pasted, and
+        # reflowing a `uv add` remedy would break the one thing the
+        # denial message is for.
+        click.echo("\n".join(["", *outcome.notes]), err=True)
+    # `Popen.returncode` is negative for a signal, and `sys.exit(-9)`
+    # truncates to 247. `lc run` is a proxy for the command it runs, so
+    # an OOM-killed probe comes back as the shell's conventional 128+N.
+    code = outcome.returncode
+    sys.exit(128 - code if code < 0 else code)

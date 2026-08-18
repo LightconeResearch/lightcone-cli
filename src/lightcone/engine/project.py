@@ -175,7 +175,7 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
 
     directory = directory.resolve()
 
-    _require_uv()
+    require_uv()
 
     c = _Converger(write=write)
 
@@ -228,7 +228,8 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     return c.report
 
 
-def _require_uv() -> None:
+def require_uv() -> None:
+    """Refuse early when uv is absent — it is the environment substrate."""
     if shutil.which("uv") is None:
         raise ProjectError(
             "uv is required (the environment substrate). Install it: "
@@ -297,6 +298,28 @@ def project_name(directory: Path) -> str:
     return name or "analysis"
 
 
+def current_project(directory: Path | None = None) -> Path:
+    """*directory* (default: the working directory), taken as the project root.
+
+    ``lc run`` assumes it is invoked from the root, so the only check is
+    that the environment is actually there: ``pyproject.toml``,
+    ``uv.lock``, ``.venv``. An ``astra.yaml`` is deliberately not
+    required — a command can be probed in any uv project, spec or no
+    spec. There is no walk-up: the directory you are in is the directory
+    that is used, or it is an error.
+    """
+    directory = (directory or Path.cwd()).resolve()
+    missing = [
+        name for name in ("pyproject.toml", "uv.lock", ".venv") if not (directory / name).exists()
+    ]
+    if missing:
+        raise ProjectError(
+            f"{directory} is missing {', '.join(missing)} — not a project "
+            "root. Run `lc init` to converge one."
+        )
+    return directory
+
+
 # =============================================================================
 # The external-tool seam
 # =============================================================================
@@ -320,8 +343,7 @@ def child_env() -> dict[str, str]:
     Every uv invocation names its project explicitly, so an activated
     environment elsewhere is never what we mean — uv agrees, ignoring it and
     warning that it did, once per invocation, which would otherwise land in
-    the report and in ``--json``. Explicit flags beat ambient variables
-    (spec §13); the launcher's broader ``UV_*`` scrub lands with layer 3.
+    the report and in ``--json``. Explicit flags beat ambient variables.
     """
     return {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
@@ -383,7 +405,7 @@ def _lock_is_current(directory: Path) -> bool:
 def _env_is_current(directory: Path) -> bool:
     """Whether ``.venv`` still satisfies ``uv.lock``.
 
-    Set-level, not byte-level, as spec §3 accepts: uv catches packages the
+    Set-level, not byte-level: uv catches packages the
     lock requires and the environment lacks, but not extras installed by
     hand, which leave ``--check`` reporting "would make no changes". What
     bounds what a recipe can import is the sandbox, not this probe.
@@ -395,7 +417,7 @@ def _env_is_current(directory: Path) -> bool:
 # --exact because a plain sync is additive; --compile-bytecode because the
 # environment is read-only at execution time, so a recipe cannot write .pyc
 # as it imports — paying compilation once here instead of on every recipe
-# run (spec §4, §6, §7).
+# run.
 _SYNC_ARGS = ["sync", "--locked", "--exact", "--compile-bytecode"]
 
 
@@ -403,11 +425,11 @@ def _uv(c: _Converger, args: list[str], *, directory: Path) -> None:
     """Run uv against *directory*, recording anything it warns about.
 
     Every invocation carries an explicit ``--project``: uv's own walk-up
-    discovery is never trusted (spec §4). Nothing about linking or caching
+    discovery is never trusted. Nothing about linking or caching
     is overridden — uv's defaults already share package content between
     projects — and ``--system-site-packages`` is never used, since it would
     make packages outside the lock importable, which is what the
-    environment model exists to prevent (spec §7, G6).
+    environment model exists to prevent.
     """
     for warning in _check_call(["uv", *args, "--project", str(directory)], cwd=directory):
         c.warn(f"uv: {warning}")

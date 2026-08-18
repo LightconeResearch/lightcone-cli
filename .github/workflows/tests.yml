@@ -4,14 +4,35 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `ready_for_review` is not in the default set, and this job is gated
+    # on `draft == false` — so without it a PR opened as a draft and then
+    # marked ready never runs at all until someone happens to push again.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
   test:
     if: github.event_name == 'push' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      # Both mechanisms are enforced by the same suite, so a failure on one
+      # OS is exactly the information the other run is there to provide.
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        include:
+          # macOS is where Seatbelt is the mechanism, and the only place
+          # the generated SBPL is ever executed. One interpreter is
+          # enough: what differs here is the kernel, not the python.
+          - os: macos-latest
+            python-version: "3.13"
+
+    env:
+      # Enforcement tests skip themselves where no mechanism exists. On CI
+      # that must be a failure instead: a runner that quietly loses
+      # Landlock or Seatbelt would otherwise report green while testing
+      # nothing at all.
+      LC_SANDBOX_TESTS_REQUIRED: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +46,34 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --group dev
+
+      - name: Report the sandbox this runner can build
+        # Printed before the suite so a failure downstream can be read
+        # against what this host could actually enforce, and against the
+        # exec set it resolved. The allowlist resolves off a fixed search
+        # path, so where a tool lives differs per OS and a missing one is
+        # otherwise a very confusing "Operation not permitted".
+        run: |
+          python -c "
+          import shutil, tempfile
+          from pathlib import Path
+          from lightcone.engine.sandbox import detect
+          from lightcone.engine.sandbox.policy import (
+              EXEC_ALLOWLIST, _UTILITY_PATH, probe_policy,
+          )
+          c = detect().capability
+          print(f'mechanism: {c.kind}  abi: {c.landlock_abi}  {c.detail}')
+          print(f'utility search path: {_UTILITY_PATH}')
+          policy = probe_policy(Path(tempfile.mkdtemp()) / 'proj')
+          granted = set(policy.execute)
+          for name in EXEC_ALLOWLIST:
+              found = shutil.which(name, path=_UTILITY_PATH)
+              if found is None:
+                  print(f'  {name:10} not on this host')
+              elif Path(found).resolve() not in granted:
+                  print(f'  {name:10} {found} -> {Path(found).resolve()}  NOT GRANTED')
+          print(f'exec set: {len(policy.execute)} paths, write: {len(policy.write)}')
+          "
 
       - name: Run tests
         run: pytest

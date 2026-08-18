@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -48,7 +49,24 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     from lightcone.engine import project
 
     monkeypatch.setattr(project, "_run", fake_run)
-    monkeypatch.setattr(project.shutil, "which", lambda name, path=None: f"/usr/bin/{name}")
+    # Narrowly, for two reasons. `project.shutil` *is* the global
+    # `shutil` module, so a blanket fake here patches `shutil.which` for
+    # the whole suite — it did, and the sandbox tests built their exec
+    # set from it, every tool resolving to a path that exists on Linux
+    # and not on macOS, so the enforcement suite tested a policy no user
+    # would ever get. And the answer is never invented: convergence asks
+    # only *whether* uv and git exist, and `_run` is faked too, so
+    # nothing ever execs what comes back. Where the tool is really
+    # installed, that is what is returned; where it is not, the stub
+    # says so rather than naming a plausible path that isn't there.
+    real_which = shutil.which
+
+    def fake_which(name: str, path: str | None = None) -> str | None:
+        if name in ("uv", "git"):
+            return real_which(name) or f"/stub/{name}"
+        return real_which(name, path=path)
+
+    monkeypatch.setattr(project.shutil, "which", fake_which)
     return calls
 
 
