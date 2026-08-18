@@ -151,8 +151,16 @@ def generate_profile(policy: Policy) -> str:
         [
             read_profile(BASE_PROFILE),
             _tier(
+                # `file-map-executable` rides with read, not with exec.
+                # A venv's compiled extension modules (`.so`/`.dylib`)
+                # live under site-packages — inside the *project*, so in
+                # the read tier — and macOS gates `dlopen` on mapping
+                # rather than on exec. Without this, `import numpy`
+                # fails on macOS alone. Landlock does not gate mmap at
+                # all, so read already implies it there: granting it here
+                # is what makes the two platforms mean the same thing.
                 "read: project tree + declared inputs",
-                "(allow file-read* file-test-existence",
+                "(allow file-read* file-test-existence file-map-executable",
                 "READ",
                 len(policy.read),
             ),
@@ -163,7 +171,11 @@ def generate_profile(policy: Policy) -> str:
                 len(policy.execute),
             ),
             ";; network: not controlled by lc, on any platform (recorded as `allowed`)",
-            "(allow network* system-socket)",
+            # Separate forms: `network*` and `system-socket` are distinct
+            # operation families, and one malformed form voids the whole
+            # profile rather than just its own line.
+            "(allow network*)",
+            "(allow system-socket)",
             "",
             read_profile(PLATFORM_DEFAULTS),
             _read_only_guard(policy),

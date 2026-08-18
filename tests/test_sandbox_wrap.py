@@ -213,6 +213,16 @@ def test_the_platform_defaults_carry_the_hard_won_entries(policy: Policy) -> Non
         assert needle in profile, needle
 
 
+def test_the_read_tier_can_map_executables(policy: Policy) -> None:
+    """A venv's compiled extension modules sit under site-packages —
+    inside the project, so in the *read* tier — and macOS gates `dlopen`
+    on mapping. Without this `import numpy` fails on macOS alone, while
+    Landlock (which does not gate mmap) is fine either way."""
+    profile = seatbelt.generate_profile(policy)
+    read_form = profile[profile.index(";; read: project tree") :].splitlines()[1]
+    assert "file-map-executable" in read_form, read_form
+
+
 def test_the_loader_can_map_system_libraries(policy: Policy) -> None:
     """dyld is the mach-o twin of the ELF loader tier: without
     `file-map-executable` on the system frameworks nothing dynamically
@@ -227,7 +237,7 @@ def test_the_profile_does_not_restrict_the_network(policy: Policy) -> None:
     platform, so the profile says so rather than denying what the
     attestation then calls `allowed`."""
     profile = seatbelt.generate_profile(policy)
-    assert "(allow network* system-socket)" in profile
+    assert "(allow network*)" in profile
     assert "(deny network" not in profile
     assert SeatbeltBackend().attest(policy).network == "allowed"
 

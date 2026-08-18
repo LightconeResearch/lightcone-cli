@@ -561,12 +561,8 @@ The sandbox suite splits along the seam, which is what makes it cheap:
 - `tests/test_sandbox_shim.py` — the shim as a **real subprocess**,
   because its contract *is* its argv and exit codes. Needs no kernel
   support: every case here is a setup failure or a pure-function check.
-- `tests/test_sandbox_landlock.py` — **real enforcement, no fakes**, with
-  a module-level `skipif` on `_sandbox_exec.abi() == 0`. A mocked sandbox
-  proves nothing, so where the mechanism is absent the file skips whole.
-  Its policies are **built by hand**, not by `probe_policy` — a test
-  grants exactly what it is testing, which is also what lets fixtures live
-  under `tmp_path` instead of `$HOME`.
+- `tests/test_sandbox_enforcement.py` — **the kernel's answer**, written
+  once for both mechanisms. See below; this is the one that matters.
 - `tests/test_run.py` — what `lc run` decides *before* it execs:
   discovery, the containerized refusal, the rename guard, declared
   inputs, the uv hop. Nothing spawns.
@@ -574,6 +570,36 @@ The sandbox suite splits along the seam, which is what makes it cheap:
 Note the autouse `tools` fixture stubs `engine.project._run` only —
 sandbox tests spawn real processes deliberately, and are the one place in
 the suite that does.
+
+### The enforcement suite, and why it is shaped that way
+
+`test_sandbox_enforcement.py` is the only file that can tell you the
+layer works. Four properties, each of which it would be easy to lose:
+
+1. **One suite, both mechanisms.** The same tests run Landlock on Linux
+   and Seatbelt on macOS, parameterised by `detect()` alone. That is the
+   seam paying rent — and it is the only way the two stay honest, since
+   *a leak only Linux catches is a leak*. macOS is in the CI matrix for
+   exactly this: it is the sole place the generated SBPL is ever
+   executed.
+2. **The real policy.** It runs against `probe_policy` — what an actual
+   `lc run` gets — never a policy hand-built to make the point. A test
+   that grants exactly what it is testing cannot discover that the
+   *shipped* policy grants something else. (This is how `/usr` sat in the
+   exec set through a full green suite.)
+3. **Real leaks, tried literally.** Undeclared *tools* are executed,
+   undeclared *libraries* are `dlopen`ed, undeclared *data* is read —
+   the three channels of spec §7. Assertions about path sets belong in
+   `test_sandbox_policy.py`; this file runs the command.
+4. **It cannot pass by not running.** `LC_SANDBOX_TESTS_REQUIRED=1` is
+   set in CI, which turns "no mechanism here, skip" into a hard failure.
+   Two tests cover the guard itself, because an unfailing guard is worse
+   than none.
+
+**When you add an enforcement test, mutation-check it**: run the same
+command through `Unavailable()` and confirm it *succeeds*. A denial test
+that would pass unsandboxed is testing nothing, and the failure mode is
+silent. Every leak case here was checked that way.
 
 ## Conventions
 

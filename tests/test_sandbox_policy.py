@@ -131,17 +131,10 @@ def test_the_minimal_device_set_is_covered(built: policy_module.Policy) -> None:
         device = Path("/dev") / node
         if device.exists():
             assert device in granted, device
-    if Path("/dev/tty").exists():
-        assert Path("/dev/tty") in built.write
-
-
-def test_a_command_can_allocate_its_own_pty(built: policy_module.Policy) -> None:
-    """devpts and ptmx are writable so pexpect, pytest's capture, and any
-    subprocess wanting a terminal work. Granting the whole directory is
-    deliberate — the threat model is accidental leakage, not a hostile
-    recipe, and Landlock only ever removes access, so devpts' own 0620
-    per-user ownership still applies."""
-    for node in ("/dev/pts", "/dev/ptmx"):
+    # The terminal set specifically: writable, so anything opening the
+    # controlling terminal or allocating a pty works. That it *actually*
+    # works is `test_sandbox_enforcement.py`'s job.
+    for node in ("/dev/tty", "/dev/pts", "/dev/ptmx"):
         device = Path(node)
         if device.exists():
             assert device.resolve() in built.write, node
