@@ -174,3 +174,25 @@ def test_without_the_flag_an_unenforced_run_is_allowed() -> None:
     from lightcone.engine.sandbox.boundary import Unavailable
 
     engine_run._enforce_requirement(Unavailable(), require=False)  # does not raise
+
+
+# ---- --sandbox-debug ------------------------------------------------------
+
+
+def test_the_debug_dump_names_every_granted_path(project: Path) -> None:
+    """`--sandbox-debug` answers "why was *that* denied", so a summary
+    will not do: every path the boundary grants has to appear."""
+    from lightcone.engine import sandbox
+
+    with sandbox.scope(project) as policy:
+        backend = sandbox.disabled()
+        lines = engine_run.describe(project, policy, backend.attest(policy), ["bash", "-c", "true"])
+
+    dump = "\n".join(lines)
+    assert str(project) in dump
+    for group in (policy.read, policy.write, policy.execute):
+        for path in group:
+            assert str(path) in dump, path
+    for key, value in policy.env.items():
+        assert f"{key}={value}" in dump
+    assert "bash -c true" in dump

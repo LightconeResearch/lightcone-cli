@@ -279,8 +279,19 @@ def test_a_bare_run_announces_the_shell(
     """A shell that looks like your own but cannot write the project is
     worse than no shell if you do not know it is there."""
     result = runner.invoke(main, ["run"])
-    assert "sandboxed" in result.output
+    assert "opening a shell" in result.output
+    assert "(sandboxed)" in result.output
     assert spawned[0]["command"] == []
+
+
+def test_an_unsandboxed_shell_does_not_claim_to_be_sandboxed(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    """The announcement is the only signal before an interactive shell
+    takes the terminal, so it is the one line that must never overstate
+    what is enforcing."""
+    result = runner.invoke(main, ["run", "--no-sandbox"])
+    assert "NOT sandboxed" in result.output
 
 
 def test_the_rename_guard_renders_as_a_clean_error(runner: CliRunner, project: Path) -> None:

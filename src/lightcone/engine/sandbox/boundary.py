@@ -153,13 +153,12 @@ def run(
     """
     wrapped = [*prefix, *backend.wrap(policy, [*env_argv(policy), *argv])]
     attestation = backend.attest(policy)
-    # `policy.env` is deliberately **not** merged here. The overlay is
-    # applied by the wrap — the shim on Linux, `env` inside `sandbox-exec`
-    # on macOS — because everything outside the rewrite must keep the real
-    # environment: `uv` resolves its cache from `XDG_CACHE_HOME` and its
-    # managed interpreters from `XDG_DATA_HOME`, so redirecting those for
-    # the `uv run` hop would point it at an empty, throwaway cache and
-    # re-download the world on every probe (and fail outright offline).
+    # `policy.env` is deliberately **not** merged here: it went inside
+    # the wrap, above, via :func:`env_argv`. Everything *outside* the
+    # rewrite has to keep the real environment — `uv` resolves its cache
+    # from `XDG_CACHE_HOME` and its interpreters from `XDG_DATA_HOME`, so
+    # overlaying those for the `uv run` prefix would point it at a
+    # throwaway directory `scope()` then deletes.
     child_env = {**env, SANDBOX_ENV: attestation.mechanism}
 
     notes: list[str] = []

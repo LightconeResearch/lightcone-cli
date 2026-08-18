@@ -199,9 +199,17 @@ def run(command: tuple[str, ...], sandboxed: bool, debug: bool, require: bool) -
 
     project = find_project()
 
-    if not command and not debug:
-        _console().print(
-            "[cyan]opening a shell inside the recipe environment (sandboxed)[/cyan]"
+    if not command:
+        # On stderr, like every other line lc says about a run: the
+        # command's stdout is the command's. And it must not claim
+        # enforcement it is about to switch off — this line is the only
+        # signal before an interactive shell takes the terminal, since
+        # the boundary's own notes do not print until the shell exits.
+        _echo(
+            [
+                "opening a shell inside the recipe environment "
+                + ("(sandboxed)" if sandboxed else "(NOT sandboxed — --no-sandbox)")
+            ]
         )
 
     outcome = engine_run.probe(

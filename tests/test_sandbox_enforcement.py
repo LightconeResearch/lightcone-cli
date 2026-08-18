@@ -31,6 +31,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -268,13 +269,9 @@ def test_an_undeclared_shared_library_cannot_be_loaded(
     """The dlopen channel, tried literally: a real native library sitting
     at a path the project never declared. Denied at open on Linux, at
     mapping on macOS — either way it must not load."""
-    stdlib_ext = next(
-        (p for p in Path(_lib_dynload()).glob("*.so")), None
-    ) or next((p for p in Path(_lib_dynload()).glob("*.dylib")), None)
-    if stdlib_ext is None:  # pragma: no cover - unusual build
-        pytest.skip("no compiled extension module to copy")
-    smuggled = outside / stdlib_ext.name
-    shutil.copy(stdlib_ext, smuggled)
+    library = _a_compiled_extension()
+    smuggled = outside / library.name
+    shutil.copy(library, smuggled)
 
     with sandbox.scope(project) as policy:
         result = shell(
@@ -288,11 +285,17 @@ def test_an_undeclared_shared_library_cannot_be_loaded(
     assert "LOADED" not in result.stdout
 
 
-def _lib_dynload() -> str:
-    """Where this interpreter keeps its compiled stdlib modules."""
-    import sysconfig
+def _a_compiled_extension() -> Path:
+    """Any real native library on this host, to smuggle somewhere undeclared.
 
-    return sysconfig.get_paths()["stdlib"] + "/lib-dynload"
+    The interpreter's own stdlib extensions are the portable source: they
+    exist on both platforms and are genuine loadable objects, unlike
+    `/usr/lib/libz.dylib`, which on modern macOS is not a file at all.
+    """
+    dynload = Path(sysconfig.get_paths()["stdlib"]) / "lib-dynload"
+    for extension in sorted(dynload.glob("*.so")) + sorted(dynload.glob("*.dylib")):
+        return extension
+    pytest.skip("no compiled extension module to copy")  # pragma: no cover
 
 
 # ---- leak channel 3: undeclared data ---------------------------------------

@@ -216,16 +216,10 @@ def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
 def _venv_python(project: Path) -> Path | None:
     """The realpath of the venv's interpreter, if there is one.
 
-    ``.venv/bin/python`` is a symlink and Landlock evaluates the resolved
-    path, so the target is what needs granting — but the two grants are
-    emphatically different. EXECUTE goes on the **file alone**: the
-    install root may be a system prefix (a venv built against the system
-    python roots at ``/usr``), and since Landlock unions rights over
-    ancestors, granting EXECUTE there would make every binary on the host
-    runnable and silently outrank the whole per-file allowlist. READ goes
-    on the install root, for the standard library beside it — without it
-    the interpreter dies before ``main`` with "Failed to import encodings
-    module".
+    Resolved, because ``.venv/bin/python`` is a symlink and Landlock
+    evaluates the target. What gets granted on it is
+    :func:`_exec_set`'s decision, and its install root is separately a
+    read root (:func:`probe_policy`) for the standard library beside it.
     """
     python = project / ".venv" / "bin" / "python"
     return python.resolve() if python.exists() else None
@@ -238,6 +232,18 @@ def _exec_set(project: Path, python: Path | None) -> list[Path]:
     ``/usr/bin`` holds ``bash`` and ``latex`` alike, so a directory grant
     there would admit every undeclared tool on the host and leave the
     layer enforcing nothing.
+
+    The interpreter is the one place that judgement is not enough, and
+    the rule is narrower than either extreme. Its **own tree** is granted
+    — a uv-managed store, a framework version directory, a Homebrew
+    Cellar — because a framework build does not exec the binary on PATH
+    at all: it re-execs itself into
+    ``Resources/Python.app/Contents/MacOS/Python``, and a grant on the
+    launcher alone leaves it unable to start. A **shared** prefix is not
+    granted (:data:`_SHARED_PREFIXES`): a venv built against the system
+    python roots at ``/usr``, and since Landlock unions rights over
+    ancestors, that single grant would make every binary on the host
+    runnable and silently outrank this whole allowlist.
     """
     paths: list[Path] = []
     bin_dir = project / ".venv" / "bin"
