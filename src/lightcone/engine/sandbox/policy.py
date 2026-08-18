@@ -111,6 +111,16 @@ _ELF_LOADER_GLOBS = (
     "/usr/lib64/ld-linux-*.so.*",
 )
 
+#: Prefixes shared with the rest of the host. An interpreter installed
+#: into one of these does not bring its own tree with it, so only the
+#: binary itself may be granted EXECUTE — granting the prefix would make
+#: every tool on the machine runnable, since Landlock unions rights over
+#: ancestors. Anything else — a uv-managed store, a framework version
+#: directory, a Homebrew Cellar — *is* the interpreter's own tree.
+_SHARED_PREFIXES = frozenset(
+    {"/", "/usr", "/usr/local", "/opt", "/opt/homebrew", "/opt/local", "/System", "/Library"}
+)
+
 #: The redirected environment, as ``variable -> subdirectory of HOME``.
 #: One mapping, so the directories that get created and the variables
 #: that point at them cannot drift apart.
@@ -235,6 +245,13 @@ def _exec_set(project: Path, python: Path | None) -> list[Path]:
         paths.append(bin_dir)
     if python is not None:
         paths.append(python)
+        # macOS framework builds `posix_spawn` themselves into
+        # `Resources/Python.app/Contents/MacOS/Python`, a *different*
+        # file from the one on PATH — so granting the launcher alone
+        # leaves the interpreter unable to start itself.
+        install_root = python.parent.parent
+        if str(install_root) not in _SHARED_PREFIXES:
+            paths.append(install_root)
     for name in EXEC_ALLOWLIST:
         found = shutil.which(name, path=_UTILITY_PATH)
         if found is not None:

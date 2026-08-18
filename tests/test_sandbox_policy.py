@@ -234,18 +234,21 @@ def test_the_venv_and_the_interpreter_behind_it_are_granted(tmp_path: Path) -> N
         assert bin_dir.resolve() in built.execute
         assert real.resolve() in built.execute
         assert install_root in built.read
-        assert install_root not in built.execute
+        # Its own tree, so EXECUTE too: a framework build re-execs itself
+        # into `Resources/Python.app/Contents/MacOS/Python`, which the
+        # binary-only grant would miss.
+        assert install_root in built.execute
 
 
 def test_a_system_interpreter_does_not_make_the_whole_prefix_executable(
     tmp_path: Path,
 ) -> None:
-    """A venv built against the system python resolves to
-    `/usr/bin/python3`, whose install root is `/usr`. Granting EXECUTE
-    there would make every binary on the host runnable — and because
-    Landlock unions rights over ancestors, that one grant silently
-    outranks the entire per-file allowlist, leaving this layer enforcing
-    nothing at all."""
+    """The other side of the same rule. A venv built against the system
+    python resolves to `/usr/bin/python3`, whose install root is `/usr` —
+    a prefix shared with the whole host. Granting EXECUTE there would
+    make every binary on the machine runnable, and because Landlock
+    unions rights over ancestors that one grant silently outranks the
+    entire per-file allowlist."""
     project = tmp_path / "proj"
     bin_dir = project / ".venv" / "bin"
     bin_dir.mkdir(parents=True)

@@ -30,7 +30,11 @@ _CANDIDATE_PATTERNS = (
     # Our own shim, when the exec itself was denied.
     re.compile(r"lc sandbox: (\S+): "),
     # bash/sh: `line 1: /path: Permission denied`, `cmd: command not found`
-    re.compile(r"(?:bash|sh)(?::\s*line \d+)?: ([^\s:]+): (?:Permission denied|command not found)"),
+    re.compile(
+        r"(?:bash|sh)(?::\s*line \d+)?: ([^\s:]+): "
+        # macOS reports a Seatbelt denial as EPERM, Linux as EACCES.
+        r"(?:Permission denied|Operation not permitted|command not found)"
+    ),
     # Landlock ABI 1 has no REFER, so a cross-directory rename is EXDEV.
     re.compile(r"Invalid cross-device link.*?['\"]([^'\"]+)['\"]"),
 )
