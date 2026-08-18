@@ -1,0 +1,16 @@
+# data/
+
+Declared inputs live here, and `astra.yaml` references them by path:
+
+    inputs:
+      catalog:
+        source: data/catalog.fits
+
+git-annex holds the bytes and git holds a pointer, so the repository
+records exactly which data produced a result without carrying its size.
+Add data the way you commit anything else:
+
+    git annex add . && git add -A . && git commit -m "add the catalog"
+
+The `git annex add` comes first on purpose: a plain `git add` would
+commit the file into git itself, size and all.

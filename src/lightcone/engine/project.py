@@ -7,11 +7,12 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from lightcone.engine import templates
+from lightcone.engine import dataset, templates
 
 SPEC_FILENAME = "astra.yaml"
 
@@ -176,6 +177,8 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     directory = directory.resolve()
 
     require_uv()
+    dataset.require_git()
+    dataset.require_git_annex()
 
     c = _Converger(write=write)
 
@@ -199,7 +202,9 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
         templates.gitignore,
         repair=templates.gitignore_repair,
     )
-    _converge_results(c, directory)
+    _converge_dataset(c, directory)
+    _converge_tracked_dir(c, directory, "data", templates.data_readme)
+    _converge_tracked_dir(c, directory, "results", templates.results_readme)
     # The MyST report is a recommended add-on on top of the spec, not part
     # of it — which is why it is scaffolded here and not by `astra init`.
     c.file("myst.yml", directory / "myst.yml", templates.myst_yml)
@@ -208,7 +213,6 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
         directory / "index.md",
         lambda: templates.index_md(title=directory.name or "My Analysis"),
     )
-    _converge_git(c, directory)
 
     # Lock and sync last: they are the expensive steps, and they are
     # meaningless until pyproject.toml and .python-version exist.
@@ -262,34 +266,94 @@ def _converge_uv_project(c: _Converger, directory: Path) -> None:
     c.file(".python-version", directory / ".python-version", templates.python_version)
 
 
-def _converge_results(c: _Converger, directory: Path) -> None:
-    results_dir = directory / "results"
-    if results_dir.exists() and not results_dir.is_dir():
-        c.blocked(
-            "results/",
-            "results exists but is not a directory; outputs cannot "
-            "materialize until it is one.",
-        )
-        return
-    c.item("results/", results_dir.is_dir(), results_dir.mkdir)
-    c.file("results/README.md", results_dir / "README.md", templates.results_readme)
+def _converge_tracked_dir(
+    c: _Converger, directory: Path, name: str, readme: Callable[[], str]
+) -> None:
+    """A directory the repository tracks, plus the README that makes it exist.
 
-
-def _converge_git(c: _Converger, directory: Path) -> None:
-    """``git init``, unless the project is already under version control.
-
-    Whether the directory *itself* holds a ``.git`` is the wrong question:
-    ``lc init subdir/`` inside an existing repository must not create a
-    nested one, so the check walks up. (``.git`` can be a file — a linked
-    worktree or submodule — hence ``exists`` rather than ``is_dir``.)
-
-    git is optional, unlike uv: a project without it is perfectly valid, so
-    an absent git is silently nothing to converge rather than a warning.
+    ``data/`` and ``results/`` are both empty in a fresh project, and git
+    carries no empty directories — so without a README neither survives a
+    clone, and nothing on disk explains what belongs in it.
     """
-    if shutil.which("git") is None:
+    path = directory / name
+    if path.exists() and not path.is_dir():
+        c.blocked(f"{name}/", f"{name} exists but is not a directory.")
         return
-    already = any((p / ".git").exists() for p in [directory, *directory.parents])
-    c.item(".git", already, lambda: _check_call(["git", "init", "-q"], cwd=directory))
+    c.item(f"{name}/", path.is_dir(), path.mkdir)
+    c.file(f"{name}/README.md", path / "README.md", readme)
+
+
+def _converge_dataset(c: _Converger, directory: Path) -> None:
+    """The repository: git for the pointers, git-annex for the bytes.
+
+    Whether the directory *itself* holds a ``.git`` is the wrong question
+    for the repository: ``lc init subdir/`` inside an existing one must not
+    create a nested repository, so the check walks up. (``.git`` can be a
+    file — a linked worktree or submodule — hence ``exists`` rather than
+    ``is_dir``.) The annex is asked about the same way git-annex asks
+    itself, so an enclosing repository that already has one is adopted.
+
+    Then the two files that make the storage policy: ``.gitattributes``
+    routes results and inputs into the annex and keeps manifests in git,
+    and ``.datalad/config`` carries a dataset id — the one thing a git +
+    git-annex repository lacks to *be* a DataLad dataset, so a project is
+    one from birth rather than by later adoption. Neither is read back by
+    lc; the id is generated once and never regenerated, because ``file``
+    writes only what is missing.
+    """
+    c.item(".git", _in_repository(directory), lambda: dataset.init_git(directory))
+    # After the item above, so a fresh project has a repository to annex.
+    c.item(
+        "git-annex",
+        _in_repository(directory) and dataset.is_annexed(directory),
+        lambda: dataset.init_annex(directory),
+    )
+    c.file(
+        ".gitattributes",
+        directory / ".gitattributes",
+        templates.gitattributes,
+        repair=templates.gitattributes_repair,
+    )
+    c.file(
+        ".datalad/config",
+        directory / ".datalad" / "config",
+        lambda: templates.datalad_config(dataset_id=str(uuid.uuid4())),
+    )
+    _converge_committable(c, directory)
+
+
+def _converge_committable(c: _Converger, directory: Path) -> None:
+    """Refuse to call a project converged while its outputs are unignorable.
+
+    Results and declared inputs are committed, so an ignore rule covering
+    either is not a preference — it is a project where materializing
+    reports success and commits nothing, silently, because ``git add``
+    skips ignored paths without a word.
+
+    A repair is not available: ``.gitignore`` convergence only ever
+    appends, deliberately, so a rule the user wrote — or one an older
+    scaffold wrote before results were tracked — stays until they delete
+    it. Blocked rather than warned, because it is convergence failing at
+    something it is responsible for.
+    """
+    if not _in_repository(directory):
+        return
+    for name in ("results", "data"):
+        # Asked with the trailing slash, because the rule that matters most
+        # here — the `results/*` an older lc scaffold wrote — ignores the
+        # directory's *contents*, and does not match the bare name at all.
+        if rule := dataset.ignore_rule(directory, f"{name}/"):
+            c.blocked(
+                f"{name}/",
+                f"{name}/ is git-ignored by `{rule}`, so nothing in it can be "
+                f"committed — and {name}/ is versioned in the repository. "
+                "Delete that line and run `lc init` again.",
+            )
+
+
+def _in_repository(directory: Path) -> bool:
+    """Whether *directory* is inside a git work tree, its own or an ancestor's."""
+    return any((p / ".git").exists() for p in [directory, *directory.parents])
 
 
 def project_name(directory: Path) -> str:

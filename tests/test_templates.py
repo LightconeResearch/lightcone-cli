@@ -102,14 +102,14 @@ def test_gitignore_entries_are_the_patterns_only() -> None:
     entries = templates.gitignore_entries()
     assert not any(e.startswith("#") or not e.strip() for e in entries)
     assert ".venv/" in entries
-    assert "results/*" in entries
-    assert "!results/README.md" in entries
 
 
-def test_gitignore_entries_keep_template_order() -> None:
-    """`!results/README.md` only works after the `results/*` it negates."""
+def test_the_template_does_not_ignore_what_the_repository_versions() -> None:
+    """`results/` and `data/` are committed, so an ignore rule covering
+    either would make every materialized output silently uncommittable —
+    `git add` skips ignored paths without a word."""
     entries = templates.gitignore_entries()
-    assert entries.index("results/*") < entries.index("!results/README.md")
+    assert not any(e.lstrip("!").startswith(("results", "data")) for e in entries)
 
 
 def test_gitignore_header_is_the_templates_own_first_line() -> None:
@@ -147,7 +147,51 @@ def test_repair_does_not_add_a_second_header() -> None:
 
 
 def test_a_pattern_inside_a_comment_does_not_count_as_present() -> None:
-    assert "results/*" in templates.missing_gitignore_entries("# results/*\n")
+    assert ".venv/" in templates.missing_gitignore_entries("# .venv/\n")
+
+
+# ---- .gitattributes -------------------------------------------------------
+
+
+def test_gitattributes_routes_content_to_the_annex_and_everything_else_to_git() -> None:
+    """The whole storage policy. The default line is the load-bearing one:
+    `git annex add` annexes whatever it is handed, so without it the
+    documented save turns analysis code into read-only symlinks."""
+    entries = templates.gitattributes_entries()
+    assert entries[0] == "* annex.largefiles=nothing"
+    assert "results/** annex.largefiles=anything" in entries
+    assert "data/** annex.largefiles=anything" in entries
+    assert "**/.lightcone-manifest.json annex.largefiles=nothing" in entries
+
+
+def test_gitattributes_exceptions_come_after_the_default() -> None:
+    """Last matching line wins, so a default written below the exceptions
+    would silently take the annex back out of the picture."""
+    entries = templates.gitattributes_entries()
+    assert entries.index("* annex.largefiles=nothing") < entries.index(
+        "results/** annex.largefiles=anything"
+    )
+
+
+def test_gitattributes_repair_appends_what_a_users_own_file_lacks() -> None:
+    """More is at stake here than in `.gitignore`: a `.gitattributes` the
+    user wrote first would leave result bytes routed into git."""
+    repaired = templates.gitattributes_repair("*.fits filter=lfs\n")
+    assert repaired is not None
+    assert repaired.startswith("*.fits filter=lfs\n\n")
+    assert templates.missing_gitattributes_entries(repaired) == []
+    assert templates.gitattributes_repair(templates.gitattributes()) is None
+
+
+# ---- .datalad/config ------------------------------------------------------
+
+
+def test_datalad_config_carries_the_dataset_id() -> None:
+    """The one thing a git + git-annex repository lacks to *be* a DataLad
+    dataset, in the git-config syntax datalad reads it from."""
+    text = templates.datalad_config(dataset_id="4b7b5c1e-0000-4000-8000-000000000000")
+    assert '[datalad "dataset"]' in text
+    assert "id = 4b7b5c1e-0000-4000-8000-000000000000" in text
 
 
 # ---- the rest -------------------------------------------------------------
@@ -164,6 +208,14 @@ def test_index_md_renders_the_title_and_keeps_myst_roles() -> None:
 
 
 def test_results_readme_explains_the_output_layout() -> None:
-    """`results/` is git-ignored and starts empty, so the README is the
-    only thing a clone shows for it."""
+    """`results/` starts empty and git carries no empty directories, so the
+    README is the only thing a clone shows for it."""
     assert "results/<universe>/<output_id>/" in templates.results_readme()
+
+
+def test_data_readme_explains_where_declared_inputs_go() -> None:
+    """Same reason, and one more: the documented add is `git annex add`
+    first — a plain `git add` would commit the bytes into git."""
+    text = templates.data_readme()
+    assert "data/catalog.fits" in text
+    assert "git annex add" in text

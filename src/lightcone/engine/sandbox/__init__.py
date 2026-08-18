@@ -22,6 +22,7 @@ from lightcone.engine.sandbox.boundary import (
     scope,
 )
 from lightcone.engine.sandbox.model import Attestation, Backend, Capability, Policy
+from lightcone.engine.sandbox.policy import recipe_policy
 
 __all__ = [
     "Attestation",
@@ -31,6 +32,7 @@ __all__ = [
     "Policy",
     "Unavailable",
     "detect",
+    "recipe_policy",
     "run",
     "scope",
 ]

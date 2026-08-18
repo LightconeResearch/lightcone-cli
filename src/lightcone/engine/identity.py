@@ -1,0 +1,208 @@
+"""What a materialized output is identified by.
+
+Two hashes, and the whole staleness model rests on them.
+
+``env_version`` is the environment's identity: the lock's bytes, the
+interpreter pin's bytes, and the settings that decide *which artifacts*
+``uv sync`` materializes from that lock. It is deliberately over-sensitive
+— raw lock bytes, so a comment reflow moves it — because the alternative
+is a parse that silently disagrees with uv about what the lock means.
+
+``code_version`` is one output's identity, and ``env_version`` sits inside
+it. So an environment edit stales exactly the outputs whose semantics it
+could change: all of them.
+
+The git commit is deliberately *not* an input to either. It is recorded
+with every output instead, so the code that produced a result stays
+recoverable without a commit staling everything in the repository.
+
+Both are length-framed. Concatenating fields raw lets a boundary shift
+between them produce the same digest from different inputs — a recipe
+ending in a character the decisions begin with, say — and nothing about a
+content hash is worth having if it can be shifted.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from lightcone.engine.project import ProjectError
+
+#: The closed, audited list of uv settings that change *which artifacts* a
+#: sync materializes from an unchanged lock. Closed on purpose: anything
+#: outside it is either already covered by the lock's bytes or does not
+#: affect what ends up installed, and a set that grew by guesswork would
+#: stale every output in every project each time it did.
+_INSTALL_SETTINGS = (
+    "default-groups",
+    "no-binary",
+    "no-binary-package",
+    "no-build",
+    "no-build-package",
+    "config-settings",
+    "no-build-isolation",
+    "no-build-isolation-package",
+)
+
+
+# =============================================================================
+# The hashes
+# =============================================================================
+
+
+def env_version(root: Path) -> str:
+    """The environment identity of the project at *root*.
+
+    ``sha256(uv.lock bytes ‖ .python-version bytes ‖ canonical
+    install-settings JSON)``. Read fresh every call — it is also the
+    mid-run gate's baseline, and a gate that trusted a cached value would
+    be checking nothing.
+    """
+    lock = _required(root, "uv.lock", "run `uv lock` (or `lc init`) to lock the environment")
+    pin = _required(
+        root,
+        ".python-version",
+        "the exact interpreter pin is part of the environment's identity; "
+        "run `lc init` to scaffold it",
+    )
+
+    h = hashlib.sha256()
+    _frame(h, "uv.lock", lock.read_bytes())
+    _frame(h, "python-version", pin.read_bytes())
+    _frame(h, "install-settings", _install_settings(root).encode())
+    return f"sha256:{h.hexdigest()}"
+
+
+def code_version(*, recipe: str, decisions: Mapping[str, str], env: str) -> str:
+    """One output's identity: what it is made of, and what made it.
+
+    ``sha256(recipe ‖ canonical decisions ‖ env_version)``. *env* is passed
+    in rather than derived, because a graph computes it once and every task
+    in the run has to be identified against the same value.
+    """
+    h = hashlib.sha256()
+    _frame(h, "recipe", recipe.encode())
+    _frame(h, "decisions", _canonical(dict(decisions)).encode())
+    _frame(h, "env-version", env.encode())
+    return f"sha256:{h.hexdigest()}"
+
+
+def _frame(h: hashlib._Hash, label: str, data: bytes) -> None:
+    """Feed one labelled, length-delimited field into *h*."""
+    h.update(label.encode())
+    h.update(b"\0")
+    h.update(str(len(data)).encode("ascii"))
+    h.update(b"\0")
+    h.update(data)
+
+
+def _canonical(value: Any) -> str:
+    """JSON with a single spelling per value — sorted keys, no padding."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _install_settings(root: Path) -> str:
+    """The audited ``[tool.uv]`` settings, canonically, absent ones included.
+
+    Every key is emitted whether or not the project sets it, so adding a
+    setting whose value happens to be uv's default still moves
+    ``env_version`` — a project that says what it means and a project that
+    relies on a default are the same environment only until uv's default
+    changes.
+    """
+    tool_uv = _pyproject(root).get("tool", {}).get("uv", {}) or {}
+    return _canonical({key: tool_uv.get(key) for key in _INSTALL_SETTINGS})
+
+
+# =============================================================================
+# The lock scan
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class LockScan:
+    """What the lock says about how far identity actually reaches."""
+
+    #: Dependencies whose bytes the lock does not pin. A refusal.
+    refusals: tuple[str, ...]
+    #: Registry packages shipping no wheel, so the sdist is built at sync
+    #: time. Reported: identity covers the sdist, not the build of it.
+    sdist_built: tuple[str, ...]
+    #: Groups outside uv's default set. Advisory: they are installable
+    #: states `env_version` does not distinguish.
+    non_default_groups: tuple[str, ...]
+
+
+def scan_lock(root: Path) -> LockScan:
+    """Read ``uv.lock`` and report where the environment's identity stops.
+
+    The refusal is the one that matters: a path, directory, or editable
+    dependency is a directory on somebody's disk, and the lock records
+    where it was rather than what was in it — so two syncs of the same lock
+    can install different code and every hash here would agree they were
+    identical. The project's own package is exempt, because it *is* the
+    project and the repository already records its bytes.
+    """
+    lock_path = _required(root, "uv.lock", "run `uv lock` (or `lc init`)")
+    try:
+        lock = tomllib.loads(lock_path.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise ProjectError(f"{lock_path}: invalid TOML: {e}") from e
+
+    pyproject = _pyproject(root)
+    own = pyproject.get("project", {}).get("name")
+
+    refusals: list[str] = []
+    sdist_built: list[str] = []
+    for package in lock.get("package", []):
+        name = package.get("name", "?")
+        source = package.get("source", {}) or {}
+        if kind := next((k for k in ("path", "directory", "editable") if k in source), None):
+            if name != own:
+                refusals.append(
+                    f"{name}: {kind} dependency — the lock records where it was, "
+                    "not what was in it, so two syncs can install different code"
+                )
+        elif "registry" in source and "sdist" in package and not package.get("wheels"):
+            sdist_built.append(name)
+
+    groups = set(pyproject.get("dependency-groups", {}) or {})
+    default = (pyproject.get("tool", {}).get("uv", {}) or {}).get("default-groups", ["dev"])
+    non_default = set() if default == "all" else groups - set(default)
+
+    return LockScan(
+        refusals=tuple(sorted(refusals)),
+        sdist_built=tuple(sorted(sdist_built)),
+        non_default_groups=tuple(sorted(non_default)),
+    )
+
+
+# =============================================================================
+# Reading the project's files
+# =============================================================================
+
+
+def _required(root: Path, name: str, remedy: str) -> Path:
+    """*root*/*name*, or a refusal naming what to do about its absence."""
+    path = root / name
+    if not path.is_file():
+        raise ProjectError(f"{root}: no {name} — {remedy}.")
+    return path
+
+
+def _pyproject(root: Path) -> dict[str, Any]:
+    path = _required(
+        root,
+        "pyproject.toml",
+        "the environment is pyproject.toml + uv.lock + .python-version; run `lc init`",
+    )
+    try:
+        return tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise ProjectError(f"{path}: invalid TOML: {e}") from e

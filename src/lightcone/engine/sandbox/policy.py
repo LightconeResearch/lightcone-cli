@@ -173,12 +173,48 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     it is the same scope a recipe gets, so a probe that works means a
     recipe will.
 
+    A probe has no output of its own, so it gets the whole of ``results/``
+    where a recipe gets one directory — the widest write scope any recipe
+    could be given, which is what makes "if a probe works, the recipe
+    will" true rather than nearly true.
+
     ``results/`` is granted only if it is already there. Convergence
     creates it, and a policy that made directories would be a side
     effect nobody asked a *probe* for.
 
     Creates the per-run HOME on disk as a side effect; the caller owns
     removing it (see :func:`~lightcone.engine.sandbox.boundary.scope`).
+    """
+    return _policy(project, read_paths=read_paths, write_paths=[project / "results"])
+
+
+def recipe_policy(project: Path, output_dir: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
+    """The policy one recipe runs under: narrower on writes than a probe's.
+
+    A recipe owns exactly one directory — the output it was asked to
+    make. Nothing else in ``results/`` is writable, which is what stops a
+    recipe from reaching into a sibling output, rewriting a manifest, or
+    touching the annex's object store; and *read* stays the whole project,
+    because committed sibling bytes are legitimately readable and a read
+    carve-out is something Landlock cannot express at all.
+
+    The directory is granted whether or not it exists yet, by creating it:
+    a recipe is asked to produce output, so making the place it goes is
+    not a side effect nobody asked for — it is the request.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return _policy(project, read_paths=read_paths, write_paths=[output_dir])
+
+
+def _policy(
+    project: Path, *, read_paths: Sequence[Path], write_paths: Sequence[Path]
+) -> Policy:
+    """The shared shape: one write scope in the tree, everything else fixed.
+
+    Every difference between a probe and a recipe is in *write_paths* and
+    *read_paths*. The rest — the private HOME, the OS read baseline, the
+    exec set, the environment overlay — is the same policy for both, in
+    one place, so the two cannot drift into enforcing different things.
     """
     tmp_home = Path(tempfile.mkdtemp(prefix="lc-home-")).resolve()
     for sub in _HOME_LAYOUT.values():
@@ -188,7 +224,7 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     # EXECUTE on the interpreter *file*; READ on the install root beside
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
-    write = _existing([tmp_home, project / "results", *_write_roots(project)])
+    write = _existing([tmp_home, *write_paths, *_write_roots(project)])
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
     return Policy(

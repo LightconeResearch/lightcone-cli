@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import shutil
+import textwrap
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
+
+from lightcone.engine import dataset, project, templates
+from lightcone.engine.project import _run as _real_run
 
 
 @pytest.fixture
@@ -21,15 +26,22 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     hermetic — no network, no real resolution, no subprocesses.
 
     Models each tool's observable effect: ``uv lock`` writes ``uv.lock``,
-    ``uv sync`` materializes ``.venv``, ``git init`` makes ``.git``. The
-    ``--check`` probes answer from existence — enough for the convergence
-    tests; drift is exercised by tests that stub ``_run`` themselves, since
-    only uv can really tell a stale lock from a current one.
+    ``uv sync`` materializes ``.venv``, ``git init`` makes ``.git``,
+    ``git annex init`` marks the repository annexed. The ``--check``
+    probes and ``git config --get annex.uuid`` answer from what those
+    left behind — enough for the convergence tests; drift is exercised by
+    tests that stub ``_run`` themselves, since only uv can really tell a
+    stale lock from a current one, and only git can really answer an
+    ignore rule.
 
     Returns the recorded argv lists, so a test can assert on *which* tools
     ran with *which* flags. :func:`uv_calls` narrows that to uv.
     """
     calls: list[list[str]] = []
+    # Repositories `git annex init` has been run in. Kept in memory
+    # rather than on disk because `.git` is a *file* in a linked
+    # worktree, so there is nowhere inside it to leave a marker.
+    annexed: set[Path] = set()
 
     def fake_run(argv: list[str], *, cwd: Path) -> MagicMock:
         calls.append(list(argv))
@@ -44,6 +56,12 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             (project / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
         elif argv[:2] == ["git", "init"]:
             (cwd / ".git").mkdir(exist_ok=True)
+        elif argv[:3] == ["git", "annex", "init"]:
+            annexed.add(_repo(cwd))
+        elif argv[:2] == ["git", "config"] and argv[-1] == "annex.uuid":
+            return MagicMock(returncode=0 if _repo(cwd) in annexed else 1)
+        elif argv[:2] == ["git", "check-ignore"]:
+            return _fake_check_ignore(cwd, argv[-1])
         return MagicMock(returncode=0, stdout="", stderr="")
 
     from lightcone.engine import project
@@ -55,19 +73,118 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     # set from it, every tool resolving to a path that exists on Linux
     # and not on macOS, so the enforcement suite tested a policy no user
     # would ever get. And the answer is never invented: convergence asks
-    # only *whether* uv and git exist, and `_run` is faked too, so
-    # nothing ever execs what comes back. Where the tool is really
-    # installed, that is what is returned; where it is not, the stub
-    # says so rather than naming a plausible path that isn't there.
+    # only *whether* uv, git and git-annex exist, and `_run` is faked
+    # too, so nothing ever execs what comes back. Where the tool is
+    # really installed, that is what is returned; where it is not, the
+    # stub says so rather than naming a plausible path that isn't there.
     real_which = shutil.which
 
     def fake_which(name: str, path: str | None = None) -> str | None:
-        if name in ("uv", "git"):
+        if name in ("uv", "git", "git-annex"):
             return real_which(name) or f"/stub/{name}"
         return real_which(name, path=path)
 
     monkeypatch.setattr(project.shutil, "which", fake_which)
     return calls
+
+
+@pytest.fixture
+def real_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opt out of :func:`tools`, and run the real git and git-annex.
+
+    The hermetic default is right for convergence, which needs only each
+    tool's observable effect. Storage is not: what ``git annex add`` does
+    to a working tree *is* the thing under test, and no fake can tell you
+    whether a file ended up as an annex symlink or as a blob in git.
+    """
+    from lightcone.engine import project
+
+    monkeypatch.setattr(project, "_run", _real_run)
+
+
+@pytest.fixture
+def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
+    """Build a real, committed lc project — the one fixture that runs a graph.
+
+    Everything is genuine: a uv environment, a git repository with an
+    annex, an ``astra.yaml``, and a first commit. That is the price of
+    testing execution at all — the questions are whether a recipe runs
+    under the boundary, whether bytes land in the annex, and whether the
+    tree is clean afterwards, and no stub answers any of them.
+
+    It is cheap anyway: the project declares no dependencies, so `uv lock`
+    and `uv sync` together cost milliseconds.
+    """
+
+    def build(
+        spec: str,
+        files: dict[str, str] | None = None,
+        universes: dict[str, str] | None = None,
+    ) -> Path:
+        root = tmp_path / "analysis"
+        for name in ("universes", "results", "data"):
+            (root / name).mkdir(parents=True, exist_ok=True)
+
+        (root / "pyproject.toml").write_text(
+            '[project]\nname = "analysis"\nversion = "0.1.0"\n'
+            'requires-python = ">=3.11"\ndependencies = []\n'
+        )
+        (root / ".python-version").write_text(templates.python_version())
+        (root / ".gitattributes").write_text(templates.gitattributes())
+        (root / ".gitignore").write_text(templates.gitignore())
+        (root / "astra.yaml").write_text(textwrap.dedent(spec))
+        for name, text in (universes or {"baseline": "id: baseline\ndecisions: {}\n"}).items():
+            (root / "universes" / f"{name}.yaml").write_text(textwrap.dedent(text))
+        for name, text in (files or {}).items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(textwrap.dedent(text))
+
+        for argv in (["uv", "lock", "-q"], ["uv", "sync", "-q", "--locked", "--exact"]):
+            _must(project._run([*argv, "--project", str(root)], cwd=root), argv)
+        dataset.init_git(root)
+        for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+            dataset._git(["config", key, value], cwd=root)
+        dataset.init_annex(root)
+        (root / ".datalad").mkdir(exist_ok=True)
+        (root / ".datalad" / "config").write_text(
+            templates.datalad_config(dataset_id="4b7b5c1e-0000-4000-8000-000000000000")
+        )
+        dataset.save(root, [root], "scaffold")
+        return root
+
+    return build
+
+
+def _must(proc: object, argv: list[str]) -> None:
+    if getattr(proc, "returncode", 1) != 0:
+        raise AssertionError(f"{' '.join(argv)} failed:\n{getattr(proc, 'stderr', '')}")
+
+
+def _repo(cwd: Path) -> Path:
+    """The work tree *cwd* is in — an annex belongs to the repository, not
+    to the directory the command happened to run from."""
+    return next((p for p in [cwd, *cwd.parents] if (p / ".git").exists()), cwd)
+
+
+def _fake_check_ignore(cwd: Path, path: str) -> MagicMock:
+    """A deliberately literal stand-in for ``git check-ignore -v``.
+
+    Not gitignore semantics — those belong to git, and the tests that need
+    them use a real repository. This recognises exactly the shapes that put
+    ``results/`` out of reach: the ``results/*`` an older lc scaffold wrote,
+    and the ``results/`` or ``results`` someone writes by hand.
+    """
+    ignore = cwd / ".gitignore"
+    if not ignore.exists():
+        return MagicMock(returncode=1, stdout="", stderr="")
+    wanted = path.rstrip("/")
+    for number, line in enumerate(ignore.read_text().splitlines(), start=1):
+        if (pattern := line.strip()) and pattern.rstrip("*").rstrip("/") == wanted:
+            return MagicMock(
+                returncode=0, stdout=f".gitignore:{number}:{pattern}\t{path}\n", stderr=""
+            )
+    return MagicMock(returncode=1, stdout="", stderr="")
 
 
 def _project(argv: list[str]) -> Path:

@@ -15,6 +15,7 @@ import click
 if TYPE_CHECKING:
     from rich.console import Console
 
+    from lightcone.engine.materialize import MaterializeReport
     from lightcone.engine.project import ConvergenceReport
 
 logger = logging.getLogger(__name__)
@@ -90,9 +91,10 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
     The spec scaffold (``astra.yaml``, ``universes/baseline.yaml``)
     follows the ``astra init`` boilerplate; on top of it sit the uv
     project (``pyproject.toml`` with lightcone-cli locked in,
-    ``.python-version``, ``uv.lock``, ``.venv``), ``.gitignore`` entries,
-    ``results/``, and a template MyST report (``myst.yml`` +
-    ``index.md``).
+    ``.python-version``, ``uv.lock``, ``.venv``), a git repository with an
+    annex — inputs and outputs are versioned in it — ``.gitignore`` and
+    ``.gitattributes`` entries, ``data/`` and ``results/``, and a template
+    MyST report (``myst.yml`` + ``index.md``).
     """
     from lightcone.engine.project import converge
 
@@ -184,3 +186,100 @@ def run(command: tuple[str, ...]) -> None:
     # an OOM-killed probe comes back as the shell's conventional 128+N.
     code = outcome.returncode
     sys.exit(128 - code if code < 0 else code)
+
+
+# =============================================================================
+# lc materialize
+# =============================================================================
+
+
+@main.command()
+@click.argument("targets", nargs=-1)
+@click.option(
+    "--check",
+    "check_only",
+    is_flag=True,
+    help=(
+        "Report what would run and why, without executing or committing "
+        "anything; exit 1 if anything is out of date."
+    ),
+)
+@click.option(
+    "--jobs",
+    type=click.IntRange(min=1),
+    default=None,
+    help="How many recipes may run at once. Defaults to the CPU count.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the report as JSON on stdout.",
+)
+def materialize(
+    targets: tuple[str, ...], check_only: bool, jobs: int | None, as_json: bool
+) -> None:
+    """Make the analysis's outputs, and commit each one as it lands.
+
+    A TARGET is an output id — every universe that declares it — or
+    ``<universe>/<output_id>`` for exactly one. With none, everything.
+    Asking for an output asks for what it is made of, so its inputs are
+    brought up to date first.
+
+    Each output is committed together with its manifest, in a commit that
+    records the command that produced it. Which is why a run refuses to
+    start on a tree with uncommitted changes: it could not otherwise say
+    which code that was.
+
+    Nothing runs that does not need to. An output is remade when its
+    recipe, its decisions, the environment, or any of its declared inputs
+    has changed — by content, so a rebuild that comes out byte-identical
+    stops there instead of cascading.
+    """
+    from lightcone.engine import materialize as engine
+    from lightcone.engine.project import current_project
+
+    root = current_project()
+    if check_only:
+        report = engine.check(root, targets)
+    else:
+        report = engine.materialize(root, targets, jobs=jobs)
+
+    if as_json:
+        click.echo(json.dumps(report.as_dict(), indent=2))
+    else:
+        _render_materialize_output(report, root, dry_run=check_only)
+
+    if not report.ok or (check_only and not report.up_to_date):
+        sys.exit(1)
+
+
+def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run: bool) -> None:
+    """Print what ran, or what would.
+
+    Check mode says *why* each output would run, because that is the
+    entire question it was asked; a real run has already answered it by
+    doing the work, and says what it committed instead.
+    """
+    lines = [
+        f"  [yellow]·[/yellow] would run {name} — {why}"
+        for name, why in report.planned.items()
+    ]
+    lines += [f"  [green]✓[/green] made {name}" for name in report.made]
+    lines += [f"  [dim]·[/dim] up to date {name}" for name in report.skipped]
+    lines += [f"  [red]✗[/red] failed {name}" for name in report.failed]
+    lines += [f"  [red]✗[/red] blocked {name}" for name in report.blocked]
+    lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
+
+    if not report.ok:
+        verdict = f"[red]✗[/red] {root} did not finish"
+    elif report.up_to_date:
+        verdict = f"[green]✓[/green] {root} is up to date — nothing to do"
+    elif dry_run:
+        verdict = f"[yellow]![/yellow] {len(report.planned)} output(s) would be made"
+    else:
+        verdict = f"[green]✓[/green] Made {len(report.made)} output(s) in {root}"
+
+    if lines:
+        lines.append("")
+    _console().print("\n".join([*lines, verdict]))

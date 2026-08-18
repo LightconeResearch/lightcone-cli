@@ -1,0 +1,16 @@
+# lightcone-cli — what git-annex stores, and what git carries.
+#
+# git-annex takes what it is given unless told otherwise, so the default
+# has to be stated: everything stays in git, and only content opts out.
+# Last matching line wins, which is why the exceptions come after it.
+#
+# Outputs and declared inputs are content, and content is often large:
+# git-annex holds the bytes, git holds a pointer to them. Manifests are
+# small and have to be readable on a clone that has fetched no annex
+# content at all, so they stay in git proper — as does everything else,
+# including analysis code, which must stay writable rather than become a
+# read-only symlink into the object store.
+* annex.largefiles=nothing
+results/** annex.largefiles=anything
+data/** annex.largefiles=anything
+**/.lightcone-manifest.json annex.largefiles=nothing

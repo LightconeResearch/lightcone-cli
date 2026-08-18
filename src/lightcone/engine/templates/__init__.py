@@ -13,8 +13,9 @@ interpret. Substitution is strict: a missing key raises rather than
 silently emitting a placeholder.
 
 This module owns file *content*, including how content merges into a file
-the user already owns (:func:`gitignore_repair`). It knows nothing about
-convergence bookkeeping or the console.
+the user already owns (:func:`gitignore_repair`,
+:func:`gitattributes_repair`). It knows nothing about convergence
+bookkeeping or the console.
 """
 
 from __future__ import annotations
@@ -29,6 +30,9 @@ TEMPLATE_NAMES = frozenset(
     {
         "pyproject.toml.tmpl",
         "gitignore.tmpl",
+        "gitattributes.tmpl",
+        "datalad-config.tmpl",
+        "data-README.md.tmpl",
         "results-README.md.tmpl",
         "myst.yml.tmpl",
         "index.md.tmpl",
@@ -119,8 +123,77 @@ def lightcone_requirement() -> str:
 
 
 # =============================================================================
-# .gitignore — converged entry-wise, not by marker
+# Line-managed files — converged entry-wise, not by marker
 # =============================================================================
+#
+# ``.gitignore`` and ``.gitattributes`` are both "a list of lines the user
+# owns, some of which are ours". Convergence works against *the set of
+# managed lines* rather than against a marker comment, so a project ends up
+# with the right entries however its file got there — and lines added in a
+# later lc release reach projects that already have one, instead of being
+# skipped because a marker was present.
+
+
+def _entries(name: str) -> tuple[str, ...]:
+    """The meaningful lines of template *name*, in template order."""
+    return tuple(_lines(read(name)))
+
+
+def _lines(text: str) -> list[str]:
+    """The meaningful (non-comment, non-blank) lines of *text*."""
+    return [
+        stripped
+        for line in text.splitlines()
+        if (stripped := line.strip()) and not stripped.startswith("#")
+    ]
+
+
+def _missing(name: str, text: str) -> list[str]:
+    """Which of template *name*'s lines *text* does not carry, in order."""
+    present = set(_lines(text))
+    return [e for e in _entries(name) if e not in present]
+
+
+def _repair(name: str, text: str) -> str | None:
+    """*text* with every line of template *name* present, or ``None``.
+
+    Only ever appends, and only what is missing — so idempotency is
+    structural: a line already in the file is never added again, whoever
+    put it there. The append preserves template order, which is what an
+    ignore file's negation patterns depend on.
+
+    Append-only also means a line a template *dropped* is never removed
+    from a file an earlier lc wrote. That is the right default — the file
+    is the user's — but it is why convergence checks separately that
+    ``results/`` is not ignored: a ``results/*`` inherited from an older
+    scaffold would make every materialized output silently uncommittable.
+    """
+    missing = _missing(name, text)
+    if not missing:
+        return None
+
+    block = "\n".join(missing) + "\n"
+    # The header is cosmetic, so add it only when it isn't already there;
+    # a later repair then appends bare lines under the first one.
+    header = _header(name)
+    if header not in text:
+        block = header + "\n" + block
+    if not text.strip():
+        return block
+    return text.rstrip("\n") + "\n\n" + block
+
+
+def _header(name: str) -> str:
+    """Template *name*'s own leading comment.
+
+    Read back out of the template rather than duplicated as a constant, so
+    rewording it there can never leave :func:`_repair` appending a second
+    header to a file that already carries the first.
+    """
+    return read(name).splitlines()[0]
+
+
+# ---- .gitignore -------------------------------------------------------------
 
 
 def gitignore() -> str:
@@ -129,69 +202,83 @@ def gitignore() -> str:
 
 
 def gitignore_header() -> str:
-    """The template's own leading comment.
-
-    Read back out of the template rather than duplicated as a constant, so
-    rewording it there can never leave :func:`gitignore_repair` appending a
-    second header to a file that already carries the first.
-    """
-    return read("gitignore.tmpl").splitlines()[0]
+    """The ``.gitignore`` template's own leading comment."""
+    return _header("gitignore.tmpl")
 
 
 def gitignore_entries() -> tuple[str, ...]:
-    """The patterns lightcone manages, in template order.
-
-    The template minus its comments and blank lines. Convergence works
-    against *this set* rather than against a marker, so a project ends up
-    with the right ignores however its ``.gitignore`` got there — and
-    entries added in a later lc release reach projects that already have
-    one, instead of being skipped because a marker was present.
-    """
-    return tuple(_patterns(read("gitignore.tmpl")))
-
-
-def _patterns(text: str) -> list[str]:
-    """The meaningful (non-comment, non-blank) lines of a gitignore."""
-    return [
-        stripped
-        for line in text.splitlines()
-        if (stripped := line.strip()) and not stripped.startswith("#")
-    ]
+    """The patterns lightcone manages, in template order."""
+    return _entries("gitignore.tmpl")
 
 
 def missing_gitignore_entries(text: str) -> list[str]:
     """Which managed patterns *text* does not already carry, in order."""
-    present = set(_patterns(text))
-    return [e for e in gitignore_entries() if e not in present]
+    return _missing("gitignore.tmpl", text)
 
 
 def gitignore_repair(text: str) -> str | None:
-    """*text* with every managed pattern present, or ``None`` if it already
-    carries them all.
+    """*text* with every managed ignore pattern present, or ``None``."""
+    return _repair("gitignore.tmpl", text)
 
-    Only ever appends, and only what is missing — so idempotency is
-    structural: a pattern already in the file is never added again, whoever
-    put it there.
 
-    The append preserves template order, which is what keeps
-    ``!results/README.md`` after the ``results/*`` it negates. (A file
-    holding the negation *without* ``results/*`` would end up with them
-    inverted; that state can only be hand-written, and re-ordering
-    someone's ignores to fix it would be the more surprising behavior.)
+# =============================================================================
+# The dataset — what git-annex stores, and what makes it a DataLad dataset
+# =============================================================================
+
+
+def gitattributes() -> str:
+    """``.gitattributes`` — the whole storage policy, in four lines.
+
+    A default of ``nothing`` and two exceptions: outputs and declared
+    inputs are content and go to git-annex, everything else stays in git.
+    The default is the line that is easy to leave out and expensive to —
+    ``git annex add`` annexes whatever it is handed, so without it the
+    documented save turns analysis code into read-only symlinks into the
+    object store. Manifests are exempted again because they must be
+    readable on a clone that has fetched no annex content.
     """
-    missing = missing_gitignore_entries(text)
-    if not missing:
-        return None
+    return read("gitattributes.tmpl")
 
-    block = "\n".join(missing) + "\n"
-    # The header is cosmetic, so add it only when it isn't already there;
-    # a later repair then appends bare patterns under the first one.
-    header = gitignore_header()
-    if header not in text:
-        block = header + "\n" + block
-    if not text.strip():
-        return block
-    return text.rstrip("\n") + "\n\n" + block
+
+def gitattributes_entries() -> tuple[str, ...]:
+    """The attribute lines lightcone manages, in template order."""
+    return _entries("gitattributes.tmpl")
+
+
+def missing_gitattributes_entries(text: str) -> list[str]:
+    """Which managed attribute lines *text* does not carry, in order."""
+    return _missing("gitattributes.tmpl", text)
+
+
+def gitattributes_repair(text: str) -> str | None:
+    """*text* with every managed attribute line present, or ``None``.
+
+    Entry-wise for the same reason ``.gitignore`` is, and with more at
+    stake: a ``.gitattributes`` that the user wrote first, or that an
+    earlier lc wrote with fewer lines, would leave result bytes routed
+    into git instead of the annex.
+    """
+    return _repair("gitattributes.tmpl", text)
+
+
+def datalad_config(*, dataset_id: str) -> str:
+    """``.datalad/config`` — a git-config file carrying the dataset id.
+
+    A dataset id is the one thing a git + git-annex repository lacks to
+    *be* a DataLad dataset, so writing it makes a scaffolded project one
+    from birth, with no adoption step. lc never reads this file back;
+    ``datalad`` does, if the researcher installs it.
+    """
+    return _render("datalad-config.tmpl", dataset_id=dataset_id)
+
+
+def data_readme() -> str:
+    """``data/README.md`` — where declared inputs live.
+
+    Like ``results/``, the directory starts empty and git carries no empty
+    directories, so the README is what makes it exist in a clone.
+    """
+    return read("data-README.md.tmpl")
 
 
 # =============================================================================
@@ -202,9 +289,9 @@ def gitignore_repair(text: str) -> str | None:
 def results_readme() -> str:
     """``results/README.md`` — where outputs land.
 
-    ``results/`` is git-ignored and starts empty, so without the README
-    the directory is invisible in a clone and nothing explains the
-    ``results/<universe>/<output_id>/`` layout.
+    ``results/`` starts empty, and git does not track empty directories,
+    so without the README the directory is absent from a clone and nothing
+    explains the ``results/<universe>/<output_id>/`` layout.
     """
     return read("results-README.md.tmpl")
 

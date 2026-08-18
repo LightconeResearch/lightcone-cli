@@ -23,12 +23,21 @@ def test_help_lists_the_implemented_verb(runner: CliRunner) -> None:
     assert "init" in result.output
 
 
-def test_help_does_not_advertise_unbuilt_verbs(runner: CliRunner) -> None:
+def test_help_advertises_exactly_the_verbs_that_work(runner: CliRunner) -> None:
     """`lc --help` advertises only verbs that work — advertising others
     before they do would be a lie."""
     result = runner.invoke(main, ["--help"])
-    for verb in ("materialize", "status", "verify", "build", "export"):
+    for verb in ("init", "materialize", "run"):
+        assert f"  {verb}" in result.output
+    for verb in ("status", "verify", "build", "export"):
         assert f"  {verb}" not in result.output
+
+
+def test_help_does_not_advertise_the_worker(runner: CliRunner) -> None:
+    """The unit a run record names is machinery, not a verb: it skips the
+    staleness check, commits nothing, and leaves the tree dirty by design
+    — which is the state `lc materialize` refuses to start from."""
+    assert "worker" not in runner.invoke(main, ["--help"]).output
 
 
 def test_engine_errors_render_cleanly(
@@ -313,3 +322,138 @@ def test_run_needs_no_spec_file(
     result = runner.invoke(main, ["run", "true"])
     assert result.exit_code == 0
     assert spawned[0]["project"] == project.resolve()
+
+
+# ---- lc materialize -------------------------------------------------------
+
+
+@pytest.fixture
+def somewhere(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A directory `current_project()` accepts, so the verb reaches the engine."""
+    for name in ("pyproject.toml", "uv.lock"):
+        (tmp_path / name).write_text("")
+    (tmp_path / ".venv").mkdir()
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def _stub(monkeypatch: pytest.MonkeyPatch, **outcomes: object) -> list[tuple[str, object]]:
+    """Record which engine entry point the flags reached, and with what."""
+    from lightcone.engine import materialize as engine
+
+    seen: list[tuple[str, object]] = []
+
+    def record(name: str) -> object:
+        def call(root: Path, targets: object, **kwargs: object) -> object:
+            seen.append((name, (list(targets), kwargs)))
+            return outcomes.get(name, engine.MaterializeReport())
+
+        return call
+
+    monkeypatch.setattr(engine, "check", record("check"))
+    monkeypatch.setattr(engine, "materialize", record("materialize"))
+    return seen
+
+
+def test_check_reaches_check_mode_and_nothing_else(
+    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _stub(monkeypatch)
+
+    runner.invoke(main, ["materialize", "--check"])
+
+    assert [name for name, _ in seen] == ["check"]
+
+
+def test_targets_and_jobs_reach_the_engine(
+    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _stub(monkeypatch)
+
+    runner.invoke(main, ["materialize", "baseline/fit", "report", "--jobs", "3"])
+
+    assert seen == [("materialize", (["baseline/fit", "report"], {"jobs": 3}))]
+
+
+def test_a_run_with_nothing_to_do_exits_zero(
+    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub(monkeypatch)
+
+    result = runner.invoke(main, ["materialize"])
+
+    assert result.exit_code == 0
+    assert "nothing to do" in result.output
+
+
+def test_check_exits_nonzero_when_something_would_run(
+    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent has to be able to ask "is this current?" and read the
+    answer off the exit status."""
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(monkeypatch, check=MaterializeReport(planned={"baseline/fit": "no manifest"}))
+
+    result = runner.invoke(main, ["materialize", "--check"])
+
+    assert result.exit_code == 1
+    assert "would run baseline/fit" in result.output
+
+
+def test_a_failure_exits_nonzero(
+    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(
+        monkeypatch,
+        materialize=MaterializeReport(failed=["baseline/fit"], blocked=["baseline/report"]),
+    )
+
+    result = runner.invoke(main, ["materialize"])
+
+    assert result.exit_code == 1
+    assert "failed baseline/fit" in result.output
+    assert "blocked baseline/report" in result.output
+
+
+def test_the_json_report_is_machine_readable(
+    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(monkeypatch, materialize=MaterializeReport(made=["baseline/fit"]))
+
+    result = runner.invoke(main, ["materialize", "--json"])
+
+    assert json.loads(result.output) == {
+        "ok": True,
+        "up_to_date": False,
+        "made": ["baseline/fit"],
+        "skipped": [],
+        "failed": [],
+        "blocked": [],
+        "planned": {},
+        "warnings": [],
+    }
+
+
+def test_an_engine_refusal_is_a_clean_error(
+    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dirty tree, a lock that cannot be audited — the user sees the
+    message, never a traceback."""
+    from lightcone.engine import materialize as engine
+    from lightcone.engine.project import ProjectError
+
+    def refuse(root: Path, targets: object, **kwargs: object) -> object:
+        raise ProjectError("uncommitted changes in the project")
+
+    monkeypatch.setattr(engine, "materialize", refuse)
+
+    result = runner.invoke(main, ["materialize"])
+
+    assert result.exit_code == 1
+    assert "uncommitted changes" in result.output
+    assert "Traceback" not in result.output
