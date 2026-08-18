@@ -358,6 +358,89 @@ def test_the_run_record_is_what_datalad_reads(root: Path, inline: None) -> None:
     assert info["chain"] == [] and info["pwd"] == "."
 
 
+def test_the_record_names_the_declared_input_not_the_annex_object(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """Declared inputs are annex symlinks, so a resolved path records
+    `.git/annex/objects/SHA256E-…` — the storage rather than the input, and
+    something no one can `datalad get`."""
+    spec = """
+    version: "0.0.13"
+    name: analysis
+    inputs:
+      - id: catalog
+        type: data
+        source: data/catalog.txt
+    outputs:
+      - id: fit
+        type: metric
+        inputs: [catalog]
+        recipe:
+          command: cat {inputs.catalog} > {output}/seen.txt
+    """
+    root = analysis(spec, files={"data/catalog.txt": "measured\n"})
+    dataset.save(root, [root / "data"], "the catalog")
+    assert (root / "data/catalog.txt").is_symlink()
+
+    engine.materialize(root, [])
+
+    from datalad.api import Dataset
+    from datalad.local.rerun import get_run_info
+
+    _, info = get_run_info(Dataset(str(root)), dataset._git(["log", "-1", "--format=%B"], cwd=root))
+    assert info is not None
+    assert info["inputs"] == ["data/catalog.txt"]
+
+
+def test_every_manifest_of_one_run_names_the_same_commit(root: Path, inline: None) -> None:
+    """The driver commits each output as it lands, so HEAD moves during the
+    run — and reading it per task would stamp later manifests with a commit
+    this same run created, nondeterministically."""
+    engine.materialize(root, [])
+
+    shas = {
+        assets.read(root / "results/baseline" / name).git_sha  # type: ignore[union-attr]
+        for name in ("first", "second")
+    }
+    assert len(shas) == 1
+
+
+def test_check_agrees_with_a_run_on_a_clone_with_no_annex_content(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """The dangling-symlink case. `--check` must not rehash an upstream the
+    annex has dropped: the digest would differ from the recorded one and it
+    would report a rebuild for a project that is entirely up to date."""
+    engine.materialize(root, [])
+    clone = tmp_path / "clone"
+    dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
+    assert not (clone / "results/baseline/first/value.txt").is_file()  # dangling
+
+    assert engine.check(clone, []).planned == {}
+
+
+def test_an_environment_that_no_longer_matches_the_lock_is_refused(
+    root: Path, inline: None
+) -> None:
+    """`uv run --locked` only asserts the lock still matches pyproject, and
+    workers pass `--no-sync` — so recipes would import packages the lock
+    does not describe while every manifest recorded the new lock's
+    `env_version`. The identity model saying something untrue is worse than
+    any failure it could report instead."""
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text().replace("dependencies = []", 'dependencies = ["idna"]')
+    )
+    dataset._git(["config", "user.email", "t@example.com"], cwd=root)
+    from lightcone.engine import project as project_mod
+
+    project_mod._run(["uv", "lock", "-q", "--project", str(root)], cwd=root)
+    dataset.save(root, [root], "add a dependency without syncing")
+
+    with pytest.raises(ProjectError, match="does not match uv.lock"):
+        engine.materialize(root, [])
+
+
 def test_the_recorded_command_reproduces_the_output(root: Path, inline: None) -> None:
     """The claim the record makes, run literally. `datalad rerun` removes
     the output, executes the recorded command, and commits what came

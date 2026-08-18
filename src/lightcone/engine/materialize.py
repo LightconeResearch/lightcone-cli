@@ -17,6 +17,17 @@ operations on one repository race on the index lock. The same loop
 restores what a failed or interrupted task left behind, so the tree ends
 exactly as clean as it started — which is what makes the refusal above
 survivable rather than a trap.
+
+One consequence, checked rather than assumed: a dependent starts as soon
+as its upstream's *worker* returns, which is milliseconds before the
+driver finishes annexing that upstream — so a recipe does read an input
+directory while ``git annex add`` is replacing its files with symlinks.
+That is safe, because git-annex hard-links the content into the object
+store first and then renames the symlink over the file: the path never
+stops existing and never holds partial bytes. Measured, on a run of
+concurrent full-content reads across 24 MB: no missing paths, no short
+reads, no wrong bytes. Do not "fix" this by moving the save into the
+task — that is what puts git back in the workers.
 """
 
 from __future__ import annotations
@@ -29,7 +40,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from lightcone.engine import assets, dataset, identity, plan, worker
+from lightcone.engine import assets, dataset, identity, plan, project, worker
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError, require_uv
 
@@ -87,6 +98,8 @@ def check(root: Path, targets: Sequence[str]) -> MaterializeReport:
     """
     report = MaterializeReport()
     graph, _ = _graph(root, targets, report)
+    if not project._env_is_current(root):
+        report.warnings.append(_stale_environment(root))
 
     stale: set[Key] = set()
     for key in graph.order():
@@ -115,7 +128,16 @@ def _predicted(task: Task, stale: set[Key]) -> dict[str, str | None]:
     """
     predicted: dict[str, str | None] = {}
     for name, path in task.inputs.items():
-        if task.produced_by.get(name) in stale or not path.exists():
+        upstream = task.produced_by.get(name)
+        if upstream is not None:
+            # The upstream's *recorded* digest, for the same reason a worker
+            # returns it rather than rehashing: on a clone that has fetched
+            # no annex content the files are dangling symlinks, and hashing
+            # them would report a different output and cascade a rebuild
+            # over a project that is perfectly up to date.
+            manifest = None if upstream in stale else assets.read(path)
+            predicted[name] = manifest.data_version if manifest else None
+        elif not path.exists():
             predicted[name] = None
         else:
             predicted[name] = assets.data_version(path)
@@ -134,6 +156,8 @@ def materialize(
     require_uv()
     dataset.require_git()
     dataset.require_git_annex()
+    if not project._env_is_current(root):
+        raise ProjectError(_stale_environment(root))
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes))
 
@@ -143,6 +167,11 @@ def materialize(
         return report
 
     dsid = dataset.dataset_id(root)
+    # Read once, for every task: the driver commits each output as it lands,
+    # so HEAD moves during the run, and a per-task read would give later
+    # manifests a commit this run created — nondeterministically, depending
+    # on whether a recipe finished before or after the previous save.
+    head = dataset.head(root)
     outstanding: dict[Key, Task] = dict(graph.tasks)
     try:
         with cluster_for_run(jobs) as scheduler:
@@ -157,6 +186,7 @@ def materialize(
                     root,
                     task,
                     env_version,
+                    head,
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
                 )
@@ -296,9 +326,16 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
 
 
 def _inside(root: Path, path: Path) -> str:
-    """*path* relative to *root*, or absolute when it is somewhere else."""
+    """*path* relative to *root*, or absolute when it is somewhere else.
+
+    Deliberately **not** resolved. Every declared input under ``data/`` is
+    an annex symlink, so resolving would record
+    ``.git/annex/objects/SHA256E-…`` — a path no one can ``datalad get``,
+    naming the storage rather than the input. The record has to say what
+    the analysis declared.
+    """
     try:
-        return path.resolve().relative_to(root.resolve()).as_posix()
+        return path.relative_to(root).as_posix()
     except ValueError:
         return path.as_posix()
 
@@ -343,6 +380,23 @@ def _graph(root: Path, targets: Sequence[str], report: MaterializeReport) -> tup
 
 def _name(key: Key) -> str:
     return f"{key[0]}/{key[1]}"
+
+
+def _stale_environment(root: Path) -> str:
+    """Said when ``.venv`` no longer matches ``uv.lock``.
+
+    A run must not start here. ``uv run --locked`` asserts only that the
+    lock still matches ``pyproject.toml``, and workers pass ``--no-sync``,
+    so a lock edited without a sync leaves recipes importing packages the
+    lock does not describe — while every manifest records the *new* lock's
+    ``env_version``. That is the identity model saying something untrue,
+    which is worse than any failure it could report instead.
+    """
+    return (
+        f"{root}: the environment does not match uv.lock — recipes would import "
+        "packages the lock does not describe, and every manifest would record an "
+        "environment that never ran. Converge it with `lc init` and try again."
+    )
 
 
 def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:

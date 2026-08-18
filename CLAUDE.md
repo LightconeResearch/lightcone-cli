@@ -333,6 +333,13 @@ user owns:
   makes its wheel platforms the CLI's install floor.
   (This reverses layer 1's original "git is optional" — a project without
   version control had nowhere to put a result.)
+- **Two questions about git, not one.** `_in_repository` is a pure
+  filesystem walk-up and answers for a directory that does not exist yet,
+  which is what check mode needs. `_can_ask_git` adds `is_dir()`, because
+  every git *invocation* needs an existing working directory — inside an
+  enclosing repository the walk-up says "in a repository" for a
+  directory that is not there, and running git in it raises
+  `FileNotFoundError` out of `Popen` rather than answering anything.
 - **`git init` checks for an *enclosing* work tree**, not just a `.git` in
   the directory, so `lc init subdir/` inside a repository can't create a
   nested one. (`.git` may be a file — linked worktree or submodule — so the
@@ -448,6 +455,12 @@ the code that produced a result stays recoverable, and stays out of
 Exact per-output code invalidation is available by declaring the source
 files a recipe reads as ASTRA inputs.
 
+**Names are compared in PEP 503 form.** uv writes the normalized name
+into `uv.lock`; `pyproject.toml` carries whatever the author wrote, and
+`project_name()` keeps `_` and `.`. Raw comparison makes a packaged
+project called `my_project` fail to recognise *itself*, and the lock scan
+then refuses the whole run over the project's own code.
+
 **The lock scan refuses only what cannot be audited.** A path, directory,
 or editable dependency records *where* it was rather than *what was in
 it*, so two syncs of one lock can install different code while every hash
@@ -458,6 +471,14 @@ is exempt: it is the project, and the repository already records its
 bytes.
 
 ## Key Invariants (layer 4)
+
+**A decision is resolved by presence, not by truthiness.** A decision's
+*value* is not a test of whether it was made: an empty string is a choice
+someone wrote down, and treating it as absent reports "the output does
+not declare this decision", which is false and unactionable. A YAML
+*null* is the opposite case and is dropped, because `str(None)` would
+render the literal `None` into a shell command and into `code_version` —
+failing by name is the legible outcome.
 
 **The layout is flat and path-addressed.** `results/<universe>/<output_id>/`,
 `data/` for declared inputs, and the path in a rendered recipe *is* the
@@ -479,8 +500,25 @@ where a task's upstream handles already exist.
 `TaskResult`; the driver commits, in one thread, as results arrive.
 Concurrent git operations on one repository race on the index lock —
 this is the `datalad-slurm` schedule/finish split, and it is not a
-preference. A worker may *read* HEAD (`dataset.head`), which takes no
-lock and is what the manifest needs.
+preference.
+
+**A dependent does run while its upstream is being annexed, and that is
+safe.** Dask releases a task the moment its upstream's *worker* returns,
+milliseconds before the driver finishes `git annex add` on that
+upstream's directory — so a recipe reads an input directory whose files
+are being replaced by symlinks. Measured before relying on it: git-annex
+hard-links the content into the object store and then renames the symlink
+over the file, so the path never stops existing and never holds partial
+bytes (448 concurrent full-content reads across 24 MB: no missing paths,
+no short reads, no wrong bytes). Don't "fix" this by moving the save into
+the task — that is what puts git back in the workers.
+
+**HEAD is read once per run, by the driver, and handed down.** The driver
+commits each output as it lands, so HEAD *moves* during a run: a
+per-task `dataset.head` would stamp later manifests with a commit this
+same run created, and whether it did would depend on whether a recipe
+finished before or after the previous save. Nondeterminism in a
+provenance field is worse than either answer.
 
 **The worker never raises.** It returns `ok`, `skipped`, `failed`, or
 `blocked`. A task whose upstream did not report — failed, or never
@@ -501,13 +539,20 @@ not pinned.
 
 **A skip returns the *recorded* digest, never a recomputed one.** On a
 clone that has fetched no annex content the files are dangling symlinks,
-and rehashing them would quietly report a different output. The honest
+and rehashing them would quietly report a different output. `--check`
+obeys the same rule for the same reason — it reads each unchanged
+upstream's manifest rather than hashing the directory, or it would report
+a rebuild for a project that is entirely up to date. The honest
 consequence: a hand-edited-and-committed output does not cascade in this
 layer. Catching that is `lc verify`'s job.
 
 **One staleness predicate, two callers** (`assets.staleness`). It compares
-`code_version` against the manifest and each recorded `input_versions[…]`
-against the version it is handed. The worker hands it live digests;
+`code_version` against the manifest, the declared input *set* against the
+recorded one, and then each recorded `input_versions[…]` against the
+version it is handed. The set comparison is separate on purpose:
+`code_version` hashes the recipe, the decisions and the environment, none
+of which an input the spec no longer declares moves — so without it a
+dropped dependency leaves the output reporting "up to date" forever. The worker hands it live digests;
 `--check` hands `None` for anything it has already classified as
 would-run, meaning "this is going to change". That single value is the
 entire difference between the two — one input, conservatively chosen, not
@@ -515,6 +560,16 @@ a second body of logic — the same discipline as layer 1's
 `converge(write=False)`. It is the one place in the layer where a bug is
 quiet rather than loud, which is exactly why it may not have two
 implementations.
+
+**An environment that no longer matches the lock is a refusal too.**
+`uv run --locked` asserts only that `uv.lock` still matches
+`pyproject.toml`, and workers pass `--no-sync` — so a lock edited without
+a sync leaves recipes importing packages the lock does not describe while
+every manifest records the *new* lock's `env_version`. Measured: the
+recipe imported `packaging 26.3` under a lock saying `24.2`, and uv
+accepted it silently. `project._env_is_current` is uv's own probe and
+already existed; the run just has to ask. (Layer 3's launcher will
+converge instead; until then this is the guard.)
 
 **A dirty tree is a refusal, and `--check` is exempt.** Every
 materialization is committed with the code that produced it, so a run that
@@ -534,6 +589,12 @@ property the layer exists for. So `ok` → `dataset.save`, and `failed`,
 loop in a `try/finally` so an interrupt restores whatever is still
 outstanding. This is what makes the dirty-tree refusal survivable rather
 than a trap.
+
+**The run record names declared paths, never resolved ones.** Every
+declared input under `data/` is an annex symlink, so a `Path.resolve()`
+in the record's `inputs` writes `.git/annex/objects/SHA256E-…` — the
+storage rather than the input, and a path nothing can `datalad get`. This
+shipped once; `_inside` is lexical now.
 
 **The run record is genuinely re-runnable, and its `cmd` is the worker
 module.** `python -m lightcone.engine.worker <universe>/<output_id>`,

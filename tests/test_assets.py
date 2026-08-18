@@ -177,12 +177,21 @@ def test_a_drifted_input_is_stale_and_says_which() -> None:
 
 
 def test_a_newly_declared_input_is_stale() -> None:
-    """The manifest has no version recorded for it, so it cannot match."""
+    """The manifest has no version recorded for it, so the sets differ."""
     assert staleness(
         code_version="sha256:code",
         manifest=_manifest(),
         inputs={"catalog": "sha256:cat", "mask": "sha256:mask"},
-    ) == Reason("input", "mask")
+    ) == Reason("declaration", "mask")
+
+
+def test_an_input_the_output_no_longer_declares_is_stale() -> None:
+    """`code_version` hashes the recipe, the decisions and the environment —
+    none of which a dropped input moves — so nothing else would catch it and
+    the output would stay "up to date" with a dependency set that changed."""
+    assert staleness(
+        code_version="sha256:code", manifest=_manifest(), inputs={}
+    ) == Reason("declaration", "catalog")
 
 
 def test_an_input_that_will_be_rebuilt_is_stale() -> None:

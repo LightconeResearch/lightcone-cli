@@ -169,8 +169,8 @@ _FIELDS = frozenset(Manifest.__dataclass_fields__)
 class Reason:
     """Why an output would be made again."""
 
-    kind: Literal["missing", "code", "input"]
-    #: Which declared input moved, when ``kind`` is ``input``.
+    kind: Literal["missing", "code", "declaration", "input"]
+    #: Which declared input it was about, for the two input kinds.
     input: str = ""
 
     def __str__(self) -> str:
@@ -178,6 +178,8 @@ class Reason:
             return "no manifest — it has never been materialized"
         if self.kind == "code":
             return "the recipe, its decisions, or the environment changed"
+        if self.kind == "declaration":
+            return f"the output no longer declares the same inputs (`{self.input}`)"
         return f"the input `{self.input}` changed"
 
 
@@ -205,7 +207,13 @@ def staleness(
         return Reason("missing")
     if manifest.code_version != code_version:
         return Reason("code")
+    # The *set* first, and separately: `code_version` hashes the recipe, the
+    # decisions and the environment, so an input the spec no longer declares
+    # moves none of them and the loop below would never look at it. Adding
+    # one is caught either way; dropping one is only caught here.
+    if changed := set(inputs) ^ set(manifest.input_versions):
+        return Reason("declaration", sorted(changed)[0])
     for name, current in inputs.items():
-        if current is None or manifest.input_versions.get(name) != current:
+        if current is None or manifest.input_versions[name] != current:
             return Reason("input", name)
     return None

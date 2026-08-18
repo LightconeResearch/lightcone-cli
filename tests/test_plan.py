@@ -323,6 +323,22 @@ def test_a_second_level_of_nesting_is_refused(tmp_path: Path) -> None:
         _build(root)
 
 
+def test_a_decision_set_to_an_empty_string_is_still_a_decision(tmp_path: Path) -> None:
+    """A decision's *value* is not a test of whether it was made. Treating
+    an empty string as absent reports "the output does not declare this
+    decision", which is false and leaves nothing to act on."""
+    graph = _build(_project(tmp_path, baseline='id: baseline\ndecisions:\n  method: ""\n'))
+
+    assert graph.tasks[("baseline", "fit")].decisions == {"method": ""}
+
+
+def test_a_decision_left_null_is_not_rendered_as_the_word_none(tmp_path: Path) -> None:
+    """`str(None)` would put the literal `None` into a shell command and
+    into `code_version`. Failing by name is the legible outcome."""
+    with pytest.raises(ProjectError, match="does not declare"):
+        _build(_project(tmp_path, baseline="id: baseline\ndecisions:\n  method: null\n"))
+
+
 # ---- rendering a recipe ----------------------------------------------------
 
 

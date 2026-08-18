@@ -381,6 +381,22 @@ def test_a_linked_worktree_counts_as_version_controlled(tmp_path: Path) -> None:
     assert ".git" in converge(tmp_path / "proj").unchanged
 
 
+def test_check_mode_can_ask_about_a_directory_that_does_not_exist_yet(
+    tmp_path: Path,
+) -> None:
+    """Check mode creates nothing, so inside an enclosing repository the
+    walk-up says "in a repository" for a directory that is not there — and
+    running git with a cwd that does not exist raises out of `Popen`
+    rather than answering anything."""
+    (tmp_path / ".git").mkdir()
+
+    report = converge(tmp_path / "newproj", write=False)
+
+    assert ".git" in report.unchanged
+    assert "git-annex" in report.created
+    assert not (tmp_path / "newproj").exists()
+
+
 def test_an_existing_annex_is_adopted(tmp_path: Path, tools: list[list[str]]) -> None:
     """The annex is asked about the way git-annex asks itself, so an
     enclosing repository that already has one is not re-initialized."""

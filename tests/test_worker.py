@@ -52,9 +52,15 @@ def _task(root: Path, output_id: str) -> plan.Task:
     return graph.tasks[("baseline", output_id)]
 
 
+#: What the driver reads once and hands to every task.
+_HEAD = ("0123456789abcdef", "https://example/analysis.git")
+
+
 def _make(root: Path, output_id: str, *upstream: TaskResult) -> TaskResult:
     """Run one task the way Dask would, handed its upstream results."""
-    return worker.materialize(root, _task(root, output_id), identity.env_version(root), *upstream)
+    return worker.materialize(
+        root, _task(root, output_id), identity.env_version(root), _HEAD, *upstream
+    )
 
 
 # ---- executing a recipe ----------------------------------------------------
@@ -79,7 +85,8 @@ def test_the_manifest_is_complete_before_anything_is_saved(root: Path) -> None:
     assert manifest.data_version == assets.data_version(root / "results/baseline/first")
     assert manifest.code_version == _task(root, "first").code_version
     assert manifest.env_version == identity.env_version(root)
-    assert manifest.git_sha and manifest.hermeticity["mechanism"]
+    assert manifest.git_sha == _HEAD[0] and manifest.git_remote == _HEAD[1]
+    assert manifest.hermeticity["mechanism"]
 
 
 def test_the_recipe_runs_under_the_boundary(root: Path) -> None:
@@ -162,6 +169,43 @@ def test_a_failing_recipe_records_no_manifest(root: Path) -> None:
     assert result.status == "failed"
     assert "exited 1" in result.reason
     assert assets.read(root / "results/baseline/first") is None
+
+
+def test_the_boundary_stops_a_recipe_removing_its_own_output_directory(root: Path) -> None:
+    """Write is granted *inside* the directory, and unlinking the directory
+    needs write on `results/`, which is not granted. So on a host with a
+    mechanism the recipe simply fails."""
+    from lightcone.engine import sandbox
+
+    if sandbox.detect().capability.kind == "none":
+        pytest.skip("no sandbox mechanism on this host")
+    (root / "astra.yaml").write_text(
+        _SPEC.replace("echo one > {output}/value.txt", "rm -rf {output}")
+    )
+
+    assert _make(root, "first").status == "failed"
+    assert (root / "results/baseline/first").is_dir()
+
+
+def test_an_output_that_cannot_be_recorded_fails_rather_than_raises(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recording is fallible too, and a raise here reaches Dask, which
+    re-raises in the driver and takes down every other task in flight —
+    where reporting one failure and letting the rest finish is the whole
+    point of owning the loop. Exercised without a mechanism, because that
+    is the host where a recipe really can delete what it was given."""
+    from lightcone.engine import sandbox
+
+    monkeypatch.setattr(sandbox, "detect", Unavailable)
+    (root / "astra.yaml").write_text(
+        _SPEC.replace("echo one > {output}/value.txt", "rm -rf {output}")
+    )
+
+    result = _make(root, "first")
+
+    assert result.status == "failed"
+    assert "could not be recorded" in result.reason
 
 
 # ---- the environment gates -------------------------------------------------
@@ -247,7 +291,7 @@ def test_a_recipe_can_read_an_annexed_input_through_its_symlink(
     dataset.save(root, [root / "data"], "the catalog")
     assert (root / "data/catalog.txt").is_symlink()
 
-    result = worker.materialize(root, _task(root, "fit"), identity.env_version(root))
+    result = _make(root, "fit")
 
     assert result.status == "ok", result.reason
     assert (root / "results/baseline/fit/seen.txt").read_text() == "measured\n"

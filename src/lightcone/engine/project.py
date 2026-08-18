@@ -305,7 +305,7 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     # After the item above, so a fresh project has a repository to annex.
     c.item(
         "git-annex",
-        _in_repository(directory) and dataset.is_annexed(directory),
+        _can_ask_git(directory) and dataset.is_annexed(directory),
         lambda: dataset.init_annex(directory),
     )
     c.file(
@@ -336,7 +336,7 @@ def _converge_committable(c: _Converger, directory: Path) -> None:
     it. Blocked rather than warned, because it is convergence failing at
     something it is responsible for.
     """
-    if not _in_repository(directory):
+    if not _can_ask_git(directory):
         return
     for name in ("results", "data"):
         # Asked with the trailing slash, because the rule that matters most
@@ -352,8 +352,26 @@ def _converge_committable(c: _Converger, directory: Path) -> None:
 
 
 def _in_repository(directory: Path) -> bool:
-    """Whether *directory* is inside a git work tree, its own or an ancestor's."""
+    """Whether *directory* is inside a git work tree, its own or an ancestor's.
+
+    A pure filesystem question, so it answers for a directory that does not
+    exist yet — which is the whole point in check mode: ``lc init --check``
+    on a new subdirectory of a repository must report that the repository
+    is already there, not that one would be created.
+    """
     return any((p / ".git").exists() for p in [directory, *directory.parents])
+
+
+def _can_ask_git(directory: Path) -> bool:
+    """Whether git can be *run* here — a stricter question than the above.
+
+    Every git invocation needs an existing working directory, and check
+    mode does not create one. Inside an enclosing repository the walk-up
+    says "in a repository" for a directory that is not there yet, and
+    running git in it raises ``FileNotFoundError`` out of ``Popen`` rather
+    than answering anything.
+    """
+    return directory.is_dir() and _in_repository(directory)
 
 
 def project_name(directory: Path) -> str:

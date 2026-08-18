@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -156,7 +157,7 @@ def scan_lock(root: Path) -> LockScan:
         raise ProjectError(f"{lock_path}: invalid TOML: {e}") from e
 
     pyproject = _pyproject(root)
-    own = pyproject.get("project", {}).get("name")
+    own = _canonical_name(pyproject.get("project", {}).get("name") or "")
 
     refusals: list[str] = []
     sdist_built: list[str] = []
@@ -164,7 +165,7 @@ def scan_lock(root: Path) -> LockScan:
         name = package.get("name", "?")
         source = package.get("source", {}) or {}
         if kind := next((k for k in ("path", "directory", "editable") if k in source), None):
-            if name != own:
+            if _canonical_name(name) != own:
                 refusals.append(
                     f"{name}: {kind} dependency — the lock records where it was, "
                     "not what was in it, so two syncs can install different code"
@@ -186,6 +187,18 @@ def scan_lock(root: Path) -> LockScan:
 # =============================================================================
 # Reading the project's files
 # =============================================================================
+
+
+def _canonical_name(name: str) -> str:
+    """A distribution name in PEP 503 form.
+
+    Both sides need it: uv writes the normalized name into ``uv.lock``,
+    while ``pyproject.toml`` carries whatever the author wrote — and
+    ``project_name()`` keeps ``_`` and ``.``. Comparing them raw makes a
+    packaged project called ``my_project`` fail to recognise *itself*, and
+    the lock scan then refuses the whole run over the project's own code.
+    """
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _required(root: Path, name: str, remedy: str) -> Path:

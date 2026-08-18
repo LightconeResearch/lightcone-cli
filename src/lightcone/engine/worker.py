@@ -36,6 +36,11 @@ from lightcone.engine import assets, dataset, identity, plan, sandbox
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import ProjectError, child_env, current_project
 
+#: The commit a run is identified against: ``(sha, origin URL)``. Read once
+#: by the driver and handed to every task, because the driver commits as
+#: outputs land and HEAD therefore moves under the run.
+Head = tuple[str, str]
+
 #: The shell a recipe's command is handed to. A recipe is a command line,
 #: not an argv — redirects and pipes are part of what people write — and
 #: bash is in the exec allowlist, so it is granted by the same rule that
@@ -71,12 +76,18 @@ class TaskResult:
 # =============================================================================
 
 
-def materialize(root: Path, task: Task, env_version: str, *upstream: TaskResult) -> TaskResult:
+def materialize(
+    root: Path, task: Task, env_version: str, head: Head, *upstream: TaskResult
+) -> TaskResult:
     """Make *task* if it needs making. What Dask submits, once per task.
 
     *upstream* arrives as the results of the futures this task was given
     as arguments, which is what makes Dask the scheduler: the ordering
     falls out of the argument graph rather than out of a loop here.
+
+    *head* is handed down rather than read here — the driver commits each
+    output as it lands, so HEAD moves during a run and reading it per task
+    would stamp later manifests with a commit this same run created.
     """
     reported = {u.key: u for u in upstream if u.usable}
     if absent := [dep for dep in task.depends_on if dep not in reported]:
@@ -98,7 +109,7 @@ def materialize(root: Path, task: Task, env_version: str, *upstream: TaskResult)
         # rehashing them would quietly report a different output.
         return TaskResult(task.key, "skipped", data_version=manifest.data_version)
 
-    return execute(root, task, env_version, versions, reason=str(reason))
+    return execute(root, task, env_version, versions, head=head, reason=str(reason))
 
 
 # =============================================================================
@@ -112,6 +123,7 @@ def execute(
     env_version: str,
     input_versions: Mapping[str, str],
     *,
+    head: Head | None = None,
     reason: str = "",
 ) -> TaskResult:
     """Run *task*'s recipe and record what it produced.
@@ -153,25 +165,37 @@ def execute(
     if drift := _gate(root, env_version):
         return TaskResult(task.key, "failed", reason=drift, notes=outcome.notes)
 
-    sha, remote = dataset.head(root)
-    data_version = assets.data_version(task.output_dir)
-    assets.write(
-        task.output_dir,
-        assets.Manifest(
-            output_id=task.output_id,
-            universe_id=task.universe_id,
-            recipe=task.recipe,
-            code_version=task.code_version,
-            env_version=env_version,
-            data_version=data_version,
-            decisions=dict(task.decisions),
-            input_versions=dict(input_versions),
-            git_sha=sha,
-            git_remote=remote,
-            lc_version=_lc_version(),
-            hermeticity=asdict(outcome.attestation),
-        ),
-    )
+    # Recording is fallible too — a recipe is free to remove the directory
+    # it was given — and a raise here would reach Dask, which re-raises in
+    # the driver and takes down every other task in flight. Reporting one
+    # failure and letting the rest finish is the whole point of the loop.
+    try:
+        sha, remote = head if head is not None else dataset.head(root)
+        data_version = assets.data_version(task.output_dir)
+        assets.write(
+            task.output_dir,
+            assets.Manifest(
+                output_id=task.output_id,
+                universe_id=task.universe_id,
+                recipe=task.recipe,
+                code_version=task.code_version,
+                env_version=env_version,
+                data_version=data_version,
+                decisions=dict(task.decisions),
+                input_versions=dict(input_versions),
+                git_sha=sha,
+                git_remote=remote,
+                lc_version=_lc_version(),
+                hermeticity=asdict(outcome.attestation),
+            ),
+        )
+    except (OSError, ProjectError) as e:
+        return TaskResult(
+            task.key,
+            "failed",
+            reason=f"the recipe finished but its output could not be recorded: {e}",
+            notes=outcome.notes,
+        )
     return TaskResult(
         task.key,
         "ok",

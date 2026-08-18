@@ -180,6 +180,16 @@ def test_the_projects_own_package_is_not_refused(root: Path) -> None:
     assert scan_lock(root).refusals == ()
 
 
+def test_the_own_package_exemption_survives_name_normalization(root: Path) -> None:
+    """uv writes the PEP 503 name into the lock; `pyproject.toml` carries
+    whatever the author wrote. Comparing them raw makes a packaged project
+    fail to recognise itself, and the scan then refuses its own code."""
+    (root / "pyproject.toml").write_text(_PYPROJECT.replace('name = "demo"', 'name = "My_Demo"'))
+    _with_package(root, 'name = "my-demo"', 'source = { editable = "." }')
+
+    assert scan_lock(root).refusals == ()
+
+
 def test_a_registry_package_with_no_wheel_is_reported(root: Path) -> None:
     """Identity covers the sdist, not the build of it — reported, not
     refused, because building from source is legitimate."""

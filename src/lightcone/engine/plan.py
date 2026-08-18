@@ -191,10 +191,14 @@ def _task(
                 "produces it and no declared input gives it a source."
             )
 
+    # `_declared` rather than `bool`: a decision's *value* is not a test of
+    # whether it was made. An empty string is a choice someone wrote down,
+    # and treating it as absent reports "the output does not declare this
+    # decision", which is false and leaves nothing to act on.
     mine = {
         name: decisions[found]
         for name in declared.definition.get("decisions") or []
-        if (found := _lookup(name, scope, decisions, bool))
+        if (found := _lookup(name, scope, decisions, _declared))
     }
     recipe = render(
         _command(declared),
@@ -224,6 +228,11 @@ def _lookup(name: str, scope: str | None, among: dict[str, Any], usable: Any) ->
     """
     candidates = (f"{scope}.{name}", name) if scope else (name,)
     return next((c for c in candidates if c in among and usable(among[c])), None)
+
+
+def _declared(_: Any) -> bool:
+    """Present is enough — see :func:`_task`."""
+    return True
 
 
 def _command(declared: _Declared) -> str:
@@ -333,7 +342,13 @@ def _universes(root: Path, spec: dict[str, Any]) -> dict[str, dict[str, str]]:
 
 
 def _flatten(decisions: Any) -> dict[str, str]:
-    return {str(k): str(v) for k, v in (decisions or {}).items()}
+    """A universe's decisions as strings, with unset ones left out.
+
+    A YAML null is *not* a choice, and `str(None)` would render the literal
+    ``None`` into a shell command and into ``code_version``. Dropping it
+    means a recipe that references the decision fails by name instead.
+    """
+    return {str(k): str(v) for k, v in (decisions or {}).items() if v is not None}
 
 
 # =============================================================================
