@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -48,7 +49,20 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     from lightcone.engine import project
 
     monkeypatch.setattr(project, "_run", fake_run)
-    monkeypatch.setattr(project.shutil, "which", lambda name, path=None: f"/usr/bin/{name}")
+    # Narrowly: `project.shutil` *is* the global `shutil` module, so a
+    # blanket fake here patches `shutil.which` for the whole suite. It
+    # did, and the sandbox tests built their exec set from it — every
+    # tool resolving to `/usr/bin/<name>`, which happens to exist on
+    # Linux and does not on macOS, so the enforcement suite was testing
+    # a policy no user would ever get. Fake only what convergence needs.
+    real_which = shutil.which
+
+    def fake_which(name: str, path: str | None = None) -> str | None:
+        if name in ("uv", "git"):
+            return f"/usr/bin/{name}"
+        return real_which(name, path=path)
+
+    monkeypatch.setattr(project.shutil, "which", fake_which)
     return calls
 
 

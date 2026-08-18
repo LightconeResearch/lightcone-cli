@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -49,15 +48,18 @@ def test_the_private_home_is_writable(built: policy_module.Policy) -> None:
 
 
 def test_the_shared_tmp_is_writable_for_a_project_outside_it() -> None:
+    """`/tmp` specifically, not `gettempdir()`: on macOS the latter is the
+    per-user `$TMPDIR` under /var/folders, a different directory that is
+    not in the baseline at all."""
     with scope(Path.home() / ".lc-policy-test-project") as built:
-        assert Path(tempfile.gettempdir()).resolve() in built.write
+        assert Path("/tmp").resolve() in built.write
 
 
 def test_a_project_living_under_tmp_does_not_become_writable() -> None:
     """`/tmp` is writable by design, so a project that *lives* there would
     otherwise be writable too — voiding the read-only-tree guarantee for
     exactly the people who keep scratch analyses in /tmp."""
-    shared = Path(tempfile.gettempdir()).resolve()
+    shared = Path("/tmp").resolve()
     with scope(shared / "lc-policy-under-tmp") as built:
         assert shared not in built.write
 
@@ -180,8 +182,9 @@ def test_allowlisted_utilities_are_granted_per_file(built: policy_module.Policy)
     bash = shutil.which("bash", path=policy_module._UTILITY_PATH)
     if bash is None:  # pragma: no cover - a host without bash
         pytest.skip("no bash in the utility path")
-    assert Path(bash).resolve() in built.execute
-    assert Path(bash).resolve().parent not in built.execute
+    resolved = Path(bash).resolve()
+    assert resolved in built.execute, f"{bash} -> {resolved}; granted: {built.execute}"
+    assert resolved.parent not in built.execute
 
 
 def test_the_allowlist_is_resolved_off_the_ambient_path(
@@ -325,3 +328,15 @@ def test_path_is_the_exec_search_path_we_granted(
     entries = built.env["PATH"].split(os.pathsep)
     assert entries[0] == str(tmp_path / "proj" / ".venv" / "bin"), "the project env comes first"
     assert entries[1:] == policy_module._UTILITY_PATH.split(os.pathsep)
+
+
+def test_the_allowlist_is_resolved_with_the_real_which() -> None:
+    """The autouse `tools` fixture fakes `shutil.which` — and because
+    `project.shutil` *is* the global module, a blanket fake silently
+    reached every test in the suite. The exec set became
+    `/usr/bin/<tool>` for every tool, which exists on Linux and does not
+    on macOS, so the enforcement tests ran against a policy no user could
+    ever have. The fake must cover uv and git and nothing else.
+    """
+    assert shutil.which("uv") == "/usr/bin/uv"
+    assert shutil.which("lc-definitely-not-a-real-tool") is None
