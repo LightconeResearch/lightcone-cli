@@ -44,6 +44,19 @@ EXEC_ALLOWLIST: tuple[str, ...] = (
 #: profile is listed too or nothing but `/bin/sh` ever resolves there.
 _UTILITY_PATH = "/usr/local/bin:/usr/bin:/bin:/run/current-system/sw/bin"
 
+
+def utility(name: str) -> Path | None:
+    """Where *name* resolves from the fixed search path, if it is there.
+
+    The **only** way anything works out where an allowlisted tool lives.
+    Anywhere that hardcodes a path instead is a second answer to the same
+    question, and the two disagree the moment a host keeps its copy
+    somewhere else: the exec set would grant one file and the caller
+    would run the other, which is a denial on every single run.
+    """
+    found = shutil.which(name, path=_UTILITY_PATH)
+    return Path(found) if found else None
+
 #: Readable everywhere: the OS the interpreter and its libraries live in.
 #: Read, never execute — being able to *read* /usr is what lets the
 #: dynamic linker work; being able to *run* what is in it is the leak.
@@ -55,6 +68,13 @@ _UTILITY_PATH = "/usr/local/bin:/usr/bin:/bin:/run/current-system/sw/bin"
 #: resolves into them, so without them the sandbox is unusable there
 #: rather than merely incomplete. (Both entries are taken from codex's
 #: own `LINUX_PLATFORM_DEFAULT_READ_ROOTS`.)
+#:
+#: `/run` is granted whole, where codex names only `/run/current-system/sw`.
+#: It reaches `/run/user/$UID` — sockets, dconf, portal state — and that
+#: is fine here: the test is whether undeclared *inputs* arrive through a
+#: path, and runtime sockets are not a channel a recipe accidentally
+#: reads data from. `/etc/resolv.conf` is a symlink into `/run` wherever
+#: systemd-resolved is in use, so the grant also keeps DNS working.
 _OS_READ_BASELINE = (
     "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt", "/run",
     "/nix/store", "/run/current-system/sw",
@@ -151,8 +171,8 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
 
     python = _venv_python(project)
     # EXECUTE on the interpreter *file*; READ on the install root beside
-    # it, for the stdlib. See :func:`_venv_python`.
-    stdlib = [python.parent.parent] if python else []
+    # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
+    stdlib = _stdlib_root(python)
     write = _existing([tmp_home, *_write_roots(project)])
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
@@ -225,6 +245,28 @@ def _venv_python(project: Path) -> Path | None:
     return python.resolve() if python.exists() else None
 
 
+def _stdlib_root(python: Path | None) -> list[Path]:
+    """The install root to grant READ on, for the standard library.
+
+    The stdlib sits beside the interpreter, outside the project and
+    outside `/usr` for a managed build, so without this grant the child
+    dies with ``Failed to import encodings module``.
+
+    Refused when the root is ``$HOME`` or an ancestor of it, which is
+    what an interpreter installed straight into ``~/bin`` produces. That
+    grant would make the real home readable and silently undo the
+    private-``$HOME`` design — the one thing the environment overlay
+    exists to guarantee. Failing loudly on a layout nobody uses beats
+    voiding the guarantee for the people who do. (Reading the base
+    prefix out of ``pyvenv.cfg`` instead would not help: it reports the
+    same directory.)
+    """
+    if python is None:
+        return []
+    root = python.parent.parent
+    return [] if Path.home().resolve().is_relative_to(root) else [root]
+
+
 def _exec_set(project: Path, python: Path | None) -> list[Path]:
     """The two exec tiers: the environment, and the utility allowlist.
 
@@ -259,9 +301,9 @@ def _exec_set(project: Path, python: Path | None) -> list[Path]:
         if str(install_root) not in _SHARED_PREFIXES:
             paths.append(install_root)
     for name in EXEC_ALLOWLIST:
-        found = shutil.which(name, path=_UTILITY_PATH)
+        found = utility(name)
         if found is not None:
-            paths.append(Path(found))
+            paths.append(found)
     paths.extend(elf_loaders())
     return paths
 

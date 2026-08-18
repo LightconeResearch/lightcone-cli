@@ -401,7 +401,7 @@ and the `podman*`/`pod*` attestation branches all belong to layers 4 and 6
 and are absent, not stubbed.
 
 **The macOS profile is vendored, not authored.**
-`sandbox/profiles/{base,platform-defaults}.sbpl` come from the codex CLI
+`sandbox/profiles/{base,network,platform-defaults}.sbpl` come from the codex CLI
 (itself Chrome-derived), with a provenance header naming the upstream
 commit and a single `LIGHTCONE DELTA`. The macOS read baseline is not
 derivable from first principles — it is a list of things that break,
@@ -414,6 +414,36 @@ own rules in the generator, not in the vendored text. The one delta —
 upstream's blanket `(allow process-exec)`, which exists because codex
 does not restrict exec — is pinned by a test so a re-sync cannot silently
 restore it.
+
+**Not controlling the network takes more than allowing sockets.** On
+macOS, name resolution and TLS trust go through *mach services*
+(`SystemConfiguration.DNSConfiguration`, `configd`, `SecurityServer`,
+`trustd.agent`, `ocspd`), which the base's `(deny default)` blocks —
+`(allow network*)` opens the socket families and nothing else. That is
+why `network.sbpl` is emitted unconditionally: without it the
+attestation reads `network: allowed` on a host where every lookup fails,
+which is worse than either honest answer. Linux needs no equivalent
+because Landlock gates the filesystem only.
+
+**One resolution rule for the utility allowlist**, `policy.utility()`.
+Anything that hardcodes a tool's path instead is a second answer to the
+same question, and the two diverge the moment a host keeps its copy
+somewhere else. `env` is the load-bearing case: the seam execs it to
+apply the overlay, so a stale `/usr/bin/env` is not a missing
+convenience but a denial on the first exec of *every* run — `/usr` is
+readable and never executable. Pinned by
+`test_the_env_the_seam_execs_is_one_the_policy_granted`, which points
+the search path at a copy, because a test against the real path passes
+on this host and ships the bug.
+
+**A derived read root may never be `$HOME` or above** (`_stdlib_root`).
+The interpreter's install root is granted READ for the stdlib beside it,
+and for an interpreter installed straight into `~/bin` that root *is*
+the home directory — silently undoing the private-`$HOME` design, which
+is the whole point of the environment overlay. Reading `pyvenv.cfg`'s
+`base-prefix` instead does not help: it reports the same directory. The
+guard is the fix; failing loudly on a layout nobody uses beats voiding
+the guarantee for the people who do.
 
 **SBPL is last-match-wins; Landlock unions.** This asymmetry decides
 where a rule can live, and it cuts both ways. A later `(deny …)` can take
@@ -537,7 +567,20 @@ only checks that the guard is present. Verified empirically, not assumed.
   it**, which §7 does not contemplate. Granting `/tmp` unconditionally
   would make the tree of a `/tmp`-hosted project writable and silently
   void the read-only-tree guarantee. `TMPDIR` points into the private
-  scope regardless, so `tempfile` works either way.
+  scope regardless, so `tempfile` works either way. The drop is
+  Linux-only in effect: on macOS the vendored defaults grant
+  `/private/tmp` write unconditionally and the guard only claws back our
+  *read* roots, so the surrounding `/tmp` stays writable there. The
+  project itself is protected on both — it is a read root, so the guard
+  names it — and `/tmp` writability is not a channel undeclared inputs
+  arrive through, so the asymmetry is recorded rather than closed.
+- **`/run` is granted whole**, where codex names only
+  `/run/current-system/sw`. It reaches `/run/user/$UID` — dconf, the
+  gnupg and keyring sockets, portal state. Kept deliberately: the test
+  is whether undeclared *inputs* arrive through a path, and runtime
+  sockets are not something a recipe accidentally reads data from.
+  `/etc/resolv.conf` is a symlink into `/run` wherever systemd-resolved
+  is in use, so the grant also keeps DNS working.
 
 ## Extending the Codebase
 

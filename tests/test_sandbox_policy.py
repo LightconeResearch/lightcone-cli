@@ -206,6 +206,36 @@ def test_the_allowlist_is_resolved_off_the_ambient_path(
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="the ELF loader tier is Linux-only")
+def test_the_env_the_seam_execs_is_one_the_policy_granted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The overlay is applied by exec'ing `env`, so it has to be in the
+    exec set — and the *same* `env`.
+
+    The search path is pointed at a copy here on purpose. Two answers to
+    "where does env live" agree on a host whose copy sits at the usual
+    place and disagree everywhere else, so a test run against the real
+    path would pass while the bug shipped: `/usr` is readable and never
+    executable, making a stale answer a denial on the first exec of
+    every single run.
+    """
+    from lightcone.engine.sandbox.boundary import env_argv
+
+    elsewhere = tmp_path / "bin"
+    elsewhere.mkdir()
+    real = shutil.which("env", path=policy_module._UTILITY_PATH)
+    assert real is not None, "no `env` on the search path"
+    shutil.copy(real, elsewhere / "env")
+    monkeypatch.setattr(policy_module, "_UTILITY_PATH", str(elsewhere))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    with scope(project) as built:
+        spawned = Path(env_argv(built)[0])
+        assert spawned == elsewhere / "env"
+        assert built.grants(spawned, built.execute)
+
+
 def test_the_elf_loader_is_in_the_exec_set(built: policy_module.Policy) -> None:
     """Landlock checks EXECUTE on the loader's own open, so without this
     every dynamically linked binary — bash and python included — fails
@@ -261,6 +291,32 @@ def test_a_system_interpreter_does_not_make_the_whole_prefix_executable(
         assert Path("/usr") not in built.execute
         assert Path("/usr") in built.read
         assert system.resolve() in built.execute
+
+
+def test_an_interpreter_in_home_does_not_make_home_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stdlib read root is derived from the interpreter's location, so
+    an interpreter installed straight into `~/bin` would hand the read
+    set `$HOME` itself — silently undoing the private-HOME design, which
+    is the one guarantee the environment overlay exists to make. Reading
+    the base prefix out of `pyvenv.cfg` would report the same directory,
+    so the guard is the fix, not a better lookup."""
+    home = tmp_path / "home"
+    (home / "bin").mkdir(parents=True)
+    interpreter = home / "bin" / "python"
+    interpreter.write_text("#!/bin/sh\n")
+    interpreter.chmod(0o755)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    project = tmp_path / "proj"
+    (project / ".venv" / "bin").mkdir(parents=True)
+    (project / ".venv" / "bin" / "python").symlink_to(interpreter)
+
+    with scope(project) as built:
+        assert not built.grants(home, built.read), built.read
+        # The interpreter file itself is still runnable.
+        assert built.grants(interpreter, built.execute)
 
 
 def test_the_utility_path_covers_the_nix_system_profile() -> None:

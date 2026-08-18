@@ -202,12 +202,18 @@ def env_argv(policy: Policy) -> list[str]:
     cache from ``XDG_CACHE_HOME`` and its interpreters from
     ``XDG_DATA_HOME``.
 
-    ``env`` is in the exec allowlist by construction, so it is runnable
-    under every mechanism.
+    ``env`` is resolved the same way the exec set resolved it, not by a
+    literal path: the set grants whatever
+    :func:`~lightcone.engine.sandbox.policy.utility` found, so a hardcoded
+    ``/usr/bin/env`` is a denial on the first exec of every run on any
+    host that keeps its copy elsewhere.
     """
     if not policy.env:
         return []
-    return ["/usr/bin/env", *(f"{k}={v}" for k, v in sorted(policy.env.items()))]
+    found = policy_module.utility("env")
+    if found is None:  # pragma: no cover - no `env` on the search path
+        raise RuntimeError(f"`env` not found on {policy_module._UTILITY_PATH}")
+    return [str(found), *(f"{k}={v}" for k, v in sorted(policy.env.items()))]
 
 
 def _downgrade_note(capability: Capability) -> str:

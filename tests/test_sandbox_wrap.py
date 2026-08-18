@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from lightcone.engine.sandbox import policy as policy_module
 from lightcone.engine.sandbox import seatbelt
 from lightcone.engine.sandbox.boundary import Unavailable, env_argv
 from lightcone.engine.sandbox.landlock import LandlockBackend
@@ -94,7 +95,10 @@ def test_the_overlay_is_the_seam_s_job_not_each_backend_s(policy: Policy) -> Non
     run (same private `$HOME`, same PYTHONPYCACHEPREFIX) or the two stop
     being comparable."""
     prefixed = [*env_argv(policy), "true"]
-    assert prefixed[0] == "/usr/bin/env"
+    # Deliberately not a literal path: the exec set grants whatever the
+    # utility search path resolved, and a second answer to that question
+    # is a denial on the first exec of every run.
+    assert Path(prefixed[0]) == policy_module.utility("env")
     assert f"HOME={policy.env['HOME']}" in prefixed
 
     for name, backend in _backends(policy):
@@ -178,7 +182,7 @@ def test_the_profile_references_every_policy_path_once(policy: Policy) -> None:
 def test_the_upstream_fragments_are_shipped() -> None:
     """They are package *data*, so a packaging slip would only surface on a
     macOS host at run time. Read them here instead."""
-    for name in (seatbelt.BASE_PROFILE, seatbelt.PLATFORM_DEFAULTS):
+    for name in (seatbelt.BASE_PROFILE, seatbelt.NETWORK, seatbelt.PLATFORM_DEFAULTS):
         assert "(allow" in seatbelt.read_profile(name), name
 
 
@@ -236,6 +240,24 @@ def test_the_profile_does_not_restrict_the_network(policy: Policy) -> None:
     assert "(allow network*)" in profile
     assert "(deny network" not in profile
     assert SeatbeltBackend().attest(policy).network == "allowed"
+
+
+def test_the_network_the_profile_allows_is_actually_usable(policy: Policy) -> None:
+    """Opening the socket families is not enough on macOS: name lookup
+    and TLS go through mach services the base's `(deny default)` blocks.
+    Without them the attestation would claim `allowed` while every
+    resolution failed — worse than either honest answer."""
+    profile = seatbelt.generate_profile(policy)
+    for service in (
+        "com.apple.SystemConfiguration.DNSConfiguration",  # resolver config
+        "com.apple.SystemConfiguration.configd",
+        "com.apple.SecurityServer",  # TLS trust evaluation
+        "com.apple.trustd.agent",
+        "com.apple.ocspd",
+    ):
+        assert service in profile, service
+    # After `(deny default)`, or it grants nothing at all.
+    assert profile.index("(deny default)") < profile.index("com.apple.SecurityServer")
 
 
 def test_readable_but_unwritable_paths_are_denied_write_last(tmp_path: Path) -> None:

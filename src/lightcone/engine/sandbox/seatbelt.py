@@ -17,6 +17,10 @@ which ``getpwuid()`` raises ``KeyError``, ``cfprefsd``, and
 ``/opt/homebrew/lib``. They are kept near-verbatim so they can be diffed
 against upstream; the single local delta is marked in the file.
 
+A third fragment, ``profiles/network.sbpl``, is the mach half of *not*
+controlling the network: lc restricts none, and on macOS saying so takes
+more than opening the socket families.
+
 What *is* ours is the three-tier policy on top: the project and declared
 inputs readable, the private scope writable, and the environment plus the
 utility allowlist executable. Two rules, both learned from shipped
@@ -49,6 +53,7 @@ SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
 #: The adapted upstream fragments, in the order they are concatenated.
 BASE_PROFILE = "base.sbpl"
+NETWORK = "network.sbpl"
 PLATFORM_DEFAULTS = "platform-defaults.sbpl"
 
 
@@ -56,7 +61,7 @@ PLATFORM_DEFAULTS = "platform-defaults.sbpl"
 def read_profile(name: str) -> str:
     """The raw text of an SBPL fragment, cached — it is immutable
     package data read on every ``wrap``."""
-    if name not in (BASE_PROFILE, PLATFORM_DEFAULTS):
+    if name not in (BASE_PROFILE, NETWORK, PLATFORM_DEFAULTS):
         raise KeyError(f"unknown profile fragment: {name!r}")
     return (resources.files(__package__) / "profiles" / name).read_text(encoding="utf-8")
 
@@ -172,6 +177,11 @@ def generate_profile(policy: Policy) -> str:
             # profile rather than just its own line.
             "(allow network*)",
             "(allow system-socket)",
+            # Sockets alone do not make the network usable: name lookup
+            # and TLS go through mach services, which the base's
+            # `(deny default)` blocks. Without this the attestation would
+            # say `allowed` on macOS while every resolution failed.
+            read_profile(NETWORK),
             "",
             read_profile(PLATFORM_DEFAULTS),
             _read_only_guard(policy),
