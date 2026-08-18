@@ -1,16 +1,4 @@
-"""What a project *is*, and how to converge one.
-
-:func:`converge` brings a directory to the state a lightcone project is
-defined to have: an ASTRA spec sitting on a uv project. Idempotent, and
-never destructive to files the user owns.
-
-Nothing here knows about Click or the console: convergence returns a
-:class:`ConvergenceReport` and raises :class:`ProjectError`; rendering and
-exit codes are the CLI's business.
-
-Project *discovery* — the ``astra.yaml`` walk-up that finds a root from a
-working directory — arrives with the launcher, the first thing that needs
-it. ``lc init`` is handed its directory explicitly.
+"""Utilities to manage a Lightcone project.
 """
 
 from __future__ import annotations
@@ -87,14 +75,32 @@ class _Converger:
         self.write = write
         self.report = ConvergenceReport()
 
-    def item(self, name: str, present: bool, apply: Callable[[], object]) -> None:
-        """Converge something whose *presence* is the whole question."""
-        if present:
-            self.report.unchanged.append(name)
-        else:
+    def item(
+        self,
+        name: str,
+        present: bool,
+        apply: Callable[[], object],
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> None:
+        """Converge something whose *presence* is the question.
+
+        ``is_current`` makes it a *derived* artifact instead, one whose
+        agreement with its inputs is the question: a ``uv.lock`` that no
+        longer matches ``pyproject.toml``, or a ``.venv`` that no longer
+        matches the lock, is exactly as unconverged as a missing one, and
+        reports as ``repaired``. It is consulted only when the item is
+        present, so a fresh project pays no probe.
+        """
+        if not present:
             self.report.created.append(name)
-            if self.write:
-                apply()
+        elif is_current is None or is_current():
+            self.report.unchanged.append(name)
+            return
+        else:
+            self.report.repaired.append(name)
+        if self.write:
+            apply()
 
     def file(
         self,
@@ -126,38 +132,6 @@ class _Converger:
                 path.write_text(fixed)
         else:
             self.report.unchanged.append(name)
-
-    def derived(
-        self,
-        name: str,
-        path: Path,
-        *,
-        is_current: Callable[[], bool],
-        apply: Callable[[], object],
-    ) -> None:
-        """Converge a *derived* artifact — one whose agreement with its
-        inputs, not its mere existence, is the question.
-
-        ``uv.lock`` and ``.venv`` are derived: a lock that no longer matches
-        ``pyproject.toml``, or an environment that no longer matches the
-        lock, is exactly as unconverged as a missing one. Existence alone
-        would make convergence a no-op on drift — and layer 3's launcher
-        converges on every invocation precisely to guarantee the environment
-        matches the lock.
-
-        ``is_current`` is only consulted when the artifact exists, so a
-        fresh project pays no probe, and the created/repaired distinction
-        falls out of the same check.
-        """
-        if not path.exists():
-            self.report.created.append(name)
-        elif is_current():
-            self.report.unchanged.append(name)
-            return
-        else:
-            self.report.repaired.append(name)
-        if self.write:
-            apply()
 
     def blocked(self, name: str, reason: str) -> None:
         """Record an item convergence cannot complete, and why.
@@ -192,6 +166,12 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     Raises :class:`ProjectError` if uv is missing or fails — it is the
     environment substrate, so there is no useful project without it.
     """
+    # Imported here rather than at module scope because `astra.cli` costs
+    # ~0.5 s to import — Click, Rich, and the validation stack, which pulls
+    # linkml_runtime. astra-tools#102 moves the scaffold to a stdlib-only
+    # `astra.scaffold`; once that lands this can go back up top.
+    from astra.cli import create_boilerplate
+
     directory = directory.resolve()
 
     _require_uv()
@@ -201,17 +181,15 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     if write:
         directory.mkdir(parents=True, exist_ok=True)
 
-    # The spec is one item, keyed on astra.yaml: astra treats it and
-    # universes/baseline.yaml as a unit, because the baseline references the
-    # boilerplate's example decision and must never land beside a
-    # user-authored spec. Nothing else about the layout is converged —
-    # `src/` and an empty `universes/` are directories git cannot track, so
-    # converging them would report drift on every fresh clone; where
-    # analysis code lives is the user's layout, not ours (astra-tools#100).
+    # `create_boilerplate` is astra's public scaffold API, the same one
+    # `astra init` delegates to: it writes the spec — astra.yaml plus
+    # universes/baseline.yaml, which converge as one item because the
+    # baseline references the boilerplate's example decision — and nothing
+    # else.
     c.item(
         "astra.yaml",
         (directory / SPEC_FILENAME).exists(),
-        lambda: _scaffold_spec(directory),
+        lambda: create_boilerplate(directory),
     )
     _converge_uv_project(c, directory)
     c.file(
@@ -221,22 +199,29 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
         repair=templates.gitignore_repair,
     )
     _converge_results(c, directory)
-    _converge_report_template(c, directory)
+    # The MyST report is a recommended add-on on top of the spec, not part
+    # of it — which is why it is scaffolded here and not by `astra init`.
+    c.file("myst.yml", directory / "myst.yml", templates.myst_yml)
+    c.file(
+        "index.md",
+        directory / "index.md",
+        lambda: templates.index_md(title=directory.name or "My Analysis"),
+    )
     _converge_git(c, directory)
 
     # Lock and sync last: they are the expensive steps, and they are
     # meaningless until pyproject.toml and .python-version exist.
-    c.derived(
+    c.item(
         "uv.lock",
-        directory / "uv.lock",
+        (directory / "uv.lock").exists(),
+        lambda: _uv(c, ["lock"], directory=directory),
         is_current=lambda: _lock_is_current(directory),
-        apply=lambda: _uv_lock(c, directory),
     )
-    c.derived(
+    c.item(
         ".venv",
-        directory / ".venv",
+        (directory / ".venv").exists(),
+        lambda: _uv(c, _SYNC_ARGS, directory=directory),
         is_current=lambda: _env_is_current(directory),
-        apply=lambda: _uv_sync(c, directory),
     )
 
     return c.report
@@ -248,26 +233,6 @@ def _require_uv() -> None:
             "uv is required (the environment substrate). Install it: "
             "https://docs.astral.sh/uv/getting-started/installation/"
         )
-
-
-def _scaffold_spec(directory: Path) -> None:
-    """Write astra's boilerplate spec: ``astra.yaml`` + ``universes/``.
-
-    ``create_boilerplate`` is astra's public scaffold API, split out
-    (astra-tools#99) so downstream tools can scaffold into existing
-    directories under their own conventions: it writes the spec and nothing
-    else — no ``.gitignore``, no git init, no emptiness checks. ``astra
-    init`` delegates to the same function, so this is the shared path, not
-    a back door.
-
-    Its boilerplate carries a ``container:`` key. **lightcone-cli ignores
-    the ASTRA ``container:`` directive entirely** — not stripped, not
-    validated, not migrated. The environment is ``pyproject.toml`` +
-    ``uv.lock``, and no code path here reads that key.
-    """
-    from astra.cli import create_boilerplate
-
-    create_boilerplate(directory)
 
 
 def _converge_uv_project(c: _Converger, directory: Path) -> None:
@@ -306,17 +271,6 @@ def _converge_results(c: _Converger, directory: Path) -> None:
         return
     c.item("results/", results_dir.is_dir(), results_dir.mkdir)
     c.file("results/README.md", results_dir / "README.md", templates.results_readme)
-
-
-def _converge_report_template(c: _Converger, directory: Path) -> None:
-    """The MyST report. Recommended add-on on top of the spec, not part of
-    it — which is why it is scaffolded here and not by ``astra init``."""
-    c.file("myst.yml", directory / "myst.yml", templates.myst_yml)
-    c.file(
-        "index.md",
-        directory / "index.md",
-        lambda: templates.index_md(title=directory.name or "My Analysis"),
-    )
 
 
 def _converge_git(c: _Converger, directory: Path) -> None:
@@ -376,12 +330,10 @@ def tool_warnings(stderr: str) -> list[str]:
     stream would bury them under a line per installed package. A warning is
     a line starting ``warning:`` plus any indented continuation.
 
-    Worth relaying at all because of one warning in particular: when the uv
-    cache and the project are on different filesystems, uv cannot link and
-    silently falls back to copying every package. That is the difference
-    between a project costing a few MB and costing the whole environment
-    again (measured: ~148 MB of a 216 MB environment is shared when linking
-    works), and nothing else would tell the user.
+    The one that has to reach the user: when the uv cache and the project
+    are on different filesystems, uv cannot link and silently falls back to
+    copying every package — most of an environment stops being shared, and
+    nothing else would say so.
     """
     found: list[str] = []
     for line in stderr.splitlines():
@@ -392,76 +344,50 @@ def tool_warnings(stderr: str) -> list[str]:
     return found
 
 
-def _probe(argv: list[str], *, cwd: Path) -> bool:
-    """Ask a tool a yes/no question.
+def _is_current(argv: list[str], *, directory: Path) -> bool:
+    """Ask uv whether an artifact still agrees with its inputs.
 
-    A nonzero exit is the answer "no", not a failure — so unlike
-    :func:`_check_call` this never raises. Whatever the tool wrote to stderr
-    is its explanation of the "no", which the caller is about to act on
-    anyway.
+    A nonzero exit is the answer "no", not a failure, so unlike
+    :func:`_check_call` this never raises. Both probes are uv's own
+    no-write verification (confirmed read-only against uv 0.12.3), so the
+    answer is uv's rather than a heuristic of ours.
     """
-    return _run(argv, cwd=cwd).returncode == 0
+    return _run(["uv", *argv, "--project", str(directory)], cwd=directory).returncode == 0
 
 
 def _lock_is_current(directory: Path) -> bool:
-    """Whether ``uv.lock`` still agrees with ``pyproject.toml``.
-
-    uv's own no-write verification, so the answer is uv's rather than a
-    heuristic of ours (verified read-only against uv 0.12.3).
-    """
-    return _probe(["uv", "lock", "--check", "--project", str(directory)], cwd=directory)
+    """Whether ``uv.lock`` still agrees with ``pyproject.toml``."""
+    return _is_current(["lock", "--check"], directory=directory)
 
 
 def _env_is_current(directory: Path) -> bool:
     """Whether ``.venv`` still satisfies ``uv.lock``.
 
-    **Honest limitation** (uv 0.12.3, measured): this catches packages the
-    lock requires and the environment lacks, but *not* extras — a package
-    installed by hand into the environment leaves ``--check`` reporting
-    "would make no changes", even though a real ``--exact`` sync would
-    remove it. So a hand-polluted environment still reads as current. The
-    design already accepts set-level rather than byte-level environment
-    checks (spec §3); what ultimately bounds what a recipe can import is
-    the sandbox, not this probe.
+    Set-level, not byte-level, as spec §3 accepts: uv catches packages the
+    lock requires and the environment lacks, but not extras installed by
+    hand, which leave ``--check`` reporting "would make no changes". What
+    bounds what a recipe can import is the sandbox, not this probe.
     """
-    argv = ["uv", "sync", "--locked", "--exact", "--check", "--project", str(directory)]
-    return _probe(argv, cwd=directory)
+    return _is_current(["sync", "--locked", "--exact", "--check"], directory=directory)
+
+
+# --locked so a drifted lock is an error rather than a silent relock;
+# --exact because a plain sync is additive; --compile-bytecode because the
+# environment is read-only at execution time, so a recipe cannot write .pyc
+# as it imports — paying compilation once here instead of on every recipe
+# run (spec §4, §6, §7).
+_SYNC_ARGS = ["sync", "--locked", "--exact", "--compile-bytecode"]
 
 
 def _uv(c: _Converger, args: list[str], *, directory: Path) -> None:
     """Run uv against *directory*, recording anything it warns about.
 
-    Every invocation carries an explicit ``--project``: uv's native
-    walk-up discovery is never trusted (spec §4).
-
-    Nothing about linking or caching is overridden. uv's defaults already
-    share package content between projects — it clones (copy-on-write) or
-    hard links out of a global cache — and the docs discourage forcing
-    ``symlink`` mode, which would couple every environment to the cache's
-    survival. `--system-site-packages` is likewise never used: it would
-    make packages outside the lock importable, which is precisely what the
-    environment model exists to prevent (spec §7 G6).
+    Every invocation carries an explicit ``--project``: uv's own walk-up
+    discovery is never trusted (spec §4). Nothing about linking or caching
+    is overridden — uv's defaults already share package content between
+    projects — and ``--system-site-packages`` is never used, since it would
+    make packages outside the lock importable, which is what the
+    environment model exists to prevent (spec §7, G6).
     """
     for warning in _check_call(["uv", *args, "--project", str(directory)], cwd=directory):
         c.warn(f"uv: {warning}")
-
-
-def _uv_lock(c: _Converger, directory: Path) -> None:
-    _uv(c, ["lock"], directory=directory)
-
-
-def _uv_sync(c: _Converger, directory: Path) -> None:
-    """Converge the environment, with the flags the spec fixes.
-
-    ``--locked`` so a drifted lock is an error rather than a silent relock;
-    ``--exact`` because a plain sync is additive; and ``--compile-bytecode``
-    because the environment is read-only at execution time, so a recipe
-    cannot write ``.pyc`` files as it imports (spec §4, §6, §7).
-
-    ``--compile-bytecode`` is the environment's one genuinely per-project
-    cost: bytecode is generated into the venv rather than linked from the
-    cache, ~55 MB of a 216 MB environment here. The alternative is paying
-    compilation on every recipe run instead, since the sandbox denies the
-    write — so this is a deliberate trade, not an oversight.
-    """
-    _uv(c, ["sync", "--locked", "--exact", "--compile-bytecode"], directory=directory)

@@ -218,9 +218,10 @@ user owns:
   same report without writing (exit 1 when not converged); `--json`
   emits `{converged, created, repaired, unchanged, blocked, warnings}`.
 - **Derived artifacts converge by correctness, not existence.** `uv.lock`
-  and `.venv` go through `_Converger.derived`, whose predicate is uv's own
-  no-write verification (`uv lock --check`, `uv sync --locked --exact
-  --check` — both confirmed read-only against uv 0.12.3). A lock that no
+  and `.venv` go through `_Converger.item`'s optional `is_current=`
+  predicate, which is uv's own no-write verification (`uv lock --check`,
+  `uv sync --locked --exact --check` — both confirmed read-only against uv
+  0.12.3). A lock that no
   longer matches `pyproject.toml`, or an environment that no longer matches
   the lock, is exactly as unconverged as a missing one and reports as
   `repaired`. Existence alone made `converge()` a no-op on drift, which
