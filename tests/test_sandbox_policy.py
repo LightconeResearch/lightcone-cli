@@ -205,7 +205,6 @@ def test_the_allowlist_is_resolved_off_the_ambient_path(
         assert impostor.resolve() not in rebuilt.execute
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="the ELF loader tier is Linux-only")
 def test_the_env_the_seam_execs_is_one_the_policy_granted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -236,6 +235,7 @@ def test_the_env_the_seam_execs_is_one_the_policy_granted(
         assert built.grants(spawned, built.execute)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="the ELF loader tier is Linux-only")
 def test_the_elf_loader_is_in_the_exec_set(built: policy_module.Policy) -> None:
     """Landlock checks EXECUTE on the loader's own open, so without this
     every dynamically linked binary — bash and python included — fails
@@ -395,7 +395,12 @@ def test_the_allowlist_is_resolved_with_the_real_which() -> None:
     reached every test in the suite. The exec set became
     `/usr/bin/<tool>` for every tool, which exists on Linux and does not
     on macOS, so the enforcement tests ran against a policy no user could
-    ever have. The fake must cover uv and git and nothing else.
+    ever have. The fake must cover uv and git and nothing else, and must
+    never invent a location for either.
     """
-    assert shutil.which("uv") == "/usr/bin/uv"
+    assert shutil.which("uv") is not None, "convergence's substrate check must pass"
+    # Anything else is the real `shutil.which`: a path that is really
+    # there, or None — never one the fixture made up.
+    found = shutil.which("sh")
+    assert found is not None and Path(found).exists(), found
     assert shutil.which("lc-definitely-not-a-real-tool") is None
