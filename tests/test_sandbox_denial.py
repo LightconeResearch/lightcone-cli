@@ -48,8 +48,8 @@ def policy(project: Path, declared_input: Path, tmp_path: Path) -> Policy:
     venv_bin.mkdir(parents=True)
     return Policy(
         read=(project, declared_input, Path("/usr")),
-        # The project is writable, like a container's bind mount.
-        write=(scratch, project),
+        # `results/` only — the rest of the tree is read-only.
+        write=(scratch, project / "results"),
         execute=(venv_bin,),
         tmp_home=scratch,
         env={},
@@ -85,28 +85,37 @@ def test_an_undeclared_data_file_gets_the_astra_snippet(
     assert f"source: {external}" in joined
 
 
-def test_a_write_outside_the_project_is_its_own_kind_of_denial(
+def test_an_in_tree_write_is_its_own_kind_of_denial(policy: Policy, project: Path) -> None:
+    """Reading the project was allowed, so an EACCES on a project file can
+    only have been a write — and "declare it as an input" would be exactly
+    the wrong advice."""
+    stderr = "PermissionError: [Errno 13] Permission denied: 'astra.yaml'\n"
+    joined = "\n".join(denial.explain(stderr, policy, cwd=project))
+    assert "cannot write" in joined
+    assert "output goes in results/" in joined
+    assert "inputs:" not in joined
+
+
+def test_a_write_to_a_declared_input_says_the_same_thing(
     policy: Policy, project: Path, declared_input: Path
 ) -> None:
-    """Reading it was allowed, so an EACCES here can only have been a
-    write — and "declare it as an input" would be exactly the wrong
-    advice for a file that already is one."""
+    """An input is somebody else's file: readable because it is declared,
+    never writable — and "declare it as an input" would be absurd advice
+    for a file that already is one."""
     target = declared_input / "catalog.csv"
     stderr = f"PermissionError: [Errno 13] Permission denied: '{target}'\n"
     joined = "\n".join(denial.explain(stderr, policy, cwd=project))
     assert "cannot write" in joined
-    assert "only the project and scratch space are writable" in joined
     assert "inputs:" not in joined
 
 
-def test_a_write_inside_the_project_is_not_a_denial_at_all(
-    policy: Policy, project: Path
-) -> None:
-    """The tree is writable, so an EACCES on a project file is the OS's
-    problem, not the sandbox's — and claiming otherwise would send the
-    reader after a restriction that no longer exists."""
-    (project / "astra.yaml").write_text("inputs: []\n")
-    stderr = "PermissionError: [Errno 13] Permission denied: 'astra.yaml'\n"
+def test_a_write_into_results_is_not_a_denial_at_all(policy: Policy, project: Path) -> None:
+    """`results/` is granted, so an EACCES there is the OS's problem, not
+    the sandbox's."""
+    (project / "results").mkdir(exist_ok=True)
+    target = project / "results" / "out.csv"
+    target.write_text("")
+    stderr = f"PermissionError: [Errno 13] Permission denied: '{target}'\n"
     assert denial.explain(stderr, policy, cwd=project) == []
 
 

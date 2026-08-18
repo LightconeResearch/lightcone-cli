@@ -51,7 +51,7 @@ class Policy:
     #: write scope; the caller owns removing it.
     tmp_home: Path
     #: Environment the boundary overlays: HOME, the XDG trio,
-    #: MPLCONFIGDIR, TMPDIR, PATH.
+    #: MPLCONFIGDIR, PYTHONPYCACHEPREFIX, TMPDIR, PATH.
     env: dict[str, str] = field(default_factory=dict)
 
     def grants(self, path: Path, roots: tuple[Path, ...]) -> bool:

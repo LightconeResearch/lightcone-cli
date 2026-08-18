@@ -140,12 +140,13 @@ def generate_profile(policy: Policy) -> str:
     what lets :func:`_read_only_guard` take a write back, and why the
     write tier is restated *after* that guard.
 
-    That last one is not cosmetic. Landlock unions rights, so a narrower
-    grant only ever widens: a writable directory nested inside a readable
-    tree works there for free. Reproducing that here means the write set
-    must have the final word, or the guard's ``(deny file-write* …)``
-    over the read roots would revoke a writable path nested under one —
-    Linux would allow and macOS would refuse the same policy.
+    That last one is not cosmetic — it is what makes ``results/`` work.
+    Landlock unions rights, so a writable directory nested inside a
+    readable tree needs no help there. Reproducing it here means the
+    write set must have the final word, or the guard's ``(deny
+    file-write* PROJECT)`` would revoke the grant on ``results/`` that
+    sits inside it: Linux would materialize and macOS would refuse the
+    very same policy.
     """
     return "\n".join(
         [
@@ -213,14 +214,12 @@ def _read_only_guard(policy: Policy) -> str:
     on devices, and only a later ``deny`` can take one back.
 
 It emits a ``deny`` over every read root that is not also writable —
-    ``/usr``, ``/etc``, the interpreter's stdlib root — but **none of
-    those is a write the fragments had granted**, so today it takes
-    nothing back that was not already denied by ``(deny default)``. That
-    is a property of the current baseline, not a reason to drop it:
-    narrow ``_WRITE_BASELINE`` — dropping the host's ``/tmp`` to look
-    more like a container, say — and the upstream ``/tmp`` grant would
-    silently reopen it. The guard is computed from the policy, so it
-    starts taking things back the moment there is something to take.
+    the project tree, ``/usr``, ``/etc``, the interpreter's stdlib root.
+    The project is the one that has to be a ``deny`` rather than an
+    absence: the upstream fragments grant write on ``/tmp``, so a project
+    living there would otherwise be writable through *their* rule. That
+    is the hole ``policy._write_roots`` closes on the Linux side, by
+    leaving the offending root out of the policy instead.
 
     Deliberately narrow: it names *our* read roots and nothing else, so
     the device and pty writes the upstream defaults grant survive. And it

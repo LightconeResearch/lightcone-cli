@@ -166,8 +166,8 @@ def run(command: tuple[str, ...]) -> None:
     Byte-for-byte the environment recipes get — same lock, same
     ``.venv``, same boundary — so a command that works here means a
     recipe will. The project and the inputs declared in ``astra.yaml``
-    are readable, the project and scratch are writable, and anything
-    outside them — a host tool, a system library, an undeclared file —
+    are readable, ``results/`` and scratch are writable, and anything
+    outside that — a host tool, a system library, an undeclared file —
     is refused.
     """
     from lightcone.engine import run as engine_run

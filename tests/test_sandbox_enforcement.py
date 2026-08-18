@@ -361,14 +361,25 @@ def test_the_real_home_is_not_readable(backend: sandbox.Backend, project: Path) 
 # ---- the write scope -------------------------------------------------------
 
 
-def test_the_project_tree_can_be_written(backend: sandbox.Backend, project: Path) -> None:
-    """A container bind-mounts the working tree read-write, and so do we.
-    The boundary is for catching a reach *outside* the project; a command
-    writing inside its own project is not that."""
+def test_the_tree_outside_results_cannot_be_written(
+    backend: sandbox.Backend, project: Path
+) -> None:
+    """The environment a run starts with is the one it ends with — and the
+    file has to be *unchanged*, not merely reported."""
     with sandbox.scope(project) as policy:
-        result = shell(backend, policy, "printf written > data.txt", cwd=project)
+        result = shell(backend, policy, "printf clobbered > data.txt", cwd=project)
+    assert result.returncode != 0
+    assert (project / "data.txt").read_text() == "in-tree\n", "the file changed anyway"
+
+
+def test_results_can_be_written(backend: sandbox.Backend, project: Path) -> None:
+    """Writable inside a read-only tree — the nesting both mechanisms have
+    to agree on, and the one a container gets from a second bind mount."""
+    (project / "results").mkdir()
+    with sandbox.scope(project) as policy:
+        result = shell(backend, policy, "printf out > results/out.csv", cwd=project)
     assert result.returncode == 0, result.stderr
-    assert (project / "data.txt").read_text() == "written"
+    assert (project / "results" / "out.csv").read_text() == "out"
 
 
 def test_a_declared_input_is_read_only(
@@ -388,29 +399,6 @@ def test_a_declared_input_is_read_only(
         result = shell(backend, policy, f"printf clobbered > {target}", cwd=project)
     assert result.returncode != 0
     assert target.read_text() == "undeclared\n", "the file changed anyway"
-
-
-def test_a_binary_dropped_into_the_venv_cannot_be_executed(
-    backend: sandbox.Backend, project: Path
-) -> None:
-    """The exec allowlist has to survive a writable project.
-
-    `.venv/bin` is exec-granted, and the tree is writable, so a grant on
-    the *directory* would be a grant on whatever is written there next:
-    copying a host tool in would run it, and the by-name denial of that
-    same tool would mean nothing. The grants are per file, taken when the
-    policy is built.
-    """
-    host_tool = shutil.which("git") or shutil.which("id")
-    if host_tool is None:  # pragma: no cover - a host with neither
-        pytest.skip("no host tool to smuggle")
-    smuggled = project / ".venv" / "bin" / "smuggled"
-    with sandbox.scope(project) as policy:
-        result = shell(
-            backend, policy, f"cp {host_tool} {smuggled} && {smuggled} --version", cwd=project
-        )
-    assert smuggled.exists(), "the copy itself should be allowed — the tree is writable"
-    assert result.returncode != 0, "a binary written into .venv/bin must not be executable"
 
 
 def test_the_private_scope_is_writable(backend: sandbox.Backend, project: Path) -> None:

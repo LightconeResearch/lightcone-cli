@@ -62,10 +62,6 @@ class Outcome:
     #: Console lines the caller prints verbatim: the downgrade notice,
     #: the denial explanation, the failure trailer.
     notes: tuple[str, ...] = ()
-    #: The child's retained stderr. Here so a caller that owns part of
-    #: the command — the ``uv run`` prefix — can explain output the
-    #: boundary itself has no business recognising.
-    stderr: str = ""
 
 
 def detect() -> Backend:
@@ -183,7 +179,6 @@ def run(
         returncode=returncode,
         attestation=attestation,
         notes=tuple(notes),
-        stderr=tail.text(),
     )
 
 

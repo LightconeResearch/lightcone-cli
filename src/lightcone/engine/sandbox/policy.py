@@ -4,14 +4,21 @@ One policy, both mechanisms. This module decides *what* a command may
 touch; :mod:`~lightcone.engine.sandbox.landlock` and
 :mod:`~lightcone.engine.sandbox.seatbelt` only decide how to say it.
 
-The shape it encodes is what a container would give the command, minus
-the container: the project directory and the declared inputs and the OS
-baseline readable, the project and scratch writable, and only the
-project's own environment plus a versioned utility allowlist runnable.
-What that catches is a command reaching *outside* the project — a tool,
-a library, or a data file that happens to be on this machine and would
-not be in the image. Inside the project it is not in the way: a
-container bind-mounts the working tree read-write, and so do we.
+The shape it encodes is what a container gives the command, minus the
+container: the project and the declared inputs and the OS baseline
+readable, ``results/`` and a private scratch scope writable, and only
+the project's own environment plus a versioned utility allowlist
+runnable. What it catches is a command reaching *outside* that set — a
+tool, a library, or a data file that is on this machine and would not be
+in the image.
+
+A read-only tree with one writable directory inside it is the shape all
+three mechanisms express *natively*, which is why it is the shape:
+Landlock unions rights over ancestors, so a nested grant only ever
+widens; SBPL restates the write tier after the guard; and podman mounts
+the project ``:ro`` with ``results`` ``:rw`` over it. The reverse — a
+writable tree with a read-only hole in it — needs rights *subtraction*,
+which Landlock cannot do at all.
 """
 
 from __future__ import annotations
@@ -152,6 +159,7 @@ _HOME_LAYOUT = {
     "XDG_CACHE_HOME": ".cache",
     "XDG_DATA_HOME": ".local/share",
     "MPLCONFIGDIR": ".mplconfig",
+    "PYTHONPYCACHEPREFIX": ".pycache",
     "TMPDIR": ".tmp",
 }
 
@@ -159,22 +167,15 @@ _HOME_LAYOUT = {
 def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     """The policy for ``lc run``.
 
-    The project tree is **writable**, the way a container's bind-mounted
-    working directory is. What the boundary is for is catching a command
-    that reaches outside the project for something the image would not
-    have; a command writing inside its own project is not that, and
-    forbidding it only made lc worse at being the thing it emulates.
+    The tree is read-only except for ``results/``, which is where output
+    goes. That keeps the environment itself — ``.venv``, ``uv.lock``,
+    the spec — exactly as the lock describes it for the whole run, and
+    it is the same scope a recipe gets, so a probe that works means a
+    recipe will.
 
-    Note this cannot be narrowed to "everything but ``.venv``": Landlock
-    unions rights over ancestors and has no way to subtract, so a
-    writable project is necessarily a writable ``.venv``. What that costs
-    is bounded deliberately rather than wished away — :func:`_exec_set`
-    grants ``.venv/bin`` per *file*, so a binary written there during a
-    run is not runnable. What remains is a module dropped into
-    site-packages, which imports; ``uv sync --exact`` does **not** clean
-    that up (measured: it prunes packages by RECORD and leaves unmanaged
-    files alone), so the honest statement is that a writable environment
-    is writable, exactly as it is in a container.
+    ``results/`` is granted only if it is already there. Convergence
+    creates it, and a policy that made directories would be a side
+    effect nobody asked a *probe* for.
 
     Creates the per-run HOME on disk as a side effect; the caller owns
     removing it (see :func:`~lightcone.engine.sandbox.boundary.scope`).
@@ -187,13 +188,7 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     # EXECUTE on the interpreter *file*; READ on the install root beside
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
-    write = _existing([tmp_home, project, *(Path(p) for p in _WRITE_BASELINE)])
-    # The project is in *both* tiers, and that is not redundant. Landlock's
-    # write bits include the read ones, but SBPL's write tier grants
-    # `file-read* file-write*` and **not** `file-map-executable` — which is
-    # what macOS gates `dlopen` on, and every compiled extension module in
-    # `.venv/lib/.../site-packages` needs it. Drop the project from `read`
-    # and `import numpy` breaks on macOS alone, with Linux CI still green.
+    write = _existing([tmp_home, project / "results", *_write_roots(project)])
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
     return Policy(
@@ -203,6 +198,22 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
         tmp_home=tmp_home,
         env=home_overlay(tmp_home, project),
     )
+
+
+def _write_roots(project: Path) -> list[Path]:
+    """The write baseline, minus any root that would swallow the project.
+
+    ``/tmp`` is writable by design — but a project that *lives* under it
+    would then be writable too, silently voiding the read-only tree for
+    exactly the people who keep scratch analyses in ``/tmp``. Dropping
+    the offending root is safe because ``TMPDIR`` points at the private
+    scope regardless, so ``tempfile`` keeps working either way. The
+    device entries can never contain a project, so the filter is a no-op
+    for them.
+    """
+    resolved = project.resolve()
+    roots = tuple(Path(root).resolve() for root in _WRITE_BASELINE)
+    return [root for root in roots if not resolved.is_relative_to(root)]
 
 
 def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
@@ -218,12 +229,11 @@ def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
     ``PATH`` is set for a different reason, but the same one at heart:
     what the command resolves has to be what the policy granted.
 
-    There is deliberately no ``PYTHONPYCACHEPREFIX``. It was here only
-    because the tree was read-only, and redirecting bytecode into a
-    ``$HOME`` that is deleted after every run meant recompiling every
-    in-tree module every time. A writable tree caches it in place, which
-    is what a container does and what the scaffolded ``.gitignore``
-    already expects.
+    ``PYTHONPYCACHEPREFIX`` is here for the same reason at the other end:
+    the tree is read-only apart from ``results/``, so without it every
+    ``import`` of an in-tree module fails trying to write its
+    ``__pycache__``. ``TMPDIR`` points inside too, so ``tempfile`` works
+    even where the shared ``/tmp`` had to leave the write set.
     """
     return {
         "HOME": str(tmp_home),
@@ -295,13 +305,13 @@ def _exec_set(project: Path, python: Path | None) -> list[Path]:
     paths: list[Path] = []
     bin_dir = project / ".venv" / "bin"
     if bin_dir.is_dir():
-        # Per *file*, never the directory — for the same reason `/usr/bin`
-        # is per-file, and now for a sharper one. The project tree is
-        # writable, so a directory grant here is an exec grant on anything
-        # written into it *later*: `cp /usr/bin/git .venv/bin/ && git` runs
-        # a host tool the allowlist denies by name. Enumerating at
-        # policy-build time grants exactly what the converged environment
-        # shipped and nothing that appears afterwards.
+        # Per *file*, never the directory, for the same reason `/usr/bin`
+        # is: a directory grant is a grant on whatever the directory holds
+        # *later*. The read-only tree means nothing a run does can put a
+        # binary here, so this is belt-and-braces today — but it was a live
+        # hole for as long as the tree was writable (`cp /usr/bin/git
+        # .venv/bin/` ran a tool the allowlist denies by name), and
+        # enumerating costs one scandir.
         paths.extend(
             entry.resolve() for entry in bin_dir.iterdir() if os.access(entry, os.X_OK)
         )

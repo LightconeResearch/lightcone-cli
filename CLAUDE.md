@@ -585,34 +585,30 @@ only checks that the guard is present. Verified empirically, not assumed.
   persisted. An earlier draft carried a `to_manifest()` with no caller —
   deleted, because "no dead code" applies to this layer's own
   conveniences too. It lands with layer 4, which is what needs it.
-- **The project tree is writable**, where §4 gives a probe no output and
-  therefore no in-tree write scope at all. The boundary exists to be a
-  no-install stand-in for running in a container, and a container
-  bind-mounts the working tree read-write; forbidding writes inside the
-  project made lc worse at the one job it has without catching anything
-  the design cares about, which is a reach *outside* the project. Note
-  this cannot be narrowed to "everything but `.venv`": Landlock unions
-  rights over ancestors and cannot subtract, so a writable project is
-  necessarily a writable `.venv`.
-  - **The exec allowlist has to survive that**, and it did not at first:
-    `.venv/bin` was granted as a *directory*, so `cp /usr/bin/git
-    .venv/bin/ && git` ran a host tool the allowlist denies by name.
-    Grants there are per *file* now, taken when the policy is built, so
-    what a run writes afterwards is not runnable. `_exec_set` grants no
-    directory anywhere; the rule is the same one `/usr/bin` has always
-    had, and now it is load-bearing twice over.
-  - What remains is a module dropped into site-packages, which imports.
-    That is inherent — Landlock cannot carve `.venv` out — and `uv sync
-    --exact` does **not** clean it up: measured, it prunes packages by
-    RECORD and leaves unmanaged files alone. Don't claim otherwise; a
-    writable environment is writable, exactly as in a container.
-  - Two things went with it, both of which existed *only* to serve the
-    read-only tree: the filter that dropped `/tmp` from the write scope
-    when the project lived under it, and `PYTHONPYCACHEPREFIX`. The
-    latter redirected bytecode into a `$HOME` deleted after every run,
-    so every in-tree module recompiled every time; a writable tree
-    caches in place, which is what a container does and what the
-    scaffolded `.gitignore` already expects.
+- **`results/` is writable; the rest of the tree is not**, where §4 gives
+  a probe no output and therefore no in-tree write scope at all. A probe
+  gets the same write scope a recipe does, so a probe that works means a
+  recipe will — and the environment a run starts with is the one it
+  finishes with.
+  - **The shape was chosen because all three mechanisms express it
+    natively.** A writable directory *nested inside* a read-only tree is
+    the widening direction: Landlock unions rights over ancestors, SBPL
+    restates the write tier after the guard, and podman mounts the
+    project `:ro` with `results` `:rw` over it — all verified by running
+    them. The reverse — a writable tree with `.venv` carved out — needs
+    rights *subtraction*, which podman and SBPL can do and **Landlock
+    cannot at all**. That asymmetry is the whole argument: the read-only
+    shape is the only one direct mode and containerized mode can both
+    deliver, so it is the only one that gives a single UX.
+  - This was briefly reversed (PR #174) on the premise that "a container
+    bind-mounts the working tree read-write". True of the default, not of
+    the mount table we will write — and the experiment that settled it is
+    two `podman -v` flags. Don't re-derive it from the default again.
+  - **`_exec_set` grants no directory anywhere**, including `.venv/bin`.
+    A directory grant is a grant on whatever the directory holds *later*,
+    which was a live hole for as long as the tree was writable: `cp
+    /usr/bin/git .venv/bin/` ran a tool the allowlist denies by name.
+    Belt-and-braces under a read-only tree, one scandir, keep it.
   - **A write-denial test must target a path the OS would let you
     write.** `printf x > /etc/…` passes with no sandbox at all — the OS
     refuses it for any non-root user — so it pins nothing. The sound

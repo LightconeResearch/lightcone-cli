@@ -36,10 +36,38 @@ def built(tmp_path: Path) -> Iterator[policy_module.Policy]:
 # ---- the write scope ------------------------------------------------------
 
 
-def test_the_project_is_writable(built: policy_module.Policy, tmp_path: Path) -> None:
-    """Like a container's bind-mounted working directory. What the
-    boundary catches is a reach outside the project, not work inside it."""
-    assert built.grants(tmp_path / "proj" / "results" / "out.csv", built.write)
+def test_the_tree_is_read_only_apart_from_results(
+    built: policy_module.Policy, tmp_path: Path
+) -> None:
+    """The environment a run starts with is the one it ends with: nothing
+    it does can touch `.venv`, the lock, or the spec."""
+    project = tmp_path / "proj"
+    assert not built.grants(project / "astra.yaml", built.write)
+    assert not built.grants(project / ".venv" / "bin" / "python", built.write)
+
+
+def test_results_is_writable(tmp_path: Path) -> None:
+    """Output goes here, and it is the same scope a recipe gets — which
+    is what makes a probe a probe of the real thing.
+
+    A writable directory nested inside a read-only tree is the shape all
+    three mechanisms express natively: Landlock unions rights so a nested
+    grant only widens, SBPL restates the write tier after the guard, and
+    podman mounts `results` `:rw` over a `:ro` project."""
+    project = tmp_path / "proj"
+    (project / "results").mkdir(parents=True)
+    with scope(project) as built:
+        assert built.grants(project / "results" / "out.csv", built.write)
+
+
+def test_results_is_granted_only_if_it_exists(tmp_path: Path) -> None:
+    """Convergence makes it. A policy that made directories would be a
+    side effect nobody asked a probe for."""
+    project = tmp_path / "bare"
+    project.mkdir()
+    with scope(project) as built:
+        assert not built.grants(project / "results", built.write)
+        assert not (project / "results").exists()
 
 
 def test_the_project_is_also_readable(built: policy_module.Policy, tmp_path: Path) -> None:
@@ -64,9 +92,18 @@ def test_the_shared_tmp_is_writable_for_a_project_outside_it() -> None:
         assert Path("/tmp").resolve() in built.write
 
 
+def test_a_project_living_under_tmp_does_not_become_writable() -> None:
+    """`/tmp` is writable by design, so a project that *lives* there would
+    otherwise be writable through that grant — voiding the read-only tree
+    for exactly the people who keep scratch analyses in /tmp."""
+    shared = Path("/tmp").resolve()
+    with scope(shared / "lc-policy-under-tmp") as built:
+        assert shared not in built.write
+
+
 def test_tmpdir_always_points_into_the_private_scope(built: policy_module.Policy) -> None:
-    """Scratch belongs to the run, so it goes away with the run rather
-    than accumulating in the shared /tmp."""
+    """Which is what keeps `tempfile` working even when the shared /tmp
+    had to be dropped from the write set."""
     assert Path(built.env["TMPDIR"]).is_relative_to(built.tmp_home)
     assert Path(built.env["TMPDIR"]).is_dir()
 
@@ -367,11 +404,12 @@ def test_home_and_friends_point_into_the_write_scope(built: policy_module.Policy
         assert Path(built.env[key]).is_relative_to(built.tmp_home), key
 
 
-def test_bytecode_is_not_redirected(built: policy_module.Policy) -> None:
-    """`PYTHONPYCACHEPREFIX` existed only because the tree was read-only.
-    A writable tree caches in place — what a container does, and what the
-    scaffolded `.gitignore` already expects."""
-    assert "PYTHONPYCACHEPREFIX" not in built.env
+def test_bytecode_is_redirected_out_of_the_read_only_tree(
+    built: policy_module.Policy,
+) -> None:
+    """Without it every `import` of an in-tree module fails trying to
+    write its `__pycache__` into a tree it may not write."""
+    assert Path(built.env["PYTHONPYCACHEPREFIX"]).is_relative_to(built.tmp_home)
 
 
 def test_the_home_subdirs_exist(built: policy_module.Policy) -> None:
