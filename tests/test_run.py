@@ -127,6 +127,37 @@ def test_an_unresolvable_tree_degrades_to_the_top_level_document(project: Path) 
     assert engine_run.read_spec(project)["inputs"]
 
 
+# ---- what entering the environment did to it ------------------------------
+
+
+def test_a_removed_package_is_explained() -> None:
+    """uv says "Uninstalled 1 package in 0.72ms" and nothing about why —
+    then the command fails for what looks like an unrelated reason. The
+    two have to be joined up, or the user concludes lc broke."""
+    notes = engine_run.environment_notes("Resolved 40 packages\nUninstalled 1 package in 0.72ms\n")
+    joined = "\n".join(notes)
+    assert "1 package just disappeared" in joined
+    assert "uv add" in joined
+    assert notes[-1] == "", "a blank line, so it does not run into the trailer"
+
+
+def test_the_count_is_uv_s_own() -> None:
+    assert "3 packages" in "\n".join(
+        engine_run.environment_notes("Uninstalled 3 packages in 4ms\n")
+    )
+
+
+def test_an_install_is_not_explained() -> None:
+    """uv installing a package the lock already asked for is it restoring
+    the declared environment, which surprises nobody. Only removals are
+    the confusing direction."""
+    assert engine_run.environment_notes("Installed 12 packages in 30ms\n") == []
+
+
+def test_an_ordinary_run_says_nothing() -> None:
+    assert engine_run.environment_notes("some traceback\n") == []
+
+
 # ---- the uv hop -----------------------------------------------------------
 
 

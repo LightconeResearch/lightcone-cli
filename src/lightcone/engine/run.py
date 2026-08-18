@@ -13,7 +13,9 @@ writable, the way a container's bind-mounted working directory is.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +35,7 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
     spec = read_spec(project)
 
     with sandbox.scope(project, read_paths=input_paths(project, spec)) as policy:
-        return sandbox.run(
+        outcome = sandbox.run(
             sandbox.detect(),
             policy,
             list(command),
@@ -45,6 +47,44 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
             # the middle of the probe's own output.
             env=child_env(),
         )
+    # First, because it explains something that happened *before* the
+    # command ran — and often why the command then failed.
+    return replace(outcome, notes=(*environment_notes(outcome.stderr), *outcome.notes))
+
+
+#: uv's own summary of what entering the environment changed. It says
+#: "Uninstalled 1 package in 0.72ms" and nothing about why.
+_UV_UNINSTALLED = re.compile(r"^Uninstalled (\d+) packages? in ", re.MULTILINE)
+
+
+def environment_notes(stderr: str) -> list[str]:
+    """Explain uv's bare "Uninstalled N packages" line, if it appeared.
+
+    Entering the environment is ``uv run --exact``, which makes it equal
+    to the lock — so a package installed by hand is removed on the way
+    in. uv reports that in one clause with no cause, and the command
+    then fails for what looks like an unrelated reason: run ``lc run
+    cowsay`` after ``uv pip install cowsay`` and you get
+    ``Uninstalled 1 package`` followed by ``cowsay: No such file or
+    directory``, with nothing joining the two.
+
+    Only removals are explained. An *install* is uv restoring something
+    the lock already asked for, which surprises nobody.
+    """
+    removed = sum(int(n) for n in _UV_UNINSTALLED.findall(stderr))
+    if not removed:
+        return []
+    what = "1 package" if removed == 1 else f"{removed} packages"
+    # Wrapped by hand, like the denial messages: rich would reflow the
+    # `uv add` line, which is the part meant to be pasted.
+    return [
+        f"{what} just disappeared from the environment, and that was lc:",
+        "  `lc run` enters the environment `uv.lock` describes — exactly that",
+        "  one — so anything installed by hand does not survive the trip.",
+        "  Declare it instead and it is there on every run, on every machine:",
+        "      uv add <package>",
+        "",
+    ]
 
 
 def uv_prefix(project: Path) -> list[str]:
