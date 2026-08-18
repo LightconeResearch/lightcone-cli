@@ -60,8 +60,8 @@ def explain(stderr: str, policy: Policy, *, cwd: Path) -> list[str]:
     - a path granted for **neither** access — an undeclared tool or an
       undeclared input;
     - a path granted for **read but not write** — which, since reading
-      it was allowed, can only have been a write attempt into the
-      read-only project tree.
+      it was allowed, can only have been a write somewhere outside the
+      project: a system directory, or a declared input.
     """
     # Access-aware, and that distinction is what keeps the message
     # honest: every allowlisted binary lives under `/usr`, which the read
@@ -161,18 +161,19 @@ def _render_data(path: Path) -> list[str]:
 
 
 def _render_write(path: Path) -> list[str]:
-    """The project tree is readable but not writable — say so plainly.
+    """Readable but not writable — a write outside the project.
 
-    Reading it was allowed, so this can only have been a write. There is
-    no declaration that makes the tree writable to a probe: a probe has
-    no output, and that is the answer rather than a limitation to work
-    around.
+    Reading it was allowed, so this can only have been a write, and the
+    project itself is writable — which leaves a system path or a
+    declared input. Neither would survive being written to in a
+    container either: the image is rebuilt from the lock, and an input
+    is somebody else's file.
     """
     return _message(
         f"cannot write {path}",
         [
-            "  the project tree is read-only in here — nothing a probe does can",
-            "  land in it. Write somewhere scratch instead:",
+            "  only the project and scratch space are writable in here. Write",
+            "  inside the project, or somewhere scratch:",
             "      import tempfile; tempfile.mkdtemp()      # or $TMPDIR, /tmp",
         ],
     )

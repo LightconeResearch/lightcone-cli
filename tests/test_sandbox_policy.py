@@ -36,11 +36,10 @@ def built(tmp_path: Path) -> Iterator[policy_module.Policy]:
 # ---- the write scope ------------------------------------------------------
 
 
-def test_a_probe_never_writes_in_the_tree(built: policy_module.Policy, tmp_path: Path) -> None:
-    """The invariant that makes `lc run` safe to hand to an agent: a probe
-    has no output, so nothing it does can land in the project."""
-    project = tmp_path / "proj"
-    assert not any(root == project or project.is_relative_to(root) for root in built.write)
+def test_the_project_is_writable(built: policy_module.Policy, tmp_path: Path) -> None:
+    """Like a container's bind-mounted working directory. What the
+    boundary catches is a reach outside the project, not work inside it."""
+    assert built.grants(tmp_path / "proj" / "results" / "out.csv", built.write)
 
 
 def test_the_private_home_is_writable(built: policy_module.Policy) -> None:
@@ -55,18 +54,9 @@ def test_the_shared_tmp_is_writable_for_a_project_outside_it() -> None:
         assert Path("/tmp").resolve() in built.write
 
 
-def test_a_project_living_under_tmp_does_not_become_writable() -> None:
-    """`/tmp` is writable by design, so a project that *lives* there would
-    otherwise be writable too — voiding the read-only-tree guarantee for
-    exactly the people who keep scratch analyses in /tmp."""
-    shared = Path("/tmp").resolve()
-    with scope(shared / "lc-policy-under-tmp") as built:
-        assert shared not in built.write
-
-
 def test_tmpdir_always_points_into_the_private_scope(built: policy_module.Policy) -> None:
-    """Which is what keeps `tempfile` working even when the shared /tmp
-    had to be dropped from the write set."""
+    """Scratch belongs to the run, so it goes away with the run rather
+    than accumulating in the shared /tmp."""
     assert Path(built.env["TMPDIR"]).is_relative_to(built.tmp_home)
     assert Path(built.env["TMPDIR"]).is_dir()
 
@@ -339,8 +329,11 @@ def test_home_and_friends_point_into_the_write_scope(built: policy_module.Policy
         assert Path(built.env[key]).is_relative_to(built.tmp_home), key
 
 
-def test_bytecode_is_redirected_out_of_the_read_only_tree(built: policy_module.Policy) -> None:
-    assert Path(built.env["PYTHONPYCACHEPREFIX"]).is_relative_to(built.tmp_home)
+def test_bytecode_is_not_redirected(built: policy_module.Policy) -> None:
+    """`PYTHONPYCACHEPREFIX` existed only because the tree was read-only.
+    A writable tree caches in place — what a container does, and what the
+    scaffolded `.gitignore` already expects."""
+    assert "PYTHONPYCACHEPREFIX" not in built.env
 
 
 def test_the_home_subdirs_exist(built: policy_module.Policy) -> None:

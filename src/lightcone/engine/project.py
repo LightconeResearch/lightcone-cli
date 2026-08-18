@@ -433,10 +433,10 @@ def _env_is_current(directory: Path) -> bool:
 
 
 # --locked so a drifted lock is an error rather than a silent relock;
-# --exact because a plain sync is additive; --compile-bytecode because the
-# environment is read-only at execution time, so a recipe cannot write .pyc
-# as it imports — paying compilation once here instead of on every recipe
-# run.
+# --exact because a plain sync is additive, and because it is what puts the
+# environment back in agreement with the lock after anything a run did to
+# it; --compile-bytecode to pay compilation once here rather than on the
+# first import of every run.
 _SYNC_ARGS = ["sync", "--locked", "--exact", "--compile-bytecode"]
 
 

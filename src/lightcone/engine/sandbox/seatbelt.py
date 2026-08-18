@@ -209,11 +209,8 @@ def _read_only_guard(policy: Policy) -> str:
 
     The upstream defaults grant write to shared scratch (``/tmp``,
     ``/var/tmp``) unconditionally, which would otherwise reopen exactly
-    the hole :func:`~lightcone.engine.sandbox.policy._write_roots` closes
-    on Linux — a project living under ``/tmp`` becoming writable. It is
-    only expressible because SBPL is last-match-wins; Landlock, which
-    unions rights, has to solve the same problem by leaving the root out
-    of the policy instead.
+    a hole Landlock does not have, since it grants only what the policy
+    names. It is only expressible because SBPL is last-match-wins.
 
     Deliberately narrow: it names *our* read roots and nothing else, so
     the device and pty writes the upstream defaults grant survive. And it

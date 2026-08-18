@@ -304,8 +304,8 @@ user owns:
     the site registry supplies `UV_CACHE_DIR` on Perlmutter (spec §4).
   - `--compile-bytecode` is the one genuinely per-project cost: bytecode is
     generated into the venv, never linked (~55 MB of 216 MB here). It is a
-    deliberate trade — the environment is read-only at execution time, so
-    without it every recipe run re-compiles.
+    deliberate trade: paying compilation once here beats paying it on the
+    first import of every run.
 - **Every external tool goes through one seam**, `project._run`, which
   tests monkeypatch — so the suite never shells out, and every call is
   inspectable. `_check_call` turns a nonzero exit into a `ProjectError`:
@@ -469,10 +469,10 @@ the guarantee for the people who do.
 
 **SBPL is last-match-wins; Landlock unions.** This asymmetry decides
 where a rule can live, and it cuts both ways. A later `(deny …)` can take
-back an earlier allow, which is how `_read_only_guard` claws back the
-write the vendored defaults grant on `/tmp`; Landlock has no equivalent —
-a narrower rule only ever *adds* — so the Linux side solves that by
-leaving the root out of the policy (`policy._write_roots`).
+back an earlier allow, which is how `_read_only_guard` takes back write
+on the read roots the vendored defaults would otherwise hand out;
+Landlock has no equivalent — a narrower rule only ever *adds* — so on
+Linux the policy simply never names them.
 
 But the same asymmetry means SBPL does **not** give nesting for free.
 Landlock unions, so a writable output directory inside a readable project
@@ -585,17 +585,30 @@ only checks that the guard is present. Verified empirically, not assumed.
   persisted. An earlier draft carried a `to_manifest()` with no caller —
   deleted, because "no dead code" applies to this layer's own
   conveniences too. It lands with layer 4, which is what needs it.
-- **`/tmp` is dropped from the write scope when the project lives under
-  it**, which §7 does not contemplate. Granting `/tmp` unconditionally
-  would make the tree of a `/tmp`-hosted project writable and silently
-  void the read-only-tree guarantee. `TMPDIR` points into the private
-  scope regardless, so `tempfile` works either way. The drop is
-  Linux-only in effect: on macOS the vendored defaults grant
-  `/private/tmp` write unconditionally and the guard only claws back our
-  *read* roots, so the surrounding `/tmp` stays writable there. The
-  project itself is protected on both — it is a read root, so the guard
-  names it — and `/tmp` writability is not a channel undeclared inputs
-  arrive through, so the asymmetry is recorded rather than closed.
+- **The project tree is writable**, where §4 gives a probe no output and
+  therefore no in-tree write scope at all. The boundary exists to be a
+  no-install stand-in for running in a container, and a container
+  bind-mounts the working tree read-write; forbidding writes inside the
+  project made lc worse at the one job it has without catching anything
+  the design cares about, which is a reach *outside* the project. Note
+  this cannot be narrowed to "everything but `.venv`": Landlock unions
+  rights over ancestors and cannot subtract, so a writable project is
+  necessarily a writable `.venv`. `uv sync --exact` at the next
+  convergence is what puts the environment back, not the sandbox.
+  - Two things went with it, both of which existed *only* to serve the
+    read-only tree: the filter that dropped `/tmp` from the write scope
+    when the project lived under it, and `PYTHONPYCACHEPREFIX`. The
+    latter redirected bytecode into a `$HOME` deleted after every run,
+    so every in-tree module recompiled every time; a writable tree
+    caches in place, which is what a container does and what the
+    scaffolded `.gitignore` already expects.
+  - **Enforcement fixtures must not live under `/tmp`.** It is in the
+    write baseline, so anything pytest's `tmp_path` hands you is
+    *granted*. The old denial tests passed only because a project under
+    `/tmp` used to drop `/tmp` from the policy; with that gone they went
+    green while testing nothing. `tests/test_sandbox_enforcement.py`'s
+    `outside` fixture is rooted at `$HOME`, which is outside every grant
+    by construction.
 - **`/run` is granted whole**, where codex names only
   `/run/current-system/sw`. It reaches `/run/user/$UID` — dconf, the
   gnupg and keyring sockets, portal state. Kept deliberately: the test

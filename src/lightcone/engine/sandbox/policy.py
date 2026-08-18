@@ -4,11 +4,14 @@ One policy, both mechanisms. This module decides *what* a command may
 touch; :mod:`~lightcone.engine.sandbox.landlock` and
 :mod:`~lightcone.engine.sandbox.seatbelt` only decide how to say it.
 
-The shape it encodes is the design's filesystem policy: read the project
-and the declared inputs and the OS baseline; write only a private
-scratch scope; execute only the environment plus a versioned utility
-allowlist. Everything a recipe reaches for outside that set fails
-loudly, which is the point.
+The shape it encodes is what a container would give the command, minus
+the container: the project directory and the declared inputs and the OS
+baseline readable, the project and scratch writable, and only the
+project's own environment plus a versioned utility allowlist runnable.
+What that catches is a command reaching *outside* the project — a tool,
+a library, or a data file that happens to be on this machine and would
+not be in the image. Inside the project it is not in the way: a
+container bind-mounts the working tree read-write, and so do we.
 """
 
 from __future__ import annotations
@@ -149,18 +152,24 @@ _HOME_LAYOUT = {
     "XDG_CACHE_HOME": ".cache",
     "XDG_DATA_HOME": ".local/share",
     "MPLCONFIGDIR": ".mplconfig",
-    "PYTHONPYCACHEPREFIX": ".pycache",
     "TMPDIR": ".tmp",
 }
 
 
 def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
-    """The policy for ``lc run`` — a probe.
+    """The policy for ``lc run``.
 
-    A probe has no output, so it gets **no in-tree write scope at all**:
-    it may read the project and the declared inputs, and write only to
-    its own tmp scope. That is stricter than a recipe's policy, and it is
-    what stops a probe from quietly materializing something.
+    The project tree is **writable**, the way a container's bind-mounted
+    working directory is. What the boundary is for is catching a command
+    that reaches outside the project for something the image would not
+    have; a command writing inside its own project is not that, and
+    forbidding it only made lc worse at being the thing it emulates.
+
+    Note this cannot be narrowed to "everything but ``.venv``": Landlock
+    unions rights over ancestors and has no way to subtract, so a
+    writable project is necessarily a writable ``.venv``. What keeps the
+    environment honest is ``uv sync --exact`` at the next convergence,
+    not the sandbox.
 
     Creates the per-run HOME on disk as a side effect; the caller owns
     removing it (see :func:`~lightcone.engine.sandbox.boundary.scope`).
@@ -173,7 +182,7 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     # EXECUTE on the interpreter *file*; READ on the install root beside
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
-    write = _existing([tmp_home, *_write_roots(project)])
+    write = _existing([tmp_home, project, *(Path(p) for p in _WRITE_BASELINE)])
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
     return Policy(
@@ -183,22 +192,6 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
         tmp_home=tmp_home,
         env=home_overlay(tmp_home, project),
     )
-
-
-def _write_roots(project: Path) -> list[Path]:
-    """The write baseline, minus any root that would swallow the project.
-
-    ``/tmp`` is writable by design — but a project that
-    *lives* under it would then be writable too, which would silently
-    void the read-only-tree guarantee for exactly the people who keep
-    scratch analyses in ``/tmp``. Dropping the offending root is safe
-    because ``TMPDIR`` points at the private scope regardless, so
-    ``tempfile`` keeps working either way. The device entries can never
-    contain a project, so the filter is a no-op for them.
-    """
-    resolved = project.resolve()
-    roots = tuple(Path(root).resolve() for root in _WRITE_BASELINE)
-    return [root for root in roots if not resolved.is_relative_to(root)]
 
 
 def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
@@ -214,11 +207,12 @@ def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
     ``PATH`` is set for a different reason, but the same one at heart:
     what the command resolves has to be what the policy granted.
 
-    ``PYTHONPYCACHEPREFIX`` is here for the same reason at the other end:
-    the project tree is read-only inside the boundary, so without it
-    every ``import`` of an in-tree module fails to write its
-    ``__pycache__``. ``TMPDIR`` points inside too, so ``tempfile`` works
-    even where the shared ``/tmp`` had to leave the write set.
+    There is deliberately no ``PYTHONPYCACHEPREFIX``. It was here only
+    because the tree was read-only, and redirecting bytecode into a
+    ``$HOME`` that is deleted after every run meant recompiling every
+    in-tree module every time. A writable tree caches it in place, which
+    is what a container does and what the scaffolded ``.gitignore``
+    already expects.
     """
     return {
         "HOME": str(tmp_home),

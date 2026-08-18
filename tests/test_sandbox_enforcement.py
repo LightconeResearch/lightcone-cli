@@ -32,7 +32,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -81,13 +81,25 @@ def project(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def outside(tmp_path: Path) -> Path:
-    """A directory the project never declares — the leak's other end."""
-    elsewhere = tmp_path / "elsewhere"
+def outside() -> Iterator[Path]:
+    """A directory the project never declares — the leak's other end.
+
+    Under `$HOME`, not `tmp_path`. `/tmp` is in the write baseline, so
+    anything pytest hands us there is *granted*, and a denial test
+    written against it would pass only for as long as something else
+    happened to keep `/tmp` out of the policy. The real home is outside
+    every grant by construction — the boundary hands the command a
+    private one — which is the property these tests actually need.
+    """
+    elsewhere = Path.home() / ".lc-enforcement-outside"
+    shutil.rmtree(elsewhere, ignore_errors=True)
     elsewhere.mkdir()
     (elsewhere / "secret.txt").write_text("undeclared\n")
     (elsewhere / "sneaky.py").write_text("VALUE = 'undeclared import'\n")
-    return elsewhere
+    try:
+        yield elsewhere
+    finally:
+        shutil.rmtree(elsewhere, ignore_errors=True)
 
 
 def run(
@@ -346,15 +358,25 @@ def test_the_real_home_is_not_readable(backend: sandbox.Backend, project: Path) 
 # ---- the write scope -------------------------------------------------------
 
 
-def test_the_project_tree_cannot_be_written(
+def test_the_project_tree_can_be_written(backend: sandbox.Backend, project: Path) -> None:
+    """A container bind-mounts the working tree read-write, and so do we.
+    The boundary is for catching a reach *outside* the project; a command
+    writing inside its own project is not that."""
+    with sandbox.scope(project) as policy:
+        result = shell(backend, policy, "printf written > data.txt", cwd=project)
+    assert result.returncode == 0, result.stderr
+    assert (project / "data.txt").read_text() == "written"
+
+
+def test_a_system_path_is_still_not_writable(
     backend: sandbox.Backend, project: Path
 ) -> None:
-    """A probe has no output, so nothing it does may land in
-    the tree — and the file has to be *unchanged*, not merely reported."""
+    """Readable and never writable: the OS baseline is what the image
+    would provide, and nothing a run does may edit it."""
     with sandbox.scope(project) as policy:
-        result = shell(backend, policy, "printf clobbered > data.txt", cwd=project)
+        result = shell(backend, policy, "printf x > /etc/lc-should-never-exist", cwd=project)
     assert result.returncode != 0
-    assert (project / "data.txt").read_text() == "in-tree\n", "the file changed anyway"
+    assert not Path("/etc/lc-should-never-exist").exists()
 
 
 def test_the_private_scope_is_writable(backend: sandbox.Backend, project: Path) -> None:
