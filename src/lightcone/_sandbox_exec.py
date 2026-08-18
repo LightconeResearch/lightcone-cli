@@ -37,6 +37,7 @@ import errno
 import json
 import os
 import platform
+import stat
 import sys
 
 # --- the kernel interface --------------------------------------------------
@@ -188,8 +189,12 @@ def add_path_rule(ruleset_fd: int, path: str, access: int) -> None:
     """
     parent_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
     try:
-        is_dir = bool(os.fstat(parent_fd).st_mode & 0o040000)
-        if not is_dir:
+        # `stat.S_ISDIR`, not a bitwise test: S_IFSOCK (0o140000) and
+        # S_IFBLK (0o060000) both carry the S_IFDIR bit, so a hand-rolled
+        # mask calls a socket a directory, leaves directory-only rights
+        # unmasked, and turns a declared unix-socket input into EINVAL —
+        # surfacing as a sandbox *setup* failure rather than a grant.
+        if not stat.S_ISDIR(os.fstat(parent_fd).st_mode):
             access &= _FILE_ONLY_BITS
         if not access:
             return
@@ -249,6 +254,23 @@ def restrict_self(ruleset_fd: int) -> None:
 # --- the entry point -------------------------------------------------------
 
 
+def _overlay(policy: dict[str, object]) -> dict[str, str]:
+    """The environment the sandboxed command runs with, from the policy.
+
+    Applied here rather than by the parent because everything *outside*
+    the wrap — notably the ``uv run`` hop — must keep the real
+    environment: uv resolves its cache from ``XDG_CACHE_HOME`` and its
+    managed interpreters from ``XDG_DATA_HOME``, so redirecting those for
+    uv would send it to an empty, throwaway cache.
+    """
+    value = policy.get("env", {})
+    if not isinstance(value, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in value.items()
+    ):
+        raise ValueError("policy field 'env' must be an object of strings")
+    return dict(value)
+
+
 def _paths(policy: dict[str, object], key: str) -> list[str]:
     value = policy.get(key, [])
     if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
@@ -290,9 +312,11 @@ def main(argv: list[str] | None = None) -> None:
         abi_level = abi()
         if abi_level == 0:
             raise ValueError("landlock unavailable (kernel < 5.13, or blocked by seccomp)")
+        overlay = _overlay(policy)
         fd = build_ruleset(policy, abi_level)
         restrict_self(fd)
         os.close(fd)
+        os.environ.update(overlay)
     except (ValueError, OSError) as e:
         _fail(str(e))
 

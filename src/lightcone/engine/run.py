@@ -56,7 +56,18 @@ def probe(
     interactive = not command
     argv = list(command) or [DEFAULT_SHELL]
 
-    backend: sandbox.Backend = sandbox.detect() if sandboxed else sandbox.Unavailable()
+    if require and not sandboxed:
+        raise ProjectError(
+            "--require-sandbox and --no-sandbox contradict each other: one "
+            "insists on enforcement, the other turns it off."
+        )
+    backend: sandbox.Backend = (
+        sandbox.detect()
+        if sandboxed
+        else sandbox.Unavailable(
+            capability=sandbox.Capability(kind="none", detail=sandbox.DISABLED)
+        )
+    )
     _enforce_requirement(backend, require)
 
     with sandbox.scope(project, read_paths=input_paths(project, spec)) as policy:

@@ -91,6 +91,25 @@ def test_the_landlock_policy_travels_as_json_the_shim_understands(policy: Policy
     assert document["execute"] == [str(p) for p in policy.execute]
 
 
+def test_the_env_overlay_travels_inside_the_wrap(policy: Policy) -> None:
+    """It must not be applied to the whole child: everything outside the
+    rewrite — the `uv run` hop — needs the *real* environment, or uv
+    resolves its cache from the throwaway XDG_CACHE_HOME and re-downloads
+    the world on every probe."""
+    backend = LandlockBackend(capability=Capability(kind="landlock", landlock_abi=4))
+    document = json.loads(backend.wrap(policy, ["true"])[4])
+    assert document["env"] == policy.env
+
+
+def test_seatbelt_applies_the_overlay_inside_the_sandbox(policy: Policy) -> None:
+    wrapped = SeatbeltBackend().wrap(policy, ["true"])
+    assert "/usr/bin/env" in wrapped
+    assert f"HOME={policy.env['HOME']}" in wrapped
+    # Still inside sandbox-exec, and still ahead of the command.
+    assert wrapped.index("/usr/bin/env") > wrapped.index("--")
+    assert wrapped.index("/usr/bin/env") < wrapped.index("true")
+
+
 def test_landlock_attests_the_probed_abi(policy: Policy) -> None:
     """Recording which ABI answered is what separates this from the
     "best effort silently succeeded on a kernel with no Landlock" trap."""

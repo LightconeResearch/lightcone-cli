@@ -45,6 +45,8 @@ def _document(**overrides: object) -> str:
         (("--policy", "[]", "--", "true"), "a document that is not an object"),
         (("--policy", json.dumps({"version": 99}), "--", "true"), "a version it cannot speak"),
         (("--policy", _document(read="/usr"), "--", "true"), "a field that is not a list"),
+        (("--policy", _document(env=[]), "--", "true"), "an env that is not an object"),
+        (("--policy", _document(env={"A": 1}), "--", "true"), "an env value that is not a string"),
     ],
 )
 def test_setup_failures_use_the_reserved_exit_code(args: tuple[str, ...], because: str) -> None:

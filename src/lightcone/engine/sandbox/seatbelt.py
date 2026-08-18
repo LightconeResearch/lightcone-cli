@@ -91,6 +91,11 @@ class SeatbeltBackend:
             generate_profile(policy),
             *(f"-D{name}={value}" for name, value in profile_params(policy)),
             "--",
+            # The overlay is applied *inside* the sandbox, so whatever the
+            # caller put outside the wrap — the `uv run` hop — keeps the
+            # real environment and finds its own cache. `env` is in the
+            # utility allowlist, so it is executable by construction.
+            *env_prefix(policy),
             *argv,
         ]
 
@@ -100,6 +105,13 @@ class SeatbeltBackend:
             fs="declared",
             exec_allowlist_version=policy.exec_allowlist_version,
         )
+
+
+def env_prefix(policy: Policy) -> list[str]:
+    """``env K=V …``, or nothing when the policy sets no overlay."""
+    if not policy.env:
+        return []
+    return ["/usr/bin/env", *(f"{k}={v}" for k, v in sorted(policy.env.items()))]
 
 
 def profile_params(policy: Policy) -> list[tuple[str, str]]:

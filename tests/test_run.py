@@ -163,6 +163,13 @@ def test_require_sandbox_refuses_where_nothing_can_enforce() -> None:
         engine_run._enforce_requirement(backend, require=True)
 
 
+def test_requiring_and_disabling_the_sandbox_is_refused(project: Path) -> None:
+    """Otherwise `--no-sandbox --require-sandbox` blames the host for a
+    contradiction the user typed."""
+    with pytest.raises(ProjectError, match="contradict"):
+        engine_run.probe(project, ["true"], sandboxed=False, require=True)
+
+
 def test_without_the_flag_an_unenforced_run_is_allowed() -> None:
     from lightcone.engine.sandbox.boundary import Unavailable
 

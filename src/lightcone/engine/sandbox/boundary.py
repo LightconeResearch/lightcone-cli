@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lightcone._sandbox_exec import SETUP_FAILURE_EXIT
 from lightcone.engine.sandbox import policy as policy_module
 from lightcone.engine.sandbox.model import Attestation, Backend, Capability, Policy
 
@@ -31,6 +32,11 @@ _STDERR_TAIL_BYTES = 64 * 1024
 #: already sandboxed. Neither mechanism nests: `sandbox-exec` refuses,
 #: and a Landlock domain can only be tightened.
 SANDBOX_ENV = "LC_SANDBOX"
+
+#: `Capability.detail` marking a deliberate opt-out rather than a host
+#: that cannot enforce. The two look identical to every other consumer
+#: and must not read identically to the user.
+DISABLED = "disabled by --no-sandbox"
 
 
 @dataclass(frozen=True)
@@ -146,9 +152,15 @@ def run(
     """
     wrapped = [*prefix, *backend.wrap(policy, argv)]
     attestation = backend.attest(policy)
+    # `policy.env` is deliberately **not** merged here. The overlay is
+    # applied by the wrap — the shim on Linux, `env` inside `sandbox-exec`
+    # on macOS — because everything outside the rewrite must keep the real
+    # environment: `uv` resolves its cache from `XDG_CACHE_HOME` and its
+    # managed interpreters from `XDG_DATA_HOME`, so redirecting those for
+    # the `uv run` hop would point it at an empty, throwaway cache and
+    # re-download the world on every probe (and fail outright offline).
     child_env = {
         **(os.environ if env is None else env),
-        **policy.env,
         SANDBOX_ENV: attestation.mechanism,
     }
 
@@ -171,7 +183,15 @@ def run(
     if tail is not None:
         tail.thread.join(timeout=5)
 
-    if returncode != 0 and attestation.mechanism != "none":
+    if returncode == SETUP_FAILURE_EXIT:
+        # The shim's reserved code: the sandbox could not be *built*. Say
+        # so plainly — the trailer would otherwise point the user at their
+        # own command's permissions for a failure that is entirely ours.
+        notes.append(
+            "lc could not set up the sandbox (see above) — this is an lc "
+            "problem, not your command's"
+        )
+    elif returncode != 0 and attestation.mechanism != "none":
         from lightcone.engine.sandbox import denial
 
         if tail is not None:
@@ -195,6 +215,8 @@ def _downgrade_note(capability: Capability) -> str:
     when you were not is the failure this layer exists to prevent, and
     it is the one shipped implementations are cited for.
     """
+    if capability.detail == DISABLED:
+        return "sandbox disabled by --no-sandbox; recorded as `fs: open`"
     reason = f" — {capability.detail}" if capability.detail else ""
     return f"not sandboxed on this host{reason}; recorded as `fs: open`"
 

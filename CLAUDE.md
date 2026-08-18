@@ -345,6 +345,31 @@ failure and each now pinned by a test:
 | **read** on the uv-managed interpreter's install root | `Failed to import encodings module` — the stdlib sits beside the binary, outside the project and outside `/usr` |
 | **read** on `/dev/urandom` | `failed to get random numbers` — CPython seeds hash randomization before `main` |
 
+**Never grant EXECUTE on a directory that could be a system prefix.**
+Landlock unions rights over ancestors, so a single EXECUTE grant on
+`/usr` silently outranks the entire per-file allowlist and leaves the
+layer enforcing nothing — while every test still passes, because the
+allowlisted binaries are exactly the ones that were going to work. This
+shipped once: the venv interpreter's *install root* was granted EXECUTE
+so the resolved symlink target would be runnable, which is `/usr` for
+any venv built on a system python (`uv venv --python-preference
+only-system`, most CI images, HPC site pythons). The grant is on the
+interpreter **file**; only READ goes to the install root, for the stdlib.
+`test_a_system_interpreter_does_not_make_the_whole_prefix_executable`
+pins it.
+
+**The env overlay belongs to the wrap, not to the parent.** `policy.env`
+is applied by the shim (Linux) or by `env` inside `sandbox-exec` (macOS)
+— never merged into the `subprocess` environment, because everything
+*outside* the rewrite must keep the real environment. `uv` resolves its
+cache from `XDG_CACHE_HOME` and its managed interpreters from
+`XDG_DATA_HOME`; overlaying those for the `uv run` hop points it at a
+throwaway `mkdtemp` that `scope()` then deletes, so every probe
+re-downloads the world, air-gapped hosts fail outright, and
+`~/.config/uv/uv.toml` and `~/.netrc` go missing. The rule generalises:
+**if `prefix` is documented as outside the boundary, nothing the boundary
+imposes may reach it.**
+
 **The shim stays alone.** `lightcone/_sandbox_exec.py` imports nothing but
 the stdlib and nothing from lightcone — `lightcone` is a namespace package
 with no `__init__`, so `python -m lightcone._sandbox_exec` executes that

@@ -62,6 +62,10 @@ class Policy:
         lightcone-cli versions — the one that built the argv and the one
         the project's environment provides — so it carries a version and
         holds nothing but strings.
+
+        ``env`` rides along because the overlay has to be applied *by the
+        wrap*, not by the parent: everything outside the rewrite — the
+        ``uv run`` hop in particular — must keep the real environment.
         """
         from lightcone._sandbox_exec import POLICY_VERSION
 
@@ -70,6 +74,7 @@ class Policy:
             "read": [str(p) for p in self.read],
             "write": [str(p) for p in self.write],
             "execute": [str(p) for p in self.execute],
+            "env": dict(self.env),
         }
 
 

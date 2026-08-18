@@ -294,3 +294,14 @@ def test_outside_a_project_is_a_clean_error(
     result = runner.invoke(main, ["run", "true"])
     assert result.exit_code == 1
     assert "lc init" in result.output
+
+
+def test_a_signal_killed_command_reports_the_conventional_status() -> None:
+    """`Popen.returncode` is negative for a signal and `sys.exit(-9)`
+    truncates to 247. A script testing for 137 (SIGKILL) has to see 137."""
+    from lightcone.cli.commands import _exit_status
+
+    assert _exit_status(-9) == 137
+    assert _exit_status(-15) == 143
+    assert _exit_status(0) == 0
+    assert _exit_status(42) == 42

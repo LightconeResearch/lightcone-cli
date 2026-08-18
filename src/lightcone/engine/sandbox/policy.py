@@ -39,7 +39,9 @@ EXEC_ALLOWLIST: tuple[str, ...] = (
 #: Where the allowlist is resolved from — deliberately *not* the ambient
 #: ``$PATH``. A user's PATH may front `/usr/bin` with a directory full of
 #: undeclared tools, and resolving through it would quietly admit them.
-_UTILITY_PATH = "/usr/local/bin:/usr/bin:/bin"
+#: NixOS keeps none of the allowlist under FHS paths, so its system
+#: profile is listed too or nothing but `/bin/sh` ever resolves there.
+_UTILITY_PATH = "/usr/local/bin:/usr/bin:/bin:/run/current-system/sw/bin"
 
 #: Readable everywhere: the OS the interpreter and its libraries live in.
 #: Read, never execute — being able to *read* /usr is what lets the
@@ -207,18 +209,24 @@ def _exec_set(project: Path) -> tuple[list[Path], list[Path]]:
     if bin_dir.is_dir():
         paths.append(bin_dir)
 
-    # `.venv/bin/python` is a symlink into uv's managed interpreter store,
-    # which lives under the user's data dir — outside the project and
-    # outside the OS baseline. Landlock evaluates the *resolved* path, so
-    # that install root needs EXECUTE for the binary and, just as
-    # importantly, READ for the standard library beside it: without the
-    # read grant the interpreter dies before `main` with
-    # "Failed to import encodings module".
+    # `.venv/bin/python` is a symlink to the real interpreter, and Landlock
+    # evaluates the *resolved* path — so the target needs both grants, but
+    # emphatically not the same ones:
+    #
+    # - EXECUTE on the interpreter **file alone**. Its install root may be
+    #   a system prefix: a venv built against the system python resolves
+    #   to `/usr/bin/python3`, whose root is `/usr`. Granting EXECUTE
+    #   there would make every binary on the host runnable and leave this
+    #   layer enforcing nothing — Landlock unions rights over ancestors,
+    #   so one such grant silently outranks the whole per-file allowlist.
+    # - READ on the install root, for the standard library beside it.
+    #   Without it the interpreter dies before `main` with "Failed to
+    #   import encodings module".
     interpreter = bin_dir / "python"
     if interpreter.exists():
-        install_root = interpreter.resolve().parent.parent
-        paths.append(install_root)
-        extra_read.append(install_root)
+        resolved = interpreter.resolve()
+        paths.append(resolved)
+        extra_read.append(resolved.parent.parent)
 
     for name in EXEC_ALLOWLIST:
         found = shutil.which(name, path=_UTILITY_PATH)

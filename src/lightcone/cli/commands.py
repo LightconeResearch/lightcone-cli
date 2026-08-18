@@ -212,7 +212,18 @@ def run(command: tuple[str, ...], sandboxed: bool, debug: bool, require: bool) -
         on_plan=_render_plan if debug else None,
     )
     _render_notes(outcome.notes)
-    sys.exit(outcome.returncode)
+    sys.exit(_exit_status(outcome.returncode))
+
+
+def _exit_status(returncode: int) -> int:
+    """The child's exit code, in the shell's spelling.
+
+    `Popen.returncode` is *negative* for a signal, and `sys.exit(-9)`
+    truncates to 247. `lc run` is a proxy for the command it runs, so an
+    OOM-killed probe has to come back as the conventional 137 that a
+    script would test for.
+    """
+    return 128 - returncode if returncode < 0 else returncode
 
 
 def _render_plan(lines: Sequence[str]) -> None:

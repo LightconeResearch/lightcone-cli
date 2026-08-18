@@ -226,9 +226,9 @@ def test_the_elf_loader_is_in_the_exec_set(built: policy_module.Policy) -> None:
 
 
 def test_the_venv_and_the_interpreter_behind_it_are_granted(tmp_path: Path) -> None:
-    """`.venv/bin/python` is a symlink into uv's interpreter store, and
-    Landlock evaluates the resolved path — so the install root needs
-    EXECUTE for the binary and READ for the stdlib beside it."""
+    """`.venv/bin/python` is a symlink and Landlock evaluates the resolved
+    path, so the target needs EXECUTE — as a *file* — and its install root
+    needs READ for the stdlib beside it."""
     project = tmp_path / "proj"
     bin_dir = project / ".venv" / "bin"
     bin_dir.mkdir(parents=True)
@@ -243,10 +243,45 @@ def test_the_venv_and_the_interpreter_behind_it_are_granted(tmp_path: Path) -> N
     try:
         install_root = store.parent.resolve()
         assert bin_dir.resolve() in built.execute
-        assert install_root in built.execute
+        assert real.resolve() in built.execute
         assert install_root in built.read
+        assert install_root not in built.execute
     finally:
         shutil.rmtree(built.tmp_home, ignore_errors=True)
+
+
+def test_a_system_interpreter_does_not_make_the_whole_prefix_executable(
+    tmp_path: Path,
+) -> None:
+    """A venv built against the system python resolves to
+    `/usr/bin/python3`, whose install root is `/usr`. Granting EXECUTE
+    there would make every binary on the host runnable — and because
+    Landlock unions rights over ancestors, that one grant silently
+    outranks the entire per-file allowlist, leaving this layer enforcing
+    nothing at all."""
+    project = tmp_path / "proj"
+    bin_dir = project / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    system = Path("/usr/bin/python3")
+    if not system.exists():  # pragma: no cover - unusual host
+        pytest.skip("no system python3")
+    (bin_dir / "python").symlink_to(system)
+
+    built = policy_module.probe_policy(project)
+    try:
+        assert Path("/usr") not in built.execute
+        assert Path("/usr") in built.read
+        assert system.resolve() in built.execute
+    finally:
+        shutil.rmtree(built.tmp_home, ignore_errors=True)
+
+
+def test_the_utility_path_covers_the_nix_system_profile() -> None:
+    """The read baseline was widened for NixOS, but the allowlist is
+    resolved off a fixed search path — if that stays FHS-only, `bash`
+    never enters the exec set there and a bare `lc run` is denied with a
+    nonsense remedy."""
+    assert "/run/current-system/sw/bin" in policy_module._UTILITY_PATH
 
 
 # ---- HOME, XDG, and hygiene -----------------------------------------------
