@@ -394,19 +394,29 @@ same problem by leaving the root out of the policy
   Worth remembering when the list next comes up short: none of the three
   bugs we hit (ELF loader, interpreter root, `/dev/urandom`) came from
   the list — two were derived paths and one was already in it.
-- **Devices are granted generously, on purpose.** `/dev/tty`, `/dev/pts`,
-  and `/dev/ptmx` are all writable, matching what bubblewrap's `--dev`
-  materializes. The threat model is accidental leakage, not a hostile
-  recipe (spec §7), and a terminal is not a channel undeclared *inputs*
-  arrive through — so the tight version buys nothing and costs real
-  failures. It reads more permissive than it is: Landlock only ever
-  removes access, never adds it, so ordinary Unix permissions still
-  apply (devpts hands each pty to its allocating user at mode 0620).
-  The concrete lesson is in the failure mode — without devpts,
-  `pty.openpty()` raises `OSError: out of pty devices`, which names
-  neither a path nor the sandbox, so the denial classifier cannot help
-  and only the trailer fires. Grants whose absence produces an
-  unattributable error are the ones to make freely.
+- **Devices, `/proc`, and `/sys` are granted generously, on purpose.**
+  Writable: the terminal set (`/dev/tty`, `/dev/pts`, `/dev/ptmx`), the
+  discard devices (`/dev/null`, `/dev/zero`, `/dev/full`), and `/proc`
+  and `/sys` whole. The threat model is accidental leakage, not a hostile
+  recipe (spec §7), and **none of these is a channel undeclared *inputs*
+  arrive through** — that is the test to apply when the next one comes
+  up. Tightening them buys nothing and costs real failures:
+  `pty.openpty()`, `/dev/full` ENOSPC handling, `oom_score_adj`, MPI and
+  CUDA runtimes poking `/sys`.
+  It also reads more permissive than it is — Landlock only ever *removes*
+  access, never adds it, so ordinary Unix permissions remain the real
+  gate (devpts hands each pty to its allocating user at 0620; nearly all
+  of `/proc` and `/sys` is root-owned). Granting them just stops lc
+  adding a second, more confusing denial on top of the OS's own.
+  The line is drawn at `/dev/urandom` and `/dev/random`, which stay
+  read-only: writing those seeds the *host's* pool — a side effect on
+  the machine rather than on the run.
+  The general rule, learned here: **a grant whose absence produces an
+  unattributable error is one to make freely.** Without devpts,
+  `pty.openpty()` raises `OSError: out of pty devices` — naming neither
+  a path nor the sandbox, so `denial.explain()` can extract nothing and
+  only the trailer fires. A denial the user cannot act on is worse than
+  the access it withheld.
 - **Landlock stays the Linux mechanism; bubblewrap is not adopted.**
   Codex moved its Linux default to bwrap+seccomp (Landlock is now
   `--use-legacy-landlock`) because it needs rights *subtraction*:

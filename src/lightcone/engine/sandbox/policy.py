@@ -54,8 +54,8 @@ _UTILITY_PATH = "/usr/local/bin:/usr/bin:/bin"
 #: own `LINUX_PLATFORM_DEFAULT_READ_ROOTS`.)
 _OS_READ_BASELINE = (
     "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt", "/run",
-    "/proc", "/sys", "/nix/store", "/run/current-system/sw",
-    "/dev/urandom", "/dev/random", "/dev/zero", "/dev/full",
+    "/nix/store", "/run/current-system/sw",
+    "/dev/urandom", "/dev/random",
 )  # fmt: skip
 
 #: Writable everywhere: the scratch surfaces and device nodes a command
@@ -76,9 +76,23 @@ _OS_READ_BASELINE = (
 #: permissive than it reads: Landlock only ever removes access, never adds
 #: it, so ordinary Unix permissions still apply — devpts gives each pty to
 #: its allocating user at mode 0620.
+#:
+#: `/dev/zero` and `/dev/full` are here rather than in the read baseline
+#: because writes to them are discard-by-construction — that is what the
+#: devices *are* — so read-only buys nothing and costs the tools that use
+#: `/dev/full` to exercise ENOSPC handling. Only the entropy sources stay
+#: read-only, since writing to those seeds the host's pool.
+#:
+#: `/proc` and `/sys` are unrestricted for the same reason. Real tools do
+#: write them — `/proc/self/oom_score_adj`, `coredump_filter`, MPI and
+#: CUDA runtimes poking `/sys` — and none of that is a channel undeclared
+#: *inputs* arrive through. Landlock only ever removes access, so the
+#: kernel's own permissions are still the real gate here: almost all of
+#: both trees is root-owned, and this simply stops lc adding a second,
+#: more confusing denial on top of the one the OS already enforces.
 _WRITE_BASELINE = (
-    "/tmp", "/var/tmp", "/dev/shm",
-    "/dev/null", "/dev/tty", "/dev/pts", "/dev/ptmx",
+    "/tmp", "/var/tmp", "/dev/shm", "/proc", "/sys",
+    "/dev/null", "/dev/zero", "/dev/full", "/dev/tty", "/dev/pts", "/dev/ptmx",
 )  # fmt: skip
 
 #: The ELF interpreter. Landlock checks EXECUTE on the *loader's* open,

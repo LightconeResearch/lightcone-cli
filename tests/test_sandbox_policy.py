@@ -151,6 +151,38 @@ def test_a_command_can_allocate_its_own_pty(built: policy_module.Policy) -> None
             assert device.resolve() in built.write, node
 
 
+def test_discard_devices_are_writable(built: policy_module.Policy) -> None:
+    """Writes to these are discard-by-construction — that is what the
+    devices are — so read-only buys nothing and breaks tools that use
+    /dev/full to exercise ENOSPC handling."""
+    for node in ("/dev/null", "/dev/zero", "/dev/full"):
+        device = Path(node)
+        if device.exists():
+            assert device in built.write, node
+
+
+def test_the_entropy_sources_stay_read_only(built: policy_module.Policy) -> None:
+    """The one place the permissive line is drawn: writing to these seeds
+    the *host's* pool, which is a side effect on the machine rather than
+    on the run."""
+    for node in ("/dev/urandom", "/dev/random"):
+        device = Path(node)
+        if device.exists():
+            assert device in built.read, node
+            assert device not in built.write, node
+
+
+def test_proc_and_sys_are_not_restricted(built: policy_module.Policy) -> None:
+    """Real tools write them — /proc/self/oom_score_adj, coredump_filter,
+    MPI and CUDA runtimes poking /sys — and none of it is a channel
+    undeclared inputs arrive through. The kernel's own permissions stay
+    the real gate; Landlock only ever removes access, never adds it."""
+    for node in ("/proc", "/sys"):
+        directory = Path(node)
+        if directory.exists():
+            assert directory in built.write, node
+
+
 # ---- the exec scope -------------------------------------------------------
 
 
