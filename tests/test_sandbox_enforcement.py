@@ -32,7 +32,8 @@ import shutil
 import subprocess
 import sys
 import sysconfig
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -81,13 +82,27 @@ def project(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def outside(tmp_path: Path) -> Path:
-    """A directory the project never declares — the leak's other end."""
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
+def outside() -> Iterator[Path]:
+    """A directory the project never declares — the leak's other end.
+
+    Under `$HOME`, not `tmp_path`. `/tmp` is in the write baseline, so
+    anything pytest hands us there is *granted*, and a denial test
+    written against it would pass only for as long as something else
+    happened to keep `/tmp` out of the policy. The real home is outside
+    every grant by construction — the boundary hands the command a
+    private one — which is the property these tests actually need.
+
+    `mkdtemp`, not a fixed name: two suites sharing a home (xdist, two
+    checkouts, two CI jobs) would otherwise race on the same directory,
+    and a fixed name is also somebody's real path to delete.
+    """
+    elsewhere = Path(tempfile.mkdtemp(prefix="lc-enforcement-", dir=Path.home()))
     (elsewhere / "secret.txt").write_text("undeclared\n")
     (elsewhere / "sneaky.py").write_text("VALUE = 'undeclared import'\n")
-    return elsewhere
+    try:
+        yield elsewhere
+    finally:
+        shutil.rmtree(elsewhere, ignore_errors=True)
 
 
 def run(
@@ -346,15 +361,44 @@ def test_the_real_home_is_not_readable(backend: sandbox.Backend, project: Path) 
 # ---- the write scope -------------------------------------------------------
 
 
-def test_the_project_tree_cannot_be_written(
+def test_the_tree_outside_results_cannot_be_written(
     backend: sandbox.Backend, project: Path
 ) -> None:
-    """A probe has no output, so nothing it does may land in
-    the tree — and the file has to be *unchanged*, not merely reported."""
+    """The environment a run starts with is the one it ends with — and the
+    file has to be *unchanged*, not merely reported."""
     with sandbox.scope(project) as policy:
         result = shell(backend, policy, "printf clobbered > data.txt", cwd=project)
     assert result.returncode != 0
     assert (project / "data.txt").read_text() == "in-tree\n", "the file changed anyway"
+
+
+def test_results_can_be_written(backend: sandbox.Backend, project: Path) -> None:
+    """Writable inside a read-only tree — the nesting both mechanisms have
+    to agree on, and the one a container gets from a second bind mount."""
+    (project / "results").mkdir()
+    with sandbox.scope(project) as policy:
+        result = shell(backend, policy, "printf out > results/out.csv", cwd=project)
+    assert result.returncode == 0, result.stderr
+    assert (project / "results" / "out.csv").read_text() == "out"
+
+
+def test_a_declared_input_is_read_only(
+    backend: sandbox.Backend, project: Path, outside: Path
+) -> None:
+    """Declaring an input makes it readable, never writable — it is
+    somebody else's file.
+
+    Deliberately not a write to `/etc`: the OS denies that to any
+    non-root user on its own, so such a test passes with no sandbox at
+    all and pins nothing. This target is owned by the user running the
+    suite, so the *only* thing that can refuse the write is the
+    boundary.
+    """
+    target = outside / "secret.txt"
+    with sandbox.scope(project, read_paths=[outside]) as policy:
+        result = shell(backend, policy, f"printf clobbered > {target}", cwd=project)
+    assert result.returncode != 0
+    assert target.read_text() == "undeclared\n", "the file changed anyway"
 
 
 def test_the_private_scope_is_writable(backend: sandbox.Backend, project: Path) -> None:

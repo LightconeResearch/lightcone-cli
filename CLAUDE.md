@@ -304,8 +304,8 @@ user owns:
     the site registry supplies `UV_CACHE_DIR` on Perlmutter (spec §4).
   - `--compile-bytecode` is the one genuinely per-project cost: bytecode is
     generated into the venv, never linked (~55 MB of 216 MB here). It is a
-    deliberate trade — the environment is read-only at execution time, so
-    without it every recipe run re-compiles.
+    deliberate trade: paying compilation once here beats paying it on the
+    first import of every run.
 - **Every external tool goes through one seam**, `project._run`, which
   tests monkeypatch — so the suite never shells out, and every call is
   inspectable. `_check_call` turns a nonzero exit into a `ProjectError`:
@@ -469,10 +469,10 @@ the guarantee for the people who do.
 
 **SBPL is last-match-wins; Landlock unions.** This asymmetry decides
 where a rule can live, and it cuts both ways. A later `(deny …)` can take
-back an earlier allow, which is how `_read_only_guard` claws back the
-write the vendored defaults grant on `/tmp`; Landlock has no equivalent —
-a narrower rule only ever *adds* — so the Linux side solves that by
-leaving the root out of the policy (`policy._write_roots`).
+back an earlier allow, which is how `_read_only_guard` takes back write
+on the read roots the vendored defaults would otherwise hand out;
+Landlock has no equivalent — a narrower rule only ever *adds* — so on
+Linux the policy simply never names them.
 
 But the same asymmetry means SBPL does **not** give nesting for free.
 Landlock unions, so a writable output directory inside a readable project
@@ -585,17 +585,43 @@ only checks that the guard is present. Verified empirically, not assumed.
   persisted. An earlier draft carried a `to_manifest()` with no caller —
   deleted, because "no dead code" applies to this layer's own
   conveniences too. It lands with layer 4, which is what needs it.
-- **`/tmp` is dropped from the write scope when the project lives under
-  it**, which §7 does not contemplate. Granting `/tmp` unconditionally
-  would make the tree of a `/tmp`-hosted project writable and silently
-  void the read-only-tree guarantee. `TMPDIR` points into the private
-  scope regardless, so `tempfile` works either way. The drop is
-  Linux-only in effect: on macOS the vendored defaults grant
-  `/private/tmp` write unconditionally and the guard only claws back our
-  *read* roots, so the surrounding `/tmp` stays writable there. The
-  project itself is protected on both — it is a read root, so the guard
-  names it — and `/tmp` writability is not a channel undeclared inputs
-  arrive through, so the asymmetry is recorded rather than closed.
+- **`results/` is writable; the rest of the tree is not**, where §4 gives
+  a probe no output and therefore no in-tree write scope at all. A probe
+  gets the same write scope a recipe does, so a probe that works means a
+  recipe will — and the environment a run starts with is the one it
+  finishes with.
+  - **The shape was chosen because all three mechanisms express it
+    natively.** A writable directory *nested inside* a read-only tree is
+    the widening direction: Landlock unions rights over ancestors, SBPL
+    restates the write tier after the guard, and podman mounts the
+    project `:ro` with `results` `:rw` over it — all verified by running
+    them. The reverse — a writable tree with `.venv` carved out — needs
+    rights *subtraction*, which podman and SBPL can do and **Landlock
+    cannot at all**. That asymmetry is the whole argument: the read-only
+    shape is the only one direct mode and containerized mode can both
+    deliver, so it is the only one that gives a single UX.
+  - This was briefly reversed (PR #174) on the premise that "a container
+    bind-mounts the working tree read-write". True of the default, not of
+    the mount table we will write — and the experiment that settled it is
+    two `podman -v` flags. Don't re-derive it from the default again.
+  - **`_exec_set` grants no directory anywhere**, including `.venv/bin`.
+    A directory grant is a grant on whatever the directory holds *later*,
+    which was a live hole for as long as the tree was writable: `cp
+    /usr/bin/git .venv/bin/` ran a tool the allowlist denies by name.
+    Belt-and-braces under a read-only tree, one scandir, keep it.
+  - **A write-denial test must target a path the OS would let you
+    write.** `printf x > /etc/…` passes with no sandbox at all — the OS
+    refuses it for any non-root user — so it pins nothing. The sound
+    target is a user-owned path that the *policy* makes read-only: a
+    declared input. Mutation-check every denial test by running the same
+    command through `Unavailable()` and confirming it succeeds.
+  - **Enforcement fixtures must not live under `/tmp`.** It is in the
+    write baseline, so anything pytest's `tmp_path` hands you is
+    *granted*. The old denial tests passed only because a project under
+    `/tmp` used to drop `/tmp` from the policy; with that gone they went
+    green while testing nothing. `tests/test_sandbox_enforcement.py`'s
+    `outside` fixture is rooted at `$HOME`, which is outside every grant
+    by construction.
 - **`/run` is granted whole**, where codex names only
   `/run/current-system/sw`. It reaches `/run/user/$UID` — dconf, the
   gnupg and keyring sockets, portal state. Kept deliberately: the test

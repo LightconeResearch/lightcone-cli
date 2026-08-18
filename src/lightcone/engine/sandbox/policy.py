@@ -4,11 +4,21 @@ One policy, both mechanisms. This module decides *what* a command may
 touch; :mod:`~lightcone.engine.sandbox.landlock` and
 :mod:`~lightcone.engine.sandbox.seatbelt` only decide how to say it.
 
-The shape it encodes is the design's filesystem policy: read the project
-and the declared inputs and the OS baseline; write only a private
-scratch scope; execute only the environment plus a versioned utility
-allowlist. Everything a recipe reaches for outside that set fails
-loudly, which is the point.
+The shape it encodes is what a container gives the command, minus the
+container: the project and the declared inputs and the OS baseline
+readable, ``results/`` and a private scratch scope writable, and only
+the project's own environment plus a versioned utility allowlist
+runnable. What it catches is a command reaching *outside* that set — a
+tool, a library, or a data file that is on this machine and would not be
+in the image.
+
+A read-only tree with one writable directory inside it is the shape all
+three mechanisms express *natively*, which is why it is the shape:
+Landlock unions rights over ancestors, so a nested grant only ever
+widens; SBPL restates the write tier after the guard; and podman mounts
+the project ``:ro`` with ``results`` ``:rw`` over it. The reverse — a
+writable tree with a read-only hole in it — needs rights *subtraction*,
+which Landlock cannot do at all.
 """
 
 from __future__ import annotations
@@ -155,12 +165,17 @@ _HOME_LAYOUT = {
 
 
 def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
-    """The policy for ``lc run`` — a probe.
+    """The policy for ``lc run``.
 
-    A probe has no output, so it gets **no in-tree write scope at all**:
-    it may read the project and the declared inputs, and write only to
-    its own tmp scope. That is stricter than a recipe's policy, and it is
-    what stops a probe from quietly materializing something.
+    The tree is read-only except for ``results/``, which is where output
+    goes. That keeps the environment itself — ``.venv``, ``uv.lock``,
+    the spec — exactly as the lock describes it for the whole run, and
+    it is the same scope a recipe gets, so a probe that works means a
+    recipe will.
+
+    ``results/`` is granted only if it is already there. Convergence
+    creates it, and a policy that made directories would be a side
+    effect nobody asked a *probe* for.
 
     Creates the per-run HOME on disk as a side effect; the caller owns
     removing it (see :func:`~lightcone.engine.sandbox.boundary.scope`).
@@ -173,7 +188,7 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     # EXECUTE on the interpreter *file*; READ on the install root beside
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
-    write = _existing([tmp_home, *_write_roots(project)])
+    write = _existing([tmp_home, project / "results", *_write_roots(project)])
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
     return Policy(
@@ -188,13 +203,13 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
 def _write_roots(project: Path) -> list[Path]:
     """The write baseline, minus any root that would swallow the project.
 
-    ``/tmp`` is writable by design — but a project that
-    *lives* under it would then be writable too, which would silently
-    void the read-only-tree guarantee for exactly the people who keep
-    scratch analyses in ``/tmp``. Dropping the offending root is safe
-    because ``TMPDIR`` points at the private scope regardless, so
-    ``tempfile`` keeps working either way. The device entries can never
-    contain a project, so the filter is a no-op for them.
+    ``/tmp`` is writable by design — but a project that *lives* under it
+    would then be writable too, silently voiding the read-only tree for
+    exactly the people who keep scratch analyses in ``/tmp``. Dropping
+    the offending root is safe because ``TMPDIR`` points at the private
+    scope regardless, so ``tempfile`` keeps working either way. The
+    device entries can never contain a project, so the filter is a no-op
+    for them.
     """
     resolved = project.resolve()
     roots = tuple(Path(root).resolve() for root in _WRITE_BASELINE)
@@ -215,8 +230,8 @@ def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
     what the command resolves has to be what the policy granted.
 
     ``PYTHONPYCACHEPREFIX`` is here for the same reason at the other end:
-    the project tree is read-only inside the boundary, so without it
-    every ``import`` of an in-tree module fails to write its
+    the tree is read-only apart from ``results/``, so without it every
+    ``import`` of an in-tree module fails trying to write its
     ``__pycache__``. ``TMPDIR`` points inside too, so ``tempfile`` works
     even where the shared ``/tmp`` had to leave the write set.
     """
@@ -290,7 +305,16 @@ def _exec_set(project: Path, python: Path | None) -> list[Path]:
     paths: list[Path] = []
     bin_dir = project / ".venv" / "bin"
     if bin_dir.is_dir():
-        paths.append(bin_dir)
+        # Per *file*, never the directory, for the same reason `/usr/bin`
+        # is: a directory grant is a grant on whatever the directory holds
+        # *later*. The read-only tree means nothing a run does can put a
+        # binary here, so this is belt-and-braces today — but it was a live
+        # hole for as long as the tree was writable (`cp /usr/bin/git
+        # .venv/bin/` ran a tool the allowlist denies by name), and
+        # enumerating costs one scandir.
+        paths.extend(
+            entry.resolve() for entry in bin_dir.iterdir() if os.access(entry, os.X_OK)
+        )
     if python is not None:
         paths.append(python)
         # macOS framework builds `posix_spawn` themselves into

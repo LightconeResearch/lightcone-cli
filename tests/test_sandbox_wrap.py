@@ -92,8 +92,8 @@ def test_the_landlock_policy_travels_as_json_the_shim_understands(policy: Policy
 def test_the_overlay_is_the_seam_s_job_not_each_backend_s(policy: Policy) -> None:
     """Composed once, inside the wrap, for *every* backend — including
     the null one, which must run in the same environment as a sandboxed
-    run (same private `$HOME`, same PYTHONPYCACHEPREFIX) or the two stop
-    being comparable."""
+    run (same private `$HOME`, same `TMPDIR`, same `PATH`) or the two
+    stop being comparable."""
     prefixed = [*env_argv(policy), "true"]
     # Deliberately not a literal path: the exec set grants whatever the
     # utility search path resolved, and a second answer to that question
@@ -220,7 +220,9 @@ def test_the_read_tier_can_map_executables(policy: Policy) -> None:
     on mapping. Without this `import numpy` fails on macOS alone, while
     Landlock (which does not gate mmap) is fine either way."""
     profile = seatbelt.generate_profile(policy)
-    read_form = profile[profile.index(";; read: project tree") :].splitlines()[1]
+    # Anchored on the tier marker, not its prose: the comment is a label,
+    # not the contract.
+    read_form = profile[profile.index(";; read:") :].splitlines()[1]
     assert "file-map-executable" in read_form, read_form
 
 

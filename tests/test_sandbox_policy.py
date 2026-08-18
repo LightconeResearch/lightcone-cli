@@ -36,11 +36,48 @@ def built(tmp_path: Path) -> Iterator[policy_module.Policy]:
 # ---- the write scope ------------------------------------------------------
 
 
-def test_a_probe_never_writes_in_the_tree(built: policy_module.Policy, tmp_path: Path) -> None:
-    """The invariant that makes `lc run` safe to hand to an agent: a probe
-    has no output, so nothing it does can land in the project."""
+def test_the_tree_is_read_only_apart_from_results(
+    built: policy_module.Policy, tmp_path: Path
+) -> None:
+    """The environment a run starts with is the one it ends with: nothing
+    it does can touch `.venv`, the lock, or the spec."""
     project = tmp_path / "proj"
-    assert not any(root == project or project.is_relative_to(root) for root in built.write)
+    assert not built.grants(project / "astra.yaml", built.write)
+    assert not built.grants(project / ".venv" / "bin" / "python", built.write)
+
+
+def test_results_is_writable(tmp_path: Path) -> None:
+    """Output goes here, and it is the same scope a recipe gets — which
+    is what makes a probe a probe of the real thing.
+
+    A writable directory nested inside a read-only tree is the shape all
+    three mechanisms express natively: Landlock unions rights so a nested
+    grant only widens, SBPL restates the write tier after the guard, and
+    podman mounts `results` `:rw` over a `:ro` project."""
+    project = tmp_path / "proj"
+    (project / "results").mkdir(parents=True)
+    with scope(project) as built:
+        assert built.grants(project / "results" / "out.csv", built.write)
+
+
+def test_results_is_granted_only_if_it_exists(tmp_path: Path) -> None:
+    """Convergence makes it. A policy that made directories would be a
+    side effect nobody asked a probe for."""
+    project = tmp_path / "bare"
+    project.mkdir()
+    with scope(project) as built:
+        assert not built.grants(project / "results", built.write)
+        assert not (project / "results").exists()
+
+
+def test_the_project_is_also_readable(built: policy_module.Policy, tmp_path: Path) -> None:
+    """Not redundant with the write grant. Landlock's write bits include
+    the read ones, but SBPL's write tier grants `file-read* file-write*`
+    and *not* `file-map-executable` — which macOS gates `dlopen` on, and
+    every compiled extension module under site-packages needs. Dropping
+    the project from `read` as duplication breaks `import numpy` on macOS
+    alone, with Linux CI still green."""
+    assert built.grants(tmp_path / "proj" / "astra.yaml", built.read)
 
 
 def test_the_private_home_is_writable(built: policy_module.Policy) -> None:
@@ -57,8 +94,8 @@ def test_the_shared_tmp_is_writable_for_a_project_outside_it() -> None:
 
 def test_a_project_living_under_tmp_does_not_become_writable() -> None:
     """`/tmp` is writable by design, so a project that *lives* there would
-    otherwise be writable too — voiding the read-only-tree guarantee for
-    exactly the people who keep scratch analyses in /tmp."""
+    otherwise be writable through that grant — voiding the read-only tree
+    for exactly the people who keep scratch analyses in /tmp."""
     shared = Path("/tmp").resolve()
     with scope(shared / "lc-policy-under-tmp") as built:
         assert shared not in built.write
@@ -261,13 +298,41 @@ def test_the_venv_and_the_interpreter_behind_it_are_granted(tmp_path: Path) -> N
 
     with scope(project) as built:
         install_root = store.parent.resolve()
-        assert bin_dir.resolve() in built.execute
+        # The *directory* is deliberately not granted: the tree is
+        # writable, so that would be an exec grant on whatever is written
+        # into `.venv/bin` next. See `test_the_venv_bin_is_granted_per_file`.
+        assert bin_dir.resolve() not in built.execute
         assert real.resolve() in built.execute
         assert install_root in built.read
         # Its own tree, so EXECUTE too: a framework build re-execs itself
         # into `Resources/Python.app/Contents/MacOS/Python`, which the
         # binary-only grant would miss.
         assert install_root in built.execute
+
+
+def test_the_venv_bin_is_granted_per_file_not_as_a_directory(tmp_path: Path) -> None:
+    """The exec allowlist has to survive a writable project.
+
+    `.venv/bin` is exec-granted and the tree is writable, so granting the
+    *directory* would grant whatever is written there next — copy a host
+    tool in and it runs, making the by-name denial of that same tool
+    meaningless. The grants are taken per file when the policy is built.
+    """
+    project = tmp_path / "proj"
+    bin_dir = project / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    script = bin_dir / "pytest"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+
+    with scope(project) as built:
+        assert script.resolve() in built.execute, "a console script that exists is granted"
+        assert bin_dir.resolve() not in built.execute, "but never the directory"
+        # What a run writes there afterwards is therefore not runnable.
+        later = bin_dir / "smuggled"
+        later.write_text("#!/bin/sh\n")
+        later.chmod(0o755)
+        assert not built.grants(later, built.execute)
 
 
 def test_a_system_interpreter_does_not_make_the_whole_prefix_executable(
@@ -339,7 +404,11 @@ def test_home_and_friends_point_into_the_write_scope(built: policy_module.Policy
         assert Path(built.env[key]).is_relative_to(built.tmp_home), key
 
 
-def test_bytecode_is_redirected_out_of_the_read_only_tree(built: policy_module.Policy) -> None:
+def test_bytecode_is_redirected_out_of_the_read_only_tree(
+    built: policy_module.Policy,
+) -> None:
+    """Without it every `import` of an in-tree module fails trying to
+    write its `__pycache__` into a tree it may not write."""
     assert Path(built.env["PYTHONPYCACHEPREFIX"]).is_relative_to(built.tmp_home)
 
 

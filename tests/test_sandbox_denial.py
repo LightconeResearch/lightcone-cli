@@ -27,14 +27,29 @@ def project(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def policy(project: Path, tmp_path: Path) -> Policy:
+def declared_input(tmp_path: Path) -> Path:
+    """A declared input: readable, and never writable.
+
+    The readable-but-not-writable case used to be the project tree. Now
+    that the tree is writable, this is what is left of it — and it is
+    the honest example, since an input really is somebody else's file.
+    """
+    source = tmp_path / "inputs"
+    source.mkdir()
+    (source / "catalog.csv").write_text("id\n")
+    return source
+
+
+@pytest.fixture
+def policy(project: Path, declared_input: Path, tmp_path: Path) -> Policy:
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     venv_bin = project / ".venv" / "bin"
     venv_bin.mkdir(parents=True)
     return Policy(
-        read=(project, Path("/usr")),
-        write=(scratch,),
+        read=(project, declared_input, Path("/usr")),
+        # `results/` only — the rest of the tree is read-only.
+        write=(scratch, project / "results"),
         execute=(venv_bin,),
         tmp_home=scratch,
         env={},
@@ -71,14 +86,37 @@ def test_an_undeclared_data_file_gets_the_astra_snippet(
 
 
 def test_an_in_tree_write_is_its_own_kind_of_denial(policy: Policy, project: Path) -> None:
-    """Reading the project was allowed, so an EACCES on a project file
-    can only have been a write — and "declare it as an input" would be
-    exactly the wrong advice."""
+    """Reading the project was allowed, so an EACCES on a project file can
+    only have been a write — and "declare it as an input" would be exactly
+    the wrong advice."""
     stderr = "PermissionError: [Errno 13] Permission denied: 'astra.yaml'\n"
     joined = "\n".join(denial.explain(stderr, policy, cwd=project))
     assert "cannot write" in joined
-    assert "read-only in here" in joined
+    assert "output goes in results/" in joined
     assert "inputs:" not in joined
+
+
+def test_a_write_to_a_declared_input_says_the_same_thing(
+    policy: Policy, project: Path, declared_input: Path
+) -> None:
+    """An input is somebody else's file: readable because it is declared,
+    never writable — and "declare it as an input" would be absurd advice
+    for a file that already is one."""
+    target = declared_input / "catalog.csv"
+    stderr = f"PermissionError: [Errno 13] Permission denied: '{target}'\n"
+    joined = "\n".join(denial.explain(stderr, policy, cwd=project))
+    assert "cannot write" in joined
+    assert "inputs:" not in joined
+
+
+def test_a_write_into_results_is_not_a_denial_at_all(policy: Policy, project: Path) -> None:
+    """`results/` is granted, so an EACCES there is the OS's problem, not
+    the sandbox's."""
+    (project / "results").mkdir(exist_ok=True)
+    target = project / "results" / "out.csv"
+    target.write_text("")
+    stderr = f"PermissionError: [Errno 13] Permission denied: '{target}'\n"
+    assert denial.explain(stderr, policy, cwd=project) == []
 
 
 # ---- what must not be reported --------------------------------------------
@@ -139,21 +177,26 @@ def test_a_bare_command_name_is_resolved_against_the_host(
 
 
 def test_a_relative_path_is_resolved_against_the_working_directory(
-    policy: Policy, project: Path
+    policy: Policy, project: Path, tmp_path: Path
 ) -> None:
-    """Python reports the string the command passed, so an in-tree denial
-    arrives as `'astra.yaml'` with no directory at all."""
-    stderr = "PermissionError: [Errno 13] Permission denied: 'astra.yaml'\n"
+    """Python reports the string the command passed, so a denial can
+    arrive as a bare relative path with no directory at all."""
+    (tmp_path / "elsewhere.fits").write_text("")
+    stderr = "PermissionError: [Errno 13] Permission denied: '../elsewhere.fits'\n"
     assert denial.explain(stderr, policy, cwd=project) != []
 
 
-def test_no_escape_hatch_is_ever_offered(policy: Policy, project: Path) -> None:
+def test_no_escape_hatch_is_ever_offered(
+    policy: Policy, project: Path, declared_input: Path
+) -> None:
     """There is no way to run outside the sandbox, so no message may
     suggest one."""
+    target = declared_input / "catalog.csv"
     joined = "\n".join(
-        denial.explain("PermissionError: [Errno 13] Permission denied: 'astra.yaml'\n", policy,
-                       cwd=project)
+        denial.explain(
+            f"PermissionError: [Errno 13] Permission denied: '{target}'\n", policy, cwd=project
+        )
     )
-    assert "read-only in here" in joined
+    assert "cannot write" in joined
     assert "--no-sandbox" not in joined
     assert "sandbox-debug" not in joined
