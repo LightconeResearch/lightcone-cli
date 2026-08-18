@@ -165,6 +165,34 @@ def test_the_interpreter_can_import_its_own_standard_library(
     assert result.stdout.strip() == "1"
 
 
+def test_allocating_a_pty_needs_devpts_and_says_so_badly(
+    sandbox_dirs: tuple[Path, Path], policy: Policy
+) -> None:
+    """Without devpts, `pty.openpty()` fails as "out of pty devices" — a
+    message that names neither the sandbox nor a path, so the denial
+    classifier cannot help and only the trailer would fire. That is the
+    argument for granting it rather than discovering it in the field."""
+    project, _ = sandbox_dirs
+    script = f"{sys.executable} -c 'import pty; pty.openpty(); print(\"PTY-OK\")'"
+
+    if not Path("/dev/ptmx").exists():  # pragma: no cover - unusual host
+        pytest.skip("no /dev/ptmx on this host")
+
+    denied = run(policy, script, cwd=project)
+    assert denied.returncode != 0
+    assert "out of pty devices" in denied.stderr
+
+    widened = Policy(
+        **{
+            **policy.__dict__,
+            "write": (*policy.write, Path("/dev/pts"), Path("/dev/ptmx").resolve()),
+        }
+    )
+    allowed = run(widened, script, cwd=project)
+    assert allowed.returncode == 0, allowed.stderr
+    assert "PTY-OK" in allowed.stdout
+
+
 # ---- the restriction cannot be shed ---------------------------------------
 
 

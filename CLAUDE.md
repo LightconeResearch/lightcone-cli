@@ -394,6 +394,19 @@ same problem by leaving the root out of the policy
   Worth remembering when the list next comes up short: none of the three
   bugs we hit (ELF loader, interpreter root, `/dev/urandom`) came from
   the list — two were derived paths and one was already in it.
+- **Devices are granted generously, on purpose.** `/dev/tty`, `/dev/pts`,
+  and `/dev/ptmx` are all writable, matching what bubblewrap's `--dev`
+  materializes. The threat model is accidental leakage, not a hostile
+  recipe (spec §7), and a terminal is not a channel undeclared *inputs*
+  arrive through — so the tight version buys nothing and costs real
+  failures. It reads more permissive than it is: Landlock only ever
+  removes access, never adds it, so ordinary Unix permissions still
+  apply (devpts hands each pty to its allocating user at mode 0620).
+  The concrete lesson is in the failure mode — without devpts,
+  `pty.openpty()` raises `OSError: out of pty devices`, which names
+  neither a path nor the sandbox, so the denial classifier cannot help
+  and only the trailer fires. Grants whose absence produces an
+  unattributable error are the ones to make freely.
 - **Landlock stays the Linux mechanism; bubblewrap is not adopted.**
   Codex moved its Linux default to bwrap+seccomp (Landlock is now
   `--use-legacy-landlock`) because it needs rights *subtraction*:

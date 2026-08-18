@@ -61,13 +61,25 @@ _OS_READ_BASELINE = (
 #: Writable everywhere: the scratch surfaces and device nodes a command
 #: legitimately uses.
 #:
-#: The `/dev` entries are the set bubblewrap's `--dev` primitive
-#: materializes (`null, zero, full, random, urandom, tty`), split by the
-#: access each actually needs. Landlock has no device-tree primitive, so
-#: where bwrap gets them from one flag we enumerate them — `/dev/tty`
-#: included, without which anything opening the controlling terminal
-#: afresh fails, `lc run`'s own shell included.
-_WRITE_BASELINE = ("/tmp", "/var/tmp", "/dev/shm", "/dev/null", "/dev/tty")
+#: The `/dev` entries mirror what bubblewrap's `--dev` primitive
+#: materializes — `null, zero, full, random, urandom, tty`, plus a devpts
+#: mount and `ptmx`. Landlock has no device-tree primitive, so where bwrap
+#: gets them from one flag we enumerate them. `/dev/tty` is what lets
+#: anything open the controlling terminal afresh (`lc run`'s own shell
+#: included); `/dev/pts` and `/dev/ptmx` are what let a command allocate a
+#: *new* pty, which pexpect, pytest's capture, and any subprocess wanting
+#: a terminal all do.
+#:
+#: Granting the whole devpts directory is deliberate. The threat model is
+#: accidental leakage, not a hostile recipe (spec §7), and terminals are
+#: not a channel undeclared *inputs* arrive through. It is also less
+#: permissive than it reads: Landlock only ever removes access, never adds
+#: it, so ordinary Unix permissions still apply — devpts gives each pty to
+#: its allocating user at mode 0620.
+_WRITE_BASELINE = (
+    "/tmp", "/var/tmp", "/dev/shm",
+    "/dev/null", "/dev/tty", "/dev/pts", "/dev/ptmx",
+)  # fmt: skip
 
 #: The ELF interpreter. Landlock checks EXECUTE on the *loader's* open,
 #: so without these every dynamically linked binary — bash and python
