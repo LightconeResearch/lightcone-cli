@@ -84,7 +84,9 @@ def test_run_on_a_converged_project_says_so(runner: CliRunner, tmp_path: Path) -
 
     result = runner.invoke(main, ["init", str(project)])
     assert result.exit_code == 0
-    assert "already converged" in result.output
+    # "already converged" straddles rich's wrap point once the tmp path is
+    # long enough — assert on a fragment that cannot wrap.
+    assert "nothing to do" in result.output
 
 
 def test_blocked_items_are_rendered(runner: CliRunner, tmp_path: Path) -> None:

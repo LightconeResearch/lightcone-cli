@@ -6,6 +6,7 @@ kernel honors the policy is `test_sandbox_landlock.py`'s question.
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import tempfile
@@ -311,3 +312,16 @@ def test_the_allowlist_version_reaches_the_attestation(built: policy_module.Poli
 
     backend = LandlockBackend(capability=Capability(kind="landlock", landlock_abi=1))
     assert backend.attest(built).exec_allowlist_version == EXEC_ALLOWLIST_VERSION
+
+
+def test_path_is_the_exec_search_path_we_granted(
+    built: policy_module.Policy, tmp_path: Path
+) -> None:
+    """The command must resolve tools through the same list the policy
+    granted from. Otherwise a host whose ambient PATH fronts another copy
+    of an allowlisted tool — homebrew's bash on macOS — gets that copy
+    denied, and the denial blames the command for lc's own incoherence.
+    """
+    entries = built.env["PATH"].split(os.pathsep)
+    assert entries[0] == str(tmp_path / "proj" / ".venv" / "bin"), "the project env comes first"
+    assert entries[1:] == policy_module._UTILITY_PATH.split(os.pathsep)

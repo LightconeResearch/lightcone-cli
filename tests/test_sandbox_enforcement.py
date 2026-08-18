@@ -471,3 +471,18 @@ def test_without_the_guard_a_mechanismless_host_skips(monkeypatch: pytest.Monkey
     )
     with pytest.raises(pytest.skip.Exception):
         _mechanism()
+
+
+def test_an_allowlisted_tool_resolves_to_the_copy_that_was_granted(
+    backend: sandbox.Backend, project: Path
+) -> None:
+    """Found by the macOS runner: PATH inside the boundary has to be the
+    search path the exec set was built from. The runner's ambient PATH
+    fronts homebrew, so `env bash` resolved `/opt/homebrew/bin/bash`
+    while the policy had granted `/bin/bash` — and the sandbox denied
+    bash itself with "Operation not permitted"."""
+    with sandbox.scope(project) as policy:
+        result = shell(backend, policy, "command -v bash && echo RESOLVED", cwd=project)
+    assert result.returncode == 0, result.stderr
+    resolved = Path(result.stdout.splitlines()[0].strip())
+    assert policy.grants(resolved, policy.execute), f"{resolved} is not in the exec set"

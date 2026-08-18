@@ -151,7 +151,7 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
         write=write,
         execute=_existing(_exec_set(project, python)),
         tmp_home=tmp_home,
-        env=home_overlay(tmp_home),
+        env=home_overlay(tmp_home, project),
     )
 
 
@@ -171,7 +171,7 @@ def _write_roots(project: Path) -> list[Path]:
     return [root for root in roots if not resolved.is_relative_to(root)]
 
 
-def home_overlay(tmp_home: Path) -> dict[str, str]:
+def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
     """HOME and friends, pointed at a fresh directory (spec §7, normative).
 
     The real ``$HOME`` is neither readable nor writable inside the
@@ -181,13 +181,26 @@ def home_overlay(tmp_home: Path) -> dict[str, str]:
     Giving them a private HOME instead is the Bazel/nix move: they work,
     and they cannot be steered.
 
+    ``PATH`` is set for a different reason, but the same one at heart:
+    what the command resolves has to be what the policy granted.
+
     ``PYTHONPYCACHEPREFIX`` is here for the same reason at the other end:
     the project tree is read-only inside the boundary, so without it
     every ``import`` of an in-tree module fails to write its
     ``__pycache__``. ``TMPDIR`` points inside too, so ``tempfile`` works
     even where the shared ``/tmp`` had to leave the write set.
     """
-    return {"HOME": str(tmp_home), **{k: str(tmp_home / v) for k, v in _HOME_LAYOUT.items()}}
+    return {
+        "HOME": str(tmp_home),
+        # The search path *is* the exec set. Without this the command
+        # resolves tools through the host's ambient PATH while the policy
+        # granted whatever `_UTILITY_PATH` resolved — so on a machine
+        # whose PATH fronts another copy (homebrew's bash on macOS, say)
+        # the sandbox denies `bash` itself, and the message blames the
+        # user's command for lc's own incoherence.
+        "PATH": os.pathsep.join([str(project / ".venv" / "bin"), _UTILITY_PATH]),
+        **{k: str(tmp_home / v) for k, v in _HOME_LAYOUT.items()},
+    }
 
 
 def _venv_python(project: Path) -> Path | None:
