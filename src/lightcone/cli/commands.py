@@ -65,6 +65,7 @@ _____|_________________
 
 
 @main.command()
+@click.argument("directory", type=click.Path(file_okay=False, path_type=Path), default=".")
 @click.option(
     "--check",
     "check_only",
@@ -80,8 +81,8 @@ _____|_________________
     is_flag=True,
     help="Emit the convergence report as JSON on stdout.",
 )
-def init(check_only: bool, as_json: bool) -> None:
-    """Converge the current directory into a Lightcone project (idempotent).
+def init(directory: Path, check_only: bool, as_json: bool) -> None:
+    """Converge DIRECTORY into a standard Lightcone project (idempotent).
 
     Safe to re-run at any time: creates whatever is missing, repairs the
     pieces lightcone manages, and never overwrites files you own.
@@ -95,7 +96,7 @@ def init(check_only: bool, as_json: bool) -> None:
     """
     from lightcone.engine.project import converge
 
-    directory = Path.cwd().resolve()
+    directory = directory.resolve()
     write = not check_only
 
     if write and not as_json:

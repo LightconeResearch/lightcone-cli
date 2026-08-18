@@ -179,10 +179,12 @@ convergence can see but must not fix (advisory — never affects
 does count, so a report can never claim a project is converged while
 something it owns is absent.
 
-**There is no project discovery, by decision.** `lc init` and `lc run`
-operate on the current directory — `project.current_project()` errors
-unless `astra.yaml` is right there. No walk-up: the directory you invoke
-from is the project, or it is a clean error.
+**There is no project discovery, by decision.** `lc init` is handed its
+directory (defaulting to `.`); `lc run` assumes the current directory is
+the project root — `project.current_project()` checks only that the
+environment is there (`pyproject.toml`, `uv.lock`, `.venv`) and does not
+require an `astra.yaml`, so any uv project can be probed. No walk-up:
+the directory you invoke from is the project, or it is a clean error.
 
 **CLI startup stays cheap.** `commands.py` imports the engine *inside* the
 command callbacks and builds the rich console lazily, so `lc --help` and

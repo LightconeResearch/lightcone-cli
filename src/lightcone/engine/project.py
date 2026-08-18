@@ -299,18 +299,23 @@ def project_name(directory: Path) -> str:
 
 
 def current_project(directory: Path | None = None) -> Path:
-    """The project at *directory* (default: the working directory).
+    """*directory* (default: the working directory), taken as the project root.
 
-    A project is a directory holding ``astra.yaml``, and verbs operate on
-    the directory they are invoked from. There is deliberately no
-    walk-up: the directory you are in is the directory that is used, or
-    it is an error.
+    ``lc run`` assumes it is invoked from the root, so the only check is
+    that the environment is actually there: ``pyproject.toml``,
+    ``uv.lock``, ``.venv``. An ``astra.yaml`` is deliberately not
+    required — a command can be probed in any uv project, spec or no
+    spec. There is no walk-up: the directory you are in is the directory
+    that is used, or it is an error.
     """
     directory = (directory or Path.cwd()).resolve()
-    if not (directory / SPEC_FILENAME).exists():
+    missing = [
+        name for name in ("pyproject.toml", "uv.lock", ".venv") if not (directory / name).exists()
+    ]
+    if missing:
         raise ProjectError(
-            f"no {SPEC_FILENAME} in {directory} — not a project root. "
-            "Create one with `lc init`."
+            f"{directory} is missing {', '.join(missing)} — not a project "
+            "root. Run `lc init` to converge one."
         )
     return directory
 

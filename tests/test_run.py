@@ -35,13 +35,22 @@ def project(tmp_path: Path) -> Path:
     (root / "data" / "local.csv").write_text("a,b\n")
     (root / "astra.yaml").write_text(SPEC)
     (root / "pyproject.toml").write_text('[project]\nname = "proj"\n')
+    (root / "uv.lock").write_text("version = 1\n")
+    (root / ".venv").mkdir()
     return root
 
 
 # ---- the project check ----------------------------------------------------
 
 
-def test_the_directory_holding_the_spec_is_a_project(project: Path) -> None:
+def test_a_directory_with_an_environment_is_a_project(project: Path) -> None:
+    assert current_project(project) == project.resolve()
+
+
+def test_the_spec_is_not_required(project: Path) -> None:
+    """`lc run` probes the *environment*; a uv project with no
+    `astra.yaml` is still runnable."""
+    (project / "astra.yaml").unlink()
     assert current_project(project) == project.resolve()
 
 
@@ -50,12 +59,18 @@ def test_a_subdirectory_is_not_the_project(project: Path) -> None:
     the directory that is used, or it is an error."""
     nested = project / "a" / "b"
     nested.mkdir(parents=True)
-    with pytest.raises(ProjectError, match="not a project root"):
+    with pytest.raises(ProjectError, match="not a project"):
         current_project(nested)
 
 
-def test_a_directory_without_a_spec_says_so(tmp_path: Path) -> None:
-    with pytest.raises(ProjectError, match="not a project root"):
+def test_the_missing_pieces_are_named(project: Path) -> None:
+    (project / "uv.lock").unlink()
+    with pytest.raises(ProjectError, match="missing uv.lock"):
+        current_project(project)
+
+
+def test_a_directory_without_an_environment_says_so(tmp_path: Path) -> None:
+    with pytest.raises(ProjectError, match="lc init"):
         current_project(tmp_path)
 
 
@@ -64,6 +79,12 @@ def test_the_default_is_the_working_directory(
 ) -> None:
     monkeypatch.chdir(project)
     assert current_project() == project.resolve()
+
+
+def test_a_missing_spec_reads_as_an_empty_one(project: Path) -> None:
+    (project / "astra.yaml").unlink()
+    assert engine_run.read_spec(project) == {}
+    assert engine_run.input_paths(project, {}) == []
 
 
 # ---- declared inputs ------------------------------------------------------

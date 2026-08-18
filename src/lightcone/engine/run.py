@@ -69,11 +69,15 @@ def read_spec(project: Path) -> dict[str, Any]:
     Best-effort by design: a probe exists to debug a project, and a spec
     whose sub-analysis references are stale is exactly when someone runs
     one. A tree that will not resolve degrades to the top-level document
-    rather than making the verb unusable.
+    rather than making the verb unusable — and no spec at all is simply
+    an empty one, with no declared inputs.
     """
     from astra.helpers import load_yaml, resolve_analysis_tree
 
-    data: dict[str, Any] = load_yaml(project / SPEC_FILENAME)
+    spec_path = project / SPEC_FILENAME
+    if not spec_path.exists():
+        return {}
+    data: dict[str, Any] = load_yaml(spec_path)
     try:
         return dict(resolve_analysis_tree(data, project))
     except Exception:
