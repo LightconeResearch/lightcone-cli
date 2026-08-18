@@ -359,8 +359,56 @@ running the command unsandboxed.
 and the `podman*`/`pod*` attestation branches all belong to layers 4 and 6
 and are absent, not stubbed.
 
+**The macOS profile is vendored, not authored.**
+`sandbox/profiles/{base,platform-defaults}.sbpl` come from the codex CLI
+(itself Chrome-derived), with a provenance header naming the upstream
+commit and a single `LIGHTCONE DELTA`. The macOS read baseline is not
+derivable from first principles — it is a list of things that break,
+found one production failure at a time: `/dev/dtracehelper`, the
+`/dev/fd` and pty regexes, firmlink-parent traversal under
+`/System/Volumes/Data`, the `opendirectoryd.libinfo` lookup without which
+`getpwuid()` raises `KeyError`, `/opt/homebrew/lib`. Keep them
+near-verbatim so `diff` against upstream stays the re-sync tool; put our
+own rules in the generator, not in the vendored text. The one delta —
+upstream's blanket `(allow process-exec)`, which exists because codex
+does not restrict exec — is pinned by a test so a re-sync cannot silently
+restore it.
+
+**SBPL is last-match-wins; Landlock unions.** This asymmetry decides
+where a rule can live. On macOS a later `(deny …)` can take back an
+earlier allow, which is how `_read_only_guard` claws back the write the
+vendored defaults grant on `/tmp`. Landlock has no equivalent — a
+narrower rule can only *add* rights — so the Linux side has to solve the
+same problem by leaving the root out of the policy
+(`policy._tmp_write_roots`). Verified empirically, not assumed.
+
 ### Recorded decisions
 
+- **Reads stay restricted, and the OS baseline is ours to maintain.**
+  Codex restricts reads too now, but its Linux read baseline is a *mount
+  table*, not a path list — there is nothing to adopt there. Keeping the
+  FHS allowlist is a deliberate choice about which way the failure
+  points: a missing allowlist entry is a **loud** `EACCES` that gets
+  reported and fixed once for everyone, while any exclusion-based scheme
+  fails **silently**, in exactly the thing the layer exists to prevent.
+  Worth remembering when the list next comes up short: none of the three
+  bugs we hit (ELF loader, interpreter root, `/dev/urandom`) came from
+  the list — two were derived paths and one was already in it.
+- **Landlock stays the Linux mechanism; bubblewrap is not adopted.**
+  Codex moved its Linux default to bwrap+seccomp (Landlock is now
+  `--use-legacy-landlock`) because it needs rights *subtraction*:
+  `read_only_subpaths` inside a writable root, to stop an agent writing
+  `.git/hooks` and escalating. Landlock cannot express that, and their
+  own older code silently dropped the carve-out on Linux as a result.
+  **That requirement is not ours** — spec §7's threat model is accidental
+  leakage, not a hostile recipe, and our policy's exceptions always
+  *widen* (a writable output dir inside a readable tree), which is
+  exactly the direction union semantics handle for free. The cost would
+  be real: a bundled `bwrap` binary, a user-namespace probe, a WSL1
+  refusal, and the Ubuntu 24.04 AppArmor wall that made
+  `hermeticity-enforcement.md` §3 call bwrap "an opportunistic upgrade,
+  never the requirement". Re-add triggers: a policy shape that genuinely
+  needs subtraction, or ambient `bwrap` becoming universal.
 - **The ASTRA `container:` directive is ignored, entirely.** astra's
   boilerplate writes `container: python:3.12-slim` into `astra.yaml`, and
   lightcone-cli does nothing with it: not read, not stripped, not

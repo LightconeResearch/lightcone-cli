@@ -133,16 +133,53 @@ def test_the_generated_profile_denies_by_default(policy: Policy) -> None:
 
 
 def test_the_profile_references_every_policy_path_once(policy: Policy) -> None:
-    profile = seatbelt.generate_profile(policy)
     for prefix, paths in (("READ", policy.read), ("WRITE", policy.write), ("EXEC", policy.execute)):
         for index in range(len(paths)):
-            assert profile.count(f'(param "{prefix}_{index}")') == 1
+            assert f'(param "{prefix}_{index}")' in seatbelt.generate_profile(policy), prefix
 
 
-def test_the_profile_allows_the_dynamic_loader(policy: Policy) -> None:
-    """dyld is the mach-o twin of the ELF loader tier: without it nothing
-    dynamically linked starts."""
-    assert '(literal "/usr/lib/dyld")' in seatbelt.generate_profile(policy)
+def test_the_vendored_fragments_are_shipped() -> None:
+    """They are package *data*, so a packaging slip would only surface on a
+    macOS host at run time. Read them here instead."""
+    for name in (seatbelt.BASE_PROFILE, seatbelt.PLATFORM_DEFAULTS):
+        assert "(allow" in seatbelt.read_profile(name), name
+
+
+def test_an_unknown_fragment_fails_loudly() -> None:
+    with pytest.raises(KeyError, match="unknown profile fragment"):
+        seatbelt.read_profile("nope.sbpl")
+
+
+def test_the_vendored_base_does_not_grant_blanket_exec() -> None:
+    """The one local delta. Upstream allows `process-exec` outright because
+    codex does not restrict exec; restricting it is our whole guarantee, so
+    the blanket allow must stay commented out however the file is re-synced."""
+    base = seatbelt.read_profile(seatbelt.BASE_PROFILE)
+    assert "\n(allow process-exec)" not in base
+    assert "LIGHTCONE DELTA" in base
+
+
+def test_the_platform_defaults_carry_the_hard_won_entries(policy: Policy) -> None:
+    """Spot-checks on entries nobody would derive from first principles —
+    the reason this file is vendored rather than written."""
+    profile = seatbelt.generate_profile(policy)
+    for needle in (
+        "/dev/dtracehelper",            # debugger helpers
+        "com.apple.system.opendirectoryd.libinfo",  # getpwuid() or KeyError
+        "/opt/homebrew/lib",            # brew dylibs
+        "^/dev/ttys[0-9]+$",            # pty handles
+        "/System/Volumes/Data/private",  # firmlink parent traversal
+    ):
+        assert needle in profile, needle
+
+
+def test_the_loader_can_map_system_libraries(policy: Policy) -> None:
+    """dyld is the mach-o twin of the ELF loader tier: without
+    `file-map-executable` on the system frameworks nothing dynamically
+    linked starts."""
+    profile = seatbelt.generate_profile(policy)
+    assert "(allow file-map-executable" in profile
+    assert '(subpath "/System/Library/Frameworks")' in profile
 
 
 def test_the_profile_does_not_restrict_the_network(policy: Policy) -> None:
@@ -150,9 +187,30 @@ def test_the_profile_does_not_restrict_the_network(policy: Policy) -> None:
     platform, so the profile says so rather than denying what the
     attestation then calls `allowed`."""
     profile = seatbelt.generate_profile(policy)
-    assert "(allow network*)" in profile
+    assert "(allow network* system-socket)" in profile
     assert "(deny network" not in profile
     assert SeatbeltBackend().attest(policy).network == "allowed"
+
+
+def test_readable_but_unwritable_paths_are_denied_write_last(tmp_path: Path) -> None:
+    """SBPL is last-match-wins, so the guard has to come after the vendored
+    defaults — which grant /tmp write unconditionally and would otherwise
+    reopen the hole the Linux side closes by omitting the root."""
+    built = Policy(
+        read=(tmp_path / "proj", tmp_path / "scratch"),
+        write=(tmp_path / "scratch",),
+        execute=(),
+        tmp_home=tmp_path / "scratch",
+        env={},
+    )
+    profile = seatbelt.generate_profile(built)
+    guard = profile.index("(deny file-write*")
+    assert guard > profile.index("(allow file-read* file-write*")
+    assert guard > profile.index("/opt/homebrew/lib"), "the guard must follow the defaults"
+    # READ_0 is the project (not writable); READ_1 is also a write root.
+    tail = profile[guard:]
+    assert '(param "READ_0")' in tail
+    assert '(param "READ_1")' not in tail
 
 
 # ---- the null backend -----------------------------------------------------
