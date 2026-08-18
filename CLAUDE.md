@@ -380,7 +380,7 @@ earlier allow, which is how `_read_only_guard` claws back the write the
 vendored defaults grant on `/tmp`. Landlock has no equivalent — a
 narrower rule can only *add* rights — so the Linux side has to solve the
 same problem by leaving the root out of the policy
-(`policy._tmp_write_roots`). Verified empirically, not assumed.
+(`policy._write_roots`). Verified empirically, not assumed.
 
 ### Recorded decisions
 

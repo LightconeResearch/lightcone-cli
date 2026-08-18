@@ -44,13 +44,30 @@ _UTILITY_PATH = "/usr/local/bin:/usr/bin:/bin"
 #: Readable everywhere: the OS the interpreter and its libraries live in.
 #: Read, never execute — being able to *read* /usr is what lets the
 #: dynamic linker work; being able to *run* what is in it is the leak.
+#:
+#: System-level paths only, deliberately: this list must never widen to
+#: reach user data, which is what the project and declared-input grants
+#: are for. `/nix/store` and `/run/current-system/sw` are here because on
+#: NixOS *everything* — interpreter, libraries, the utility allowlist —
+#: resolves into them, so without them the sandbox is unusable there
+#: rather than merely incomplete. (Both entries are taken from codex's
+#: own `LINUX_PLATFORM_DEFAULT_READ_ROOTS`.)
 _OS_READ_BASELINE = (
     "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt", "/run",
-    "/proc", "/sys", "/dev/urandom", "/dev/random", "/dev/zero", "/dev/full",
+    "/proc", "/sys", "/nix/store", "/run/current-system/sw",
+    "/dev/urandom", "/dev/random", "/dev/zero", "/dev/full",
 )  # fmt: skip
 
-#: Writable everywhere: the scratch surfaces a recipe legitimately uses.
-_TMP_WRITE_BASELINE = ("/tmp", "/var/tmp", "/dev/shm", "/dev/null")
+#: Writable everywhere: the scratch surfaces and device nodes a command
+#: legitimately uses.
+#:
+#: The `/dev` entries are the set bubblewrap's `--dev` primitive
+#: materializes (`null, zero, full, random, urandom, tty`), split by the
+#: access each actually needs. Landlock has no device-tree primitive, so
+#: where bwrap gets them from one flag we enumerate them — `/dev/tty`
+#: included, without which anything opening the controlling terminal
+#: afresh fails, `lc run`'s own shell included.
+_WRITE_BASELINE = ("/tmp", "/var/tmp", "/dev/shm", "/dev/null", "/dev/tty")
 
 #: The ELF interpreter. Landlock checks EXECUTE on the *loader's* open,
 #: so without these every dynamically linked binary — bash and python
@@ -86,7 +103,7 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
         (tmp_home / sub).mkdir(parents=True, exist_ok=True)
 
     execute, interpreter_root = _exec_set(project)
-    write = _existing([tmp_home, *_tmp_write_roots(project)])
+    write = _existing([tmp_home, *_write_roots(project)])
     read = _existing(
         [project, *read_paths, *interpreter_root, *(Path(p) for p in _OS_READ_BASELINE)]
     )
@@ -101,20 +118,21 @@ def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     )
 
 
-def _tmp_write_roots(project: Path) -> list[Path]:
-    """The scratch surfaces, minus any that would swallow the project.
+def _write_roots(project: Path) -> list[Path]:
+    """The write baseline, minus any root that would swallow the project.
 
     ``/tmp`` is writable by design (spec §7) — but a project that
     *lives* under it would then be writable too, which would silently
     void the read-only-tree guarantee for exactly the people who keep
     scratch analyses in ``/tmp``. Dropping the offending root is safe
     because ``TMPDIR`` points at the private scope regardless, so
-    ``tempfile`` keeps working either way.
+    ``tempfile`` keeps working either way. The device entries can never
+    contain a project, so the filter is a no-op for them.
     """
     resolved = project.resolve()
     return [
         candidate
-        for root in _TMP_WRITE_BASELINE
+        for root in _WRITE_BASELINE
         if not resolved.is_relative_to(candidate := Path(root).resolve())
     ]
 
@@ -143,7 +161,7 @@ def home_overlay(tmp_home: Path) -> dict[str, str]:
         "PYTHONPYCACHEPREFIX": str(tmp_home / ".pycache"),
         # Pointed inside the private scope so `tempfile` works even where
         # the shared /tmp had to be dropped from the write set — see
-        # :func:`_tmp_write_roots`.
+        # :func:`_write_roots`.
         "TMPDIR": str(tmp_home / ".tmp"),
     }
 

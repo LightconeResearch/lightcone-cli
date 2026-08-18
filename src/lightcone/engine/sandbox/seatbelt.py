@@ -166,7 +166,7 @@ def _read_only_guard(policy: Policy) -> str:
 
     The vendored defaults grant write to shared scratch (``/tmp``,
     ``/var/tmp``) unconditionally, which would otherwise re-open exactly
-    the hole :func:`~lightcone.engine.sandbox.policy._tmp_write_roots`
+    the hole :func:`~lightcone.engine.sandbox.policy._write_roots`
     closes on Linux — a project living under ``/tmp`` becoming writable.
     Emitting the deny **last** is what makes the two platforms agree,
     and it is only expressible because SBPL is last-match-wins (Landlock,

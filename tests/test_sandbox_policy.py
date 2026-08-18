@@ -106,6 +106,39 @@ def test_dev_urandom_is_readable(built: policy_module.Policy) -> None:
     assert Path("/dev/urandom") in built.read
 
 
+def test_the_nix_roots_are_in_the_read_baseline() -> None:
+    """On NixOS *everything* — interpreter, libraries, the utility
+    allowlist — resolves into these, so omitting them makes the sandbox
+    unusable there rather than merely incomplete. Asserted against the
+    constant, since neither path exists on most hosts."""
+    assert "/nix/store" in policy_module._OS_READ_BASELINE
+    assert "/run/current-system/sw" in policy_module._OS_READ_BASELINE
+
+
+def test_the_read_baseline_is_system_paths_only() -> None:
+    """It must never widen to reach user data — that is what the project
+    and declared-input grants are for."""
+    home = str(Path.home())
+    for entry in policy_module._OS_READ_BASELINE:
+        assert not entry.startswith(home), entry
+        assert entry.startswith("/"), entry
+
+
+def test_the_minimal_device_set_is_covered(built: policy_module.Policy) -> None:
+    """bubblewrap materializes `null, zero, full, random, urandom, tty`
+    from one `--dev` flag. Landlock has no device-tree primitive, so we
+    enumerate the same set, split by the access each needs — `/dev/tty`
+    writable, without which anything opening the controlling terminal
+    afresh fails, `lc run`'s own shell included."""
+    granted = {*built.read, *built.write}
+    for node in ("null", "zero", "full", "random", "urandom", "tty"):
+        device = Path("/dev") / node
+        if device.exists():
+            assert device in granted, device
+    if Path("/dev/tty").exists():
+        assert Path("/dev/tty") in built.write
+
+
 # ---- the exec scope -------------------------------------------------------
 
 
