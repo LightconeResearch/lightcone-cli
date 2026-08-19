@@ -15,6 +15,12 @@ hooks, or plugins.
 lightcone-cli depends on ASTRA. The `astra` CLI handles spec operations;
 the `lc` CLI handles execution.
 
+That split is enforced in code, not just described: everything about what
+a spec *means* — scoping, `from:` references, conditional outputs,
+universe resolution, the recipe placeholder grammar — is answered by
+`astra.resolve` and validated by `astra.validation` before lc acts on it.
+lc's whole ASTRA surface is ten functions; see Key Invariants (layer 4).
+
 ## ⚠️ This repository is a clean rebuild in progress
 
 The codebase is being **re-added layer by layer** on top of the normative
@@ -552,21 +558,44 @@ bytes.
 
 ## Key Invariants (layer 4)
 
-**A decision is resolved by presence, not by truthiness.** A decision's
-*value* is not a test of whether it was made: an empty string is a choice
-someone wrote down, and treating it as absent reports "the output does
-not declare this decision", which is false and unactionable. A YAML
-*null* is the opposite case and is dropped, because `str(None)` would
-render the literal `None` into a shell command and into `code_version` —
-failing by name is the legible outcome.
+**What the spec *means* is ASTRA's to say, and `plan.py` asks rather than
+re-derives it.** `astra.resolve` settles each universe's decisions,
+resolves every output's inputs to what supplies them, drops the outputs
+whose `when:` does not hold, and renders the recipe grammar. Scoping,
+`from:` aliases, sub-analysis nesting and the placeholder grammar are all
+*read* here, never re-implemented — a second implementation of one
+specification is how the two start disagreeing, and ours had:
+
+- it could not build `examples/iris_pipeline` at all, ASTRA's own
+  canonical nested example;
+- it ignored `when:` on an output, so a universe ran a recipe the spec
+  excludes and committed a manifest for it;
+- it invented a dotted input id (`inputs: [hod.mass_function]`) and an
+  implicit "same universe id" fallback for sub-analyses, neither of which
+  `astra validate` accepts — `UniverseNode.universe` names it explicitly.
+
+`lightcone.engine.plan` therefore holds only what execution adds:
+`Task`, `Graph`, and the mapping of resolved outputs onto directories,
+edges and `code_version`. When something about the spec's meaning looks
+wrong, the fix is in astra-tools, not here.
+
+**A spec ASTRA rejects never reaches a recipe.** `build` runs
+`validate_analysis_schema`, `validate_analysis_file` and
+`validate_universe_file` before resolving anything, and refuses with
+ASTRA's own errors. This is a contract requirement, not a courtesy:
+resolution answers what a *valid* spec means and does not re-check that
+it is one, so without the gate an invalid spec surfaces later as a
+missing decision or an unresolvable input — blaming the run for a fault
+in the file, far from the line at fault. It caught three of lc's own
+test fixtures the first time it ran.
 
 **The layout is flat and path-addressed.** `results/<universe>/<output_id>/`,
 `data/` for declared inputs, and the path in a rendered recipe *is* the
-path on disk — no staging, no scratch, no relocation. Sub-analyses
-flatten onto the same namespace as `<analysis_id>.<output_id>` rather than
-nesting, so there is one addressing scheme and one place to look. A
-second level of nesting is **refused**, not ignored: the scheme has no
-name for it, and silently dropping those outputs would be worse.
+path on disk — no staging, no scratch, no relocation. The `output_id` is
+ASTRA's **qualified** id, so a sub-analysis output lands at
+`results/<universe>/<analysis>.<output>/` and one addressing scheme spans
+however deep the spec nests. Nesting is not capped: the dot separator is
+unambiguous because ASTRA ids match `^[a-z][a-z0-9_]*$`.
 
 **Because the path is composed, `output_dir` refuses an id that is not one
 path component.** An empty universe or output id collapses
@@ -1128,7 +1157,7 @@ only checks that the guard is present. Verified empirically, not assumed.
 | Change how a project stores bytes | `src/lightcone/engine/dataset.py` + `templates/files/gitattributes.tmpl` | Every command through `project._run`; test it against a real annex (`real_tools`) |
 | Change how an output is identified | `src/lightcone/engine/identity.py` + `tests/test_identity.py` | Sensitivity tests both ways: what must move the hash, and what must not |
 | Change when an output is remade | `src/lightcone/engine/assets.py` + `tests/test_assets.py` | One `staleness()`, two callers; `--check` differs by one input value, never by logic |
-| Change how the spec becomes a graph | `src/lightcone/engine/plan.py` + `tests/test_plan.py` | Anything ambiguous is a `ProjectError`, never a guess |
+| Change how the spec becomes a graph | `src/lightcone/engine/plan.py` + `tests/test_plan.py` | Ask `astra.resolve`; if the answer is missing, the fix is a PR to astra-tools. Anything ambiguous is a `ProjectError`, never a guess |
 | Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
 | Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
@@ -1153,6 +1182,13 @@ only checks that the guard is present. Verified empirically, not assumed.
   default, the pointer-file trap, `filter=annex`) was invisible to a stub.
 - `tests/test_project.py` — discovery and convergence semantics, called
   directly. This is where scaffold behavior is tested.
+- `tests/test_plan.py` tests what lc adds — directories, edges,
+  `code_version`, target resolution, the validation gate — and **not**
+  what a spec means. Scoping, `from:`, `when:` and the recipe grammar are
+  covered by `astra-tools`' own suite; asserting them here again would
+  re-create the second implementation this layer just deleted. Every
+  fixture must be a spec `astra validate` accepts, which the gate now
+  enforces for free.
 - `tests/test_identity.py`, `test_assets.py`, `test_plan.py` — **pure**,
   and the whole of layer 2 plus the graph. Nothing spawns, nothing on disk
   beyond `tmp_path`.

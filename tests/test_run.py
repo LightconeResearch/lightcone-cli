@@ -105,6 +105,20 @@ def test_declared_file_inputs_become_read_paths(project: Path) -> None:
     assert engine_run.input_paths(project, spec) == [(project / "data" / "local.csv").resolve()]
 
 
+def test_an_input_declared_inside_a_sub_analysis_is_a_read_path_too(project: Path) -> None:
+    """A denial the researcher cannot act on is worse than the access it
+    withheld: the file *is* declared, just not at the top of the tree."""
+    (project / "data" / "stage.csv").write_text("x\n")
+    spec = {
+        "inputs": [{"id": "local", "source": "data/local.csv"}],
+        "analyses": {"stage": {"inputs": [{"id": "sub", "source": "data/stage.csv"}]}},
+    }
+    assert engine_run.input_paths(project, spec) == [
+        (project / "data" / "local.csv").resolve(),
+        (project / "data" / "stage.csv").resolve(),
+    ]
+
+
 def test_a_source_that_is_not_a_path_is_left_alone(project: Path) -> None:
     """ASTRA's `source` is free-form — a URI, a dotted name, a path — so
     "is this a path" is answered by whether it resolves to something that

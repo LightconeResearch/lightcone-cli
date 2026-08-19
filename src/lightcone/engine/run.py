@@ -94,14 +94,19 @@ def input_paths(project: Path, spec: dict[str, Any]) -> list[Path]:
         The resolved paths that exist.
     """
     from astra.helpers import get_inputs
+    from astra.resolve import iter_analysis_nodes
 
     found: list[Path] = []
-    for declared in get_inputs(spec):
-        source = declared.get("source")
-        if not isinstance(source, str) or not source:
-            continue
-        candidate = Path(source)
-        resolved = candidate if candidate.is_absolute() else project / candidate
-        if resolved.exists():
-            found.append(resolved.resolve())
-    return found
+    # Every node, not just the root: a sub-analysis declares its own
+    # inputs, and a probe denied one is a denial the researcher cannot act
+    # on — the file is declared, just not at the top of the tree.
+    for _scope, node in iter_analysis_nodes(spec):
+        for declared in get_inputs(node):
+            source = declared.get("source")
+            if not isinstance(source, str) or not source:
+                continue
+            candidate = Path(source)
+            resolved = candidate if candidate.is_absolute() else project / candidate
+            if resolved.exists():
+                found.append(resolved.resolve())
+    return list(dict.fromkeys(found))

@@ -6,34 +6,30 @@ executing it needs and nothing about *how* it will be executed: the
 rendered command, where its bytes go, what it reads, which decisions it
 was made under, and its ``code_version``.
 
+What the spec *means* is ASTRA's to say. ``astra.resolve`` settles each
+universe's decisions, resolves every output's inputs to what supplies
+them, drops the outputs whose ``when:`` does not hold, and renders the
+recipe grammar — so scoping, ``from:`` references and sub-analysis
+nesting are read here rather than re-derived. A qualified output id
+(``classification.accuracy``) is used verbatim as the directory name, so
+one addressing scheme spans however deep the spec nests.
+
 Nothing here schedules anything. Ordering is Dask's job at execution time
 and a topological walk's job in ``--check``; this module only says which
 task depends on which.
-
-Sub-analyses are flattened rather than nested. An output declared inside
-``analyses.<id>`` is addressed as ``<id>.<output_id>`` and its bytes land
-in ``results/<universe>/<id>.<output_id>/`` beside everything else — one
-addressing scheme and one place to look, whatever shape the spec has.
-References resolve the way ASTRA scopes them: an id declared beside the
-output wins, and the root is the fallback.
 """
 
 from __future__ import annotations
 
-import string
-from collections.abc import Callable
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from typing import Any
 
 from lightcone.engine import assets, identity
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
 #: A task's identity within a run: which universe, which output.
 Key = tuple[str, str]
-
-_FORMATTER = string.Formatter()
 
 
 @dataclass(frozen=True)
@@ -152,291 +148,143 @@ def build(root: Path, *, env_version: str) -> Graph:
             computed here, so a graph cannot straddle an edit.
 
     Returns:
-        One task per ``(universe, output)`` pair that has a recipe.
+        One task per ``(universe, output)`` pair that has a recipe and is
+        active in that universe.
 
     Raises:
-        ProjectError: If the spec is missing, declares no universe, nests
-            sub-analyses more than one level, or names an input nothing
-            provides.
+        ProjectError: If the spec is missing, declares no universe, or
+            names an input nothing provides.
     """
-    spec = _spec(root)
-    outputs = _outputs(spec)
-    sources = _sources(spec)
-    universes = _universes(root, spec)
+    from astra.helpers import load_yaml, resolve_analysis_tree
+
+    spec_path = root / SPEC_FILENAME
+    if not spec_path.is_file():
+        raise ProjectError(
+            f"{root}: no {SPEC_FILENAME} — there is no analysis to materialize."
+        )
+    universes = sorted((root / "universes").glob("*.yaml"))
     if not universes:
         raise ProjectError(
             f"{root}/universes/ declares no universe — a run needs at least one "
             "set of decisions to make outputs under."
         )
+    _validate(spec_path, universes)
+    spec = dict(resolve_analysis_tree(load_yaml(spec_path), root))
 
     tasks: dict[Key, Task] = {}
-    for universe_id, decisions in universes.items():
-        for output_id, declared in outputs.items():
-            if _command(declared):
-                key = (universe_id, output_id)
-                tasks[key] = _task(root, key, declared, outputs, sources, decisions, env_version)
+    for path in universes:
+        universe = load_yaml(path)
+        universe_id = str(universe.get("id") or path.stem)
+        for task in _tasks(root, universe_id, spec, universe, env_version):
+            tasks[task.key] = task
     return Graph(tasks=tasks)
 
 
-@dataclass(frozen=True)
-class _Declared:
-    """One output as the spec declares it, and the scope it was found in."""
+def _validate(spec_path: Path, universes: list[Path]) -> None:
+    """Refuse a spec ASTRA rejects, before anything is resolved.
 
-    definition: dict[str, Any]
-    #: The sub-analysis it came from, or ``None`` for a root output.
-    analysis_id: str | None
-
-
-def _task(
-    root: Path,
-    key: Key,
-    declared: _Declared,
-    outputs: dict[str, _Declared],
-    sources: dict[str, str],
-    decisions: dict[str, str],
-    env_version: str,
-) -> Task:
-    universe_id, output_id = key
-    output_dir = assets.output_dir(root, universe_id, output_id)
-    scope = declared.analysis_id
-
-    values: dict[str, str] = {}
-    paths: dict[str, Path] = {}
-    produced_by: dict[str, Key] = {}
-    for name in declared.definition.get("inputs") or []:
-        if upstream := _lookup(name, scope, outputs, _command):
-            produced_by[name] = (universe_id, upstream)
-            paths[name] = assets.output_dir(root, universe_id, upstream)
-            values[name] = paths[name].relative_to(root).as_posix()
-        elif source := _lookup(name, scope, sources, bool):
-            values[name] = sources[source]
-            candidate = Path(sources[source])
-            paths[name] = candidate if candidate.is_absolute() else root / candidate
-        else:
-            raise ProjectError(
-                f"output `{output_id}` declares the input `{name}`, but no output "
-                "produces it and no declared input gives it a source."
-            )
-
-    # No `usable` here, because a decision's *value* is not a test of
-    # whether it was made. An empty string is a choice someone wrote down,
-    # and treating it as absent reports "the output does not declare this
-    # decision", which is false and leaves nothing to act on.
-    mine = {
-        name: decisions[found]
-        for name in declared.definition.get("decisions") or []
-        if (found := _lookup(name, scope, decisions))
-    }
-    recipe = render(
-        _command(declared),
-        inputs=values,
-        decisions=mine,
-        output=output_dir.relative_to(root).as_posix(),
-    )
-    return Task(
-        universe_id=universe_id,
-        output_id=output_id,
-        output_dir=output_dir,
-        recipe=recipe,
-        inputs=paths,
-        produced_by=produced_by,
-        decisions=mine,
-        code_version=identity.code_version(recipe=recipe, decisions=mine, env=env_version),
-    )
-
-
-def _lookup(
-    name: str,
-    scope: str | None,
-    among: dict[str, Any],
-    usable: Callable[[Any], object] | None = None,
-) -> str | None:
-    """The key *name* resolves to in *among*, following ASTRA's scoping.
-
-    An id declared inside a sub-analysis is qualified and wins; the root's
-    bare id is the fallback. *usable* is read for truth and rejects a
-    match that exists but
-    cannot serve — a re-exported output with no recipe produces no bytes,
-    and an input with no source names nothing. Omitting it means presence
-    is the whole test, which is the right answer where the value carries
-    no such distinction.
-    """
-    candidates = (f"{scope}.{name}", name) if scope else (name,)
-    return next(
-        (c for c in candidates if c in among and (usable is None or usable(among[c]))), None
-    )
-
-
-def _command(declared: _Declared) -> str:
-    """A recipe's command template, or empty when the output has none."""
-    return str((declared.definition.get("recipe") or {}).get("command") or "")
-
-
-# =============================================================================
-# Reading the spec and the universes
-# =============================================================================
-
-
-def _spec(root: Path) -> dict[str, Any]:
-    """*root*'s ``astra.yaml``, with ``path:`` sub-analyses expanded."""
-    from astra.helpers import load_yaml, resolve_analysis_tree
-
-    path = root / SPEC_FILENAME
-    if not path.is_file():
-        raise ProjectError(f"{root}: no {SPEC_FILENAME} — there is no analysis to materialize.")
-    data: dict[str, Any] = load_yaml(path)
-    return dict(resolve_analysis_tree(data, root))
-
-
-def _analyses(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """The sub-analyses, refusing a depth this layer cannot address.
-
-    One level flattens onto ``<id>.<output_id>``. A second would need a
-    naming scheme and a decision-merge rule that nothing here has, and
-    quietly ignoring those outputs would be worse than saying so.
-    """
-    found = {}
-    for analysis_id, node in (spec.get("analyses") or {}).items():
-        if node.get("analyses"):
-            raise ProjectError(
-                f"sub-analysis `{analysis_id}` declares sub-analyses of its own. "
-                "One level of nesting is supported; flatten the deeper ones."
-            )
-        found[str(analysis_id)] = node
-    return found
-
-
-def _outputs(spec: dict[str, Any]) -> dict[str, _Declared]:
-    """Every output in the tree, flattened onto one namespace."""
-    found = {
-        str(o["id"]): _Declared(o, analysis_id=None)
-        for o in spec.get("outputs") or []
-        if o.get("id")
-    }
-    for analysis_id, node in _analyses(spec).items():
-        for output in node.get("outputs") or []:
-            if output.get("id"):
-                found[f"{analysis_id}.{output['id']}"] = _Declared(output, analysis_id)
-    return found
-
-
-def _sources(spec: dict[str, Any]) -> dict[str, str]:
-    """Every declared input's source, flattened onto the same namespace.
-
-    A sub-analysis input written ``from: ../<id>`` is an alias: it carries
-    no source of its own and inherits the one it points at. Only upward
-    references are resolved, which is the only direction ASTRA's ``from:``
-    goes for inputs.
-    """
-    root_sources = {
-        str(i["id"]): str(i.get("source") or "") for i in spec.get("inputs") or [] if i.get("id")
-    }
-    found = dict(root_sources)
-    for analysis_id, node in _analyses(spec).items():
-        for declared in node.get("inputs") or []:
-            if not declared.get("id"):
-                continue
-            source = declared.get("source") or ""
-            if alias := declared.get("from"):
-                source = root_sources.get(str(alias).lstrip("./"), "")
-            found[f"{analysis_id}.{declared['id']}"] = str(source)
-    return found
-
-
-def _universes(root: Path, spec: dict[str, Any]) -> dict[str, dict[str, str]]:
-    """Each universe's decisions, by universe id, flattened like the rest.
-
-    A sub-analysis keeps its own ``universes/`` directory, and the root
-    universe says which of them this one selects; absent that, the same
-    id. Its decisions land under ``<analysis_id>.<decision_id>``, so the
-    flat namespace holds for decisions exactly as it does for outputs.
-
-    Discovered by glob, so a project with no ``universes/`` directory is
-    empty rather than an error — git carries no empty directories, and a
-    fresh clone is a normal state to be in.
-    """
-    from astra.helpers import load_yaml
-
-    found: dict[str, dict[str, str]] = {}
-    for path in sorted((root / "universes").glob("*.yaml")):
-        data = load_yaml(path)
-        universe_id = str(data.get("id") or path.stem)
-        selected = data.get("analyses") or {}
-        decisions = _flatten(data.get("decisions"))
-        for analysis_id, node in _analyses(spec).items():
-            sub = root / str(node.get("path") or analysis_id) / "universes"
-            chosen = str((selected.get(analysis_id) or {}).get("universe") or universe_id)
-            if (sub_path := sub / f"{chosen}.yaml").is_file():
-                for name, value in _flatten(load_yaml(sub_path).get("decisions")).items():
-                    decisions[f"{analysis_id}.{name}"] = value
-        found[universe_id] = decisions
-    return found
-
-
-def _flatten(decisions: Any) -> dict[str, str]:
-    """A universe's decisions as strings, with unset ones left out.
-
-    A YAML null is *not* a choice, and `str(None)` would render the literal
-    ``None`` into a shell command and into ``code_version``. Dropping it
-    means a recipe that references the decision fails by name instead.
-    """
-    return {str(k): str(v) for k, v in (decisions or {}).items() if v is not None}
-
-
-# =============================================================================
-# Rendering a recipe
-# =============================================================================
-
-
-def render(template: str, *, inputs: dict[str, str], decisions: dict[str, str], output: str) -> str:
-    """Substitute ASTRA's recipe placeholders.
-
-    ``{output}`` is the directory written into, ``{inputs}`` is every
-    input's value in declaration order, and ``{inputs.<id>}`` /
-    ``{decisions.<id>}`` are one of each. ``{{`` and ``}}`` collapse to
-    literal braces.
+    Resolution answers what a valid spec *means*; it does not re-check
+    that it is one. So an invalid spec reaches it as a missing decision or
+    an unresolvable input — blaming the run for a fault in the file, and
+    at a point far from the line that caused it. Asking ASTRA first costs
+    one pass over a spec file and moves the error to where it can be
+    fixed.
 
     Args:
-        template: The recipe command as the spec declares it.
-        inputs: Declared input name → the value to substitute.
-        decisions: Decision id → the option chosen in this universe.
-        output: The output directory, relative to the project root.
-
-    Returns:
-        The command with every placeholder substituted.
+        spec_path: The project's ``astra.yaml``.
+        universes: Every universe file that will be resolved against it.
 
     Raises:
-        ProjectError: On an unknown placeholder, an undeclared reference,
-            or a format spec. A silently empty substitution would produce
-            bytes the manifest then swears are correct.
+        ProjectError: Listing every structural and semantic error found,
+            in ASTRA's own words.
     """
-    pieces: list[str] = []
-    for literal, field, spec, conversion in _FORMATTER.parse(template):
-        pieces.append(literal)
-        if field is None:
+    from astra.validation import (
+        validate_analysis_file,
+        validate_analysis_schema,
+        validate_universe_file,
+    )
+
+    problems = [
+        *validate_analysis_schema(spec_path),
+        *(str(e) for e in validate_analysis_file(spec_path)),
+    ]
+    for path in universes:
+        problems += [f"{path.name}: {e}" for e in validate_universe_file(path, spec_path)]
+    if problems:
+        listed = "\n".join(f"  {problem}" for problem in problems)
+        raise ProjectError(
+            f"{spec_path} does not validate, so there is nothing to materialize "
+            f"from it:\n{listed}"
+        )
+
+
+def _tasks(
+    root: Path,
+    universe_id: str,
+    spec: dict[str, object],
+    universe: dict[str, object],
+    env_version: str,
+) -> list[Task]:
+    """Every task one universe contributes.
+
+    ``resolve_outputs`` has already dropped what this universe does not
+    produce, so the only filter left is whether an output carries a
+    command: a re-export names bytes another output makes, and making it
+    twice under two ids is not a thing to do.
+    """
+    from astra.resolve import render_command, resolve_outputs
+
+    resolved = resolve_outputs(spec, universe, root)
+    executable = {out.id for out in resolved if out.command}
+
+    tasks = []
+    for out in resolved:
+        if not out.command:
             continue
-        if spec or conversion:
-            raise ProjectError(f"recipe placeholder `{{{field}}}` takes no format spec.")
-        if field == "output":
-            pieces.append(output)
-        elif field == "inputs":
-            pieces.append(" ".join(inputs.values()))
-        else:
-            pieces.append(_named(field, inputs=inputs, decisions=decisions))
-    return "".join(pieces)
+        output_dir = assets.output_dir(root, universe_id, out.id)
+        values: dict[str, str] = {}
+        paths: dict[str, Path] = {}
+        produced_by: dict[str, Key] = {}
+        for declared in out.inputs:
+            if declared.produced_by in executable:
+                produced_by[declared.id] = (universe_id, declared.produced_by)
+                paths[declared.id] = assets.output_dir(
+                    root, universe_id, declared.produced_by
+                )
+            elif declared.source:
+                candidate = Path(declared.source)
+                paths[declared.id] = (
+                    candidate if candidate.is_absolute() else root / candidate
+                )
+            else:
+                raise ProjectError(
+                    f"output `{out.id}` declares the input `{declared.id}`, but no "
+                    "output produces it and no declared input gives it a source."
+                )
+            values[declared.id] = paths[declared.id].relative_to(root).as_posix()
 
+        try:
+            recipe = render_command(
+                out.command,
+                inputs=values,
+                decisions=out.decisions,
+                output=output_dir.relative_to(root).as_posix(),
+            )
+        except ValueError as e:
+            raise ProjectError(f"output `{out.id}`: {e}") from e
 
-def _named(field: str, *, inputs: dict[str, str], decisions: dict[str, str]) -> str:
-    namespace, dot, name = field.partition(".")
-    available = {"inputs": inputs, "decisions": decisions}
-    if not dot or namespace not in available:
-        raise ProjectError(
-            f"unknown recipe placeholder `{{{field}}}` — use {{output}}, {{inputs}}, "
-            "{inputs.<id>}, or {decisions.<id>}."
+        tasks.append(
+            Task(
+                universe_id=universe_id,
+                output_id=out.id,
+                output_dir=output_dir,
+                recipe=recipe,
+                inputs=paths,
+                produced_by=produced_by,
+                decisions=out.decisions,
+                code_version=identity.code_version(
+                    recipe=recipe, decisions=out.decisions, env=env_version
+                ),
+            )
         )
-    if name not in available[namespace]:
-        raise ProjectError(
-            f"recipe placeholder `{{{field}}}` names a {namespace[:-1]} "
-            "the output does not declare."
-        )
-    return available[namespace][name]
+    return tasks

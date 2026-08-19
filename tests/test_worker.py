@@ -28,6 +28,11 @@ _SPEC = """
 version: "0.0.13"
 name: analysis
 
+inputs:
+  - id: catalog
+    type: data
+    source: data/catalog.fits
+
 outputs:
   - id: first
     type: metric

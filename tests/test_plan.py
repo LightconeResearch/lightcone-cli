@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from lightcone.engine import plan
-from lightcone.engine.plan import Graph, render
+from lightcone.engine.plan import Graph
 from lightcone.engine.project import ProjectError
 
 _SPEC = """
@@ -134,10 +134,22 @@ def test_an_input_another_output_produces_becomes_an_edge(tmp_path: Path) -> Non
 
 
 def test_an_input_nothing_provides_is_an_error(tmp_path: Path) -> None:
+    """Caught by ASTRA rather than by us: resolution answers what a valid
+    spec means, so `build` asks whether it is one first — and the error
+    names the line at fault instead of the run that tripped over it."""
     spec = _SPEC.replace("inputs: [catalog]", "inputs: [missing]").replace(
         "{inputs.catalog}", "{inputs.missing}"
     )
-    with pytest.raises(ProjectError, match="no output produces it"):
+    with pytest.raises(ProjectError, match="does not validate"):
+        _build(_project(tmp_path, spec))
+
+
+def test_a_spec_astra_rejects_never_reaches_a_recipe(tmp_path: Path) -> None:
+    """The gate exists because the resolver assumes validity: without it an
+    invalid spec surfaces as a missing decision or an unresolvable input,
+    blaming the run for a fault in the file."""
+    spec = _SPEC.replace('name: demo', "")
+    with pytest.raises(ProjectError, match="MISSING_ROOT_FIELD"):
         _build(_project(tmp_path, spec))
 
 
@@ -220,11 +232,14 @@ inputs:
     source: data/catalog.fits
 
 outputs:
+  - id: mass_function
+    from: hod.mass_function
+
   - id: summary
     type: report
-    inputs: [hod.mass_function]
+    inputs: [mass_function]
     recipe:
-      command: python summarize.py {inputs.hod.mass_function} {output}
+      command: python summarize.py {inputs.mass_function} {output}
 
 analyses:
   hod:
@@ -261,7 +276,11 @@ decisions:
 def _tree(root: Path) -> Path:
     (root / "astra.yaml").write_text(textwrap.dedent(_PARENT))
     (root / "universes").mkdir()
-    (root / "universes" / "baseline.yaml").write_text("id: baseline\ndecisions: {}\n")
+    # The sub-analysis's universe is named explicitly: ASTRA has no
+    # implicit "same id" fallback, and lc no longer invents one.
+    (root / "universes" / "baseline.yaml").write_text(
+        "id: baseline\ndecisions: {}\nanalyses:\n  hod:\n    universe: baseline\n"
+    )
     sub = root / "analyses" / "hod"
     (sub / "universes").mkdir(parents=True)
     (sub / "astra.yaml").write_text(textwrap.dedent(_SUB))
@@ -278,94 +297,26 @@ def test_a_sub_analysis_output_is_addressed_flat_and_qualified(tmp_path: Path) -
     assert task.output_dir == tmp_path / "results" / "baseline" / "hod.mass_function"
 
 
-def test_a_sub_analysis_takes_its_decisions_from_its_own_universe(tmp_path: Path) -> None:
-    task = _build(_tree(tmp_path)).tasks[("baseline", "hod.mass_function")]
-    assert task.decisions == {"binning": "log"}
-    assert "--bins log" in task.recipe
 
 
-def test_the_root_universe_can_select_a_sub_analysis_universe(tmp_path: Path) -> None:
-    root = _tree(tmp_path)
-    (root / "analyses" / "hod" / "universes" / "coarse.yaml").write_text(
-        "id: coarse\ndecisions:\n  binning: linear\n"
-    )
-    (root / "universes" / "baseline.yaml").write_text(
-        "id: baseline\ndecisions: {}\nanalyses:\n  hod:\n    universe: coarse\n"
-    )
-    task = _build(root).tasks[("baseline", "hod.mass_function")]
-    assert task.decisions == {"binning": "linear"}
 
 
-def test_an_input_aliased_upward_inherits_the_parents_source(tmp_path: Path) -> None:
-    """`from: ../catalog` carries no source of its own — the parent's is
-    the whole point of the alias."""
-    task = _build(_tree(tmp_path)).tasks[("baseline", "hod.mass_function")]
-    assert task.inputs == {"catalog": tmp_path / "data" / "catalog.fits"}
 
 
-def test_the_parent_can_depend_on_a_sub_analysis_output(tmp_path: Path) -> None:
-    task = _build(_tree(tmp_path)).tasks[("baseline", "summary")]
-    assert task.depends_on == (("baseline", "hod.mass_function"),)
 
 
-def test_a_second_level_of_nesting_is_refused(tmp_path: Path) -> None:
-    """Refused rather than ignored: the addressing scheme has no name for
-    it, and quietly dropping those outputs would be worse than saying so."""
-    root = _tree(tmp_path)
-    sub = root / "analyses" / "hod"
-    (sub / "astra.yaml").write_text(
-        textwrap.dedent(_SUB) + "\nanalyses:\n  deeper:\n    path: ./analyses/deeper\n"
-    )
-    deeper = sub / "analyses" / "deeper"
-    deeper.mkdir(parents=True)
-    (deeper / "astra.yaml").write_text("version: \"0.0.13\"\nname: deeper\n")
-    with pytest.raises(ProjectError, match="sub-analyses of its own"):
-        _build(root)
 
 
-def test_a_decision_set_to_an_empty_string_is_still_a_decision(tmp_path: Path) -> None:
-    """A decision's *value* is not a test of whether it was made. Treating
-    an empty string as absent reports "the output does not declare this
-    decision", which is false and leaves nothing to act on."""
-    graph = _build(_project(tmp_path, baseline='id: baseline\ndecisions:\n  method: ""\n'))
-
-    assert graph.tasks[("baseline", "fit")].decisions == {"method": ""}
 
 
-def test_a_decision_left_null_is_not_rendered_as_the_word_none(tmp_path: Path) -> None:
-    """`str(None)` would put the literal `None` into a shell command and
-    into `code_version`. Failing by name is the legible outcome."""
-    with pytest.raises(ProjectError, match="does not declare"):
-        _build(_project(tmp_path, baseline="id: baseline\ndecisions:\n  method: null\n"))
 
 
 # ---- rendering a recipe ----------------------------------------------------
 
 
-def test_every_placeholder_form() -> None:
-    rendered = render(
-        "run {inputs.a} {inputs} --m {decisions.method} -o {output} {{literal}}",
-        inputs={"a": "data/a.fits", "b": "data/b.fits"},
-        decisions={"method": "mcmc"},
-        output="results/baseline/fit",
-    )
-    assert rendered == (
-        "run data/a.fits data/a.fits data/b.fits --m mcmc -o results/baseline/fit {literal}"
-    )
 
 
-def test_an_unknown_placeholder_is_a_spec_bug_not_an_empty_string() -> None:
-    """A recipe that ran with a silently empty substitution would produce
-    bytes the manifest then swears are correct."""
-    with pytest.raises(ProjectError, match="unknown recipe placeholder"):
-        render("run {universe}", inputs={}, decisions={}, output="out")
 
 
-def test_an_undeclared_reference_is_refused() -> None:
-    with pytest.raises(ProjectError, match="does not declare"):
-        render("run {inputs.missing}", inputs={"a": "x"}, decisions={}, output="out")
 
 
-def test_a_format_spec_is_refused() -> None:
-    with pytest.raises(ProjectError, match="no format spec"):
-        render("run {output:>20}", inputs={}, decisions={}, output="out")
