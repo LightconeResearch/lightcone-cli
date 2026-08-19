@@ -376,10 +376,12 @@ re-derived. Two things it does *not* settle, both layer 7's:
 
 - **Lustre/GPFS behaviour is unmeasured.** arXiv:2505.06558 documents
   symlink, many-small-files and inode pressure on parallel filesystems.
-  Correctness is not the worry; cost is, and one output is one symlink
-  plus one object. `annex.thin` and adjusted (unlocked) branches are the
-  known mitigations. Time `git annex add` and `git annex get` on
-  `$SCRATCH` and `$CFS` before designing around either.
+  Correctness is not the worry; cost is, and one output is one file plus
+  one hard link to its object. Results are already thin (above); adjusted
+  (unlocked) branches remain the untried lever, as does whether Lustre
+  makes the hard link behave differently. Time `git annex add` and
+  `git annex get` on `$SCRATCH` and `$CFS` before designing around
+  either.
 - **`git-annex-shell` is not on the default remote PATH.** `git annex get`
   from a laptop dispatches to it over a non-login ssh session, and the
   wheel installs it into `.venv/bin`. Configuration, not design:
@@ -406,16 +408,30 @@ fetched no annex content at all — which is what lets `lc materialize
 --check` classify a whole project on a laptop that holds none of the
 bytes.
 
-**An unfetched file exists, and that is the trap.** With `filter=annex` a
-clone without content holds a ~100-byte *pointer file* where the data
-would be: it exists, it is readable, and hashing it yields a perfectly
-well-formed digest of the wrong thing. `assets.data_version` therefore
-refuses one — `ContentNotFetchedError`, naming `git annex get` — using
-the same test git-annex's own `isPointerFile` makes, a `/annex/objects/`
-prefix within the first 32 KiB. Measured before it was fixed: the same
-input hashed differently on a clone, silently. `--check` catches that
-error and reports "not in this clone" rather than "changed", because the
-two are different facts and only one of them means a rebuild.
+**An unfetched file exists, and that is the trap — in two shapes.**
+`assets.data_version` refuses both with `ContentNotFetchedError`, naming
+`git annex get`, and it checks for both regardless of which one lc's own
+writes produce: `annex.thin` and `git annex lock` are the researcher's to
+set on their clone, so the shape a file arrives in is not ours to assume.
+
+- **Unlocked** — what `filter=annex` writes, hard-linked or copied alike.
+  A clone without content holds a ~100-byte *pointer file* where the data
+  would be: it exists, it is readable, and hashing it yields a perfectly
+  well-formed digest of the wrong thing. The test is git-annex's own
+  `isPointerFile` — a `/annex/objects/` prefix within the first 32 KiB.
+  Measured before it was fixed: the same input hashed differently on a
+  clone, silently.
+- **Locked** — a symlink into the object store, which without the content
+  dangles. This one is quieter and worse: `is_file()` answers False for a
+  dangling symlink, so a directory walk filtered on that alone drops the
+  absent file from the digest *without a word*, reporting a hash of
+  whatever subset happens to be present. Only dangling symlinks are added
+  back to the walk — one that resolves to a file already is one, and one
+  that resolves to a directory is not content.
+
+`--check` catches the error and reports "not in this clone" rather than
+"changed", because the two are different facts and only one of them means
+a rebuild.
 
 **PATH is part of the contract.** `git annex` is not a builtin — git
 dispatches it by searching `PATH` for a `git-annex` executable, and
@@ -457,6 +473,30 @@ their own project.
 unlocked, so an output can be overwritten in place and nothing needs to
 remove it first. (This reverses the earlier symlink model, where a
 rebuild hit `PermissionError` on a path that looked perfectly ordinary.)
+
+**Results are committed thin; declared inputs are not.** `dataset.save`
+passes `-c annex.thin=true` to its `git add`, so a result is hard-linked
+to its annex object instead of copied — measured, 39 MB to 20 MB for one
+20 MB file, since an unlocked file otherwise exists both in the tree and
+in the object store.
+
+It is safe *there* and nowhere else, and the reason is specific:
+**thin's hazard is an in-place write.** With the file hard-linked to the
+object, one `open('r+b')` rewrites the object under the key that names
+it — measured, the committed version becomes unrecoverable (`git annex
+get` reports no known copies) and `fsck` only notices later, moving it to
+`.git/annex/bad/`. lc never writes in place: a worker *removes* an output
+directory before rebuilding it, and an unlink merely drops the link
+count, leaving the object intact (measured — an old version still checks
+out clean afterwards). So the flag is passed **per-add and never written
+to the repository's config**, because repo-wide it would reach `data/`,
+which researchers add with their own `git add` and whose tools —
+`h5py.File(p, 'r+')`, astropy `mode='update'` — very much do open files
+for update.
+
+Thin-ness is *not* recorded anywhere: it is local working-tree state, so
+a clone re-decides at `git annex get` time. That is why detection has to
+handle every shape rather than the one we write.
 
 **`restore` is scoped, and asymmetric.** `git clean -qfdx` always, plus
 `git checkout HEAD --` **only when HEAD has the path** — a first
@@ -527,6 +567,21 @@ flatten onto the same namespace as `<analysis_id>.<output_id>` rather than
 nesting, so there is one addressing scheme and one place to look. A
 second level of nesting is **refused**, not ignored: the scheme has no
 name for it, and silently dropping those outputs would be worse.
+
+**Because the path is composed, `output_dir` refuses an id that is not one
+path component.** An empty universe or output id collapses
+`results/<u>/<o>` onto a *parent* — `results/` itself, for two — and the
+worker empties that directory before running a recipe in it, so the
+consequence of an unchecked id is deleting every other universe's
+outputs. A `/`, `.` or `..` is refused for the same reason. This is the
+guard that lets the reset stay a whole-directory operation.
+
+**The reset takes the whole directory, and cannot take a named list.** A
+recipe declares an output *id*, never filenames, so there is no set of
+"expected files" to remove — and a previous run that crashed can have left
+anything in there, which would otherwise survive into this run's
+`data_version` as though the recipe had written it. What bounds the blast
+radius is the guard above, not a narrower delete.
 
 **Dask owns the ordering.** Every task is submitted with its upstream
 futures as arguments, so the dependency order, the parallelism, and the

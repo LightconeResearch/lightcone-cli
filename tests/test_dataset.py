@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine import dataset, project, templates
+from lightcone.engine import assets, dataset, project, templates
 
 
 @pytest.fixture
@@ -115,6 +115,87 @@ def test_data_is_annexed_too(repo: Path) -> None:
     dataset.save(repo, [repo / "data"], "input data")
 
     assert _annexed(repo, repo / "data" / "catalog.fits")
+
+
+# ---- one copy on disk, and finding what is not there -----------------------
+
+
+def _content_object(repo: Path, path: Path) -> Path:
+    """Where git-annex keeps the bytes for *path*."""
+    rel = str(path.relative_to(repo))
+    key = dataset._git(["annex", "lookupkey", rel], cwd=repo).strip()
+    return (repo / dataset._git(["annex", "contentlocation", key], cwd=repo).strip()).resolve()
+
+
+def test_a_saved_result_is_hard_linked_to_its_annex_object(repo: Path) -> None:
+    """`annex.thin` for lc's own add: a result exists once on disk, not
+    twice. Safe here and only here — thin's hazard is an in-place write,
+    and a worker removes an output directory before rebuilding it."""
+    output = repo / "results" / "baseline" / "best_fit"
+    output.mkdir(parents=True)
+    (output / "fit.csv").write_text("a,b\n1,2\n")
+
+    dataset.save(repo, [output], "materialize best_fit")
+
+    result = output / "fit.csv"
+    assert result.stat().st_ino == _content_object(repo, result).stat().st_ino
+    assert result.stat().st_nlink == 2
+
+
+def test_a_researchers_own_add_is_left_as_a_copy(repo: Path) -> None:
+    """Thin is set for lc's add alone, never in the repository's config —
+    a declared input is added by the researcher, whose tools do open files
+    for update, and an in-place write to a thin file rewrites the annex
+    object under the key that names it."""
+    (repo / "data" / "catalog.fits").write_bytes(b"\x00" * 64)
+
+    dataset._git(["add", "-A", "--", "data"], cwd=repo)
+    dataset._git(["commit", "-q", "-m", "input data"], cwd=repo)
+
+    catalog = repo / "data" / "catalog.fits"
+    assert _annexed(repo, catalog)
+    assert catalog.stat().st_nlink == 1
+
+
+def test_content_that_is_not_here_is_refused_thin_or_not(repo: Path) -> None:
+    """The requirement a researcher's own choices create: `annex.thin` and
+    `git annex lock` are theirs to set on their clone, so lc must recognise
+    an absent file in every shape it can arrive in — never hash it."""
+    output = repo / "results" / "baseline" / "best_fit"
+    output.mkdir(parents=True)
+    (output / "thin.bin").write_bytes(b"\x01" * 4096)
+    (output / "fat.bin").write_bytes(b"\x02" * 4096)
+    dataset.save(repo, [output], "materialize best_fit")
+    # `save` made both thin; put one back to a copy, so the two shapes an
+    # *unlocked* file takes are both represented.
+    dataset._git(["-c", "annex.thin=false", "annex", "fix", "fat.bin"], cwd=output)
+    assert (output / "thin.bin").stat().st_nlink == 2
+    assert (output / "fat.bin").stat().st_nlink == 1
+
+    for name in ("thin.bin", "fat.bin"):
+        dataset._git(["annex", "drop", "--force", "--", name], cwd=output)
+        with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
+            assets.data_version(output / name)
+
+    with pytest.raises(assets.ContentNotFetchedError):
+        assets.data_version(output)
+
+
+def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
+    """`git annex lock` turns the tree back into symlinks, and an unfetched
+    one dangles rather than reading as a pointer."""
+    output = repo / "results" / "baseline" / "best_fit"
+    output.mkdir(parents=True)
+    (output / "fit.csv").write_text("a,b\n1,2\n")
+    dataset.save(repo, [output], "materialize best_fit")
+
+    dataset._git(["annex", "lock", "--", "fit.csv"], cwd=output)
+    dataset._git(["annex", "drop", "--force", "--", "fit.csv"], cwd=output)
+
+    assert (output / "fit.csv").is_symlink()
+    assert not (output / "fit.csv").exists()
+    with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
+        assets.data_version(output)
 
 
 # ---- committing ------------------------------------------------------------

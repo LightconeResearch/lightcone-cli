@@ -32,12 +32,13 @@ SCHEMA_VERSION = 1
 #: hash it contains, so hashing it would be circular.
 _HASH_EXCLUDE = frozenset({MANIFEST_FILENAME})
 
-#: What git-annex writes in place of content it does not have locally.
-#: Detecting it is the same test git-annex's own ``isPointerFile`` makes,
-#: and it has to be made: a pointer file *exists* and is readable, so
-#: hashing one would quietly record the digest of a path instead of the
-#: digest of the data.
-_POINTER_PREFIX = b"/annex/objects/"
+#: The marker every annexed path carries, in both of the shapes an annexed
+#: file takes on disk — the pointer file's first bytes, and the locked
+#: symlink's target. Detecting the first is the same test git-annex's own
+#: ``isPointerFile`` makes, and both have to be made: an unfetched file is
+#: readable, or absent, but never obviously wrong.
+_ANNEX_OBJECTS = "/annex/objects/"
+_POINTER_PREFIX = _ANNEX_OBJECTS.encode()
 _POINTER_MAX_BYTES = 32 * 1024
 
 
@@ -58,7 +59,19 @@ def output_dir(root: Path, universe_id: str, output_id: str) -> Path:
 
     Returns:
         ``<root>/results/<universe_id>/<output_id>``.
+
+    Raises:
+        ProjectError: If either id is not a single path component. The
+            path is *composed* from them, so an empty one collapses it
+            onto a parent — ``results/`` itself, for two — and a worker
+            empties this directory before running a recipe in it.
     """
+    for label, value in (("universe", universe_id), ("output", output_id)):
+        if not value or "/" in value or "\\" in value or value in {".", ".."}:
+            raise ProjectError(
+                f"{label} id {value!r} is not a single path component, so it "
+                f"cannot name a directory under results/."
+            )
     return root / "results" / universe_id / output_id
 
 
@@ -89,22 +102,34 @@ def data_version(path: Path) -> str:
     Raises:
         FileNotFoundError: If *path* does not exist. Never a constant
             digest, which would silently disable the staleness chain.
-        ContentNotFetchedError: If any file is a git-annex pointer rather than
-            the data itself.
+        ContentNotFetchedError: If any file is annexed without its content
+            being in this clone, in either of the shapes that takes.
     """
+    if path.is_symlink() and not path.exists():
+        _refuse_unfetched(path)
     if not path.exists():
         raise FileNotFoundError(path)
     h = hashlib.sha256()
     if path.is_file():
-        _refuse_pointer(path)
+        _refuse_unfetched(path)
         h.update(b"file:")
         _feed(h, path)
         return f"sha256:{h.hexdigest()}"
 
     h.update(b"dir:")
-    files = [p for p in path.rglob("*") if p.is_file() and p.name not in _HASH_EXCLUDE]
+    # A dangling symlink is an unfetched *locked* file, and ``is_file()``
+    # answers False for one — so filtering on that alone would drop it from
+    # the digest without a word, reporting a hash of the subset that happens
+    # to be present. Only dangling ones are added back: a symlink that
+    # resolves to a file is already a file, and one that resolves to a
+    # directory is not content.
+    files = [
+        p
+        for p in path.rglob("*")
+        if p.name not in _HASH_EXCLUDE and (p.is_file() or (p.is_symlink() and not p.exists()))
+    ]
     for p in sorted(files, key=lambda x: x.relative_to(path).as_posix()):
-        _refuse_pointer(p)
+        _refuse_unfetched(p)
         h.update(b"path:")
         h.update(p.relative_to(path).as_posix().encode())
         h.update(b"\0data:")
@@ -149,26 +174,38 @@ class Versions:
         return known
 
 
-def _refuse_pointer(path: Path) -> None:
+def _refuse_unfetched(path: Path) -> None:
     """Refuse a file whose content this clone does not hold.
+
+    An annexed file takes one of two shapes, and a researcher can convert
+    between them whenever they like — so both are checked rather than
+    whichever one lc's own writes produce. An *unlocked* file is a small
+    regular file holding the object's path, hard-linked to the object or
+    copied from it depending on ``annex.thin``; both look identical without
+    the content. A *locked* file is a symlink into the object store, which
+    without the content simply dangles.
 
     Args:
         path: A file about to be hashed.
 
     Raises:
-        ContentNotFetchedError: If *path* is a git-annex pointer. Loud, because
-            the alternative is a digest of the pointer text — which is a
-            perfectly well-formed answer to the wrong question, and would
-            land in a manifest as if it described the data.
+        ContentNotFetchedError: If *path* is either shape without its
+            content. Loud, because both alternatives are silent: hashing a
+            pointer yields a well-formed digest of the wrong bytes, and a
+            dangling symlink drops out of a directory's digest entirely.
     """
-    if path.stat().st_size > _POINTER_MAX_BYTES:
-        return
-    with path.open("rb") as f:
-        if f.read(len(_POINTER_PREFIX)) == _POINTER_PREFIX:
-            raise ContentNotFetchedError(
-                f"{path}: the content is not in this clone — git-annex has a "
-                f"pointer to it. Fetch it with `git annex get {path}`."
-            )
+    if path.is_symlink() and not path.exists():
+        unfetched = _ANNEX_OBJECTS in path.readlink().as_posix()
+    elif path.stat().st_size > _POINTER_MAX_BYTES:
+        unfetched = False
+    else:
+        with path.open("rb") as f:
+            unfetched = f.read(len(_POINTER_PREFIX)) == _POINTER_PREFIX
+    if unfetched:
+        raise ContentNotFetchedError(
+            f"{path}: the content is not in this clone — git-annex holds a "
+            f"reference to it, not the data. Fetch it with `git annex get {path}`."
+        )
 
 
 def _feed(h: hashlib._Hash, path: Path) -> None:

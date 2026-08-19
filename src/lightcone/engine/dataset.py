@@ -179,6 +179,16 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
     own add routes content to the annex and everything else into git. lc
     runs no annex command here for the same reason it asks nobody else to.
 
+    ``annex.thin`` is set for this add alone, so a result is hard-linked to
+    its annex object rather than copied — one copy on disk instead of two.
+    It is safe precisely here: thin's hazard is editing a file in place,
+    which rewrites the object under the key that names it, and lc never
+    does — the worker removes an output directory before rebuilding it, and
+    an unlink leaves the object untouched. Setting it repository-wide would
+    reach declared inputs instead, which a researcher adds with their own
+    `git add` and whose tools very much do open files for update, so it is
+    passed per-add and never written to the repository's config.
+
     Args:
         directory: The repository root.
         paths: What to stage, absolute or repository-relative.
@@ -188,7 +198,7 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
         False if there was nothing to commit.
     """
     relative = [_rel(directory, p) for p in paths]
-    _git(["add", "-A", "--", *relative], cwd=directory)
+    _git(["-c", "annex.thin=true", "add", "-A", "--", *relative], cwd=directory)
     if _git_ok(["diff", "--cached", "--quiet"], cwd=directory):
         return False
     _git(["commit", "-q", "-m", message], cwd=directory)

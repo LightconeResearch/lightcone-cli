@@ -17,6 +17,7 @@ import pytest
 
 from lightcone.engine import assets
 from lightcone.engine.assets import Manifest, Reason, data_version, output_dir, staleness
+from lightcone.engine.project import ProjectError
 
 
 def _manifest(**overrides: object) -> Manifest:
@@ -99,6 +100,26 @@ def test_a_file_and_a_directory_holding_it_are_different(tmp_path: Path) -> None
     assert data_version(tmp_path / "one") != data_version(tmp_path / "fit.csv")
 
 
+@pytest.mark.parametrize("bad", ["", "/", "..", ".", "a/b", "results/../.."])
+def test_output_dir_refuses_an_id_that_is_not_one_path_component(
+    tmp_path: Path, bad: str
+) -> None:
+    """The path is composed from the two ids, and a worker empties it
+    before running a recipe — so an id that collapses it onto a parent
+    would take every other universe's outputs with it."""
+    with pytest.raises(ProjectError):
+        assets.output_dir(tmp_path, bad, "best_fit")
+    with pytest.raises(ProjectError):
+        assets.output_dir(tmp_path, "baseline", bad)
+
+
+def test_output_dir_is_two_components_below_results(tmp_path: Path) -> None:
+    """The shape everything else in the layer addresses by."""
+    assert assets.output_dir(tmp_path, "baseline", "best_fit") == (
+        tmp_path / "results" / "baseline" / "best_fit"
+    )
+
+
 def test_an_unfetched_annexed_file_is_refused_not_hashed(tmp_path: Path) -> None:
     """`filter=annex` leaves a pointer file where the content would be, so
     the path *exists* and is readable. Hashing it would be a well-formed
@@ -120,6 +141,44 @@ def test_a_directory_holding_an_unfetched_file_is_refused_too(tmp_path: Path) ->
     (tmp_path / "big.bin").write_text("/annex/objects/SHA256E-s9--abc.bin\n")
 
     with pytest.raises(assets.ContentNotFetchedError):
+        data_version(tmp_path)
+
+
+def test_an_unfetched_locked_file_is_refused_like_an_unfetched_pointer(
+    tmp_path: Path,
+) -> None:
+    """The other shape an annexed file takes. A researcher may run `git
+    annex lock`, or set `annex.thin`, whenever they like — so detection
+    cannot depend on which one lc's own writes happen to produce."""
+    locked = tmp_path / "catalog.fits"
+    locked.symlink_to("../.git/annex/objects/2K/9P/SHA256E-s300000--4367c4a6.fits")
+
+    assert locked.is_symlink() and not locked.exists()
+    with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
+        data_version(locked)
+
+
+def test_a_directory_holding_an_unfetched_locked_file_is_refused_too(
+    tmp_path: Path,
+) -> None:
+    """The quiet one. A dangling symlink answers False to `is_file()`, so
+    filtering a directory walk on that alone drops the absent file from the
+    digest without a word — reporting a hash of the subset that happens to
+    be present, which is a worse lie than the pointer's."""
+    (tmp_path / "fit.csv").write_text("a,b\n")
+    (tmp_path / "big.bin").symlink_to("../.git/annex/objects/xx/yy/SHA256E-s9--abc.bin")
+
+    with pytest.raises(assets.ContentNotFetchedError):
+        data_version(tmp_path)
+
+
+def test_a_broken_symlink_that_is_not_annexed_is_still_loud(tmp_path: Path) -> None:
+    """Not git-annex's doing, so not `git annex get`'s to fix — but it may
+    not vanish from the digest either."""
+    (tmp_path / "fit.csv").write_text("a,b\n")
+    (tmp_path / "scratch.dat").symlink_to("/tmp/gone-with-the-scratch-dir")
+
+    with pytest.raises(FileNotFoundError):
         data_version(tmp_path)
 
 

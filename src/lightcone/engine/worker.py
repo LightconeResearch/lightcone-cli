@@ -185,7 +185,14 @@ def execute(
     if drift := _gate(root, env_version):
         return TaskResult(task.key, "failed", reason=drift)
 
-    shutil.rmtree(task.output_dir, ignore_errors=True)
+    # The whole directory, not a list of expected files: a recipe declares
+    # an output id rather than filenames, and a previous run that crashed
+    # can have left anything in here — which would otherwise survive into
+    # this run's `data_version` as though the recipe had written it. The
+    # path is `results/<universe>/<output>` and `output_dir` refuses an id
+    # that could widen it.
+    if task.output_dir.exists():
+        shutil.rmtree(task.output_dir)
     task.output_dir.mkdir(parents=True)
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
