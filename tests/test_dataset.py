@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -240,24 +239,6 @@ def test_ignore_rule_sees_through_a_tracked_path(repo: Path) -> None:
     dataset._git(["commit", "-q", "-m", "forced"], cwd=repo)
 
     assert dataset.ignore_rule(repo, "results/") == ".gitignore:1:results/*"
-
-
-def test_the_save_the_data_readme_documents_actually_runs(repo: Path) -> None:
-    """We tell researchers to type this, so run it. `git annex add` takes no
-    `-A` — the flag `git add` needs and the one that reads like it belongs
-    on both — and the whole line fails on a spelling nothing else checks."""
-    (repo / "data" / "catalog.fits").write_bytes(b"\x00" * 64)
-    command = next(
-        line.strip()
-        for line in templates.data_readme().splitlines()
-        if "git annex add" in line
-    )
-
-    dataset.put_our_bin_first()
-    assert subprocess.run(command, shell=True, cwd=repo, capture_output=True).returncode == 0
-
-    assert _annexed(repo / "data" / "catalog.fits")
-    assert not dataset.status(repo)
 
 
 # ---- how git finds git-annex -----------------------------------------------

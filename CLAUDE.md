@@ -400,12 +400,19 @@ every later verb that reads identity, work without a `git annex get`.
 
 **A plain `git add` does not annex anything.** `.gitattributes` only
 routes what `git annex add` is *given*; git's own add commits the bytes.
-So `dataset.save` is ordered `git annex add` → `git add -A` → `git commit`,
-and the user-facing spelling we document is the same order. It is
-`git annex add .` — **not** `-A`, which git-annex does not accept even
-though `git add` needs it. `tests/test_dataset.py::test_the_save_the_data_readme_documents_actually_runs`
-extracts the line from the README and runs it, because that spelling was
-wrong once.
+So `dataset.save` is ordered `git annex add` → `git add -A` →
+`git commit`. It is `git annex add .` — **not** `-A`, which git-annex
+does not accept even though `git add` needs it.
+
+**Nothing scaffolded asks a researcher to run git-annex by hand.**
+`data/README.md` says what the directory is for and stops there. That is
+a decision about the product, not about the storage: annex commands are
+lc's to run, not a step in somebody's workflow. It leaves one thing
+unfinished, recorded so it is not mistaken for done — `lc materialize`'s
+dirty-tree refusal still prints `git annex add . && git add -A . && …`,
+and there is no lc-side way to get a file in `data/` committed, so a
+researcher who follows the obvious `git add` silently commits the bytes
+into git.
 
 **PATH is part of the contract.** `git annex` is not a builtin — git
 dispatches it by searching `PATH` for a `git-annex` executable, and

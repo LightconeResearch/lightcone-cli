@@ -214,8 +214,8 @@ def test_results_readme_explains_the_output_layout() -> None:
 
 
 def test_data_readme_explains_where_declared_inputs_go() -> None:
-    """Same reason, and one more: the documented add is `git annex add`
-    first — a plain `git add` would commit the bytes into git."""
+    """It says what the directory is for and nothing about how to fill it:
+    manipulating git-annex by hand is not something lc asks of anyone."""
     text = templates.data_readme()
     assert "data/catalog.fits" in text
-    assert "git annex add" in text
+    assert "git annex" not in text
