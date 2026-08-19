@@ -553,7 +553,9 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
     ``cmd`` is the worker module: the bare recipe would reconstruct nothing
     lc adds, and ``lc materialize`` cannot be it because a rerun removes
     the declared outputs first, dirtying the tree materialize refuses to
-    start from.
+    start from. The worker rebuilds the *project* environment itself from
+    the lock of the commit being rerun; :func:`_worker_cmd` is what pins
+    the *engine*.
 
     Args:
         root: The project root.
@@ -565,10 +567,7 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
     """
     info = {
         "chain": [],
-        "cmd": (
-            "uv run --locked --project . -- python -m lightcone.engine.worker "
-            f"{task.universe_id}/{task.output_id}"
-        ),
+        "cmd": _worker_cmd(f"{task.universe_id}/{task.output_id}"),
         "dsid": dsid,
         "exit": 0,
         "inputs": sorted(plan.declared_path(root, path) for path in task.inputs.values()),
@@ -582,6 +581,30 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
         f"{body}\n"
         "^^^ Do not change lines above ^^^"
     )
+
+
+def _worker_cmd(target: str) -> str:
+    """Build the rerun invocation for one output.
+
+    The module spelling, never a console script, behind an ephemeral
+    ``uv run`` that pins the engine to the version that made the output —
+    so a rerun executes the recorded engine, not whatever the host has
+    grown into. A dev build's version is not published, and pinning it
+    would fail resolution loudly; a dev engine exists only in a checkout
+    whose ambient ``python`` already imports it, which is exactly what the
+    bare form resolves.
+
+    Args:
+        target: ``<universe>/<output_id>``.
+
+    Returns:
+        The command line ``datalad rerun`` will hand to a shell.
+    """
+    module = f"python -m lightcone.engine.worker {target}"
+    v = worker.lc_version()
+    if v and "dev" not in v:
+        return f"uv run --no-project --with lightcone-cli=={v} -- {module}"
+    return module
 
 
 # =============================================================================

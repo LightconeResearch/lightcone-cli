@@ -32,10 +32,10 @@ def put_our_bin_first() -> None:
     ``git annex`` is dispatched by git searching ``PATH`` for a
     ``git-annex`` executable, and ``uv tool install lightcone-cli`` links
     only *our* entry points into ``~/.local/bin`` — the git-annex we
-    resolved as a dependency sits beside the interpreter instead. Verified:
-    with only the tool's ``lc`` on ``PATH``, ``git annex version`` fails and
-    ``lc init`` refuses. (Under ``uv run`` the prepend is a no-op, because
-    uv already fronts the project's ``.venv/bin``.)
+    resolved as a dependency sits beside the interpreter instead, and this
+    prepend is the only way git finds it. Verified: with only the tool's
+    ``lc`` on ``PATH``, ``git annex version`` fails and ``lc init``
+    refuses.
 
     Prepend, never append: a system git-annex winning would make the
     version recorded in the lock a fiction. Idempotent, and applied to our

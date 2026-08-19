@@ -46,7 +46,7 @@ speculatively.
 |---|-------|-------|
 | 1 | **Project scaffolding** — `lc init` | ✅ **done** |
 | 2 | **Environment layer** — `env_version`, lock scan, manifest schema | ✅ **done** |
-| 3 | The `lc` entrypoint — launcher: discover → mode-detect → scrub `UV_*` → converge → delegate | ⬜ |
+| 3 | ~~The `lc` entrypoint — launcher~~ | ❌ **removed by decision** (2026-08) — see Recorded decisions: the host `lc` is the engine, so there is nothing to delegate to |
 | 4 | **Fabric** — `lc materialize`, worker sequence, mid-run relock gate | ✅ **done** |
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | Container hatch — `[tool.lightcone.image]`, generated Containerfile, `lc build` | ⬜ |
@@ -63,10 +63,12 @@ Layer 5 landed **out of order**, ahead of 2–4: `lc run` is the spec's
 with it. That makes it the smallest honest consumer of the exec boundary,
 and the boundary is what layer 4 will then plug recipes into.
 
-The spec's §11 (Migration) is the authoritative ordering; the table above
-is the working map. **Layer boundaries are also dependency boundaries** —
-a dependency enters `pyproject.toml` with the layer that needs it, not
-before.
+The spec's §11 (Migration) is the reference ordering; the table above is
+the working map, and the spec is a reference the rebuild deliberately
+drifts from — reversals land as Recorded decisions here rather than
+waiting on a spec rewrite. **Layer boundaries are also dependency
+boundaries** — a dependency enters `pyproject.toml` with the layer that
+needs it, not before.
 
 ### Rules while rebuilding
 
@@ -149,7 +151,7 @@ Any new `lightcone-*` package must:
 src/lightcone/              # namespace — NO __init__.py
 ├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
 ├── cli/                    # the CLI only: flags, rendering, exit codes
-│   ├── __init__.py         # exposes main(); the launcher hooks in here (layer 3)
+│   ├── __init__.py         # exposes main(), lazily
 │   └── commands.py         # lc init, lc run, lc materialize
 └── engine/
     ├── __init__.py         # docstring only
@@ -257,11 +259,10 @@ so the template name has to be bound before the call site.
 
 **No engine constants for the environment.** The scaffolded
 `.python-version` is the interpreter `lc` itself is running on, and
-`requires-python` is lightcone-cli's own `Requires-Python`, verbatim. These
-can't conflict — lc only runs on an interpreter satisfying its own bound —
-and neither is a number to maintain. Identity follows the project's files
-from there: `env_version` hashes `.python-version`'s bytes, not anything in
-the engine (spec §3).
+`requires-python` is that interpreter's minor as a floor. Both come from
+one place, so they can't conflict, and neither is a number to maintain.
+Identity follows the project's files from there: `env_version` hashes
+`.python-version`'s bytes, not anything in the engine (spec §3).
 
 **`.gitignore` converges entry-wise, not by marker.**
 `templates.gitignore_entries()` is the template minus comments and blanks;
@@ -278,7 +279,7 @@ user owns:
 | Path | Role |
 |---|---|
 | `astra.yaml` + `universes/baseline.yaml` | astra's boilerplate spec, verbatim, as **one item keyed on `astra.yaml`** — the baseline references the boilerplate's example decision, so it must never land beside a user-authored spec. Its `container:` key is ignored outright — see Recorded decisions |
-| `pyproject.toml` | The uv project: **virtual** (no `[build-system]`), `lightcone-cli` pinned in its own dependencies — the engine lives inside the experiment's lock |
+| `pyproject.toml` | The uv project: **virtual** (no `[build-system]`), no dependencies — the engine is the host's uv tool, never a project dependency (see Recorded decisions), so the lock carries only what the analysis imports |
 | `.python-version` | The exact patch of the interpreter `lc` is running on |
 | `uv.lock`, `.venv` | **Derived** — converged by correctness, not existence: `uv lock --check` / `uv sync --check` decide, then `uv lock` / `uv sync --locked --exact --compile-bytecode` repair |
 | `.gitignore` | One managed block of patterns; convergence ensures each is present |
@@ -311,10 +312,9 @@ user owns:
   0.12.3). A lock that no
   longer matches `pyproject.toml`, or an environment that no longer matches
   the lock, is exactly as unconverged as a missing one and reports as
-  `repaired`. Existence alone made `converge()` a no-op on drift, which
-  layer 3's launcher — which converges on every invocation precisely to
-  guarantee the environment matches the lock — would have silently
-  inherited.
+  `repaired`. Existence alone made `converge()` a no-op on drift, and
+  everything that converges before acting — `lc materialize`'s sync, the
+  worker entry point's — would have silently inherited it.
   - The probe is skipped when the artifact is absent (nothing to ask), so a
     fresh project costs none and the created/repaired split falls out of the
     same check.
@@ -393,10 +393,12 @@ one monkeypatch point and the `tools` fixture already covers git.
 `manylinux_2_34` on x86_64/aarch64, macOS 14+ arm64 or 15+ x86_64,
 win_amd64 — and **no sdist**, so a host below the floor fails to install
 rather than building from source. Because git-annex is a *hard* runtime
-dependency and `lc init` pins `lightcone-cli` into every project, that
-floor gates installing lc at all, including `lc run`, which never touches
-the annex. If it ever bites a real user, that coupling is the thing to
-revisit — an extra, or a probed requirement like git — not the floor.
+dependency, that floor gates installing the lc tool at all, including
+`lc run`, which never touches the annex — but only the tool: projects no
+longer depend on lightcone-cli, so the floor never constrains a project's
+own resolution. If it ever bites a real user, the hard dependency is the
+thing to revisit — an extra, or a probed requirement like git — not the
+floor.
 
 **Perlmutter clears it** (checked 2026-08-19, login node): the wheel
 installs and `git annex version` runs. That was the open question this
@@ -413,8 +415,8 @@ re-derived. Two things it does *not* settle, both layer 7's:
   either.
 - **`git-annex-shell` is not on the default remote PATH.** `git annex get`
   from a laptop dispatches to it over a non-login ssh session, and the
-  wheel installs it into `.venv/bin`. Configuration, not design:
-  `git config remote.<name>.annex-shell <abs-path>`.
+  wheel installs it beside the tool's interpreter. Configuration, not
+  design: `git config remote.<name>.annex-shell <abs-path>`.
 
 **`filter=annex` is what makes an ordinary `git add` do the right thing.**
 `git annex init` configures the smudge/clean filter itself; the template
@@ -473,8 +475,9 @@ prepend and by the name git itself searches for.
 
 Measured, not assumed: with only the tool's `lc` on `PATH` — exactly what
 `uv tool install` produces — `git annex version` fails, and with the
-prepend disabled `lc init` refuses. Under `uv run` it is a no-op, because
-uv already fronts the project's `.venv/bin`.
+prepend disabled `lc init` refuses. With the engine out of the project's
+lock, the prepend is the *only* way git finds git-annex; there is no
+project `.venv/bin` fallback to mask a regression.
 
 **A project can sit inside a larger repository, so `dataset.status` is
 scoped and relativised.** `lc init subdir/` adopts an enclosing work
@@ -915,11 +918,12 @@ A test that reads `dataset.head()` after materializing and expects a match
 is asserting the wrong thing.
 
 **One uv hop, one spelling** (`project.uv_prefix(root, *, sync)`). The
-flags are also what `run_record` writes verbatim into every commit
-message, so a second copy is a second thing that can drift out of the
-provenance. The only thing callers disagree about is `sync`: a probe
-converges the environment it is about to describe, a recipe must not, or
-every concurrent worker writes the same `.venv`.
+only thing its callers disagree about is `sync`: a probe converges the
+environment it is about to describe, a recipe must not, or every
+concurrent worker writes the same `.venv`. The run record carries no uv
+hop at all — the worker entry point converges the project environment for
+itself, so there is nothing in the record to drift out of step with the
+prefix.
 
 **A run syncs the environment; it does not report on it.** `uv run
 --locked` asserts only that `uv.lock` still matches `pyproject.toml`, and
@@ -964,13 +968,20 @@ shipped once; `_inside` is lexical now.
 
 **The run record is genuinely re-runnable, and its `cmd` is the worker
 module.** `python -m lightcone.engine.worker <universe>/<output_id>`,
-behind `uv run --locked --project .` — which reconstructs the environment
-from *that commit's* lock, and therefore the exact engine that produced
-the output. The bare recipe would reconstruct nothing lc adds (no locked
-environment, no boundary, no gates, no manifest) and would commit bytes
-the identity model never produced; `lc materialize` cannot be it either,
-because `datalad rerun` removes the declared outputs first and that
-dirties the tree materialize refuses to start from.
+behind `uv run --no-project --with lightcone-cli==<v>` when the engine
+that made the output is a published release — an ephemeral environment
+that reconstructs the *engine* by version, while the worker itself
+reconstructs the *project* environment from the rerun commit's own lock
+(`main()` syncs before anything executes; `uv run --no-sync` against a
+missing `.venv` silently creates an empty one, so a clone's rerun would
+otherwise run recipes in a bare environment under a manifest recording
+the lock's `env_version`). A dev build's version is unpublished, so its
+record is the bare module, which only ever exists in a checkout whose own
+interpreter imports it. The bare recipe would reconstruct nothing lc adds
+(no locked environment, no boundary, no gates, no manifest) and would
+commit bytes the identity model never produced; `lc materialize` cannot
+be it either, because `datalad rerun` removes the declared outputs first
+and that dirties the tree materialize refuses to start from.
 
 **The worker module is not an `lc` verb and not a console script.** It
 makes the output unconditionally, commits nothing, leaves the tree dirty by
@@ -1215,6 +1226,39 @@ only checks that the guard is present. Verified empirically, not assumed.
 
 ### Recorded decisions
 
+- **The engine is the host's uv tool, never a project dependency**
+  (2026-08, reversing spec §2's engine-in-lock rule and deleting layer 3).
+  `lc init` scaffolds no `lightcone-cli` dependency, and there is no
+  launcher and no delegation: the `lc` that was invoked is the engine that
+  runs. What the pin bought, and where each guarantee went:
+  - *The engine inside `env_version`.* Gone, and deliberately: an lc
+    upgrade now moves nothing — no output ever reads `behind` over an
+    engine release, completing the reversal that already took
+    `env_version` out of `definition_version`. The engine is attestation
+    (`lc_version` in every manifest, `worker.lc_version()`), not identity.
+  - *Reruns reconstruct the exact engine from the commit's lock.*
+    Re-provided in the run record itself: `cmd` pins the engine by version
+    through `uv run --no-project --with lightcone-cli==<v>` (see the
+    layer-4 run-record invariant). Needs PyPI or a warm uv cache at rerun
+    time where the lock needed neither; recorded, not hidden.
+  - *Driver/worker version skew "structurally impossible".* Moot while
+    workers are in-process threads; when a venue larger than a laptop
+    lands (layer 7), its connect path must probe the remote engine version
+    — the pin no longer does it structurally.
+  - *Layer 6 note:* the generated image can no longer get its in-image
+    engine from the lock (`/opt/venv/bin/lc` existed because the pin did).
+    The Containerfile must install the engine as an explicit layer, and
+    that version becomes a tag input.
+  What it buys: a project's resolution is freed from the engine's own
+  pins (no astra-tools/click/rich/distributed/git-annex in any project
+  lock); the git-annex wheel floor gates only the tool install; the eval
+  workflow exercises the branch under test rather than a released engine
+  resolved from PyPI; and recipes no longer find `lc` or `git-annex` on
+  the sandbox PATH — the project `.venv/bin` no longer carries them,
+  which is the boundary telling the truth. The `UV_*` ambient scrub the
+  launcher would have done is still worth having and is tracked
+  separately; it protects `env_version`'s install-settings term, not the
+  delegation that is gone.
 - **Reads stay restricted, and the OS baseline is ours to maintain.**
   Codex restricts reads too now, but its Linux read baseline is a *mount
   table*, not a path list — there is nothing to adopt there. Keeping the

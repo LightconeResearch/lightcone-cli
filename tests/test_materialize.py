@@ -13,7 +13,6 @@ the seam is only worth having if the real thing still fits through it.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -576,7 +575,10 @@ def test_the_run_record_is_what_datalad_reads(root: Path, inline: None) -> None:
 
     assert subject == "second [baseline]"
     assert info is not None
-    assert info["cmd"].endswith("python -m lightcone.engine.worker baseline/second")
+    # Full-string, not endswith: the suite runs a dev build, whose record
+    # is the bare module — an engine-pin prefix appearing or vanishing here
+    # must fail this test, not slip past a suffix match.
+    assert info["cmd"] == "python -m lightcone.engine.worker baseline/second"
     assert info["inputs"] == ["results/baseline/first"]
     assert info["outputs"] == ["results/baseline/second"]
     assert info["dsid"] == "4b7b5c1e-0000-4000-8000-000000000000"
@@ -652,11 +654,12 @@ def test_check_agrees_with_a_run_on_a_clone_with_no_annex_content(
 def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     root: Path, inline: None
 ) -> None:
-    """Workers pass `--no-sync`, so this is the only place the environment
-    is made to match the lock. Reported and refused, a lock edited without
-    a sync would leave recipes importing packages the lock does not
-    describe while every manifest recorded the new lock's `env_version`;
-    doing it instead is shorter and impossible to ignore."""
+    """Workers pass `--no-sync`, so this is the only place on a run's path
+    where the environment is made to match the lock (a rerun's worker
+    entry point syncs for itself). Reported and refused, a lock edited
+    without a sync would leave recipes importing packages the lock does
+    not describe while every manifest recorded the new lock's
+    `env_version`; doing it instead is shorter and impossible to ignore."""
     pyproject = root / "pyproject.toml"
     pyproject.write_text(
         pyproject.read_text().replace("dependencies = []", 'dependencies = ["idna"]')
@@ -676,7 +679,10 @@ def test_a_drifted_environment_is_made_to_match_before_anything_runs(
 def test_the_recorded_command_reproduces_the_output(root: Path, inline: None) -> None:
     """The claim the record makes, run literally. `datalad rerun` removes
     the output, executes the recorded command, and commits what came
-    back — so the manifest is regenerated inside the same commit."""
+    back — so the manifest is regenerated inside the same commit. Under a
+    dev build the record is the bare worker module, which the suite's own
+    interpreter resolves; the released shape is pinned by
+    `test_the_record_pins_a_released_engine`."""
     pytest.importorskip("datalad")
     engine.materialize(root, ["first"])
     original = assets.read(root / "results/baseline/first")
@@ -687,7 +693,7 @@ def test_the_recorded_command_reproduces_the_output(root: Path, inline: None) ->
         cwd=root,
         capture_output=True,
         text=True,
-        env={**child_env(), "PYTHONPATH": _engine_path()},
+        env=child_env(),
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -698,19 +704,60 @@ def test_the_recorded_command_reproduces_the_output(root: Path, inline: None) ->
     assert not dataset.status(root)
 
 
-def _engine_path() -> str:
-    """Stand in for the ``lightcone-cli`` pin a real project's lock carries.
+def test_the_recorded_command_holds_on_a_fresh_clone(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """A clone checks out the lock but never `.venv`, and `uv run --no-sync`
+    against a missing environment silently creates an *empty* one — so the
+    record only reproduces the output because the worker converges the
+    environment for itself. The in-place rerun above cannot catch a missing
+    sync; this is the test that does."""
+    pytest.importorskip("datalad")
+    engine.materialize(root, ["first"])
+    original = assets.read(root / "results/baseline/first")
+    assert original is not None
 
-    The recorded command resolves the worker out of the project's own
-    environment, which is the whole reason the record reproduces the
-    *recorded* engine rather than today's. The fixture's project declares
-    no dependencies so it stays cheap to build, so the engine under test is
-    put on the path explicitly instead.
-    """
-    import sysconfig
+    clone = tmp_path / "clone"
+    dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=clone)
+    dataset._git(["annex", "init", "-q", "clone"], cwd=clone)
+    assert not (clone / ".venv").exists()
 
-    return os.pathsep.join(
-        [str(Path(__file__).parent.parent / "src"), sysconfig.get_paths()["purelib"]]
+    proc = subprocess.run(
+        [sys.executable, "-c", "from datalad.api import rerun; rerun('HEAD')"],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        env=child_env(),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    rerun = assets.read(clone / "results/baseline/first")
+    assert rerun is not None
+    assert rerun.data_version == original.data_version
+    assert (clone / ".venv").exists()
+
+
+def test_the_record_pins_a_released_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A released engine is pinned by version through an ephemeral uv
+    environment; a dev build's version is unpublished, so pinning it would
+    fail resolution loudly, and the bare module is what a dev checkout's
+    own interpreter resolves."""
+    monkeypatch.setattr(engine.worker, "lc_version", lambda: "1.2.3")
+    assert engine._worker_cmd("baseline/first") == (
+        "uv run --no-project --with lightcone-cli==1.2.3 -- "
+        "python -m lightcone.engine.worker baseline/first"
+    )
+
+    monkeypatch.setattr(engine.worker, "lc_version", lambda: "1.2.3.dev4+gabc")
+    assert engine._worker_cmd("baseline/first") == (
+        "python -m lightcone.engine.worker baseline/first"
+    )
+
+    monkeypatch.setattr(engine.worker, "lc_version", lambda: "")
+    assert engine._worker_cmd("baseline/first") == (
+        "python -m lightcone.engine.worker baseline/first"
     )
 
 

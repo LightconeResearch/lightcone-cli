@@ -291,8 +291,8 @@ def require_git_annex() -> None:
     if shutil.which("git-annex") is None:
         raise ProjectError(
             "git-annex is required (it stores the bytes results are made of) "
-            "and is not on PATH. It ships as a wheel and installs with the "
-            "engine: `uv sync` in the project, or reinstall lightcone-cli."
+            "and is not on PATH. It ships as a wheel beside lc itself: "
+            "`uv tool install --force lightcone-cli` repairs the install."
         )
 
 
@@ -340,25 +340,13 @@ def sync(directory: Path) -> list[str]:
 def _converge_uv_project(c: _Converger, directory: Path) -> None:
     """pyproject.toml + .python-version — the environment definition.
 
-    An existing ``pyproject.toml`` is the user's: read, possibly warned
-    about, never edited. The warning is decided against the *pre-existing*
-    file, so one we just wrote — which always names the engine — can never
-    trigger it.
+    An existing ``pyproject.toml`` is the user's: read, never edited.
     """
-    pyproject_path = directory / "pyproject.toml"
-    adopted = pyproject_path.exists()
     c.file(
         "pyproject.toml",
-        pyproject_path,
+        directory / "pyproject.toml",
         lambda: templates.pyproject(name=project_name(directory)),
     )
-    if adopted and "lightcone-cli" not in pyproject_path.read_text():
-        c.warn(
-            "pyproject.toml does not depend on lightcone-cli — the "
-            "engine should live inside the experiment's lock: "
-            "`uv add lightcone-cli`."
-        )
-
     c.file(".python-version", directory / ".python-version", templates.python_version)
 
 
@@ -499,11 +487,13 @@ def project_name(directory: Path) -> str:
 
 #: What makes a directory a project root: the environment ``lc run``
 #: enters. ``astra.yaml`` is deliberately not among them — a command can
-#: be probed in any uv project, spec or no spec.
+#: be probed in any uv project, spec or no spec. ``.venv`` stays last:
+#: it is the one entry that is local state rather than repository
+#: content, and ``current_project(synced=False)`` slices it off.
 _ENVIRONMENT_FILES = ("pyproject.toml", "uv.lock", ".venv")
 
 
-def current_project(directory: Path | None = None) -> Path:
+def current_project(directory: Path | None = None, *, synced: bool = True) -> Path:
     """Take a directory as the project root, checking it is one.
 
     There is no walk-up: the directory you are in is the directory that is
@@ -511,6 +501,11 @@ def current_project(directory: Path | None = None) -> Path:
 
     Args:
         directory: Defaults to the working directory.
+        synced: Whether the built ``.venv`` must already be there. The
+            worker entry point passes False, because it converges the
+            environment itself — which is what makes a rerun work on a
+            fresh clone, where the lock is in the repository and the
+            environment is not.
 
     Returns:
         The resolved project root.
@@ -523,7 +518,8 @@ def current_project(directory: Path | None = None) -> Path:
             not yet converged, which is what a fresh clone is.
     """
     directory = (directory or Path.cwd()).resolve()
-    missing = [name for name in _ENVIRONMENT_FILES if not (directory / name).exists()]
+    required = _ENVIRONMENT_FILES if synced else _ENVIRONMENT_FILES[:2]
+    missing = [name for name in required if not (directory / name).exists()]
     if not missing:
         return directory
     declared = (directory / "pyproject.toml").exists() or (directory / SPEC_FILENAME).exists()

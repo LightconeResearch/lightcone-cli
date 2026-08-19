@@ -110,16 +110,8 @@ def test_blocked_items_are_rendered(runner: CliRunner, tmp_path: Path) -> None:
     assert "blocked results/" in result.output
     # Rich wraps on the terminal width, so assert on an unwrappable fragment.
     assert "✗" in result.output
-
-
-def test_init_surfaces_warnings(runner: CliRunner, tmp_path: Path) -> None:
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "pyproject.toml").write_text('[project]\nname = "mine"\nversion = "0"\n')
-
-    result = runner.invoke(main, ["init", str(project)])
-    assert result.exit_code == 0
-    assert "does not depend on lightcone-cli" in result.output
+    # The reason travels as a warning, and the console renders those too.
+    assert "not a directory" in result.output
 
 
 # ---- --check / --json (the agent-facing surface) --------------------------

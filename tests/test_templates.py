@@ -29,10 +29,15 @@ def test_pyproject_renders_every_placeholder() -> None:
     assert "$" not in rendered
     assert 'name = "my-analysis"' in rendered
     assert f'requires-python = "{templates.requires_python()}"' in rendered
-    assert templates.lightcone_requirement() in rendered
     # Virtual by design: containerized mode builds `--no-install-project`,
     # so a packaged project's own import would fail inside its image.
     assert "[build-system]" not in rendered
+
+
+def test_pyproject_does_not_depend_on_the_engine() -> None:
+    """The engine is the host's uv tool, not a project dependency — a
+    scaffolded lock carries only what the analysis itself imports."""
+    assert "lightcone-cli" not in templates.pyproject(name="my-analysis")
 
 
 def test_python_version_pins_the_running_interpreter() -> None:
@@ -42,54 +47,11 @@ def test_python_version_pins_the_running_interpreter() -> None:
     assert templates.python_version() == f"{v.major}.{v.minor}.{v.micro}\n"
 
 
-def test_requires_python_comes_from_our_own_metadata() -> None:
-    """Declaring the engine's own bound rather than inventing a second one."""
-    from importlib.metadata import metadata
-
-    assert templates.requires_python() == metadata("lightcone-cli")["Requires-Python"]
-
-
-def test_the_ambient_pin_always_satisfies_the_declared_floor() -> None:
-    """Not a coincidence: lc can only run on an interpreter meeting its own
-    Requires-Python, so the two can never conflict."""
-    from packaging.specifiers import SpecifierSet
-
-    assert templates.python_version().strip() in SpecifierSet(templates.requires_python())
-
-
-def test_requires_python_falls_back_to_the_running_minor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A metadata-less install still gets a bound the ambient pin meets."""
-    import importlib.metadata
-
-    def _missing(_name: str) -> object:
-        raise importlib.metadata.PackageNotFoundError
-
-    monkeypatch.setattr(importlib.metadata, "metadata", _missing)
+def test_requires_python_is_the_running_minor() -> None:
+    """The bound and the exact pin come from one interpreter, so the
+    scaffolded `.python-version` always satisfies `requires-python`."""
     v = sys.version_info
     assert templates.requires_python() == f">={v.major}.{v.minor}"
-
-
-def test_lightcone_requirement_pins_the_running_version(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Driver and project stay in lockstep — except for dev builds, whose
-    versions aren't published, so pinning one would make the project's lock
-    unsolvable."""
-    import importlib.metadata
-
-    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "1.2.3")
-    assert templates.lightcone_requirement() == "lightcone-cli==1.2.3"
-
-    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "1.2.3.dev4+gabc")
-    assert templates.lightcone_requirement() == "lightcone-cli"
-
-    def _missing(_name: str) -> str:
-        raise importlib.metadata.PackageNotFoundError
-
-    monkeypatch.setattr(importlib.metadata, "version", _missing)
-    assert templates.lightcone_requirement() == "lightcone-cli"
 
 
 # ---- .gitignore -----------------------------------------------------------
