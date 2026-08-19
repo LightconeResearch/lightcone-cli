@@ -417,6 +417,10 @@ def test_check_agrees_with_a_run_on_a_clone_with_no_annex_content(
     engine.materialize(root, [])
     clone = tmp_path / "clone"
     dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
+    # `clone` does not copy identity, and `annex init` makes a commit — so
+    # this fails on any host without a usable global one, CI included.
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=clone)
     dataset._git(["annex", "init", "-q", "clone"], cwd=clone)
     pointer = (clone / "results/baseline/first/value.txt").read_text()
     assert pointer.startswith("/annex/objects/")  # content really is absent
