@@ -1076,8 +1076,27 @@ older half cannot be changed.
 |---|---|
 | Already delegated? | Return. The engine we exec runs this same code on the way in. |
 | A verb at all, and not `init`? | `init` is what *makes* the environment a delegation would hand over to. Everything else delegates — including `status`. |
-| Is the current directory a uv project? | If not, **decline silently**: `current_project()` already says why, and a second copy of that message here could only disagree with it. |
-| Are we already the project's engine? | `uv run lc …` arrives inside the project's environment; delegating would re-exec this program to reach itself and re-converge what uv just converged. |
+| Does `.venv/bin/lc` already exist? | One stat, and it answers both questions worth asking: this is a built project, and it carries an engine of its own. If not, **decline silently** — `current_project()` already says why, and a second copy of that message here could only disagree with it. |
+| Are we already inside that environment? | `uv run lc …` arrives there; delegating would re-exec this program to reach itself. |
+
+**The engine check comes *before* the converge, and that ordering is the
+whole of it.** `uv sync --exact` *uninstalls* whatever the lock does not
+name, so converging first would let `lc status`, typed in an unrelated uv
+checkout, rewrite someone else's environment on its way to reporting that
+lc is not installed there. Gating on an engine that is already present
+means a project that is not ours is never written to — and it is also why
+there is no "run `uv add lightcone-cli`" refusal: a project without an
+engine of its own is simply the tool env's to run, and convergence already
+warns about the missing dependency.
+
+**"Am I already in that environment" is asked of `sys.prefix`, never
+`sys.executable`.** `.venv/bin/python` is a symlink out to the base
+interpreter, so `Path(sys.executable).resolve().parent` names the
+interpreter's own directory and is *never* the venv's `bin` — a guard
+written that way is dead, and a test that monkeypatches `sys.executable`
+to a path the fixture never created will pass over it. `sys.prefix` is the
+venv root, symlink-free, and is the question itself rather than a proxy
+for it.
 
 **`lc status` delegates, against spec §4.** It and `materialize --check` run
 the same classification walk, and `definition_version` hashes what
@@ -1087,10 +1106,6 @@ make two verbs that must differ only in exit code disagree on the answer.
 The price, stated where the promise is written: status converges before it
 answers. Its "reads only" promise is about the analysis and the repository,
 never about not touching `.venv`.
-
-**A converged `.venv` with no `lc` in it is a refusal**, naming
-`uv add lightcone-cli`. Never a fall-through to the tool env — that
-fall-through *is* the silent skew the layer removes.
 
 **There is no discovery step**, where spec §4 walks up looking for
 `astra.yaml`. The current directory is the project, as everywhere else.
@@ -1105,8 +1120,26 @@ the two partitions agree.
 
 **Startup stays cheap, and the launcher is on every invocation.** Stdlib
 only — no click, no rich, no astra — and the engine import happens *after*
-the decision to delegate, so a verbless `lc --help` pays for none of it.
-Measured through the installed console script: 91 ms, no converge, no exec.
+the decision to delegate, so a verbless `lc --help` pays for none of it:
+not the 18 ms of `engine.project`, and not a single `stat`, since nothing
+touches the filesystem before the verb is known. Measured through the
+installed console script: 91 ms, no converge, no exec.
+
+**The converge verifies before it writes** (`project.converge_environment`).
+A full `uv sync --locked --exact --compile-bytecode` costs ~100 ms against
+an environment that needs nothing, where uv's own read-only probe costs
+~15 ms — and the launcher runs on every delegating verb, ahead of the sync
+`materialize` does for its own reasons. The split from `sync()` is
+deliberate and not an optimization to propagate: the probe is *set-level*,
+so a hand-installed extra survives it where `--exact` would prune one. That
+is the right trade for a caller that needs the environment to **be** the
+lock's, and the wrong one for a run that needs it to be **nothing but** the
+lock's — which is why `materialize` still syncs unconditionally.
+
+**`require_uv()` lives inside `sync()`**, not at each call site. It was
+added there after the launcher — a fourth caller — forgot it, and the
+failure was a raw `FileNotFoundError` out of `Popen` in the one code path
+that runs before click can render anything.
 
 ### The `UV_*` scrub
 
@@ -1119,7 +1152,7 @@ launcher-only scrub would cover the last of those alone.
 — and for the same reason.** A set that grew by guesswork would strip a
 variable someone legitimately relies on. Every entry was verified read by
 uv 0.12.5, by giving it an unparseable value and watching uv reject it.
-Three families, and nothing else qualifies:
+Four families, and nothing else qualifies:
 
 - **where the environment goes, and which interpreter builds it** —
   measured, `UV_PROJECT_ENVIRONMENT` relocates the venv outright and
@@ -1135,6 +1168,14 @@ Three families, and nothing else qualifies:
   untrue.
 - **what lc's own flags mean** — `UV_FROZEN` would defeat the `--locked`
   that makes a drifted lock an error rather than a silent relock.
+- **which settings apply at all** — `UV_NO_CONFIG` makes uv ignore
+  `[tool.uv]` and `uv.toml`, the very files `identity` hashes, and
+  `UV_CONFIG_FILE` substitutes another for them. Neither is a setting, so
+  the derived correspondence test cannot reach them; both belong to the
+  family above by consequence. Distinguish these from the *user-level*
+  `~/.config/uv/uv.toml` that `identity` deliberately tolerates as machine
+  state — these two change whether the project's own configuration is read
+  at all.
 
 **What is deliberately kept.** `UV_CACHE_DIR` and `UV_LINK_MODE` decide
 where bytes are cached and how they are linked, never what is installed —

@@ -653,30 +653,25 @@ def test_ambient_virtualenv_is_not_passed_to_tools(
 
 
 def test_ambient_uv_steering_is_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`env_version` hashes the install settings *from the project's files*.
-
-    uv reads the same settings from the environment, so an ambient one
-    changes what a sync installs without moving the hash — the identity
-    model stating something untrue. Verified against uv 0.12.5: given
-    these variables, uv relocates the venv, picks another interpreter, and
-    changes which artifacts it materializes.
-    """
+    """One from each family `_UV_SCRUB` names, which is where the why is."""
     from lightcone.engine.project import child_env
 
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/somewhere/else")
     monkeypatch.setenv("UV_PYTHON", "3.9")
     monkeypatch.setenv("UV_NO_BUILD_ISOLATION", "1")
     monkeypatch.setenv("UV_FROZEN", "1")
+    monkeypatch.setenv("UV_NO_CONFIG", "1")
 
     env = child_env()
-    for name in ("UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "UV_NO_BUILD_ISOLATION", "UV_FROZEN"):
+    for name in ("UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "UV_NO_BUILD_ISOLATION"):
         assert name not in env
+    assert "UV_FROZEN" not in env
+    # Not a setting itself, but it makes uv ignore the files identity reads.
+    assert "UV_NO_CONFIG" not in env
 
 
 def test_where_bytes_are_cached_is_not_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """These decide where packages are cached and how they are linked,
-    never what is installed — and they are exactly what a site registry
-    supplies on a machine whose cache cannot live in $HOME."""
+    """Placement, never content — and what a site registry supplies."""
     from lightcone.engine.project import child_env
 
     monkeypatch.setenv("UV_CACHE_DIR", "/scratch/uv")
@@ -690,11 +685,10 @@ def test_where_bytes_are_cached_is_not_scrubbed(monkeypatch: pytest.MonkeyPatch)
 def test_every_audited_install_setting_is_scrubbed() -> None:
     """The scrub and the identity model have to name the same settings.
 
-    `identity` hashes a closed list of settings read from the project's
-    files; every one of them also has an environment spelling. Adding a
-    setting there without adding it here would reopen the hole silently —
-    the hash would cover the file and miss the variable — so the
-    correspondence is asserted rather than remembered.
+    Adding a setting to the hash without adding its environment spelling
+    here would reopen the hole silently — the hash would cover the file
+    and miss the variable — so the correspondence is asserted rather than
+    remembered.
     """
     from lightcone.engine.identity import _INSTALL_SETTINGS
     from lightcone.engine.project import _UV_SCRUB
@@ -702,6 +696,35 @@ def test_every_audited_install_setting_is_scrubbed() -> None:
     for setting in _INSTALL_SETTINGS:
         spelling = "UV_" + setting.upper().replace("-", "_")
         assert spelling in _UV_SCRUB, f"{setting} is hashed but its variable is not scrubbed"
+
+
+def test_a_converged_environment_is_probed_not_re_synced(
+    tmp_path: Path, tools: list[list[str]]
+) -> None:
+    """`converge_environment` asks before it writes; `sync` never does.
+
+    The split is the point: a caller that needs the environment to *be*
+    the lock's can take the probe's set-level answer, while a run that
+    needs it to be nothing but the lock's cannot — `--exact` is what
+    prunes a hand-installed extra, and the probe does not see one.
+    """
+    from lightcone.engine.project import converge_environment
+
+    (tmp_path / ".venv").mkdir()
+    assert converge_environment(tmp_path) == []
+    assert all("--check" in c for c in uv_calls(tools)), uv_calls(tools)
+
+
+def test_an_absent_environment_is_synced_without_a_probe(
+    tmp_path: Path, tools: list[list[str]]
+) -> None:
+    """Nothing to ask about — the same rule convergence uses for a
+    derived artifact that is not there yet."""
+    from lightcone.engine.project import converge_environment
+
+    converge_environment(tmp_path)
+    assert [c for c in uv_calls(tools) if "--check" in c] == []
+    assert [c for c in uv_calls(tools) if c[0] == "sync"], tools
 
 
 def test_relays_uv_warnings_into_the_report(

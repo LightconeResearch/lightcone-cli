@@ -332,9 +332,46 @@ def sync(directory: Path) -> list[str]:
         Whatever uv warned about.
 
     Raises:
-        ProjectError: If uv fails.
+        ProjectError: If uv is absent, or fails.
     """
+    # Guarded here rather than at each call site: this is the only place
+    # that promises "uv failing is a ProjectError", and a caller that
+    # forgets gets `FileNotFoundError` out of `Popen` instead of the
+    # message written for exactly that case.
+    require_uv()
     return _check_call(["uv", *_SYNC_ARGS, "--project", str(directory)], cwd=directory)
+
+
+def converge_environment(directory: Path) -> list[str]:
+    """Make ``.venv`` agree with ``uv.lock``, verifying before writing.
+
+    The same decide-then-maybe-write shape convergence uses for derived
+    artifacts: ask uv's own read-only probe first, and sync only when the
+    answer is no. Against a converged environment the probe costs ~15 ms
+    where the sync costs ~100 ms (measured, uv 0.12.5, this project),
+    because ``--compile-bytecode`` re-stamps every file whether or not
+    anything moved — and the launcher runs this on every delegating verb.
+
+    Unlike :func:`sync`, this is not enough to guarantee an environment
+    holding *only* what the lock names: the probe is set-level, so a
+    hand-installed extra survives it where ``--exact`` would prune one.
+    That is the right trade for a caller that needs the environment to be
+    the lock's, and the wrong one for a run that needs it to be *nothing
+    but* the lock's — which is why :func:`sync` stays unconditional there.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        Whatever uv warned about; empty when nothing needed doing.
+
+    Raises:
+        ProjectError: If uv is absent, or fails.
+    """
+    require_uv()
+    if (directory / ".venv").is_dir() and _env_is_current(directory):
+        return []
+    return sync(directory)
 
 
 def _converge_uv_project(c: _Converger, directory: Path) -> None:
@@ -563,7 +600,7 @@ def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
 #: relies on. Verified read by uv 0.12.5, by giving each an unparseable
 #: value and watching uv reject it.
 #:
-#: Three families, and nothing else qualifies:
+#: Four families, and nothing else qualifies:
 #:
 #: - **where the environment goes, and which interpreter builds it.**
 #:   ``--project`` is no defence against these: measured,
@@ -579,6 +616,15 @@ def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
 #: - **what lc's own flags mean.** ``UV_FROZEN`` would defeat the
 #:   ``--locked`` that makes a drifted lock an error rather than a
 #:   silent relock.
+#: - **which settings apply at all.** ``UV_NO_CONFIG`` makes uv ignore
+#:   ``[tool.uv]`` and ``uv.toml`` — the very files ``identity`` hashes —
+#:   and ``UV_CONFIG_FILE`` substitutes another for them. Either changes
+#:   what a sync installs while ``env_version`` reports the settings it
+#:   read from the project, so they belong to family two by consequence
+#:   even though neither is a setting itself. (This is *not* the
+#:   user-level ``~/.config/uv/uv.toml`` that ``identity`` deliberately
+#:   tolerates as machine state: these two change whether the project's
+#:   own configuration is read.)
 #:
 #: Deliberately *not* scrubbed: ``UV_CACHE_DIR`` and ``UV_LINK_MODE``
 #: decide where bytes are cached and how they are linked, never what is
@@ -587,7 +633,7 @@ def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
 #: cannot be fetched from. ``UV_PROJECT`` needs no scrub either:
 #: measured, the explicit ``--project`` every invocation carries already
 #: beats it.
-_UV_SCRUB = (
+_UV_SCRUB = frozenset({
     "UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "UV_WORKING_DIR",
     "UV_NO_BINARY", "UV_NO_BINARY_PACKAGE",
     "UV_NO_BUILD", "UV_NO_BUILD_PACKAGE",
@@ -597,7 +643,13 @@ _UV_SCRUB = (
     "UV_NO_INSTALL_PROJECT", "UV_NO_INSTALL_LOCAL", "UV_NO_EDITABLE",
     "UV_NO_SOURCES",
     "UV_FROZEN", "UV_LOCKED", "UV_NO_SYNC",
-)  # fmt: skip
+    "UV_NO_CONFIG", "UV_CONFIG_FILE",
+})  # fmt: skip
+
+#: Everything :func:`child_env` drops, built once. `VIRTUAL_ENV` joins the
+#: scrub for a different reason — every uv invocation names its project, so
+#: an environment activated elsewhere is never what we mean.
+_DROPPED = _UV_SCRUB | {"VIRTUAL_ENV"}
 
 
 def child_env() -> dict[str, str]:
@@ -617,8 +669,7 @@ def child_env() -> dict[str, str]:
     Returns:
         The current environment, scrubbed.
     """
-    dropped = {"VIRTUAL_ENV", *_UV_SCRUB}
-    return {k: v for k, v in os.environ.items() if k not in dropped}
+    return {k: v for k, v in os.environ.items() if k not in _DROPPED}
 
 
 def _check_call(argv: list[str], *, cwd: Path) -> list[str]:

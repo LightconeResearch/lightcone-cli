@@ -24,9 +24,11 @@ Three things it does not do:
 - **It does not report that a directory is not a project.** It simply
   declines to delegate, and the engine's own message says why — one
   error, written once.
-- **It does not fall back.** A converged environment with no ``lc`` in it
-  is a loud failure, because continuing in the tool env is exactly the
-  silent version skew this module exists to remove.
+- **It does not touch a project that has no engine of its own.** The gate
+  is a ``.venv/bin/lc`` that is already there, checked *before* anything
+  is converged. Any other order would let ``lc status`` in an unrelated
+  uv checkout run ``uv sync --exact`` against it and uninstall someone
+  else's packages on the way to reporting that lc is not installed there.
 
 Kept to the standard library: it runs on every invocation, ahead of click,
 rich and the astra stack.
@@ -39,8 +41,9 @@ import sys
 from pathlib import Path
 
 #: Set on delegation, and the whole of what the launcher tells the engine.
-#: Its presence is also what stops a second hand-over: the engine we exec
-#: runs this same code on the way in.
+#: Its presence is also what stops a second hand-over — belt to the
+#: :func:`maybe_delegate` braces, since the engine we exec lives in the
+#: environment whose own check would already have returned.
 DELEGATED_ENV = "LC_DELEGATED"
 
 #: Verbs that never delegate, because they are what *produces* the
@@ -49,11 +52,6 @@ DELEGATED_ENV = "LC_DELEGATED"
 #: classification walk with ``materialize --check`` and would otherwise be
 #: the one way to make those two verbs answer differently.
 TOOL_ENV_VERBS = frozenset({"init"})
-
-#: What has to be there before delegating is even a question. Not
-#: ``.venv``: converging is this module's job, so a project that has never
-#: been synced is one to build, not one to refuse.
-_PROJECT_FILES = ("pyproject.toml", "uv.lock")
 
 
 def maybe_delegate(argv: list[str]) -> None:
@@ -72,20 +70,26 @@ def maybe_delegate(argv: list[str]) -> None:
     if verb is None or verb in TOOL_ENV_VERBS:
         return
 
+    # One stat, and it answers both questions worth asking here: a
+    # directory holding this file is a built project, and it is one that
+    # carries an engine of its own. Nothing before this point touches the
+    # filesystem, so `lc --help` and shell completion pay for none of it.
     root = Path.cwd()
-    if not all((root / name).is_file() for name in _PROJECT_FILES):
-        return
     engine = root / ".venv" / "bin" / "lc"
-    if Path(sys.executable).resolve().parent == engine.parent.resolve():
-        # Already the project's engine — `uv run lc …`, or a direct call
-        # to the binary in its `.venv`. Delegating would re-exec this same
-        # program to reach itself, and re-converge what uv just converged.
+    if not engine.is_file():
+        return
+    if Path(sys.prefix).resolve() == (root / ".venv").resolve():
+        # Already inside that environment — `uv run lc …`, or a direct
+        # call to the binary. Delegating would re-exec this same program
+        # to reach itself. `sys.prefix` rather than `sys.executable`:
+        # `.venv/bin/python` is a symlink out to the base interpreter, so
+        # resolving it names the interpreter's home, never the venv.
         return
 
-    from lightcone.engine.project import ProjectError, child_env, sync
+    from lightcone.engine.project import ProjectError, child_env, converge_environment
 
     try:
-        warnings = sync(root)
+        warnings = converge_environment(root)
     except ProjectError as e:
         # Raised before click is imported, so `_EngineErrorGroup` cannot
         # render it and this has to say it plainly itself.
@@ -94,9 +98,12 @@ def maybe_delegate(argv: list[str]) -> None:
         print(f"uv: {warning}", file=sys.stderr)
 
     if not engine.is_file():
-        raise SystemExit(
-            f"Error: {engine} does not exist after a successful sync — the "
-            "engine lives inside the experiment's lock, so the project has "
-            "to depend on it: `uv add lightcone-cli`."
-        )
-    os.execve(str(engine), ["lc", *argv], {**child_env(), DELEGATED_ENV: "1"})
+        # Converging removed it: the lock no longer carries
+        # `lightcone-cli`, and `--exact` prunes what the lock does not
+        # name. There is no project engine to hand over to, so this is the
+        # tool env's command after all — convergence already warns about
+        # the missing dependency.
+        return
+    env = child_env()
+    env[DELEGATED_ENV] = "1"
+    os.execve(str(engine), ["lc", *argv], env)
