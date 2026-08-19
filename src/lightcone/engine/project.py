@@ -556,18 +556,69 @@ def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+#: Ambient variables that would make ``env_version`` describe an
+#: environment other than the one uv builds. Closed and audited, exactly
+#: like ``identity._INSTALL_SETTINGS`` — and for the same reason: a set
+#: that grew by guesswork would strip a variable someone legitimately
+#: relies on. Verified read by uv 0.12.5, by giving each an unparseable
+#: value and watching uv reject it.
+#:
+#: Three families, and nothing else qualifies:
+#:
+#: - **where the environment goes, and which interpreter builds it.**
+#:   ``--project`` is no defence against these: measured,
+#:   ``UV_PROJECT_ENVIRONMENT`` relocates the venv and ``UV_PYTHON``
+#:   changes the interpreter while every flag lc passes stays the same.
+#: - **which artifacts a sync materializes from an unchanged lock** —
+#:   the env-var spellings of the audited install settings, plus the
+#:   family that actually spells `default-groups` on a command line.
+#:   These are the dangerous ones: `env_version` hashes those settings
+#:   *from the project's files*, so an ambient one changes what is
+#:   installed without moving the hash, and the identity model says
+#:   something untrue.
+#: - **what lc's own flags mean.** ``UV_FROZEN`` would defeat the
+#:   ``--locked`` that makes a drifted lock an error rather than a
+#:   silent relock.
+#:
+#: Deliberately *not* scrubbed: ``UV_CACHE_DIR`` and ``UV_LINK_MODE``
+#: decide where bytes are cached and how they are linked, never what is
+#: installed — and they are what a site registry legitimately supplies.
+#: Nor credentials or TLS settings, without which a private index simply
+#: cannot be fetched from. ``UV_PROJECT`` needs no scrub either:
+#: measured, the explicit ``--project`` every invocation carries already
+#: beats it.
+_UV_SCRUB = (
+    "UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "UV_WORKING_DIR",
+    "UV_NO_BINARY", "UV_NO_BINARY_PACKAGE",
+    "UV_NO_BUILD", "UV_NO_BUILD_PACKAGE",
+    "UV_NO_BUILD_ISOLATION", "UV_NO_BUILD_ISOLATION_PACKAGE",
+    "UV_CONFIG_SETTINGS", "UV_DEFAULT_GROUPS",
+    "UV_NO_DEFAULT_GROUPS", "UV_NO_DEV", "UV_DEV",
+    "UV_NO_INSTALL_PROJECT", "UV_NO_INSTALL_LOCAL", "UV_NO_EDITABLE",
+    "UV_NO_SOURCES",
+    "UV_FROZEN", "UV_LOCKED", "UV_NO_SYNC",
+)  # fmt: skip
+
+
 def child_env() -> dict[str, str]:
     """Build the environment external tools run in.
 
-    Ours, minus ``VIRTUAL_ENV``. Every uv invocation names its project
-    explicitly, so an activated environment elsewhere is never what we
-    mean — and uv warns once per invocation when it ignores one, which
-    would otherwise land in the report and in ``--json``.
+    Ours, minus ``VIRTUAL_ENV`` and minus the ambient uv steering in
+    :data:`_UV_SCRUB`. Every uv invocation names its project explicitly,
+    so an activated environment elsewhere is never what we mean — and uv
+    warns once per invocation when it ignores one, which would otherwise
+    land in the report and in ``--json``.
+
+    The scrub lives here rather than in the launcher because this is the
+    one seam every external tool goes through: convergence, a run's sync,
+    the recipe's ``uv run`` hop and the delegation exec all read it, and
+    a launcher-only scrub would cover the last of those alone.
 
     Returns:
-        The current environment without ``VIRTUAL_ENV``.
+        The current environment, scrubbed.
     """
-    return {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    dropped = {"VIRTUAL_ENV", *_UV_SCRUB}
+    return {k: v for k, v in os.environ.items() if k not in dropped}
 
 
 def _check_call(argv: list[str], *, cwd: Path) -> list[str]:

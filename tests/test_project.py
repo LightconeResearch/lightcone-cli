@@ -652,6 +652,58 @@ def test_ambient_virtualenv_is_not_passed_to_tools(
     assert env["LC_TEST_CANARY"] == "kept", "the rest of the environment is untouched"
 
 
+def test_ambient_uv_steering_is_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`env_version` hashes the install settings *from the project's files*.
+
+    uv reads the same settings from the environment, so an ambient one
+    changes what a sync installs without moving the hash — the identity
+    model stating something untrue. Verified against uv 0.12.5: given
+    these variables, uv relocates the venv, picks another interpreter, and
+    changes which artifacts it materializes.
+    """
+    from lightcone.engine.project import child_env
+
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/somewhere/else")
+    monkeypatch.setenv("UV_PYTHON", "3.9")
+    monkeypatch.setenv("UV_NO_BUILD_ISOLATION", "1")
+    monkeypatch.setenv("UV_FROZEN", "1")
+
+    env = child_env()
+    for name in ("UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "UV_NO_BUILD_ISOLATION", "UV_FROZEN"):
+        assert name not in env
+
+
+def test_where_bytes_are_cached_is_not_scrubbed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These decide where packages are cached and how they are linked,
+    never what is installed — and they are exactly what a site registry
+    supplies on a machine whose cache cannot live in $HOME."""
+    from lightcone.engine.project import child_env
+
+    monkeypatch.setenv("UV_CACHE_DIR", "/scratch/uv")
+    monkeypatch.setenv("UV_LINK_MODE", "copy")
+
+    env = child_env()
+    assert env["UV_CACHE_DIR"] == "/scratch/uv"
+    assert env["UV_LINK_MODE"] == "copy"
+
+
+def test_every_audited_install_setting_is_scrubbed() -> None:
+    """The scrub and the identity model have to name the same settings.
+
+    `identity` hashes a closed list of settings read from the project's
+    files; every one of them also has an environment spelling. Adding a
+    setting there without adding it here would reopen the hole silently —
+    the hash would cover the file and miss the variable — so the
+    correspondence is asserted rather than remembered.
+    """
+    from lightcone.engine.identity import _INSTALL_SETTINGS
+    from lightcone.engine.project import _UV_SCRUB
+
+    for setting in _INSTALL_SETTINGS:
+        spelling = "UV_" + setting.upper().replace("-", "_")
+        assert spelling in _UV_SCRUB, f"{setting} is hashed but its variable is not scrubbed"
+
+
 def test_relays_uv_warnings_into_the_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

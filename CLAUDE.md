@@ -46,7 +46,7 @@ speculatively.
 |---|-------|-------|
 | 1 | **Project scaffolding** — `lc init` | ✅ **done** |
 | 2 | **Environment layer** — `env_version`, lock scan, manifest schema | ✅ **done** |
-| 3 | The `lc` entrypoint — launcher: discover → mode-detect → scrub `UV_*` → converge → delegate | ⬜ |
+| 3 | **The `lc` entrypoint** — launcher: scrub `UV_*` → converge → delegate | ✅ **done** |
 | 4 | **Fabric** — `lc materialize`, worker sequence, mid-run relock gate | ✅ **done** |
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | Container hatch — `[tool.lightcone.image]`, generated Containerfile, `lc build` | ⬜ |
@@ -149,8 +149,9 @@ Any new `lightcone-*` package must:
 src/lightcone/              # namespace — NO __init__.py
 ├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
 ├── cli/                    # the CLI only: flags, rendering, exit codes
-│   ├── __init__.py         # exposes main(); the launcher hooks in here (layer 3)
-│   └── commands.py         # lc init, lc run, lc materialize
+│   ├── __init__.py         # exposes main(); delegation happens here, before click
+│   ├── launcher.py         # converge, then exec the project's own engine
+│   └── commands.py         # lc init, lc run, lc materialize, lc status
 └── engine/
     ├── __init__.py         # docstring only
     ├── project.py          # what a project is: convergence + discovery
@@ -1046,6 +1047,109 @@ larger than a laptop land behind it without the driver noticing.
   not argv, and `bash` is in the exec allowlist — so it is granted by the
   same rule that grants everything else a recipe may run.
 
+## Key Invariants (layer 3)
+
+**`lc` and the engine are two different programs, and the launcher is
+where they meet.** `lc` is installed once as a uv tool; the engine that
+executes a project lives inside that project's own lock, because `lc init`
+pins `lightcone-cli` into its dependencies so the engine that produced a
+result stays recoverable from the commit that recorded it. Before click
+sees an argument, `cli/launcher.py` converges the project's environment and
+`exec`s the `lc` inside it.
+
+What this fixed was not hypothetical: `cluster_for_run()` builds a
+`LocalCluster(processes=False)`, so the driver, the graph, `astra.resolve`,
+the classifier and `worker.materialize` all ran in the *invoking* process,
+while `_lc_version()` resolved `importlib.metadata` against that same
+process. A project whose lock pinned engine A could be materialized by
+engine B, with the manifest recording both and reconciling neither.
+
+**The delegation interface is argv plus one variable, and that is
+deliberate.** `LC_DELEGATED=1` is the whole of what crosses. A launcher of
+any version has to be able to hand over to a project engine of any age, so
+anything richer is something the two would have to agree about — and the
+older half cannot be changed.
+
+**The launcher decides four things and writes no errors of its own.**
+
+| Question | Answer |
+|---|---|
+| Already delegated? | Return. The engine we exec runs this same code on the way in. |
+| A verb at all, and not `init`? | `init` is what *makes* the environment a delegation would hand over to. Everything else delegates — including `status`. |
+| Is the current directory a uv project? | If not, **decline silently**: `current_project()` already says why, and a second copy of that message here could only disagree with it. |
+| Are we already the project's engine? | `uv run lc …` arrives inside the project's environment; delegating would re-exec this program to reach itself and re-converge what uv just converged. |
+
+**`lc status` delegates, against spec §4.** It and `materialize --check` run
+the same classification walk, and `definition_version` hashes what
+`astra.resolve.render_command` produced — so two astra versions can render
+one recipe differently. Leaving status in the tool env is the one way to
+make two verbs that must differ only in exit code disagree on the answer.
+The price, stated where the promise is written: status converges before it
+answers. Its "reads only" promise is about the analysis and the repository,
+never about not touching `.venv`.
+
+**A converged `.venv` with no `lc` in it is a refusal**, naming
+`uv add lightcone-cli`. Never a fall-through to the tool env — that
+fall-through *is* the silent skew the layer removes.
+
+**There is no discovery step**, where spec §4 walks up looking for
+`astra.yaml`. The current directory is the project, as everywhere else.
+
+**A parity test is the only thing binding the launcher to the CLI.** The
+launcher never imports `commands.py`, so `TOOL_ENV_VERBS` and the click
+group could drift apart in silence — a verb added without a routing
+decision would delegate by default, into an engine that may be too old to
+know it, failing far from its cause.
+`tests/test_launcher.py::test_every_verb_has_a_routing_decision` asserts
+the two partitions agree.
+
+**Startup stays cheap, and the launcher is on every invocation.** Stdlib
+only — no click, no rich, no astra — and the engine import happens *after*
+the decision to delegate, so a verbless `lc --help` pays for none of it.
+Measured through the installed console script: 91 ms, no converge, no exec.
+
+### The `UV_*` scrub
+
+**It lives in `project.child_env()`, not in the launcher.** That is the one
+seam every external tool goes through, so one edit covers convergence, a
+run's sync, the recipe's `uv run` hop *and* the delegation exec; a
+launcher-only scrub would cover the last of those alone.
+
+**The list is closed and audited, exactly like `identity._INSTALL_SETTINGS`
+— and for the same reason.** A set that grew by guesswork would strip a
+variable someone legitimately relies on. Every entry was verified read by
+uv 0.12.5, by giving it an unparseable value and watching uv reject it.
+Three families, and nothing else qualifies:
+
+- **where the environment goes, and which interpreter builds it** —
+  measured, `UV_PROJECT_ENVIRONMENT` relocates the venv outright and
+  `UV_PYTHON` changes the interpreter, while every flag lc passes stays the
+  same. `--project` is no defence against either.
+- **which artifacts a sync materializes from an unchanged lock** — the
+  environment spellings of the audited install settings, plus the family
+  that actually spells `default-groups` on a command line
+  (`UV_NO_DEFAULT_GROUPS`, `UV_NO_DEV`, `UV_DEV`) and the install-shape
+  flags. These are the dangerous ones: `env_version` hashes those settings
+  *from the project's files*, so an ambient one changes what is installed
+  **without moving the hash**, and the identity model says something
+  untrue.
+- **what lc's own flags mean** — `UV_FROZEN` would defeat the `--locked`
+  that makes a drifted lock an error rather than a silent relock.
+
+**What is deliberately kept.** `UV_CACHE_DIR` and `UV_LINK_MODE` decide
+where bytes are cached and how they are linked, never what is installed —
+and they are exactly what a site registry supplies on a machine whose cache
+cannot live in `$HOME`. Credentials and TLS settings stay too: without them
+a private index cannot be fetched from at all. `UV_PROJECT` needs no scrub
+— measured, the explicit `--project` every invocation carries already beats
+it.
+
+**The scrub and the identity model are held together by a test**, not by
+memory: `test_every_audited_install_setting_is_scrubbed` derives each
+setting's environment spelling and asserts it is scrubbed, so adding a
+setting to the hash without adding it to the scrub fails rather than
+quietly reopening the hole.
+
 ## Key Invariants (layer 5)
 
 **The seam is a pure argv rewrite.** Every mechanism is a
@@ -1375,7 +1479,7 @@ only checks that the guard is present. Verified empirically, not assumed.
 | Change how the spec becomes a graph | `src/lightcone/engine/plan.py` + `tests/test_plan.py` | Ask `astra.resolve`; if the answer is missing, the fix is a PR to astra-tools. Anything ambiguous is a `ProjectError`, never a guess |
 | Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
 | Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
-| Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
+| Add a CLI verb | `src/lightcone/cli/commands.py` + `cli/launcher.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here. Decide whether it delegates — the parity test fails until you do |
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
 | Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |
 | Change a denial message | `sandbox/denial.py` + `tests/test_sandbox_denial.py` | Remedies must be copy-pasteable and real *today*; the trailer stays unconditional |
@@ -1421,6 +1525,15 @@ only checks that the guard is present. Verified empirically, not assumed.
 - `tests/test_cli.py` — the CLI surface only: flags reaching the engine,
   rendering, exit codes, error translation. Rich wraps output at terminal
   width, so assert on short unwrappable fragments.
+- `tests/test_launcher.py` — routing, the frozen interface, and what the
+  scrub lets through. `os.execve` is faked by *raising* `SystemExit`, since
+  a fake that returned would let a test run on through code the real caller
+  can never reach. One test runs a genuine `os.execve` in a subprocess
+  against a shell-script stand-in for the project's engine: everything else
+  fakes the exec, and so cannot catch an argv that is well-formed and
+  unrunnable. `test_cli.py` is untouched by all of this — it drives
+  `cli.commands.main` through `CliRunner`, while delegation hooks into
+  `cli/__init__.py`, which the suite never calls.
 - `tests/test_templates.py` — template loading (guards the packaging of
   package data), strict substitution, and the `.gitignore` /
   `.gitattributes` entry/repair logic. Content assertions live here; `test_project.py` asserts only that
