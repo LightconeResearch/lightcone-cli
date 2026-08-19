@@ -87,14 +87,6 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
 
     Safe to re-run at any time: creates whatever is missing, repairs the
     pieces lightcone manages, and never overwrites files you own.
-
-    The spec scaffold (``astra.yaml``, ``universes/baseline.yaml``)
-    follows the ``astra init`` boilerplate; on top of it sit the uv
-    project (``pyproject.toml`` with lightcone-cli locked in,
-    ``.python-version``, ``uv.lock``, ``.venv``), a git repository with an
-    annex — inputs and outputs are versioned in it — ``.gitignore`` and
-    ``.gitattributes`` entries, ``data/`` and ``results/``, and a template
-    MyST report (``myst.yml`` + ``index.md``).
     """
     from lightcone.engine.project import converge
 
@@ -117,14 +109,6 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
 
 def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: bool) -> None:
     """Print a convergence report: the items, then the verdict.
-
-    ``--check`` and a real run print the *same* report — they disagree
-    only about tense — so ``dry_run`` selects the mood and nothing else,
-    mirroring the ``write`` flag convergence itself takes. Blocked items
-    are listed with created and repaired ones because they count the same
-    way: they are what lets a report say "not converged" (see
-    :class:`~lightcone.engine.project.ConvergenceReport`). Their reason
-    arrives separately, as a warning.
     """
     mark, style = ("·", "yellow") if dry_run else ("✓", "green")
 
@@ -163,23 +147,13 @@ def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: 
 @main.command(context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
 def run(command: tuple[str, ...]) -> None:
-    """Run COMMAND in the project environment, inside the sandbox.
-
-    Byte-for-byte the environment recipes get — same lock, same
-    ``.venv``, same boundary — so a command that works here means a
-    recipe will. The project and the inputs declared in ``astra.yaml``
-    are readable, ``results/`` and scratch are writable, and anything
-    outside that — a host tool, a system library, an undeclared file —
-    is refused.
+    """Run COMMAND in the project environment, under isolation.
     """
     from lightcone.engine import run as engine_run
     from lightcone.engine.project import current_project
 
     outcome = engine_run.probe(current_project(), command)
     if outcome.notes:
-        # click.echo, not rich: these lines are built to be pasted, and
-        # reflowing a `uv add` remedy would break the one thing the
-        # denial message is for.
         click.echo("\n".join(["", *outcome.notes]), err=True)
     # `Popen.returncode` is negative for a signal, and `sys.exit(-9)`
     # truncates to 247. `lc run` is a proxy for the command it runs, so
@@ -221,11 +195,6 @@ def materialize(
 ) -> None:
     """Make the analysis's outputs, and commit each one as it lands.
 
-    A TARGET is an output id — every universe that declares it — or
-    ``<universe>/<output_id>`` for exactly one. With none, everything.
-    Asking for an output asks for what it is made of, so its inputs are
-    brought up to date first.
-
     Each output is committed together with its manifest, in a commit that
     records the command that produced it. Which is why a run refuses to
     start on a tree with uncommitted changes: it could not otherwise say
@@ -249,9 +218,6 @@ def materialize(
         click.echo(json.dumps(report.as_dict(), indent=2))
     else:
         if report.notes:
-            # click.echo, not rich, for the same reason `lc run` uses it:
-            # these are the boundary's own lines and their remedies are
-            # meant to be pasted, so reflowing them breaks them.
             click.echo("\n".join(["", *report.notes]), err=True)
         _render_materialize_output(report, root, dry_run=check_only)
 
@@ -261,10 +227,6 @@ def materialize(
 
 def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run: bool) -> None:
     """Print what ran, or what would.
-
-    Check mode says *why* each output would run, because that is the
-    entire question it was asked; a real run has already answered it by
-    doing the work, and says what it committed instead.
     """
     lines = [
         f"  [yellow]·[/yellow] would run {name} — {why}"
