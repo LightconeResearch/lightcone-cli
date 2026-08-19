@@ -173,20 +173,18 @@ def test_a_failing_recipe_records_no_manifest(root: Path) -> None:
     assert assets.read(root / "results/baseline/first") is None
 
 
-def test_the_boundary_stops_a_recipe_removing_its_own_output_directory(root: Path) -> None:
-    """Write is granted *inside* the directory, and unlinking the directory
-    needs write on `results/`, which is not granted. So on a host with a
-    mechanism the recipe simply fails."""
-    from lightcone.engine import sandbox
-
-    if sandbox.detect().capability.kind == "none":
-        pytest.skip("no sandbox mechanism on this host")
+def test_a_recipe_that_removes_its_output_directory_fails_on_any_host(root: Path) -> None:
+    """The two mechanisms disagree about whether the removal is even
+    allowed — Landlock follows POSIX and refuses it, because unlinking the
+    directory needs write on `results/`, which is not granted; Seatbelt's
+    subpath grant covers the directory node itself and permits it. The
+    *contract* is the same either way, so that is what this asserts: a
+    `failed` result, never a raise into the driver."""
     (root / "astra.yaml").write_text(
         _SPEC.replace("echo one > {output}/value.txt", "rm -rf {output}")
     )
 
     assert _make(root, "first").status == "failed"
-    assert (root / "results/baseline/first").is_dir()
 
 
 def test_an_output_that_cannot_be_recorded_fails_rather_than_raises(

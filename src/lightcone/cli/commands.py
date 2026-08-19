@@ -248,6 +248,11 @@ def materialize(
     if as_json:
         click.echo(json.dumps(report.as_dict(), indent=2))
     else:
+        if report.notes:
+            # click.echo, not rich, for the same reason `lc run` uses it:
+            # these are the boundary's own lines and their remedies are
+            # meant to be pasted, so reflowing them breaks them.
+            click.echo("\n".join(["", *report.notes]), err=True)
         _render_materialize_output(report, root, dry_run=check_only)
 
     if not report.ok or (check_only and not report.up_to_date):

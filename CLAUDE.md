@@ -835,6 +835,16 @@ is the whole point of the environment overlay. Reading `pyvenv.cfg`'s
 guard is the fix; failing loudly on a layout nobody uses beats voiding
 the guarantee for the people who do.
 
+**The two mechanisms disagree about the write root itself.** Landlock
+follows POSIX — unlinking a directory needs write on its *parent* — so a
+recipe granted write on its output directory cannot remove that
+directory. Seatbelt's `(allow file-write* (subpath …))` covers the
+directory node, and permits it. Found by CI, which is the point of
+running one suite on both. Nothing depends on either answer (the worker
+resets the directory anyway, and a recipe that removes it fails to record
+its output), so the asymmetry is documented rather than papered over —
+but a test that asserts one mechanism's answer will go red on the other.
+
 **SBPL is last-match-wins; Landlock unions.** This asymmetry decides
 where a rule can live, and it cuts both ways. A later `(deny …)` can take
 back an earlier allow, which is how `_read_only_guard` takes back write

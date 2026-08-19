@@ -59,8 +59,14 @@ class MaterializeReport:
     blocked: list[str] = field(default_factory=list)
     #: Check mode only: ``universe/output`` → why it would run.
     planned: dict[str, str] = field(default_factory=dict)
-    #: What the lock scan and the boundary had to say.
+    #: lc's own prose: what the lock scan found, why a task did not finish.
     warnings: list[str] = field(default_factory=list)
+    #: Console lines from the boundary, verbatim — a downgrade notice, a
+    #: denial and its remedies. Kept apart from ``warnings`` because they
+    #: are built to be *pasted*: reflowing a `uv add numpy` to the terminal
+    #: width breaks the one thing a denial message is for. The caller
+    #: prints these unwrapped, exactly as ``lc run`` does.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -214,7 +220,11 @@ def _consume(
 ) -> None:
     """Record one finished task, and commit or undo what it left on disk."""
     name = _name(task.key)
-    report.warnings.extend(f"{name}: {note}" for note in result.notes if note)
+    if lines := [note for note in result.notes if note]:
+        # Named on a line of their own rather than prefixed onto each: a
+        # prefix would land in the middle of a multi-line remedy and make
+        # it uncopyable, which is the whole reason these travel separately.
+        report.notes.extend([f"{name}:", *lines])
 
     if result.status == "ok":
         dataset.save(root, [task.output_dir], run_record(root, task, dsid))

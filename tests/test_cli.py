@@ -426,6 +426,7 @@ def test_the_json_report_is_machine_readable(
         "blocked": [],
         "planned": {},
         "warnings": [],
+        "notes": [],
     }
 
 
