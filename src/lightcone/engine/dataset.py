@@ -37,9 +37,11 @@ def put_our_bin_first() -> None:
     ``lc`` on ``PATH``, ``git annex version`` fails and ``lc init``
     refuses.
 
-    Prepend, never append: a system git-annex winning would make the
-    version recorded in the lock a fiction. Idempotent, and applied to our
-    own environment because that is what child processes inherit.
+    Prepend, never append: the annex we resolved is the one the engine was
+    installed with and the one its behaviour is tested against, and a
+    system copy of another vintage winning that race is a difference
+    nothing records. Idempotent, and applied to our own environment
+    because that is what child processes inherit.
     """
     ours = str(Path(sys.executable).parent)
     path = os.environ.get("PATH", "")

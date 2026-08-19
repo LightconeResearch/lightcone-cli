@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
@@ -320,10 +320,11 @@ def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
 def sync(directory: Path) -> list[str]:
     """Make ``.venv`` match ``uv.lock``.
 
-    A run calls this before it starts rather than checking and refusing:
-    workers pass ``--no-sync``, so nothing else would notice a lock edited
-    without a sync, and a manifest recording an environment the recipe did
-    not run under is the identity model saying something untrue.
+    Both entry points that execute recipes call this before they start,
+    rather than checking and refusing: workers pass ``--no-sync``, so
+    nothing else would notice a lock edited without a sync, and a manifest
+    recording an environment the recipe did not run under is the identity
+    model saying something untrue.
 
     Args:
         directory: The project root.
@@ -485,40 +486,70 @@ def project_name(directory: Path) -> str:
     return name or "analysis"
 
 
-#: What makes a directory a project root: the environment ``lc run``
-#: enters. ``astra.yaml`` is deliberately not among them — a command can
-#: be probed in any uv project, spec or no spec. ``.venv`` stays last:
-#: it is the one entry that is local state rather than repository
-#: content, and ``current_project(synced=False)`` slices it off.
-_ENVIRONMENT_FILES = ("pyproject.toml", "uv.lock", ".venv")
+#: What the repository itself carries of the environment. ``astra.yaml``
+#: is deliberately not among them — a command can be probed in any uv
+#: project, spec or no spec.
+_DECLARED_FILES = ("pyproject.toml", "uv.lock")
+
+#: …plus the built environment. ``.venv`` is the one piece that is local
+#: state rather than repository content, which is the whole difference
+#: between the two questions below.
+_ENVIRONMENT_FILES = (*_DECLARED_FILES, ".venv")
 
 
-def current_project(directory: Path | None = None, *, synced: bool = True) -> Path:
-    """Take a directory as the project root, checking it is one.
+def declared_project(directory: Path | None = None) -> Path:
+    """Take a directory as a project root, needing only what git carries.
 
-    There is no walk-up: the directory you are in is the directory that is
-    used, or it is an error.
+    The weaker of the two questions: it asks whether the project is
+    *declared*, not whether it is built. That is what the worker entry
+    point needs — a clone holds the lock and no ``.venv``, and the worker
+    converges the environment for itself a moment later.
 
     Args:
         directory: Defaults to the working directory.
-        synced: Whether the built ``.venv`` must already be there. The
-            worker entry point passes False, because it converges the
-            environment itself — which is what makes a rerun work on a
-            fresh clone, where the lock is in the repository and the
-            environment is not.
 
     Returns:
         The resolved project root.
 
     Raises:
-        ProjectError: If the environment is not there. The two ways that
-            fails get different advice — a directory with no project
+        ProjectError: If ``pyproject.toml`` or ``uv.lock`` is absent.
+    """
+    return _project_root(directory, _DECLARED_FILES)
+
+
+def current_project(directory: Path | None = None) -> Path:
+    """Take a directory as the project root, built environment and all.
+
+    The question every verb that runs something asks, and the stronger of
+    the two: a ``.venv`` that is not there is not something these callers
+    are going to create.
+
+    Args:
+        directory: Defaults to the working directory.
+
+    Returns:
+        The resolved project root.
+
+    Raises:
+        ProjectError: If any of the environment is absent.
+    """
+    return _project_root(directory, _ENVIRONMENT_FILES)
+
+
+def _project_root(directory: Path | None, required: Sequence[str]) -> Path:
+    """Check *directory* against *required* and resolve it.
+
+    There is no walk-up: the directory you are in is the directory that is
+    used, or it is an error.
+
+    Raises:
+        ProjectError: If anything in *required* is absent. The two ways
+            that fails get different advice — a directory with no project
             markers is the wrong *place*, while one that declares a
-            project but lacks the built environment is the right place,
-            not yet converged, which is what a fresh clone is.
+            project but lacks a piece of the environment is the right
+            place, not yet converged.
     """
     directory = (directory or Path.cwd()).resolve()
-    required = _ENVIRONMENT_FILES if synced else _ENVIRONMENT_FILES[:2]
     missing = [name for name in required if not (directory / name).exists()]
     if not missing:
         return directory

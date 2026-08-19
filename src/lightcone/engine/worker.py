@@ -5,12 +5,12 @@ Also an entry point:
     python -m lightcone.engine.worker <universe>/<output_id>
 
 which is what the ``[DATALAD RUNCMD]`` record in every materialization
-commit names — behind an engine-pinning ``uv run --no-project --with
-lightcone-cli==<v>`` when the engine that made the output is a published
-release. That is why it is a module rather than an ``lc`` verb: it
-makes the output unconditionally, commits nothing, and leaves the tree dirty by
-design — precisely the state ``lc materialize`` refuses to start from —
-so advertising it in ``lc --help`` would hand people a footgun.
+commit names, behind whatever engine pin
+:func:`~lightcone.engine.materialize._worker_cmd` decided on. That is why
+it is a module rather than an ``lc`` verb: it makes the output
+unconditionally, commits nothing, and leaves the tree dirty by design —
+precisely the state ``lc materialize`` refuses to start from — so
+advertising it in ``lc --help`` would hand people a footgun.
 :func:`main` converges the project environment from the rerun commit's
 own lock before anything executes, so the record holds on a clone that
 has never built one.
@@ -27,6 +27,7 @@ owning the loop.
 
 from __future__ import annotations
 
+import functools
 import shutil
 import sys
 from collections.abc import Mapping
@@ -39,7 +40,7 @@ from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
     ProjectError,
     child_env,
-    current_project,
+    declared_project,
     sync,
     uv_prefix,
 )
@@ -278,12 +279,17 @@ def _gate(root: Path, env_version: str) -> str:
     )
 
 
+@functools.cache
 def lc_version() -> str:
     """Report the running engine's version, empty for a bare source tree.
 
     The one lookup behind both places the engine attests itself: the
     manifest's ``lc_version`` and the run record's version pin. One
     function, so the two cannot disagree about which engine ran.
+
+    Cached: the metadata scan walks ``sys.path``, both callers are once
+    per output, and an installed version cannot change under a running
+    process.
     """
     from importlib.metadata import PackageNotFoundError, version
 
@@ -326,7 +332,7 @@ def main(argv: list[str]) -> int:
 
     universe_id, _, output_id = argv[0].partition("/")
     try:
-        root = current_project(synced=False)
+        root = declared_project()
         sync(root)
         env_version = identity.env_version(root)
         graph = plan.build(root)

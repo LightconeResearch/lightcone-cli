@@ -373,7 +373,8 @@ def materialize(
     project.require_git_annex()
     dataset.require_committer(root)
     # Before anything else: workers pass `--no-sync`, so this is the only
-    # place the environment is made to match the lock.
+    # place on a run's path where the environment is made to match the
+    # lock. (A rerun does not come through here; its entry point syncs.)
     report = MaterializeReport()
     report.warnings.extend(f"uv: {w}" for w in project.sync(root))
     if changes := dataset.status(root):
@@ -554,8 +555,8 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
     lc adds, and ``lc materialize`` cannot be it because a rerun removes
     the declared outputs first, dirtying the tree materialize refuses to
     start from. The worker rebuilds the *project* environment itself from
-    the lock of the commit being rerun; :func:`_worker_cmd` is what pins
-    the *engine*.
+    the lock of the commit being rerun; what becomes of the *engine* is
+    :func:`_worker_cmd`'s decision.
 
     Args:
         root: The project root.
@@ -586,13 +587,14 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
 def _worker_cmd(target: str) -> str:
     """Build the rerun invocation for one output.
 
-    The module spelling, never a console script, behind an ephemeral
-    ``uv run`` that pins the engine to the version that made the output —
-    so a rerun executes the recorded engine, not whatever the host has
-    grown into. A dev build's version is not published, and pinning it
-    would fail resolution loudly; a dev engine exists only in a checkout
-    whose ambient ``python`` already imports it, which is exactly what the
-    bare form resolves.
+    Always the module spelling, never a console script. A released engine
+    is put behind an ephemeral ``uv run`` pinning its own version, so the
+    rerun executes the engine that made the output rather than whatever
+    the host has grown into. A dev build cannot be: its version is not
+    published, so pinning it would fail resolution — and a dev engine
+    exists only in a checkout whose ambient ``python`` already imports it,
+    which is what the bare form resolves. So the dev record is the weaker
+    of the two, and says nothing about which engine it will find.
 
     Args:
         target: ``<universe>/<output_id>``.

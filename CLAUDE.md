@@ -227,6 +227,17 @@ environment is there (`pyproject.toml`, `uv.lock`, `.venv`) and does not
 require an `astra.yaml`, so any uv project can be probed. No walk-up:
 the directory you invoke from is the project, or it is a clean error.
 
+**Two questions about a project root, not one** — the same shape as
+`_in_repository` / `_can_ask_git` below. `declared_project()` wants only
+what the repository carries (`pyproject.toml`, `uv.lock`);
+`current_project()` adds `.venv`. The split is named rather than a
+`synced=` flag on one function, because "what makes a directory a
+project" should not be negotiable per call site, and because a slice of
+a constant would make the answer depend on the order its entries happen
+to be in. The weaker question has exactly one caller — the worker entry
+point, which builds the `.venv` a moment later — and that is the whole
+reason it exists.
+
 **CLI startup stays cheap.** `commands.py` imports the engine *inside* the
 command callbacks and builds the rich console lazily, so `lc --help` and
 shell completion pay for neither. Keep this up as verbs land: a module-scope
@@ -917,13 +928,21 @@ commit the run went on to create. It is the code that produced the output.
 A test that reads `dataset.head()` after materializing and expects a match
 is asserting the wrong thing.
 
-**One uv hop, one spelling** (`project.uv_prefix(root, *, sync)`). The
-only thing its callers disagree about is `sync`: a probe converges the
-environment it is about to describe, a recipe must not, or every
-concurrent worker writes the same `.venv`. The run record carries no uv
-hop at all — the worker entry point converges the project environment for
-itself, so there is nothing in the record to drift out of step with the
-prefix.
+**One *project* uv hop, one spelling** (`project.uv_prefix(root, *,
+sync)`). The only thing its callers disagree about is `sync`: a probe
+converges the environment it is about to describe, a recipe must not, or
+every concurrent worker writes the same `.venv`.
+
+The run record's `cmd` is the deliberate second shape, and it is not the
+drift the rule guards against: it is *project-less* by construction
+(`uv run --no-project --with lightcone-cli==<v>`), so it shares no flag
+with `uv_prefix` — no `--project`, no `--locked`, no sync selection,
+because there is no project environment involved. It builds an engine to
+run, where `uv_prefix` enters an environment already built. Routing one
+through the other would mean a helper with two disjoint output shapes.
+What keeps *that* hop from drifting is that the worker it invokes
+converges the project environment itself, so the record never has to
+spell how.
 
 **A run syncs the environment; it does not report on it.** `uv run
 --locked` asserts only that `uv.lock` still matches `pyproject.toml`, and
@@ -982,6 +1001,14 @@ interpreter imports it. The bare recipe would reconstruct nothing lc adds
 commit bytes the identity model never produced; `lc materialize` cannot
 be it either, because `datalad rerun` removes the declared outputs first
 and that dirties the tree materialize refuses to start from.
+
+The **shipped** shape is the one the suite cannot execute, and that is
+worth knowing rather than discovering. The tests run a dev build, so both
+end-to-end rerun tests exercise the bare-module branch; the pinned branch
+every real commit will carry is covered only by a string assertion over a
+monkeypatched version. Verified by hand instead, against a wheel built
+from the branch — record it that way again when the branch changes, and
+treat "the suite is green" as saying nothing about it.
 
 **The worker module is not an `lc` verb and not a console script.** It
 makes the output unconditionally, commits nothing, leaves the tree dirty by
@@ -1245,6 +1272,13 @@ only checks that the guard is present. Verified empirically, not assumed.
     workers are in-process threads; when a venue larger than a laptop
     lands (layer 7), its connect path must probe the remote engine version
     — the pin no longer does it structurally.
+  - *The engine's dependency closure left the record entirely, and is not
+    replaced.* The project lock used to pin what the engine resolved —
+    most concretely the git-annex build that wrote the bytes. Now
+    `lc_version` names the engine and nothing pins what it was made of.
+    Accepted rather than re-provided: the alternative is hashing an
+    environment lc does not own into artifacts it does, which is the
+    over-sensitivity the `behind` model exists to avoid.
   - *Layer 6 note:* the generated image can no longer get its in-image
     engine from the lock (`/opt/venv/bin/lc` existed because the pin did).
     The Containerfile must install the engine as an explicit layer, and

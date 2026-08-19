@@ -638,17 +638,28 @@ def test_check_agrees_with_a_run_on_a_clone_with_no_annex_content(
     is still classifiable — check mode reads the recorded digest rather
     than the pointer file sitting in its place."""
     engine.materialize(root, [])
-    clone = tmp_path / "clone"
-    dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
-    # `clone` does not copy identity, and `annex init` makes a commit — so
-    # this fails on any host without a usable global one, CI included.
-    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
-        dataset._git(["config", key, value], cwd=clone)
-    dataset._git(["annex", "init", "-q", "clone"], cwd=clone)
+    clone = _clone(root, tmp_path)
     pointer = (clone / "results/baseline/first/value.txt").read_text()
     assert pointer.startswith("/annex/objects/")  # content really is absent
 
     assert engine.check(clone, []).planned == {}
+
+
+def _clone(root: Path, into: Path) -> Path:
+    """Clone *root* into a usable annexed repository, as a colleague would.
+
+    The identity is set because `clone` does not copy one and
+    `annex init` makes a commit — so without it this fails on any host
+    with no usable global identity, CI included. No annex content is
+    fetched: a fresh clone holds pointers, and that is the state these
+    tests are about.
+    """
+    clone = into / "clone"
+    dataset._git(["clone", "-q", str(root), str(clone)], cwd=into)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=clone)
+    dataset._git(["annex", "init", "-q", "clone"], cwd=clone)
+    return clone
 
 
 def test_a_drifted_environment_is_made_to_match_before_anything_runs(
@@ -717,11 +728,7 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
     original = assets.read(root / "results/baseline/first")
     assert original is not None
 
-    clone = tmp_path / "clone"
-    dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
-    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
-        dataset._git(["config", key, value], cwd=clone)
-    dataset._git(["annex", "init", "-q", "clone"], cwd=clone)
+    clone = _clone(root, tmp_path)
     assert not (clone / ".venv").exists()
 
     proc = subprocess.run(
