@@ -513,6 +513,18 @@ bytes (448 concurrent full-content reads across 24 MB: no missing paths,
 no short reads, no wrong bytes). Don't "fix" this by moving the save into
 the task — that is what puts git back in the workers.
 
+**A declared input is hashed once per run** (`assets.Versions`). Without
+it a multiverse spec re-reads the same bytes once per `(universe,
+output)` that names it — eight universes times four outputs sharing one
+catalog is thirty-two full hashes of one file, paid again on the
+"nothing to do" path because staleness needs the digest before it can
+skip. Memoizing is sound for exactly as long as a run lasts: a run
+refuses to start on a dirty tree, and the only in-tree path a recipe may
+write is its own output directory. A class rather than a closure, so it
+keeps one dict alive and not whatever scope built it; and deliberately
+unlocked, because a lock would serialise every hash and would not survive
+being handed to a worker in another process.
+
 **HEAD is read once per run, by the driver, and handed down.** The driver
 commits each output as it lands, so HEAD *moves* during a run: a
 per-task `dataset.head` would stamp later manifests with a commit this
@@ -520,12 +532,15 @@ same run created, and whether it did would depend on whether a recipe
 finished before or after the previous save. Nondeterminism in a
 provenance field is worse than either answer.
 
-**The worker never raises.** It returns `ok`, `skipped`, `failed`, or
-`blocked`. A task whose upstream did not report — failed, or never
-finished at all — returns `blocked` without running. Raising would make
-Dask propagate to every dependent and stop "who actually failed" from
-being answerable, and reporting all independent failures in one run is
-most of what owning the loop buys.
+**The worker never raises, and that is enforced at the unit boundary.**
+It returns `ok`, `skipped`, `failed`, or `blocked`. A task whose upstream
+did not report — failed, or never finished at all — returns `blocked`
+without running. Raising would make Dask re-raise in the driver and abort
+every task in flight, and reporting all independent failures in one run
+is most of what owning the loop buys. `worker.materialize` wraps the
+whole unit, so the contract holds for failure modes nobody enumerated;
+the one inner guard that remains exists because "your recipe failed" and
+"your recipe worked and we could not record it" deserve different words.
 
 **`data_version` is computed in the worker, before anything is staged.**
 The dependent's argument *is* the upstream worker's return value, so the
@@ -561,14 +576,23 @@ a second body of logic — the same discipline as layer 1's
 quiet rather than loud, which is exactly why it may not have two
 implementations.
 
+**One uv hop, one spelling** (`project.uv_prefix(root, *, sync)`). The
+flags are also what `run_record` writes verbatim into every commit
+message, so a second copy is a second thing that can drift out of the
+provenance. The only thing callers disagree about is `sync`: a probe
+converges the environment it is about to describe, a recipe must not, or
+every concurrent worker writes the same `.venv`.
+
 **An environment that no longer matches the lock is a refusal too.**
 `uv run --locked` asserts only that `uv.lock` still matches
 `pyproject.toml`, and workers pass `--no-sync` — so a lock edited without
 a sync leaves recipes importing packages the lock does not describe while
 every manifest records the *new* lock's `env_version`. Measured: the
 recipe imported `packaging 26.3` under a lock saying `24.2`, and uv
-accepted it silently. `project._env_is_current` is uv's own probe and
-already existed; the run just has to ask. (Layer 3's launcher will
+accepted it silently. `project.environment_drift` wraps uv's own probe and
+returns the message rather than a bool, so the description lives with the
+detection and the two callers differ only in the verb — one raises, one
+warns. (Layer 3's launcher will
 converge instead; until then this is the guard.)
 
 **A dirty tree is a refusal, and `--check` is exempt.** Every
@@ -621,6 +645,14 @@ a golden test over our own JSON would stay green through a silent break.
 So the suite asserts through datalad's parser *and* runs a real
 `datalad rerun`, and `datalad` is a **dev** dependency only. Nothing in lc
 imports it.
+
+**A policy is a description, and `scope()` owns every policy's lifetime.**
+`recipe_policy` does not create the output directory — the worker resets
+it, so the whole of an output's lifecycle stays in the module that owns
+it, and a policy that could not be built without touching the filesystem
+would be the impurity `wrap` is already pinned against. `sandbox.scope`
+takes a *built* policy rather than building a probe's, so the `rmtree` of
+the private `$HOME` has one owner for probes and recipes alike.
 
 **`recipe_policy` narrows a probe's scope on writes, and only on writes.**
 A probe gets all of `results/`; a recipe gets its own output directory and

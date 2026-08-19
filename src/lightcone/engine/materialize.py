@@ -98,16 +98,17 @@ def check(root: Path, targets: Sequence[str]) -> MaterializeReport:
     """
     report = MaterializeReport()
     graph, _ = _graph(root, targets, report)
-    if not project._env_is_current(root):
-        report.warnings.append(_stale_environment(root))
+    if drift := project.environment_drift(root):
+        report.warnings.append(drift)
 
+    versions = assets.Versions()
     stale: set[Key] = set()
     for key in graph.order():
         task = graph.tasks[key]
         reason = assets.staleness(
             code_version=task.code_version,
             manifest=assets.read(task.output_dir),
-            inputs=_predicted(task, stale),
+            inputs=_predicted(task, stale, versions),
         )
         name = _name(key)
         if reason is None:
@@ -118,7 +119,7 @@ def check(root: Path, targets: Sequence[str]) -> MaterializeReport:
     return report
 
 
-def _predicted(task: Task, stale: set[Key]) -> dict[str, str | None]:
+def _predicted(task: Task, stale: set[Key], versions: assets.Versions) -> dict[str, str | None]:
     """Each input's version as check mode can know it.
 
     ``None`` for anything that will be rebuilt; the bytes on disk for
@@ -140,7 +141,7 @@ def _predicted(task: Task, stale: set[Key]) -> dict[str, str | None]:
         elif not path.exists():
             predicted[name] = None
         else:
-            predicted[name] = assets.data_version(path)
+            predicted[name] = versions.of(path)
     return predicted
 
 
@@ -156,8 +157,8 @@ def materialize(
     require_uv()
     dataset.require_git()
     dataset.require_git_annex()
-    if not project._env_is_current(root):
-        raise ProjectError(_stale_environment(root))
+    if drift := project.environment_drift(root):
+        raise ProjectError(drift)
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes))
 
@@ -172,6 +173,10 @@ def materialize(
     # manifests a commit this run created — nondeterministically, depending
     # on whether a recipe finished before or after the previous save.
     head = dataset.head(root)
+    # One memo for the run, for the same reason as one HEAD read: a
+    # declared input shared by several outputs — or by one output across
+    # several universes — is the same bytes every time it is asked for.
+    versions = assets.Versions()
     outstanding: dict[Key, Task] = dict(graph.tasks)
     try:
         with cluster_for_run(jobs) as scheduler:
@@ -187,6 +192,7 @@ def materialize(
                     task,
                     env_version,
                     head,
+                    versions,
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
                 )
@@ -380,23 +386,6 @@ def _graph(root: Path, targets: Sequence[str], report: MaterializeReport) -> tup
 
 def _name(key: Key) -> str:
     return f"{key[0]}/{key[1]}"
-
-
-def _stale_environment(root: Path) -> str:
-    """Said when ``.venv`` no longer matches ``uv.lock``.
-
-    A run must not start here. ``uv run --locked`` asserts only that the
-    lock still matches ``pyproject.toml``, and workers pass ``--no-sync``,
-    so a lock edited without a sync leaves recipes importing packages the
-    lock does not describe — while every manifest records the *new* lock's
-    ``env_version``. That is the identity model saying something untrue,
-    which is worse than any failure it could report instead.
-    """
-    return (
-        f"{root}: the environment does not match uv.lock — recipes would import "
-        "packages the lock does not describe, and every manifest would record an "
-        "environment that never ran. Converge it with `lc init` and try again."
-    )
 
 
 def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:

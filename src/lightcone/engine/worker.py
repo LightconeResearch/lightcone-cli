@@ -34,7 +34,12 @@ from typing import Literal
 
 from lightcone.engine import assets, dataset, identity, plan, sandbox
 from lightcone.engine.plan import Key, Task
-from lightcone.engine.project import ProjectError, child_env, current_project
+from lightcone.engine.project import (
+    ProjectError,
+    child_env,
+    current_project,
+    uv_prefix,
+)
 
 #: The commit a run is identified against: ``(sha, origin URL)``. Read once
 #: by the driver and handed to every task, because the driver commits as
@@ -58,12 +63,10 @@ class TaskResult:
     #: which are the two states in which the bytes on disk are current —
     #: this is what a dependent compares against.
     data_version: str = ""
-    #: Why it ran, or why it did not finish. Shown to the user verbatim.
+    #: Why it did not finish. Shown to the user verbatim.
     reason: str = ""
     #: Console lines from the boundary: a downgrade notice, a denial.
     notes: tuple[str, ...] = ()
-    #: What the sandbox actually enforced, when a recipe ran.
-    hermeticity: dict[str, object] | None = None
 
     @property
     def usable(self) -> bool:
@@ -77,39 +80,61 @@ class TaskResult:
 
 
 def materialize(
-    root: Path, task: Task, env_version: str, head: Head, *upstream: TaskResult
+    root: Path,
+    task: Task,
+    env_version: str,
+    head: Head,
+    versions: assets.Versions,
+    *upstream: TaskResult,
 ) -> TaskResult:
     """Make *task* if it needs making. What Dask submits, once per task.
+
+    This is where "the worker never raises" is enforced, rather than at
+    each fallible call inside it. Dask re-raises a task's exception in the
+    driver, which would abort every other task in flight — so the contract
+    is absolute, and a contract assembled from individually-guarded call
+    sites is only as true as the last person to add one.
 
     *upstream* arrives as the results of the futures this task was given
     as arguments, which is what makes Dask the scheduler: the ordering
     falls out of the argument graph rather than out of a loop here.
-
-    *head* is handed down rather than read here — the driver commits each
-    output as it lands, so HEAD moves during a run and reading it per task
-    would stamp later manifests with a commit this same run created.
+    *head* and *versions* are the run's, handed down: the driver commits
+    as outputs land so HEAD moves under the run, and one input declared by
+    many outputs is the same bytes every time.
     """
+    try:
+        return _materialize(root, task, env_version, head, versions, upstream)
+    except Exception as e:  # the contract is that this function returns
+        return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
+
+
+def _materialize(
+    root: Path,
+    task: Task,
+    env_version: str,
+    head: Head,
+    versions: assets.Versions,
+    upstream: tuple[TaskResult, ...],
+) -> TaskResult:
     reported = {u.key: u for u in upstream if u.usable}
     if absent := [dep for dep in task.depends_on if dep not in reported]:
         names = ", ".join(f"{u}/{o}" for u, o in absent)
         return TaskResult(task.key, "blocked", reason=f"upstream did not finish: {names}")
 
-    try:
-        versions = _input_versions(task, {k: u.data_version for k, u in reported.items()})
-    except FileNotFoundError as e:
-        return TaskResult(task.key, "failed", reason=f"declared input is missing: {e}")
-
+    live = {key: u.data_version for key, u in reported.items()}
+    inputs = {
+        name: live[key] if (key := task.produced_by.get(name)) else versions.of(path)
+        for name, path in task.inputs.items()
+    }
     manifest = assets.read(task.output_dir)
-    reason = assets.staleness(
-        code_version=task.code_version, manifest=manifest, inputs=versions
-    )
-    if reason is None and manifest is not None:
+    if assets.staleness(code_version=task.code_version, manifest=manifest, inputs=inputs) is None:
         # The recorded digest, never a recomputed one: on a clone that has
         # fetched no annex content the files are dangling symlinks, and
         # rehashing them would quietly report a different output.
+        assert manifest is not None  # staleness returns a reason when it is None
         return TaskResult(task.key, "skipped", data_version=manifest.data_version)
 
-    return execute(root, task, env_version, versions, head=head, reason=str(reason))
+    return execute(root, task, env_version, inputs, head=head)
 
 
 # =============================================================================
@@ -123,8 +148,7 @@ def execute(
     env_version: str,
     input_versions: Mapping[str, str],
     *,
-    head: Head | None = None,
-    reason: str = "",
+    head: Head,
 ) -> TaskResult:
     """Run *task*'s recipe and record what it produced.
 
@@ -140,20 +164,19 @@ def execute(
         return TaskResult(task.key, "failed", reason=drift)
 
     shutil.rmtree(task.output_dir, ignore_errors=True)
+    task.output_dir.mkdir(parents=True)
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
     policy = sandbox.recipe_policy(root, task.output_dir, read_paths=read_paths)
-    try:
+    with sandbox.scope(policy):
         outcome = sandbox.run(
             sandbox.detect(),
             policy,
             [_SHELL, "-c", task.recipe],
             cwd=root,
-            prefix=_uv_prefix(root),
+            prefix=uv_prefix(root, sync=False),
             env=child_env(),
         )
-    finally:
-        shutil.rmtree(policy.tmp_home, ignore_errors=True)
 
     if outcome.returncode != 0:
         return TaskResult(
@@ -165,12 +188,11 @@ def execute(
     if drift := _gate(root, env_version):
         return TaskResult(task.key, "failed", reason=drift, notes=outcome.notes)
 
-    # Recording is fallible too — a recipe is free to remove the directory
-    # it was given — and a raise here would reach Dask, which re-raises in
-    # the driver and takes down every other task in flight. Reporting one
-    # failure and letting the rest finish is the whole point of the loop.
+    # Guarded separately from the boundary catch above it, because these
+    # two failures deserve different words: "your recipe failed" and "your
+    # recipe worked and we could not record it" are different problems.
     try:
-        sha, remote = head if head is not None else dataset.head(root)
+        sha, remote = head
         data_version = assets.data_version(task.output_dir)
         assets.write(
             task.output_dir,
@@ -196,14 +218,7 @@ def execute(
             reason=f"the recipe finished but its output could not be recorded: {e}",
             notes=outcome.notes,
         )
-    return TaskResult(
-        task.key,
-        "ok",
-        data_version=data_version,
-        reason=reason,
-        notes=outcome.notes,
-        hermeticity=asdict(outcome.attestation),
-    )
+    return TaskResult(task.key, "ok", data_version=data_version, notes=outcome.notes)
 
 
 def _gate(root: Path, env_version: str) -> str:
@@ -215,31 +230,6 @@ def _gate(root: Path, env_version: str) -> str:
         ".python-version, or an install setting was edited. Nothing was "
         "recorded; re-run `lc materialize`."
     )
-
-
-def _uv_prefix(root: Path) -> list[str]:
-    """``uv run``, outside the boundary, and syncing nothing.
-
-    ``--no-sync`` because the environment was converged before the run
-    started: syncing here would have every concurrent task writing the
-    same ``.venv``. ``--locked`` still holds, so a lock that drifted under
-    the run is uv's loud error rather than a silent relock. Always an
-    explicit ``--project``: uv's own walk-up discovery is never trusted.
-    """
-    return ["uv", "run", "--locked", "--no-sync", "--project", str(root), "--"]
-
-
-def _input_versions(task: Task, upstream: Mapping[Key, str]) -> dict[str, str]:
-    """Each declared input's content identity, right now.
-
-    An input another task produces takes that task's answer — computed in
-    the worker that made it, before anything was staged. Everything else
-    is hashed from disk.
-    """
-    return {
-        name: upstream[key] if (key := task.produced_by.get(name)) else assets.data_version(path)
-        for name, path in task.inputs.items()
-    }
 
 
 def _lc_version() -> str:
@@ -278,7 +268,12 @@ def main(argv: list[str]) -> int:
         env_version = identity.env_version(root)
         graph = plan.build(root, env_version=env_version)
         task = graph.tasks[(universe_id, output_id)]
-        result = execute(root, task, env_version, _from_disk(task))
+        # This one-task run reads HEAD for itself, because it *is* the
+        # driver here — the rule is that the run's commit is read once by
+        # whoever owns the run, not that a worker never reads it.
+        result = execute(
+            root, task, env_version, _from_disk(task), head=dataset.head(root)
+        )
     except KeyError:
         print(f"no output `{argv[0]}` in this project", file=sys.stderr)
         return 2
@@ -295,7 +290,12 @@ def main(argv: list[str]) -> int:
 
 
 def _from_disk(task: Task) -> dict[str, str]:
-    """Upstream versions, read from the manifests already in the tree."""
+    """Upstream versions, read from the manifests already in the tree.
+
+    There is no graph in flight to take them from, and a single-task run
+    has nothing to share a memo with — the digests are read once each here
+    by construction.
+    """
     versions: dict[str, str] = {}
     for name, path in task.inputs.items():
         if task.produced_by.get(name) is None:

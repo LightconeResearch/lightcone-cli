@@ -58,9 +58,9 @@ _HEAD = ("0123456789abcdef", "https://example/analysis.git")
 
 def _make(root: Path, output_id: str, *upstream: TaskResult) -> TaskResult:
     """Run one task the way Dask would, handed its upstream results."""
-    return worker.materialize(
-        root, _task(root, output_id), identity.env_version(root), _HEAD, *upstream
-    )
+    task = _task(root, output_id)
+    env = identity.env_version(root)
+    return worker.materialize(root, task, env, _HEAD, assets.Versions(), *upstream)
 
 
 # ---- executing a recipe ----------------------------------------------------
@@ -94,9 +94,11 @@ def test_the_recipe_runs_under_the_boundary(root: Path) -> None:
     never what the mechanism matrix says it should have been."""
     from lightcone.engine import sandbox
 
-    result = _make(root, "first")
-    assert result.hermeticity is not None
-    assert result.hermeticity["mechanism"] == sandbox.detect().capability.kind
+    _make(root, "first")
+
+    manifest = assets.read(root / "results/baseline/first")
+    assert manifest is not None
+    assert manifest.hermeticity["mechanism"] == sandbox.detect().capability.kind
 
 
 # ---- deciding whether to run at all ----------------------------------------
@@ -154,7 +156,7 @@ def test_a_stale_file_does_not_survive_a_rebuild(root: Path) -> None:
     output = root / "results/baseline/first"
     (output / "leftover.txt").write_text("from a previous run\n")
 
-    worker.execute(root, _task(root, "first"), identity.env_version(root), {})
+    worker.execute(root, _task(root, "first"), identity.env_version(root), {}, head=_HEAD)
 
     assert not (output / "leftover.txt").exists()
     assert (output / "value.txt").exists()
@@ -214,7 +216,9 @@ def test_an_output_that_cannot_be_recorded_fails_rather_than_raises(
 def test_an_environment_that_moved_under_the_run_is_refused(root: Path) -> None:
     """A manifest may not claim an environment that had already been edited
     by the time the recipe ran."""
-    result = worker.execute(root, _task(root, "first"), "sha256:from-another-run", {})
+    result = worker.execute(
+        root, _task(root, "first"), "sha256:from-another-run", {}, head=_HEAD
+    )
 
     assert result.status == "failed"
     assert "environment changed" in result.reason
@@ -327,7 +331,7 @@ def test_the_module_runs_one_task_and_commits_nothing(root: Path) -> None:
 
     assert proc.returncode == 0, proc.stderr
     assert (root / "results/baseline/first/value.txt").read_text() == "one\n"
-    assert not dataset.is_clean(root)
+    assert dataset.status(root)
 
 
 def test_the_module_reruns_unconditionally(

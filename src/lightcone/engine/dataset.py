@@ -180,11 +180,6 @@ def dataset_id(directory: Path) -> str:
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
-def is_clean(directory: Path) -> bool:
-    """Whether the working tree has nothing uncommitted."""
-    return not status(directory)
-
-
 def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
     """Commit *paths* with *message*. False if there was nothing to commit.
 

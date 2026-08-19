@@ -327,16 +327,6 @@ def test_run_needs_no_spec_file(
 # ---- lc materialize -------------------------------------------------------
 
 
-@pytest.fixture
-def somewhere(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A directory `current_project()` accepts, so the verb reaches the engine."""
-    for name in ("pyproject.toml", "uv.lock"):
-        (tmp_path / name).write_text("")
-    (tmp_path / ".venv").mkdir()
-    monkeypatch.chdir(tmp_path)
-    return tmp_path
-
-
 def _stub(monkeypatch: pytest.MonkeyPatch, **outcomes: object) -> list[tuple[str, object]]:
     """Record which engine entry point the flags reached, and with what."""
     from lightcone.engine import materialize as engine
@@ -356,7 +346,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, **outcomes: object) -> list[tuple[str
 
 
 def test_check_reaches_check_mode_and_nothing_else(
-    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen = _stub(monkeypatch)
 
@@ -366,7 +356,7 @@ def test_check_reaches_check_mode_and_nothing_else(
 
 
 def test_targets_and_jobs_reach_the_engine(
-    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen = _stub(monkeypatch)
 
@@ -376,7 +366,7 @@ def test_targets_and_jobs_reach_the_engine(
 
 
 def test_a_run_with_nothing_to_do_exits_zero(
-    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _stub(monkeypatch)
 
@@ -387,7 +377,7 @@ def test_a_run_with_nothing_to_do_exits_zero(
 
 
 def test_check_exits_nonzero_when_something_would_run(
-    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An agent has to be able to ask "is this current?" and read the
     answer off the exit status."""
@@ -402,7 +392,7 @@ def test_check_exits_nonzero_when_something_would_run(
 
 
 def test_a_failure_exits_nonzero(
-    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from lightcone.engine.materialize import MaterializeReport
 
@@ -419,7 +409,7 @@ def test_a_failure_exits_nonzero(
 
 
 def test_the_json_report_is_machine_readable(
-    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from lightcone.engine.materialize import MaterializeReport
 
@@ -440,7 +430,7 @@ def test_the_json_report_is_machine_readable(
 
 
 def test_an_engine_refusal_is_a_clean_error(
-    runner: CliRunner, somewhere: Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A dirty tree, a lock that cannot be audited — the user sees the
     message, never a traceback."""

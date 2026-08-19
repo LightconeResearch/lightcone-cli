@@ -21,6 +21,7 @@ output wins, and the root is the fallback.
 from __future__ import annotations
 
 import string
+from collections.abc import Callable
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
@@ -191,14 +192,14 @@ def _task(
                 "produces it and no declared input gives it a source."
             )
 
-    # `_declared` rather than `bool`: a decision's *value* is not a test of
+    # No `usable` here, because a decision's *value* is not a test of
     # whether it was made. An empty string is a choice someone wrote down,
     # and treating it as absent reports "the output does not declare this
     # decision", which is false and leaves nothing to act on.
     mine = {
         name: decisions[found]
         for name in declared.definition.get("decisions") or []
-        if (found := _lookup(name, scope, decisions, _declared))
+        if (found := _lookup(name, scope, decisions))
     }
     recipe = render(
         _command(declared),
@@ -218,21 +219,26 @@ def _task(
     )
 
 
-def _lookup(name: str, scope: str | None, among: dict[str, Any], usable: Any) -> str | None:
+def _lookup(
+    name: str,
+    scope: str | None,
+    among: dict[str, Any],
+    usable: Callable[[Any], object] | None = None,
+) -> str | None:
     """The key *name* resolves to in *among*, following ASTRA's scoping.
 
     An id declared inside a sub-analysis is qualified and wins; the root's
-    bare id is the fallback. *usable* rejects a match that exists but
+    bare id is the fallback. *usable* is read for truth and rejects a
+    match that exists but
     cannot serve — a re-exported output with no recipe produces no bytes,
-    and an input with no source names nothing.
+    and an input with no source names nothing. Omitting it means presence
+    is the whole test, which is the right answer where the value carries
+    no such distinction.
     """
     candidates = (f"{scope}.{name}", name) if scope else (name,)
-    return next((c for c in candidates if c in among and usable(among[c])), None)
-
-
-def _declared(_: Any) -> bool:
-    """Present is enough — see :func:`_task`."""
-    return True
+    return next(
+        (c for c in candidates if c in among and (usable is None or usable(among[c]))), None
+    )
 
 
 def _command(declared: _Declared) -> str:

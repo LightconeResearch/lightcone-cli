@@ -132,9 +132,13 @@ def lightcone_requirement() -> str:
 # with the right entries however its file got there — and lines added in a
 # later lc release reach projects that already have one, instead of being
 # skipped because a marker was present.
+#
+# `entries`, `missing` and `header` take the template name; only the two
+# `*_repair` functions are named per file, because convergence hands those
+# to `_Converger.file` as callbacks over the text alone.
 
 
-def _entries(name: str) -> tuple[str, ...]:
+def entries(name: str) -> tuple[str, ...]:
     """The meaningful lines of template *name*, in template order."""
     return tuple(_lines(read(name)))
 
@@ -148,10 +152,10 @@ def _lines(text: str) -> list[str]:
     ]
 
 
-def _missing(name: str, text: str) -> list[str]:
+def missing(name: str, text: str) -> list[str]:
     """Which of template *name*'s lines *text* does not carry, in order."""
     present = set(_lines(text))
-    return [e for e in _entries(name) if e not in present]
+    return [e for e in entries(name) if e not in present]
 
 
 def _repair(name: str, text: str) -> str | None:
@@ -168,22 +172,22 @@ def _repair(name: str, text: str) -> str | None:
     ``results/`` is not ignored: a ``results/*`` inherited from an older
     scaffold would make every materialized output silently uncommittable.
     """
-    missing = _missing(name, text)
-    if not missing:
+    absent = missing(name, text)
+    if not absent:
         return None
 
-    block = "\n".join(missing) + "\n"
+    block = "\n".join(absent) + "\n"
     # The header is cosmetic, so add it only when it isn't already there;
     # a later repair then appends bare lines under the first one.
-    header = _header(name)
-    if header not in text:
-        block = header + "\n" + block
+    first = header(name)
+    if first not in text:
+        block = first + "\n" + block
     if not text.strip():
         return block
     return text.rstrip("\n") + "\n\n" + block
 
 
-def _header(name: str) -> str:
+def header(name: str) -> str:
     """Template *name*'s own leading comment.
 
     Read back out of the template rather than duplicated as a constant, so
@@ -199,21 +203,6 @@ def _header(name: str) -> str:
 def gitignore() -> str:
     """The whole ``.gitignore``, for a project that has none."""
     return read("gitignore.tmpl")
-
-
-def gitignore_header() -> str:
-    """The ``.gitignore`` template's own leading comment."""
-    return _header("gitignore.tmpl")
-
-
-def gitignore_entries() -> tuple[str, ...]:
-    """The patterns lightcone manages, in template order."""
-    return _entries("gitignore.tmpl")
-
-
-def missing_gitignore_entries(text: str) -> list[str]:
-    """Which managed patterns *text* does not already carry, in order."""
-    return _missing("gitignore.tmpl", text)
 
 
 def gitignore_repair(text: str) -> str | None:
@@ -238,16 +227,6 @@ def gitattributes() -> str:
     readable on a clone that has fetched no annex content.
     """
     return read("gitattributes.tmpl")
-
-
-def gitattributes_entries() -> tuple[str, ...]:
-    """The attribute lines lightcone manages, in template order."""
-    return _entries("gitattributes.tmpl")
-
-
-def missing_gitattributes_entries(text: str) -> list[str]:
-    """Which managed attribute lines *text* does not carry, in order."""
-    return _missing("gitattributes.tmpl", text)
 
 
 def gitattributes_repair(text: str) -> str | None:

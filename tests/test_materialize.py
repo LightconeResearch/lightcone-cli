@@ -25,7 +25,7 @@ import pytest
 
 from lightcone.engine import assets, dataset
 from lightcone.engine import materialize as engine
-from lightcone.engine.project import ProjectError
+from lightcone.engine.project import ProjectError, child_env
 from lightcone.engine.worker import TaskResult
 
 _SPEC = """
@@ -102,7 +102,7 @@ def test_every_output_is_made_and_committed(root: Path, inline: None) -> None:
     assert report.ok and not report.up_to_date
     assert (root / "results/baseline/second/copy.txt").read_text() == "alpha\n"
     assert _commits(root) == before + 2
-    assert dataset.is_clean(root)
+    assert not dataset.status(root)
 
 
 def test_an_output_and_its_manifest_land_in_one_commit(root: Path, inline: None) -> None:
@@ -286,7 +286,7 @@ def test_a_failing_recipe_commits_nothing_and_leaves_the_tree_clean(
     assert report.blocked == ["baseline/second"]
     assert not report.ok
     assert _commits(root) == before
-    assert dataset.is_clean(root)
+    assert not dataset.status(root)
 
 
 def test_a_rebuild_that_fails_puts_the_previous_output_back(
@@ -304,7 +304,7 @@ def test_a_rebuild_that_fails_puts_the_previous_output_back(
     assert report.failed == ["baseline/first"]
     assert (root / "results/baseline/first/value.txt").read_text() == "alpha\n"
     assert _commits(root) == at_break
-    assert dataset.is_clean(root)
+    assert not dataset.status(root)
 
 
 def test_an_interrupted_run_restores_what_never_reported(
@@ -330,7 +330,7 @@ def test_an_interrupted_run_restores_what_never_reported(
     with pytest.raises(KeyboardInterrupt):
         engine.materialize(root, [])
 
-    assert dataset.is_clean(root)
+    assert not dataset.status(root)
 
 
 # ---- the commit message ----------------------------------------------------
@@ -455,7 +455,7 @@ def test_the_recorded_command_reproduces_the_output(root: Path, inline: None) ->
         cwd=root,
         capture_output=True,
         text=True,
-        env={**_env(), "PYTHONPATH": _engine_path()},
+        env={**child_env(), "PYTHONPATH": _engine_path()},
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -463,11 +463,7 @@ def test_the_recorded_command_reproduces_the_output(root: Path, inline: None) ->
     assert rerun is not None
     assert rerun.data_version == original.data_version
     assert rerun.data_version == assets.data_version(root / "results/baseline/first")
-    assert dataset.is_clean(root)
-
-
-def _env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    assert not dataset.status(root)
 
 
 def _engine_path() -> str:
@@ -495,7 +491,7 @@ def test_a_real_cluster_still_fits_through_the_seam(root: Path) -> None:
     report = engine.materialize(root, [], jobs=2)
 
     assert report.made == ["baseline/first", "baseline/second"]
-    assert dataset.is_clean(root)
+    assert not dataset.status(root)
 
 
 # ---- the report ------------------------------------------------------------

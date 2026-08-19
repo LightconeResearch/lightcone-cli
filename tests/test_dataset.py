@@ -76,7 +76,7 @@ def test_save_puts_result_bytes_in_the_annex_and_the_manifest_in_git(repo: Path)
 
     assert _annexed(output / "fit.csv")
     assert not _annexed(output / ".lightcone-manifest.json")
-    assert dataset.is_clean(repo)
+    assert not dataset.status(repo)
 
 
 def test_a_plain_git_add_would_not_have_annexed_it(repo: Path) -> None:
@@ -138,7 +138,7 @@ def test_save_stages_what_a_rebuild_deleted(repo: Path) -> None:
     (output / "fit.csv").write_text("second\n")
     assert dataset.save(repo, [output], "second")
 
-    assert dataset.is_clean(repo)
+    assert not dataset.status(repo)
     tracked = dataset._git(["ls-files", "--", "results"], cwd=repo)
     assert "extra.csv" not in tracked
 
@@ -161,7 +161,7 @@ def test_restore_undoes_a_half_written_rebuild(repo: Path) -> None:
 
     dataset.restore(repo, [output])
 
-    assert dataset.is_clean(repo)
+    assert not dataset.status(repo)
     assert not (output / "junk.tmp").exists()
     assert (output / "fit.csv").read_text() == "good\n"
 
@@ -175,7 +175,7 @@ def test_restore_of_a_never_committed_output_is_not_an_error(repo: Path) -> None
 
     dataset.restore(repo, [output])
 
-    assert dataset.is_clean(repo)
+    assert not dataset.status(repo)
     assert not (output / "fit.csv").exists()
 
 
@@ -202,12 +202,12 @@ def test_restore_is_scoped_to_the_paths_it_is_given(repo: Path) -> None:
 
 
 def test_status_reports_uncommitted_changes(repo: Path) -> None:
-    assert dataset.is_clean(repo)
+    assert not dataset.status(repo)
 
     (repo / "src").mkdir()
     (repo / "src" / "fit.py").write_text("print('hi')\n")
 
-    assert not dataset.is_clean(repo)
+    assert dataset.status(repo)
     assert ("??", "src/") in dataset.status(repo)
 
 
@@ -219,7 +219,7 @@ def test_status_honours_gitignore(repo: Path) -> None:
     (repo / ".venv" / "bin").mkdir(parents=True)
     (repo / ".venv" / "bin" / "python").write_text("")
 
-    assert dataset.is_clean(repo)
+    assert not dataset.status(repo)
 
 
 def test_ignore_rule_names_the_line_to_delete(repo: Path) -> None:
@@ -258,7 +258,7 @@ def test_the_save_the_data_readme_documents_actually_runs(repo: Path) -> None:
     assert subprocess.run(command, shell=True, cwd=repo, capture_output=True).returncode == 0
 
     assert _annexed(repo / "data" / "catalog.fits")
-    assert dataset.is_clean(repo)
+    assert not dataset.status(repo)
 
 
 # ---- how git finds git-annex -----------------------------------------------

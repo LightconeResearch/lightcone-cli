@@ -76,6 +76,35 @@ def data_version(path: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
+class Versions:
+    """Content identities, computed once per run.
+
+    A declared input is hashed once per ``(universe, output)`` that names
+    it, which for a multiverse spec is the same bytes over and over: eight
+    universes times four outputs sharing one catalog reads it thirty-two
+    times. Memoizing is sound for exactly as long as a run lasts — a run
+    refuses to start on a dirty tree, and the only in-tree path a recipe
+    may write is its own output directory, so a declared input's bytes
+    cannot change underneath it.
+
+    A class rather than a closure, so what it keeps alive is one dict and
+    not whatever scope built it. Deliberately unlocked: concurrent workers
+    can race to compute the same digest, which wastes one hash rather than
+    serialising every hash behind a lock — and a lock would not survive
+    being handed to a worker in another process.
+    """
+
+    def __init__(self) -> None:
+        self._known: dict[Path, str] = {}
+
+    def of(self, path: Path) -> str:
+        """*path*'s content identity, hashing it at most once per run."""
+        resolved = path.resolve()
+        if (known := self._known.get(resolved)) is None:
+            known = self._known[resolved] = data_version(path)
+        return known
+
+
 def _feed(h: hashlib._Hash, path: Path) -> None:
     """Stream *path* into *h* — outputs are not assumed to fit in memory."""
     with path.open("rb") as f:

@@ -106,6 +106,32 @@ def test_a_missing_path_is_an_error_not_an_empty_hash(tmp_path: Path) -> None:
         data_version(tmp_path / "nothing")
 
 
+def test_one_input_is_hashed_once_per_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A declared input is asked for once per `(universe, output)` that names
+    it — for a multiverse spec, the same bytes over and over. Eight
+    universes times four outputs sharing one catalog is thirty-two reads of
+    one file."""
+    catalog = tmp_path / "catalog.txt"
+    catalog.write_text("measured\n")
+    hashed: list[Path] = []
+    real = assets.data_version
+    monkeypatch.setattr(assets, "data_version", lambda p: (hashed.append(p), real(p))[1])
+
+    versions = assets.Versions()
+    digests = {versions.of(catalog) for _ in range(32)}
+
+    assert len(hashed) == 1
+    assert digests == {real(catalog)}
+
+
+def test_the_memo_does_not_confuse_two_inputs(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("one\n")
+    (tmp_path / "b.txt").write_text("two\n")
+    versions = assets.Versions()
+
+    assert versions.of(tmp_path / "a.txt") != versions.of(tmp_path / "b.txt")
+
+
 # ---- the manifest ----------------------------------------------------------
 
 

@@ -241,6 +241,39 @@ def require_uv() -> None:
         )
 
 
+def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
+    """``uv run``, pinned to *directory* and refusing to drift.
+
+    ``--locked`` makes a stale lock uv's loud error rather than a silent
+    relock, and the explicit ``--project`` is there because uv's own
+    walk-up discovery is never trusted.
+
+    *sync* is the only thing callers disagree about. A probe syncs, and
+    ``--exact`` keeps a previously-installed extra out of the environment
+    it is about to describe. A recipe does not: the environment was
+    converged before the run started, and syncing per task would have
+    every concurrent worker writing the same ``.venv``.
+    """
+    selection = ["--exact"] if sync else ["--no-sync"]
+    return ["uv", "run", "--locked", *selection, "--project", str(directory), "--"]
+
+
+def environment_drift(directory: Path) -> str:
+    """Empty while ``.venv`` still satisfies ``uv.lock``; else what is wrong.
+
+    A message rather than a bool, so the one description of this state
+    lives with the probe that detects it — a caller that refuses and a
+    caller that warns then differ only in the verb.
+    """
+    if _env_is_current(directory):
+        return ""
+    return (
+        f"{directory}: the environment does not match uv.lock — recipes would "
+        "import packages the lock does not describe, and every manifest would "
+        "record an environment that never ran. Converge it with `lc init`."
+    )
+
+
 def _converge_uv_project(c: _Converger, directory: Path) -> None:
     """pyproject.toml + .python-version — the environment definition.
 

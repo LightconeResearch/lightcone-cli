@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from lightcone.engine import sandbox
-from lightcone.engine.project import SPEC_FILENAME, child_env, require_uv
+from lightcone.engine.project import SPEC_FILENAME, child_env, require_uv, uv_prefix
 
 
 def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
@@ -33,30 +33,20 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
     require_uv()
     spec = read_spec(project)
 
-    with sandbox.scope(project, read_paths=input_paths(project, spec)) as policy:
+    built = sandbox.probe_policy(project, read_paths=input_paths(project, spec))
+    with sandbox.scope(built) as policy:
         return sandbox.run(
             sandbox.detect(),
             policy,
             list(command),
             cwd=project,
-            prefix=uv_prefix(project),
+            prefix=uv_prefix(project, sync=True),
             # Same reason as convergence: this uv invocation names its
             # project explicitly, so an environment activated elsewhere
             # is never what we mean — and uv says so, once per run, in
             # the middle of the probe's own output.
             env=child_env(),
         )
-
-
-def uv_prefix(project: Path) -> list[str]:
-    """``uv run``, pinned to *project* and refusing to drift.
-
-    ``--locked`` makes a stale lock uv's loud error rather than a silent
-    relock, and ``--exact`` keeps a previously-installed extra from
-    surviving into the environment being probed. Always an explicit
-    ``--project``: uv's own walk-up discovery is never trusted.
-    """
-    return ["uv", "run", "--locked", "--exact", "--project", str(project), "--"]
 
 
 def read_spec(project: Path) -> dict[str, Any]:

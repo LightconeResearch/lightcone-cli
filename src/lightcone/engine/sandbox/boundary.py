@@ -91,19 +91,20 @@ def detect() -> Backend:
 
 
 @contextmanager
-def scope(project: Path, *, read_paths: Sequence[Path] = ()) -> Iterator[Policy]:
-    """A probe policy, with its per-run HOME cleaned up afterwards.
+def scope(policy: Policy) -> Iterator[Policy]:
+    """*policy*, with the directory it allocated cleaned up afterwards.
 
-    The policy owns a real directory on disk (the private ``$HOME``), so
-    building one is not free and leaking one is a real cost on a machine
-    that runs many probes. A context manager makes the lifetime the
-    caller's, visibly.
+    Every policy owns a real directory on disk — the private ``$HOME`` —
+    so building one is not free and leaking one is a real cost on a
+    machine that runs many of them. Taking the policy rather than
+    building it keeps that lifetime in **one** place for probes and
+    recipes alike; a second caller doing its own ``rmtree`` is a second
+    thing to find when a policy starts allocating something else.
     """
-    built = policy_module.probe_policy(project, read_paths=read_paths)
     try:
-        yield built
+        yield policy
     finally:
-        shutil.rmtree(built.tmp_home, ignore_errors=True)
+        shutil.rmtree(policy.tmp_home, ignore_errors=True)
 
 
 def run(

@@ -242,7 +242,7 @@ def test_gitignore_repair_preserves_user_content(tmp_path: Path) -> None:
 
     text = (project / ".gitignore").read_text()
     assert text.startswith("mine.txt\nbuild/\n")
-    assert templates.missing_gitignore_entries(text) == []
+    assert templates.missing("gitignore.tmpl", text) == []
 
 
 def test_gitignore_repair_is_idempotent(tmp_path: Path) -> None:

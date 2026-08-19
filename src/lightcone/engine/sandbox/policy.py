@@ -198,11 +198,12 @@ def recipe_policy(project: Path, output_dir: Path, *, read_paths: Sequence[Path]
     because committed sibling bytes are legitimately readable and a read
     carve-out is something Landlock cannot express at all.
 
-    The directory is granted whether or not it exists yet, by creating it:
-    a recipe is asked to produce output, so making the place it goes is
-    not a side effect nobody asked for — it is the request.
+    *output_dir* must already exist — a policy is a description of what
+    may be touched, and one that could not be built without mutating the
+    filesystem would be the same kind of impurity ``wrap`` is pinned
+    against. The worker resets the directory before it asks for a policy,
+    so the whole of an output's lifecycle stays in the module that owns it.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
     return _policy(project, read_paths=read_paths, write_paths=[output_dir])
 
 

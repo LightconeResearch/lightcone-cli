@@ -99,7 +99,7 @@ def test_gitignore_entries_are_the_patterns_only() -> None:
     """Convergence compares patterns, so comments and blanks must not leak
     into the set — a comment treated as an entry would be re-appended
     forever."""
-    entries = templates.gitignore_entries()
+    entries = templates.entries("gitignore.tmpl")
     assert not any(e.startswith("#") or not e.strip() for e in entries)
     assert ".venv/" in entries
 
@@ -108,18 +108,18 @@ def test_the_template_does_not_ignore_what_the_repository_versions() -> None:
     """`results/` and `data/` are committed, so an ignore rule covering
     either would make every materialized output silently uncommittable —
     `git add` skips ignored paths without a word."""
-    entries = templates.gitignore_entries()
+    entries = templates.entries("gitignore.tmpl")
     assert not any(e.lstrip("!").startswith(("results", "data")) for e in entries)
 
 
 def test_gitignore_header_is_the_templates_own_first_line() -> None:
     """Derived, not duplicated: rewording the template's comment can't leave
     the repair appending a second header."""
-    assert templates.gitignore().startswith(templates.gitignore_header() + "\n")
+    assert templates.gitignore().startswith(templates.header("gitignore.tmpl") + "\n")
 
 
 def test_repair_is_none_when_nothing_is_missing() -> None:
-    assert templates.missing_gitignore_entries(templates.gitignore()) == []
+    assert templates.missing("gitignore.tmpl", templates.gitignore()) == []
     assert templates.gitignore_repair(templates.gitignore()) is None
 
 
@@ -132,22 +132,22 @@ def test_repair_appends_only_what_is_missing_behind_the_header() -> None:
     assert repaired is not None
     assert repaired.startswith("mine.txt\n.venv/\n\n")
     assert repaired.count(".venv/") == 1
-    assert templates.gitignore_header() in repaired
-    assert templates.missing_gitignore_entries(repaired) == []
+    assert templates.header("gitignore.tmpl") in repaired
+    assert templates.missing("gitignore.tmpl", repaired) == []
 
 
 def test_repair_does_not_add_a_second_header() -> None:
     """The case a marker check would have skipped: header present, entries
     missing."""
-    header = templates.gitignore_header()
+    header = templates.header("gitignore.tmpl")
     repaired = templates.gitignore_repair(f"{header}\n.venv/\n")
     assert repaired is not None
     assert repaired.count(header) == 1
-    assert templates.missing_gitignore_entries(repaired) == []
+    assert templates.missing("gitignore.tmpl", repaired) == []
 
 
 def test_a_pattern_inside_a_comment_does_not_count_as_present() -> None:
-    assert ".venv/" in templates.missing_gitignore_entries("# .venv/\n")
+    assert ".venv/" in templates.missing("gitignore.tmpl", "# .venv/\n")
 
 
 # ---- .gitattributes -------------------------------------------------------
@@ -157,7 +157,7 @@ def test_gitattributes_routes_content_to_the_annex_and_everything_else_to_git() 
     """The whole storage policy. The default line is the load-bearing one:
     `git annex add` annexes whatever it is handed, so without it the
     documented save turns analysis code into read-only symlinks."""
-    entries = templates.gitattributes_entries()
+    entries = templates.entries("gitattributes.tmpl")
     assert entries[0] == "* annex.largefiles=nothing"
     assert "results/** annex.largefiles=anything" in entries
     assert "data/** annex.largefiles=anything" in entries
@@ -167,7 +167,7 @@ def test_gitattributes_routes_content_to_the_annex_and_everything_else_to_git() 
 def test_gitattributes_exceptions_come_after_the_default() -> None:
     """Last matching line wins, so a default written below the exceptions
     would silently take the annex back out of the picture."""
-    entries = templates.gitattributes_entries()
+    entries = templates.entries("gitattributes.tmpl")
     assert entries.index("* annex.largefiles=nothing") < entries.index(
         "results/** annex.largefiles=anything"
     )
@@ -179,7 +179,7 @@ def test_gitattributes_repair_appends_what_a_users_own_file_lacks() -> None:
     repaired = templates.gitattributes_repair("*.fits filter=lfs\n")
     assert repaired is not None
     assert repaired.startswith("*.fits filter=lfs\n\n")
-    assert templates.missing_gitattributes_entries(repaired) == []
+    assert templates.missing("gitattributes.tmpl", repaired) == []
     assert templates.gitattributes_repair(templates.gitattributes()) is None
 
 
