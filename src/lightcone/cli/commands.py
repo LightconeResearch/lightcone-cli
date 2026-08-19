@@ -203,9 +203,8 @@ def materialize(targets: tuple[str, ...], check_only: bool, as_json: bool) -> No
     """Make the analysis's outputs, and commit each one as it lands.
 
     Each output is committed together with its manifest, in a commit that
-    records the command that produced it. Which is why a run refuses to
-    start on a tree with uncommitted changes: it could not otherwise say
-    which code that was.
+    records the command that produced it. The git tree needs to be clean 
+    before the run can start.
 
     Nothing runs that does not need to. An output is remade when its
     recipe, its decisions, the environment, or any of its declared inputs
