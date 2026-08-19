@@ -126,6 +126,20 @@ def test_a_declared_input_resolves_to_its_source(tmp_path: Path) -> None:
     assert "data/catalog.fits" in task.recipe
 
 
+def test_a_declared_input_outside_the_project_keeps_its_absolute_path(
+    tmp_path: Path,
+) -> None:
+    """A path in a recipe *is* the path on disk, and one outside the tree
+    has no project-relative spelling to fall back on. It used to be
+    rendered by `relative_to`, which raised a bare ValueError."""
+    outside = tmp_path.parent / "shared" / "catalog.fits"
+    root = _project(tmp_path, _SPEC.replace("source: data/catalog.fits", f"source: {outside}"))
+
+    task = _build(root).tasks[("baseline", "fit")]
+    assert task.inputs == {"catalog": outside}
+    assert str(outside) in task.recipe
+
+
 def test_an_input_another_output_produces_becomes_an_edge(tmp_path: Path) -> None:
     task = _build(_project(tmp_path)).tasks[("baseline", "report")]
     assert task.produced_by == {"fit": ("baseline", "fit")}
@@ -206,6 +220,29 @@ def test_an_unknown_target_is_an_error_not_an_empty_run(tmp_path: Path) -> None:
 
 
 # ---- refusals --------------------------------------------------------------
+
+
+def test_two_universes_cannot_claim_one_id(tmp_path: Path) -> None:
+    """They would materialize into one directory, and the second simply
+    replaced the first — so a universe went missing with nothing said. The
+    natural way to reach it is copying a universe file and forgetting to
+    change the id inside."""
+    root = _project(
+        tmp_path,
+        baseline="id: baseline\ndecisions:\n  method: mcmc\n",
+        copy="id: baseline\ndecisions:\n  method: nested\n",
+    )
+    with pytest.raises(ProjectError, match="both declare the universe `baseline`"):
+        _build(root)
+
+
+def test_universes_are_told_apart_by_their_id_not_their_filename(tmp_path: Path) -> None:
+    root = _project(
+        tmp_path,
+        baseline="id: baseline\ndecisions:\n  method: mcmc\n",
+        alternative="id: alternative\ndecisions:\n  method: nested\n",
+    )
+    assert {u for u, _ in _build(root).tasks} == {"baseline", "alternative"}
 
 
 def test_no_spec_is_a_clean_error(tmp_path: Path) -> None:

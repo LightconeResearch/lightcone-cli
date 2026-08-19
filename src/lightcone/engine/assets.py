@@ -243,10 +243,10 @@ class Manifest:
     data_version: str
     decisions: dict[str, str]
     input_versions: dict[str, str]
-    #: The commit the working tree was at. Recorded, never hashed into
-    #: `code_version` — a commit must not stale every output in the
-    #: repository, and this is what makes the code that produced a result
-    #: recoverable anyway.
+    #: The commit the working tree was at when the run started. Recorded,
+    #: never hashed into `definition_version` — a commit must not stale
+    #: every output in the repository, and this is what makes the code that
+    #: produced a result recoverable anyway.
     git_sha: str
     #: The `origin` URL, or empty when the repository has no remote.
     git_remote: str

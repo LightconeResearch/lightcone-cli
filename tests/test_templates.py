@@ -183,6 +183,31 @@ def test_gitattributes_repair_appends_what_a_users_own_file_lacks() -> None:
     assert templates.gitattributes_repair(templates.read("gitattributes.tmpl")) is None
 
 
+def test_a_file_the_repair_can_fix_reports_no_disorder() -> None:
+    """The ordinary case: whatever the user already had, the managed lines
+    are appended in template order and the result means what it should."""
+    assert templates.gitattributes_disorder("") == ""
+    assert templates.gitattributes_disorder("*.fits filter=lfs\n") == ""
+    assert templates.gitattributes_disorder(templates.read("gitattributes.tmpl")) == ""
+
+
+def test_an_opt_out_the_defaults_would_land_below_is_named() -> None:
+    """The trap append-only cannot escape. A file that already opts
+    `results/` into the annex gets `* annex.largefiles=nothing` appended
+    *after* it, and last-match-wins then routes every result into git as a
+    plain blob — while convergence reports the file repaired."""
+    misplaced = templates.gitattributes_disorder("results/** annex.largefiles=anything\n")
+    assert misplaced == "* annex.largefiles=nothing"
+
+
+def test_a_hand_written_file_already_in_the_right_order_needs_nothing() -> None:
+    """Judged on meaning, not on who wrote it — and only lines setting the
+    *same* attribute can be out of order with each other, so the
+    `* filter=annex` the repair appends below these two is not disorder."""
+    ordered = "* annex.largefiles=nothing\nresults/** annex.largefiles=anything\n"
+    assert templates.gitattributes_disorder(ordered) == ""
+
+
 # ---- .datalad/config ------------------------------------------------------
 
 

@@ -86,8 +86,13 @@ class MaterializeReport:
         earlier environment is not out of date — it is what the spec asks
         for, and saying otherwise would put ``--check`` back in the
         business of demanding compute.
+
+        A run that failed is not up to date either, however little it
+        managed to produce: ``made`` stays empty when every recipe fails,
+        so without ``ok`` here the first two keys of the JSON report would
+        read "nothing to do" over a list of failures.
         """
-        return not self.made and not self.planned
+        return self.ok and not self.made and not self.planned
 
     def as_dict(self) -> dict[str, Any]:
         """Return the report as JSON-ready data.
@@ -175,7 +180,7 @@ def _classified(
             definition_version=task.definition_version,
             env_version=env_version,
             manifest=manifest,
-            inputs=_predicted(task, would_run, versions, unfetched),
+            inputs=_predicted(root, task, would_run, versions, unfetched),
         )
         if verdict.calls_for_a_remake(refresh=refresh):
             would_run.add(key)
@@ -191,11 +196,16 @@ def _classified(
 
 
 def _predicted(
-    task: Task, would_run: set[Key], versions: assets.Versions, unfetched: set[str]
+    root: Path,
+    task: Task,
+    would_run: set[Key],
+    versions: assets.Versions,
+    unfetched: set[str],
 ) -> dict[str, str | None]:
     """Each input's version as check mode can know it.
 
     Args:
+        root: The project root, for naming a path in the report.
         task: The output being classified.
         would_run: Task keys already decided to be remade.
         versions: The run's content-hash memo.
@@ -227,7 +237,13 @@ def _predicted(
                 # said out loud, because reporting a rebuild for a clone
                 # that simply has not fetched its inputs is misleading on
                 # its own.
-                unfetched.add(_inside(task.output_dir.parent.parent.parent, path))
+                unfetched.add(plan.declared_path(root, path))
+                predicted[name] = None
+            except OSError:
+                # Unreadable for any other reason — a broken symlink inside
+                # the directory, a permission wall. Same answer as an input
+                # that is not there at all: it will be remade, and the
+                # recipe is where that failure belongs, with a real error.
                 predicted[name] = None
     return predicted
 
@@ -348,12 +364,14 @@ def materialize(
         blocked, plus the boundary's notes and the lock scan's warnings.
 
     Raises:
-        ProjectError: If a required tool is missing, the tree has
-            uncommitted changes, or the lock cannot be audited.
+        ProjectError: If a required tool or git's committer identity is
+            missing, the tree has uncommitted changes, or the lock cannot
+            be audited.
     """
     project.require_uv()
     project.require_git()
     project.require_git_annex()
+    dataset.require_committer(root)
     # Before anything else: workers pass `--no-sync`, so this is the only
     # place the environment is made to match the lock.
     report = MaterializeReport()
@@ -553,8 +571,8 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
         ),
         "dsid": dsid,
         "exit": 0,
-        "inputs": sorted(_inside(root, path) for path in task.inputs.values()),
-        "outputs": [_inside(root, task.output_dir)],
+        "inputs": sorted(plan.declared_path(root, path) for path in task.inputs.values()),
+        "outputs": [plan.declared_path(root, task.output_dir)],
         "pwd": ".",
     }
     body = json.dumps(info, indent=1, sort_keys=True, ensure_ascii=False)
@@ -564,21 +582,6 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
         f"{body}\n"
         "^^^ Do not change lines above ^^^"
     )
-
-
-def _inside(root: Path, path: Path) -> str:
-    """*path* relative to *root*, or absolute when it is somewhere else.
-
-    Deliberately **not** resolved. Every declared input under ``data/`` is
-    an annex symlink, so resolving would record
-    ``.git/annex/objects/SHA256E-…`` — a path no one can ``datalad get``,
-    naming the storage rather than the input. The record has to say what
-    the analysis declared.
-    """
-    try:
-        return path.relative_to(root).as_posix()
-    except ValueError:
-        return path.as_posix()
 
 
 # =============================================================================
@@ -616,6 +619,24 @@ def _graph(root: Path, targets: Sequence[str], report: MaterializeReport) -> tup
     graph = plan.build(root)
     if targets:
         graph = graph.closure(graph.resolve(list(targets)))
+
+    # A declared input outside the project is hashed into the manifest like
+    # any other, so a change to it still cascades — but it is not in the
+    # repository, so the commit that records the output cannot bring it
+    # back. That is a weaker promise than the rest of the layer makes, and
+    # the only honest thing to do about it is say so.
+    outside = {
+        plan.declared_path(root, path)
+        for task in graph.tasks.values()
+        for name, path in task.inputs.items()
+        if name not in task.produced_by and root not in path.parents
+    }
+    if outside:
+        report.warnings.append(
+            "declared inputs outside the project are recorded by content but "
+            "not stored in it, so a commit cannot restore them: "
+            + ", ".join(sorted(outside))
+        )
     return graph, env_version
 
 

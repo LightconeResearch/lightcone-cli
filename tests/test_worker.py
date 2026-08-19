@@ -422,7 +422,45 @@ def test_the_module_refuses_an_argument_it_cannot_use(root: Path) -> None:
 
 
 def test_the_module_refuses_an_output_that_does_not_exist(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(root)
     assert worker.main(["baseline/nothing"]) == 2
+    assert "no output `baseline/nothing`" in capsys.readouterr().err
+
+
+def test_only_the_lookup_can_blame_the_target(
+    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The whole body used to sit under one `except KeyError`, so anything
+    raising one inside astra's validation or resolution was reported as
+    "no output <x>". This is the entry point every `[DATALAD RUNCMD]`
+    record names, so a rerun failing for an unrelated reason misdiagnosed
+    itself."""
+    monkeypatch.chdir(root)
+
+    def explode(_: Path) -> None:
+        raise KeyError("something inside the resolver")
+
+    monkeypatch.setattr(worker.plan, "build", explode)
+    with pytest.raises(KeyError):
+        worker.main(["baseline/first"])
+    assert "no output" not in capsys.readouterr().err
+
+
+def test_a_declared_input_that_is_not_there_names_itself(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`data_version` reports an absent path with the OS's own exception,
+    which would unwind as a traceback at whoever is reading a rerun."""
+    spec = _SPEC.replace(
+        "    recipe:\n      command: echo one > {output}/value.txt",
+        "    inputs: [catalog]\n    recipe:\n      command: echo one > {output}/value.txt",
+        1,
+    )
+    root = analysis(spec)
+    monkeypatch.chdir(root)
+
+    assert worker.main(["baseline/first"]) == 2
+    assert "the declared input `catalog` cannot be read" in capsys.readouterr().err

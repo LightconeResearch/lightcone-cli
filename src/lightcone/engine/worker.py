@@ -313,16 +313,15 @@ def main(argv: list[str]) -> int:
         root = current_project()
         env_version = identity.env_version(root)
         graph = plan.build(root)
-        task = graph.tasks[(universe_id, output_id)]
+        if (task := graph.tasks.get((universe_id, output_id))) is None:
+            print(f"no output `{argv[0]}` in this project", file=sys.stderr)
+            return 2
         # This one-task run reads HEAD for itself, because it *is* the
         # driver here — the rule is that the run's commit is read once by
         # whoever owns the run, not that a worker never reads it.
         result = execute(
             root, task, env_version, _from_disk(task), head=dataset.head(root)
         )
-    except KeyError:
-        print(f"no output `{argv[0]}` in this project", file=sys.stderr)
-        return 2
     except ProjectError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -344,15 +343,24 @@ def _from_disk(task: Task) -> dict[str, str]:
     """
     versions: dict[str, str] = {}
     for name, path in task.inputs.items():
-        if task.produced_by.get(name) is None:
-            versions[name] = assets.data_version(path)
-        elif (manifest := assets.read(path)) is None:
-            raise ProjectError(
-                f"the input `{name}` has never been materialized — there is no "
-                f"manifest in {path}. Run `lc materialize` instead."
-            )
-        else:
+        if task.produced_by.get(name) is not None:
+            if (manifest := assets.read(path)) is None:
+                raise ProjectError(
+                    f"the input `{name}` has never been materialized — there is no "
+                    f"manifest in {path}. Run `lc materialize` instead."
+                )
             versions[name] = manifest.data_version
+        else:
+            try:
+                versions[name] = assets.data_version(path)
+            except OSError as e:
+                # `data_version` reports an absent or unreadable path with
+                # the OS's own exception, and this is the entry point a
+                # `datalad rerun` lands on — so it names the declared input
+                # rather than unwinding a traceback at whoever reads that.
+                raise ProjectError(
+                    f"the declared input `{name}` cannot be read: {e}"
+                ) from e
     return versions
 
 

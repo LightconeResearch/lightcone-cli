@@ -117,20 +117,66 @@ def ignore_rule(directory: Path, path: str) -> str | None:
 
 
 def status(directory: Path) -> list[tuple[str, str]]:
-    """List the working tree's uncommitted changes.
+    """List *directory*'s uncommitted changes.
 
     Honours ``.gitignore``, so ``.venv/`` never counts; ``data/`` and
     ``results/`` do, which is the point — inputs are committed before
     anything computes on them.
 
+    Scoped to *directory* and reported relative to it, both deliberately.
+    A project can sit inside a larger repository — ``lc init subdir/``
+    adopts an enclosing work tree rather than nesting a new one — and
+    porcelain otherwise covers that whole tree and names paths from *its*
+    root: an edit somewhere else in the repository would refuse every run,
+    and lc's own writes would arrive as ``subdir/results/…``, which no
+    caller sorting by path class can recognise.
+
     Args:
-        directory: The repository to inspect.
+        directory: The project to inspect.
 
     Returns:
-        ``(status code, path)`` for each change, empty when clean.
+        ``(status code, path)`` for each change, paths relative to
+        *directory*, empty when clean. A wholly untracked project collapses
+        to ``.``, which is git's own summary of it and what the caller
+        would tell the user to add.
     """
-    lines = _git(["status", "--porcelain"], cwd=directory).splitlines()
-    return [(line[:2], line[3:]) for line in lines if line.strip()]
+    prefix = _git(["rev-parse", "--show-prefix"], cwd=directory).strip()
+    lines = _git(["status", "--porcelain", "--", "."], cwd=directory).splitlines()
+    return [
+        (line[:2], line[3:].removeprefix(prefix) or ".") for line in lines if line.strip()
+    ]
+
+
+def require_committer(directory: Path) -> None:
+    """Refuse a repository that cannot make a commit yet.
+
+    git needs an identity to commit, and a fresh container or CI image has
+    none — the case this CLI is most often run in. Asked at the start of a
+    run rather than discovered at the first save, because by then a recipe
+    has already run and its work is about to be restored away over a
+    setting that takes one command to fix.
+
+    Asked as ``git var``, which is the question a commit itself asks:
+    an identity can come from ``user.email``, ``EMAIL``, the author and
+    committer variables, or three levels of config, and reimplementing
+    that lookup here is how a probe comes to disagree with the thing it
+    is standing in for.
+
+    Args:
+        directory: The repository that is about to be committed to.
+
+    Raises:
+        ProjectError: If no committer identity resolves.
+    """
+    put_our_bin_first()
+    proc = project._run(["git", "var", "GIT_COMMITTER_IDENT"], cwd=directory)
+    if proc.returncode != 0:
+        raise project.ProjectError(
+            "git has no identity to commit with, and every materialized output "
+            "is committed:\n"
+            '  git config --global user.name "Your Name"\n'
+            '  git config --global user.email "you@example.com"'
+        )
 
 
 def head(directory: Path) -> tuple[str, str]:

@@ -304,6 +304,70 @@ def test_status_honours_gitignore(repo: Path) -> None:
     assert not dataset.status(repo)
 
 
+def test_status_is_scoped_to_the_project_inside_a_larger_repository(
+    tmp_path: Path, real_tools: None
+) -> None:
+    """`lc init subdir/` adopts an enclosing work tree rather than nesting a
+    new one, so a project can sit inside a bigger repository. Unscoped,
+    porcelain covers that whole tree — an unrelated edit anywhere in it
+    would refuse every run in the project."""
+    outer = tmp_path / "outer"
+    project_root = outer / "project"
+    (project_root / "results").mkdir(parents=True)
+    (project_root / "src.py").write_text("print('hi')\n")
+    (outer / "unrelated.txt").write_text("someone else's work\n")
+    dataset.init_git(outer)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=outer)
+    dataset._git(["add", "-A", "."], cwd=outer)
+    dataset._git(["commit", "-q", "-m", "outer"], cwd=outer)
+
+    (outer / "unrelated.txt").write_text("edited while the project is clean\n")
+    assert not dataset.status(project_root)
+
+    (project_root / "results" / "fit.csv").write_text("1\n")
+    # Relative to the project, not to the repository — a caller sorting by
+    # path class cannot recognise `project/results/`.
+    assert dataset.status(project_root) == [("??", "results/")]
+
+
+def test_a_project_that_has_never_been_committed_reads_as_itself(
+    tmp_path: Path, real_tools: None
+) -> None:
+    """git collapses a wholly untracked directory to its own name, which
+    the prefix strip then empties. `.` is what the refusal has to say."""
+    outer = tmp_path / "outer"
+    (outer / "project").mkdir(parents=True)
+    (outer / "project" / "astra.yaml").write_text("name: demo\n")
+    dataset.init_git(outer)
+
+    assert dataset.status(outer / "project") == [("??", ".")]
+
+
+def test_a_repository_that_cannot_commit_is_refused_before_anything_runs(
+    tmp_path: Path, real_tools: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh container or CI image has no git identity, which is the case
+    this CLI is most often run in. Discovered at the first save, it would
+    cost whatever the recipe had already computed."""
+    root = tmp_path / "demo"
+    root.mkdir()
+    dataset.init_git(root)
+    monkeypatch.setenv("HOME", str(tmp_path / "nowhere"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "absent"))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "absent"))
+    monkeypatch.delenv("EMAIL", raising=False)
+    monkeypatch.delenv("GIT_AUTHOR_EMAIL", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_EMAIL", raising=False)
+
+    with pytest.raises(project.ProjectError, match="no identity to commit with"):
+        dataset.require_committer(root)
+
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=root)
+    dataset.require_committer(root)
+
+
 def test_ignore_rule_names_the_line_to_delete(repo: Path) -> None:
     """Convergence cannot repair this one, so the message has to point at
     the line rather than merely report that one exists."""

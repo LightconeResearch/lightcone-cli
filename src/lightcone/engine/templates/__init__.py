@@ -165,6 +165,12 @@ def lightcone_requirement() -> str:
 # alone, so the name has to be bound here rather than at the call site.
 
 
+#: The one line-managed template whose lines have to be in a particular
+#: order to mean the right thing; ``.gitignore``'s only do so among
+#: themselves, which appending already preserves.
+_GITATTRIBUTES = "gitattributes.tmpl"
+
+
 def entries(name: str) -> tuple[str, ...]:
     """List the lines a template manages.
 
@@ -261,6 +267,8 @@ def gitattributes_repair(text: str) -> str | None:
 
     More is at stake than in ``.gitignore``: a ``.gitattributes`` the user
     wrote first would leave result bytes routed into git, not the annex.
+    What appending cannot always achieve is the *order* they need to be in
+    — see :func:`gitattributes_disorder`.
 
     Args:
         text: The file's current contents.
@@ -268,7 +276,52 @@ def gitattributes_repair(text: str) -> str | None:
     Returns:
         The repaired text, or ``None`` if nothing was missing.
     """
-    return _repair("gitattributes.tmpl", text)
+    return _repair(_GITATTRIBUTES, text)
+
+
+def gitattributes_disorder(text: str) -> str:
+    """Name the managed line a repair would leave in the wrong place.
+
+    ``.gitattributes`` is last-match-wins, so the two ``*`` defaults have
+    to come *before* the lines that opt out of them. A repair only
+    appends, so a file already carrying ``results/** annex.largefiles=
+    anything`` gets ``* annex.largefiles=nothing`` added after it — and
+    every result then lands in git as a plain blob while convergence
+    reports the file repaired and the project converged.
+
+    Judged on the text a repair would produce, not the text as it stands:
+    a file missing the defaults entirely is in order today and out of it
+    the moment they are appended. And only lines setting the *same*
+    attribute can override one another, so ``* filter=annex`` landing
+    below ``results/** annex.largefiles=anything`` is not disorder —
+    neither says anything about the other.
+
+    Args:
+        text: The file's current contents.
+
+    Returns:
+        The first managed line that ends up below one it has to precede,
+        or empty when the order is right.
+    """
+    rank = {line: i for i, line in enumerate(entries(_GITATTRIBUTES))}
+    lowest: dict[str, int] = {}
+    for line in _lines(_repair(_GITATTRIBUTES, text) or text):
+        if (place := rank.get(line)) is None:
+            continue
+        for attribute in _attributes(line):
+            if place < lowest.get(attribute, -1):
+                return line
+            lowest[attribute] = place
+    return ""
+
+
+def _attributes(line: str) -> list[str]:
+    """The attribute names one ``.gitattributes`` line sets.
+
+    A line is a pattern followed by specs — ``attr``, ``-attr``, ``!attr``
+    or ``attr=value``.
+    """
+    return [spec.split("=")[0].lstrip("-!") for spec in line.split()[1:]]
 
 
 # =============================================================================

@@ -322,6 +322,43 @@ def test_results_that_is_not_a_directory_blocks_convergence(tmp_path: Path) -> N
     assert not converge(project).converged
 
 
+def test_a_gitattributes_the_repair_cannot_order_blocks_convergence(
+    tmp_path: Path,
+) -> None:
+    """The repair only appends, so a file already opting `results/` into
+    the annex gets the `*` default added *below* it — and git-annex takes
+    the last match, so every result would be committed to git as a plain
+    blob while the report said the file was repaired."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".gitattributes").write_text("results/** annex.largefiles=anything\n")
+
+    report = converge(project)
+    assert ".gitattributes" in report.blocked
+    assert not report.converged
+    assert any("git-annex takes the last match" in w for w in report.warnings)
+
+    # And it stays blocked, rather than the repair settling it into a lie.
+    assert not converge(project).converged
+
+
+def test_a_gitattributes_in_the_right_order_is_repaired_and_converges(
+    tmp_path: Path,
+) -> None:
+    """The mutation check on the test above: the same two lines the other
+    way round take the ordinary append and leave the project converged."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".gitattributes").write_text(
+        "* annex.largefiles=nothing\nresults/** annex.largefiles=anything\n"
+    )
+
+    report = converge(project)
+    assert ".gitattributes" not in report.blocked
+    assert ".gitattributes" in report.repaired
+    assert converge(project).converged
+
+
 # ---- the repository -------------------------------------------------------
 
 

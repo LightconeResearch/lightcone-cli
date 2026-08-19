@@ -150,8 +150,8 @@ def build(root: Path) -> Graph:
         active in that universe.
 
     Raises:
-        ProjectError: If the spec is missing, declares no universe, or
-            names an input nothing provides.
+        ProjectError: If the spec is missing, declares no universe, gives
+            two universes the same id, or names an input nothing provides.
     """
     from astra.helpers import load_yaml, resolve_analysis_tree
 
@@ -170,12 +170,50 @@ def build(root: Path) -> Graph:
     spec = dict(resolve_analysis_tree(load_yaml(spec_path), root))
 
     tasks: dict[Key, Task] = {}
+    declared_in: dict[str, Path] = {}
     for path in universes:
         universe = load_yaml(path)
         universe_id = str(universe.get("id") or path.stem)
+        # A universe id names a directory under results/, so two files
+        # claiming one would write to the same place — and since the second
+        # simply replaces the first here, the outputs of one of them would
+        # go missing with nothing said.
+        if (first := declared_in.get(universe_id)) is not None:
+            raise ProjectError(
+                f"{first.name} and {path.name} both declare the universe "
+                f"`{universe_id}`, so both would materialize into "
+                f"results/{universe_id}/. Give each universe its own id."
+            )
+        declared_in[universe_id] = path
         for task in _tasks(root, universe_id, spec, universe):
             tasks[task.key] = task
     return Graph(tasks=tasks)
+
+
+def declared_path(root: Path, path: Path) -> str:
+    """Name *path* the way the analysis declared it.
+
+    Project-relative inside the tree, absolute outside it — the two forms a
+    recipe, a manifest and a ``[DATALAD RUNCMD]`` record all want, and the
+    reason a declared input with an absolute ``source:`` has somewhere to
+    be written down rather than being a crash.
+
+    Deliberately **not** resolved. Every declared input under ``data/`` is
+    an annex symlink, so resolving would name
+    ``.git/annex/objects/SHA256E-…`` — the storage rather than the input,
+    and a path no one can fetch.
+
+    Args:
+        root: The project root.
+        path: What to name.
+
+    Returns:
+        A POSIX path, relative to *root* where it is under it.
+    """
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def _validate(spec_path: Path, universes: list[Path]) -> None:
@@ -249,23 +287,22 @@ def _tasks(
                     root, universe_id, declared.produced_by
                 )
             elif declared.source:
-                candidate = Path(declared.source)
-                paths[declared.id] = (
-                    candidate if candidate.is_absolute() else root / candidate
-                )
+                # An absolute `source:` wins over the join — pathlib's own
+                # rule, and the one anyone writing one expects.
+                paths[declared.id] = root / declared.source
             else:
                 raise ProjectError(
                     f"output `{out.id}` declares the input `{declared.id}`, but no "
                     "output produces it and no declared input gives it a source."
                 )
-            values[declared.id] = paths[declared.id].relative_to(root).as_posix()
+            values[declared.id] = declared_path(root, paths[declared.id])
 
         try:
             recipe = render_command(
                 out.command,
                 inputs=values,
                 decisions=out.decisions,
-                output=output_dir.relative_to(root).as_posix(),
+                output=declared_path(root, output_dir),
             )
         except ValueError as e:
             raise ProjectError(f"output `{out.id}`: {e}") from e

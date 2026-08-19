@@ -397,6 +397,55 @@ def test_a_dirty_tree_refuses_and_says_what_to_do_about_each_path(
     assert "discard these" in message and "results/baseline/first/stray.txt" in message
 
 
+def _consuming(source: str) -> str:
+    """`_SPEC` with `first` actually reading the declared input, from *source*."""
+    return _SPEC.replace("source: data/catalog.fits", f"source: {source}").replace(
+        "    decisions: [method]", "    inputs: [catalog]\n    decisions: [method]"
+    )
+
+
+def test_an_unreadable_declared_input_does_not_traceback_out_of_a_read_only_verb(
+    analysis: Callable[..., Path],
+) -> None:
+    """A declared input directory can hold a symlink pointing nowhere —
+    the directory walk keeps dangling links deliberately, so that an
+    unfetched annexed file cannot silently drop out of the digest. One that
+    is not an annex link then reaches `open()`. `status` and `--check` read
+    projects that are in a state, so neither may raise."""
+    root = analysis(_consuming("data/inputs"), universes={"baseline": _UNIVERSE})
+    (root / "data" / "inputs").mkdir()
+    (root / "data" / "inputs" / "broken").symlink_to("nowhere.fits")
+
+    assert engine.status(root).outputs
+    assert engine.check(root, []).planned
+
+
+def test_a_declared_input_outside_the_project_is_reported_as_unrecoverable(
+    analysis: Callable[..., Path], tmp_path: Path
+) -> None:
+    """Its bytes are hashed into the manifest like any other input, so a
+    change to it still cascades — but it is not in the repository, so the
+    commit that records the output cannot bring it back."""
+    outside = tmp_path / "shared" / "catalog.fits"
+    outside.parent.mkdir()
+    outside.write_text("elsewhere\n")
+    root = analysis(_consuming(str(outside)), universes={"baseline": _UNIVERSE})
+
+    report = engine.check(root, [])
+
+    assert any(str(outside) in w and "cannot restore them" in w for w in report.warnings)
+
+
+def test_a_declared_input_inside_the_project_draws_no_such_warning(
+    analysis: Callable[..., Path],
+) -> None:
+    """The mutation check on the test above: the same spec with the source
+    back under `data/` says nothing."""
+    root = analysis(_consuming("data/catalog.fits"), universes={"baseline": _UNIVERSE})
+
+    assert not any("cannot restore" in w for w in engine.check(root, []).warnings)
+
+
 def test_a_dependency_the_lock_does_not_pin_is_refused(root: Path) -> None:
     """Its bytes are not recorded anywhere, so every hash below it would be
     a claim nobody can check."""
@@ -445,6 +494,24 @@ def test_a_failing_recipe_commits_nothing_and_leaves_the_tree_clean(
     assert not report.ok
     assert _commits(root) == before
     assert not dataset.status(root)
+
+
+def test_a_run_in_which_everything_failed_is_not_up_to_date(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """`made` stays empty when every recipe fails, so `up_to_date` alone
+    read "nothing to do" over a list of failures — and it is the second key
+    of the JSON report, which is what an agent branches on."""
+    spec = _SPEC.replace("echo {decisions.method} > {output}/value.txt", "exit 1")
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+
+    report = engine.materialize(root, [])
+
+    assert report.made == []
+    assert not report.up_to_date
+    assert json.loads(json.dumps(report.as_dict()))["up_to_date"] is False
+    # The positive control is `test_a_second_run_does_nothing_and_commits_
+    # nothing`, where the same empty `made` does mean up to date.
 
 
 def test_a_rebuild_that_fails_puts_the_previous_output_back(

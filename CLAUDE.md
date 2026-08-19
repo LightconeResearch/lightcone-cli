@@ -476,6 +476,30 @@ Measured, not assumed: with only the tool's `lc` on `PATH` — exactly what
 prepend disabled `lc init` refuses. Under `uv run` it is a no-op, because
 uv already fronts the project's `.venv/bin`.
 
+**A project can sit inside a larger repository, so `dataset.status` is
+scoped and relativised.** `lc init subdir/` adopts an enclosing work
+tree rather than nesting a new one — that is a supported layout — and
+`git status --porcelain` otherwise covers the *whole* work tree and names
+paths from *its* root. Unscoped, an edit anywhere else in the repository
+refuses every run in the project, and lc's own writes arrive as
+`subdir/results/…`, which the refusal's path-class split cannot
+recognise. So the call carries `-- .` and the `rev-parse --show-prefix`
+is stripped off each path. A wholly untracked project collapses to `.`,
+which is git's own summary of it and exactly what the refusal should tell
+someone to add.
+
+**git needs an identity, and that is asked before a run, not at the first
+commit.** A fresh container or CI image has none — the case an agent-run
+CLI meets most — and discovering it at `dataset.save` would throw away
+whatever the recipe had already computed. `require_committer` asks
+`git var GIT_COMMITTER_IDENT`, which is the question a commit itself
+asks: an identity resolves from `user.email`, `EMAIL`, the author and
+committer variables, or three levels of config, and a probe that
+reimplements that lookup is one that can disagree with the thing it
+stands in for. Measured: `git annex init` does *not* need one (it
+tolerates the missing identity and exits 0), so `lc init` is not gated on
+it — only the verb that commits is.
+
 **The ignore probe asks about the directory as a directory.**
 `check-ignore` is run with a trailing slash (`results/`), because the rule
 that matters most — the `results/*` an older lc scaffold wrote — ignores
@@ -487,6 +511,21 @@ the rule for the next. The item records **`blocked`**, not a warning —
 `git add` skips ignored paths in silence, so a materialize would report
 success and commit nothing — and it names `<file>:<line>:<pattern>`,
 because `.gitignore` convergence only ever appends and cannot fix this.
+
+**`.gitattributes` can be *unrepairable*, and that is a second blocked
+item.** The file is last-match-wins, and a repair only appends — so a
+project that already carries `results/** annex.largefiles=anything`
+without the `*` defaults gets `* annex.largefiles=nothing` appended
+*below* it, and every result then lands in git as a plain blob while the
+report says repaired and converged. `templates.gitattributes_disorder`
+judges **the text a repair would produce**, not the text as it stands (a
+file missing the defaults is in order until they are appended), and only
+compares lines setting the **same attribute** — `* filter=annex` landing
+under an `annex.largefiles` line is not disorder, and treating it as one
+blocks a perfectly good file. Blocked rather than fixed, for the reason
+the ignore rule is: reordering a file the user wrote is not something
+append-only convergence gets to do, so it names the line and prints the
+order the managed lines belong in.
 
 **An lc project is a DataLad dataset from birth.** `.datalad/config`
 carries a `datalad.dataset.id` UUID, generated once by `lc init` and never
@@ -666,6 +705,29 @@ ASTRA's **qualified** id, so a sub-analysis output lands at
 however deep the spec nests. Nesting is not capped: the dot separator is
 unambiguous because ASTRA ids match `^[a-z][a-z0-9_]*$`.
 
+**One rule names a path, and both the recipe and the run record use it**
+(`plan.declared_path`). Project-relative inside the tree, absolute
+outside it, never resolved. A declared input may name an absolute
+`source:` — ASTRA allows it and an HPC project pointing at a shared
+catalog is the obvious case — and there is no project-relative spelling
+for one, so a bare `relative_to` was a `ValueError` traceback out of
+`lc status`, `--check` and `materialize` alike. Two copies of this rule
+existed; the second is what made the first easy to miss.
+
+An input outside the project is **reported, not refused**: its bytes are
+hashed into the manifest like any other, so a change to it still
+cascades, but it is not in the repository and the commit recording the
+output cannot bring it back. That is a weaker promise than the rest of
+the layer makes, and saying so is the whole obligation — the same
+treatment `sdist_built` gets.
+
+**Two universes cannot share an id.** The id names a directory under
+`results/`, and the graph is keyed on `(universe_id, output_id)` — so the
+second file simply replaced the first and one universe's outputs went
+missing with nothing said. The way in is the natural one: copy
+`baseline.yaml`, edit the decisions, forget the id inside. `build`
+refuses, naming both files.
+
 **Because the path is composed, `output_dir` refuses an id that is not one
 path component.** An empty universe or output id collapses
 `results/<u>/<o>` onto a *parent* — `results/` itself, for two — and the
@@ -810,9 +872,13 @@ is deliberately no flag in the other direction — nothing suppresses the
 rebuild of a stale output, because deleting the directory is the user's
 own file operation and is stronger consent than a flag.
 
-**`up_to_date` does not count `behind`.** `lc materialize --check` is a
-gate, and a project of curated results would otherwise never pass it
-again.
+**`up_to_date` does not count `behind`, and is not true of a run that
+failed.** `lc materialize --check` is a gate, and a project of curated
+results would otherwise never pass it again — that is the `behind` half.
+The other half is that `made` stays empty when *every* recipe fails, so
+`not made and not planned` reported "nothing to do" over a list of
+failures. It is `ok and not made and not planned`; those two are the
+first keys of the JSON report and are what an agent branches on.
 
 **`lc status` reports; `--check` gates.** Status always exits 0 — a state
 is not a failure — and it is the only verb that shows the commit each
@@ -822,6 +888,21 @@ and does not mind a dirty tree, because the moment you most need to know
 what state a project is in is when it is not clean. Two verbs answering
 the same question with different exit codes is how a script comes to
 depend on the wrong one, so keep the split sharp.
+
+**A read-only verb never tracebacks, and an entry point never
+misattributes.** `lc status` and `--check` read projects that are *in a
+state* — that is what they are for — so anything `_predicted` cannot read
+becomes the same `None` an absent input already produces: it will be
+remade, and the recipe is where that failure belongs with a real error.
+(The concrete way in: `data_version`'s directory walk keeps dangling
+symlinks deliberately, so an unfetched annexed file cannot drop silently
+out of a digest — one that is *not* an annex link then reaches `open()`.)
+The same rule at the other end: `worker.main` is what every
+`[DATALAD RUNCMD]` record names, and its "no output `<x>`" message covers
+the task lookup **only**. It once wrapped the whole body, so a `KeyError`
+raised anywhere inside astra's validation or resolution was reported as a
+bad target — a rerun misdiagnosing itself, at the one place nobody is
+watching.
 
 **`git_sha` in a manifest is the commit the run *started* at**, not the
 commit the run went on to create. It is the code that produced the output.

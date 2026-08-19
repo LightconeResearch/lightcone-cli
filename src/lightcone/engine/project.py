@@ -404,12 +404,26 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
         _can_ask_git(directory) and dataset.is_annexed(directory),
         lambda: dataset.init_annex(directory),
     )
+    attributes = directory / ".gitattributes"
+    # Read before the repair, not after: the check is on the text a repair
+    # would leave behind, and check mode never writes one.
+    authored = attributes.read_text() if attributes.exists() else ""
     c.file(
         ".gitattributes",
-        directory / ".gitattributes",
+        attributes,
         partial(templates.read, "gitattributes.tmpl"),
         repair=templates.gitattributes_repair,
     )
+    if misplaced := templates.gitattributes_disorder(authored):
+        c.blocked(
+            ".gitattributes",
+            f".gitattributes would put `{misplaced}` after a line that has to "
+            "come before it, and git-annex takes the last match — so results "
+            "would be committed to git as plain blobs instead of reaching the "
+            "annex. Convergence only ever appends, so it cannot reorder a file "
+            "the user wrote. Put lightcone's lines in this order:\n  "
+            + "\n  ".join(templates.entries("gitattributes.tmpl")),
+        )
     c.file(
         ".datalad/config",
         directory / ".datalad" / "config",
