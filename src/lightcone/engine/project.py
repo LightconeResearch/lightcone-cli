@@ -529,7 +529,7 @@ def current_project(directory: Path | None = None) -> Path:
     declared = (directory / "pyproject.toml").exists() or (directory / SPEC_FILENAME).exists()
     if not declared:
         raise ProjectError(
-            f"{directory} is not a Lightcone project — `lc run` uses the "
+            f"{directory} is not a Lightcone project — lc uses the "
             "directory it is invoked from, and there is no project here. "
             "cd to the root of one and try again."
         )

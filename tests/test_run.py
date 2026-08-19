@@ -82,6 +82,9 @@ def test_the_wrong_directory_is_told_to_move_not_to_scaffold(tmp_path: Path) -> 
     message = str(raised.value)
     assert "cd to the root of one" in message
     assert "lc init" not in message
+    # Every verb that takes a project lands here, so the message names
+    # none of them in particular.
+    assert "lc run" not in message
 
 
 def test_the_default_is_the_working_directory(
