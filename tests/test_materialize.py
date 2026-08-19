@@ -120,11 +120,15 @@ def test_an_output_and_its_manifest_land_in_one_commit(root: Path, inline: None)
 
 
 def test_the_bytes_go_to_the_annex_and_the_manifest_to_git(root: Path, inline: None) -> None:
+    """What git records is the test: a pointer for content, the real thing
+    for a manifest. The working tree looks the same either way now."""
     engine.materialize(root, ["first"])
-    output = root / "results/baseline/first"
 
-    assert (output / "value.txt").is_symlink()
-    assert not (output / ".lightcone-manifest.json").is_symlink()
+    def blob(rel: str) -> str:
+        return dataset._git(["cat-file", "-p", f"HEAD:{rel}"], cwd=root)
+
+    assert blob("results/baseline/first/value.txt").startswith("/annex/objects/")
+    assert blob("results/baseline/first/.lightcone-manifest.json").startswith("{")
 
 
 def test_a_second_run_does_nothing_and_commits_nothing(root: Path, inline: None) -> None:
@@ -380,7 +384,6 @@ def test_the_record_names_the_declared_input_not_the_annex_object(
     """
     root = analysis(spec, files={"data/catalog.txt": "measured\n"})
     dataset.save(root, [root / "data"], "the catalog")
-    assert (root / "data/catalog.txt").is_symlink()
 
     engine.materialize(root, [])
 
@@ -408,13 +411,15 @@ def test_every_manifest_of_one_run_names_the_same_commit(root: Path, inline: Non
 def test_check_agrees_with_a_run_on_a_clone_with_no_annex_content(
     root: Path, inline: None, tmp_path: Path
 ) -> None:
-    """The dangling-symlink case. `--check` must not rehash an upstream the
-    annex has dropped: the digest would differ from the recorded one and it
-    would report a rebuild for a project that is entirely up to date."""
+    """Manifests are in git, so an output whose bytes were never fetched
+    is still classifiable — check mode reads the recorded digest rather
+    than the pointer file sitting in its place."""
     engine.materialize(root, [])
     clone = tmp_path / "clone"
     dataset._git(["clone", "-q", str(root), str(clone)], cwd=tmp_path)
-    assert not (clone / "results/baseline/first/value.txt").is_file()  # dangling
+    dataset._git(["annex", "init", "-q", "clone"], cwd=clone)
+    pointer = (clone / "results/baseline/first/value.txt").read_text()
+    assert pointer.startswith("/annex/objects/")  # content really is absent
 
     assert engine.check(clone, []).planned == {}
 

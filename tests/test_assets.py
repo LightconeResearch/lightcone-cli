@@ -99,6 +99,39 @@ def test_a_file_and_a_directory_holding_it_are_different(tmp_path: Path) -> None
     assert data_version(tmp_path / "one") != data_version(tmp_path / "fit.csv")
 
 
+def test_an_unfetched_annexed_file_is_refused_not_hashed(tmp_path: Path) -> None:
+    """`filter=annex` leaves a pointer file where the content would be, so
+    the path *exists* and is readable. Hashing it would be a well-formed
+    answer to the wrong question, and would land in a manifest as if it
+    described the data."""
+    pointer = tmp_path / "catalog.fits"
+    pointer.write_text(
+        "/annex/objects/SHA256E-s300000--4367c4a63392fa9b887bbcf046033d89.fits\n"
+    )
+
+    with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
+        data_version(pointer)
+
+
+def test_a_directory_holding_an_unfetched_file_is_refused_too(tmp_path: Path) -> None:
+    """An output directory is hashed as a whole, so one absent file must
+    not be quietly folded in as its pointer."""
+    (tmp_path / "fit.csv").write_text("a,b\n")
+    (tmp_path / "big.bin").write_text("/annex/objects/SHA256E-s9--abc.bin\n")
+
+    with pytest.raises(assets.ContentNotFetchedError):
+        data_version(tmp_path)
+
+
+def test_a_file_that_merely_mentions_the_prefix_is_still_hashed(tmp_path: Path) -> None:
+    """The test is the prefix at the very start, as git-annex's own is —
+    a script that talks about annex paths is not a pointer."""
+    script = tmp_path / "fit.py"
+    script.write_text("# reads /annex/objects/ sometimes\nprint(1)\n")
+
+    assert data_version(script).startswith("sha256:")
+
+
 def test_a_missing_path_is_an_error_not_an_empty_hash(tmp_path: Path) -> None:
     """The failure mode worth refusing loudly: a constant digest for
     everything absent would silently disable the whole chain."""

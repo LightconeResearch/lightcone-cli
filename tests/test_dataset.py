@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine import dataset, templates
+from lightcone.engine import dataset, project, templates
 
 
 @pytest.fixture
@@ -42,20 +42,26 @@ def _rebuild(output: Path) -> None:
     """What a worker does before it runs a recipe: the recipe owns the
     directory, and a stale file must not survive into the next hash.
 
-    It is also the only way to overwrite an output — annexed files are
-    read-only symlinks into the object store.
+    With `filter=annex` an annexed file is writable, so this is about
+    what a rebuild *means* rather than about permissions.
     """
     shutil.rmtree(output, ignore_errors=True)
     output.mkdir(parents=True)
 
 
-def _annexed(path: Path) -> bool:
+def _annexed(repo: Path, path: Path) -> bool:
     """Whether git-annex holds the bytes rather than git.
 
-    An annexed file is a symlink into the object store; a file git carries
-    is an ordinary file.
+    Asked of git-annex, because `filter=annex` means an annexed file is an
+    ordinary writable file in the tree with no symlink to look at.
+    `lookupkey` names a key for content git-annex holds and says nothing
+    for content git carries itself.
     """
-    return path.is_symlink() and ".git/annex/objects" in os.readlink(path)
+    rel = str(path.relative_to(repo))
+    # Not `_git`: lookupkey exits nonzero for a file git carries itself,
+    # which is an answer rather than a failure.
+    found = project._run(["git", "annex", "lookupkey", rel], cwd=repo)
+    return found.returncode == 0 and bool(found.stdout.strip())
 
 
 # ---- what git-annex stores, and what git carries ---------------------------
@@ -72,36 +78,33 @@ def test_save_puts_result_bytes_in_the_annex_and_the_manifest_in_git(repo: Path)
 
     assert dataset.save(repo, [output], "materialize best_fit")
 
-    assert _annexed(output / "fit.csv")
-    assert not _annexed(output / ".lightcone-manifest.json")
+    assert _annexed(repo, output / "fit.csv")
+    assert not _annexed(repo, output / ".lightcone-manifest.json")
     assert not dataset.status(repo)
 
 
-def test_a_plain_git_add_would_not_have_annexed_it(repo: Path) -> None:
-    """The trap `save`'s ordering exists to avoid: `.gitattributes` alone
-    does not route anything — without the `git annex add` first, git
-    commits the bytes itself, silently."""
+def test_a_plain_git_add_annexes_content_by_itself(repo: Path) -> None:
+    """`filter=annex` is what makes git's own add route content, which is
+    what lets lc — and everyone else — never run a git-annex command."""
     output = repo / "results" / "baseline" / "best_fit"
     output.mkdir(parents=True)
     (output / "fit.csv").write_text("a,b\n1,2\n")
 
     dataset._git(["add", "-A", "--", "results"], cwd=repo)
-    dataset._git(["commit", "-q", "-m", "the wrong way"], cwd=repo)
+    dataset._git(["commit", "-q", "-m", "plain git"], cwd=repo)
 
-    assert not _annexed(output / "fit.csv")
+    assert _annexed(repo, output / "fit.csv")
 
 
 def test_analysis_code_stays_in_git_and_stays_writable(repo: Path) -> None:
-    """`git annex add` annexes whatever it is handed, so the whole tree
-    goes through it on the documented save. Without the default line in
-    `.gitattributes`, `src/fit.py` comes back a read-only symlink into the
-    object store and the next edit fails with EACCES."""
+    """The default `annex.largefiles=nothing` is what keeps `filter=annex`
+    from routing source files into the annex along with the data."""
     (repo / "src").mkdir()
     (repo / "src" / "fit.py").write_text("print('hi')\n")
 
     dataset.save(repo, [repo], "the analysis")
 
-    assert not _annexed(repo / "src" / "fit.py")
+    assert not _annexed(repo, repo / "src" / "fit.py")
     (repo / "src" / "fit.py").write_text("print('edited')\n")
 
 
@@ -111,7 +114,7 @@ def test_data_is_annexed_too(repo: Path) -> None:
     (repo / "data" / "catalog.fits").write_bytes(b"\x00" * 64)
     dataset.save(repo, [repo / "data"], "input data")
 
-    assert _annexed(repo / "data" / "catalog.fits")
+    assert _annexed(repo, repo / "data" / "catalog.fits")
 
 
 # ---- committing ------------------------------------------------------------

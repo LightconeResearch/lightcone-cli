@@ -119,12 +119,13 @@ def check(root: Path, targets: Sequence[str]) -> MaterializeReport:
 
     versions = assets.Versions()
     stale: set[Key] = set()
+    unfetched: set[str] = set()
     for key in graph.order():
         task = graph.tasks[key]
         reason = assets.staleness(
             code_version=task.code_version,
             manifest=assets.read(task.output_dir),
-            inputs=_predicted(task, stale, versions),
+            inputs=_predicted(task, stale, versions, unfetched),
         )
         name = _name(key)
         if reason is None:
@@ -132,16 +133,30 @@ def check(root: Path, targets: Sequence[str]) -> MaterializeReport:
         else:
             stale.add(key)
             report.planned[name] = str(reason)
+    if unfetched:
+        report.warnings.append(
+            "reported as out of date because their content is not in this "
+            f"clone, not because they changed: {', '.join(sorted(unfetched))}. "
+            "Fetch with `git annex get <path>`."
+        )
     return report
 
 
-def _predicted(task: Task, stale: set[Key], versions: assets.Versions) -> dict[str, str | None]:
+def _predicted(
+    task: Task, stale: set[Key], versions: assets.Versions, unfetched: set[str]
+) -> dict[str, str | None]:
     """Each input's version as check mode can know it.
 
-    ``None`` for anything that will be rebuilt; the bytes on disk for
-    everything else. A declared input that is not there at all is also
-    ``None`` — it cannot be read now and running the recipe is what would
-    be attempted, which is the honest classification.
+    Args:
+        task: The output being classified.
+        stale: Task keys already decided to be rebuilt.
+        versions: The run's content-hash memo.
+        unfetched: Collects declared inputs whose content is not local, so
+            the report can say why they read as out of date.
+
+    Returns:
+        Each input's version as check mode can know it: ``None`` for
+        anything that will be rebuilt, is absent, or cannot be read.
     """
     predicted: dict[str, str | None] = {}
     for name, path in task.inputs.items():
@@ -157,7 +172,15 @@ def _predicted(task: Task, stale: set[Key], versions: assets.Versions) -> dict[s
         elif not path.exists():
             predicted[name] = None
         else:
-            predicted[name] = versions.of(path)
+            try:
+                predicted[name] = versions.of(path)
+            except assets.ContentNotFetchedError:
+                # Not "it changed" — "I cannot tell". Conservative, and
+                # said out loud, because reporting a rebuild for a clone
+                # that simply has not fetched its inputs is misleading on
+                # its own.
+                unfetched.add(_inside(task.output_dir.parent.parent.parent, path))
+                predicted[name] = None
     return predicted
 
 
@@ -468,7 +491,7 @@ def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
     if theirs:
         lines += [
             "",
-            '  commit these:   git annex add . && git add -A . && git commit -m "…"',
+            '  commit these:   git add -A . && git commit -m "…"',
             *(f"      {code.strip() or '??'} {path}" for code, path in theirs),
         ]
     if ours:

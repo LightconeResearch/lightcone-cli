@@ -385,34 +385,37 @@ re-derived. Two things it does *not* settle, both layer 7's:
   wheel installs it into `.venv/bin`. Configuration, not design:
   `git config remote.<name>.annex-shell <abs-path>`.
 
-**The `.gitattributes` default line is load-bearing.** `git annex add`
-annexes whatever it is handed, so the policy has to *start* with
-`* annex.largefiles=nothing` and let outputs and inputs opt out; last
-matching line wins. Without it the documented save turns `src/fit.py`
-into a read-only symlink into the object store and the next edit fails
-with EACCES. `tests/test_dataset.py::test_analysis_code_stays_in_git_and_stays_writable`
-runs it against a real annex, which is the only way to know.
+**`filter=annex` is what makes an ordinary `git add` do the right thing.**
+`git annex init` configures the smudge/clean filter itself; the template
+adds `* filter=annex`, and `annex.largefiles` then decides what counts as
+content. So a researcher types `git add -A . && git commit` — the same
+git they already know — and a 200 KB input lands in the annex as a
+101-byte pointer while `src/main.py` and the manifests stay real. Nothing
+lc scaffolds, prints or documents asks anyone to run a git-annex command,
+and `dataset.save` does not run one either.
+
+**The `annex.largefiles=nothing` default is load-bearing.** It has to come
+first, with outputs and inputs opting out; last matching line wins.
+Without it `filter=annex` routes *everything* into the annex, analysis
+code included. `tests/test_dataset.py::test_analysis_code_stays_in_git_and_stays_writable`
+pins it against a real annex.
 
 **Manifests stay in git, deliberately.** `**/.lightcone-manifest.json` is
 exempted back out of the annex so it is readable on a clone that has
-fetched no annex content at all — which is what makes a plain `grep`, and
-every later verb that reads identity, work without a `git annex get`.
+fetched no annex content at all — which is what lets `lc materialize
+--check` classify a whole project on a laptop that holds none of the
+bytes.
 
-**A plain `git add` does not annex anything.** `.gitattributes` only
-routes what `git annex add` is *given*; git's own add commits the bytes.
-So `dataset.save` is ordered `git annex add` → `git add -A` →
-`git commit`. It is `git annex add .` — **not** `-A`, which git-annex
-does not accept even though `git add` needs it.
-
-**Nothing scaffolded asks a researcher to run git-annex by hand.**
-`data/README.md` says what the directory is for and stops there. That is
-a decision about the product, not about the storage: annex commands are
-lc's to run, not a step in somebody's workflow. It leaves one thing
-unfinished, recorded so it is not mistaken for done — `lc materialize`'s
-dirty-tree refusal still prints `git annex add . && git add -A . && …`,
-and there is no lc-side way to get a file in `data/` committed, so a
-researcher who follows the obvious `git add` silently commits the bytes
-into git.
+**An unfetched file exists, and that is the trap.** With `filter=annex` a
+clone without content holds a ~100-byte *pointer file* where the data
+would be: it exists, it is readable, and hashing it yields a perfectly
+well-formed digest of the wrong thing. `assets.data_version` therefore
+refuses one — `ContentNotFetchedError`, naming `git annex get` — using
+the same test git-annex's own `isPointerFile` makes, a `/annex/objects/`
+prefix within the first 32 KiB. Measured before it was fixed: the same
+input hashed differently on a clone, silently. `--check` catches that
+error and reports "not in this clone" rather than "changed", because the
+two are different facts and only one of them means a rebuild.
 
 **PATH is part of the contract.** `git annex` is not a builtin — git
 dispatches it by searching `PATH` for a `git-annex` executable, and
@@ -450,10 +453,10 @@ datalad, never imports it, and never parses `.datalad/`.** A researcher
 who wants `datalad get`, siblings or RIA stores runs `uv add datalad` in
 their own project.
 
-**Annexed files are read-only symlinks.** An output cannot be overwritten
-in place; it is removed and rewritten. Tests that model a rebuild have to
-do the same, or they fail with `PermissionError` on a path that looks
-perfectly ordinary.
+**Annexed files are ordinary writable files.** `filter=annex` keeps them
+unlocked, so an output can be overwritten in place and nothing needs to
+remove it first. (This reverses the earlier symlink model, where a
+rebuild hit `PermissionError` on a path that looked perfectly ordinary.)
 
 **`restore` is scoped, and asymmetric.** `git clean -qfdx` always, plus
 `git checkout HEAD --` **only when HEAD has the path** — a first
@@ -541,9 +544,9 @@ preference.
 
 **A dependent does run while its upstream is being annexed, and that is
 safe.** Dask releases a task the moment its upstream's *worker* returns,
-milliseconds before the driver finishes `git annex add` on that
-upstream's directory — so a recipe reads an input directory whose files
-are being replaced by symlinks. Measured before relying on it: git-annex
+milliseconds before the driver finishes committing that upstream's
+directory — so a recipe reads an input directory while git's clean filter
+is moving its content into the annex. Measured before relying on it: git-annex
 hard-links the content into the object store and then renames the symlink
 over the file, so the path never stops existing and never holds partial
 bytes (448 concurrent full-content reads across 24 MB: no missing paths,
@@ -1092,7 +1095,7 @@ only checks that the guard is present. Verified empirically, not assumed.
   deliberate: the question is whether bytes land in the annex or as a blob
   in git, and a fake answering it would only restate what the code already
   believes. Every bug this file found (the missing `.gitattributes`
-  default, `git annex add -A`, read-only symlinks) was invisible to a stub.
+  default, the pointer-file trap, `filter=annex`) was invisible to a stub.
 - `tests/test_project.py` — discovery and convergence semantics, called
   directly. This is where scaffold behavior is tested.
 - `tests/test_identity.py`, `test_assets.py`, `test_plan.py` — **pure**,

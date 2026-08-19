@@ -23,12 +23,26 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from lightcone.engine.project import ProjectError
+
 MANIFEST_FILENAME = ".lightcone-manifest.json"
 SCHEMA_VERSION = 1
 
 #: Excluded from the content hash: the manifest is written *after* the
 #: hash it contains, so hashing it would be circular.
 _HASH_EXCLUDE = frozenset({MANIFEST_FILENAME})
+
+#: What git-annex writes in place of content it does not have locally.
+#: Detecting it is the same test git-annex's own ``isPointerFile`` makes,
+#: and it has to be made: a pointer file *exists* and is readable, so
+#: hashing one would quietly record the digest of a path instead of the
+#: digest of the data.
+_POINTER_PREFIX = b"/annex/objects/"
+_POINTER_MAX_BYTES = 32 * 1024
+
+
+class ContentNotFetchedError(ProjectError):
+    """An annexed file whose content is not in this clone."""
 
 
 def output_dir(root: Path, universe_id: str, output_id: str) -> Path:
@@ -75,11 +89,14 @@ def data_version(path: Path) -> str:
     Raises:
         FileNotFoundError: If *path* does not exist. Never a constant
             digest, which would silently disable the staleness chain.
+        ContentNotFetchedError: If any file is a git-annex pointer rather than
+            the data itself.
     """
     if not path.exists():
         raise FileNotFoundError(path)
     h = hashlib.sha256()
     if path.is_file():
+        _refuse_pointer(path)
         h.update(b"file:")
         _feed(h, path)
         return f"sha256:{h.hexdigest()}"
@@ -87,6 +104,7 @@ def data_version(path: Path) -> str:
     h.update(b"dir:")
     files = [p for p in path.rglob("*") if p.is_file() and p.name not in _HASH_EXCLUDE]
     for p in sorted(files, key=lambda x: x.relative_to(path).as_posix()):
+        _refuse_pointer(p)
         h.update(b"path:")
         h.update(p.relative_to(path).as_posix().encode())
         h.update(b"\0data:")
@@ -129,6 +147,28 @@ class Versions:
         if (known := self._known.get(resolved)) is None:
             known = self._known[resolved] = data_version(path)
         return known
+
+
+def _refuse_pointer(path: Path) -> None:
+    """Refuse a file whose content this clone does not hold.
+
+    Args:
+        path: A file about to be hashed.
+
+    Raises:
+        ContentNotFetchedError: If *path* is a git-annex pointer. Loud, because
+            the alternative is a digest of the pointer text — which is a
+            perfectly well-formed answer to the wrong question, and would
+            land in a manifest as if it described the data.
+    """
+    if path.stat().st_size > _POINTER_MAX_BYTES:
+        return
+    with path.open("rb") as f:
+        if f.read(len(_POINTER_PREFIX)) == _POINTER_PREFIX:
+            raise ContentNotFetchedError(
+                f"{path}: the content is not in this clone — git-annex has a "
+                f"pointer to it. Fetch it with `git annex get {path}`."
+            )
 
 
 def _feed(h: hashlib._Hash, path: Path) -> None:

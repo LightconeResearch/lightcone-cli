@@ -261,12 +261,11 @@ def test_that_write_would_have_succeeded_unsandboxed(
     assert (root / "src" / "injected.py").read_text() == "tampered\n"
 
 
-def test_a_recipe_can_read_an_annexed_input_through_its_symlink(
-    analysis: Callable[..., Path]
-) -> None:
-    """Declared inputs live in the annex, so what a recipe actually opens
-    is a symlink into the object store — which the project read root has
-    to cover, or every recipe with an input fails."""
+def test_a_recipe_can_read_an_annexed_input(analysis: Callable[..., Path]) -> None:
+    """Declared inputs live in the annex. With `filter=annex` the working
+    tree holds the real bytes, so the project read root covers them — but
+    that is worth pinning, since it is what every recipe with an input
+    depends on."""
     from lightcone.engine import dataset
 
     spec = """
@@ -287,7 +286,6 @@ def test_a_recipe_can_read_an_annexed_input_through_its_symlink(
     """
     root = analysis(spec, files={"data/catalog.txt": "measured\n"})
     dataset.save(root, [root / "data"], "the catalog")
-    assert (root / "data/catalog.txt").is_symlink()
 
     result = _make(root, "fit")
 

@@ -11,9 +11,9 @@ Every command goes through :func:`~lightcone.engine.project._run`, the
 same seam convergence uses, so there is one place to monkeypatch and every
 invocation is inspectable.
 
-``git annex add`` must run before ``git add``: ``.gitattributes`` only
-routes what git-annex is *given*, and a plain ``git add`` commits the
-bytes into git itself.
+``.gitattributes`` sets ``filter=annex``, so an ordinary ``git add``
+routes content to the annex. Nothing here — and nothing lc documents —
+asks anyone to run a git-annex command by hand.
 """
 
 from __future__ import annotations
@@ -175,9 +175,9 @@ def dataset_id(directory: Path) -> str:
 def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
     """Commit *paths*.
 
-    ``git annex add`` first, so content ``.gitattributes`` routes to the
-    annex is never captured as a git blob; then ``git add -A``, which
-    stages the deletions a rebuild left behind.
+    A plain ``git add``: ``.gitattributes`` sets ``filter=annex``, so git's
+    own add routes content to the annex and everything else into git. lc
+    runs no annex command here for the same reason it asks nobody else to.
 
     Args:
         directory: The repository root.
@@ -188,7 +188,6 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
         False if there was nothing to commit.
     """
     relative = [_rel(directory, p) for p in paths]
-    _git(["annex", "add", "--quiet", "--", *relative], cwd=directory)
     _git(["add", "-A", "--", *relative], cwd=directory)
     if _git_ok(["diff", "--cached", "--quiet"], cwd=directory):
         return False
