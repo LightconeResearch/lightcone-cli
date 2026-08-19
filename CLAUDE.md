@@ -15,6 +15,12 @@ hooks, or plugins.
 lightcone-cli depends on ASTRA. The `astra` CLI handles spec operations;
 the `lc` CLI handles execution.
 
+That split is enforced in code, not just described: everything about what
+a spec *means* — scoping, `from:` references, conditional outputs,
+universe resolution, the recipe placeholder grammar — is answered by
+`astra.resolve` and validated by `astra.validation` before lc acts on it.
+lc's whole ASTRA surface is ten functions; see Key Invariants (layer 4).
+
 ## ⚠️ This repository is a clean rebuild in progress
 
 The codebase is being **re-added layer by layer** on top of the normative
@@ -39,13 +45,17 @@ speculatively.
 | # | Layer | State |
 |---|-------|-------|
 | 1 | **Project scaffolding** — `lc init` | ✅ **done** |
-| 2 | Environment layer — `env_version`, lock scan, manifest schema | ⬜ |
+| 2 | **Environment layer** — `env_version`, lock scan, manifest schema | ✅ **done** |
 | 3 | The `lc` entrypoint — launcher: discover → mode-detect → scrub `UV_*` → converge → delegate | ⬜ |
-| 4 | Fabric — `lc materialize`, worker sequence, mid-run relock gate | ⬜ |
+| 4 | **Fabric** — `lc materialize`, worker sequence, mid-run relock gate | ✅ **done** |
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | Container hatch — `[tool.lightcone.image]`, generated Containerfile, `lc build` | ⬜ |
 | 7 | Venues — Perlmutter, hub/GKE, Cloud Build | ⬜ |
-| 8 | `lc status`, `lc verify`, WRROC export | ⬜ |
+| 8 | `lc verify`, WRROC export | ⬜ |
+
+`lc status` landed with the invalidation model rather than at layer 8:
+once an output can be *behind*, something has to say which ones are, and
+the verb is the same classification walk `--check` already does.
 
 Layer 5 landed **out of order**, ahead of 2–4: `lc run` is the spec's
 *probe* verb, and a probe has no output, so it needs neither manifests
@@ -115,7 +125,8 @@ recipes run under Landlock/          execution world: driver, workers,
 
 Identity: `env_version = sha256(uv.lock ‖ .python-version ‖ canonical
 install-settings ‖ canonical [tool.lightcone.image] ‖ Containerfile.extra
-hash)`, sitting inside `code_version`. Every output records what
+hash)`, recorded beside `definition_version` rather than folded into it.
+Every output records what
 enforcement it actually ran under (`hermeticity`). See spec §1–§3, §7.
 
 ### Namespace contract
@@ -139,15 +150,21 @@ src/lightcone/              # namespace — NO __init__.py
 ├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
 ├── cli/                    # the CLI only: flags, rendering, exit codes
 │   ├── __init__.py         # exposes main(); the launcher hooks in here (layer 3)
-│   └── commands.py         # lc init, lc run
+│   └── commands.py         # lc init, lc run, lc materialize
 └── engine/
     ├── __init__.py         # docstring only
     ├── project.py          # what a project is: convergence + discovery
+    ├── dataset.py          # the git + git-annex seam: how a project stores
+    ├── identity.py         # env_version, definition_version, the lock scan
+    ├── assets.py           # an output: its directory, its manifest, its state
+    ├── plan.py             # the spec, read as a graph of tasks
+    ├── worker.py           # making one output; also the `python -m` entry point
+    ├── materialize.py      # the driver: dirty gate, Dask, the save/restore loop
     ├── run.py              # what `lc run` is: the probe + the uv hop
     ├── sandbox/            # the exec boundary
     │   ├── __init__.py     # the public surface (detect, run, scope, the types)
     │   ├── model.py        # Policy · Capability · Attestation · Backend protocol
-    │   ├── policy.py       # what a probe may touch
+    │   ├── policy.py       # what a probe and a recipe may touch
     │   ├── boundary.py     # detect() + run(): the mechanism-blind half
     │   ├── landlock.py     # Linux backend
     │   ├── seatbelt.py     # macOS backend
@@ -213,12 +230,30 @@ command callbacks and builds the rich console lazily, so `lc --help` and
 shell completion pay for neither. Keep this up as verbs land: a module-scope
 engine import would make every invocation pay for the heaviest layer.
 
+**The scaffold comes from `astra.scaffold`, not `astra.cli`.** Both export
+`create_boilerplate`, and the second drags Click, Rich and the validation
+stack — measured, 37 ms against 4 ms. `astra.scaffold` is stdlib-only
+(checked: it pulls no linkml_runtime, click, rich, pydantic or
+jsonschema), which is why this one astra import sits at module scope in
+`project.py` where `astra.validation` and `astra.resolve` must not.
+
 **Templates are files, not string literals.** `engine/templates/files/*.tmpl`
-are package data, loaded through `importlib.resources`; `templates/__init__.py`
-exposes one function per scaffolded file. Placeholders are
+are package data, loaded through `importlib.resources`. Placeholders are
 `string.Template` (`${name}`) — **not** `str.format` — because several
 templates legitimately contain braces (TOML tables, MyST `{astra}` roles).
 Substitution is strict, so a missing key raises.
+
+**A template gets a function only when there is something to decide** — a
+value the caller supplies (`pyproject`, `datalad_config`, `index_md`) or a
+merge policy for a file the user already owns (`gitignore_repair`,
+`gitattributes_repair`). Everything else is read by name:
+`templates.read("myst.yml.tmpl")`, or `partial(templates.read, …)` where
+convergence wants a thunk. This reverses the earlier "one function per
+scaffolded file" rule, which had five of the module's twenty functions
+doing nothing but rename a file — a second place for the name to be
+wrong, and one the type checker cannot catch. The two `*_repair`
+functions stay named because `_Converger.file` hands them the text alone,
+so the template name has to be bound before the call site.
 
 **No engine constants for the environment.** The scaffolded
 `.python-version` is the interpreter `lc` itself is running on, and
@@ -247,6 +282,10 @@ user owns:
 | `.python-version` | The exact patch of the interpreter `lc` is running on |
 | `uv.lock`, `.venv` | **Derived** — converged by correctness, not existence: `uv lock --check` / `uv sync --check` decide, then `uv lock` / `uv sync --locked --exact --compile-bytecode` repair |
 | `.gitignore` | One managed block of patterns; convergence ensures each is present |
+| `.git` + the annex | `git init` then `git annex init` — results are versioned in the project's own repository |
+| `.gitattributes` | The storage policy: what git-annex holds and what git carries. Line-managed, like `.gitignore` |
+| `.datalad/config` | A `datalad.dataset.id` UUID, generated once. lc never reads it back |
+| `data/` + `README.md` | Where declared inputs live; annexed, and committed before anything computes on them |
 | `results/` + `README.md` | Where outputs land; the README states the materialize-don't-hand-write contract |
 | `myst.yml`, `index.md` | Template MyST report referencing `astra.yaml` *by path* |
 
@@ -257,7 +296,9 @@ user owns:
   layout, and the boilerplate's `python src/main.py` is a placeholder.
   Universes are discovered by `glob("*.yaml")`, which is empty-not-error on
   a missing directory. `tests/test_project.py::test_a_clone_of_a_converged_project_is_converged`
-  pins this: a clone must need nothing but `.venv`.
+  pins this: a clone must need nothing but `.venv` and `git annex init`.
+  Those two are the exemptions, and for one reason — they are local state
+  git does not clone.
 - **Convergence, not scaffolding.** Each item is created if missing,
   offered to a conservative `repair(text) -> str | None` hook otherwise,
   and left alone when the hook returns `None`. `--check` computes the
@@ -312,19 +353,694 @@ user owns:
   nothing convergence invokes is allowed to fail silently. Every uv
   invocation carries an explicit `--project` — uv's own walk-up discovery
   is never trusted (spec §4).
-- **uv is required; git is optional.** An absent uv is a refusal (it is
-  the environment substrate); an absent git is simply nothing to converge,
-  since a project without version control is still a valid project.
+- **uv, git and git-annex are all required.** Each is a refusal, not a
+  warning: uv is the environment substrate and git + git-annex are the
+  storage substrate, and results are versioned in the repository, so there
+  is no useful project without any of them. git is the one tool uv cannot
+  install and the single admitted exception to a uv-installable stack;
+  git-annex ships as a wheel and is therefore a locked dependency, which
+  makes its wheel platforms the CLI's install floor.
+  (This reverses layer 1's original "git is optional" — a project without
+  version control had nowhere to put a result.)
+- **Two questions about git, not one.** `_in_repository` is a pure
+  filesystem walk-up and answers for a directory that does not exist yet,
+  which is what check mode needs. `_can_ask_git` adds `is_dir()`, because
+  every git *invocation* needs an existing working directory — inside an
+  enclosing repository the walk-up says "in a repository" for a
+  directory that is not there, and running git in it raises
+  `FileNotFoundError` out of `Popen` rather than answering anything.
 - **`git init` checks for an *enclosing* work tree**, not just a `.git` in
   the directory, so `lc init subdir/` inside a repository can't create a
   nested one. (`.git` may be a file — linked worktree or submodule — so the
-  test is `exists`, not `is_dir`.)
+  test is `exists`, not `is_dir`.) The annex asks git-annex's own question,
+  `git config --get annex.uuid`, so an enclosing repository that already
+  has one is adopted rather than re-initialized.
 - **`lc init` has exactly two flags**, `--check` and `--json`. `--no-git`
   and `--no-sync` were deleted: neither had a caller outside the test suite,
   `--no-git` was a workaround for the missing enclosing-repo check, and
   `--no-sync`'s real home is containerized mode (layer 6), where the host
   `.venv` is inert. Don't add a flag whose only user is a test — stub
   `project._run` instead.
+## Key Invariants (storage)
+
+**Results are versioned in the project's own repository**, on the DataLad
+model: **git carries the pointers and the history, git-annex carries the
+bytes.** `engine/dataset.py` is the whole seam, and every command in it
+goes through `project._run` — the same one convergence uses, so there is
+one monkeypatch point and the `tools` fixture already covers git.
+
+**git-annex is a wheel, and that sets the CLI's install floor.**
+`manylinux_2_34` on x86_64/aarch64, macOS 14+ arm64 or 15+ x86_64,
+win_amd64 — and **no sdist**, so a host below the floor fails to install
+rather than building from source. Because git-annex is a *hard* runtime
+dependency and `lc init` pins `lightcone-cli` into every project, that
+floor gates installing lc at all, including `lc run`, which never touches
+the annex. If it ever bites a real user, that coupling is the thing to
+revisit — an extra, or a probed requirement like git — not the floor.
+
+**Perlmutter clears it** (checked 2026-08-19, login node): the wheel
+installs and `git annex version` runs. That was the open question this
+stack was most likely to fail on, so it is written down rather than
+re-derived. Two things it does *not* settle, both layer 7's:
+
+- **Lustre/GPFS behaviour is unmeasured.** arXiv:2505.06558 documents
+  symlink, many-small-files and inode pressure on parallel filesystems.
+  Correctness is not the worry; cost is, and one output is one file plus
+  one hard link to its object. Results are already thin (above); adjusted
+  (unlocked) branches remain the untried lever, as does whether Lustre
+  makes the hard link behave differently. Time `git annex add` and
+  `git annex get` on `$SCRATCH` and `$CFS` before designing around
+  either.
+- **`git-annex-shell` is not on the default remote PATH.** `git annex get`
+  from a laptop dispatches to it over a non-login ssh session, and the
+  wheel installs it into `.venv/bin`. Configuration, not design:
+  `git config remote.<name>.annex-shell <abs-path>`.
+
+**`filter=annex` is what makes an ordinary `git add` do the right thing.**
+`git annex init` configures the smudge/clean filter itself; the template
+adds `* filter=annex`, and `annex.largefiles` then decides what counts as
+content. So a researcher types `git add -A . && git commit` — the same
+git they already know — and a 200 KB input lands in the annex as a
+101-byte pointer while `src/main.py` and the manifests stay real. Nothing
+lc scaffolds, prints or documents asks anyone to run a git-annex command,
+and `dataset.save` does not run one either.
+
+**The `annex.largefiles=nothing` default is load-bearing.** It has to come
+first, with outputs and inputs opting out; last matching line wins.
+Without it `filter=annex` routes *everything* into the annex, analysis
+code included. `tests/test_dataset.py::test_analysis_code_stays_in_git_and_stays_writable`
+pins it against a real annex.
+
+**Manifests stay in git, deliberately.** `**/.lightcone-manifest.json` is
+exempted back out of the annex so it is readable on a clone that has
+fetched no annex content at all — which is what lets `lc materialize
+--check` classify a whole project on a laptop that holds none of the
+bytes.
+
+**An unfetched file exists, and that is the trap — in two shapes.**
+`assets.data_version` refuses both with `ContentNotFetchedError`, naming
+`git annex get`, and it checks for both regardless of which one lc's own
+writes produce: `annex.thin` and `git annex lock` are the researcher's to
+set on their clone, so the shape a file arrives in is not ours to assume.
+
+- **Unlocked** — what `filter=annex` writes, hard-linked or copied alike.
+  A clone without content holds a ~100-byte *pointer file* where the data
+  would be: it exists, it is readable, and hashing it yields a perfectly
+  well-formed digest of the wrong thing. The test is git-annex's own
+  `isPointerFile` — a `/annex/objects/` prefix within the first 32 KiB.
+  Measured before it was fixed: the same input hashed differently on a
+  clone, silently.
+- **Locked** — a symlink into the object store, which without the content
+  dangles. This one is quieter and worse: `is_file()` answers False for a
+  dangling symlink, so a directory walk filtered on that alone drops the
+  absent file from the digest *without a word*, reporting a hash of
+  whatever subset happens to be present. Only dangling symlinks are added
+  back to the walk — one that resolves to a file already is one, and one
+  that resolves to a directory is not content.
+
+`--check` catches the error and reports "not in this clone" rather than
+"changed", because the two are different facts and only one of them means
+a rebuild.
+
+**PATH is part of the contract.** `git annex` is not a builtin — git
+dispatches it by searching `PATH` for a `git-annex` executable, and
+`uv tool install lightcone-cli` links only lc's own entry points into
+`~/.local/bin`. So `dataset.put_our_bin_first()` **prepends**
+`Path(sys.executable).parent`, idempotently, before any git call. Prepend,
+never append: a system copy winning would make the version the project's
+lock records a fiction. `project.require_git_annex()` probes after the
+prepend and by the name git itself searches for.
+
+Measured, not assumed: with only the tool's `lc` on `PATH` — exactly what
+`uv tool install` produces — `git annex version` fails, and with the
+prepend disabled `lc init` refuses. Under `uv run` it is a no-op, because
+uv already fronts the project's `.venv/bin`.
+
+**A project can sit inside a larger repository, so `dataset.status` is
+scoped and relativised.** `lc init subdir/` adopts an enclosing work
+tree rather than nesting a new one — that is a supported layout — and
+`git status --porcelain` otherwise covers the *whole* work tree and names
+paths from *its* root. Unscoped, an edit anywhere else in the repository
+refuses every run in the project, and lc's own writes arrive as
+`subdir/results/…`, which the refusal's path-class split cannot
+recognise. So the call carries `-- .` and the `rev-parse --show-prefix`
+is stripped off each path. A wholly untracked project collapses to `.`,
+which is git's own summary of it and exactly what the refusal should tell
+someone to add.
+
+**git needs an identity, and that is asked before a run, not at the first
+commit.** A fresh container or CI image has none — the case an agent-run
+CLI meets most — and discovering it at `dataset.save` would throw away
+whatever the recipe had already computed. `require_committer` asks
+`git var GIT_COMMITTER_IDENT`, which is the question a commit itself
+asks: an identity resolves from `user.email`, `EMAIL`, the author and
+committer variables, or three levels of config, and a probe that
+reimplements that lookup is one that can disagree with the thing it
+stands in for. Measured: `git annex init` does *not* need one (it
+tolerates the missing identity and exits 0), so `lc init` is not gated on
+it — only the verb that commits is.
+
+**The ignore probe asks about the directory as a directory.**
+`check-ignore` is run with a trailing slash (`results/`), because the rule
+that matters most — the `results/*` an older lc scaffold wrote — ignores
+the directory's *contents* and does not match the bare name at all. And
+with `--no-index`, which asks about the *rules* rather than the index:
+without it git answers "not ignored" for anything already tracked, which
+is exactly the project where someone committed one result by hand and left
+the rule for the next. The item records **`blocked`**, not a warning —
+`git add` skips ignored paths in silence, so a materialize would report
+success and commit nothing — and it names `<file>:<line>:<pattern>`,
+because `.gitignore` convergence only ever appends and cannot fix this.
+
+**`.gitattributes` can be *unrepairable*, and that is a second blocked
+item.** The file is last-match-wins, and a repair only appends — so a
+project that already carries `results/** annex.largefiles=anything`
+without the `*` defaults gets `* annex.largefiles=nothing` appended
+*below* it, and every result then lands in git as a plain blob while the
+report says repaired and converged. `templates.gitattributes_disorder`
+judges **the text a repair would produce**, not the text as it stands (a
+file missing the defaults is in order until they are appended), and only
+compares lines setting the **same attribute** — `* filter=annex` landing
+under an `annex.largefiles` line is not disorder, and treating it as one
+blocks a perfectly good file. Blocked rather than fixed, for the reason
+the ignore rule is: reordering a file the user wrote is not something
+append-only convergence gets to do, so it names the line and prints the
+order the managed lines belong in.
+
+**An lc project is a DataLad dataset from birth.** `.datalad/config`
+carries a `datalad.dataset.id` UUID, generated once by `lc init` and never
+regenerated — it identifies the dataset across clones and siblings.
+Verified, not assumed: `datalad status` recognises a freshly scaffolded
+project with no `--force` adoption step, and `Dataset('.').id` is the UUID
+we wrote. The reciprocal is a standing non-goal: **lc never requires
+datalad, never imports it, and never parses `.datalad/`.** A researcher
+who wants `datalad get`, siblings or RIA stores runs `uv add datalad` in
+their own project.
+
+**Annexed files are ordinary writable files.** `filter=annex` keeps them
+unlocked, so an output can be overwritten in place and nothing needs to
+remove it first. (This reverses the earlier symlink model, where a
+rebuild hit `PermissionError` on a path that looked perfectly ordinary.)
+
+**Results are committed thin; declared inputs are not.** `dataset.save`
+passes `-c annex.thin=true` to its `git add`, so a result is hard-linked
+to its annex object instead of copied — measured, 39 MB to 20 MB for one
+20 MB file, since an unlocked file otherwise exists both in the tree and
+in the object store.
+
+It is safe *there* and nowhere else, and the reason is specific:
+**thin's hazard is an in-place write.** With the file hard-linked to the
+object, one `open('r+b')` rewrites the object under the key that names
+it — measured, the committed version becomes unrecoverable (`git annex
+get` reports no known copies) and `fsck` only notices later, moving it to
+`.git/annex/bad/`. lc never writes in place: a worker *removes* an output
+directory before rebuilding it, and an unlink merely drops the link
+count, leaving the object intact (measured — an old version still checks
+out clean afterwards). So the flag is passed **per-add and never written
+to the repository's config**, because repo-wide it would reach `data/`,
+which researchers add with their own `git add` and whose tools —
+`h5py.File(p, 'r+')`, astropy `mode='update'` — very much do open files
+for update.
+
+Thin-ness is *not* recorded anywhere: it is local working-tree state, so
+a clone re-decides at `git annex get` time. That is why detection has to
+handle every shape rather than the one we write.
+
+**`restore` is scoped, and asymmetric.** `git clean -qfdx` always, plus
+`git checkout HEAD --` **only when HEAD has the path** — a first
+materialization has nothing to go back to, and the naive form exits
+nonzero on the pathspec. Never `git checkout HEAD -- .`: a failed task
+must not discard edits made elsewhere while the graph was running.
+
+## Key Invariants (layer 2)
+
+**Two hashes, and they answer different questions** (`identity.py`).
+`definition_version = sha256(recipe ‖ canonical decisions)` is what the
+spec says an output *is*. `env_version = sha256(uv.lock bytes ‖
+.python-version bytes ‖ canonical install-settings JSON)` is what it ran
+under.
+
+**`env_version` is not part of `definition_version`, and that is the whole
+shape of the model.** An environment moves for reasons that have nothing
+to do with any particular output — one `uv add` for one plotting script
+rewrites the lock for the entire project — while a research artifact costs
+hours to remake and has usually already been looked at. So an environment
+edit stales nothing; it makes an output **behind**, which is reported and
+left alone. (This reverses the original design, where `env_version` sat
+inside `code_version` and therefore staled every output in the project on
+any dependency change, and every output in every project on an lc upgrade.
+That was recorded as an accepted cost; it was the bug.)
+
+Nothing is lost by not rebuilding: the manifest records the environment
+*and* the commit, and that commit's `uv.lock` reconstructs the
+environment exactly. Over-sensitivity in `env_version` is affordable
+precisely because it no longer spends compute.
+
+**Both are length-framed.** Concatenating fields raw lets a boundary shift
+between them produce one digest from two different inputs.  `_frame`
+writes label, length, then bytes. The test lives on `env_version`, where a
+shift is actually constructible — two raw file bodies, adjacent — rather
+than on `definition_version`, whose second field is canonical JSON and
+cannot be shifted into. Mutation-checked: breaking `_frame` fails it.
+
+**The lock's raw bytes, not a parse.** A comment reflow moves
+`env_version`, deliberately: the alternative is a parse of our own that
+can silently disagree with uv about what the lock means, and
+over-invalidation is the failure that costs time rather than correctness.
+
+**The install-settings list is closed** (`_INSTALL_SETTINGS`), and every
+key is hashed whether or not the project sets it. A setting outside the
+list must not move the hash, or every uv config nicety stales the world;
+a setting whose value merely *matches* today's default must, because that
+default can change under a project that never said anything.
+
+**The settings are read where uv reads them, and `uv.toml` *replaces*
+`[tool.uv]`** rather than merging with it (measured, uv 0.12.5 — uv warns
+about the pair itself, and `tool_warnings()` already lifts that into the
+report). Reading both would hash settings uv is ignoring, reporting two
+environments where uv installs one; reading only `pyproject.toml` left a
+`uv.toml` free to change what gets installed without moving `env_version`
+at all. Only the *values* are hashed, never which file supplied them —
+two projects that install the same artifacts are one environment however
+they spell it. `scan_lock` reads `default-groups` through the same
+function, because it is asking uv's question too.
+
+What this deliberately cannot reach is **user-level configuration**
+(`~/.config/uv/uv.toml`), which uv merges in underneath the project's own
+(measured). That is machine state, not project state: hashing it would
+make one commit answer differently on two hosts, so a colleague's clone
+would report every output as behind. The residue is real and unguarded —
+a user-level `no-build` changes what a sync installs and nothing records
+it.
+
+**The git commit is recorded, never hashed, and never a signal.** It goes
+in the manifest so the code that produced a result stays recoverable. It
+is out of `definition_version` because git has one sha for the whole
+tree — hashing it would stale every output in the repository on a README
+edit — and it is not a `behind` trigger for the same reason: it moves on
+every commit, and a signal that is always on is not one.
+
+The honest consequence, which is a **decision and not an oversight**:
+editing `src/fit.py` remakes nothing, because the recipe *string* is
+unchanged. Per-output code invalidation is available by declaring the
+source files as ASTRA inputs, and that declaration is deliberately the
+researcher's to make rather than something lc infers — for an expensive
+output, "the code moved and the result still stands" is a legitimate and
+common position. Do not add a heuristic that scans a recipe's command line
+for repo paths.
+
+**Names are compared in PEP 503 form.** uv writes the normalized name
+into `uv.lock`; `pyproject.toml` carries whatever the author wrote, and
+`project_name()` keeps `_` and `.`. Raw comparison makes a packaged
+project called `my_project` fail to recognise *itself*, and the lock scan
+then refuses the whole run over the project's own code.
+
+**The lock scan refuses only what cannot be audited.** A path, directory,
+or editable dependency records *where* it was rather than *what was in
+it*, so two syncs of one lock can install different code while every hash
+agrees they are identical — that is a refusal. A registry package with no
+wheel is a *report* (identity covers the sdist, not the build of it), and
+a non-default dependency group is *advisory*. The project's own package
+is exempt: it is the project, and the repository already records its
+bytes.
+
+## Key Invariants (layer 4)
+
+**What the spec *means* is ASTRA's to say, and `plan.py` asks rather than
+re-derives it.** `astra.resolve` settles each universe's decisions,
+resolves every output's inputs to what supplies them, drops the outputs
+whose `when:` does not hold, and renders the recipe grammar. Scoping,
+`from:` aliases, sub-analysis nesting and the placeholder grammar are all
+*read* here, never re-implemented — a second implementation of one
+specification is how the two start disagreeing, and ours had:
+
+- it could not build `examples/iris_pipeline` at all, ASTRA's own
+  canonical nested example;
+- it ignored `when:` on an output, so a universe ran a recipe the spec
+  excludes and committed a manifest for it;
+- it invented a dotted input id (`inputs: [hod.mass_function]`) and an
+  implicit "same universe id" fallback for sub-analyses, neither of which
+  `astra validate` accepts — `UniverseNode.universe` names it explicitly.
+
+`lightcone.engine.plan` therefore holds only what execution adds:
+`Task`, `Graph`, and the mapping of resolved outputs onto directories,
+edges and `definition_version`. When something about the spec's meaning looks
+wrong, the fix is in astra-tools, not here.
+
+**A spec ASTRA rejects never reaches a recipe.** `build` runs
+`validate_analysis_schema`, `validate_analysis_file` and
+`validate_universe_file` before resolving anything, and refuses with
+ASTRA's own errors. This is a contract requirement, not a courtesy:
+resolution answers what a *valid* spec means and does not re-check that
+it is one, so without the gate an invalid spec surfaces later as a
+missing decision or an unresolvable input — blaming the run for a fault
+in the file, far from the line at fault. It caught three of lc's own
+test fixtures the first time it ran.
+
+**The layout is flat and path-addressed.** `results/<universe>/<output_id>/`,
+`data/` for declared inputs, and the path in a rendered recipe *is* the
+path on disk — no staging, no scratch, no relocation. The `output_id` is
+ASTRA's **qualified** id, so a sub-analysis output lands at
+`results/<universe>/<analysis>.<output>/` and one addressing scheme spans
+however deep the spec nests. Nesting is not capped: the dot separator is
+unambiguous because ASTRA ids match `^[a-z][a-z0-9_]*$`.
+
+**One rule names a path, and both the recipe and the run record use it**
+(`plan.declared_path`). Project-relative inside the tree, absolute
+outside it, never resolved. A declared input may name an absolute
+`source:` — ASTRA allows it and an HPC project pointing at a shared
+catalog is the obvious case — and there is no project-relative spelling
+for one, so a bare `relative_to` was a `ValueError` traceback out of
+`lc status`, `--check` and `materialize` alike. Two copies of this rule
+existed; the second is what made the first easy to miss.
+
+An input outside the project is **reported, not refused**: its bytes are
+hashed into the manifest like any other, so a change to it still
+cascades, but it is not in the repository and the commit recording the
+output cannot bring it back. That is a weaker promise than the rest of
+the layer makes, and saying so is the whole obligation — the same
+treatment `sdist_built` gets.
+
+**Two universes cannot share an id.** The id names a directory under
+`results/`, and the graph is keyed on `(universe_id, output_id)` — so the
+second file simply replaced the first and one universe's outputs went
+missing with nothing said. The way in is the natural one: copy
+`baseline.yaml`, edit the decisions, forget the id inside. `build`
+refuses, naming both files.
+
+**Because the path is composed, `output_dir` refuses an id that is not one
+path component.** An empty universe or output id collapses
+`results/<u>/<o>` onto a *parent* — `results/` itself, for two — and the
+worker empties that directory before running a recipe in it, so the
+consequence of an unchecked id is deleting every other universe's
+outputs. A `/`, `.` or `..` is refused for the same reason. This is the
+guard that lets the reset stay a whole-directory operation.
+
+**The reset takes the whole directory, and cannot take a named list.** A
+recipe declares an output *id*, never filenames, so there is no set of
+"expected files" to remove — and a previous run that crashed can have left
+anything in there, which would otherwise survive into this run's
+`data_version` as though the recipe had written it. What bounds the blast
+radius is the guard above, not a narrower delete.
+
+**Dask owns the ordering.** Every task is submitted with its upstream
+futures as arguments, so the dependency order, the parallelism, and the
+scheduling all fall out of the argument graph. There is no ready-set loop
+and no hand-rolled topological sort in the execution path.
+`Graph.order()` exists for the read-only walk, which has to classify a
+task after everything upstream of it — and for submitting in an order
+where a task's upstream handles already exist.
+
+**The driver owns git, alone.** Workers execute and return a
+`TaskResult`; the driver commits, in one thread, as results arrive.
+Concurrent git operations on one repository race on the index lock —
+this is the `datalad-slurm` schedule/finish split, and it is not a
+preference.
+
+**A dependent does run while its upstream is being annexed, and that is
+safe.** Dask releases a task the moment its upstream's *worker* returns,
+milliseconds before the driver finishes committing that upstream's
+directory — so a recipe reads an input directory while git's clean filter
+is moving its content into the annex. Measured before relying on it: git-annex
+hard-links the content into the object store and then renames the symlink
+over the file, so the path never stops existing and never holds partial
+bytes (448 concurrent full-content reads across 24 MB: no missing paths,
+no short reads, no wrong bytes). Don't "fix" this by moving the save into
+the task — that is what puts git back in the workers.
+
+**A declared input is hashed once per run** (`assets.Versions`). Without
+it a multiverse spec re-reads the same bytes once per `(universe,
+output)` that names it — eight universes times four outputs sharing one
+catalog is thirty-two full hashes of one file, paid again on the
+"nothing to do" path because classification needs the digest before it can
+skip. Memoizing is sound for exactly as long as a run lasts: a run
+refuses to start on a dirty tree, and the only in-tree path a recipe may
+write is its own output directory. A class rather than a closure, so it
+keeps one dict alive and not whatever scope built it; and deliberately
+unlocked, because a lock would serialise every hash and would not survive
+being handed to a worker in another process.
+
+**HEAD is read once per run, by the driver, and handed down.** The driver
+commits each output as it lands, so HEAD *moves* during a run: a
+per-task `dataset.head` would stamp later manifests with a commit this
+same run created, and whether it did would depend on whether a recipe
+finished before or after the previous save. Nondeterminism in a
+provenance field is worse than either answer.
+
+**The worker never raises, and that is enforced at the unit boundary.**
+It returns `ok`, `current`, `behind`, `failed`, or `blocked`. A task whose upstream
+did not report — failed, or never finished at all — returns `blocked`
+without running. Raising would make Dask re-raise in the driver and abort
+every task in flight, and reporting all independent failures in one run
+is most of what owning the loop buys. `worker.materialize` wraps the
+whole unit, so the contract holds for failure modes nobody enumerated;
+the one inner guard that remains exists because "your recipe failed" and
+"your recipe worked and we could not record it" deserve different words.
+
+**`data_version` is computed in the worker, before anything is staged.**
+The dependent's argument *is* the upstream worker's return value, so the
+digest has to exist at return time — when the files are still untracked
+and unannexed. Deriving it from `git annex find` instead was the first
+instinct and is wrong twice: nothing is annexed yet, so every output would
+record `sha256([])` — one constant, silently disabling the whole chain
+with green tests — and it would make the digest a function of
+`annex.backend`. The annex backend is therefore not load-bearing and is
+not pinned.
+
+**A skip returns the *recorded* digest, never a recomputed one.** On a
+clone that has fetched no annex content the files are dangling symlinks,
+and rehashing them would quietly report a different output. `--check`
+obeys the same rule for the same reason — it reads each unchanged
+upstream's manifest rather than hashing the directory, or it would report
+a rebuild for a project that is entirely up to date. The honest
+consequence: a hand-edited-and-committed output does not cascade in this
+layer. Catching that is `lc verify`'s job.
+
+**Three states, and the line between them is the layer's whole shape**
+(`assets.classify`).
+
+| state | means | what happens |
+|---|---|---|
+| `stale` | the artifact **contradicts** the project: the spec defines it differently than it was made, or it records deriving from bytes the project no longer holds | remade |
+| `behind` | it is still exactly what the spec asks for; only the **environment** moved | reported, left alone |
+| `current` | neither | nothing |
+
+The distinction is *contradiction* versus *circumstance*. A stale artifact
+is mislabelled — what is on disk is not an instance of what the spec
+declares — so keeping it would be a lie. A behind artifact is not wrong in
+any way; its environment is recorded and its commit reconstructs that
+environment, so remaking it buys nothing and can cost a week of
+allocation.
+
+**`Verdict.calls_for_a_remake(refresh=)` is the one place that turns a
+state into an action**, and it has three callers — the worker, `check`,
+and the walk that feeds the cascade. `stale` always; `behind` only when
+asked. Do not re-spell it inline; the third copy is where they start to
+disagree.
+
+**One classification rule, and the two callers differ by one value**
+(`assets.classify`). It compares `definition_version` against the
+manifest, the declared input *set* against the recorded one, each recorded
+`input_versions[…]` against the version it is handed, and finally
+`env_version`. The set comparison is separate on purpose:
+`definition_version` hashes the recipe and the decisions, neither of which
+an input the spec no longer declares moves — so without it a dropped
+dependency leaves the output reporting current forever. The worker hands
+live digests; the read-only walk hands `None` for anything it has already
+decided will run, meaning "this is going to change". That single value is
+the entire difference between them — one input, conservatively chosen, not
+a second body of logic — the same discipline as layer 1's
+`converge(write=False)`. It is the one place in the layer where a bug is
+quiet rather than loud, which is exactly why it may not have two
+implementations.
+
+**`stale` wins over `behind` when both apply.** The artifact is going to
+be remade either way, and reporting "left alone" about something the run
+is about to rebuild is the one wrong answer.
+
+**`behind` does not propagate, and a behind upstream still feeds its
+dependents.** It says the environment moved, not that the bytes are wrong,
+so `TaskResult.usable` includes it and `data_version` flows on unchanged.
+Propagating it would mark one old artifact's entire downstream forever and
+kill the signal; the mosaic — how many environments and commits an output's
+ancestry spans — is a project-level question, not a per-output flag.
+
+**`--refresh` widens a run by exactly one state.** It is not an escape
+hatch (it asks for *more* work, not less), and it must not become a
+rebuild-the-world flag: a `current` output stays current under it. There
+is deliberately no flag in the other direction — nothing suppresses the
+rebuild of a stale output, because deleting the directory is the user's
+own file operation and is stronger consent than a flag.
+
+**`up_to_date` does not count `behind`, and is not true of a run that
+failed.** `lc materialize --check` is a gate, and a project of curated
+results would otherwise never pass it again — that is the `behind` half.
+The other half is that `made` stays empty when *every* recipe fails, so
+`not made and not planned` reported "nothing to do" over a list of
+failures. It is `ok and not made and not planned`; those two are the
+first keys of the JSON report and are what an agent branches on.
+
+**`lc status` reports; `--check` gates.** Status always exits 0 — a state
+is not a failure — and it is the only verb that shows the commit each
+output was made at, for every state and not only the interesting ones.
+It reads manifests and hashes inputs; it runs nothing, commits nothing,
+and does not mind a dirty tree, because the moment you most need to know
+what state a project is in is when it is not clean. Two verbs answering
+the same question with different exit codes is how a script comes to
+depend on the wrong one, so keep the split sharp.
+
+**A read-only verb never tracebacks, and an entry point never
+misattributes.** `lc status` and `--check` read projects that are *in a
+state* — that is what they are for — so anything `_predicted` cannot read
+becomes the same `None` an absent input already produces: it will be
+remade, and the recipe is where that failure belongs with a real error.
+(The concrete way in: `data_version`'s directory walk keeps dangling
+symlinks deliberately, so an unfetched annexed file cannot drop silently
+out of a digest — one that is *not* an annex link then reaches `open()`.)
+The same rule at the other end: `worker.main` is what every
+`[DATALAD RUNCMD]` record names, and its "no output `<x>`" message covers
+the task lookup **only**. It once wrapped the whole body, so a `KeyError`
+raised anywhere inside astra's validation or resolution was reported as a
+bad target — a rerun misdiagnosing itself, at the one place nobody is
+watching.
+
+**`git_sha` in a manifest is the commit the run *started* at**, not the
+commit the run went on to create. It is the code that produced the output.
+A test that reads `dataset.head()` after materializing and expects a match
+is asserting the wrong thing.
+
+**One uv hop, one spelling** (`project.uv_prefix(root, *, sync)`). The
+flags are also what `run_record` writes verbatim into every commit
+message, so a second copy is a second thing that can drift out of the
+provenance. The only thing callers disagree about is `sync`: a probe
+converges the environment it is about to describe, a recipe must not, or
+every concurrent worker writes the same `.venv`.
+
+**A run syncs the environment; it does not report on it.** `uv run
+--locked` asserts only that `uv.lock` still matches `pyproject.toml`, and
+workers pass `--no-sync` — so a lock edited without a sync would leave
+recipes importing packages the lock does not describe while every manifest
+recorded the *new* lock's `env_version`. Measured: the recipe imported
+`packaging 26.3` under a lock saying `24.2`, and uv accepted it silently.
+`materialize()` calls `project.sync()` before anything else, so the state
+is made impossible rather than detected. `--check` needs neither:
+`env_version` is the lock's bytes, so a drifted `.venv` cannot change what
+it answers.
+
+**A run takes every core, and there is no flag to say otherwise.** How
+much of a machine a run may use — and which machine — is one question, and
+it belongs to a declared execution backend rather than to a `--jobs` knob
+only a `LocalCluster` could honour.
+
+**A dirty tree is a refusal, and `--check` is exempt.** Every
+materialization is committed with the code that produced it, so a run that
+started dirty could not say what that code was. Check mode does not
+refuse: reading the state of a project before deciding what to commit is
+what it is for. The refusal splits by path class because the remedies are
+opposite — work the researcher owns gets committed, and anything under
+`results/` is lc's to write and is wreckage to discard.
+
+**A run leaves the tree exactly as clean as it found it.** The worker
+resets the output directory *before* executing, so a failed recipe, a
+crash, or a Ctrl-C would otherwise leave tracked files deleted or
+half-written — and the next run's refusal would tell the user to commit
+truncated, manifest-less garbage into `results/`, destroying the one
+property the layer exists for. So `ok` → `dataset.save`, and `failed`,
+`blocked` or never-reported → `dataset.restore`, with the consumption
+loop in a `try/finally` so an interrupt restores whatever is still
+outstanding. This is what makes the dirty-tree refusal survivable rather
+than a trap.
+
+**The run record names declared paths, never resolved ones.** Every
+declared input under `data/` is an annex symlink, so a `Path.resolve()`
+in the record's `inputs` writes `.git/annex/objects/SHA256E-…` — the
+storage rather than the input, and a path nothing can `datalad get`. This
+shipped once; `_inside` is lexical now.
+
+**The run record is genuinely re-runnable, and its `cmd` is the worker
+module.** `python -m lightcone.engine.worker <universe>/<output_id>`,
+behind `uv run --locked --project .` — which reconstructs the environment
+from *that commit's* lock, and therefore the exact engine that produced
+the output. The bare recipe would reconstruct nothing lc adds (no locked
+environment, no boundary, no gates, no manifest) and would commit bytes
+the identity model never produced; `lc materialize` cannot be it either,
+because `datalad rerun` removes the declared outputs first and that
+dirties the tree materialize refuses to start from.
+
+**The worker module is not an `lc` verb and not a console script.** It
+makes the output unconditionally, commits nothing, leaves the tree dirty by
+design. `lc --help` advertising it would hand people a footgun, and a
+`[project.scripts]` entry would put it on `$PATH` through
+`uv tool install`. `lightcone/_sandbox_exec.py` is the same shape for the
+same reason. Keep it cheap to import — **no click, no rich** — it is on
+the path of every task and every rerun; two tests pin that.
+
+**The record's format is datalad's, so it is tested through datalad.**
+`get_run_info` matches with a regex and returns `(None, None)` on any
+mismatch, after which `rerun` says "no command; skipping" and **exits 0** —
+a golden test over our own JSON would stay green through a silent break.
+So the suite asserts through datalad's parser *and* runs a real
+`datalad rerun`, and `datalad` is a **dev** dependency only. Nothing in lc
+imports it.
+
+**A policy is a description, and `scope()` owns every policy's lifetime.**
+`exec_policy` creates no directory — the worker resets the output
+directory, so the whole of an output's lifecycle stays in the module that
+owns it, and a policy that could not be built without touching the
+filesystem would be the impurity `wrap` is already pinned against.
+`sandbox.scope` takes a *built* policy, so the `rmtree` of the private
+`$HOME` has one owner.
+
+**There is one policy, `exec_policy`, and a recipe gets exactly what a
+probe gets.** The tree is read-only apart from `results/`, for both. So
+layer 5's promise is not "in the direction that matters" — it is simply
+true: a command that works under `lc run` works as a recipe, with nothing
+in between to reason about.
+
+A recipe is deliberately **not** narrowed to its own output directory.
+That would be a second answer to "are these bytes what produced them",
+and the manifest's `data_version` is the first — content-addressed,
+checked by `lc verify`, and the only one that survives a rebuild on
+another machine. Two mechanisms for one guarantee is one more than can be
+kept honest, and the sandbox's is the one that cannot travel.
+
+The residue, recorded rather than argued away: a cross-write that lands
+*before* the victim task hashes leaves a manifest that is self-consistent
+and wrong, which no checksum can see. It needs concurrent tasks and a
+hardcoded sibling path, and the threat model here is accidental leakage
+rather than a hostile recipe — but `lc verify` will not catch that one, so
+do not describe it as covered.
+
+**`cluster_for_run()` is the seam, and it is two methods wide.**
+`submit(fn, *args, key=…)` and `completed(handles)`. That is all the
+driver asks of a scheduler and all a venue has to supply — which is what
+lets the suite run a graph inline in-process, and what will let something
+larger than a laptop land behind it without the driver noticing.
+
+### Recorded deviations from the spec (layers 2 and 4)
+
+- **`git_dirty` is not written.** Spec §3 lists it; the start-of-run
+  refusal makes it constant. The limitation that comes with that, stated:
+  the check is at start of run while manifests are written per-output much
+  later, so a user who edits `src/fit.py` while a long graph runs gets a
+  manifest whose `git_sha` no longer describes the code that ran, and
+  nothing records it.
+- **The manifest carries what this layer can honestly fill.**
+  `schema_version`, `output_id`, `universe_id`, `recipe`,
+  `definition_version`, `env_version`, `data_version`, `decisions`,
+  `input_versions`, `git_sha`,
+  `git_remote`, `lc_version`, `hermeticity`. Spec §3's longer list —
+  `uv_version`, `platform`, `python_build`, `worker_runtime`, `image`,
+  `dpkg_snapshot_sha256`, `sdist_built`, `env_snapshot`, `gpu_driver` —
+  is either layer 6's or attestation nothing here reads; it lands with the
+  verb that reads it.
+- **`env_version` has three terms, not five.** The
+  `[tool.lightcone.image]` and `Containerfile.extra` terms are layer 6's,
+  and hashing an empty shape for them now would be foreshadowing.
+- **A recipe is handed to `bash -c`.** ASTRA recipes are command lines,
+  not argv, and `bash` is in the exec allowlist — so it is granted by the
+  same rule that grants everything else a recipe may run.
+
 ## Key Invariants (layer 5)
 
 **The seam is a pure argv rewrite.** Every mechanism is a
@@ -466,6 +1182,16 @@ is the whole point of the environment overlay. Reading `pyvenv.cfg`'s
 `base-prefix` instead does not help: it reports the same directory. The
 guard is the fix; failing loudly on a layout nobody uses beats voiding
 the guarantee for the people who do.
+
+**The two mechanisms disagree about the write root itself.** Landlock
+follows POSIX — unlinking a directory needs write on its *parent* — so a
+recipe granted write on its output directory cannot remove that
+directory. Seatbelt's `(allow file-write* (subpath …))` covers the
+directory node, and permits it. Found by CI, which is the point of
+running one suite on both. Nothing depends on either answer (the worker
+resets the directory anyway, and a recipe that removes it fails to record
+its output), so the asymmetry is documented rather than papered over —
+but a test that asserts one mechanism's answer will go red on the other.
 
 **SBPL is last-match-wins; Landlock unions.** This asymmetry decides
 where a rule can live, and it cuts both ways. A later `(deny …)` can take
@@ -635,9 +1361,15 @@ only checks that the guard is present. Verified empirically, not assumed.
 | To... | Read | Key patterns |
 |---|---|---|
 | Add the next layer | the spec (§11 = the layer ordering) | Land code + tests + deps together; update the layer table above. Docs are deliberately deferred |
-| Change what a scaffolded file contains | `src/lightcone/engine/templates/files/` | Edit the `.tmpl`; add new ones to `TEMPLATE_NAMES` + a renderer |
+| Change what a scaffolded file contains | `src/lightcone/engine/templates/files/` | Edit the `.tmpl`; add new ones to `TEMPLATE_NAMES`, and a renderer only if the file needs a substituted value or a merge policy |
 | Add a value to the scaffold | `src/lightcone/engine/templates/__init__.py` | Derive it from the environment or our own metadata before introducing a constant |
 | Change what gets converged | `src/lightcone/engine/project.py` + `tests/test_project.py` | `_Converger.item` / `.file`; repairs only ever append |
+| Change how a project stores bytes | `src/lightcone/engine/dataset.py` + `templates/files/gitattributes.tmpl` | Every command through `project._run`; test it against a real annex (`real_tools`) |
+| Change how an output is identified | `src/lightcone/engine/identity.py` + `tests/test_identity.py` | Sensitivity tests both ways: what must move the hash, and what must not |
+| Change when an output is remade | `src/lightcone/engine/assets.py` + `tests/test_assets.py` | One `classify()`, two callers; `--check` differs by one input value, never by logic. Ask first whether the thing that moved *contradicts* the project or is a *circumstance* — the second is `behind`, not `stale` |
+| Change how the spec becomes a graph | `src/lightcone/engine/plan.py` + `tests/test_plan.py` | Ask `astra.resolve`; if the answer is missing, the fix is a PR to astra-tools. Anything ambiguous is a `ProjectError`, never a guess |
+| Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
+| Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
 | Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |
@@ -647,17 +1379,46 @@ only checks that the guard is present. Verified empirically, not assumed.
 
 - `tests/conftest.py` — the `tools` autouse fixture stubs
   `engine.project._run`, emulating each tool's observable effect (`uv lock`
-  writes `uv.lock`, `uv sync` makes `.venv`, `git init` makes `.git`) and
-  recording every argv. `uv_calls(tools)` narrows it to uv. Tests are
-  hermetic: no network, no resolution, no subprocesses.
+  writes `uv.lock`, `uv sync` makes `.venv`, `git init` makes `.git`,
+  `git annex init` marks the repository annexed) and recording every argv.
+  `uv_calls(tools)` narrows it to uv. Tests are hermetic: no network, no
+  resolution, no subprocesses. The `real_tools` fixture opts back out,
+  putting the real `_run` back.
+- `tests/test_dataset.py` — the storage seam, and **the one place in the
+  non-sandbox suite that runs real tools**, via `real_tools`. That is
+  deliberate: the question is whether bytes land in the annex or as a blob
+  in git, and a fake answering it would only restate what the code already
+  believes. Every bug this file found (the missing `.gitattributes`
+  default, the pointer-file trap, `filter=annex`) was invisible to a stub.
 - `tests/test_project.py` — discovery and convergence semantics, called
   directly. This is where scaffold behavior is tested.
+- `tests/test_plan.py` tests what lc adds — directories, edges,
+  `definition_version`, target resolution, the validation gate — and **not**
+  what a spec means. Scoping, `from:`, `when:` and the recipe grammar are
+  covered by `astra-tools`' own suite; asserting them here again would
+  re-create the second implementation this layer just deleted. Every
+  fixture must be a spec `astra validate` accepts, which the gate now
+  enforces for free.
+- `tests/test_identity.py`, `test_assets.py`, `test_plan.py` — **pure**,
+  and the whole of layer 2 plus the graph. Nothing spawns, nothing on disk
+  beyond `tmp_path`.
+- `tests/test_worker.py`, `tests/test_materialize.py` — real recipes,
+  through the real boundary, against a real repository, via the `analysis`
+  fixture in `conftest.py`. That is the price of testing execution: whether
+  the gates hold, whether bytes land in the annex, and whether the tree is
+  clean afterwards are not questions a stub can answer. It is cheap anyway
+  — the fixture's project declares no dependencies, so `uv lock` and
+  `uv sync` together cost milliseconds.
+  - **`cluster_for_run()` is the one new monkeypatch point.** Most tests
+    swap in an inline scheduler and never start Dask; exactly one starts a
+    real `LocalCluster`, because a seam is only worth having if the thing
+    it abstracts still fits through it.
 - `tests/test_cli.py` — the CLI surface only: flags reaching the engine,
   rendering, exit codes, error translation. Rich wraps output at terminal
   width, so assert on short unwrappable fragments.
 - `tests/test_templates.py` — template loading (guards the packaging of
-  package data), strict substitution, and the `.gitignore` entry/repair
-  logic. Content assertions live here; `test_project.py` asserts only that
+  package data), strict substitution, and the `.gitignore` /
+  `.gitattributes` entry/repair logic. Content assertions live here; `test_project.py` asserts only that
   the file written *is* the template, so a template edit touches one file.
 
 The sandbox suite splits along the seam, which is what makes it cheap:
@@ -691,8 +1452,9 @@ layer works. Four properties, each of which it would be easy to lose:
    *a leak only Linux catches is a leak*. macOS is in the CI matrix for
    exactly this: it is the sole place the generated SBPL is ever
    executed.
-2. **The real policy.** It runs against `probe_policy` — what an actual
-   `lc run` gets — never a policy hand-built to make the point. A test
+2. **The real policy.** It runs against `exec_policy` — what an actual
+   `lc run` *and* an actual recipe get — never a policy hand-built to
+   make the point. A test
    that grants exactly what it is testing cannot discover that the
    *shipped* policy grants something else. (This is how `/usr` sat in the
    exec set through a full green suite.)
@@ -715,5 +1477,12 @@ silent. Every leak case here was checked that way.
 - Ruff for linting (E, F, I, N, W, UP), line length 100, target Python 3.11
 - mypy strict mode with `namespace_packages = true`,
   `explicit_package_bases = true`
-- Docstrings and comments carry *why*, and cite the spec section
-  (`spec §7`) when they encode a design decision
+- **Google-style docstrings** on every public function: an imperative
+  one-line summary, then `Args:` / `Returns:` / `Raises:` / `Yields:`
+  where they carry information. Concise — a design decision gets a
+  sentence or two, not its history; the long form belongs in this file.
+  Two deliberate exceptions: **click command callbacks**, whose docstring
+  *is* the `--help` text and must stay prose, and properties, whose value
+  the summary already describes.
+- Comments and docstrings carry *why*, never a narrative of how the code
+  came to be

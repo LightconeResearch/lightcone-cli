@@ -4,6 +4,7 @@ project."""
 from __future__ import annotations
 
 import shutil
+import uuid
 from pathlib import Path
 
 import pytest
@@ -103,9 +104,9 @@ def test_converge_writes_the_templates_verbatim(tmp_path: Path) -> None:
 
     assert (project / "pyproject.toml").read_text() == templates.pyproject(name="proj")
     assert (project / ".python-version").read_text() == templates.python_version()
-    assert (project / ".gitignore").read_text() == templates.gitignore()
-    assert (project / "results/README.md").read_text() == templates.results_readme()
-    assert (project / "myst.yml").read_text() == templates.myst_yml()
+    assert (project / ".gitignore").read_text() == templates.read("gitignore.tmpl")
+    assert (project / "results/README.md").read_text() == templates.read("results-README.md.tmpl")
+    assert (project / "myst.yml").read_text() == templates.read("myst.yml.tmpl")
     assert (project / "index.md").read_text() == templates.index_md(title="proj")
 
 
@@ -183,7 +184,12 @@ def test_adoption_adds_no_layout_of_its_own(tmp_path: Path) -> None:
 def test_a_clone_of_a_converged_project_is_converged(tmp_path: Path) -> None:
     """The property the removed `src/` item broke: everything convergence
     tracks has to be something git can carry, or a fresh clone reports
-    drift forever. `.venv` is exempt — it is git-ignored and rebuilt."""
+    drift forever.
+
+    Two items are exempt, and both for the same reason — they are local
+    state git does not clone. `.venv` is git-ignored and rebuilt from the
+    lock, and `git clone` of an annexed repository leaves the annex
+    uninitialized until someone runs `git annex init`."""
     project = tmp_path / "proj"
     converge(project)
 
@@ -198,7 +204,7 @@ def test_a_clone_of_a_converged_project_is_converged(tmp_path: Path) -> None:
     (clone / ".git").mkdir()
 
     report = converge(clone, write=False)
-    assert report.created == [".venv"], report.created
+    assert report.created == ["git-annex", ".venv"], report.created
 
 
 def test_converge_repairs_a_missing_piece(tmp_path: Path) -> None:
@@ -236,7 +242,7 @@ def test_gitignore_repair_preserves_user_content(tmp_path: Path) -> None:
 
     text = (project / ".gitignore").read_text()
     assert text.startswith("mine.txt\nbuild/\n")
-    assert templates.missing_gitignore_entries(text) == []
+    assert templates.missing("gitignore.tmpl", text) == []
 
 
 def test_gitignore_repair_is_idempotent(tmp_path: Path) -> None:
@@ -316,15 +322,82 @@ def test_results_that_is_not_a_directory_blocks_convergence(tmp_path: Path) -> N
     assert not converge(project).converged
 
 
-# ---- git ------------------------------------------------------------------
+def test_a_gitattributes_the_repair_cannot_order_blocks_convergence(
+    tmp_path: Path,
+) -> None:
+    """The repair only appends, so a file already opting `results/` into
+    the annex gets the `*` default added *below* it — and git-annex takes
+    the last match, so every result would be committed to git as a plain
+    blob while the report said the file was repaired."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".gitattributes").write_text("results/** annex.largefiles=anything\n")
+
+    report = converge(project)
+    assert ".gitattributes" in report.blocked
+    assert not report.converged
+    assert any("git-annex takes the last match" in w for w in report.warnings)
+
+    # And it stays blocked, rather than the repair settling it into a lie.
+    assert not converge(project).converged
 
 
-def test_initializes_a_repository(tmp_path: Path, tools: list[list[str]]) -> None:
+def test_a_gitattributes_in_the_right_order_is_repaired_and_converges(
+    tmp_path: Path,
+) -> None:
+    """The mutation check on the test above: the same two lines the other
+    way round take the ordinary append and leave the project converged."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".gitattributes").write_text(
+        "* annex.largefiles=nothing\nresults/** annex.largefiles=anything\n"
+    )
+
+    report = converge(project)
+    assert ".gitattributes" not in report.blocked
+    assert ".gitattributes" in report.repaired
+    assert converge(project).converged
+
+
+# ---- the repository -------------------------------------------------------
+
+
+def test_initializes_a_repository_with_an_annex(
+    tmp_path: Path, tools: list[list[str]]
+) -> None:
+    """git for the pointers, git-annex for the bytes — a project is both
+    from birth, because results are versioned in it."""
     project = tmp_path / "proj"
     report = converge(project)
 
     assert ["git", "init", "-q"] in tools
+    assert ["git", "annex", "init", "-q"] in tools
     assert ".git" in report.created
+    assert "git-annex" in report.created
+
+
+def test_writes_the_storage_policy_and_the_dataset_id(tmp_path: Path) -> None:
+    """`.gitattributes` is what routes bytes to the annex; `.datalad/config`
+    is the one thing that makes the repository a DataLad dataset."""
+    project = tmp_path / "proj"
+    report = converge(project)
+
+    assert (project / ".gitattributes").read_text() == templates.read("gitattributes.tmpl")
+    assert ".datalad/config" in report.created
+    config = (project / ".datalad" / "config").read_text()
+    assert '[datalad "dataset"]' in config
+    uuid.UUID(config.split("id =")[1].strip())
+
+
+def test_the_dataset_id_is_generated_once(tmp_path: Path) -> None:
+    """It identifies the dataset across clones and siblings — regenerating
+    it on a re-`init` would make a project a different dataset every time."""
+    project = tmp_path / "proj"
+    converge(project)
+    first = (project / ".datalad" / "config").read_text()
+
+    converge(project)
+    assert (project / ".datalad" / "config").read_text() == first
 
 
 def test_does_not_nest_a_repository_inside_one(tmp_path: Path, tools: list[list[str]]) -> None:
@@ -333,7 +406,7 @@ def test_does_not_nest_a_repository_inside_one(tmp_path: Path, tools: list[list[
     (tmp_path / ".git").mkdir()
     report = converge(tmp_path / "nested" / "proj")
 
-    assert not any(c[0] == "git" for c in tools)
+    assert not any(c[:2] == ["git", "init"] for c in tools)
     assert ".git" in report.unchanged
     assert not (tmp_path / "nested" / "proj" / ".git").exists()
 
@@ -345,23 +418,48 @@ def test_a_linked_worktree_counts_as_version_controlled(tmp_path: Path) -> None:
     assert ".git" in converge(tmp_path / "proj").unchanged
 
 
-def test_git_absent_is_not_a_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tools: list[list[str]]
+def test_check_mode_can_ask_about_a_directory_that_does_not_exist_yet(
+    tmp_path: Path,
 ) -> None:
-    """git is optional, unlike uv: a project without it is valid, so an
-    absent git is nothing to converge rather than a warning."""
-    from lightcone.engine import project as project_mod
+    """Check mode creates nothing, so inside an enclosing repository the
+    walk-up says "in a repository" for a directory that is not there — and
+    running git with a cwd that does not exist raises out of `Popen`
+    rather than answering anything."""
+    (tmp_path / ".git").mkdir()
 
-    monkeypatch.setattr(
-        project_mod.shutil,
-        "which",
-        lambda name, path=None: None if name == "git" else f"/usr/bin/{name}",
-    )
-    report = converge(tmp_path / "proj")
+    report = converge(tmp_path / "newproj", write=False)
 
-    assert not any(c[0] == "git" for c in tools)
-    assert ".git" not in report.created + report.unchanged
-    assert report.warnings == []
+    assert ".git" in report.unchanged
+    assert "git-annex" in report.created
+    assert not (tmp_path / "newproj").exists()
+
+
+def test_an_existing_annex_is_adopted(tmp_path: Path, tools: list[list[str]]) -> None:
+    """The annex is asked about the way git-annex asks itself, so an
+    enclosing repository that already has one is not re-initialized."""
+    project = tmp_path / "proj"
+    converge(project)
+    tools.clear()
+
+    report = converge(project)
+    assert "git-annex" in report.unchanged
+    assert not any(c[:3] == ["git", "annex", "init"] for c in tools)
+
+
+def test_results_ignored_by_an_older_scaffold_blocks_convergence(tmp_path: Path) -> None:
+    """A `.gitignore` written before results were versioned keeps them
+    uncommittable, and `.gitignore` convergence only ever appends — so
+    convergence cannot fix this and must not call the project converged.
+    `git add` skips ignored paths in silence; a materialize would report
+    success and commit nothing."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / ".gitignore").write_text("results/*\n")
+
+    report = converge(project)
+    assert "results/" in report.blocked
+    assert not report.converged
+    assert any("results/*" in w and ".gitignore:1" in w for w in report.warnings)
 
 
 def test_surfaces_a_git_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -388,11 +486,37 @@ def test_surfaces_a_git_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
 
 def test_requires_uv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from lightcone.engine import project as project_mod
-
-    monkeypatch.setattr(project_mod.shutil, "which", lambda name, path=None: None)
+    _absent(monkeypatch, "uv")
     with pytest.raises(ProjectError, match="uv is required"):
         converge(tmp_path / "proj")
+
+
+def test_requires_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """git stops being optional the moment results are versioned in the
+    repository: there is no useful project without it, so an absent git is
+    a refusal rather than nothing to converge."""
+    _absent(monkeypatch, "git")
+    with pytest.raises(ProjectError, match="git is required"):
+        converge(tmp_path / "proj")
+
+
+def test_requires_git_annex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """And by the name git itself searches for: `git annex` is not a
+    builtin, it is git finding a `git-annex` executable on PATH."""
+    _absent(monkeypatch, "git-annex")
+    with pytest.raises(ProjectError, match="git-annex is required"):
+        converge(tmp_path / "proj")
+
+
+def _absent(monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
+    """Make exactly one tool unfindable, leaving the others resolvable."""
+    from lightcone.engine import project as project_mod
+
+    monkeypatch.setattr(
+        project_mod.shutil,
+        "which",
+        lambda name, path=None: None if name == missing else f"/usr/bin/{name}",
+    )
 
 
 # ---- the uv seam ----------------------------------------------------------

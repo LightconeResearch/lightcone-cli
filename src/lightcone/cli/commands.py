@@ -15,6 +15,7 @@ import click
 if TYPE_CHECKING:
     from rich.console import Console
 
+    from lightcone.engine.materialize import MaterializeReport
     from lightcone.engine.project import ConvergenceReport
 
 logger = logging.getLogger(__name__)
@@ -22,8 +23,12 @@ logger = logging.getLogger(__name__)
 
 @functools.cache
 def _console() -> Console:
-    """The rich console, built on first use to avoid startup cost at each
-    invocation of the cli even when the console is not needed."""
+    """Build the rich console, once and on first use.
+
+    Returns:
+        The console. Deferred so ``lc --help`` and shell completion never
+        pay for it.
+    """
     from rich.console import Console
 
     return Console()
@@ -39,6 +44,17 @@ class _EngineErrorGroup(click.Group):
     """
 
     def invoke(self, ctx: click.Context) -> object:
+        """Run a command, rendering engine errors as clean CLI errors.
+
+        Args:
+            ctx: The click context.
+
+        Returns:
+            Whatever the command returned.
+
+        Raises:
+            click.ClickException: In place of any ``ProjectError``.
+        """
         from lightcone.engine.project import ProjectError
 
         try:
@@ -86,13 +102,6 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
 
     Safe to re-run at any time: creates whatever is missing, repairs the
     pieces lightcone manages, and never overwrites files you own.
-
-    The spec scaffold (``astra.yaml``, ``universes/baseline.yaml``)
-    follows the ``astra init`` boilerplate; on top of it sit the uv
-    project (``pyproject.toml`` with lightcone-cli locked in,
-    ``.python-version``, ``uv.lock``, ``.venv``), ``.gitignore`` entries,
-    ``results/``, and a template MyST report (``myst.yml`` +
-    ``index.md``).
     """
     from lightcone.engine.project import converge
 
@@ -115,14 +124,6 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
 
 def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: bool) -> None:
     """Print a convergence report: the items, then the verdict.
-
-    ``--check`` and a real run print the *same* report — they disagree
-    only about tense — so ``dry_run`` selects the mood and nothing else,
-    mirroring the ``write`` flag convergence itself takes. Blocked items
-    are listed with created and repaired ones because they count the same
-    way: they are what lets a report say "not converged" (see
-    :class:`~lightcone.engine.project.ConvergenceReport`). Their reason
-    arrives separately, as a warning.
     """
     mark, style = ("·", "yellow") if dry_run else ("✓", "green")
 
@@ -161,26 +162,184 @@ def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: 
 @main.command(context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
 def run(command: tuple[str, ...]) -> None:
-    """Run COMMAND in the project environment, inside the sandbox.
-
-    Byte-for-byte the environment recipes get — same lock, same
-    ``.venv``, same boundary — so a command that works here means a
-    recipe will. The project and the inputs declared in ``astra.yaml``
-    are readable, ``results/`` and scratch are writable, and anything
-    outside that — a host tool, a system library, an undeclared file —
-    is refused.
+    """Run COMMAND in the project environment, under isolation.
     """
     from lightcone.engine import run as engine_run
     from lightcone.engine.project import current_project
 
     outcome = engine_run.probe(current_project(), command)
     if outcome.notes:
-        # click.echo, not rich: these lines are built to be pasted, and
-        # reflowing a `uv add` remedy would break the one thing the
-        # denial message is for.
         click.echo("\n".join(["", *outcome.notes]), err=True)
     # `Popen.returncode` is negative for a signal, and `sys.exit(-9)`
     # truncates to 247. `lc run` is a proxy for the command it runs, so
     # an OOM-killed probe comes back as the shell's conventional 128+N.
     code = outcome.returncode
     sys.exit(128 - code if code < 0 else code)
+
+
+# =============================================================================
+# lc materialize
+# =============================================================================
+
+
+@main.command()
+@click.argument("targets", nargs=-1)
+@click.option(
+    "--check",
+    "check_only",
+    is_flag=True,
+    help=(
+        "Report what would run and why, without executing or committing "
+        "anything; exit 1 if anything is out of date."
+    ),
+)
+@click.option(
+    "--refresh",
+    is_flag=True,
+    help=(
+        "Also remake outputs that are behind — still what the analysis "
+        "asks for, but made under an earlier environment."
+    ),
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the report as JSON on stdout.",
+)
+def materialize(
+    targets: tuple[str, ...], check_only: bool, refresh: bool, as_json: bool
+) -> None:
+    """Make the analysis's outputs, and commit each one as it lands.
+
+    Each output is committed together with its manifest, in a commit that
+    records the command that produced it. The git tree needs to be clean
+    before the run can start.
+
+    An output is remade when the analysis defines it differently than it
+    was made — a changed recipe or decision — or when one of its declared
+    inputs changed. Inputs are compared by content, so a rebuild that
+    comes out byte-identical stops there instead of cascading.
+
+    An output made under an earlier environment is reported as behind and
+    left alone: it is still what the analysis asks for, and the manifest
+    records the environment and the commit that produced it. Pass
+    --refresh to remake those too.
+    """
+    from lightcone.engine import materialize as engine
+    from lightcone.engine.project import current_project
+
+    root = current_project()
+    if check_only:
+        report = engine.check(root, targets, refresh=refresh)
+    else:
+        report = engine.materialize(root, targets, refresh=refresh)
+
+    if as_json:
+        click.echo(json.dumps(report.as_dict(), indent=2))
+    else:
+        if report.notes:
+            click.echo("\n".join(["", *report.notes]), err=True)
+        _render_materialize_output(report, root, dry_run=check_only)
+
+    if not report.ok or (check_only and not report.up_to_date):
+        sys.exit(1)
+
+
+# =============================================================================
+# lc status
+# =============================================================================
+
+
+@main.command()
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the report as JSON on stdout.",
+)
+def status(as_json: bool) -> None:
+    """Report what state each of the analysis's outputs is in.
+
+    For every output the analysis declares: whether it is current, behind
+    or stale, and — once it has been materialized — the commit it was made
+    at. An output that is behind is not wrong; that commit is where the
+    code and the environment which produced it can be read back.
+
+    Reads only. It runs nothing, commits nothing, does not mind an unclean
+    tree, and always exits 0 — a state is not a failure. Use
+    `lc materialize --check` for a gate that exits nonzero.
+    """
+    from lightcone.engine import materialize as engine
+    from lightcone.engine.project import current_project
+
+    report = engine.status(current_project())
+    if as_json:
+        click.echo(json.dumps(report.as_dict(), indent=2))
+        return
+
+    marks = {"current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]", "stale": "[yellow]![/yellow]"}
+    width = max((len(o.output) for o in report.outputs), default=0)
+    lines = [
+        # The commit gets a column of its own, for every state and not only
+        # the interesting ones: "which code made this" is the question the
+        # verb exists to answer, and it has an answer for a current output
+        # too.
+        f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
+        f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{o.why}[/dim]" if o.why else "")
+        for o in report.outputs
+    ]
+    lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
+
+    counts = report.counts
+    if not report.outputs:
+        lines.append("[dim]The analysis declares no output with a recipe.[/dim]")
+    else:
+        lines.append("")
+        lines.append(
+            " · ".join(f"{count} {state}" for state, count in counts.items() if count)
+        )
+    _console().print("\n".join(lines))
+
+
+# =============================================================================
+# Rendering
+# =============================================================================
+
+
+def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run: bool) -> None:
+    """Print what ran, or what would.
+    """
+    lines = [
+        f"  [yellow]·[/yellow] would run {name} — {why}"
+        for name, why in report.planned.items()
+    ]
+    lines += [f"  [green]✓[/green] made {name}" for name in report.made]
+    # Behind is not a warning and not a problem: it is a fact about where
+    # an output came from, and the only line here that tells you something
+    # you could not have worked out from the exit code.
+    lines += [
+        f"  [cyan]·[/cyan] behind {name} — {why}" for name, why in report.behind.items()
+    ]
+    lines += [f"  [dim]·[/dim] up to date {name}" for name in report.current]
+    lines += [f"  [red]✗[/red] failed {name}" for name in report.failed]
+    lines += [f"  [red]✗[/red] blocked {name}" for name in report.blocked]
+    lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
+
+    if not report.ok:
+        verdict = f"[red]✗[/red] {root} did not finish"
+    elif report.up_to_date:
+        verdict = f"[green]✓[/green] {root} is up to date — nothing to do"
+    elif dry_run:
+        verdict = f"[yellow]![/yellow] {len(report.planned)} output(s) would be made"
+    else:
+        verdict = f"[green]✓[/green] Made {len(report.made)} output(s) in {root}"
+    # On the verdict line as well as in the listing: on a large analysis the
+    # listing scrolls away, and this is the one state that reports something
+    # rather than doing it.
+    if report.behind:
+        verdict += f" · {len(report.behind)} behind — `--refresh` remakes them"
+
+    if lines:
+        lines.append("")
+    _console().print("\n".join([*lines, verdict]))

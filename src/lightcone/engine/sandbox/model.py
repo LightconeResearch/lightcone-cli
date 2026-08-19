@@ -55,12 +55,17 @@ class Policy:
     env: dict[str, str] = field(default_factory=dict)
 
     def grants(self, path: Path, roots: tuple[Path, ...]) -> bool:
-        """Whether *path* lies under any of *roots*.
+        """Test whether a path lies under any of a set of roots.
 
-        The one containment predicate for the layer. ``is_relative_to`` is
-        reflexive, so a root grants itself — spelling it `p == r or
-        p.is_relative_to(r)` is not just redundant, it teaches the next
-        reader that the stdlib does not do the obvious thing.
+        The one containment predicate for the layer.
+
+        Args:
+            path: The path to test, resolved before comparison.
+            roots: One of the policy's path tiers.
+
+        Returns:
+            True if *path* is under a root. ``is_relative_to`` is
+            reflexive, so a root grants itself.
         """
         resolved = path.resolve()
         return any(resolved.is_relative_to(root) for root in roots)
@@ -109,14 +114,36 @@ class Backend(Protocol):
 
         A read-only property rather than a bare attribute, so a frozen
         dataclass satisfies the protocol — an immutable backend is the
-        point, since ``wrap`` must be pure.
+        point, since :meth:`wrap` must be pure.
         """
         ...
 
     def wrap(self, policy: Policy, argv: Sequence[str]) -> list[str]:
-        """*argv*, rewritten into a command that sandboxes itself."""
+        """Rewrite a command into one that sandboxes itself.
+
+        Must be pure: no temporary files, no file descriptors, no global
+        state. That is what makes a backend testable on a host that
+        cannot run it.
+
+        Args:
+            policy: What the command may touch.
+            argv: The command.
+
+        Returns:
+            The rewritten command.
+        """
         ...
 
     def attest(self, policy: Policy) -> Attestation:
-        """What :meth:`wrap`'s command will actually have enforced."""
+        """Report what :meth:`wrap`'s command will actually have enforced.
+
+        Derived from the flags applied, never from what the mechanism
+        matrix says should have happened.
+
+        Args:
+            policy: The policy being wrapped.
+
+        Returns:
+            The record written with every output.
+        """
         ...

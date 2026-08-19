@@ -26,12 +26,12 @@ from lightcone.engine.sandbox.model import (
 
 @functools.cache
 def capability() -> Capability:
-    """Whether this kernel can enforce, and at which ABI.
+    """Probe whether this kernel can enforce, and at which ABI.
 
-    Cached: it is a syscall whose answer cannot change inside one
-    process. The ABI is *recorded*, not merely gated on — a "best
-    effort" that succeeded against a kernel with no Landlock at all is
-    exactly the silent degradation this layer exists to make impossible.
+    Returns:
+        A ``landlock`` capability with its ABI, or ``none`` with the
+        reason. Cached: a syscall whose answer cannot change inside one
+        process.
     """
     abi = _sandbox_exec.abi()
     if abi > 0:
@@ -75,6 +75,17 @@ class LandlockBackend:
     interpreter: str = sys.executable
 
     def wrap(self, policy: Policy, argv: Sequence[str]) -> list[str]:
+        """Rewrite *argv* to run under the Landlock shim.
+
+        Pure: no temporary files, no file descriptors, no global state.
+
+        Args:
+            policy: What the command may touch.
+            argv: The command.
+
+        Returns:
+            The rewritten command.
+        """
         document = json.dumps(_document(policy), separators=(",", ":"), sort_keys=True)
         return [
             self.interpreter,
@@ -87,6 +98,15 @@ class LandlockBackend:
         ]
 
     def attest(self, policy: Policy) -> Attestation:
+        """Report what the wrapped command will have enforced.
+
+        Args:
+            policy: The policy being wrapped.
+
+        Returns:
+            The record written with every output, derived from the flags
+            actually applied.
+        """
         return Attestation(
             mechanism="landlock",
             fs="declared",

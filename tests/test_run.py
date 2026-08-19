@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from lightcone.engine import run as engine_run
-from lightcone.engine.project import ProjectError, current_project
+from lightcone.engine.project import ProjectError, current_project, uv_prefix
 
 SPEC = """\
 title: Test
@@ -105,6 +105,20 @@ def test_declared_file_inputs_become_read_paths(project: Path) -> None:
     assert engine_run.input_paths(project, spec) == [(project / "data" / "local.csv").resolve()]
 
 
+def test_an_input_declared_inside_a_sub_analysis_is_a_read_path_too(project: Path) -> None:
+    """A denial the researcher cannot act on is worse than the access it
+    withheld: the file *is* declared, just not at the top of the tree."""
+    (project / "data" / "stage.csv").write_text("x\n")
+    spec = {
+        "inputs": [{"id": "local", "source": "data/local.csv"}],
+        "analyses": {"stage": {"inputs": [{"id": "sub", "source": "data/stage.csv"}]}},
+    }
+    assert engine_run.input_paths(project, spec) == [
+        (project / "data" / "local.csv").resolve(),
+        (project / "data" / "stage.csv").resolve(),
+    ]
+
+
 def test_a_source_that_is_not_a_path_is_left_alone(project: Path) -> None:
     """ASTRA's `source` is free-form — a URI, a dotted name, a path — so
     "is this a path" is answered by whether it resolves to something that
@@ -133,9 +147,17 @@ def test_an_unresolvable_tree_degrades_to_the_top_level_document(project: Path) 
 def test_uv_is_pinned_to_the_project_and_refuses_to_drift(project: Path) -> None:
     """uv's own walk-up discovery is never trusted, and a stale lock must
     be uv's loud error rather than a silent relock."""
-    prefix = engine_run.uv_prefix(project)
+    prefix = uv_prefix(project, sync=True)
     assert prefix[:2] == ["uv", "run"]
     assert "--locked" in prefix
     assert "--exact" in prefix
     assert prefix[prefix.index("--project") + 1] == str(project)
     assert prefix[-1] == "--"
+
+
+def test_a_recipe_does_not_sync_where_a_probe_does(project: Path) -> None:
+    """The one thing the two hops disagree about: a probe converges the
+    environment it is about to describe, and a recipe must not, or every
+    concurrent worker writes the same `.venv`."""
+    assert "--no-sync" in uv_prefix(project, sync=False)
+    assert "--exact" not in uv_prefix(project, sync=False)

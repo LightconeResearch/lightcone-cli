@@ -23,16 +23,12 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 
-# Clean rebuild: dependencies are re-added with the layer that needs
-# them. Layer 1 (`lc init` scaffolding) needs the ASTRA spec tooling, the
-# CLI framework, and console rendering — nothing else.
 dependencies = [
-    # Pinned: the spec scaffold delegates to astra's boilerplate helper,
-    # whose surface has changed across releases (0.2.14 exposes the
-    # public `create_boilerplate`). Bump deliberately.
-    "astra-tools==0.2.14",
+    "astra-tools==0.2.16",
     "click>=8.0",
     "rich>=13.0",
+    "git-annex>=10.2026",
+    "distributed>=2026.7",
 ]
 
 [dependency-groups]
@@ -41,6 +37,7 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
+    "datalad",
 ]
 docs = [
     "zensical>=0.0.33",

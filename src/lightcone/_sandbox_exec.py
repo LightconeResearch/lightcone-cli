@@ -107,13 +107,10 @@ def _libc() -> ctypes.CDLL:
 
 
 def abi() -> int:
-    """The Landlock ABI this kernel supports, or 0 if it supports none.
+    """Probe the Landlock ABI this kernel supports.
 
-    A version query, so it is cheap and side-effect free. Every failure
-    mode — kernel < 5.13, the syscall blocked by seccomp, an
-    architecture we do not vouch for — answers 0 rather than raising:
-    the caller's question is "can I sandbox here", and "no" is a valid
-    answer to it. Recording *which* ABI answered is the caller's job.
+    Returns:
+        The ABI level, or 0 if the kernel supports none.
     """
     if os.uname().machine not in _SUPPORTED_ARCHES:
         return 0
@@ -129,23 +126,14 @@ def abi() -> int:
 
 
 def handled_access(abi_level: int) -> int:
-    """The rights the ruleset declares it governs, for *abi_level*.
+    """Build the mask of rights the ruleset declares it governs.
 
-    Unknown bits make ``landlock_create_ruleset`` fail EINVAL, so this
-    only ever widens with the ABI. Widening matters in both directions:
-    a right the ruleset does not *handle* is one the kernel does not
-    check at all, so ABI 1 silently permits ``ftruncate`` — while a
-    handled right must also be granted somewhere or nothing can use it.
+    Args:
+        abi_level: The ABI reported by :func:`abi`.
 
-    ``REFER`` is the case worth naming: when a ruleset does not handle
-    it, the kernel denies *every* cross-directory rename and link, which
-    is the ABI-1 EXDEV the denial classifier knows about. Handling it
-    (and granting it on the write roots) is what lets a recipe rename its
-    own temporary files.
-
-    ``IOCTL_DEV`` (ABI 5) is deliberately left unhandled: ioctls on
-    device nodes are outside the accidental-leakage threat model, and
-    handling it would break anything opening a terminal afresh.
+    Returns:
+        Every right this ABI knows about. A right the kernel does not
+        know is a ruleset it rejects outright.
     """
     handled = _ABI1_ALL
     if abi_level >= 2:
@@ -156,16 +144,29 @@ def handled_access(abi_level: int) -> int:
 
 
 def write_bits(abi_level: int) -> int:
-    """The rights a writable root is granted: everything but EXECUTE.
+    """Build the mask a writable root is granted.
 
-    Write implies read — a directory you may create files in but not
-    list is not a useful grant — so the read bits are included.
+    Args:
+        abi_level: The ABI reported by :func:`abi`.
+
+    Returns:
+        Everything but EXECUTE, which is granted per file.
     """
     return (handled_access(abi_level) & ~ACCESS_FS_EXECUTE) | READ_BITS
 
 
 def create_ruleset(handled_fs: int) -> int:
-    """A new, empty Landlock ruleset FD governing *handled_fs*."""
+    """Create an empty Landlock ruleset.
+
+    Args:
+        handled_fs: The rights the ruleset governs.
+
+    Returns:
+        A ruleset file descriptor.
+
+    Raises:
+        OSError: If the kernel refuses the ruleset.
+    """
     attr = _RulesetAttr(handled_fs, 0)
     fd = _libc().syscall(
         SYS_LANDLOCK_CREATE_RULESET,
@@ -179,13 +180,15 @@ def create_ruleset(handled_fs: int) -> int:
 
 
 def add_path_rule(ruleset_fd: int, path: str, access: int) -> None:
-    """Grant *access* beneath *path*.
+    """Grant access beneath a path.
 
-    Rights are masked down for a regular-file rule, because the kernel
-    rejects directory-only rights on one. That is what makes a per-file
-    EXECUTE grant work — and per-file is the point: ``/usr/bin`` holds
-    both the utility allowlist and every undeclared tool on the host, so
-    granting the directory would defeat the layer.
+    Args:
+        ruleset_fd: The ruleset to add to.
+        path: The directory or file to grant on.
+        access: The rights to grant, masked to what the path can bear.
+
+    Raises:
+        OSError: If the path cannot be opened or the rule is refused.
     """
     parent_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
     try:
@@ -214,10 +217,17 @@ def add_path_rule(ruleset_fd: int, path: str, access: int) -> None:
 
 
 def build_ruleset(policy: dict[str, object], abi_level: int) -> int:
-    """A ruleset FD realizing *policy*, or raise :class:`OSError`.
+    """Build a ruleset realizing a policy document.
 
-    A path that has vanished between policy construction and here grants
-    nothing, which is safe, so it is skipped rather than fatal.
+    Args:
+        policy: The read, write and execute path lists from argv.
+        abi_level: The ABI reported by :func:`abi`.
+
+    Returns:
+        A ruleset file descriptor.
+
+    Raises:
+        OSError: If the ruleset cannot be created or a rule refused.
     """
     fd = create_ruleset(handled_access(abi_level))
     try:
@@ -238,11 +248,13 @@ def build_ruleset(policy: dict[str, object], abi_level: int) -> int:
 
 
 def restrict_self(ruleset_fd: int) -> None:
-    """Apply *ruleset_fd* to this process, irreversibly.
+    """Apply a ruleset to this process, irreversibly.
 
-    ``PR_SET_NO_NEW_PRIVS`` first: the kernel refuses an unprivileged
-    ``landlock_restrict_self`` without it, and it is also what stops a
-    setuid binary from escaping the domain.
+    Args:
+        ruleset_fd: The ruleset to enter.
+
+    Raises:
+        OSError: If ``no_new_privs`` or the restriction is refused.
     """
     libc = _libc()
     if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
@@ -267,11 +279,14 @@ def _fail(message: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """``--policy <json> -- <command>...`` — restrict, then become it.
+    """Restrict this process, then exec the command it was given.
 
-    Hand-parsed rather than argparse'd: this runs before every sandboxed
-    exec, and everything after ``--`` belongs to the command, including
-    arguments that look like our own options.
+    ``--policy <json> -- <command>...``. Never falls through to running
+    the command unsandboxed: a setup failure exits with a reserved code
+    that nothing a command could return will collide with.
+
+    Args:
+        argv: Defaults to the process arguments.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) < 2 or args[0] != "--policy":

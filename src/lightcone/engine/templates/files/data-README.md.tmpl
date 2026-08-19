@@ -1,0 +1,10 @@
+# data/
+
+Declared inputs live here, and `astra.yaml` references them by path:
+
+    inputs:
+      catalog:
+        source: data/catalog.fits
+
+git-annex holds the bytes and git holds a pointer, so the repository
+records exactly which data produced a result without carrying its size.
