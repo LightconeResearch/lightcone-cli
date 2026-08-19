@@ -349,16 +349,22 @@ def test_a_repository_that_cannot_commit_is_refused_before_anything_runs(
 ) -> None:
     """A fresh container or CI image has no git identity, which is the case
     this CLI is most often run in. Discovered at the first save, it would
-    cost whatever the recipe had already computed."""
+    cost whatever the recipe had already computed.
+
+    `user.useConfigOnly` is how the absence is staged, rather than an empty
+    HOME: with no config git *guesses* from the username and the hostname,
+    and whether the guess is one it will accept depends on the host — a
+    Linux runner's `user@box.(none)` is refused and a macOS runner's is
+    not. This turns the guess off, which is git's own switch for it.
+    """
     root = tmp_path / "demo"
     root.mkdir()
     dataset.init_git(root)
-    monkeypatch.setenv("HOME", str(tmp_path / "nowhere"))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "absent"))
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "absent"))
-    monkeypatch.delenv("EMAIL", raising=False)
-    monkeypatch.delenv("GIT_AUTHOR_EMAIL", raising=False)
-    monkeypatch.delenv("GIT_COMMITTER_EMAIL", raising=False)
+    for name in ("EMAIL", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(name, raising=False)
+    dataset._git(["config", "user.useConfigOnly", "true"], cwd=root)
 
     with pytest.raises(project.ProjectError, match="no identity to commit with"):
         dataset.require_committer(root)
