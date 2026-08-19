@@ -23,34 +23,11 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 
-# Clean rebuild: dependencies are re-added with the layer that needs
-# them. Layer 1 (`lc init` scaffolding) needs the ASTRA spec tooling, the
-# CLI framework, and console rendering; the environment layer adds the
-# storage substrate — nothing else.
 dependencies = [
-    # Pinned: the spec scaffold delegates to astra's boilerplate helper,
-    # whose surface has changed across releases (0.2.14 exposes the
-    # public `create_boilerplate`). Bump deliberately.
     "astra-tools==0.2.14",
     "click>=8.0",
     "rich>=13.0",
-    # Results are versioned in the project's own repository: git carries
-    # the pointers, git-annex carries the bytes. The wheel bundles the
-    # binary and its libraries and has no Python dependencies, so the
-    # storage substrate installs like anything else and sits inside the
-    # environment the project's lock describes.
-    #
-    # It is a wheel-only distribution, which makes it the CLI's install
-    # floor: Linux glibc >= 2.34 on x86_64/aarch64, macOS >= 14 arm64 or
-    # >= 15 x86_64, win_amd64. AGPL-3.0-or-later, invoked only ever as a
-    # subprocess — never linked, never imported — so lightcone-cli stays
-    # BSD-3-Clause.
     "git-annex>=10.2026",
-    # The scheduler. Tasks are submitted with their upstream futures as
-    # arguments, so the dependency order, the parallelism, and the
-    # scheduling are all derived rather than looped over here — and the
-    # same graph description is what a venue larger than a laptop will
-    # take later.
     "distributed>=2026.7",
 ]
 
@@ -60,13 +37,6 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
-    # Not a runtime dependency, and deliberately: nothing in lc imports
-    # datalad. It is here because we hand-write a commit-message format
-    # datalad owns, and that format fails *silently* — its parser returns
-    # nothing on a mismatch and `rerun` then exits 0 — so the tests assert
-    # through datalad's own parser and a real rerun rather than against
-    # our own JSON. Dependency groups are not published wheel metadata, so
-    # no scaffolded project ever sees this.
     "datalad",
 ]
 docs = [
