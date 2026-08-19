@@ -194,31 +194,46 @@ def run(command: tuple[str, ...]) -> None:
     ),
 )
 @click.option(
+    "--refresh",
+    is_flag=True,
+    help=(
+        "Also remake outputs that are behind — still what the analysis "
+        "asks for, but made under an earlier environment."
+    ),
+)
+@click.option(
     "--json",
     "as_json",
     is_flag=True,
     help="Emit the report as JSON on stdout.",
 )
-def materialize(targets: tuple[str, ...], check_only: bool, as_json: bool) -> None:
+def materialize(
+    targets: tuple[str, ...], check_only: bool, refresh: bool, as_json: bool
+) -> None:
     """Make the analysis's outputs, and commit each one as it lands.
 
     Each output is committed together with its manifest, in a commit that
     records the command that produced it. The git tree needs to be clean
     before the run can start.
 
-    Nothing runs that does not need to. An output is remade when its
-    recipe, its decisions, the environment, or any of its declared inputs
-    has changed — by content, so a rebuild that comes out byte-identical
-    stops there instead of cascading.
+    An output is remade when the analysis defines it differently than it
+    was made — a changed recipe or decision — or when one of its declared
+    inputs changed. Inputs are compared by content, so a rebuild that
+    comes out byte-identical stops there instead of cascading.
+
+    An output made under an earlier environment is reported as behind and
+    left alone: it is still what the analysis asks for, and the manifest
+    records the environment and the commit that produced it. Pass
+    --refresh to remake those too.
     """
     from lightcone.engine import materialize as engine
     from lightcone.engine.project import current_project
 
     root = current_project()
     if check_only:
-        report = engine.check(root, targets)
+        report = engine.check(root, targets, refresh=refresh)
     else:
-        report = engine.materialize(root, targets)
+        report = engine.materialize(root, targets, refresh=refresh)
 
     if as_json:
         click.echo(json.dumps(report.as_dict(), indent=2))
@@ -231,6 +246,67 @@ def materialize(targets: tuple[str, ...], check_only: bool, as_json: bool) -> No
         sys.exit(1)
 
 
+# =============================================================================
+# lc status
+# =============================================================================
+
+
+@main.command()
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the report as JSON on stdout.",
+)
+def status(as_json: bool) -> None:
+    """Report what state each of the analysis's outputs is in.
+
+    For every output the analysis declares: whether it is current, behind
+    or stale, and — once it has been materialized — the commit it was made
+    at. An output that is behind is not wrong; that commit is where the
+    code and the environment which produced it can be read back.
+
+    Reads only. It runs nothing, commits nothing, does not mind an unclean
+    tree, and always exits 0 — a state is not a failure. Use
+    `lc materialize --check` for a gate that exits nonzero.
+    """
+    from lightcone.engine import materialize as engine
+    from lightcone.engine.project import current_project
+
+    report = engine.status(current_project())
+    if as_json:
+        click.echo(json.dumps(report.as_dict(), indent=2))
+        return
+
+    marks = {"current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]", "stale": "[yellow]![/yellow]"}
+    width = max((len(o.output) for o in report.outputs), default=0)
+    lines = [
+        # The commit gets a column of its own, for every state and not only
+        # the interesting ones: "which code made this" is the question the
+        # verb exists to answer, and it has an answer for a current output
+        # too.
+        f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
+        f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{o.why}[/dim]" if o.why else "")
+        for o in report.outputs
+    ]
+    lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
+
+    counts = report.counts
+    if not report.outputs:
+        lines.append("[dim]The analysis declares no output with a recipe.[/dim]")
+    else:
+        lines.append("")
+        lines.append(
+            " · ".join(f"{count} {state}" for state, count in counts.items() if count)
+        )
+    _console().print("\n".join(lines))
+
+
+# =============================================================================
+# Rendering
+# =============================================================================
+
+
 def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run: bool) -> None:
     """Print what ran, or what would.
     """
@@ -239,7 +315,13 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
         for name, why in report.planned.items()
     ]
     lines += [f"  [green]✓[/green] made {name}" for name in report.made]
-    lines += [f"  [dim]·[/dim] up to date {name}" for name in report.skipped]
+    # Behind is not a warning and not a problem: it is a fact about where
+    # an output came from, and the only line here that tells you something
+    # you could not have worked out from the exit code.
+    lines += [
+        f"  [cyan]·[/cyan] behind {name} — {why}" for name, why in report.behind.items()
+    ]
+    lines += [f"  [dim]·[/dim] up to date {name}" for name in report.current]
     lines += [f"  [red]✗[/red] failed {name}" for name in report.failed]
     lines += [f"  [red]✗[/red] blocked {name}" for name in report.blocked]
     lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
@@ -252,6 +334,11 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
         verdict = f"[yellow]![/yellow] {len(report.planned)} output(s) would be made"
     else:
         verdict = f"[green]✓[/green] Made {len(report.made)} output(s) in {root}"
+    # On the verdict line as well as in the listing: on a large analysis the
+    # listing scrolls away, and this is the one state that reports something
+    # rather than doing it.
+    if report.behind:
+        verdict += f" · {len(report.behind)} behind — `--refresh` remakes them"
 
     if lines:
         lines.append("")

@@ -51,7 +51,11 @@ speculatively.
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | Container hatch — `[tool.lightcone.image]`, generated Containerfile, `lc build` | ⬜ |
 | 7 | Venues — Perlmutter, hub/GKE, Cloud Build | ⬜ |
-| 8 | `lc status`, `lc verify`, WRROC export | ⬜ |
+| 8 | `lc verify`, WRROC export | ⬜ |
+
+`lc status` landed with the invalidation model rather than at layer 8:
+once an output can be *behind*, something has to say which ones are, and
+the verb is the same classification walk `--check` already does.
 
 Layer 5 landed **out of order**, ahead of 2–4: `lc run` is the spec's
 *probe* verb, and a probe has no output, so it needs neither manifests
@@ -121,7 +125,8 @@ recipes run under Landlock/          execution world: driver, workers,
 
 Identity: `env_version = sha256(uv.lock ‖ .python-version ‖ canonical
 install-settings ‖ canonical [tool.lightcone.image] ‖ Containerfile.extra
-hash)`, sitting inside `code_version`. Every output records what
+hash)`, recorded beside `definition_version` rather than folded into it.
+Every output records what
 enforcement it actually ran under (`hermeticity`). See spec §1–§3, §7.
 
 ### Namespace contract
@@ -150,8 +155,8 @@ src/lightcone/              # namespace — NO __init__.py
     ├── __init__.py         # docstring only
     ├── project.py          # what a project is: convergence + discovery
     ├── dataset.py          # the git + git-annex seam: how a project stores
-    ├── identity.py         # env_version, code_version, the lock scan
-    ├── assets.py           # an output: its directory, its manifest, staleness
+    ├── identity.py         # env_version, definition_version, the lock scan
+    ├── assets.py           # an output: its directory, its manifest, its state
     ├── plan.py             # the spec, read as a graph of tasks
     ├── worker.py           # making one output; also the `python -m` entry point
     ├── materialize.py      # the driver: dirty gate, Dask, the save/restore loop
@@ -224,6 +229,13 @@ the directory you invoke from is the project, or it is a clean error.
 command callbacks and builds the rich console lazily, so `lc --help` and
 shell completion pay for neither. Keep this up as verbs land: a module-scope
 engine import would make every invocation pay for the heaviest layer.
+
+**The scaffold comes from `astra.scaffold`, not `astra.cli`.** Both export
+`create_boilerplate`, and the second drags Click, Rich and the validation
+stack — measured, 37 ms against 4 ms. `astra.scaffold` is stdlib-only
+(checked: it pulls no linkml_runtime, click, rich, pydantic or
+jsonschema), which is why this one astra import sits at module scope in
+`project.py` where `astra.validation` and `astra.resolve` must not.
 
 **Templates are files, not string literals.** `engine/templates/files/*.tmpl`
 are package data, loaded through `importlib.resources`. Placeholders are
@@ -523,17 +535,34 @@ must not discard edits made elsewhere while the graph was running.
 
 ## Key Invariants (layer 2)
 
-**Two hashes, and everything downstream rests on them** (`identity.py`).
-`env_version = sha256(uv.lock bytes ‖ .python-version bytes ‖ canonical
-install-settings JSON)`, and `code_version = sha256(recipe ‖ canonical
-decisions ‖ env_version)`. The environment sits *inside* the output's
-identity, so an environment edit stales exactly the outputs whose
-semantics it could change: all of them.
+**Two hashes, and they answer different questions** (`identity.py`).
+`definition_version = sha256(recipe ‖ canonical decisions)` is what the
+spec says an output *is*. `env_version = sha256(uv.lock bytes ‖
+.python-version bytes ‖ canonical install-settings JSON)` is what it ran
+under.
+
+**`env_version` is not part of `definition_version`, and that is the whole
+shape of the model.** An environment moves for reasons that have nothing
+to do with any particular output — one `uv add` for one plotting script
+rewrites the lock for the entire project — while a research artifact costs
+hours to remake and has usually already been looked at. So an environment
+edit stales nothing; it makes an output **behind**, which is reported and
+left alone. (This reverses the original design, where `env_version` sat
+inside `code_version` and therefore staled every output in the project on
+any dependency change, and every output in every project on an lc upgrade.
+That was recorded as an accepted cost; it was the bug.)
+
+Nothing is lost by not rebuilding: the manifest records the environment
+*and* the commit, and that commit's `uv.lock` reconstructs the
+environment exactly. Over-sensitivity in `env_version` is affordable
+precisely because it no longer spends compute.
 
 **Both are length-framed.** Concatenating fields raw lets a boundary shift
-between them produce one digest from two different inputs — a recipe
-ending in a character the decisions begin with. `_frame` writes label,
-length, then bytes; `test_fields_cannot_shift_into_one_another` pins it.
+between them produce one digest from two different inputs.  `_frame`
+writes label, length, then bytes. The test lives on `env_version`, where a
+shift is actually constructible — two raw file bodies, adjacent — rather
+than on `definition_version`, whose second field is canonical JSON and
+cannot be shifted into. Mutation-checked: breaking `_frame` fails it.
 
 **The lock's raw bytes, not a parse.** A comment reflow moves
 `env_version`, deliberately: the alternative is a parse of our own that
@@ -546,11 +575,21 @@ list must not move the hash, or every uv config nicety stales the world;
 a setting whose value merely *matches* today's default must, because that
 default can change under a project that never said anything.
 
-**The git commit is recorded, never hashed.** It goes in the manifest so
-the code that produced a result stays recoverable, and stays out of
-`code_version` so a commit does not stale every output in the repository.
-Exact per-output code invalidation is available by declaring the source
-files a recipe reads as ASTRA inputs.
+**The git commit is recorded, never hashed, and never a signal.** It goes
+in the manifest so the code that produced a result stays recoverable. It
+is out of `definition_version` because git has one sha for the whole
+tree — hashing it would stale every output in the repository on a README
+edit — and it is not a `behind` trigger for the same reason: it moves on
+every commit, and a signal that is always on is not one.
+
+The honest consequence, which is a **decision and not an oversight**:
+editing `src/fit.py` remakes nothing, because the recipe *string* is
+unchanged. Per-output code invalidation is available by declaring the
+source files as ASTRA inputs, and that declaration is deliberately the
+researcher's to make rather than something lc infers — for an expensive
+output, "the code moved and the result still stands" is a legitimate and
+common position. Do not add a heuristic that scans a recipe's command line
+for repo paths.
 
 **Names are compared in PEP 503 form.** uv writes the normalized name
 into `uv.lock`; `pyproject.toml` carries whatever the author wrote, and
@@ -587,7 +626,7 @@ specification is how the two start disagreeing, and ours had:
 
 `lightcone.engine.plan` therefore holds only what execution adds:
 `Task`, `Graph`, and the mapping of resolved outputs onto directories,
-edges and `code_version`. When something about the spec's meaning looks
+edges and `definition_version`. When something about the spec's meaning looks
 wrong, the fix is in astra-tools, not here.
 
 **A spec ASTRA rejects never reaches a recipe.** `build` runs
@@ -627,7 +666,7 @@ radius is the guard above, not a narrower delete.
 futures as arguments, so the dependency order, the parallelism, and the
 scheduling all fall out of the argument graph. There is no ready-set loop
 and no hand-rolled topological sort in the execution path.
-`Graph.order()` exists for one caller — `--check`, which has to classify a
+`Graph.order()` exists for the read-only walk, which has to classify a
 task after everything upstream of it — and for submitting in an order
 where a task's upstream handles already exist.
 
@@ -652,7 +691,7 @@ the task — that is what puts git back in the workers.
 it a multiverse spec re-reads the same bytes once per `(universe,
 output)` that names it — eight universes times four outputs sharing one
 catalog is thirty-two full hashes of one file, paid again on the
-"nothing to do" path because staleness needs the digest before it can
+"nothing to do" path because classification needs the digest before it can
 skip. Memoizing is sound for exactly as long as a run lasts: a run
 refuses to start on a dirty tree, and the only in-tree path a recipe may
 write is its own output directory. A class rather than a closure, so it
@@ -668,7 +707,7 @@ finished before or after the previous save. Nondeterminism in a
 provenance field is worse than either answer.
 
 **The worker never raises, and that is enforced at the unit boundary.**
-It returns `ok`, `skipped`, `failed`, or `blocked`. A task whose upstream
+It returns `ok`, `current`, `behind`, `failed`, or `blocked`. A task whose upstream
 did not report — failed, or never finished at all — returns `blocked`
 without running. Raising would make Dask re-raise in the driver and abort
 every task in flight, and reporting all independent failures in one run
@@ -696,20 +735,79 @@ a rebuild for a project that is entirely up to date. The honest
 consequence: a hand-edited-and-committed output does not cascade in this
 layer. Catching that is `lc verify`'s job.
 
-**One staleness predicate, two callers** (`assets.staleness`). It compares
-`code_version` against the manifest, the declared input *set* against the
-recorded one, and then each recorded `input_versions[…]` against the
-version it is handed. The set comparison is separate on purpose:
-`code_version` hashes the recipe, the decisions and the environment, none
-of which an input the spec no longer declares moves — so without it a
-dropped dependency leaves the output reporting "up to date" forever. The worker hands it live digests;
-`--check` hands `None` for anything it has already classified as
-would-run, meaning "this is going to change". That single value is the
-entire difference between the two — one input, conservatively chosen, not
+**Three states, and the line between them is the layer's whole shape**
+(`assets.classify`).
+
+| state | means | what happens |
+|---|---|---|
+| `stale` | the artifact **contradicts** the project: the spec defines it differently than it was made, or it records deriving from bytes the project no longer holds | remade |
+| `behind` | it is still exactly what the spec asks for; only the **environment** moved | reported, left alone |
+| `current` | neither | nothing |
+
+The distinction is *contradiction* versus *circumstance*. A stale artifact
+is mislabelled — what is on disk is not an instance of what the spec
+declares — so keeping it would be a lie. A behind artifact is not wrong in
+any way; its environment is recorded and its commit reconstructs that
+environment, so remaking it buys nothing and can cost a week of
+allocation.
+
+**`Verdict.calls_for_a_remake(refresh=)` is the one place that turns a
+state into an action**, and it has three callers — the worker, `check`,
+and the walk that feeds the cascade. `stale` always; `behind` only when
+asked. Do not re-spell it inline; the third copy is where they start to
+disagree.
+
+**One classification rule, and the two callers differ by one value**
+(`assets.classify`). It compares `definition_version` against the
+manifest, the declared input *set* against the recorded one, each recorded
+`input_versions[…]` against the version it is handed, and finally
+`env_version`. The set comparison is separate on purpose:
+`definition_version` hashes the recipe and the decisions, neither of which
+an input the spec no longer declares moves — so without it a dropped
+dependency leaves the output reporting current forever. The worker hands
+live digests; the read-only walk hands `None` for anything it has already
+decided will run, meaning "this is going to change". That single value is
+the entire difference between them — one input, conservatively chosen, not
 a second body of logic — the same discipline as layer 1's
 `converge(write=False)`. It is the one place in the layer where a bug is
 quiet rather than loud, which is exactly why it may not have two
 implementations.
+
+**`stale` wins over `behind` when both apply.** The artifact is going to
+be remade either way, and reporting "left alone" about something the run
+is about to rebuild is the one wrong answer.
+
+**`behind` does not propagate, and a behind upstream still feeds its
+dependents.** It says the environment moved, not that the bytes are wrong,
+so `TaskResult.usable` includes it and `data_version` flows on unchanged.
+Propagating it would mark one old artifact's entire downstream forever and
+kill the signal; the mosaic — how many environments and commits an output's
+ancestry spans — is a project-level question, not a per-output flag.
+
+**`--refresh` widens a run by exactly one state.** It is not an escape
+hatch (it asks for *more* work, not less), and it must not become a
+rebuild-the-world flag: a `current` output stays current under it. There
+is deliberately no flag in the other direction — nothing suppresses the
+rebuild of a stale output, because deleting the directory is the user's
+own file operation and is stronger consent than a flag.
+
+**`up_to_date` does not count `behind`.** `lc materialize --check` is a
+gate, and a project of curated results would otherwise never pass it
+again.
+
+**`lc status` reports; `--check` gates.** Status always exits 0 — a state
+is not a failure — and it is the only verb that shows the commit each
+output was made at, for every state and not only the interesting ones.
+It reads manifests and hashes inputs; it runs nothing, commits nothing,
+and does not mind a dirty tree, because the moment you most need to know
+what state a project is in is when it is not clean. Two verbs answering
+the same question with different exit codes is how a script comes to
+depend on the wrong one, so keep the split sharp.
+
+**`git_sha` in a manifest is the commit the run *started* at**, not the
+commit the run went on to create. It is the code that produced the output.
+A test that reads `dataset.head()` after materializing and expects a match
+is asserting the wrong thing.
 
 **One uv hop, one spelling** (`project.uv_prefix(root, *, sync)`). The
 flags are also what `run_record` writes verbatim into every commit
@@ -770,7 +868,7 @@ because `datalad rerun` removes the declared outputs first and that
 dirties the tree materialize refuses to start from.
 
 **The worker module is not an `lc` verb and not a console script.** It
-skips the staleness check, commits nothing, and leaves the tree dirty by
+makes the output unconditionally, commits nothing, leaves the tree dirty by
 design. `lc --help` advertising it would hand people a footgun, and a
 `[project.scripts]` entry would put it on `$PATH` through
 `uv tool install`. `lightcone/_sandbox_exec.py` is the same shape for the
@@ -828,8 +926,9 @@ larger than a laptop land behind it without the driver noticing.
   manifest whose `git_sha` no longer describes the code that ran, and
   nothing records it.
 - **The manifest carries what this layer can honestly fill.**
-  `schema_version`, `output_id`, `universe_id`, `recipe`, `code_version`,
-  `env_version`, `data_version`, `decisions`, `input_versions`, `git_sha`,
+  `schema_version`, `output_id`, `universe_id`, `recipe`,
+  `definition_version`, `env_version`, `data_version`, `decisions`,
+  `input_versions`, `git_sha`,
   `git_remote`, `lc_version`, `hermeticity`. Spec §3's longer list —
   `uv_version`, `platform`, `python_build`, `worker_runtime`, `image`,
   `dpkg_snapshot_sha256`, `sdist_built`, `env_snapshot`, `gpu_driver` —
@@ -1167,7 +1266,7 @@ only checks that the guard is present. Verified empirically, not assumed.
 | Change what gets converged | `src/lightcone/engine/project.py` + `tests/test_project.py` | `_Converger.item` / `.file`; repairs only ever append |
 | Change how a project stores bytes | `src/lightcone/engine/dataset.py` + `templates/files/gitattributes.tmpl` | Every command through `project._run`; test it against a real annex (`real_tools`) |
 | Change how an output is identified | `src/lightcone/engine/identity.py` + `tests/test_identity.py` | Sensitivity tests both ways: what must move the hash, and what must not |
-| Change when an output is remade | `src/lightcone/engine/assets.py` + `tests/test_assets.py` | One `staleness()`, two callers; `--check` differs by one input value, never by logic |
+| Change when an output is remade | `src/lightcone/engine/assets.py` + `tests/test_assets.py` | One `classify()`, two callers; `--check` differs by one input value, never by logic. Ask first whether the thing that moved *contradicts* the project or is a *circumstance* — the second is `behind`, not `stale` |
 | Change how the spec becomes a graph | `src/lightcone/engine/plan.py` + `tests/test_plan.py` | Ask `astra.resolve`; if the answer is missing, the fix is a PR to astra-tools. Anything ambiguous is a `ProjectError`, never a guess |
 | Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
 | Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
@@ -1194,7 +1293,7 @@ only checks that the guard is present. Verified empirically, not assumed.
 - `tests/test_project.py` — discovery and convergence semantics, called
   directly. This is where scaffold behavior is tested.
 - `tests/test_plan.py` tests what lc adds — directories, edges,
-  `code_version`, target resolution, the validation gate — and **not**
+  `definition_version`, target resolution, the validation gate — and **not**
   what a spec means. Scoping, `from:`, `when:` and the recipe grammar are
   covered by `astra-tools`' own suite; asserting them here again would
   re-create the second implementation this layer just deleted. Every

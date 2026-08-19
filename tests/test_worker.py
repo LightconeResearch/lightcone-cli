@@ -16,6 +16,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -53,7 +54,7 @@ def root(analysis: Callable[..., Path]) -> Path:
 
 
 def _task(root: Path, output_id: str) -> plan.Task:
-    graph = plan.build(root, env_version=identity.env_version(root))
+    graph = plan.build(root)
     return graph.tasks[("baseline", output_id)]
 
 
@@ -61,11 +62,29 @@ def _task(root: Path, output_id: str) -> plan.Task:
 _HEAD = ("0123456789abcdef", "https://example/analysis.git")
 
 
-def _make(root: Path, output_id: str, *upstream: TaskResult) -> TaskResult:
+def _make(
+    root: Path, output_id: str, *upstream: TaskResult, refresh: bool = False
+) -> TaskResult:
     """Run one task the way Dask would, handed its upstream results."""
     task = _task(root, output_id)
-    env = identity.env_version(root)
-    return worker.materialize(root, task, env, _HEAD, assets.Versions(), *upstream)
+    return worker.materialize(
+        root, task, identity.env_version(root), _HEAD, assets.Versions(), refresh, *upstream
+    )
+
+
+def _age(root: Path, output_id: str) -> None:
+    """Rewrite an output's manifest to name an environment that is not this
+    one — the shape a project takes when `uv add` rewrites the lock after a
+    result was made.
+
+    The *recorded* value is what moves, never the run's: the environment
+    the recipe actually runs under has to stay the real one, or the mid-run
+    gate refuses the execution before any of this is exercised.
+    """
+    directory = root / "results/baseline" / output_id
+    manifest = assets.read(directory)
+    assert manifest is not None
+    assets.write(directory, replace(manifest, env_version="sha256:an-earlier-environment"))
 
 
 # ---- executing a recipe ----------------------------------------------------
@@ -88,7 +107,7 @@ def test_the_manifest_is_complete_before_anything_is_saved(root: Path) -> None:
     manifest = assets.read(root / "results/baseline/first")
     assert manifest is not None
     assert manifest.data_version == assets.data_version(root / "results/baseline/first")
-    assert manifest.code_version == _task(root, "first").code_version
+    assert manifest.definition_version == _task(root, "first").definition_version
     assert manifest.env_version == identity.env_version(root)
     assert manifest.git_sha == _HEAD[0] and manifest.git_remote == _HEAD[1]
     assert manifest.hermeticity["mechanism"]
@@ -109,11 +128,11 @@ def test_the_recipe_runs_under_the_boundary(root: Path) -> None:
 # ---- deciding whether to run at all ----------------------------------------
 
 
-def test_an_unchanged_output_is_skipped(root: Path) -> None:
+def test_an_unchanged_output_is_current(root: Path) -> None:
     made = _make(root, "first")
     again = _make(root, "first")
 
-    assert again.status == "skipped"
+    assert again.status == "current"
     assert again.data_version == made.data_version
 
 
@@ -127,6 +146,59 @@ def test_a_skip_returns_the_recorded_digest_rather_than_rehashing(root: Path) ->
     (output / "value.txt").unlink()
 
     assert _make(root, "first").data_version == manifest.data_version
+
+
+def test_a_moved_environment_leaves_the_output_alone(root: Path) -> None:
+    """The change this layer exists for. The recipe and the decisions still
+    define exactly this output, so it is reported and kept — remaking it
+    would spend the compute that a rewritten `uv.lock` never justified."""
+    made = _make(root, "first")
+    (root / "results/baseline/first/value.txt").write_text("untouched\n")
+    _age(root, "first")
+
+    again = _make(root, "first")
+
+    assert again.status == "behind"
+    assert "earlier environment" in again.reason
+    assert again.data_version == made.data_version
+    assert (root / "results/baseline/first/value.txt").read_text() == "untouched\n"
+
+
+def test_refresh_remakes_what_is_only_behind(root: Path) -> None:
+    """And the recipe really runs: the file the previous assertion left in
+    place is overwritten, so this cannot pass by skipping too."""
+    _make(root, "first")
+    (root / "results/baseline/first/value.txt").write_text("untouched\n")
+    _age(root, "first")
+
+    again = _make(root, "first", refresh=True)
+
+    assert again.status == "ok"
+    assert (root / "results/baseline/first/value.txt").read_text() == "one\n"
+
+
+def test_refresh_does_not_remake_what_is_current(root: Path) -> None:
+    """`--refresh` widens the run by one state, not to everything. Without
+    this it would be a rebuild-the-world flag wearing another name."""
+    _make(root, "first")
+
+    assert _make(root, "first", refresh=True).status == "current"
+
+
+def test_a_behind_upstream_still_feeds_its_dependents(root: Path) -> None:
+    """`behind` says the environment moved, not that the bytes are wrong —
+    so a dependent proceeds on them rather than reporting blocked."""
+    first = _make(root, "first")
+    _age(root, "first")
+    behind = _make(root, "first")
+    assert behind.status == "behind"
+
+    second = _make(root, "second", behind)
+
+    assert second.status == "ok"
+    manifest = assets.read(root / "results/baseline/second")
+    assert manifest is not None
+    assert manifest.input_versions == {"first": first.data_version}
 
 
 def test_a_task_whose_upstream_did_not_finish_is_blocked(root: Path) -> None:

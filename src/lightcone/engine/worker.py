@@ -6,7 +6,7 @@ Also an entry point:
 
 which is what the ``[DATALAD RUNCMD]`` record in every materialization
 commit names. That is why it is a module rather than an ``lc`` verb: it
-skips the staleness check, commits nothing, and leaves the tree dirty by
+makes the output unconditionally, commits nothing, and leaves the tree dirty by
 design — precisely the state ``lc materialize`` refuses to start from —
 so advertising it in ``lc --help`` would hand people a footgun. A
 ``uv run --locked --project .`` in front of it reconstructs the exact
@@ -58,10 +58,10 @@ class TaskResult:
     """What one task did. Returned, never raised, and handed to dependents."""
 
     key: Key
-    status: Literal["ok", "skipped", "failed", "blocked"]
-    #: The output's content identity. Present for ``ok`` and ``skipped``,
-    #: which are the two states in which the bytes on disk are current —
-    #: this is what a dependent compares against.
+    status: Literal["ok", "current", "behind", "failed", "blocked"]
+    #: The output's content identity. Present for the three states in
+    #: which the bytes on disk are what the spec asks for — this is what a
+    #: dependent compares against.
     data_version: str = ""
     #: Why it did not finish. Shown to the user verbatim.
     reason: str = ""
@@ -73,10 +73,12 @@ class TaskResult:
         """Whether a dependent may proceed on this result.
 
         Returns:
-            True for ``ok`` and ``skipped`` — the two states in which the
-            bytes on disk are current.
+            True for ``ok``, ``current`` and ``behind`` — the states in
+            which the bytes on disk are what the spec asks for. ``behind``
+            is among them deliberately: it says the environment moved, not
+            that the artifact is wrong.
         """
-        return self.status in ("ok", "skipped")
+        return self.status in ("ok", "current", "behind")
 
 
 # =============================================================================
@@ -90,6 +92,7 @@ def materialize(
     env_version: str,
     head: Head,
     versions: assets.Versions,
+    refresh: bool,
     *upstream: TaskResult,
 ) -> TaskResult:
     """Make *task* if it needs making. What Dask submits, once per task.
@@ -107,6 +110,7 @@ def materialize(
         head: The run's ``(commit sha, origin URL)``, read once by the
             driver because it commits as outputs land and HEAD moves.
         versions: The run's content-hash memo for declared inputs.
+        refresh: Whether to remake an output that is merely behind.
         *upstream: The results of this task's dependencies, arriving as
             the futures it was given — which is what makes Dask the
             scheduler rather than a loop here.
@@ -115,7 +119,7 @@ def materialize(
         What happened. Never raises.
     """
     try:
-        return _materialize(root, task, env_version, head, versions, upstream)
+        return _materialize(root, task, env_version, head, versions, refresh, upstream)
     except Exception as e:  # the contract is that this function returns
         return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
 
@@ -126,6 +130,7 @@ def _materialize(
     env_version: str,
     head: Head,
     versions: assets.Versions,
+    refresh: bool,
     upstream: tuple[TaskResult, ...],
 ) -> TaskResult:
     reported = {u.key: u for u in upstream if u.usable}
@@ -139,14 +144,23 @@ def _materialize(
         for name, path in task.inputs.items()
     }
     manifest = assets.read(task.output_dir)
-    if assets.staleness(code_version=task.code_version, manifest=manifest, inputs=inputs) is None:
-        # The recorded digest, never a recomputed one: on a clone that has
-        # fetched no annex content the files are dangling symlinks, and
-        # rehashing them would quietly report a different output.
-        assert manifest is not None  # staleness returns a reason when it is None
-        return TaskResult(task.key, "skipped", data_version=manifest.data_version)
+    verdict = assets.classify(
+        definition_version=task.definition_version,
+        env_version=env_version,
+        manifest=manifest,
+        inputs=inputs,
+    )
+    if verdict.calls_for_a_remake(refresh=refresh):
+        return execute(root, task, env_version, inputs, head=head)
 
-    return execute(root, task, env_version, inputs, head=head)
+    # Left alone, so the bytes on disk stand. Their *recorded* digest,
+    # never a recomputed one: on a clone that has fetched no annex content
+    # the files are dangling symlinks, and rehashing them would quietly
+    # report a different output.
+    assert manifest is not None and verdict.status != "stale"  # the branch above
+    return TaskResult(
+        task.key, verdict.status, data_version=manifest.data_version, reason=verdict.why
+    )
 
 
 # =============================================================================
@@ -182,8 +196,8 @@ def execute(
         ``ok`` with the output's ``data_version``, or ``failed``. Commits
         nothing and never touches git beyond reading HEAD.
     """
-    if drift := _gate(root, env_version):
-        return TaskResult(task.key, "failed", reason=drift)
+    if moved := _gate(root, env_version):
+        return TaskResult(task.key, "failed", reason=moved)
 
     # The whole directory, not a list of expected files: a recipe declares
     # an output id rather than filenames, and a previous run that crashed
@@ -214,8 +228,8 @@ def execute(
             reason=f"the recipe exited {outcome.returncode}",
             notes=outcome.notes,
         )
-    if drift := _gate(root, env_version):
-        return TaskResult(task.key, "failed", reason=drift, notes=outcome.notes)
+    if moved := _gate(root, env_version):
+        return TaskResult(task.key, "failed", reason=moved, notes=outcome.notes)
 
     # Guarded separately from the boundary catch above it, because these
     # two failures deserve different words: "your recipe failed" and "your
@@ -229,7 +243,7 @@ def execute(
                 output_id=task.output_id,
                 universe_id=task.universe_id,
                 recipe=task.recipe,
-                code_version=task.code_version,
+                definition_version=task.definition_version,
                 env_version=env_version,
                 data_version=data_version,
                 decisions=dict(task.decisions),
@@ -281,7 +295,7 @@ def main(argv: list[str]) -> int:
     ``python -m lightcone.engine.worker <universe>/<output_id>`` — what the
     ``[DATALAD RUNCMD]`` record in every materialization commit names. A
     thin wrapper over :func:`execute`, so this is an entry point rather
-    than a second implementation. No staleness check: a rerun is a rerun.
+    than a second implementation. Nothing is classified: a rerun is a rerun.
 
     Args:
         argv: One argument, ``<universe>/<output_id>``.
@@ -298,7 +312,7 @@ def main(argv: list[str]) -> int:
     try:
         root = current_project()
         env_version = identity.env_version(root)
-        graph = plan.build(root, env_version=env_version)
+        graph = plan.build(root)
         task = graph.tasks[(universe_id, output_id)]
         # This one-task run reads HEAD for itself, because it *is* the
         # driver here — the rule is that the run's commit is read once by

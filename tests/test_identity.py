@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine.identity import LockScan, code_version, env_version, scan_lock
+from lightcone.engine.identity import LockScan, definition_version, env_version, scan_lock
 from lightcone.engine.project import ProjectError
 
 _LOCK = """version = 1
@@ -116,40 +116,48 @@ def test_a_missing_interpreter_pin_is_a_refusal(root: Path) -> None:
         env_version(root)
 
 
-# ---- code_version ----------------------------------------------------------
+def test_fields_cannot_shift_into_one_another(root: Path) -> None:
+    """Length framing, exercised where it is load-bearing. `env_version`
+    concatenates two files' *raw* bytes, so without framing a byte moved
+    from the end of one to the start of the other feeds the hash the same
+    input and claims two different environments are one.
+    """
+    (root / "uv.lock").write_bytes(b"lock\n3.13")
+    (root / ".python-version").write_bytes(b".1\n")
+    shifted_left = env_version(root)
+
+    (root / "uv.lock").write_bytes(b"lock\n")
+    (root / ".python-version").write_bytes(b"3.13.1\n")
+    assert env_version(root) != shifted_left
 
 
-def test_code_version_follows_each_of_its_three_terms() -> None:
-    recipe, decisions, env = "python fit.py {output}", {"method": "mcmc"}, "sha256:aa"
-    original = code_version(recipe=recipe, decisions=decisions, env=env)
+# ---- definition_version ----------------------------------------------------
 
-    assert code_version(recipe=recipe + " -v", decisions=decisions, env=env) != original
-    assert code_version(recipe=recipe, decisions={"method": "nested"}, env=env) != original
-    assert code_version(recipe=recipe, decisions=decisions, env="sha256:bb") != original
+
+def test_definition_version_follows_both_its_terms() -> None:
+    recipe, decisions = "python fit.py {output}", {"method": "mcmc"}
+    original = definition_version(recipe=recipe, decisions=decisions)
+
+    assert definition_version(recipe=recipe + " -v", decisions=decisions) != original
+    assert definition_version(recipe=recipe, decisions={"method": "nested"}) != original
 
 
 def test_decision_order_does_not_matter() -> None:
     """Decisions are a mapping, not a sequence — two spellings of the same
-    choices are the same code."""
-    a = code_version(recipe="r", decisions={"x": "1", "y": "2"}, env="e")
-    b = code_version(recipe="r", decisions={"y": "2", "x": "1"}, env="e")
+    choices define the same output."""
+    a = definition_version(recipe="r", decisions={"x": "1", "y": "2"})
+    b = definition_version(recipe="r", decisions={"y": "2", "x": "1"})
     assert a == b
 
 
-def test_fields_cannot_shift_into_one_another() -> None:
-    """Length framing, exercised. Concatenated raw, these two would feed
-    the hash identical bytes and claim two different outputs were one."""
-    a = code_version(recipe="ab", decisions={}, env="c")
-    b = code_version(recipe="a", decisions={}, env="bc")
-    assert a != b
-
-
-def test_the_environment_reaches_every_output(root: Path) -> None:
-    """The property that makes `env_version` worth computing: it sits
-    inside `code_version`, so an environment edit stales everything."""
-    before = code_version(recipe="r", decisions={}, env=env_version(root))
+def test_the_environment_is_not_part_of_what_an_output_is(root: Path) -> None:
+    """The load-bearing separation. `env_version` is recorded beside an
+    output and compared to say it is *behind*; folding it in here would
+    make one added dependency remake a project's every result."""
+    before = definition_version(recipe="r", decisions={})
     (root / ".python-version").write_text("3.12.9\n")
-    assert code_version(recipe="r", decisions={}, env=env_version(root)) != before
+    assert env_version(root)  # the environment did move
+    assert definition_version(recipe="r", decisions={}) == before
 
 
 # ---- the lock scan ---------------------------------------------------------

@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
 
+from astra.scaffold import create_boilerplate
+
 from lightcone.engine import dataset, templates
 
 SPEC_FILENAME = "astra.yaml"
@@ -185,12 +187,6 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
         ProjectError: If uv, git or git-annex is missing, or any of them
             fails.
     """
-    # Imported here rather than at module scope because `astra.cli` costs
-    # ~0.5 s to import — Click, Rich, and the validation stack, which pulls
-    # linkml_runtime. astra-tools#102 moves the scaffold to a stdlib-only
-    # `astra.scaffold`; once that lands this can go back up top.
-    from astra.cli import create_boilerplate
-
     directory = directory.resolve()
 
     require_uv()
@@ -202,11 +198,12 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     if write:
         directory.mkdir(parents=True, exist_ok=True)
 
-    # `create_boilerplate` is astra's public scaffold API, the same one
+    # `astra.scaffold` is astra's public scaffold API, the same one
     # `astra init` delegates to: it writes the spec — astra.yaml plus
     # universes/baseline.yaml, which converge as one item because the
     # baseline references the boilerplate's example decision — and nothing
-    # else.
+    # else. It is stdlib-only and imports in milliseconds, which is why it
+    # sits at module scope where the validation stack cannot.
     c.item(
         "astra.yaml",
         (directory / SPEC_FILENAME).exists(),

@@ -1,25 +1,39 @@
 """What a materialized output is identified by.
 
-Two hashes, and the whole staleness model rests on them.
+Two hashes, and they answer different questions on purpose.
+
+``definition_version`` is what the spec says an output *is*: its rendered
+recipe and the decisions it was made under. It is the rebuild trigger —
+when it moves, the artifact on disk is no longer an instance of the thing
+the spec describes, so keeping it would be mislabelling it.
 
 ``env_version`` is the environment's identity: the lock's bytes, the
 interpreter pin's bytes, and the settings that decide *which artifacts*
-``uv sync`` materializes from that lock. It is deliberately over-sensitive
-— raw lock bytes, so a comment reflow moves it — because the alternative
-is a parse that silently disagrees with uv about what the lock means.
+``uv sync`` materializes from that lock. It is deliberately
+over-sensitive — raw lock bytes, so a comment reflow moves it — because
+the alternative is a parse that silently disagrees with uv about what the
+lock means.
 
-``code_version`` is one output's identity, and ``env_version`` sits inside
-it. So an environment edit stales exactly the outputs whose semantics it
-could change: all of them.
+**``env_version`` is not part of ``definition_version``**, and that is the
+whole shape of the model. An environment moves for reasons that have
+nothing to do with a given output — one added dependency rewrites the lock
+for the whole project — and a research artifact costs hours to remake and
+is often already looked at. So an environment edit does not stale
+anything; it makes an artifact *behind*, which is a fact the report states
+and a rebuild the caller can ask for. Over-sensitivity is affordable
+exactly because it no longer spends compute.
 
-The git commit is deliberately *not* an input to either. It is recorded
-with every output instead, so the code that produced a result stays
-recoverable without a commit staling everything in the repository.
+What makes that safe is that nothing is lost: the environment an output
+was made under is recorded in its manifest, and the commit alongside it
+reconstructs that environment from the lock of the day.
 
-Both are length-framed. Concatenating fields raw lets a boundary shift
-between them produce the same digest from different inputs — a recipe
-ending in a character the decisions begin with, say — and nothing about a
-content hash is worth having if it can be shifted.
+The git commit is not an input to either hash. It is tree-wide, so
+hashing it would stale every output in the repository on a README edit.
+
+Both hashes are length-framed. Concatenating fields raw lets a boundary
+shift between them produce the same digest from different inputs — a
+recipe ending in a character the decisions begin with, say — and nothing
+about a content hash is worth having if it can be shifted.
 """
 
 from __future__ import annotations
@@ -39,7 +53,7 @@ from lightcone.engine.project import ProjectError
 #: sync materializes from an unchanged lock. Closed on purpose: anything
 #: outside it is either already covered by the lock's bytes or does not
 #: affect what ends up installed, and a set that grew by guesswork would
-#: stale every output in every project each time it did.
+#: report every output in every project as behind each time it did.
 _INSTALL_SETTINGS = (
     "default-groups",
     "no-binary",
@@ -89,16 +103,15 @@ def env_version(root: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
-def code_version(*, recipe: str, decisions: Mapping[str, str], env: str) -> str:
-    """Compute one output's identity.
+def definition_version(*, recipe: str, decisions: Mapping[str, str]) -> str:
+    """Compute what the spec says one output is.
 
-    ``sha256(recipe ‖ canonical decisions ‖ env_version)``, length-framed.
+    ``sha256(recipe ‖ canonical decisions)``, length-framed. The
+    environment is deliberately absent: see this module's docstring.
 
     Args:
         recipe: The rendered recipe command.
         decisions: The decisions this output declares, as id → option.
-        env: The run's ``env_version``. Passed in rather than derived, so
-            every task in a graph is identified against the same value.
 
     Returns:
         The digest, as ``sha256:<hex>``.
@@ -106,7 +119,6 @@ def code_version(*, recipe: str, decisions: Mapping[str, str], env: str) -> str:
     h = hashlib.sha256()
     _frame(h, "recipe", recipe.encode())
     _frame(h, "decisions", _canonical(dict(decisions)).encode())
-    _frame(h, "env-version", env.encode())
     return f"sha256:{h.hexdigest()}"
 
 

@@ -51,8 +51,13 @@ class MaterializeReport:
 
     #: ``universe/output`` for each output this run produced and committed.
     made: list[str] = field(default_factory=list)
-    #: Already current: nothing about them changed.
-    skipped: list[str] = field(default_factory=list)
+    #: Nothing about them changed, and the environment is the one they were
+    #: made under.
+    current: list[str] = field(default_factory=list)
+    #: Still what the spec asks for, but made under an earlier environment
+    #: — ``universe/output`` → the context, naming the commit. Left alone;
+    #: ``refresh`` is what remakes them.
+    behind: dict[str, str] = field(default_factory=dict)
     #: The recipe failed, or the environment moved under it.
     failed: list[str] = field(default_factory=list)
     #: Not attempted, because something upstream did not finish.
@@ -75,7 +80,13 @@ class MaterializeReport:
 
     @property
     def up_to_date(self) -> bool:
-        """Whether the analysis needed nothing done to it."""
+        """Whether the analysis needed nothing done to it.
+
+        ``behind`` does not count against it. An output made under an
+        earlier environment is not out of date — it is what the spec asks
+        for, and saying otherwise would put ``--check`` back in the
+        business of demanding compute.
+        """
         return not self.made and not self.planned
 
     def as_dict(self) -> dict[str, Any]:
@@ -92,7 +103,7 @@ class MaterializeReport:
 # =============================================================================
 
 
-def check(root: Path, targets: Sequence[str]) -> MaterializeReport:
+def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> MaterializeReport:
     """Classify every task without executing or committing anything.
 
     Not subject to the dirty-tree refusal: reading the state of a project
@@ -105,51 +116,88 @@ def check(root: Path, targets: Sequence[str]) -> MaterializeReport:
     Args:
         root: The project root.
         targets: What to classify; empty means everything.
+        refresh: Whether an output that is merely behind would be remade.
 
     Returns:
-        ``planned`` naming each output that would run and why, and
-        ``skipped`` naming those already current.
+        ``planned`` naming each output that would run and why, ``behind``
+        those made under an earlier environment, and ``current`` the
+        rest.
 
     Raises:
         ProjectError: If the spec, the universes or the lock cannot be
             read, or a target matches nothing.
     """
     report = MaterializeReport()
-    graph, _ = _graph(root, targets, report)
+    for key, verdict, _ in _classified(root, targets, report, refresh=refresh):
+        name = _name(key)
+        if verdict.calls_for_a_remake(refresh=refresh):
+            report.planned[name] = verdict.why
+        elif verdict.status == "behind":
+            report.behind[name] = verdict.why
+        else:
+            report.current.append(name)
+    return report
 
+
+def _classified(
+    root: Path, targets: Sequence[str], report: MaterializeReport, *, refresh: bool
+) -> list[tuple[Key, assets.Verdict, assets.Manifest | None]]:
+    """Classify every task in topological order, reading nothing but disk.
+
+    The walk both read-only modes share, so there is one answer to "what
+    is this output" and not one per verb. Topological because a task can
+    only be classified after everything upstream of it, and an upstream
+    already decided to run is passed down as ``None`` — nothing here can
+    know whether a rebuild comes out byte-identical, and assuming it will
+    would under-report.
+
+    Args:
+        root: The project root.
+        targets: What to classify; empty means everything.
+        report: Collects the lock scan's warnings, and the note about
+            inputs this clone has not fetched.
+        refresh: Whether behind outputs count as running, which is what
+            decides whether their dependents see the sentinel.
+
+    Returns:
+        One ``(key, verdict, manifest)`` per task, upstream first.
+    """
+    graph, env_version = _graph(root, targets, report)
     versions = assets.Versions()
-    stale: set[Key] = set()
+    would_run: set[Key] = set()
     unfetched: set[str] = set()
+
+    classified = []
     for key in graph.order():
         task = graph.tasks[key]
-        reason = assets.staleness(
-            code_version=task.code_version,
-            manifest=assets.read(task.output_dir),
-            inputs=_predicted(task, stale, versions, unfetched),
+        manifest = assets.read(task.output_dir)
+        verdict = assets.classify(
+            definition_version=task.definition_version,
+            env_version=env_version,
+            manifest=manifest,
+            inputs=_predicted(task, would_run, versions, unfetched),
         )
-        name = _name(key)
-        if reason is None:
-            report.skipped.append(name)
-        else:
-            stale.add(key)
-            report.planned[name] = str(reason)
+        if verdict.calls_for_a_remake(refresh=refresh):
+            would_run.add(key)
+        classified.append((key, verdict, manifest))
+
     if unfetched:
         report.warnings.append(
             "reported as out of date because their content is not in this "
             f"clone, not because they changed: {', '.join(sorted(unfetched))}. "
             "Fetch with `git annex get <path>`."
         )
-    return report
+    return classified
 
 
 def _predicted(
-    task: Task, stale: set[Key], versions: assets.Versions, unfetched: set[str]
+    task: Task, would_run: set[Key], versions: assets.Versions, unfetched: set[str]
 ) -> dict[str, str | None]:
     """Each input's version as check mode can know it.
 
     Args:
         task: The output being classified.
-        stale: Task keys already decided to be rebuilt.
+        would_run: Task keys already decided to be remade.
         versions: The run's content-hash memo.
         unfetched: Collects declared inputs whose content is not local, so
             the report can say why they read as out of date.
@@ -167,7 +215,7 @@ def _predicted(
             # no annex content the files are dangling symlinks, and hashing
             # them would report a different output and cascade a rebuild
             # over a project that is perfectly up to date.
-            manifest = None if upstream in stale else assets.read(path)
+            manifest = None if upstream in would_run else assets.read(path)
             predicted[name] = manifest.data_version if manifest else None
         elif not path.exists():
             predicted[name] = None
@@ -185,21 +233,119 @@ def _predicted(
 
 
 # =============================================================================
+# Status — what the project holds, and where each of it came from
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class OutputStatus:
+    """One output: what it is now, and the commit it came from."""
+
+    #: ``universe/output_id``.
+    output: str
+    status: assets.Status
+    #: Why, for ``stale`` and ``behind``. Empty for ``current``.
+    why: str
+    #: The commit the output was materialized at, or empty if it never was.
+    #: This is the whole point of the verb: an artifact that is behind is
+    #: not wrong, and this is where the code and environment that produced
+    #: it can be read back.
+    git_sha: str
+    #: Its content identity, or empty if it was never materialized.
+    data_version: str
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the record as JSON-ready data.
+
+        Returns:
+            Every field, in declaration order.
+        """
+        return asdict(self)
+
+
+@dataclass
+class StatusReport:
+    """Every output the spec declares, in dependency order."""
+
+    outputs: list[OutputStatus] = field(default_factory=list)
+    #: The lock scan's prose, and inputs this clone has not fetched.
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def counts(self) -> dict[str, int]:
+        """How many outputs are in each state, states with none included."""
+        tally = {"current": 0, "behind": 0, "stale": 0}
+        for output in self.outputs:
+            tally[output.status] += 1
+        return tally
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the report as JSON-ready data.
+
+        Returns:
+            The counts, then every output, then the warnings.
+        """
+        return {
+            "counts": self.counts,
+            "outputs": [output.as_dict() for output in self.outputs],
+            "warnings": self.warnings,
+        }
+
+
+def status(root: Path) -> StatusReport:
+    """Report what state every declared output is in.
+
+    Reads manifests and hashes declared inputs; runs nothing, commits
+    nothing, and does not care whether the tree is clean. Classified with
+    ``refresh=False``, because this says what the project *is* rather than
+    what some run would do to it.
+
+    Args:
+        root: The project root.
+
+    Returns:
+        One record per declared output, upstream first.
+
+    Raises:
+        ProjectError: If the spec, the universes or the lock cannot be
+            read.
+    """
+    report = MaterializeReport()
+    result = StatusReport()
+    for key, verdict, manifest in _classified(root, [], report, refresh=False):
+        result.outputs.append(
+            OutputStatus(
+                output=_name(key),
+                status=verdict.status,
+                why=verdict.why,
+                git_sha=manifest.git_sha if manifest else "",
+                data_version=manifest.data_version if manifest else "",
+            )
+        )
+    result.warnings = report.warnings
+    return result
+
+
+# =============================================================================
 # Executing
 # =============================================================================
 
 
-def materialize(root: Path, targets: Sequence[str]) -> MaterializeReport:
+def materialize(
+    root: Path, targets: Sequence[str], *, refresh: bool = False
+) -> MaterializeReport:
     """Make everything *targets* names, committing each output as it lands.
 
     Args:
         root: The project root.
         targets: What to make; empty means everything. Asking for an
             output asks for what it is made of.
+        refresh: Also remake outputs that are merely behind — still what
+            the spec asks for, but made under an earlier environment.
 
     Returns:
-        What was made, skipped, failed or blocked, plus the boundary's
-        notes and the lock scan's warnings.
+        What was made, what was current or behind, what failed or was
+        blocked, plus the boundary's notes and the lock scan's warnings.
 
     Raises:
         ProjectError: If a required tool is missing, the tree has
@@ -245,6 +391,7 @@ def materialize(root: Path, targets: Sequence[str]) -> MaterializeReport:
                     env_version,
                     head,
                     versions,
+                    refresh,
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
                 )
@@ -277,8 +424,12 @@ def _consume(
         report.made.append(name)
         return
 
-    if result.status == "skipped":
-        report.skipped.append(name)
+    if result.status == "current":
+        report.current.append(name)
+        return
+
+    if result.status == "behind":
+        report.behind[name] = result.reason
         return
 
     dataset.restore(root, [task.output_dir])
@@ -436,7 +587,7 @@ def _inside(root: Path, path: Path) -> str:
 
 
 def _graph(root: Path, targets: Sequence[str], report: MaterializeReport) -> tuple[Graph, str]:
-    """The tasks a run covers, and the environment they are identified against.
+    """The tasks a run covers, and the environment they will be compared to.
 
     The lock scan runs here, once, for both modes: what it refuses is a
     dependency whose bytes the lock does not pin, which makes every hash
@@ -462,7 +613,7 @@ def _graph(root: Path, targets: Sequence[str], report: MaterializeReport) -> tup
         )
 
     env_version = identity.env_version(root)
-    graph = plan.build(root, env_version=env_version)
+    graph = plan.build(root)
     if targets:
         graph = graph.closure(graph.resolve(list(targets)))
     return graph, env_version

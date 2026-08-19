@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "astra-tools==0.2.15",
+    "astra-tools==0.2.16",
     "click>=8.0",
     "rich>=13.0",
     "git-annex>=10.2026",

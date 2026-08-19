@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from lightcone.engine import assets, dataset
+from lightcone.engine import assets, dataset, identity
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 from lightcone.engine.worker import TaskResult
@@ -143,9 +143,158 @@ def test_a_second_run_does_nothing_and_commits_nothing(root: Path, inline: None)
     report = engine.materialize(root, [])
 
     assert report.made == []
-    assert report.skipped == ["baseline/first", "baseline/second"]
+    assert report.current == ["baseline/first", "baseline/second"]
     assert report.up_to_date
     assert _commits(root) == after_first
+
+
+# ---- behind: the environment moved, the analysis did not -------------------
+
+
+def _move_the_environment(root: Path) -> None:
+    """Change `env_version` for real, and commit it.
+
+    An install setting is hashed into the environment's identity but is not
+    in the lock, so `uv.lock` still matches `pyproject.toml` and both the
+    driver's `uv sync --locked` and the workers' `uv run --locked` go
+    through — which is what lets this test the classification rather than
+    an incidental uv refusal.
+    """
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text() + "\n[tool.uv]\nno-binary = true\n")
+    dataset.save(root, [root], "an environment edit")
+
+
+def test_a_moved_environment_is_reported_and_nothing_is_remade(
+    root: Path, inline: None
+) -> None:
+    """The change the layer turns on. A rewritten environment says nothing
+    about whether a result is still right, and remaking one can cost hours,
+    so it is reported and left where it is."""
+    engine.materialize(root, [])
+    after_first = _commits(root)
+    first = (root / "results/baseline/first/value.txt").read_text()
+    _move_the_environment(root)
+
+    report = engine.materialize(root, [])
+
+    assert report.made == []
+    assert set(report.behind) == {"baseline/first", "baseline/second"}
+    assert "earlier environment" in report.behind["baseline/first"]
+    assert report.up_to_date, "behind is not out of date"
+    assert _commits(root) == after_first + 1, "only the environment edit"
+    assert (root / "results/baseline/first/value.txt").read_text() == first
+
+
+def test_refresh_remakes_what_is_behind_and_commits_it(root: Path, inline: None) -> None:
+    """The other half: the report is not the only thing on offer, and asking
+    is one flag."""
+    engine.materialize(root, [])
+    _move_the_environment(root)
+    before = _commits(root)
+
+    report = engine.materialize(root, [], refresh=True)
+
+    assert set(report.made) == {"baseline/first", "baseline/second"}
+    assert report.behind == {}
+    assert _commits(root) == before + 2
+    manifest = assets.read(root / "results/baseline/first")
+    assert manifest is not None
+    assert manifest.env_version == identity.env_version(root)
+
+
+def test_check_reports_behind_without_planning_it(root: Path, inline: None) -> None:
+    """`--check` is a gate, and `behind` must not close it — a project of
+    curated results would never pass again."""
+    engine.materialize(root, [])
+    _move_the_environment(root)
+
+    report = engine.check(root, [])
+
+    assert report.planned == {}
+    assert set(report.behind) == {"baseline/first", "baseline/second"}
+    assert report.up_to_date
+
+
+def test_check_with_refresh_plans_what_is_behind(root: Path, inline: None) -> None:
+    engine.materialize(root, [])
+    _move_the_environment(root)
+
+    report = engine.check(root, [], refresh=True)
+
+    assert set(report.planned) == {"baseline/first", "baseline/second"}
+    assert report.behind == {}
+    assert not report.up_to_date
+
+
+def test_a_stale_output_is_stale_even_when_the_environment_also_moved(
+    root: Path, inline: None
+) -> None:
+    """Both moved, and only one of them calls for work. Reporting `behind`
+    here would say "left alone" about something the next run will remake."""
+    engine.materialize(root, [])
+    _move_the_environment(root)
+    (root / "universes" / "baseline.yaml").write_text(
+        "id: baseline\ndecisions:\n  method: beta\n"
+    )
+    dataset.save(root, [root], "switch method")
+
+    report = engine.check(root, [])
+
+    assert "the recipe or its decisions" in report.planned["baseline/first"]
+    assert "baseline/first" not in report.behind
+
+
+# ---- lc status -------------------------------------------------------------
+
+
+def test_status_names_the_commit_each_output_came_from(root: Path, inline: None) -> None:
+    """The verb's whole reason to exist: an output that is behind is not
+    wrong, and this is where the code that produced it can be read back."""
+    ran_against = dataset.head(root)[0]
+    engine.materialize(root, [])
+
+    report = engine.status(root)
+
+    assert [o.output for o in report.outputs] == ["baseline/first", "baseline/second"]
+    assert all(o.status == "current" for o in report.outputs)
+    # The commit the tree was at when the run *started* — the code that
+    # produced the output, not the commit the run itself went on to make.
+    assert all(o.git_sha == ran_against for o in report.outputs)
+    assert report.counts == {"current": 2, "behind": 0, "stale": 0}
+
+
+def test_status_reports_behind_after_the_environment_moves(
+    root: Path, inline: None
+) -> None:
+    made_at = dataset.head(root)[0]
+    engine.materialize(root, [])
+    _move_the_environment(root)
+
+    report = engine.status(root)
+
+    assert report.counts == {"current": 0, "behind": 2, "stale": 0}
+    assert all(o.git_sha == made_at for o in report.outputs), "the commit it was made at"
+    assert "earlier environment" in report.outputs[0].why
+
+
+def test_status_leaves_a_never_materialized_output_without_a_commit(root: Path) -> None:
+    """There is nothing to name — and an empty string rather than HEAD,
+    which would claim the output came from a commit that never made it."""
+    report = engine.status(root)
+
+    assert report.counts == {"current": 0, "behind": 0, "stale": 2}
+    assert all(o.git_sha == "" and o.data_version == "" for o in report.outputs)
+    assert "never been materialized" in report.outputs[0].why
+
+
+def test_status_does_not_mind_a_dirty_tree(root: Path, inline: None) -> None:
+    """It reads. Refusing here would make the one verb that tells you what
+    state you are in unavailable exactly when you need it."""
+    engine.materialize(root, [])
+    (root / "results/baseline/first/value.txt").write_text("edited by hand\n")
+
+    assert engine.status(root).counts["current"] == 2
 
 
 def test_asking_for_an_output_makes_what_it_is_made_of(root: Path, inline: None) -> None:
@@ -216,7 +365,7 @@ def test_check_cascades_through_an_output_it_already_decided_to_rebuild(
 
     report = engine.check(root, [])
 
-    assert "the recipe, its decisions, or the environment" in report.planned["baseline/first"]
+    assert "the recipe or its decisions" in report.planned["baseline/first"]
     assert report.planned["baseline/second"] == "the input `first` changed"
 
 

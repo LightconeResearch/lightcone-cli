@@ -1,11 +1,18 @@
 """Tests for `lightcone.engine.assets` — an output's bytes, record, and
 whether it is still current.
 
-The staleness table is the important part of this file. It is driven the
-way both callers drive it — the worker with live content identities, and
-`--check` with `None` for anything it has already decided will be rebuilt
-— because the entire justification for one predicate is that those two
+The classification table is the important part of this file. It is driven
+the way both callers drive it — the worker with live content identities,
+and `--check` with `None` for anything it has already decided will be
+remade — because the entire justification for one rule is that those two
 cannot disagree.
+
+The `stale` / `behind` split is the other half. `stale` means the artifact
+contradicts the project and must be remade; `behind` means it is still
+exactly what the analysis asks for and only the environment moved. Getting
+that line wrong in either direction is expensive: one way spends compute
+nobody asked for, the other way leaves a result quietly describing an
+environment that no longer exists.
 """
 
 from __future__ import annotations
@@ -16,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from lightcone.engine import assets
-from lightcone.engine.assets import Manifest, Reason, data_version, output_dir, staleness
+from lightcone.engine.assets import Manifest, classify, data_version, output_dir
 from lightcone.engine.project import ProjectError
 
 
@@ -25,7 +32,7 @@ def _manifest(**overrides: object) -> Manifest:
         "output_id": "best_fit",
         "universe_id": "baseline",
         "recipe": "python src/fit.py {output}",
-        "code_version": "sha256:code",
+        "definition_version": "sha256:code",
         "env_version": "sha256:env",
         "data_version": "sha256:data",
         "decisions": {"method": "mcmc"},
@@ -262,87 +269,123 @@ def test_writing_a_manifest_replaces_the_previous_one_whole(tmp_path: Path) -> N
     assert not list(tmp_path.glob("*.tmp"))
 
 
-# ---- staleness -------------------------------------------------------------
+# ---- classification --------------------------------------------------------
+#
+# Every case names the environment it is classified against, because that
+# argument is what decides `behind`, and a default would hide it.
+
+_ENV = "sha256:env"
+
+
+def _classify(**overrides: object) -> assets.Verdict:
+    """Classify against the manifest `_manifest()` builds, unchanged."""
+    call: dict[str, object] = {
+        "definition_version": "sha256:code",
+        "env_version": _ENV,
+        "manifest": _manifest(),
+        "inputs": {"catalog": "sha256:cat"},
+    }
+    return classify(**{**call, **overrides})  # type: ignore[arg-type]
 
 
 def test_a_never_materialized_output_is_stale() -> None:
-    assert staleness(code_version="sha256:code", manifest=None, inputs={}) == Reason("missing")
+    verdict = _classify(manifest=None, inputs={})
+    assert verdict.status == "stale"
+    assert verdict.calls_for_a_remake(refresh=False)
+    assert "never been materialized" in verdict.why
 
 
-def test_an_unchanged_output_is_not_stale() -> None:
-    assert (
-        staleness(
-            code_version="sha256:code",
-            manifest=_manifest(),
-            inputs={"catalog": "sha256:cat"},
-        )
-        is None
-    )
+def test_an_unchanged_output_is_current() -> None:
+    verdict = _classify()
+    assert verdict.status == "current"
+    assert not verdict.calls_for_a_remake(refresh=False)
+    assert verdict.why == ""
 
 
-def test_drifted_code_is_stale() -> None:
-    """One reason covers recipe, decisions, and environment, because
-    `code_version` is what all three feed."""
-    assert staleness(
-        code_version="sha256:other", manifest=_manifest(), inputs={"catalog": "sha256:cat"}
-    ) == Reason("code")
+def test_a_drifted_definition_is_stale() -> None:
+    """One reason covers the recipe and the decisions, because
+    `definition_version` is what both feed."""
+    verdict = _classify(definition_version="sha256:other")
+    assert verdict.status == "stale"
+    assert "recipe or its decisions" in verdict.why
 
 
 def test_a_drifted_input_is_stale_and_says_which() -> None:
-    assert staleness(
-        code_version="sha256:code", manifest=_manifest(), inputs={"catalog": "sha256:new"}
-    ) == Reason("input", "catalog")
+    verdict = _classify(inputs={"catalog": "sha256:new"})
+    assert verdict.status == "stale"
+    assert "`catalog`" in verdict.why
 
 
 def test_a_newly_declared_input_is_stale() -> None:
     """The manifest has no version recorded for it, so the sets differ."""
-    assert staleness(
-        code_version="sha256:code",
-        manifest=_manifest(),
-        inputs={"catalog": "sha256:cat", "mask": "sha256:mask"},
-    ) == Reason("declaration", "mask")
+    verdict = _classify(inputs={"catalog": "sha256:cat", "mask": "sha256:mask"})
+    assert verdict.status == "stale"
+    assert "`mask`" in verdict.why
 
 
 def test_an_input_the_output_no_longer_declares_is_stale() -> None:
-    """`code_version` hashes the recipe, the decisions and the environment —
-    none of which a dropped input moves — so nothing else would catch it and
-    the output would stay "up to date" with a dependency set that changed."""
-    assert staleness(
-        code_version="sha256:code", manifest=_manifest(), inputs={}
-    ) == Reason("declaration", "catalog")
+    """`definition_version` hashes the recipe and the decisions — neither of
+    which a dropped input moves — so nothing else would catch it and the
+    output would stay current with a dependency set that changed."""
+    verdict = _classify(inputs={})
+    assert verdict.status == "stale"
+    assert "`catalog`" in verdict.why
 
 
-def test_an_input_that_will_be_rebuilt_is_stale() -> None:
+def test_an_input_that_will_be_remade_is_stale() -> None:
     """`--check`'s sentinel. It cannot know whether a rebuild comes out
     byte-identical, so `None` means "this is going to change" — deliberate
     over-approximation, and the only difference between the two callers."""
-    assert staleness(
-        code_version="sha256:code", manifest=_manifest(), inputs={"catalog": None}
-    ) == Reason("input", "catalog")
+    assert _classify(inputs={"catalog": None}).status == "stale"
 
 
-def test_the_sentinel_and_a_real_drift_give_the_same_reason() -> None:
-    """The property that justifies one predicate with two callers: for the
-    same state they agree, and `--check` differs from the worker only in
-    what it is able to know."""
-    checked = staleness(
-        code_version="sha256:code", manifest=_manifest(), inputs={"catalog": None}
+def test_the_sentinel_and_a_real_drift_give_the_same_verdict() -> None:
+    """The property that justifies one rule with two callers: for the same
+    state they agree, and `--check` differs from the worker only in what it
+    is able to know."""
+    assert _classify(inputs={"catalog": None}) == _classify(
+        inputs={"catalog": "sha256:rebuilt"}
     )
-    executed = staleness(
-        code_version="sha256:code", manifest=_manifest(), inputs={"catalog": "sha256:rebuilt"}
-    )
-    assert checked == executed
 
 
 def test_a_byte_identical_rebuild_stops_the_cascade() -> None:
     """What content hashing buys, and what the sentinel deliberately gives
     up: the worker sees the upstream came out the same and does not rerun,
     where `--check` had to assume it would."""
-    assert (
-        staleness(
-            code_version="sha256:code",
-            manifest=_manifest(),
-            inputs={"catalog": "sha256:cat"},
-        )
-        is None
-    )
+    assert _classify(inputs={"catalog": "sha256:cat"}).status == "current"
+
+
+# ---- behind, which is the whole point of the split -------------------------
+
+
+def test_a_moved_environment_is_behind_and_not_stale() -> None:
+    """The headline. One added dependency rewrites `uv.lock` for the whole
+    project, and folding that into the rebuild trigger is what made a
+    week-old result disappear over a plotting library."""
+    verdict = _classify(env_version="sha256:moved")
+    assert verdict.status == "behind"
+    assert not verdict.calls_for_a_remake(refresh=False)
+
+
+def test_the_reason_says_what_happened_and_not_where() -> None:
+    """The commit an output came from is a field of its manifest, not a
+    phrase in a sentence — a caller with a column for it reads the record.
+    Interpolating it here would also have to handle a repository with no
+    commit yet, which records an empty sha."""
+    verdict = _classify(env_version="sha256:moved")
+    assert verdict.why == "made under an earlier environment"
+
+
+def test_stale_wins_over_behind() -> None:
+    """Both moved. The artifact has to be remade either way, so the reason
+    reported is the one that calls for the work — a `behind` verdict here
+    would say "left alone" about something about to run."""
+    verdict = _classify(definition_version="sha256:other", env_version="sha256:moved")
+    assert verdict.status == "stale"
+    assert verdict.calls_for_a_remake(refresh=False)
+
+
+def test_an_environment_that_did_not_move_is_not_behind() -> None:
+    """The negative half of the sensitivity pair: `behind` has to be off by
+    default, or every output reports it forever and the signal is dead."""
+    assert _classify(env_version=_ENV).status == "current"

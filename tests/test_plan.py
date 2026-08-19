@@ -64,7 +64,7 @@ def _project(root: Path, spec: str = _SPEC, **universes: str) -> Path:
 
 
 def _build(root: Path) -> Graph:
-    return plan.build(root, env_version="sha256:env")
+    return plan.build(root)
 
 
 # ---- what the graph contains -----------------------------------------------
@@ -88,7 +88,7 @@ def test_every_universe_gets_its_own_task(tmp_path: Path) -> None:
     assert {u for u, _ in graph.tasks} == {"baseline", "alternative"}
 
 
-def test_a_decision_that_differs_gives_a_different_code_version(tmp_path: Path) -> None:
+def test_a_decision_that_differs_gives_a_different_definition_version(tmp_path: Path) -> None:
     """The whole point of a universe: the same output, made differently, is
     a different thing."""
     graph = _build(
@@ -99,18 +99,18 @@ def test_a_decision_that_differs_gives_a_different_code_version(tmp_path: Path) 
         )
     )
     assert (
-        graph.tasks[("baseline", "fit")].code_version
-        != graph.tasks[("alternative", "fit")].code_version
+        graph.tasks[("baseline", "fit")].definition_version
+        != graph.tasks[("alternative", "fit")].definition_version
     )
 
 
 def test_an_output_that_ignores_a_decision_is_not_moved_by_it(tmp_path: Path) -> None:
-    """`code_version` hashes the decisions the output *declares*, so an
+    """`definition_version` hashes the decisions the output *declares*, so an
     unrelated choice does not stale it."""
     a = _build(_project(tmp_path, baseline="id: baseline\ndecisions:\n  method: mcmc\n"))
     b = _build(_project(tmp_path, baseline="id: baseline\ndecisions:\n  method: nested\n"))
     key = ("baseline", "report")
-    assert a.tasks[key].code_version == b.tasks[key].code_version
+    assert a.tasks[key].definition_version == b.tasks[key].definition_version
 
 
 def test_an_output_addresses_its_own_directory(tmp_path: Path) -> None:

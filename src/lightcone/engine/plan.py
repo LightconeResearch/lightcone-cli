@@ -4,7 +4,7 @@
 ``(universe, output)`` pair that has a recipe. A task carries everything
 executing it needs and nothing about *how* it will be executed: the
 rendered command, where its bytes go, what it reads, which decisions it
-was made under, and its ``code_version``.
+was made under, and its ``definition_version``.
 
 What the spec *means* is ASTRA's to say. ``astra.resolve`` settles each
 universe's decisions, resolves every output's inputs to what supplies
@@ -47,7 +47,7 @@ class Task:
     #: The subset of ``inputs`` another task produces, and which one.
     produced_by: dict[str, Key]
     decisions: dict[str, str]
-    code_version: str
+    definition_version: str
 
     @property
     def key(self) -> Key:
@@ -139,13 +139,11 @@ class Graph:
 # =============================================================================
 
 
-def build(root: Path, *, env_version: str) -> Graph:
+def build(root: Path) -> Graph:
     """Read a project's spec and universes into a graph of tasks.
 
     Args:
         root: The project root.
-        env_version: The run's environment identity. Passed in rather than
-            computed here, so a graph cannot straddle an edit.
 
     Returns:
         One task per ``(universe, output)`` pair that has a recipe and is
@@ -175,7 +173,7 @@ def build(root: Path, *, env_version: str) -> Graph:
     for path in universes:
         universe = load_yaml(path)
         universe_id = str(universe.get("id") or path.stem)
-        for task in _tasks(root, universe_id, spec, universe, env_version):
+        for task in _tasks(root, universe_id, spec, universe):
             tasks[task.key] = task
     return Graph(tasks=tasks)
 
@@ -223,7 +221,6 @@ def _tasks(
     universe_id: str,
     spec: dict[str, object],
     universe: dict[str, object],
-    env_version: str,
 ) -> list[Task]:
     """Every task one universe contributes.
 
@@ -282,8 +279,8 @@ def _tasks(
                 inputs=paths,
                 produced_by=produced_by,
                 decisions=out.decisions,
-                code_version=identity.code_version(
-                    recipe=recipe, decisions=out.decisions, env=env_version
+                definition_version=identity.definition_version(
+                    recipe=recipe, decisions=out.decisions
                 ),
             )
         )
