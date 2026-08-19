@@ -164,58 +164,33 @@ _HOME_LAYOUT = {
 }
 
 
-def probe_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
-    """The policy for ``lc run``.
+def exec_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
+    """What a sandboxed command may touch — one policy, every caller.
 
     The tree is read-only except for ``results/``, which is where output
-    goes. That keeps the environment itself — ``.venv``, ``uv.lock``,
-    the spec — exactly as the lock describes it for the whole run, and
-    it is the same scope a recipe gets, so a probe that works means a
-    recipe will.
+    goes. That keeps the environment itself — ``.venv``, ``uv.lock``, the
+    spec — exactly as the lock describes it for the whole run, and it is
+    what makes ``lc run`` a real rehearsal: a probe and a recipe get the
+    *same* scope, so a command that works under one works under the other,
+    with nothing to reason about in between.
 
-    A probe has no output of its own, so it gets the whole of ``results/``
-    where a recipe gets one directory — the widest write scope any recipe
-    could be given, which is what makes "if a probe works, the recipe
-    will" true rather than nearly true.
+    A recipe is deliberately **not** narrowed to its own output directory.
+    That would be a second answer to "are these bytes what produced them",
+    and the manifest's ``data_version`` is the first — content-addressed,
+    checked by ``lc verify``, and the only one that survives a rebuild on
+    another machine. Two mechanisms for one guarantee is one more than can
+    be kept honest. (The residue, stated: a cross-write that lands *before*
+    the victim hashes leaves a manifest that is self-consistent and wrong,
+    which no checksum can see. It needs concurrent tasks and a hardcoded
+    sibling path; the threat model here is accidental leakage, not a
+    hostile recipe.)
 
     ``results/`` is granted only if it is already there. Convergence
-    creates it, and a policy that made directories would be a side
-    effect nobody asked a *probe* for.
+    creates it, and a policy that made directories would be a side effect
+    nobody asked for — a policy describes, it does not prepare.
 
     Creates the per-run HOME on disk as a side effect; the caller owns
     removing it (see :func:`~lightcone.engine.sandbox.boundary.scope`).
-    """
-    return _policy(project, read_paths=read_paths, write_paths=[project / "results"])
-
-
-def recipe_policy(project: Path, output_dir: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
-    """The policy one recipe runs under: narrower on writes than a probe's.
-
-    A recipe owns exactly one directory — the output it was asked to
-    make. Nothing else in ``results/`` is writable, which is what stops a
-    recipe from reaching into a sibling output, rewriting a manifest, or
-    touching the annex's object store; and *read* stays the whole project,
-    because committed sibling bytes are legitimately readable and a read
-    carve-out is something Landlock cannot express at all.
-
-    *output_dir* must already exist — a policy is a description of what
-    may be touched, and one that could not be built without mutating the
-    filesystem would be the same kind of impurity ``wrap`` is pinned
-    against. The worker resets the directory before it asks for a policy,
-    so the whole of an output's lifecycle stays in the module that owns it.
-    """
-    return _policy(project, read_paths=read_paths, write_paths=[output_dir])
-
-
-def _policy(
-    project: Path, *, read_paths: Sequence[Path], write_paths: Sequence[Path]
-) -> Policy:
-    """The shared shape: one write scope in the tree, everything else fixed.
-
-    Every difference between a probe and a recipe is in *write_paths* and
-    *read_paths*. The rest — the private HOME, the OS read baseline, the
-    exec set, the environment overlay — is the same policy for both, in
-    one place, so the two cannot drift into enforcing different things.
     """
     tmp_home = Path(tempfile.mkdtemp(prefix="lc-home-")).resolve()
     for sub in _HOME_LAYOUT.values():
@@ -225,7 +200,7 @@ def _policy(
     # EXECUTE on the interpreter *file*; READ on the install root beside
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
-    write = _existing([tmp_home, *write_paths, *_write_roots(project)])
+    write = _existing([tmp_home, project / "results", *_write_roots(project)])
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
     return Policy(
@@ -291,7 +266,7 @@ def _venv_python(project: Path) -> Path | None:
     Resolved, because ``.venv/bin/python`` is a symlink and Landlock
     evaluates the target. What gets granted on it is
     :func:`_exec_set`'s decision, and its install root is separately a
-    read root (:func:`probe_policy`) for the standard library beside it.
+    read root (:func:`exec_policy`) for the standard library beside it.
     """
     python = project / ".venv" / "bin" / "python"
     return python.resolve() if python.exists() else None

@@ -672,22 +672,32 @@ So the suite asserts through datalad's parser *and* runs a real
 imports it.
 
 **A policy is a description, and `scope()` owns every policy's lifetime.**
-`recipe_policy` does not create the output directory — the worker resets
-it, so the whole of an output's lifecycle stays in the module that owns
-it, and a policy that could not be built without touching the filesystem
-would be the impurity `wrap` is already pinned against. `sandbox.scope`
-takes a *built* policy rather than building a probe's, so the `rmtree` of
-the private `$HOME` has one owner for probes and recipes alike.
+`exec_policy` creates no directory — the worker resets the output
+directory, so the whole of an output's lifecycle stays in the module that
+owns it, and a policy that could not be built without touching the
+filesystem would be the impurity `wrap` is already pinned against.
+`sandbox.scope` takes a *built* policy, so the `rmtree` of the private
+`$HOME` has one owner.
 
-**`recipe_policy` narrows a probe's scope on writes, and only on writes.**
-A probe gets all of `results/`; a recipe gets its own output directory and
-nothing else, which is what stops it reaching into a sibling output, a
-manifest, or the annex's object store. Read stays the whole project —
-committed sibling bytes are legitimately readable, and a read carve-out is
-something Landlock cannot express at all. Both share `_policy`, so the
-private HOME, the OS baseline, the exec set and the environment overlay
-cannot drift apart. Layer 5's promise holds in the direction that matters:
-if a probe works, the recipe will.
+**There is one policy, `exec_policy`, and a recipe gets exactly what a
+probe gets.** The tree is read-only apart from `results/`, for both. So
+layer 5's promise is not "in the direction that matters" — it is simply
+true: a command that works under `lc run` works as a recipe, with nothing
+in between to reason about.
+
+A recipe is deliberately **not** narrowed to its own output directory.
+That would be a second answer to "are these bytes what produced them",
+and the manifest's `data_version` is the first — content-addressed,
+checked by `lc verify`, and the only one that survives a rebuild on
+another machine. Two mechanisms for one guarantee is one more than can be
+kept honest, and the sandbox's is the one that cannot travel.
+
+The residue, recorded rather than argued away: a cross-write that lands
+*before* the victim task hashes leaves a manifest that is self-consistent
+and wrong, which no checksum can see. It needs concurrent tasks and a
+hardcoded sibling path, and the threat model here is accidental leakage
+rather than a hostile recipe — but `lc verify` will not catch that one, so
+do not describe it as covered.
 
 **`cluster_for_run()` is the seam, and it is two methods wide.**
 `submit(fn, *args, key=…)` and `completed(handles)`. That is all the
@@ -1122,8 +1132,9 @@ layer works. Four properties, each of which it would be easy to lose:
    *a leak only Linux catches is a leak*. macOS is in the CI matrix for
    exactly this: it is the sole place the generated SBPL is ever
    executed.
-2. **The real policy.** It runs against `probe_policy` — what an actual
-   `lc run` gets — never a policy hand-built to make the point. A test
+2. **The real policy.** It runs against `exec_policy` — what an actual
+   `lc run` *and* an actual recipe get — never a policy hand-built to
+   make the point. A test
    that grants exactly what it is testing cannot discover that the
    *shipped* policy grants something else. (This is how `/usr` sat in the
    exec set through a full green suite.)

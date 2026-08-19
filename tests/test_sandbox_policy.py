@@ -29,7 +29,7 @@ def built(tmp_path: Path) -> Iterator[policy_module.Policy]:
     """
     project = tmp_path / "proj"
     project.mkdir()
-    with scope(policy_module.probe_policy(project)) as built:
+    with scope(policy_module.exec_policy(project)) as built:
         yield built
 
 
@@ -56,7 +56,7 @@ def test_results_is_writable(tmp_path: Path) -> None:
     podman mounts `results` `:rw` over a `:ro` project."""
     project = tmp_path / "proj"
     (project / "results").mkdir(parents=True)
-    with scope(policy_module.probe_policy(project)) as built:
+    with scope(policy_module.exec_policy(project)) as built:
         assert built.grants(project / "results" / "out.csv", built.write)
 
 
@@ -65,7 +65,7 @@ def test_results_is_granted_only_if_it_exists(tmp_path: Path) -> None:
     side effect nobody asked a probe for."""
     project = tmp_path / "bare"
     project.mkdir()
-    with scope(policy_module.probe_policy(project)) as built:
+    with scope(policy_module.exec_policy(project)) as built:
         assert not built.grants(project / "results", built.write)
         assert not (project / "results").exists()
 
@@ -88,7 +88,7 @@ def test_the_shared_tmp_is_writable_for_a_project_outside_it() -> None:
     """`/tmp` specifically, not `gettempdir()`: on macOS the latter is the
     per-user `$TMPDIR` under /var/folders, a different directory that is
     not in the baseline at all."""
-    with scope(policy_module.probe_policy(Path.home() / ".lc-policy-test-project")) as built:
+    with scope(policy_module.exec_policy(Path.home() / ".lc-policy-test-project")) as built:
         assert Path("/tmp").resolve() in built.write
 
 
@@ -97,7 +97,7 @@ def test_a_project_living_under_tmp_does_not_become_writable() -> None:
     otherwise be writable through that grant — voiding the read-only tree
     for exactly the people who keep scratch analyses in /tmp."""
     shared = Path("/tmp").resolve()
-    with scope(policy_module.probe_policy(shared / "lc-policy-under-tmp")) as built:
+    with scope(policy_module.exec_policy(shared / "lc-policy-under-tmp")) as built:
         assert shared not in built.write
 
 
@@ -122,7 +122,7 @@ def test_declared_inputs_join_the_read_scope(tmp_path: Path) -> None:
     external.parent.mkdir()
     external.touch()
 
-    with scope(policy_module.probe_policy(project, read_paths=[external])) as built:
+    with scope(policy_module.exec_policy(project, read_paths=[external])) as built:
         assert external.resolve() in built.read
 
 
@@ -238,7 +238,7 @@ def test_the_allowlist_is_resolved_off_the_ambient_path(
 
     project = tmp_path / "proj2"
     project.mkdir()
-    with scope(policy_module.probe_policy(project)) as rebuilt:
+    with scope(policy_module.exec_policy(project)) as rebuilt:
         assert impostor.resolve() not in rebuilt.execute
 
 
@@ -266,7 +266,7 @@ def test_the_env_the_seam_execs_is_one_the_policy_granted(
 
     project = tmp_path / "proj"
     project.mkdir()
-    with scope(policy_module.probe_policy(project)) as built:
+    with scope(policy_module.exec_policy(project)) as built:
         spawned = Path(env_argv(built)[0])
         assert spawned == elsewhere / "env"
         assert built.grants(spawned, built.execute)
@@ -296,7 +296,7 @@ def test_the_venv_and_the_interpreter_behind_it_are_granted(tmp_path: Path) -> N
     real.chmod(0o755)
     (bin_dir / "python").symlink_to(real)
 
-    with scope(policy_module.probe_policy(project)) as built:
+    with scope(policy_module.exec_policy(project)) as built:
         install_root = store.parent.resolve()
         # The *directory* is deliberately not granted: the tree is
         # writable, so that would be an exec grant on whatever is written
@@ -325,7 +325,7 @@ def test_the_venv_bin_is_granted_per_file_not_as_a_directory(tmp_path: Path) -> 
     script.write_text("#!/bin/sh\n")
     script.chmod(0o755)
 
-    with scope(policy_module.probe_policy(project)) as built:
+    with scope(policy_module.exec_policy(project)) as built:
         assert script.resolve() in built.execute, "a console script that exists is granted"
         assert bin_dir.resolve() not in built.execute, "but never the directory"
         # What a run writes there afterwards is therefore not runnable.
@@ -352,7 +352,7 @@ def test_a_system_interpreter_does_not_make_the_whole_prefix_executable(
         pytest.skip("no system python3")
     (bin_dir / "python").symlink_to(system)
 
-    with scope(policy_module.probe_policy(project)) as built:
+    with scope(policy_module.exec_policy(project)) as built:
         assert Path("/usr") not in built.execute
         assert Path("/usr") in built.read
         assert system.resolve() in built.execute
@@ -378,7 +378,7 @@ def test_an_interpreter_in_home_does_not_make_home_readable(
     (project / ".venv" / "bin").mkdir(parents=True)
     (project / ".venv" / "bin" / "python").symlink_to(interpreter)
 
-    with scope(policy_module.probe_policy(project)) as built:
+    with scope(policy_module.exec_policy(project)) as built:
         assert not built.grants(home, built.read), built.read
         # The interpreter file itself is still runnable.
         assert built.grants(interpreter, built.execute)

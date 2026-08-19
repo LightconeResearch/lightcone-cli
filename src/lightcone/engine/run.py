@@ -33,7 +33,7 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
     require_uv()
     spec = read_spec(project)
 
-    built = sandbox.probe_policy(project, read_paths=input_paths(project, spec))
+    built = sandbox.exec_policy(project, read_paths=input_paths(project, spec))
     with sandbox.scope(built) as policy:
         return sandbox.run(
             sandbox.detect(),

@@ -10,7 +10,7 @@ That symmetry is the point. A leak that only Linux catches is a leak.
 Two deliberate choices:
 
 - **The real policy.** These run against
-  :func:`~lightcone.engine.sandbox.policy.probe_policy` — what an actual
+  :func:`~lightcone.engine.sandbox.policy.exec_policy` — what an actual
   ``lc run`` gets — not a policy hand-built to make a point. A test that
   grants exactly what it is testing cannot discover that the shipped
   policy grants something else.
@@ -152,7 +152,7 @@ def test_the_expected_mechanism_is_in_use(backend: sandbox.Backend) -> None:
 def test_a_sandboxed_run_attests_a_scoped_filesystem(
     backend: sandbox.Backend, project: Path
 ) -> None:
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         attestation = backend.attest(policy)
     assert attestation.fs == "declared"
     assert attestation.mechanism == backend.capability.kind
@@ -167,7 +167,7 @@ def test_an_undeclared_host_tool_cannot_be_executed(
     """The #1 leakage channel: a recipe that works only because the
     author happens to have some tool installed."""
     tool = undeclared_tool()
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(backend, policy, f"{tool} --version", cwd=project)
     assert result.returncode != 0, f"{tool} ran inside the sandbox"
 
@@ -179,7 +179,7 @@ def test_an_undeclared_tool_is_readable_but_still_not_executable(
     readable so the dynamic linker works, which means an undeclared tool
     can be *seen* — running it is the leak, and only that is denied."""
     tool = undeclared_tool()
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         seen = shell(backend, policy, f"test -r {tool} && echo READABLE", cwd=project)
         ran = shell(backend, policy, f"{tool} --version", cwd=project)
     assert "READABLE" in seen.stdout
@@ -191,7 +191,7 @@ def test_an_allowlisted_utility_is_executable(
 ) -> None:
     """The other half: the allowlist has to actually work, or every
     recipe that pipes through sed breaks."""
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(backend, policy, "printf 'b\\na\\n' | sort | head -1", cwd=project)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "a"
@@ -203,7 +203,7 @@ def test_a_dynamically_linked_binary_runs_at_all(
     """Proves the loader tier — the ELF interpreter on Linux, dyld on
     macOS. Without it *nothing* dynamically linked starts, bash included,
     and every other test here would fail for the wrong reason."""
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(backend, policy, "echo LOADER-OK", cwd=project)
     assert result.returncode == 0, result.stderr
     assert "LOADER-OK" in result.stdout
@@ -215,7 +215,7 @@ def test_a_binary_dropped_into_the_writable_scope_cannot_be_run(
     """Write does not imply execute. Otherwise the allowlist is two lines
     from being defeated: copy a tool into scratch, run it from there."""
     tool = undeclared_tool()
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         smuggled = policy.tmp_home / "smuggled"
         result = shell(
             backend,
@@ -229,7 +229,7 @@ def test_a_binary_dropped_into_the_writable_scope_cannot_be_run(
 def test_the_projects_own_interpreter_runs_and_finds_its_stdlib(
     backend: sandbox.Backend, project: Path
 ) -> None:
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(
             backend, policy, f"{project}/.venv/bin/python -c 'import json; print(json.dumps(1))'",
             cwd=project,
@@ -247,7 +247,7 @@ def test_an_undeclared_python_module_cannot_be_imported(
     """Python-level leakage: a module reachable on the host but not part
     of the declared environment. Denied at *read*, so the import fails
     however sys.path was arranged."""
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(
             backend,
             policy,
@@ -267,7 +267,7 @@ def test_a_compiled_extension_module_can_be_imported(
     read grant is enough, while macOS gates `dlopen` on
     `file-map-executable`. If the read tier lost that right, this is the
     test that fails — on macOS only."""
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(
             backend,
             policy,
@@ -288,7 +288,7 @@ def test_an_undeclared_shared_library_cannot_be_loaded(
     smuggled = outside / library.name
     shutil.copy(library, smuggled)
 
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(
             backend,
             policy,
@@ -319,7 +319,7 @@ def _a_compiled_extension() -> Path:
 def test_an_undeclared_data_file_cannot_be_read(
     backend: sandbox.Backend, project: Path, outside: Path
 ) -> None:
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(backend, policy, f"cat {outside / 'secret.txt'}", cwd=project)
     assert result.returncode != 0
     assert "undeclared" not in result.stdout
@@ -331,14 +331,14 @@ def test_a_declared_input_outside_the_project_can_be_read(
     """The same file, declared. This is what makes the denial actionable
     rather than a wall: the remedy the message prints has to work."""
     declared = outside / "secret.txt"
-    with sandbox.scope(sandbox.probe_policy(project, read_paths=[declared])) as policy:
+    with sandbox.scope(sandbox.exec_policy(project, read_paths=[declared])) as policy:
         result = shell(backend, policy, f"cat {declared}", cwd=project)
     assert result.returncode == 0, result.stderr
     assert "undeclared" in result.stdout
 
 
 def test_the_project_tree_is_readable(backend: sandbox.Backend, project: Path) -> None:
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(backend, policy, "cat data.txt", cwd=project)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "in-tree"
@@ -350,7 +350,7 @@ def test_the_real_home_is_not_readable(backend: sandbox.Backend, project: Path) 
     canary = Path.home() / ".lc-enforcement-canary"
     canary.write_text("host home\n")
     try:
-        with sandbox.scope(sandbox.probe_policy(project)) as policy:
+        with sandbox.scope(sandbox.exec_policy(project)) as policy:
             result = shell(backend, policy, f"cat {canary}", cwd=project)
     finally:
         canary.unlink(missing_ok=True)
@@ -366,7 +366,7 @@ def test_the_tree_outside_results_cannot_be_written(
 ) -> None:
     """The environment a run starts with is the one it ends with — and the
     file has to be *unchanged*, not merely reported."""
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(backend, policy, "printf clobbered > data.txt", cwd=project)
     assert result.returncode != 0
     assert (project / "data.txt").read_text() == "in-tree\n", "the file changed anyway"
@@ -376,7 +376,7 @@ def test_results_can_be_written(backend: sandbox.Backend, project: Path) -> None
     """Writable inside a read-only tree — the nesting both mechanisms have
     to agree on, and the one a container gets from a second bind mount."""
     (project / "results").mkdir()
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(backend, policy, "printf out > results/out.csv", cwd=project)
     assert result.returncode == 0, result.stderr
     assert (project / "results" / "out.csv").read_text() == "out"
@@ -395,14 +395,14 @@ def test_a_declared_input_is_read_only(
     boundary.
     """
     target = outside / "secret.txt"
-    with sandbox.scope(sandbox.probe_policy(project, read_paths=[outside])) as policy:
+    with sandbox.scope(sandbox.exec_policy(project, read_paths=[outside])) as policy:
         result = shell(backend, policy, f"printf clobbered > {target}", cwd=project)
     assert result.returncode != 0
     assert target.read_text() == "undeclared\n", "the file changed anyway"
 
 
 def test_the_private_scope_is_writable(backend: sandbox.Backend, project: Path) -> None:
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         target = policy.tmp_home / "result.txt"
         result = shell(backend, policy, f"printf ok > {target}", cwd=project)
         wrote = target.read_text() if target.exists() else ""
@@ -415,7 +415,7 @@ def test_tempfile_works_inside_the_boundary(
 ) -> None:
     """TMPDIR points into the private scope, so the stdlib's own scratch
     keeps working even where the shared /tmp left the write set."""
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(
             backend,
             policy,
@@ -432,7 +432,7 @@ def test_a_command_can_allocate_a_pty(backend: sandbox.Backend, project: Path) -
     """devpts and friends are granted, so pexpect and pytest's own
     capture work. Without them `pty.openpty()` fails as "out of pty
     devices" — a message naming neither a path nor the sandbox."""
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(
             backend,
             policy,
@@ -451,7 +451,7 @@ def test_the_restriction_is_inherited_by_grandchildren(
 ) -> None:
     """Both mechanisms confine the whole descendant tree and neither can
     be shed — which is why wrapping the outermost command is enough."""
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(
             backend,
             policy,
@@ -472,7 +472,7 @@ def test_a_denial_reaches_the_user_through_the_boundary(
     a real denial must produce the explanation *and* the trailer, or the
     sandbox is an invisible wall."""
     tool = undeclared_tool()
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         outcome = sandbox.run(
             backend,
             policy,
@@ -528,7 +528,7 @@ def test_an_allowlisted_tool_resolves_to_the_copy_that_was_granted(
     fronts homebrew, so `env bash` resolved `/opt/homebrew/bin/bash`
     while the policy had granted `/bin/bash` — and the sandbox denied
     bash itself with "Operation not permitted"."""
-    with sandbox.scope(sandbox.probe_policy(project)) as policy:
+    with sandbox.scope(sandbox.exec_policy(project)) as policy:
         result = shell(backend, policy, "command -v bash && echo RESOLVED", cwd=project)
     assert result.returncode == 0, result.stderr
     resolved = Path(result.stdout.splitlines()[0].strip())

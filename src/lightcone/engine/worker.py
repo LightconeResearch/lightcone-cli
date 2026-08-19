@@ -167,7 +167,7 @@ def execute(
     task.output_dir.mkdir(parents=True)
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
-    policy = sandbox.recipe_policy(root, task.output_dir, read_paths=read_paths)
+    policy = sandbox.exec_policy(root, read_paths=read_paths)
     with sandbox.scope(policy):
         outcome = sandbox.run(
             sandbox.detect(),

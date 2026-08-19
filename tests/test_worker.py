@@ -226,43 +226,39 @@ def test_an_environment_that_moved_under_the_run_is_refused(root: Path) -> None:
 # ---- what a recipe may touch -----------------------------------------------
 
 
-def _tamper(sibling: Path) -> str:
-    """The spec, with `second`'s recipe pointed at `first`'s output."""
-    return _SPEC.replace(
-        "cat {inputs.first}/value.txt > {output}/copy.txt", f"echo tampered > {sibling}"
-    )
-
-
-def test_a_recipe_cannot_write_into_a_sibling_output(root: Path) -> None:
-    """The one narrowing `recipe_policy` makes over a probe's scope: a
-    recipe owns its own directory and nothing else under `results/`."""
+def test_a_recipe_cannot_write_outside_the_results_tree(root: Path) -> None:
+    """One policy for probes and recipes, so `results/` is the whole of a
+    recipe's in-tree write scope. Sibling outputs are *not* carved out —
+    the manifest's content hash is what says whether an output's bytes are
+    its own, and a second mechanism for one guarantee is one more than can
+    be kept honest."""
     from lightcone.engine import sandbox
 
     if sandbox.detect().capability.kind == "none":
         pytest.skip("no sandbox mechanism on this host")
+    (root / "astra.yaml").write_text(
+        _SPEC.replace("echo one > {output}/value.txt", "echo tampered > src/injected.py")
+    )
 
-    first = _make(root, "first")
-    sibling = root / "results/baseline/first/value.txt"
-    (root / "astra.yaml").write_text(_tamper(sibling))
-
-    assert _make(root, "second", first).status == "failed"
-    assert sibling.read_text() == "one\n"
+    assert _make(root, "first").status == "failed"
+    assert not (root / "src" / "injected.py").exists()
 
 
-def test_the_sibling_write_would_have_succeeded_unsandboxed(
+def test_that_write_would_have_succeeded_unsandboxed(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The mutation check. Without it the test above would pass on a host
     that enforces nothing, and pin nothing at all."""
     from lightcone.engine import sandbox
 
-    first = _make(root, "first")
-    sibling = root / "results/baseline/first/value.txt"
-    (root / "astra.yaml").write_text(_tamper(sibling))
     monkeypatch.setattr(sandbox, "detect", Unavailable)
+    (root / "src").mkdir(exist_ok=True)
+    (root / "astra.yaml").write_text(
+        _SPEC.replace("echo one > {output}/value.txt", "echo tampered > src/injected.py")
+    )
 
-    assert _make(root, "second", first).status == "ok"
-    assert sibling.read_text() == "tampered\n"
+    assert _make(root, "first").status == "ok"
+    assert (root / "src" / "injected.py").read_text() == "tampered\n"
 
 
 def test_a_recipe_can_read_an_annexed_input_through_its_symlink(
