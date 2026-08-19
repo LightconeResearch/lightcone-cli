@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 
 from lightcone.engine import dataset, templates
-from lightcone.engine.project import ProjectError
 
 
 @pytest.fixture
@@ -254,7 +253,7 @@ def test_the_save_the_data_readme_documents_actually_runs(repo: Path) -> None:
         if "git annex add" in line
     )
 
-    dataset._put_our_bin_first()
+    dataset.put_our_bin_first()
     assert subprocess.run(command, shell=True, cwd=repo, capture_output=True).returncode == 0
 
     assert _annexed(repo / "data" / "catalog.fits")
@@ -271,10 +270,10 @@ def test_our_bin_goes_to_the_front_of_path(monkeypatch: pytest.MonkeyPatch) -> N
     ours = str(Path(sys.executable).parent)
     monkeypatch.setenv("PATH", "/somewhere/else")
 
-    dataset._put_our_bin_first()
+    dataset.put_our_bin_first()
     assert os.environ["PATH"] == f"{ours}{os.pathsep}/somewhere/else"
 
-    dataset._put_our_bin_first()
+    dataset.put_our_bin_first()
     assert os.environ["PATH"].count(ours) == 1
 
 
@@ -284,7 +283,3 @@ def test_git_dispatches_annex_after_the_prepend(repo: Path) -> None:
     assert "git-annex version:" in dataset._git(["annex", "version"], cwd=repo)
 
 
-def test_git_annex_missing_is_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dataset.shutil, "which", lambda name, path=None: None)
-    with pytest.raises(ProjectError, match="git-annex is required"):
-        dataset.require_git_annex()

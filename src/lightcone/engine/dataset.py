@@ -1,81 +1,45 @@
 """The git + git-annex seam: how a project stores what it produced.
 
-Storage follows the DataLad model — **git carries the pointers and the
-history, git-annex carries the bytes** — and the whole of it is reached
-through ordinary ``git`` and ``git annex`` commands. What routes content
-to the right one is ``.gitattributes``: the default is
-``annex.largefiles=nothing``, and outputs and declared inputs opt out of
-it, so a clone that has fetched no annex content can still read every
-manifest and analysis code never becomes a read-only symlink.
+Storage follows the DataLad model — git carries the pointers and the
+history, git-annex carries the bytes — reached through ordinary ``git``
+and ``git annex`` commands. ``.gitattributes`` routes content: the default
+is ``annex.largefiles=nothing``, and outputs and declared inputs opt out
+of it, so manifests and analysis code stay in git while results and data
+go to the annex.
 
 Every command goes through :func:`~lightcone.engine.project._run`, the
-same seam convergence uses, so there is one place the suite has to
-monkeypatch and every invocation is inspectable.
+same seam convergence uses, so there is one place to monkeypatch and every
+invocation is inspectable.
 
-The trap worth knowing: a plain ``git add`` of a file that
-``.gitattributes`` marks ``annex.largefiles=anything`` does **not** annex
-it — it silently commits the bytes into git. ``git annex add`` has to run
-first, which is why :func:`save` is ordered the way it is.
+``git annex add`` must run before ``git add``: ``.gitattributes`` only
+routes what git-annex is *given*, and a plain ``git add`` commits the
+bytes into git itself.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from collections.abc import Iterable
 from pathlib import Path
 
 from lightcone.engine import project
 
-# =============================================================================
-# Requirements
-# =============================================================================
 
-
-def require_git() -> None:
-    """Refuse early when git is absent.
-
-    git is the one tool uv cannot install, and the only admitted exception
-    to an otherwise uv-installable stack. A project's results *are* its
-    history, so there is no useful project without it.
-    """
-    if shutil.which("git") is None:
-        raise project.ProjectError(
-            "git is required (results are versioned in the repository). "
-            "Install it: https://git-scm.com/downloads"
-        )
-
-
-def require_git_annex() -> None:
-    """Refuse early when git-annex is not reachable as git reaches it.
-
-    Probed *after* :func:`_put_our_bin_first`, and deliberately by the
-    name ``git`` itself searches for: ``git annex`` is not a builtin, it
-    is ``git`` finding a ``git-annex`` executable on ``PATH``. Asking any
-    other way would answer a question git never asks.
-    """
-    _put_our_bin_first()
-    if shutil.which("git-annex") is None:
-        raise project.ProjectError(
-            "git-annex is required (it stores the bytes results are made of) "
-            "and is not on PATH. It ships as a wheel and installs with the "
-            "engine: `uv sync` in the project, or reinstall lightcone-cli."
-        )
-
-
-def _put_our_bin_first() -> None:
+def put_our_bin_first() -> None:
     """Prepend the directory holding our own interpreter to ``PATH``.
 
-    ``git annex`` dispatches by searching ``PATH`` for ``git-annex``, and
-    ``uv tool install lightcone-cli`` links only *our* entry points into
-    ``~/.local/bin`` — the git-annex we resolved as a dependency sits
-    beside the interpreter instead. Without this, git either finds
-    nothing or finds a system copy.
+    ``git annex`` is dispatched by git searching ``PATH`` for a
+    ``git-annex`` executable, and ``uv tool install lightcone-cli`` links
+    only *our* entry points into ``~/.local/bin`` — the git-annex we
+    resolved as a dependency sits beside the interpreter instead. Verified:
+    with only the tool's ``lc`` on ``PATH``, ``git annex version`` fails and
+    ``lc init`` refuses. (Under ``uv run`` the prepend is a no-op, because
+    uv already fronts the project's ``.venv/bin``.)
 
     Prepend, never append: a system git-annex winning would make the
-    version recorded in the lock a fiction. Idempotent, and applied to
-    our own environment because that is what child processes inherit.
+    version recorded in the lock a fiction. Idempotent, and applied to our
+    own environment because that is what child processes inherit.
     """
     ours = str(Path(sys.executable).parent)
     path = os.environ.get("PATH", "")
@@ -222,7 +186,7 @@ def restore(directory: Path, paths: Iterable[Path]) -> None:
 
 def _git(argv: list[str], *, cwd: Path) -> str:
     """Run git in *cwd*, returning its stdout; a nonzero exit raises."""
-    _put_our_bin_first()
+    put_our_bin_first()
     proc = project._run(["git", *argv], cwd=cwd)
     if proc.returncode != 0:
         raise project.ProjectError(f"`git {' '.join(argv)}` failed:\n{proc.stderr.strip()}")
@@ -231,7 +195,7 @@ def _git(argv: list[str], *, cwd: Path) -> str:
 
 def _git_ok(argv: list[str], *, cwd: Path) -> bool:
     """Run git as a yes/no probe: exit status is the answer, not a failure."""
-    _put_our_bin_first()
+    put_our_bin_first()
     return bool(project._run(["git", *argv], cwd=cwd).returncode == 0)
 
 

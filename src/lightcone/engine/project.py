@@ -177,8 +177,8 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     directory = directory.resolve()
 
     require_uv()
-    dataset.require_git()
-    dataset.require_git_annex()
+    require_git()
+    require_git_annex()
 
     c = _Converger(write=write)
 
@@ -241,6 +241,36 @@ def require_uv() -> None:
         )
 
 
+def require_git() -> None:
+    """Refuse early when git is absent.
+
+    git is the one tool uv cannot install, and the only admitted exception
+    to an otherwise uv-installable stack. Results are versioned in the
+    repository, so there is no useful project without it.
+    """
+    if shutil.which("git") is None:
+        raise ProjectError(
+            "git is required (results are versioned in the repository). "
+            "Install it: https://git-scm.com/downloads"
+        )
+
+
+def require_git_annex() -> None:
+    """Refuse early when git-annex is not reachable as git reaches it.
+
+    Probed after :func:`~lightcone.engine.dataset.put_our_bin_first`, and
+    by the name git itself searches for: ``git annex`` is git finding a
+    ``git-annex`` executable on ``PATH``, not a builtin.
+    """
+    dataset.put_our_bin_first()
+    if shutil.which("git-annex") is None:
+        raise ProjectError(
+            "git-annex is required (it stores the bytes results are made of) "
+            "and is not on PATH. It ships as a wheel and installs with the "
+            "engine: `uv sync` in the project, or reinstall lightcone-cli."
+        )
+
+
 def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
     """``uv run``, pinned to *directory* and refusing to drift.
 
@@ -258,20 +288,16 @@ def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
     return ["uv", "run", "--locked", *selection, "--project", str(directory), "--"]
 
 
-def environment_drift(directory: Path) -> str:
-    """Empty while ``.venv`` still satisfies ``uv.lock``; else what is wrong.
+def sync(directory: Path) -> list[str]:
+    """Make ``.venv`` match ``uv.lock``. Returns whatever uv warned about.
 
-    A message rather than a bool, so the one description of this state
-    lives with the probe that detects it — a caller that refuses and a
-    caller that warns then differ only in the verb.
+    A run calls this before it starts rather than checking and refusing:
+    workers pass ``--no-sync`` so nothing else would notice a lock edited
+    without a sync, and a manifest recording an environment the recipe did
+    not run under is the identity model saying something untrue. Doing it
+    is both shorter than reporting it and impossible to ignore.
     """
-    if _env_is_current(directory):
-        return ""
-    return (
-        f"{directory}: the environment does not match uv.lock — recipes would "
-        "import packages the lock does not describe, and every manifest would "
-        "record an environment that never ran. Converge it with `lc init`."
-    )
+    return _check_call(["uv", *_SYNC_ARGS, "--project", str(directory)], cwd=directory)
 
 
 def _converge_uv_project(c: _Converger, directory: Path) -> None:
@@ -304,9 +330,9 @@ def _converge_tracked_dir(
 ) -> None:
     """A directory the repository tracks, plus the README that makes it exist.
 
-    ``data/`` and ``results/`` are both empty in a fresh project, and git
-    carries no empty directories — so without a README neither survives a
-    clone, and nothing on disk explains what belongs in it.
+    Git carries no empty directories, so a tracked directory that starts
+    empty needs a file to survive a clone. The README is that file, and it
+    is also where what belongs in the directory is written down.
     """
     path = directory / name
     if path.exists() and not path.is_dir():

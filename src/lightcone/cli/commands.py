@@ -179,20 +179,12 @@ def run(command: tuple[str, ...]) -> None:
     ),
 )
 @click.option(
-    "--jobs",
-    type=click.IntRange(min=1),
-    default=None,
-    help="How many recipes may run at once. Defaults to the CPU count.",
-)
-@click.option(
     "--json",
     "as_json",
     is_flag=True,
     help="Emit the report as JSON on stdout.",
 )
-def materialize(
-    targets: tuple[str, ...], check_only: bool, jobs: int | None, as_json: bool
-) -> None:
+def materialize(targets: tuple[str, ...], check_only: bool, as_json: bool) -> None:
     """Make the analysis's outputs, and commit each one as it lands.
 
     Each output is committed together with its manifest, in a commit that
@@ -212,7 +204,7 @@ def materialize(
     if check_only:
         report = engine.check(root, targets)
     else:
-        report = engine.materialize(root, targets, jobs=jobs)
+        report = engine.materialize(root, targets)
 
     if as_json:
         click.echo(json.dumps(report.as_dict(), indent=2))

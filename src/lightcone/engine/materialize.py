@@ -42,7 +42,7 @@ from typing import Any, Protocol
 
 from lightcone.engine import assets, dataset, identity, plan, project, worker
 from lightcone.engine.plan import Graph, Key, Task
-from lightcone.engine.project import ProjectError, require_uv
+from lightcone.engine.project import ProjectError
 
 
 @dataclass
@@ -104,8 +104,6 @@ def check(root: Path, targets: Sequence[str]) -> MaterializeReport:
     """
     report = MaterializeReport()
     graph, _ = _graph(root, targets, report)
-    if drift := project.environment_drift(root):
-        report.warnings.append(drift)
 
     versions = assets.Versions()
     stale: set[Key] = set()
@@ -156,19 +154,18 @@ def _predicted(task: Task, stale: set[Key], versions: assets.Versions) -> dict[s
 # =============================================================================
 
 
-def materialize(
-    root: Path, targets: Sequence[str], *, jobs: int | None = None
-) -> MaterializeReport:
+def materialize(root: Path, targets: Sequence[str]) -> MaterializeReport:
     """Make everything *targets* names, and commit each output as it lands."""
-    require_uv()
-    dataset.require_git()
-    dataset.require_git_annex()
-    if drift := project.environment_drift(root):
-        raise ProjectError(drift)
+    project.require_uv()
+    project.require_git()
+    project.require_git_annex()
+    # Before anything else: workers pass `--no-sync`, so this is the only
+    # place the environment is made to match the lock.
+    report = MaterializeReport()
+    report.warnings.extend(f"uv: {w}" for w in project.sync(root))
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes))
 
-    report = MaterializeReport()
     graph, env_version = _graph(root, targets, report)
     if not graph.tasks:
         return report
@@ -185,7 +182,7 @@ def materialize(
     versions = assets.Versions()
     outstanding: dict[Key, Task] = dict(graph.tasks)
     try:
-        with cluster_for_run(jobs) as scheduler:
+        with cluster_for_run() as scheduler:
             pending: dict[Key, Any] = {}
             # Submitted in dependency order so a task's upstream futures
             # exist to be passed to it. Dask still derives the *execution*
@@ -278,8 +275,12 @@ class _Dask:
 
 
 @contextmanager
-def cluster_for_run(jobs: int | None) -> Iterator[Scheduler]:
+def cluster_for_run() -> Iterator[Scheduler]:
     """A scheduler for one run. The seam venues will land behind.
+
+    Every core, with no knob to say otherwise: how much of a machine a run
+    may use, and which machine, is one question and it belongs to the
+    declaration of an execution backend rather than to a flag here.
 
     Threads rather than processes: every task's real work happens in a
     subprocess behind the exec boundary, so the worker itself spends its
@@ -290,7 +291,7 @@ def cluster_for_run(jobs: int | None) -> Iterator[Scheduler]:
 
     with LocalCluster(  # type: ignore[no-untyped-call]
         n_workers=1,
-        threads_per_worker=jobs or os.cpu_count() or 1,
+        threads_per_worker=os.cpu_count() or 1,
         processes=False,
         dashboard_address=None,
     ) as cluster:

@@ -355,14 +355,20 @@ def test_check_reaches_check_mode_and_nothing_else(
     assert [name for name, _ in seen] == ["check"]
 
 
-def test_targets_and_jobs_reach_the_engine(
+def test_targets_reach_the_engine(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen = _stub(monkeypatch)
 
-    runner.invoke(main, ["materialize", "baseline/fit", "report", "--jobs", "3"])
+    runner.invoke(main, ["materialize", "baseline/fit", "report"])
 
-    assert seen == [("materialize", (["baseline/fit", "report"], {"jobs": 3}))]
+    assert seen == [("materialize", (["baseline/fit", "report"], {}))]
+
+
+def test_there_is_no_knob_for_how_much_of_the_machine_to_use(runner: CliRunner) -> None:
+    """A run takes every core. How much of a machine, and which machine,
+    is one question and it belongs to a declared execution backend."""
+    assert "--jobs" not in runner.invoke(main, ["materialize", "--help"]).output
 
 
 def test_a_run_with_nothing_to_do_exits_zero(

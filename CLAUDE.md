@@ -410,11 +410,16 @@ wrong once.
 **PATH is part of the contract.** `git annex` is not a builtin — git
 dispatches it by searching `PATH` for a `git-annex` executable, and
 `uv tool install lightcone-cli` links only lc's own entry points into
-`~/.local/bin`. So `dataset._put_our_bin_first()` **prepends**
+`~/.local/bin`. So `dataset.put_our_bin_first()` **prepends**
 `Path(sys.executable).parent`, idempotently, before any git call. Prepend,
 never append: a system copy winning would make the version the project's
-lock records a fiction. `require_git_annex()` probes after the prepend and
-by the name git itself searches for.
+lock records a fiction. `project.require_git_annex()` probes after the
+prepend and by the name git itself searches for.
+
+Measured, not assumed: with only the tool's `lc` on `PATH` — exactly what
+`uv tool install` produces — `git annex version` fails, and with the
+prepend disabled `lc init` refuses. Under `uv run` it is a no-op, because
+uv already fronts the project's `.venv/bin`.
 
 **The ignore probe asks about the directory as a directory.**
 `check-ignore` is run with a trailing slash (`results/`), because the rule
@@ -608,17 +613,21 @@ provenance. The only thing callers disagree about is `sync`: a probe
 converges the environment it is about to describe, a recipe must not, or
 every concurrent worker writes the same `.venv`.
 
-**An environment that no longer matches the lock is a refusal too.**
-`uv run --locked` asserts only that `uv.lock` still matches
-`pyproject.toml`, and workers pass `--no-sync` — so a lock edited without
-a sync leaves recipes importing packages the lock does not describe while
-every manifest records the *new* lock's `env_version`. Measured: the
-recipe imported `packaging 26.3` under a lock saying `24.2`, and uv
-accepted it silently. `project.environment_drift` wraps uv's own probe and
-returns the message rather than a bool, so the description lives with the
-detection and the two callers differ only in the verb — one raises, one
-warns. (Layer 3's launcher will
-converge instead; until then this is the guard.)
+**A run syncs the environment; it does not report on it.** `uv run
+--locked` asserts only that `uv.lock` still matches `pyproject.toml`, and
+workers pass `--no-sync` — so a lock edited without a sync would leave
+recipes importing packages the lock does not describe while every manifest
+recorded the *new* lock's `env_version`. Measured: the recipe imported
+`packaging 26.3` under a lock saying `24.2`, and uv accepted it silently.
+`materialize()` calls `project.sync()` before anything else, so the state
+is made impossible rather than detected. `--check` needs neither:
+`env_version` is the lock's bytes, so a drifted `.venv` cannot change what
+it answers.
+
+**A run takes every core, and there is no flag to say otherwise.** How
+much of a machine a run may use — and which machine — is one question, and
+it belongs to a declared execution backend rather than to a `--jobs` knob
+only a `LocalCluster` could honour.
 
 **A dirty tree is a refusal, and `--check` is exempt.** Every
 materialization is committed with the code that produced it, so a run that

@@ -80,7 +80,7 @@ class _Inline:
 @pytest.fixture
 def inline(monkeypatch: pytest.MonkeyPatch) -> None:
     @contextmanager
-    def fake(jobs: int | None) -> Iterator[_Inline]:
+    def fake() -> Iterator[_Inline]:
         yield _Inline()
 
     monkeypatch.setattr(engine, "cluster_for_run", fake)
@@ -322,7 +322,7 @@ def test_an_interrupted_run_restores_what_never_reported(
             raise KeyboardInterrupt
 
     @contextmanager
-    def fake(jobs: int | None) -> Iterator[_Interrupted]:
+    def fake() -> Iterator[_Interrupted]:
         yield _Interrupted()
 
     monkeypatch.setattr(engine, "cluster_for_run", fake)
@@ -419,26 +419,28 @@ def test_check_agrees_with_a_run_on_a_clone_with_no_annex_content(
     assert engine.check(clone, []).planned == {}
 
 
-def test_an_environment_that_no_longer_matches_the_lock_is_refused(
+def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     root: Path, inline: None
 ) -> None:
-    """`uv run --locked` only asserts the lock still matches pyproject, and
-    workers pass `--no-sync` — so recipes would import packages the lock
-    does not describe while every manifest recorded the new lock's
-    `env_version`. The identity model saying something untrue is worse than
-    any failure it could report instead."""
+    """Workers pass `--no-sync`, so this is the only place the environment
+    is made to match the lock. Reported and refused, a lock edited without
+    a sync would leave recipes importing packages the lock does not
+    describe while every manifest recorded the new lock's `env_version`;
+    doing it instead is shorter and impossible to ignore."""
     pyproject = root / "pyproject.toml"
     pyproject.write_text(
         pyproject.read_text().replace("dependencies = []", 'dependencies = ["idna"]')
     )
-    dataset._git(["config", "user.email", "t@example.com"], cwd=root)
     from lightcone.engine import project as project_mod
 
     project_mod._run(["uv", "lock", "-q", "--project", str(root)], cwd=root)
     dataset.save(root, [root], "add a dependency without syncing")
+    assert not project_mod._env_is_current(root)
 
-    with pytest.raises(ProjectError, match="does not match uv.lock"):
-        engine.materialize(root, [])
+    report = engine.materialize(root, ["first"])
+
+    assert report.ok
+    assert project_mod._env_is_current(root)
 
 
 def test_the_recorded_command_reproduces_the_output(root: Path, inline: None) -> None:
@@ -488,7 +490,7 @@ def _engine_path() -> str:
 def test_a_real_cluster_still_fits_through_the_seam(root: Path) -> None:
     """The one test that starts Dask. The seam is only worth having if the
     thing it abstracts still goes through it."""
-    report = engine.materialize(root, [], jobs=2)
+    report = engine.materialize(root, [])
 
     assert report.made == ["baseline/first", "baseline/second"]
     assert not dataset.status(root)

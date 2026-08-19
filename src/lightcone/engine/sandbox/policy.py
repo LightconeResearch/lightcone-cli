@@ -167,29 +167,20 @@ _HOME_LAYOUT = {
 def exec_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     """What a sandboxed command may touch — one policy, every caller.
 
-    The tree is read-only except for ``results/``, which is where output
-    goes. That keeps the environment itself — ``.venv``, ``uv.lock``, the
-    spec — exactly as the lock describes it for the whole run, and it is
-    what makes ``lc run`` a real rehearsal: a probe and a recipe get the
-    *same* scope, so a command that works under one works under the other,
-    with nothing to reason about in between.
+    The tree is read-only apart from ``results/``, so ``lc run`` and a
+    recipe get the same scope: a command that works under one works under
+    the other. ``read_paths`` adds whatever the caller declared outside
+    the tree.
 
-    A recipe is deliberately **not** narrowed to its own output directory.
-    That would be a second answer to "are these bytes what produced them",
-    and the manifest's ``data_version`` is the first — content-addressed,
-    checked by ``lc verify``, and the only one that survives a rebuild on
-    another machine. Two mechanisms for one guarantee is one more than can
-    be kept honest. (The residue, stated: a cross-write that lands *before*
-    the victim hashes leaves a manifest that is self-consistent and wrong,
-    which no checksum can see. It needs concurrent tasks and a hardcoded
-    sibling path; the threat model here is accidental leakage, not a
-    hostile recipe.)
+    A recipe is not narrowed to its own output directory. Whether an
+    output's bytes are its own is what the manifest's ``data_version``
+    answers, and that answer travels; a second mechanism for it would not.
+    The residue: a cross-write landing before the victim task hashes
+    leaves a manifest that is self-consistent and wrong, which no checksum
+    can see.
 
-    ``results/`` is granted only if it is already there. Convergence
-    creates it, and a policy that made directories would be a side effect
-    nobody asked for — a policy describes, it does not prepare.
-
-    Creates the per-run HOME on disk as a side effect; the caller owns
+    ``results/`` is granted only if it exists — a policy describes, it
+    does not prepare. Creates the per-run HOME on disk; the caller owns
     removing it (see :func:`~lightcone.engine.sandbox.boundary.scope`).
     """
     tmp_home = Path(tempfile.mkdtemp(prefix="lc-home-")).resolve()
