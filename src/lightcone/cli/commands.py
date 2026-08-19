@@ -23,8 +23,12 @@ logger = logging.getLogger(__name__)
 
 @functools.cache
 def _console() -> Console:
-    """The rich console, built on first use to avoid startup cost at each
-    invocation of the cli even when the console is not needed."""
+    """Build the rich console, once and on first use.
+
+    Returns:
+        The console. Deferred so ``lc --help`` and shell completion never
+        pay for it.
+    """
     from rich.console import Console
 
     return Console()
@@ -40,6 +44,17 @@ class _EngineErrorGroup(click.Group):
     """
 
     def invoke(self, ctx: click.Context) -> object:
+        """Run a command, rendering engine errors as clean CLI errors.
+
+        Args:
+            ctx: The click context.
+
+        Returns:
+            Whatever the command returned.
+
+        Raises:
+            click.ClickException: In place of any ``ProjectError``.
+        """
         from lightcone.engine.project import ProjectError
 
         try:

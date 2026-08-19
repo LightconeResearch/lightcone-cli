@@ -1166,5 +1166,12 @@ silent. Every leak case here was checked that way.
 - Ruff for linting (E, F, I, N, W, UP), line length 100, target Python 3.11
 - mypy strict mode with `namespace_packages = true`,
   `explicit_package_bases = true`
-- Docstrings and comments carry *why*, and cite the spec section
-  (`spec §7`) when they encode a design decision
+- **Google-style docstrings** on every public function: an imperative
+  one-line summary, then `Args:` / `Returns:` / `Raises:` / `Yields:`
+  where they carry information. Concise — a design decision gets a
+  sentence or two, not its history; the long form belongs in this file.
+  Two deliberate exceptions: **click command callbacks**, whose docstring
+  *is* the `--help` text and must stay prose, and properties, whose value
+  the summary already describes.
+- Comments and docstrings carry *why*, never a narrative of how the code
+  came to be

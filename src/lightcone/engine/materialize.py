@@ -79,6 +79,11 @@ class MaterializeReport:
         return not self.made and not self.planned
 
     def as_dict(self) -> dict[str, Any]:
+        """Return the report as JSON-ready data.
+
+        Returns:
+            Every field, with ``ok`` and ``up_to_date`` first.
+        """
         return {"ok": self.ok, "up_to_date": self.up_to_date, **asdict(self)}
 
 
@@ -90,17 +95,24 @@ class MaterializeReport:
 def check(root: Path, targets: Sequence[str]) -> MaterializeReport:
     """Classify every task without executing or committing anything.
 
-    Deliberately *not* subject to the dirty-tree refusal: reading the
-    state of a project before deciding what to commit is exactly what this
-    is for.
+    Not subject to the dirty-tree refusal: reading the state of a project
+    before deciding what to commit is what this is for. The walk is
+    topological because a task can only be classified after everything
+    upstream of it, and an upstream already classified as would-run is
+    passed down as ``None`` — check mode cannot know whether a rebuild
+    comes out byte-identical, and assuming it will would under-report.
 
-    The walk is topological because a task can only be classified after
-    everything upstream of it. An upstream already classified as
-    would-run is passed down as ``None``, meaning "this is going to
-    change" — check mode cannot know whether a rebuild will come out
-    byte-identical, and assuming it will would under-report. That single
-    value is the whole difference between this and what a worker does;
-    the rule itself lives in one place, in :func:`assets.staleness`.
+    Args:
+        root: The project root.
+        targets: What to classify; empty means everything.
+
+    Returns:
+        ``planned`` naming each output that would run and why, and
+        ``skipped`` naming those already current.
+
+    Raises:
+        ProjectError: If the spec, the universes or the lock cannot be
+            read, or a target matches nothing.
     """
     report = MaterializeReport()
     graph, _ = _graph(root, targets, report)
@@ -155,7 +167,21 @@ def _predicted(task: Task, stale: set[Key], versions: assets.Versions) -> dict[s
 
 
 def materialize(root: Path, targets: Sequence[str]) -> MaterializeReport:
-    """Make everything *targets* names, and commit each output as it lands."""
+    """Make everything *targets* names, committing each output as it lands.
+
+    Args:
+        root: The project root.
+        targets: What to make; empty means everything. Asking for an
+            output asks for what it is made of.
+
+    Returns:
+        What was made, skipped, failed or blocked, plus the boundary's
+        notes and the lock scan's warnings.
+
+    Raises:
+        ProjectError: If a required tool is missing, the tree has
+            uncommitted changes, or the lock cannot be audited.
+    """
     project.require_uv()
     project.require_git()
     project.require_git_annex()
@@ -248,11 +274,27 @@ class Scheduler(Protocol):
     """
 
     def submit(self, fn: Any, *args: Any, key: str) -> Any:
-        """Schedule the call, returning a handle to pass downstream."""
+        """Schedule a call.
+
+        Args:
+            fn: The function to run.
+            *args: Its arguments, upstream handles included.
+            key: A display name for the task.
+
+        Returns:
+            A handle to pass to dependents.
+        """
         ...
 
     def completed(self, handles: list[Any]) -> Iterator[worker.TaskResult]:
-        """The results, in the order they finish."""
+        """Yield results as they land.
+
+        Args:
+            handles: Everything submitted.
+
+        Yields:
+            Each task's result, in completion order.
+        """
         ...
 
 
@@ -263,9 +305,11 @@ class _Dask:
     client: Any
 
     def submit(self, fn: Any, *args: Any, key: str) -> Any:
+        """Schedule a call on the Dask client. See :class:`Scheduler`."""
         return self.client.submit(fn, *args, key=key)
 
     def completed(self, handles: list[Any]) -> Iterator[worker.TaskResult]:
+        """Yield results as Dask completes them. See :class:`Scheduler`."""
         # distributed ships no type information, so this one call is
         # annotated rather than the module exempted.
         from distributed import as_completed
@@ -276,16 +320,19 @@ class _Dask:
 
 @contextmanager
 def cluster_for_run() -> Iterator[Scheduler]:
-    """A scheduler for one run. The seam venues will land behind.
+    """Open a scheduler for one run. The seam venues will land behind.
 
     Every core, with no knob to say otherwise: how much of a machine a run
     may use, and which machine, is one question and it belongs to the
-    declaration of an execution backend rather than to a flag here.
+    declaration of an execution backend.
 
-    Threads rather than processes: every task's real work happens in a
-    subprocess behind the exec boundary, so the worker itself spends its
-    time in ``wait()`` with the GIL released, and a threaded cluster costs
-    no interpreter startup and no pickling of results.
+    Threads rather than processes — every task's real work happens in a
+    subprocess behind the exec boundary, so a worker spends its time in
+    ``wait()`` with the GIL released, and a threaded cluster costs no
+    interpreter startup and no pickling of results.
+
+    Yields:
+        A scheduler bound to a local Dask cluster, closed on exit.
     """
     from distributed import Client, LocalCluster
 
@@ -305,21 +352,24 @@ def cluster_for_run() -> Iterator[Scheduler]:
 
 
 def run_record(root: Path, task: Task, dsid: str) -> str:
-    """The commit message for one materialized output.
+    """Build the commit message for one materialized output.
 
-    A ``[DATALAD RUNCMD]`` record, which is datalad's format rather than
-    ours — so all of it is written, ``chain`` and ``dsid`` included, and
-    none of it is abbreviated. ``datalad rerun`` reads it out of the
-    message with a regex and reports "no command; skipping" on any
-    mismatch, so the shape is not a matter of taste.
+    A ``[DATALAD RUNCMD]`` record — datalad's format, not ours, so all of
+    it is written and none of it abbreviated. ``datalad rerun`` reads it
+    with a regex and reports "no command; skipping" on any mismatch.
 
-    ``cmd`` is the worker module, not the bare recipe and not
-    ``lc materialize``. The bare recipe would reconstruct nothing lc adds
-    — no locked environment, no boundary, no environment gates, no
-    manifest — and would commit bytes the identity model never produced.
-    ``lc materialize`` cannot be it either: a rerun removes the declared
-    outputs first, which dirties the tree that materialize refuses to
+    ``cmd`` is the worker module: the bare recipe would reconstruct nothing
+    lc adds, and ``lc materialize`` cannot be it because a rerun removes
+    the declared outputs first, dirtying the tree materialize refuses to
     start from.
+
+    Args:
+        root: The project root.
+        task: The output that was made.
+        dsid: The dataset's UUID, which ``rerun`` reads.
+
+    Returns:
+        The full commit message, subject and record.
     """
     info = {
         "chain": [],

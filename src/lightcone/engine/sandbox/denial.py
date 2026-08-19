@@ -45,23 +45,24 @@ _BIN_DIR_HINTS = ("/bin", "/sbin", "/Library/TeX", "/opt")
 
 
 def explain(stderr: str, policy: Policy, *, cwd: Path) -> list[str]:
-    """Lines explaining the first confirmed denial in *stderr*, or ``[]``.
+    """Explain the first confirmed denial in a child's stderr.
 
-    "Confirmed" is doing real work here. A candidate is dropped when the
-    path does not exist (an ordinary missing-file bug, not a denial) or
-    when the policy fully grants it (someone else's permission problem).
-    Both checks run in the unsandboxed parent, where ``stat`` sees
-    everything — which is the whole reason the parent does the
-    explaining rather than the child.
+    "Confirmed" is doing real work: a candidate is dropped when the path
+    does not exist (an ordinary missing-file bug) or when the policy fully
+    grants it (someone else's permission problem). Both checks run in the
+    unsandboxed parent, where ``stat`` sees everything — which is why the
+    parent explains rather than the child.
 
-    The three outcomes are three different mistakes, and conflating them
-    is how a sandbox message becomes useless:
+    Args:
+        stderr: The child's captured stderr.
+        policy: What the command was allowed to touch.
+        cwd: Where it ran, for resolving relative paths.
 
-    - a path granted for **neither** access — an undeclared tool or an
-      undeclared input;
-    - a path granted for **read but not write** — which, since reading
-      it was allowed, can only have been a write into the read-only
-      tree, a system directory, or a declared input.
+    Returns:
+        Lines to print verbatim, or ``[]`` when nothing can be confirmed.
+        A path granted for neither access is an undeclared tool or input;
+        one granted for read but not write can only have been a write
+        into the read-only tree, a system directory, or a declared input.
     """
     # Access-aware, and that distinction is what keeps the message
     # honest: every allowlisted binary lives under `/usr`, which the read
@@ -84,13 +85,18 @@ def explain(stderr: str, policy: Policy, *, cwd: Path) -> list[str]:
 
 
 def trailer(mechanism: str) -> str:
-    """The one line printed after *every* failed sandboxed run.
+    """Build the line printed after every failed sandboxed run.
 
     Unconditional by design: :func:`explain` fires only when it can
-    extract and confirm a path, and the cases where it cannot — a recipe
-    that catches the ``PermissionError`` and exits with something else —
-    are exactly the cases where someone would otherwise spend an hour
-    fighting an invisible wall.
+    confirm a path, and the cases where it cannot — a command that catches
+    the ``PermissionError`` and exits with something else — are exactly
+    the cases where someone would otherwise fight an invisible wall.
+
+    Args:
+        mechanism: What enforced the run.
+
+    Returns:
+        One line, naming the mechanism.
     """
     return (
         f"this ran under the lc sandbox ({mechanism}) — a permissions or "

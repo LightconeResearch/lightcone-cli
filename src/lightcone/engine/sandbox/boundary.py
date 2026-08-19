@@ -47,9 +47,16 @@ class Unavailable:
     capability: Capability = field(default_factory=lambda: Capability(kind="none"))
 
     def wrap(self, policy: Policy, argv: Sequence[str]) -> list[str]:
+        """Return *argv* unchanged — there is no mechanism to wrap with."""
         return list(argv)
 
     def attest(self, policy: Policy) -> Attestation:
+        """Attest that nothing was enforced.
+
+        Returns:
+            ``fs: open``. Saying so is the caller's job; pretending is
+            nobody's.
+        """
         return Attestation(mechanism="none", fs="open")
 
 
@@ -65,11 +72,15 @@ class Outcome:
 
 
 def detect() -> Backend:
-    """The best mechanism this host can offer.
+    """Pick the best mechanism this host can offer.
 
-    The single platform branch. A backend that probes unavailable falls
-    through to the next candidate and finally to :class:`Unavailable`,
-    so adding another mechanism is one import and one line.
+    The single platform branch in the codebase. A backend that probes
+    unavailable falls through to :class:`Unavailable`, so adding another
+    mechanism is one import and one line.
+
+    Returns:
+        A backend, never ``None`` — an unenforced host gets one that says
+        so rather than a special case for callers to branch on.
     """
     if sys.platform == "linux":
         from lightcone.engine.sandbox.landlock import LandlockBackend, capability
@@ -92,14 +103,17 @@ def detect() -> Backend:
 
 @contextmanager
 def scope(policy: Policy) -> Iterator[Policy]:
-    """*policy*, with the directory it allocated cleaned up afterwards.
+    """Own a policy's lifetime, cleaning up the directory it allocated.
 
-    Every policy owns a real directory on disk — the private ``$HOME`` —
-    so building one is not free and leaking one is a real cost on a
-    machine that runs many of them. Taking the policy rather than
-    building it keeps that lifetime in **one** place for probes and
-    recipes alike; a second caller doing its own ``rmtree`` is a second
-    thing to find when a policy starts allocating something else.
+    Every policy owns a private ``$HOME`` on disk, so leaking one is a
+    real cost on a machine that runs many. Taking the policy rather than
+    building it keeps that lifetime in one place for every caller.
+
+    Args:
+        policy: An already-built policy.
+
+    Yields:
+        The same policy, with its ``tmp_home`` removed on exit.
     """
     try:
         yield policy
@@ -116,18 +130,26 @@ def run(
     env: dict[str, str],
     prefix: Sequence[str] = (),
 ) -> Outcome:
-    """Run *argv* through *backend*, and explain it if it fails.
+    """Run a command through a backend, and explain it if it fails.
 
-    *prefix* is spawned **outside** the rewrite — it is how the caller
-    says "wrap the command, not this". ``lc run`` uses it for the
-    ``uv run`` hop, because uv, its config, and its caches are trusted
-    plumbing that must stay outside the boundary.
+    stdout is inherited untouched, so output arrives live. stderr is teed
+    — written through as it arrives and retained — because the denial
+    classifier needs text and the user needs immediacy.
 
-    stdout is inherited untouched, so a probe stays a probe — output
-    arrives live. stderr is teed: written through as it arrives *and*
-    retained, because the denial classifier needs text and the user
-    needs immediacy. (A denial printed only to stdout is therefore
-    missed; the trailer still fires.)
+    Args:
+        backend: The mechanism to wrap with.
+        policy: What the command may touch.
+        argv: The command.
+        cwd: Where to run it.
+        env: The environment for everything outside the rewrite. The
+            policy's own overlay is applied inside it, not merged here.
+        prefix: Spawned *outside* the rewrite — how a caller says "wrap
+            the command, not this". Used for the ``uv run`` hop, since
+            uv's config and caches are trusted plumbing.
+
+    Returns:
+        The exit code, what was actually enforced, and any lines the
+        caller should print verbatim.
     """
     wrapped = [*prefix, *backend.wrap(policy, [*env_argv(policy), *argv])]
     attestation = backend.attest(policy)
@@ -184,21 +206,22 @@ def run(
 
 
 def env_argv(policy: Policy) -> list[str]:
-    """``env K=V …``, prefixed to the command *inside* the wrap.
+    """Build the ``env K=V …`` prefix applied *inside* the wrap.
 
-    One place, every backend — including :class:`Unavailable`, which
-    would otherwise silently run in a different environment than a
-    sandboxed run.
-    Composed inside the wrap rather than around it so the ``prefix``
-    (the ``uv run`` hop) keeps the real environment: uv resolves its
-    cache from ``XDG_CACHE_HOME`` and its interpreters from
-    ``XDG_DATA_HOME``.
+    One place, every backend — including :class:`Unavailable`, which would
+    otherwise run in a different environment than a sandboxed run. Inside
+    the wrap rather than around it, so the ``uv run`` prefix keeps the
+    real environment: uv resolves its cache from ``XDG_CACHE_HOME`` and
+    its interpreters from ``XDG_DATA_HOME``.
 
-    ``env`` is resolved the same way the exec set resolved it, not by a
-    literal path: the set grants whatever
-    :func:`~lightcone.engine.sandbox.policy.utility` found, so a hardcoded
-    ``/usr/bin/env`` is a denial on the first exec of every run on any
-    host that keeps its copy elsewhere.
+    Args:
+        policy: The policy whose overlay to apply.
+
+    Returns:
+        The ``env`` invocation, empty when the policy overlays nothing.
+        ``env`` is resolved the way the exec set resolved it, since a
+        hardcoded path would be denied on any host that keeps it
+        elsewhere.
     """
     if not policy.env:
         return []
@@ -239,6 +262,7 @@ class _Tail(threading.Thread):
         self._size = 0
 
     def run(self) -> None:
+        """Pump the stream through to stderr, keeping a bounded tail."""
         for line in self._stream:
             sys.stderr.write(line)
             self._chunks.append(line)
@@ -248,4 +272,5 @@ class _Tail(threading.Thread):
         sys.stderr.flush()
 
     def text(self) -> str:
+        """Return the retained tail, for the denial classifier."""
         return "".join(self._chunks)

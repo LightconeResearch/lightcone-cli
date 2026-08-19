@@ -41,7 +41,17 @@ TEMPLATE_NAMES = frozenset(
 
 
 def read(name: str) -> str:
-    """Return the raw text of template *name*."""
+    """Read a template's raw text.
+
+    Args:
+        name: A file name from :data:`TEMPLATE_NAMES`.
+
+    Returns:
+        The template's text.
+
+    Raises:
+        KeyError: If *name* is not a shipped template.
+    """
     if name not in TEMPLATE_NAMES:
         raise KeyError(f"unknown template: {name!r}")
     return (resources.files(__name__) / "files" / name).read_text(encoding="utf-8")
@@ -57,7 +67,14 @@ def _render(name: str, /, **values: str) -> str:
 
 
 def pyproject(*, name: str) -> str:
-    """The scaffolded ``pyproject.toml`` for a project called *name*."""
+    """Render the scaffolded ``pyproject.toml``.
+
+    Args:
+        name: The project name.
+
+    Returns:
+        A virtual uv project depending on lightcone-cli.
+    """
     return _render(
         "pyproject.toml.tmpl",
         name=name,
@@ -67,30 +84,32 @@ def pyproject(*, name: str) -> str:
 
 
 def python_version() -> str:
-    """``.python-version`` — the exact interpreter patch, taken from the
-    interpreter ``lc`` is running on.
+    """Render ``.python-version``.
 
     Deliberately not an engine constant: a new project pins the python the
     researcher actually has, rather than one lc would have to download to
-    honor a number baked into a release.
+    honour a number baked into a release.
+
+    Returns:
+        The exact patch of the interpreter ``lc`` is running on.
     """
     v = sys.version_info
     return f"{v.major}.{v.minor}.{v.micro}\n"
 
 
 def requires_python() -> str:
-    """The scaffolded ``requires-python``, taken verbatim from
-    lightcone-cli's own ``Requires-Python``.
+    """Render the scaffolded ``requires-python``.
 
-    A scaffolded project depends on the engine, so uv enforces this bound
-    during resolution regardless; declaring the same specifier states it
-    rather than inventing a second, unrelated one. Verbatim, so a compound
-    specifier carries over intact.
+    Taken verbatim from lightcone-cli's own ``Requires-Python``: a
+    scaffolded project depends on the engine, so uv enforces this bound
+    during resolution regardless, and declaring the same specifier states
+    it rather than inventing a second one. It cannot conflict with
+    :func:`python_version`, since lc only runs on an interpreter that
+    already satisfies it.
 
-    It cannot conflict with :func:`python_version`: lc is only *able* to
-    run on an interpreter satisfying this specifier, so the ambient pin
-    always satisfies it. The fallback for a metadata-less install is the
-    running interpreter's own minor version, which holds that property too.
+    Returns:
+        The specifier, or the running interpreter's minor version for a
+        metadata-less install.
     """
     from importlib.metadata import PackageNotFoundError, metadata
 
@@ -105,13 +124,15 @@ def requires_python() -> str:
 
 
 def lightcone_requirement() -> str:
-    """The ``lightcone-cli`` requirement pinned into the scaffold.
+    """Render the ``lightcone-cli`` requirement for the scaffold.
 
-    The engine lives *inside the experiment's lock* — pinned to the
-    version that ran ``lc init``, so driver and project stay in lockstep
-    and the engine that produced a result stays recoverable. Dev builds
-    fall back to unpinned: their versions aren't published, so pinning one
-    would make the project's lock unsolvable.
+    The engine lives inside the experiment's lock, pinned to the version
+    that ran ``lc init``, so the engine that produced a result stays
+    recoverable.
+
+    Returns:
+        A pinned requirement, or an unpinned one for a dev build, whose
+        version is not published and would make the lock unsolvable.
     """
     from importlib.metadata import PackageNotFoundError, version
 
@@ -139,7 +160,14 @@ def lightcone_requirement() -> str:
 
 
 def entries(name: str) -> tuple[str, ...]:
-    """The meaningful lines of template *name*, in template order."""
+    """List the lines a template manages.
+
+    Args:
+        name: A line-managed template's file name.
+
+    Returns:
+        Its non-comment, non-blank lines, in template order.
+    """
     return tuple(_lines(read(name)))
 
 
@@ -153,7 +181,15 @@ def _lines(text: str) -> list[str]:
 
 
 def missing(name: str, text: str) -> list[str]:
-    """Which of template *name*'s lines *text* does not carry, in order."""
+    """Find the managed lines a file does not already carry.
+
+    Args:
+        name: A line-managed template's file name.
+        text: The file's current contents.
+
+    Returns:
+        The absent lines, in template order.
+    """
     present = set(_lines(text))
     return [e for e in entries(name) if e not in present]
 
@@ -188,11 +224,16 @@ def _repair(name: str, text: str) -> str | None:
 
 
 def header(name: str) -> str:
-    """Template *name*'s own leading comment.
+    """Read a template's own leading comment.
 
     Read back out of the template rather than duplicated as a constant, so
-    rewording it there can never leave :func:`_repair` appending a second
-    header to a file that already carries the first.
+    rewording it there cannot leave a repair appending a second header.
+
+    Args:
+        name: A line-managed template's file name.
+
+    Returns:
+        Its first line.
     """
     return read(name).splitlines()[0]
 
@@ -201,12 +242,19 @@ def header(name: str) -> str:
 
 
 def gitignore() -> str:
-    """The whole ``.gitignore``, for a project that has none."""
+    """Render the whole ``.gitignore``, for a project that has none."""
     return read("gitignore.tmpl")
 
 
 def gitignore_repair(text: str) -> str | None:
-    """*text* with every managed ignore pattern present, or ``None``."""
+    """Append the managed ignore patterns a file is missing.
+
+    Args:
+        text: The file's current contents.
+
+    Returns:
+        The repaired text, or ``None`` if nothing was missing.
+    """
     return _repair("gitignore.tmpl", text)
 
 
@@ -216,46 +264,56 @@ def gitignore_repair(text: str) -> str | None:
 
 
 def gitattributes() -> str:
-    """``.gitattributes`` — the whole storage policy, in four lines.
+    """Render ``.gitattributes``, the whole storage policy.
 
     A default of ``nothing`` and two exceptions: outputs and declared
-    inputs are content and go to git-annex, everything else stays in git.
-    The default is the line that is easy to leave out and expensive to —
-    ``git annex add`` annexes whatever it is handed, so without it the
-    documented save turns analysis code into read-only symlinks into the
-    object store. Manifests are exempted again because they must be
-    readable on a clone that has fetched no annex content.
+    inputs go to git-annex, everything else stays in git. The default is
+    the load-bearing line — ``git annex add`` annexes whatever it is
+    handed, so without it a save turns analysis code into read-only
+    symlinks. Manifests are exempted back out so they stay readable on a
+    clone that has fetched no annex content.
+
+    Returns:
+        The four attribute lines, with the default first.
     """
     return read("gitattributes.tmpl")
 
 
 def gitattributes_repair(text: str) -> str | None:
-    """*text* with every managed attribute line present, or ``None``.
+    """Append the managed attribute lines a file is missing.
 
-    Entry-wise for the same reason ``.gitignore`` is, and with more at
-    stake: a ``.gitattributes`` that the user wrote first, or that an
-    earlier lc wrote with fewer lines, would leave result bytes routed
-    into git instead of the annex.
+    More is at stake than in ``.gitignore``: a ``.gitattributes`` the user
+    wrote first would leave result bytes routed into git, not the annex.
+
+    Args:
+        text: The file's current contents.
+
+    Returns:
+        The repaired text, or ``None`` if nothing was missing.
     """
     return _repair("gitattributes.tmpl", text)
 
 
 def datalad_config(*, dataset_id: str) -> str:
-    """``.datalad/config`` — a git-config file carrying the dataset id.
+    """Render ``.datalad/config``, the file that makes a project a dataset.
 
     A dataset id is the one thing a git + git-annex repository lacks to
-    *be* a DataLad dataset, so writing it makes a scaffolded project one
-    from birth, with no adoption step. lc never reads this file back;
-    ``datalad`` does, if the researcher installs it.
+    *be* a DataLad dataset. lc never reads this back; datalad does.
+
+    Args:
+        dataset_id: A UUID, generated once and never regenerated.
+
+    Returns:
+        A git-config file carrying ``datalad.dataset.id``.
     """
     return _render("datalad-config.tmpl", dataset_id=dataset_id)
 
 
 def data_readme() -> str:
-    """``data/README.md`` — where declared inputs live.
+    """Render ``data/README.md``, which says where declared inputs live.
 
-    Like ``results/``, the directory starts empty and git carries no empty
-    directories, so the README is what makes it exist in a clone.
+    Returns:
+        The README that makes an otherwise empty directory survive a clone.
     """
     return read("data-README.md.tmpl")
 
@@ -266,21 +324,30 @@ def data_readme() -> str:
 
 
 def results_readme() -> str:
-    """``results/README.md`` — where outputs land.
+    """Render ``results/README.md``, which says where outputs land.
 
-    ``results/`` starts empty, and git does not track empty directories,
-    so without the README the directory is absent from a clone and nothing
-    explains the ``results/<universe>/<output_id>/`` layout.
+    Returns:
+        The README that makes an otherwise empty directory survive a clone
+        and explains the ``results/<universe>/<output_id>/`` layout.
     """
     return read("results-README.md.tmpl")
 
 
 def myst_yml() -> str:
-    """``myst.yml`` — the report's MyST configuration."""
+    """Render ``myst.yml``, the report's MyST configuration."""
     return read("myst.yml.tmpl")
 
 
 def index_md(*, title: str) -> str:
-    """The template report. References ``astra.yaml`` elements *by path*,
-    so numbers and figures stay single-sourced in the analysis."""
+    """Render ``index.md``, the template report.
+
+    References ``astra.yaml`` elements by path, so numbers and figures
+    stay single-sourced in the analysis.
+
+    Args:
+        title: The report title.
+
+    Returns:
+        A MyST document.
+    """
     return _render("index.md.tmpl", title=title)

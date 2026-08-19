@@ -58,12 +58,21 @@ _INSTALL_SETTINGS = (
 
 
 def env_version(root: Path) -> str:
-    """The environment identity of the project at *root*.
+    """Compute the environment identity of a project.
 
     ``sha256(uv.lock bytes ‖ .python-version bytes ‖ canonical
-    install-settings JSON)``. Read fresh every call — it is also the
-    mid-run gate's baseline, and a gate that trusted a cached value would
-    be checking nothing.
+    install-settings JSON)``, length-framed. Read fresh on every call: this
+    is also the mid-run gate's baseline, and a cached value would check
+    nothing.
+
+    Args:
+        root: The project root.
+
+    Returns:
+        The digest, as ``sha256:<hex>``.
+
+    Raises:
+        ProjectError: If ``uv.lock`` or ``.python-version`` is missing.
     """
     lock = _required(root, "uv.lock", "run `uv lock` (or `lc init`) to lock the environment")
     pin = _required(
@@ -81,11 +90,18 @@ def env_version(root: Path) -> str:
 
 
 def code_version(*, recipe: str, decisions: Mapping[str, str], env: str) -> str:
-    """One output's identity: what it is made of, and what made it.
+    """Compute one output's identity.
 
-    ``sha256(recipe ‖ canonical decisions ‖ env_version)``. *env* is passed
-    in rather than derived, because a graph computes it once and every task
-    in the run has to be identified against the same value.
+    ``sha256(recipe ‖ canonical decisions ‖ env_version)``, length-framed.
+
+    Args:
+        recipe: The rendered recipe command.
+        decisions: The decisions this output declares, as id → option.
+        env: The run's ``env_version``. Passed in rather than derived, so
+            every task in a graph is identified against the same value.
+
+    Returns:
+        The digest, as ``sha256:<hex>``.
     """
     h = hashlib.sha256()
     _frame(h, "recipe", recipe.encode())
@@ -141,14 +157,22 @@ class LockScan:
 
 
 def scan_lock(root: Path) -> LockScan:
-    """Read ``uv.lock`` and report where the environment's identity stops.
+    """Scan the lock for dependencies that weaken an output's identity.
 
-    The refusal is the one that matters: a path, directory, or editable
-    dependency is a directory on somebody's disk, and the lock records
-    where it was rather than what was in it — so two syncs of the same lock
-    can install different code and every hash here would agree they were
-    identical. The project's own package is exempt, because it *is* the
-    project and the repository already records its bytes.
+    A path, directory or editable dependency records *where* it was rather
+    than what was in it, so two syncs of one lock can install different
+    code while every hash agrees they are identical. That is the refusal.
+    The project's own package is exempt: the repository records its bytes.
+
+    Args:
+        root: The project root.
+
+    Returns:
+        The refusals, the registry packages built from sdist, and the
+        dependency groups outside uv's default set.
+
+    Raises:
+        ProjectError: If ``uv.lock`` is missing or is not valid TOML.
     """
     lock_path = _required(root, "uv.lock", "run `uv lock` (or `lc init`)")
     try:

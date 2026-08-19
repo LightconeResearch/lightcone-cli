@@ -23,12 +23,17 @@ from lightcone.engine.project import SPEC_FILENAME, child_env, require_uv, uv_pr
 
 
 def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
-    """Run *command* in the project environment, inside the boundary.
+    """Run a command in the project environment, inside the boundary.
 
-    *command* is required, and there is deliberately no bare-``lc run``
-    shell. A probe is run far more often by an agent than by a person,
-    and an agent that opens an interactive shell waits forever for input
-    nobody is going to type.
+    Args:
+        project: The project root.
+        command: The argv to run. Required — there is deliberately no bare
+            ``lc run`` shell, since an agent that opens an interactive
+            shell waits forever for input nobody will type.
+
+    Returns:
+        The exit code, what the boundary enforced, and any lines the
+        caller should print verbatim.
     """
     require_uv()
     spec = read_spec(project)
@@ -50,13 +55,17 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
 
 
 def read_spec(project: Path) -> dict[str, Any]:
-    """The project's ``astra.yaml``, with sub-analyses merged in if possible.
+    """Read the project's spec, best-effort.
 
-    Best-effort by design: a probe exists to debug a project, and a spec
-    whose sub-analysis references are stale is exactly when someone runs
-    one. A tree that will not resolve degrades to the top-level document
-    rather than making the verb unusable — and no spec at all is simply
-    an empty one, with no declared inputs.
+    A probe exists to debug a project, and a spec whose sub-analysis
+    references are stale is exactly when someone runs one.
+
+    Args:
+        project: The project root.
+
+    Returns:
+        The spec with sub-analyses merged in; the top-level document alone
+        if the tree will not resolve; an empty spec if there is none.
     """
     from astra.helpers import load_yaml, resolve_analysis_tree
 
@@ -71,13 +80,18 @@ def read_spec(project: Path) -> dict[str, Any]:
 
 
 def input_paths(project: Path, spec: dict[str, Any]) -> list[Path]:
-    """The declared inputs that are filesystem paths, resolved.
+    """Collect the declared inputs that are filesystem paths.
 
-    A probe's read allowlist is the union of *all* declared inputs — it
-    has no output, so it has no narrower set to use. ASTRA's ``source``
-    is free-form (a URI, a dotted name, a path), so the test for "is
-    this a path" is whether it resolves to something that exists.
-    Anything else is somebody else's input kind.
+    ASTRA's ``source`` is free-form — a URI, a dotted name, a path — so
+    the test for "is this a path" is whether it resolves to something that
+    exists. Anything else is somebody else's input kind.
+
+    Args:
+        project: The project root, for resolving relative sources.
+        spec: The spec to read inputs from.
+
+    Returns:
+        The resolved paths that exist.
     """
     from astra.helpers import get_inputs
 

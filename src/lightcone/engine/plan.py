@@ -55,6 +55,7 @@ class Task:
 
     @property
     def key(self) -> Key:
+        """This task's identity within a run."""
         return (self.universe_id, self.output_id)
 
     @property
@@ -70,13 +71,17 @@ class Graph:
     tasks: dict[Key, Task]
 
     def order(self) -> list[Key]:
-        """The tasks in dependency order.
+        """Return the tasks in dependency order.
 
-        Only ``--check`` needs this: it has to classify a task after
-        everything upstream of it, so an upstream it already decided will
-        be rebuilt can be passed down as "this is going to change".
-        Execution never calls it — Dask derives the same order from the
-        futures it is handed.
+        Only ``--check`` needs this, to classify a task after everything
+        upstream of it. Execution never calls it: Dask derives the same
+        order from the futures it is handed.
+
+        Returns:
+            Every task key, dependencies first.
+
+        Raises:
+            ProjectError: If the outputs depend on each other in a cycle.
         """
         sorter = TopologicalSorter({k: set(t.depends_on) for k, t in self.tasks.items()})
         try:
@@ -85,10 +90,16 @@ class Graph:
             raise ProjectError(f"the outputs depend on each other in a cycle: {e.args[1]}") from e
 
     def closure(self, targets: list[Key]) -> Graph:
-        """*targets* and everything they transitively depend on.
+        """Narrow the graph to *targets* and what they depend on.
 
-        Asking for an output asks for what it is made of — anything less
+        Asking for an output asks for what it is made of; anything less
         runs a recipe against inputs that were never brought up to date.
+
+        Args:
+            targets: The task keys asked for.
+
+        Returns:
+            A graph holding *targets* plus their transitive dependencies.
         """
         wanted: set[Key] = set()
         pending = list(targets)
@@ -103,10 +114,16 @@ class Graph:
     def resolve(self, targets: list[str]) -> list[Key]:
         """Turn what a user typed into task keys.
 
-        A target is an output id — every universe that has it — or
-        ``<universe>/<output_id>`` for exactly one. An unknown target is
-        an error rather than an empty run: quietly making nothing is the
-        least useful thing a build tool can do.
+        Args:
+            targets: Each an output id — matching every universe that has
+                it — or ``<universe>/<output_id>`` for exactly one.
+
+        Returns:
+            The matching task keys, in the order given.
+
+        Raises:
+            ProjectError: If a target matches nothing. Quietly making
+                nothing is the least useful thing a build tool can do.
         """
         keys: list[Key] = []
         for target in targets:
@@ -127,11 +144,20 @@ class Graph:
 
 
 def build(root: Path, *, env_version: str) -> Graph:
-    """Read *root*'s spec and universes into a graph of tasks.
+    """Read a project's spec and universes into a graph of tasks.
 
-    *env_version* is passed in rather than computed here: every task in a
-    run has to be identified against the same environment, and a graph
-    that recomputed it per task could straddle an edit.
+    Args:
+        root: The project root.
+        env_version: The run's environment identity. Passed in rather than
+            computed here, so a graph cannot straddle an edit.
+
+    Returns:
+        One task per ``(universe, output)`` pair that has a recipe.
+
+    Raises:
+        ProjectError: If the spec is missing, declares no universe, nests
+            sub-analyses more than one level, or names an input nothing
+            provides.
     """
     spec = _spec(root)
     outputs = _outputs(spec)
@@ -365,15 +391,24 @@ def _flatten(decisions: Any) -> dict[str, str]:
 def render(template: str, *, inputs: dict[str, str], decisions: dict[str, str], output: str) -> str:
     """Substitute ASTRA's recipe placeholders.
 
-    ``{output}`` is the directory the recipe writes into, ``{inputs}`` is
-    every input's value in declaration order, and ``{inputs.<id>}`` /
+    ``{output}`` is the directory written into, ``{inputs}`` is every
+    input's value in declaration order, and ``{inputs.<id>}`` /
     ``{decisions.<id>}`` are one of each. ``{{`` and ``}}`` collapse to
     literal braces.
 
-    Strict on everything else, deliberately: an unknown placeholder, an
-    undeclared reference, or a format spec is a spec bug, and a recipe
-    that ran with a silently empty substitution would produce bytes the
-    manifest then swears are correct.
+    Args:
+        template: The recipe command as the spec declares it.
+        inputs: Declared input name → the value to substitute.
+        decisions: Decision id → the option chosen in this universe.
+        output: The output directory, relative to the project root.
+
+    Returns:
+        The command with every placeholder substituted.
+
+    Raises:
+        ProjectError: On an unknown placeholder, an undeclared reference,
+            or a format spec. A silently empty substitution would produce
+            bytes the manifest then swears are correct.
     """
     pieces: list[str] = []
     for literal, field, spec, conversion in _FORMATTER.parse(template):

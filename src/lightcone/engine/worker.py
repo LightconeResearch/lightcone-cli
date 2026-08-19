@@ -70,7 +70,12 @@ class TaskResult:
 
     @property
     def usable(self) -> bool:
-        """Whether a dependent may proceed on this result."""
+        """Whether a dependent may proceed on this result.
+
+        Returns:
+            True for ``ok`` and ``skipped`` — the two states in which the
+            bytes on disk are current.
+        """
         return self.status in ("ok", "skipped")
 
 
@@ -89,18 +94,25 @@ def materialize(
 ) -> TaskResult:
     """Make *task* if it needs making. What Dask submits, once per task.
 
-    This is where "the worker never raises" is enforced, rather than at
-    each fallible call inside it. Dask re-raises a task's exception in the
-    driver, which would abort every other task in flight — so the contract
-    is absolute, and a contract assembled from individually-guarded call
-    sites is only as true as the last person to add one.
+    Where "the worker never raises" is enforced. Dask re-raises a task's
+    exception in the driver, which would abort every other task in flight,
+    so the contract is absolute — and one assembled from individually
+    guarded call sites is only as true as the last person to add one.
 
-    *upstream* arrives as the results of the futures this task was given
-    as arguments, which is what makes Dask the scheduler: the ordering
-    falls out of the argument graph rather than out of a loop here.
-    *head* and *versions* are the run's, handed down: the driver commits
-    as outputs land so HEAD moves under the run, and one input declared by
-    many outputs is the same bytes every time.
+    Args:
+        root: The project root.
+        task: The output to make.
+        env_version: The run's environment identity, checked either side
+            of the recipe.
+        head: The run's ``(commit sha, origin URL)``, read once by the
+            driver because it commits as outputs land and HEAD moves.
+        versions: The run's content-hash memo for declared inputs.
+        *upstream: The results of this task's dependencies, arriving as
+            the futures it was given — which is what makes Dask the
+            scheduler rather than a loop here.
+
+    Returns:
+        What happened. Never raises.
     """
     try:
         return _materialize(root, task, env_version, head, versions, upstream)
@@ -152,13 +164,23 @@ def execute(
 ) -> TaskResult:
     """Run *task*'s recipe and record what it produced.
 
-    The environment is checked on both sides of the recipe: an edit to the
-    lock while a long graph runs would otherwise leave manifests claiming
-    an environment that no longer existed by the time the recipe ran.
+    The output directory is reset first: the recipe owns it, and a file
+    left from a previous run would otherwise enter the content hash and be
+    committed as part of an output that never produced it.
 
-    The output directory is reset first. The recipe owns it, and a file
-    left over from a previous run would otherwise survive into the content
-    hash and be committed as part of an output that never produced it.
+    Args:
+        root: The project root.
+        task: The output to make.
+        env_version: The run's environment identity, checked either side
+            of the recipe so a mid-run lock edit cannot be recorded as if
+            it had been in force.
+        input_versions: Each declared input's content identity, recorded
+            in the manifest as the chain.
+        head: The run's ``(commit sha, origin URL)``.
+
+    Returns:
+        ``ok`` with the output's ``data_version``, or ``failed``. Commits
+        nothing and never touches git beyond reading HEAD.
     """
     if drift := _gate(root, env_version):
         return TaskResult(task.key, "failed", reason=drift)
@@ -247,16 +269,19 @@ def _lc_version() -> str:
 
 
 def main(argv: list[str]) -> int:
-    """``python -m lightcone.engine.worker <universe>/<output_id>``.
+    """Run one task from the command line, unconditionally.
 
-    A thin wrapper over :func:`execute` — the same function Dask calls, so
-    this is an entry point rather than a second implementation. It runs the
-    task unconditionally: a rerun is a rerun, and the caller (a person, or
-    ``datalad rerun``) has already said what they want.
+    ``python -m lightcone.engine.worker <universe>/<output_id>`` — what the
+    ``[DATALAD RUNCMD]`` record in every materialization commit names. A
+    thin wrapper over :func:`execute`, so this is an entry point rather
+    than a second implementation. No staleness check: a rerun is a rerun.
 
-    Upstream versions come from the manifests on disk, because there is no
-    graph in flight to take them from. An upstream that has never been
-    materialized is a refusal, not a silent zero.
+    Args:
+        argv: One argument, ``<universe>/<output_id>``.
+
+    Returns:
+        0 on success, 1 if the task failed, 2 on a bad argument or an
+        unreadable project.
     """
     if len(argv) != 1 or "/" not in argv[0]:
         print("usage: python -m lightcone.engine.worker <universe>/<output_id>", file=sys.stderr)

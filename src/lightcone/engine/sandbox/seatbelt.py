@@ -59,8 +59,14 @@ PLATFORM_DEFAULTS = "platform-defaults.sbpl"
 
 @functools.cache
 def read_profile(name: str) -> str:
-    """The raw text of an SBPL fragment, cached — it is immutable
-    package data read on every ``wrap``."""
+    """Read an SBPL fragment.
+
+    Args:
+        name: A fragment's file name.
+
+    Returns:
+        Its text. Cached: immutable package data read on every wrap.
+    """
     if name not in (BASE_PROFILE, NETWORK, PLATFORM_DEFAULTS):
         raise KeyError(f"unknown profile fragment: {name!r}")
     return (resources.files(__package__) / "profiles" / name).read_text(encoding="utf-8")
@@ -68,14 +74,14 @@ def read_profile(name: str) -> str:
 
 @functools.cache
 def capability() -> Capability:
-    """Whether ``sandbox-exec`` is present and usable on this host.
+    """Probe whether ``sandbox-exec`` is present and usable on this host.
 
-    Seatbelt has been "deprecated" since 2012 and has never been given a
-    removal date, but the profile dialect does drift across releases —
-    so this runs a live canary rather than trusting the file's presence.
+    Deprecated since 2012 and never given a replacement, which is why it
+    is probed rather than assumed.
 
-    Cached like its Landlock twin: the canary is a subprocess, and the
-    answer cannot change inside one process.
+    Returns:
+        A ``seatbelt`` capability, or ``none`` with the reason. Cached:
+        the answer cannot change inside one process.
     """
     if os.name != "posix" or not os.path.isfile(SANDBOX_EXEC):
         return Capability(kind="none", detail=f"{SANDBOX_EXEC} not present")
@@ -102,6 +108,17 @@ class SeatbeltBackend:
     capability: Capability = field(default_factory=lambda: Capability(kind="seatbelt"))
 
     def wrap(self, policy: Policy, argv: Sequence[str]) -> list[str]:
+        """Rewrite *argv* to run under ``sandbox-exec``.
+
+        Pure: no temporary files, no file descriptors, no global state.
+
+        Args:
+            policy: What the command may touch.
+            argv: The command.
+
+        Returns:
+            The rewritten command.
+        """
         return [
             SANDBOX_EXEC,
             "-p",
@@ -112,6 +129,15 @@ class SeatbeltBackend:
         ]
 
     def attest(self, policy: Policy) -> Attestation:
+        """Report what the wrapped command will have enforced.
+
+        Args:
+            policy: The policy being wrapped.
+
+        Returns:
+            The record written with every output, derived from the flags
+            actually applied.
+        """
         return Attestation(
             mechanism="seatbelt",
             fs="declared",
@@ -120,7 +146,14 @@ class SeatbeltBackend:
 
 
 def profile_params(policy: Policy) -> list[tuple[str, str]]:
-    """The ``-D`` bindings the generated profile refers to, in order."""
+    """Build the ``-D`` bindings the generated profile refers to.
+
+    Args:
+        policy: The policy being wrapped.
+
+    Returns:
+        ``(name, value)`` pairs, in the order the profile uses them.
+    """
     return [
         (f"{prefix}_{index}", str(path))
         for prefix, paths in (
@@ -133,20 +166,21 @@ def profile_params(policy: Policy) -> list[tuple[str, str]]:
 
 
 def generate_profile(policy: Policy) -> str:
-    """The SBPL for *policy*: upstream base, our tiers, upstream defaults.
+    """Generate the SBPL profile for a policy.
 
-    Order is load-bearing, because **SBPL is last-match-wins**: it is
-    what lets ``(deny default)`` lead the base and still be overridden,
-    what lets :func:`_read_only_guard` take a write back, and why the
-    write tier is restated *after* that guard.
+    Upstream base, our tiers, then upstream defaults. Order is
+    load-bearing, because SBPL is last-match-wins: it is what lets
+    ``(deny default)`` lead the base and still be overridden, what lets
+    :func:`_read_only_guard` take a write back, and why the write tier is
+    restated *after* that guard — otherwise a writable directory inside a
+    readable tree would be revoked.
 
-    That last one is not cosmetic — it is what makes ``results/`` work.
-    Landlock unions rights, so a writable directory nested inside a
-    readable tree needs no help there. Reproducing it here means the
-    write set must have the final word, or the guard's ``(deny
-    file-write* PROJECT)`` would revoke the grant on ``results/`` that
-    sits inside it: Linux would materialize and macOS would refuse the
-    very same policy.
+    Args:
+        policy: What the command may touch.
+
+    Returns:
+        The profile text, referring to the bindings
+        :func:`profile_params` supplies.
     """
     return "\n".join(
         [

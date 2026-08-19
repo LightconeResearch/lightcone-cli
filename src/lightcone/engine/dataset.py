@@ -54,36 +54,55 @@ def put_our_bin_first() -> None:
 
 
 def init_git(directory: Path) -> None:
-    """``git init`` — the repository the project's history lives in."""
+    """Create the repository the project's history lives in.
+
+    Args:
+        directory: Where to run ``git init``.
+    """
     _git(["init", "-q"], cwd=directory)
 
 
 def init_annex(directory: Path) -> None:
-    """``git annex init`` — the object store the bytes live in."""
+    """Create the object store the bytes live in.
+
+    Args:
+        directory: A directory inside the repository to annex.
+    """
     _git(["annex", "init", "-q"], cwd=directory)
 
 
 def is_annexed(directory: Path) -> bool:
-    """Whether the enclosing repository has an annex.
+    """Report whether the enclosing repository has an annex.
 
-    ``annex.uuid`` is the marker git-annex itself writes on ``init`` and
-    reads to decide the same question, so this asks git-annex rather than
-    guessing from a directory listing.
+    Asks git-annex's own question — ``annex.uuid`` is the marker it writes
+    on ``init`` — rather than guessing from a directory listing.
+
+    Args:
+        directory: A directory inside the repository.
+
+    Returns:
+        True if the repository has been annexed.
     """
     return _git_ok(["config", "--get", "annex.uuid"], cwd=directory)
 
 
 def ignore_rule(directory: Path, path: str) -> str | None:
-    """Where *path* is git-ignored, as ``<file>:<line>:<pattern>``, or ``None``.
+    """Find the ignore rule covering *path*, if there is one.
 
-    ``--no-index`` asks about the *rules* rather than about the index:
-    without it git answers "not ignored" for anything already tracked,
-    which is exactly the project where someone tracked a result by hand
-    and left the rule in place for the next one.
+    ``--no-index`` asks about the *rules* rather than the index: without
+    it, git answers "not ignored" for anything already tracked, which is
+    exactly the project where someone tracked a result by hand and left
+    the rule for the next one.
 
-    ``-v`` is what makes the answer actionable. Convergence cannot repair
-    this — ``.gitignore`` convergence only ever appends — so the message
-    has to point at the line to delete, not merely report that one exists.
+    Args:
+        directory: The repository to ask in.
+        path: The pathspec to ask about, with a trailing slash for a
+            directory — a rule like ``results/*`` ignores the contents and
+            does not match the bare name.
+
+    Returns:
+        ``<file>:<line>:<pattern>``, or ``None`` if nothing ignores it.
+        Convergence cannot repair this, so the message must name the line.
     """
     proc = project._run(["git", "check-ignore", "-v", "--no-index", "--", path], cwd=directory)
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -98,29 +117,34 @@ def ignore_rule(directory: Path, path: str) -> str | None:
 
 
 def status(directory: Path) -> list[tuple[str, str]]:
-    """The working tree's uncommitted changes, as ``(code, path)`` pairs.
+    """List the working tree's uncommitted changes.
 
-    ``git status --porcelain`` honours ``.gitignore``, so ``.venv/`` never
-    counts. ``data/`` and ``results/`` do, now that they are tracked —
-    which is the point: inputs are committed before anything computes on
-    them, and outputs are committed by the run that produced them.
+    Honours ``.gitignore``, so ``.venv/`` never counts; ``data/`` and
+    ``results/`` do, which is the point — inputs are committed before
+    anything computes on them.
+
+    Args:
+        directory: The repository to inspect.
+
+    Returns:
+        ``(status code, path)`` for each change, empty when clean.
     """
     lines = _git(["status", "--porcelain"], cwd=directory).splitlines()
     return [(line[:2], line[3:]) for line in lines if line.strip()]
 
 
 def head(directory: Path) -> tuple[str, str]:
-    """The commit ``HEAD`` is at, and the ``origin`` URL if there is one.
+    """Read the commit ``HEAD`` is at and the ``origin`` URL.
 
-    Both are reads and neither takes the index lock, so this is the one
-    thing about git a worker may do for itself — it needs them for the
-    manifest, and a run starts from a clean tree, so every worker gets the
-    same answer.
+    Both are reads and neither takes the index lock.
 
-    The remote is empty rather than absent when there is none: a project
-    that has never been pushed is perfectly normal, and a manifest field
-    that is sometimes missing is worse to read than one that is sometimes
-    blank.
+    Args:
+        directory: The repository to read.
+
+    Returns:
+        ``(commit sha, origin URL)``. The URL is empty rather than absent
+        when the repository has no remote — a manifest field that is
+        sometimes missing reads worse than one that is sometimes blank.
     """
     remote = project._run(["git", "config", "--get", "remote.origin.url"], cwd=directory)
     return (
@@ -130,12 +154,16 @@ def head(directory: Path) -> tuple[str, str]:
 
 
 def dataset_id(directory: Path) -> str:
-    """The dataset's UUID, read back through git rather than parsed.
+    """Read the dataset's UUID out of ``.datalad/config``.
 
-    lc writes ``.datalad/config`` and otherwise leaves ``.datalad/`` to
-    datalad; asking git for one key out of a git-config file keeps it that
-    way. Empty when there is none, which is a project someone assembled
-    without ``lc init``.
+    Through ``git config`` rather than by parsing: lc writes that file and
+    otherwise leaves ``.datalad/`` to datalad.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        The UUID, or empty for a project assembled without ``lc init``.
     """
     found = project._run(
         ["git", "config", "-f", ".datalad/config", "--get", "datalad.dataset.id"],
@@ -145,13 +173,19 @@ def dataset_id(directory: Path) -> str:
 
 
 def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
-    """Commit *paths* with *message*. False if there was nothing to commit.
+    """Commit *paths*.
 
-    ``git annex add`` first, so content that ``.gitattributes`` routes to
-    the annex is never captured as a git blob; then ``git add -A``, which
-    stages the deletions a rebuild left behind; then a commit with no
-    pathspec, because what is staged is exactly what we staged — a run
-    starts from a clean tree and workers never touch git.
+    ``git annex add`` first, so content ``.gitattributes`` routes to the
+    annex is never captured as a git blob; then ``git add -A``, which
+    stages the deletions a rebuild left behind.
+
+    Args:
+        directory: The repository root.
+        paths: What to stage, absolute or repository-relative.
+        message: The commit message.
+
+    Returns:
+        False if there was nothing to commit.
     """
     relative = [_rel(directory, p) for p in paths]
     _git(["annex", "add", "--quiet", "--", *relative], cwd=directory)
@@ -165,12 +199,14 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
 def restore(directory: Path, paths: Iterable[Path]) -> None:
     """Put *paths* back the way the last commit had them.
 
-    Scoped to the paths given and never to the whole tree: a run that
-    fails must not discard edits made while it was running. ``clean``
-    first for what the run wrote, then ``checkout`` for what it deleted or
-    truncated — and only when the path is in ``HEAD`` at all, since a
-    first materialization has nothing to go back to and ``checkout``
-    would fail on the pathspec.
+    ``clean`` first for what a run wrote, then ``checkout`` for what it
+    deleted or truncated — and only when the path is in ``HEAD``, since a
+    first materialization has nothing to go back to.
+
+    Args:
+        directory: The repository root.
+        paths: What to restore. Scoped to these and never the whole tree:
+            a failed run must not discard edits made while it ran.
     """
     for path in paths:
         rel = _rel(directory, path)

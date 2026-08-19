@@ -48,17 +48,19 @@ class ConvergenceReport:
         """Whether the project needed nothing done to it.
 
         Note the tense: after a write run that created files this is
-        ``False``. It reports what convergence *found* — which is the
-        question check mode asks — not "the project is now good".
+        ``False``. It reports what convergence *found*, not whether the
+        project is now good.
         """
         return not self.created and not self.repaired and not self.blocked
 
     def as_dict(self) -> dict[str, object]:
-        """The report as JSON-ready data, ``converged`` first.
+        """Return the report as JSON-ready data, ``converged`` first.
 
-        Built from :func:`dataclasses.asdict` so a field added to the
-        report cannot silently go missing from ``lc init --json``, which is
-        the agent-facing contract.
+        Built from :func:`dataclasses.asdict`, so a field added to the
+        report cannot silently go missing from ``lc init --json``.
+
+        Returns:
+            Every field, with ``converged`` first.
         """
         return {"converged": self.converged, **asdict(self)}
 
@@ -87,12 +89,16 @@ class _Converger:
     ) -> None:
         """Converge something whose *presence* is the question.
 
-        ``is_current`` makes it a *derived* artifact instead, one whose
-        agreement with its inputs is the question: a ``uv.lock`` that no
-        longer matches ``pyproject.toml``, or a ``.venv`` that no longer
-        matches the lock, is exactly as unconverged as a missing one, and
-        reports as ``repaired``. It is consulted only when the item is
-        present, so a fresh project pays no probe.
+        Args:
+            name: What to call it in the report.
+            present: Whether it is already there.
+            apply: Creates or repairs it. Called only when writing.
+            is_current: Makes it a *derived* artifact instead, one whose
+                agreement with its inputs is the question — a ``uv.lock``
+                that no longer matches ``pyproject.toml`` is exactly as
+                unconverged as a missing one, and reports as ``repaired``.
+                Consulted only when present, so a fresh project pays no
+                probe.
         """
         if not present:
             self.report.created.append(name)
@@ -111,17 +117,18 @@ class _Converger:
         template: Callable[[], str],
         repair: Callable[[str], str | None] | None = None,
     ) -> None:
-        """Create *path* from *template* if missing; else offer it to *repair*.
+        """Create a file from a template, or offer it to a repair.
 
-        *template* is a thunk rather than a string, so check mode renders
-        nothing at all and a steady-state run renders only the files it
-        actually writes. Parent directories are created, so a managed file
-        never depends on an earlier item having made its directory first.
-
-        ``repair`` receives the current text and returns the fixed text, or
-        ``None`` when the file is already fine. Repairs must be
-        conservative by construction — see
-        :func:`~lightcone.engine.templates.gitignore_repair`.
+        Args:
+            name: What to call it in the report.
+            path: Where it goes. Parent directories are created, so a
+                managed file never depends on an earlier item.
+            template: Renders the file. A thunk rather than a string, so
+                check mode renders nothing and a steady-state run renders
+                only what it writes.
+            repair: Receives the current text and returns the fixed text,
+                or ``None`` when the file is already fine. Must be
+                conservative by construction.
         """
         if not path.exists():
             self.report.created.append(name)
@@ -139,7 +146,11 @@ class _Converger:
         """Record an item convergence cannot complete, and why.
 
         Stronger than :meth:`warn`: the project is not converged, so
-        ``--check`` fails instead of reporting a file that isn't there.
+        ``--check`` fails rather than reporting a file that is not there.
+
+        Args:
+            name: What to call it in the report.
+            reason: What the user must do, recorded as a warning.
         """
         self.report.blocked.append(name)
         self.report.warnings.append(reason)
@@ -155,18 +166,23 @@ class _Converger:
 
 
 def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
-    """Converge *directory* into an ASTRA project. Idempotent.
+    """Converge a directory into an ASTRA project. Idempotent.
 
     Creates whatever is missing, repairs the pieces lightcone manages, and
     never overwrites a file the user owns. A directory that already holds
     an ``astra.yaml`` is adopted, not rejected.
 
-    With ``write=False`` nothing touches the filesystem — not even the
-    directory itself — and the returned report describes what a real run
-    would have done.
+    Args:
+        directory: The project root, created if absent.
+        write: False for check mode, which touches nothing — not even the
+            directory — and reports what a real run would have done.
 
-    Raises :class:`ProjectError` if uv is missing or fails — it is the
-    environment substrate, so there is no useful project without it.
+    Returns:
+        What was created, repaired, left alone or blocked, plus warnings.
+
+    Raises:
+        ProjectError: If uv, git or git-annex is missing, or any of them
+            fails.
     """
     # Imported here rather than at module scope because `astra.cli` costs
     # ~0.5 s to import — Click, Rich, and the validation stack, which pulls
@@ -233,7 +249,11 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
 
 
 def require_uv() -> None:
-    """Refuse early when uv is absent — it is the environment substrate."""
+    """Refuse early when uv is absent — it is the environment substrate.
+
+    Raises:
+        ProjectError: If uv is not on ``PATH``.
+    """
     if shutil.which("uv") is None:
         raise ProjectError(
             "uv is required (the environment substrate). Install it: "
@@ -244,9 +264,11 @@ def require_uv() -> None:
 def require_git() -> None:
     """Refuse early when git is absent.
 
-    git is the one tool uv cannot install, and the only admitted exception
-    to an otherwise uv-installable stack. Results are versioned in the
-    repository, so there is no useful project without it.
+    The one tool uv cannot install, and the only admitted exception to an
+    otherwise uv-installable stack.
+
+    Raises:
+        ProjectError: If git is not on ``PATH``.
     """
     if shutil.which("git") is None:
         raise ProjectError(
@@ -261,6 +283,9 @@ def require_git_annex() -> None:
     Probed after :func:`~lightcone.engine.dataset.put_our_bin_first`, and
     by the name git itself searches for: ``git annex`` is git finding a
     ``git-annex`` executable on ``PATH``, not a builtin.
+
+    Raises:
+        ProjectError: If ``git-annex`` is not on ``PATH``.
     """
     dataset.put_our_bin_first()
     if shutil.which("git-annex") is None:
@@ -272,30 +297,42 @@ def require_git_annex() -> None:
 
 
 def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
-    """``uv run``, pinned to *directory* and refusing to drift.
+    """Build the ``uv run`` hop that pins a command to a project.
 
     ``--locked`` makes a stale lock uv's loud error rather than a silent
-    relock, and the explicit ``--project`` is there because uv's own
-    walk-up discovery is never trusted.
+    relock, and ``--project`` is explicit because uv's walk-up discovery
+    is never trusted.
 
-    *sync* is the only thing callers disagree about. A probe syncs, and
-    ``--exact`` keeps a previously-installed extra out of the environment
-    it is about to describe. A recipe does not: the environment was
-    converged before the run started, and syncing per task would have
-    every concurrent worker writing the same ``.venv``.
+    Args:
+        directory: The project to pin to.
+        sync: True for a probe, which converges the environment it is
+            about to describe. False for a recipe: the environment was
+            converged before the run, and syncing per task would have
+            every concurrent worker writing the same ``.venv``.
+
+    Returns:
+        The argv prefix, ending in ``--``.
     """
     selection = ["--exact"] if sync else ["--no-sync"]
     return ["uv", "run", "--locked", *selection, "--project", str(directory), "--"]
 
 
 def sync(directory: Path) -> list[str]:
-    """Make ``.venv`` match ``uv.lock``. Returns whatever uv warned about.
+    """Make ``.venv`` match ``uv.lock``.
 
     A run calls this before it starts rather than checking and refusing:
-    workers pass ``--no-sync`` so nothing else would notice a lock edited
+    workers pass ``--no-sync``, so nothing else would notice a lock edited
     without a sync, and a manifest recording an environment the recipe did
-    not run under is the identity model saying something untrue. Doing it
-    is both shorter than reporting it and impossible to ignore.
+    not run under is the identity model saying something untrue.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        Whatever uv warned about.
+
+    Raises:
+        ProjectError: If uv fails.
     """
     return _check_call(["uv", *_SYNC_ARGS, "--project", str(directory)], cwd=directory)
 
@@ -434,7 +471,14 @@ def _can_ask_git(directory: Path) -> bool:
 
 
 def project_name(directory: Path) -> str:
-    """A PEP 503-ish project name derived from the directory name."""
+    """Derive a project name from a directory name.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        A PEP 503-ish name, or ``analysis`` if nothing usable remains.
+    """
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", directory.name).strip("-._").lower()
     return name or "analysis"
 
@@ -446,22 +490,23 @@ _ENVIRONMENT_FILES = ("pyproject.toml", "uv.lock", ".venv")
 
 
 def current_project(directory: Path | None = None) -> Path:
-    """*directory* (default: the working directory), taken as the project root.
+    """Take a directory as the project root, checking it is one.
 
-    ``lc run`` assumes it is invoked from the root, so the only check is
-    that the environment is actually there. There is no walk-up: the
-    directory you are in is the directory that is used, or it is an
-    error.
+    There is no walk-up: the directory you are in is the directory that is
+    used, or it is an error.
 
-    The two ways that fails are different mistakes and get different
-    advice. A directory with no project markers at all is the wrong
-    *place* — the answer is to go to the right one, and telling someone
-    standing in ``$HOME`` to run ``lc init`` there would be telling them
-    to scaffold a project in their home directory. A directory that
-    holds a ``pyproject.toml`` or an ``astra.yaml`` but lacks the built
-    environment is the right place, not yet converged — a fresh clone is
-    exactly this, since git carries no ``.venv`` — and there ``lc init``
-    is the whole answer.
+    Args:
+        directory: Defaults to the working directory.
+
+    Returns:
+        The resolved project root.
+
+    Raises:
+        ProjectError: If the environment is not there. The two ways that
+            fails get different advice — a directory with no project
+            markers is the wrong *place*, while one that declares a
+            project but lacks the built environment is the right place,
+            not yet converged, which is what a fresh clone is.
     """
     directory = (directory or Path.cwd()).resolve()
     missing = [name for name in _ENVIRONMENT_FILES if not (directory / name).exists()]
@@ -498,12 +543,15 @@ def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
 
 
 def child_env() -> dict[str, str]:
-    """The environment external tools run in: ours, minus ``VIRTUAL_ENV``.
+    """Build the environment external tools run in.
 
-    Every uv invocation names its project explicitly, so an activated
-    environment elsewhere is never what we mean — uv agrees, ignoring it and
-    warning that it did, once per invocation, which would otherwise land in
-    the report and in ``--json``. Explicit flags beat ambient variables.
+    Ours, minus ``VIRTUAL_ENV``. Every uv invocation names its project
+    explicitly, so an activated environment elsewhere is never what we
+    mean — and uv warns once per invocation when it ignores one, which
+    would otherwise land in the report and in ``--json``.
+
+    Returns:
+        The current environment without ``VIRTUAL_ENV``.
     """
     return {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
 
@@ -522,20 +570,22 @@ def _check_call(argv: list[str], *, cwd: Path) -> list[str]:
 
 
 def tool_warnings(stderr: str) -> list[str]:
-    """A tool's warnings, lifted out of its progress output.
+    """Lift a tool's warnings out of its progress output.
 
-    uv interleaves warnings with progress on stderr, so relaying the whole
-    stream would bury them under a line per installed package. A warning is
-    a line starting ``warning:`` plus its continuations, which uv aligns
-    under the 9-character ``warning: `` prefix. The two-space floor is what
-    separates those from uv's own change list (`` + pkg==1.0``), which is
-    indented by exactly one — folding those in swallowed the whole install
-    list into the warning text.
+    uv interleaves warnings with progress, so relaying the whole stream
+    would bury them under a line per installed package. A warning is a
+    line starting ``warning:`` plus its continuations, which uv indents by
+    at least two — one space is uv's own change list (`` + pkg==1.0``).
 
-    The one that has to reach the user: when the uv cache and the project
-    are on different filesystems, uv cannot link and silently falls back to
-    copying every package — most of an environment stops being shared, and
-    nothing else would say so.
+    The one that must reach the user: when the uv cache and the project
+    are on different filesystems, uv silently falls back to copying every
+    package, and nothing else would say so.
+
+    Args:
+        stderr: A tool's captured stderr.
+
+    Returns:
+        One entry per warning, continuations folded in.
     """
     found: list[str] = []
     for line in stderr.splitlines():
@@ -565,10 +615,9 @@ def _lock_is_current(directory: Path) -> bool:
 def _env_is_current(directory: Path) -> bool:
     """Whether ``.venv`` still satisfies ``uv.lock``.
 
-    Set-level, not byte-level: uv catches packages the
-    lock requires and the environment lacks, but not extras installed by
-    hand, which leave ``--check`` reporting "would make no changes". What
-    bounds what a recipe can import is the sandbox, not this probe.
+    Set-level, not byte-level: uv catches packages the lock requires and
+    the environment lacks, but not extras installed by hand. What bounds
+    what a recipe can import is the sandbox, not this probe.
     """
     return _is_current(["sync", "--locked", "--exact", "--check"], directory=directory)
 

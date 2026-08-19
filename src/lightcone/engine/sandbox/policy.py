@@ -56,13 +56,18 @@ _UTILITY_PATH = "/usr/local/bin:/usr/bin:/bin:/run/current-system/sw/bin"
 
 
 def utility(name: str) -> Path | None:
-    """Where *name* resolves from the fixed search path, if it is there.
+    """Resolve an allowlisted tool from the fixed search path.
 
-    The **only** way anything works out where an allowlisted tool lives.
-    Anywhere that hardcodes a path instead is a second answer to the same
-    question, and the two disagree the moment a host keeps its copy
-    somewhere else: the exec set would grant one file and the caller
-    would run the other, which is a denial on every single run.
+    The only way anything works out where an allowlisted tool lives.
+    Hardcoding a path is a second answer to the same question, and the two
+    disagree the moment a host keeps its copy elsewhere — the exec set
+    would grant one file and the caller would run the other.
+
+    Args:
+        name: A tool from :data:`EXEC_ALLOWLIST`.
+
+    Returns:
+        Its path, or ``None`` if it is not on this host.
     """
     found = shutil.which(name, path=_UTILITY_PATH)
     return Path(found) if found else None
@@ -165,12 +170,11 @@ _HOME_LAYOUT = {
 
 
 def exec_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
-    """What a sandboxed command may touch — one policy, every caller.
+    """Build what a sandboxed command may touch.
 
     The tree is read-only apart from ``results/``, so ``lc run`` and a
     recipe get the same scope: a command that works under one works under
-    the other. ``read_paths`` adds whatever the caller declared outside
-    the tree.
+    the other.
 
     A recipe is not narrowed to its own output directory. Whether an
     output's bytes are its own is what the manifest's ``data_version``
@@ -179,9 +183,15 @@ def exec_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     leaves a manifest that is self-consistent and wrong, which no checksum
     can see.
 
-    ``results/`` is granted only if it exists — a policy describes, it
-    does not prepare. Creates the per-run HOME on disk; the caller owns
-    removing it (see :func:`~lightcone.engine.sandbox.boundary.scope`).
+    Args:
+        project: The project root, granted read.
+        read_paths: Declared inputs outside the tree.
+
+    Returns:
+        The policy. ``results/`` is granted only if it exists — a policy
+        describes, it does not prepare. Creates the per-run HOME on disk;
+        the caller owns removing it (see
+        :func:`~lightcone.engine.sandbox.boundary.scope`).
     """
     tmp_home = Path(tempfile.mkdtemp(prefix="lc-home-")).resolve()
     for sub in _HOME_LAYOUT.values():
@@ -220,23 +230,25 @@ def _write_roots(project: Path) -> list[Path]:
 
 
 def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
-    """HOME and friends, pointed at a fresh directory.
+    """Point ``HOME`` and friends at a fresh private directory.
 
     The real ``$HOME`` is neither readable nor writable inside the
-    boundary. Left alone, that breaks matplotlib, astropy, and R on first
-    import — and the obvious patch, mounting ``$HOME`` read-only, would
-    reopen the dotfile-steering channel the whole layer exists to close.
-    Giving them a private HOME instead is the Bazel/nix move: they work,
-    and they cannot be steered.
+    boundary, which breaks matplotlib, astropy and R on first import —
+    and mounting it read-only would reopen the dotfile-steering channel
+    the layer exists to close. A private HOME is the Bazel/nix move: they
+    work, and they cannot be steered.
 
-    ``PATH`` is set for a different reason, but the same one at heart:
-    what the command resolves has to be what the policy granted.
+    ``PATH`` is set so what the command resolves is what the policy
+    granted. ``PYTHONPYCACHEPREFIX`` and ``TMPDIR`` point inside the
+    private HOME, so an in-tree import can write its ``__pycache__`` and
+    ``tempfile`` works even where the shared ``/tmp`` left the write set.
 
-    ``PYTHONPYCACHEPREFIX`` is here for the same reason at the other end:
-    the tree is read-only apart from ``results/``, so without it every
-    ``import`` of an in-tree module fails trying to write its
-    ``__pycache__``. ``TMPDIR`` points inside too, so ``tempfile`` works
-    even where the shared ``/tmp`` had to leave the write set.
+    Args:
+        tmp_home: The per-run directory to point at.
+        project: The project, whose ``.venv/bin`` fronts ``PATH``.
+
+    Returns:
+        The environment overlay the boundary applies inside the wrap.
     """
     return {
         "HOME": str(tmp_home),
@@ -337,13 +349,18 @@ def _exec_set(project: Path, python: Path | None) -> list[Path]:
 
 @functools.cache
 def elf_loaders() -> tuple[Path, ...]:
-    """The dynamic loaders present on this host, realpath'd.
+    """Find the dynamic loaders present on this host.
 
-    Scans each distinct directory once rather than globbing five
-    patterns: on a merged-``/usr`` system all five resolve to the same
-    directory, and `glob` re-lists and re-matches its ~8000 entries per
-    pattern — which measured as 95% of the whole policy build. Cached
-    because the answer cannot change while the process runs.
+    Landlock checks EXECUTE on the loader's open, so without these every
+    dynamically linked binary fails ``EACCES``. Scans each distinct
+    directory once rather than globbing five patterns — on a merged-
+    ``/usr`` system all five resolve to the same directory, and globbing
+    re-lists ~8000 entries per pattern, which measured as 95% of the
+    policy build.
+
+    Returns:
+        The realpath'd loaders. Cached: the answer cannot change while
+        the process runs.
     """
     found: set[Path] = set()
     for directory, patterns in _loader_patterns().items():

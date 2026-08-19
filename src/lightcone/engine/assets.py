@@ -32,10 +32,18 @@ _HASH_EXCLUDE = frozenset({MANIFEST_FILENAME})
 
 
 def output_dir(root: Path, universe_id: str, output_id: str) -> Path:
-    """Where a ``(universe, output)`` pair's bytes live.
+    """Locate a ``(universe, output)`` pair's directory.
 
-    Path-addressed, and the path in a rendered recipe is this path — no
-    staging, no scratch, no relocation.
+    Path-addressed: the path in a rendered recipe is this path, with no
+    staging, scratch or relocation in between.
+
+    Args:
+        root: The project root.
+        universe_id: The universe the output was made under.
+        output_id: The output's id, qualified for a sub-analysis.
+
+    Returns:
+        ``<root>/results/<universe_id>/<output_id>``.
     """
     return root / "results" / universe_id / output_id
 
@@ -46,16 +54,27 @@ def output_dir(root: Path, universe_id: str, output_id: str) -> Path:
 
 
 def data_version(path: Path) -> str:
-    """The content identity of *path* — its bytes, and nothing else about it.
+    """Hash *path*'s content — its bytes, and nothing else about it.
 
-    A directory hashes each file in sorted relative-path order, with the
-    path fed in beside the bytes so a rename moves the digest. A file
-    hashes its own bytes. The two are framed differently, so a directory
-    holding one file can never collide with that file on its own.
+    A directory hashes each file in sorted relative-path order with the
+    relative path fed in beside the bytes, so a rename moves the digest. A
+    file hashes its own bytes. The two are framed apart, so a directory
+    holding one file cannot collide with that file alone.
 
-    Never mtime or size. A content hash is what lets a byte-identical
-    rebuild stop invalidating everything downstream, and what stops a file
-    restored with an old timestamp from passing as unchanged.
+    Never mtime or size: a content hash is what lets a byte-identical
+    rebuild stop cascading, and what stops a file restored with an old
+    timestamp passing as unchanged.
+
+    Args:
+        path: A file or directory. The manifest is excluded from a
+            directory's digest, since it carries the result.
+
+    Returns:
+        The digest, as ``sha256:<hex>``.
+
+    Raises:
+        FileNotFoundError: If *path* does not exist. Never a constant
+            digest, which would silently disable the staleness chain.
     """
     if not path.exists():
         raise FileNotFoundError(path)
@@ -98,7 +117,14 @@ class Versions:
         self._known: dict[Path, str] = {}
 
     def of(self, path: Path) -> str:
-        """*path*'s content identity, hashing it at most once per run."""
+        """Return *path*'s content identity, hashing it at most once.
+
+        Args:
+            path: A declared input, file or directory.
+
+        Returns:
+            The digest, as ``sha256:<hex>``.
+        """
         resolved = path.resolve()
         if (known := self._known.get(resolved)) is None:
             known = self._known[resolved] = data_version(path)
@@ -148,18 +174,28 @@ class Manifest:
     schema_version: int = field(default=SCHEMA_VERSION)
 
     def as_dict(self) -> dict[str, Any]:
-        """The manifest as JSON-ready data, ``schema_version`` first."""
+        """Return the manifest as JSON-ready data, ``schema_version`` first.
+
+        Returns:
+            Every field, in declaration order.
+        """
         data = asdict(self)
         return {"schema_version": data.pop("schema_version"), **data}
 
 
 def read(directory: Path) -> Manifest | None:
-    """The manifest in *directory*, or ``None`` if there isn't a usable one.
+    """Read the manifest in *directory*.
 
-    Absent or unparseable both come back as ``None``, which the staleness
-    rule reads as "make it again" — the safe direction. ``OSError`` is
-    deliberately not caught: a permission problem is a real fault and must
-    not disguise itself as an output that simply needs rebuilding.
+    Args:
+        directory: An output directory.
+
+    Returns:
+        The manifest, or ``None`` when it is absent or unparseable — which
+        the staleness rule reads as "make it again", the safe direction.
+
+    Raises:
+        OSError: Deliberately not caught. A permission problem is a real
+            fault and must not look like an output needing a rebuild.
     """
     path = directory / MANIFEST_FILENAME
     if not path.is_file():
@@ -175,9 +211,14 @@ def write(directory: Path, manifest: Manifest) -> Path:
     """Write *manifest* into *directory*, atomically.
 
     The rename is the commit point: a reader sees the previous manifest or
-    this one, never half of either. It has to be complete before the driver
-    saves the directory, which is why the content hash it carries is
-    computed before the save rather than from what the save produced.
+    this one, never half of either.
+
+    Args:
+        directory: The output directory to write into.
+        manifest: The record to write.
+
+    Returns:
+        The path written.
     """
     path = directory / MANIFEST_FILENAME
     temporary = directory / f"{MANIFEST_FILENAME}.tmp"
@@ -218,19 +259,22 @@ def staleness(
     manifest: Manifest | None,
     inputs: Mapping[str, str | None],
 ) -> Reason | None:
-    """Why *manifest* no longer describes a current output, or ``None``.
+    """Decide whether an output still describes what it was made from.
 
-    Values, not objects, on purpose: this is a pure comparison, and both of
-    its callers arrive at those values differently. The worker passes each
-    input's live content identity, taken from what its upstream just
-    returned. ``--check`` passes ``None`` for any input it has already
-    decided will be rebuilt, meaning "this is going to change" — it cannot
-    know whether a rebuild will come out byte-identical, and stopping the
-    cascade there would under-report.
+    The only place this rule lives. Values rather than objects, because the
+    two callers arrive at them differently and must not diverge in
+    anything else.
 
-    That ``None`` is the whole of the difference between the two callers:
-    one input value, conservatively chosen, rather than a second body of
-    logic that could disagree with this one.
+    Args:
+        code_version: The task's current identity.
+        manifest: The output's recorded manifest, or ``None``.
+        inputs: Each declared input's current content identity. ``None``
+            for an input the caller has already decided will be rebuilt —
+            ``--check``'s sentinel, meaning "this is going to change",
+            since it cannot know whether a rebuild is byte-identical.
+
+    Returns:
+        Why the output would be made again, or ``None`` if it is current.
     """
     if manifest is None:
         return Reason("missing")
