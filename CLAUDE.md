@@ -360,6 +360,31 @@ bytes.** `engine/dataset.py` is the whole seam, and every command in it
 goes through `project._run` — the same one convergence uses, so there is
 one monkeypatch point and the `tools` fixture already covers git.
 
+**git-annex is a wheel, and that sets the CLI's install floor.**
+`manylinux_2_34` on x86_64/aarch64, macOS 14+ arm64 or 15+ x86_64,
+win_amd64 — and **no sdist**, so a host below the floor fails to install
+rather than building from source. Because git-annex is a *hard* runtime
+dependency and `lc init` pins `lightcone-cli` into every project, that
+floor gates installing lc at all, including `lc run`, which never touches
+the annex. If it ever bites a real user, that coupling is the thing to
+revisit — an extra, or a probed requirement like git — not the floor.
+
+**Perlmutter clears it** (checked 2026-08-19, login node): the wheel
+installs and `git annex version` runs. That was the open question this
+stack was most likely to fail on, so it is written down rather than
+re-derived. Two things it does *not* settle, both layer 7's:
+
+- **Lustre/GPFS behaviour is unmeasured.** arXiv:2505.06558 documents
+  symlink, many-small-files and inode pressure on parallel filesystems.
+  Correctness is not the worry; cost is, and one output is one symlink
+  plus one object. `annex.thin` and adjusted (unlocked) branches are the
+  known mitigations. Time `git annex add` and `git annex get` on
+  `$SCRATCH` and `$CFS` before designing around either.
+- **`git-annex-shell` is not on the default remote PATH.** `git annex get`
+  from a laptop dispatches to it over a non-login ssh session, and the
+  wheel installs it into `.venv/bin`. Configuration, not design:
+  `git config remote.<name>.annex-shell <abs-path>`.
+
 **The `.gitattributes` default line is load-bearing.** `git annex add`
 annexes whatever it is handed, so the policy has to *start* with
 `* annex.largefiles=nothing` and let outputs and inputs opt out; last
