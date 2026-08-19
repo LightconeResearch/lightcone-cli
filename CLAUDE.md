@@ -631,7 +631,12 @@ What this deliberately cannot reach is **user-level configuration**
 make one commit answer differently on two hosts, so a colleague's clone
 would report every output as behind. The residue is real and unguarded —
 a user-level `no-build` changes what a sync installs and nothing records
-it.
+it. **There is no flag that closes it**: `--config-file` refuses a
+`pyproject.toml` outright, and both `--config-file <empty>` and
+`--no-config` drop the project's own `[tool.uv]` along with everything
+else (measured; `--no-config` also drops `[tool.uv.index]`, which is the
+GPU mechanism, so adopting it would break working projects). Tracked as
+issue #176 with the options and the measurements; don't re-derive them.
 
 **The git commit is recorded, never hashed, and never a signal.** It goes
 in the manifest so the code that produced a result stays recoverable. It
