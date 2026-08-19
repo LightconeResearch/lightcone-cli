@@ -45,9 +45,9 @@ speculatively.
 | # | Layer | State |
 |---|-------|-------|
 | 1 | **Project scaffolding** — `lc init` | ✅ **done** |
-| 2 | Environment layer — `env_version`, lock scan, manifest schema | ⬜ |
+| 2 | **Environment layer** — `env_version`, lock scan, manifest schema | ✅ **done** |
 | 3 | The `lc` entrypoint — launcher: discover → mode-detect → scrub `UV_*` → converge → delegate | ⬜ |
-| 4 | Fabric — `lc materialize`, worker sequence, mid-run relock gate | ⬜ |
+| 4 | **Fabric** — `lc materialize`, worker sequence, mid-run relock gate | ✅ **done** |
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | Container hatch — `[tool.lightcone.image]`, generated Containerfile, `lc build` | ⬜ |
 | 7 | Venues — Perlmutter, hub/GKE, Cloud Build | ⬜ |
@@ -574,6 +574,25 @@ key is hashed whether or not the project sets it. A setting outside the
 list must not move the hash, or every uv config nicety stales the world;
 a setting whose value merely *matches* today's default must, because that
 default can change under a project that never said anything.
+
+**The settings are read where uv reads them, and `uv.toml` *replaces*
+`[tool.uv]`** rather than merging with it (measured, uv 0.12.5 — uv warns
+about the pair itself, and `tool_warnings()` already lifts that into the
+report). Reading both would hash settings uv is ignoring, reporting two
+environments where uv installs one; reading only `pyproject.toml` left a
+`uv.toml` free to change what gets installed without moving `env_version`
+at all. Only the *values* are hashed, never which file supplied them —
+two projects that install the same artifacts are one environment however
+they spell it. `scan_lock` reads `default-groups` through the same
+function, because it is asking uv's question too.
+
+What this deliberately cannot reach is **user-level configuration**
+(`~/.config/uv/uv.toml`), which uv merges in underneath the project's own
+(measured). That is machine state, not project state: hashing it would
+make one commit answer differently on two hosts, so a colleague's clone
+would report every output as behind. The residue is real and unguarded —
+a user-level `no-build` changes what a sync installs and nothing records
+it.
 
 **The git commit is recorded, never hashed, and never a signal.** It goes
 in the manifest so the code that produced a result stays recoverable. It

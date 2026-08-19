@@ -94,6 +94,43 @@ def test_a_setting_outside_the_audited_list_does_not_move_it(root: Path) -> None
     assert env_version(root) == before
 
 
+def test_a_setting_written_in_uv_toml_moves_it(root: Path) -> None:
+    """`uv.toml` is the other place uv reads these from, and it decides the
+    same thing: which artifacts a sync materializes from an unchanged lock."""
+    before = env_version(root)
+    (root / "uv.toml").write_text("no-binary = true\n")
+    assert env_version(root) != before
+
+
+def test_uv_toml_replaces_tool_uv_rather_than_merging_with_it(root: Path) -> None:
+    """uv's own precedence (measured, uv 0.12.5): a `uv.toml` beside
+    `pyproject.toml` makes `[tool.uv]` ignored wholesale. Hashing a setting
+    uv is ignoring would report two environments where uv installs one."""
+    bare = env_version(root)
+    (root / "pyproject.toml").write_text(_PYPROJECT + "\n[tool.uv]\nno-binary = true\n")
+    assert env_version(root) != bare
+
+    (root / "uv.toml").write_text("")
+    assert env_version(root) == bare
+
+
+def test_where_a_setting_is_written_is_not_part_of_the_environment(
+    root: Path, tmp_path: Path
+) -> None:
+    """Two projects that install the same artifacts are one environment,
+    whichever file each of them says so in."""
+    (root / "pyproject.toml").write_text(_PYPROJECT + "\n[tool.uv]\nno-binary = true\n")
+
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "uv.lock").write_text(_LOCK)
+    (other / ".python-version").write_text("3.13.14\n")
+    (other / "pyproject.toml").write_text(_PYPROJECT)
+    (other / "uv.toml").write_text("no-binary = true\n")
+
+    assert env_version(other) == env_version(root)
+
+
 def test_project_code_does_not_move_it(root: Path) -> None:
     """The environment is not the analysis. Editing a recipe's source has
     to stale that output, through the git record and through declared
@@ -237,4 +274,14 @@ def test_groups_outside_the_default_set_are_advisory(root: Path) -> None:
 
 def test_a_group_uv_installs_by_default_is_not_advisory(root: Path) -> None:
     (root / "pyproject.toml").write_text(_PYPROJECT + "\n[dependency-groups]\ndev = []\n")
+    assert scan_lock(root).non_default_groups == ()
+
+
+def test_the_default_group_set_is_read_from_uv_toml_too(root: Path) -> None:
+    """The scan asks the same question `env_version` does, so it has to read
+    the answer from the same place uv would."""
+    (root / "pyproject.toml").write_text(
+        _PYPROJECT + "\n[dependency-groups]\ndev = []\nplots = []\n"
+    )
+    (root / "uv.toml").write_text('default-groups = ["dev", "plots"]\n')
     assert scan_lock(root).non_default_groups == ()

@@ -137,16 +137,19 @@ def _canonical(value: Any) -> str:
 
 
 def _install_settings(root: Path) -> str:
-    """The audited ``[tool.uv]`` settings, canonically, absent ones included.
+    """The audited uv settings, canonically, absent ones included.
 
     Every key is emitted whether or not the project sets it, so adding a
     setting whose value happens to be uv's default still moves
     ``env_version`` — a project that says what it means and a project that
     relies on a default are the same environment only until uv's default
     changes.
+
+    Only the values matter, never which file supplied them: two projects
+    that install the same artifacts are one environment however they spell
+    it.
     """
-    tool_uv = _pyproject(root).get("tool", {}).get("uv", {}) or {}
-    return _canonical({key: tool_uv.get(key) for key in _INSTALL_SETTINGS})
+    return _canonical({key: _uv_config(root).get(key) for key in _INSTALL_SETTINGS})
 
 
 # =============================================================================
@@ -210,7 +213,7 @@ def scan_lock(root: Path) -> LockScan:
             sdist_built.append(name)
 
     groups = set(pyproject.get("dependency-groups", {}) or {})
-    default = (pyproject.get("tool", {}).get("uv", {}) or {}).get("default-groups", ["dev"])
+    default = _uv_config(root).get("default-groups", ["dev"])
     non_default = set() if default == "all" else groups - set(default)
 
     return LockScan(
@@ -243,6 +246,30 @@ def _required(root: Path, name: str, remedy: str) -> Path:
     if not path.is_file():
         raise ProjectError(f"{root}: no {name} — {remedy}.")
     return path
+
+
+def _uv_config(root: Path) -> dict[str, Any]:
+    """uv's settings for this project, read the way uv itself reads them.
+
+    A ``uv.toml`` beside ``pyproject.toml`` **replaces** ``[tool.uv]``
+    wholesale rather than merging with it, so a project carrying both has
+    settings uv ignores — and hashing those would say two environments
+    differ when uv installs the same thing in each. uv warns about the
+    pair itself, and convergence already lifts its warnings.
+
+    What this cannot reach is user-level configuration
+    (``~/.config/uv/uv.toml``), which uv *does* merge in underneath. That
+    is machine state rather than project state: hashing it would make one
+    commit answer differently on two hosts, reporting every output as
+    behind on a colleague's clone.
+    """
+    config = root / "uv.toml"
+    if not config.is_file():
+        return _pyproject(root).get("tool", {}).get("uv", {}) or {}
+    try:
+        return tomllib.loads(config.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise ProjectError(f"{config}: invalid TOML: {e}") from e
 
 
 def _pyproject(root: Path) -> dict[str, Any]:
