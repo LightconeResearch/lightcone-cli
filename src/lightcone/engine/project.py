@@ -10,6 +10,7 @@ import subprocess
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from pathlib import Path
 
 from lightcone.engine import dataset, templates
@@ -215,15 +216,17 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     c.file(
         ".gitignore",
         directory / ".gitignore",
-        templates.gitignore,
+        partial(templates.read, "gitignore.tmpl"),
         repair=templates.gitignore_repair,
     )
     _converge_dataset(c, directory)
-    _converge_tracked_dir(c, directory, "data", templates.data_readme)
-    _converge_tracked_dir(c, directory, "results", templates.results_readme)
+    _converge_tracked_dir(c, directory, "data", partial(templates.read, "data-README.md.tmpl"))
+    _converge_tracked_dir(
+        c, directory, "results", partial(templates.read, "results-README.md.tmpl")
+    )
     # The MyST report is a recommended add-on on top of the spec, not part
     # of it — which is why it is scaffolded here and not by `astra init`.
-    c.file("myst.yml", directory / "myst.yml", templates.myst_yml)
+    c.file("myst.yml", directory / "myst.yml", partial(templates.read, "myst.yml.tmpl"))
     c.file(
         "index.md",
         directory / "index.md",
@@ -407,7 +410,7 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     c.file(
         ".gitattributes",
         directory / ".gitattributes",
-        templates.gitattributes,
+        partial(templates.read, "gitattributes.tmpl"),
         repair=templates.gitattributes_repair,
     )
     c.file(

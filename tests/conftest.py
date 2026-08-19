@@ -130,8 +130,8 @@ def analysis(tmp_path: Path, real_tools: None) -> Callable[..., Path]:
             'requires-python = ">=3.11"\ndependencies = []\n'
         )
         (root / ".python-version").write_text(templates.python_version())
-        (root / ".gitattributes").write_text(templates.gitattributes())
-        (root / ".gitignore").write_text(templates.gitignore())
+        (root / ".gitattributes").write_text(templates.read("gitattributes.tmpl"))
+        (root / ".gitignore").write_text(templates.read("gitignore.tmpl"))
         (root / "astra.yaml").write_text(textwrap.dedent(spec))
         for name, text in (universes or {"baseline": "id: baseline\ndecisions: {}\n"}).items():
             (root / "universes" / f"{name}.yaml").write_text(textwrap.dedent(text))

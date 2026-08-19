@@ -226,11 +226,22 @@ shell completion pay for neither. Keep this up as verbs land: a module-scope
 engine import would make every invocation pay for the heaviest layer.
 
 **Templates are files, not string literals.** `engine/templates/files/*.tmpl`
-are package data, loaded through `importlib.resources`; `templates/__init__.py`
-exposes one function per scaffolded file. Placeholders are
+are package data, loaded through `importlib.resources`. Placeholders are
 `string.Template` (`${name}`) — **not** `str.format` — because several
 templates legitimately contain braces (TOML tables, MyST `{astra}` roles).
 Substitution is strict, so a missing key raises.
+
+**A template gets a function only when there is something to decide** — a
+value the caller supplies (`pyproject`, `datalad_config`, `index_md`) or a
+merge policy for a file the user already owns (`gitignore_repair`,
+`gitattributes_repair`). Everything else is read by name:
+`templates.read("myst.yml.tmpl")`, or `partial(templates.read, …)` where
+convergence wants a thunk. This reverses the earlier "one function per
+scaffolded file" rule, which had five of the module's twenty functions
+doing nothing but rename a file — a second place for the name to be
+wrong, and one the type checker cannot catch. The two `*_repair`
+functions stay named because `_Converger.file` hands them the text alone,
+so the template name has to be bound before the call site.
 
 **No engine constants for the environment.** The scaffolded
 `.python-version` is the interpreter `lc` itself is running on, and
@@ -1151,7 +1162,7 @@ only checks that the guard is present. Verified empirically, not assumed.
 | To... | Read | Key patterns |
 |---|---|---|
 | Add the next layer | the spec (§11 = the layer ordering) | Land code + tests + deps together; update the layer table above. Docs are deliberately deferred |
-| Change what a scaffolded file contains | `src/lightcone/engine/templates/files/` | Edit the `.tmpl`; add new ones to `TEMPLATE_NAMES` + a renderer |
+| Change what a scaffolded file contains | `src/lightcone/engine/templates/files/` | Edit the `.tmpl`; add new ones to `TEMPLATE_NAMES`, and a renderer only if the file needs a substituted value or a merge policy |
 | Add a value to the scaffold | `src/lightcone/engine/templates/__init__.py` | Derive it from the environment or our own metadata before introducing a constant |
 | Change what gets converged | `src/lightcone/engine/project.py` + `tests/test_project.py` | `_Converger.item` / `.file`; repairs only ever append |
 | Change how a project stores bytes | `src/lightcone/engine/dataset.py` + `templates/files/gitattributes.tmpl` | Every command through `project._run`; test it against a real annex (`real_tools`) |

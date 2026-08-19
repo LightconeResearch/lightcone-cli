@@ -104,9 +104,9 @@ def test_converge_writes_the_templates_verbatim(tmp_path: Path) -> None:
 
     assert (project / "pyproject.toml").read_text() == templates.pyproject(name="proj")
     assert (project / ".python-version").read_text() == templates.python_version()
-    assert (project / ".gitignore").read_text() == templates.gitignore()
-    assert (project / "results/README.md").read_text() == templates.results_readme()
-    assert (project / "myst.yml").read_text() == templates.myst_yml()
+    assert (project / ".gitignore").read_text() == templates.read("gitignore.tmpl")
+    assert (project / "results/README.md").read_text() == templates.read("results-README.md.tmpl")
+    assert (project / "myst.yml").read_text() == templates.read("myst.yml.tmpl")
     assert (project / "index.md").read_text() == templates.index_md(title="proj")
 
 
@@ -345,7 +345,7 @@ def test_writes_the_storage_policy_and_the_dataset_id(tmp_path: Path) -> None:
     project = tmp_path / "proj"
     report = converge(project)
 
-    assert (project / ".gitattributes").read_text() == templates.gitattributes()
+    assert (project / ".gitattributes").read_text() == templates.read("gitattributes.tmpl")
     assert ".datalad/config" in report.created
     config = (project / ".datalad" / "config").read_text()
     assert '[datalad "dataset"]' in config

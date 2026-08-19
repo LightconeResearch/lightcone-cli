@@ -115,16 +115,16 @@ def test_the_template_does_not_ignore_what_the_repository_versions() -> None:
 def test_gitignore_header_is_the_templates_own_first_line() -> None:
     """Derived, not duplicated: rewording the template's comment can't leave
     the repair appending a second header."""
-    assert templates.gitignore().startswith(templates.header("gitignore.tmpl") + "\n")
+    assert templates.read("gitignore.tmpl").startswith(templates.header("gitignore.tmpl") + "\n")
 
 
 def test_repair_is_none_when_nothing_is_missing() -> None:
-    assert templates.missing("gitignore.tmpl", templates.gitignore()) == []
-    assert templates.gitignore_repair(templates.gitignore()) is None
+    assert templates.missing("gitignore.tmpl", templates.read("gitignore.tmpl")) == []
+    assert templates.gitignore_repair(templates.read("gitignore.tmpl")) is None
 
 
 def test_repair_of_an_empty_file_is_just_the_template() -> None:
-    assert templates.gitignore_repair("") == templates.gitignore()
+    assert templates.gitignore_repair("") == templates.read("gitignore.tmpl")
 
 
 def test_repair_appends_only_what_is_missing_behind_the_header() -> None:
@@ -180,7 +180,7 @@ def test_gitattributes_repair_appends_what_a_users_own_file_lacks() -> None:
     assert repaired is not None
     assert repaired.startswith("*.fits filter=lfs\n\n")
     assert templates.missing("gitattributes.tmpl", repaired) == []
-    assert templates.gitattributes_repair(templates.gitattributes()) is None
+    assert templates.gitattributes_repair(templates.read("gitattributes.tmpl")) is None
 
 
 # ---- .datalad/config ------------------------------------------------------
@@ -210,12 +210,12 @@ def test_index_md_renders_the_title_and_keeps_myst_roles() -> None:
 def test_results_readme_explains_the_output_layout() -> None:
     """`results/` starts empty and git carries no empty directories, so the
     README is the only thing a clone shows for it."""
-    assert "results/<universe>/<output_id>/" in templates.results_readme()
+    assert "results/<universe>/<output_id>/" in templates.read("results-README.md.tmpl")
 
 
 def test_data_readme_explains_where_declared_inputs_go() -> None:
     """It says what the directory is for and nothing about how to fill it:
     manipulating git-annex by hand is not something lc asks of anyone."""
-    text = templates.data_readme()
+    text = templates.read("data-README.md.tmpl")
     assert "data/catalog.fits" in text
     assert "git annex" not in text

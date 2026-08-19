@@ -29,7 +29,7 @@ def repo(tmp_path: Path, real_tools: None) -> Path:
     root = tmp_path / "demo"
     (root / "results").mkdir(parents=True)
     (root / "data").mkdir()
-    (root / ".gitattributes").write_text(templates.gitattributes())
+    (root / ".gitattributes").write_text(templates.read("gitattributes.tmpl"))
     dataset.init_git(root)
     for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
         dataset._git(["config", key, value], cwd=root)
@@ -296,7 +296,7 @@ def test_status_reports_uncommitted_changes(repo: Path) -> None:
 def test_status_honours_gitignore(repo: Path) -> None:
     """`.venv/` must never dirty a tree — a materialize would refuse to run
     in any project that had been synced."""
-    (repo / ".gitignore").write_text(templates.gitignore())
+    (repo / ".gitignore").write_text(templates.read("gitignore.tmpl"))
     dataset.save(repo, [repo], "ignores")
     (repo / ".venv" / "bin").mkdir(parents=True)
     (repo / ".venv" / "bin" / "python").write_text("")

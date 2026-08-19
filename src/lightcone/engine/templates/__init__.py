@@ -12,10 +12,15 @@ Placeholders use ``string.Template`` (``${name}``) rather than
 interpret. Substitution is strict: a missing key raises rather than
 silently emitting a placeholder.
 
-This module owns file *content*, including how content merges into a file
-the user already owns (:func:`gitignore_repair`,
-:func:`gitattributes_repair`). It knows nothing about convergence
-bookkeeping or the console.
+A template gets a function here only when there is something to decide:
+a value the caller supplies (:func:`pyproject`, :func:`datalad_config`,
+:func:`index_md`) or a policy for merging into a file the user already
+owns (:func:`gitignore_repair`, :func:`gitattributes_repair`). Everything
+else is its own content, and callers read it by name through
+:func:`read` — a wrapper that only renames the file would be a second
+place for the name to be wrong.
+
+This module knows nothing about convergence bookkeeping or the console.
 """
 
 from __future__ import annotations
@@ -154,9 +159,10 @@ def lightcone_requirement() -> str:
 # later lc release reach projects that already have one, instead of being
 # skipped because a marker was present.
 #
-# `entries`, `missing` and `header` take the template name; only the two
-# `*_repair` functions are named per file, because convergence hands those
-# to `_Converger.file` as callbacks over the text alone.
+# `entries`, `missing` and `header` take the template name. The two
+# `*_repair` functions are the exception to reading templates by name:
+# convergence hands them to `_Converger.file` as callbacks over the text
+# alone, so the name has to be bound here rather than at the call site.
 
 
 def entries(name: str) -> tuple[str, ...]:
@@ -238,14 +244,6 @@ def header(name: str) -> str:
     return read(name).splitlines()[0]
 
 
-# ---- .gitignore -------------------------------------------------------------
-
-
-def gitignore() -> str:
-    """Render the whole ``.gitignore``, for a project that has none."""
-    return read("gitignore.tmpl")
-
-
 def gitignore_repair(text: str) -> str | None:
     """Append the managed ignore patterns a file is missing.
 
@@ -256,27 +254,6 @@ def gitignore_repair(text: str) -> str | None:
         The repaired text, or ``None`` if nothing was missing.
     """
     return _repair("gitignore.tmpl", text)
-
-
-# =============================================================================
-# The dataset — what git-annex stores, and what makes it a DataLad dataset
-# =============================================================================
-
-
-def gitattributes() -> str:
-    """Render ``.gitattributes``, the whole storage policy.
-
-    A default of ``nothing`` and two exceptions: outputs and declared
-    inputs go to git-annex, everything else stays in git. The default is
-    the load-bearing line — ``git annex add`` annexes whatever it is
-    handed, so without it a save turns analysis code into read-only
-    symlinks. Manifests are exempted back out so they stay readable on a
-    clone that has fetched no annex content.
-
-    Returns:
-        The four attribute lines, with the default first.
-    """
-    return read("gitattributes.tmpl")
 
 
 def gitattributes_repair(text: str) -> str | None:
@@ -294,6 +271,11 @@ def gitattributes_repair(text: str) -> str | None:
     return _repair("gitattributes.tmpl", text)
 
 
+# =============================================================================
+# Files the caller supplies a value for
+# =============================================================================
+
+
 def datalad_config(*, dataset_id: str) -> str:
     """Render ``.datalad/config``, the file that makes a project a dataset.
 
@@ -307,35 +289,6 @@ def datalad_config(*, dataset_id: str) -> str:
         A git-config file carrying ``datalad.dataset.id``.
     """
     return _render("datalad-config.tmpl", dataset_id=dataset_id)
-
-
-def data_readme() -> str:
-    """Render ``data/README.md``, which says where declared inputs live.
-
-    Returns:
-        The README that makes an otherwise empty directory survive a clone.
-    """
-    return read("data-README.md.tmpl")
-
-
-# =============================================================================
-# results/ and the MyST report
-# =============================================================================
-
-
-def results_readme() -> str:
-    """Render ``results/README.md``, which says where outputs land.
-
-    Returns:
-        The README that makes an otherwise empty directory survive a clone
-        and explains the ``results/<universe>/<output_id>/`` layout.
-    """
-    return read("results-README.md.tmpl")
-
-
-def myst_yml() -> str:
-    """Render ``myst.yml``, the report's MyST configuration."""
-    return read("myst.yml.tmpl")
 
 
 def index_md(*, title: str) -> str:
