@@ -867,6 +867,31 @@ def test_a_real_cluster_still_fits_through_the_seam(root: Path) -> None:
     assert not dataset.status(root)
 
 
+def test_a_processes_cluster_fits_through_the_seam(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Workers in other processes — the shape every venue beyond one
+    machine has. Pins that the unit crosses the boundary by reference
+    (`worker.materialize`, `Task`, `Versions`, `TaskResult`) and that
+    results travel back whole."""
+
+    @contextmanager
+    def processes() -> Iterator[engine._Dask]:
+        from distributed import Client, LocalCluster
+
+        with LocalCluster(  # type: ignore[no-untyped-call]
+            n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None
+        ) as cluster:
+            with Client(cluster) as client:  # type: ignore[no-untyped-call]
+                yield engine._Dask(client)
+
+    monkeypatch.setattr(engine, "cluster_for_run", processes)
+    report = engine.materialize(root, [])
+
+    assert report.made == ["baseline/first", "baseline/second"]
+    assert not dataset.status(root)
+
+
 # ---- the report ------------------------------------------------------------
 
 

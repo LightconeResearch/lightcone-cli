@@ -41,7 +41,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from lightcone.engine import assets, container, dataset, identity, plan, project, worker
+from lightcone.engine import assets, container, dataset, identity, plan, project, venue, worker
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
 
@@ -406,10 +406,14 @@ def materialize(
         blocked, plus the boundary's notes and the lock scan's warnings.
 
     Raises:
-        ProjectError: If a required tool or git's committer identity is
-            missing, the tree has uncommitted changes, or the lock cannot
-            be audited.
+        ProjectError: If this is a login node, a required tool or git's
+            committer identity is missing, the tree has uncommitted
+            changes, or the lock cannot be audited.
     """
+    # First, because its remedy is the one with queue latency: the user
+    # can submit the allocation and fix anything the later refusals name
+    # while waiting for it.
+    venue.require_compute_node()
     project.require_uv()
     project.require_git()
     project.require_git_annex()
@@ -573,20 +577,27 @@ class _Dask:
 
 @contextmanager
 def cluster_for_run() -> Iterator[Scheduler]:
-    """Open a scheduler for one run. The seam venues will land behind.
+    """Open a scheduler for one run — the venue ladder, and nothing else.
 
     Every core, with no knob to say otherwise: how much of a machine a run
-    may use, and which machine, is one question and it belongs to the
-    declaration of an execution backend.
+    may use, and which machine, is one question, and the venue answers it —
+    a SLURM allocation spans every node it was granted, and the local
+    machine is the whole of itself. Detected, never configured, and only
+    here: nothing outside this function asks where a run executes.
 
-    Threads rather than processes — every task's real work happens in a
-    subprocess behind the exec boundary, so a worker spends its time in
-    ``wait()`` with the GIL released, and a threaded cluster costs no
-    interpreter startup and no pickling of results.
+    Threads rather than processes on the local branch — every task's real
+    work happens in a subprocess behind the exec boundary, so a worker
+    spends its time in ``wait()`` with the GIL released, and a threaded
+    cluster costs no interpreter startup and no pickling of results. The
+    allocation branch runs one such worker per node.
 
     Yields:
-        A scheduler bound to a local Dask cluster, closed on exit.
+        A scheduler bound to a Dask cluster, closed on exit.
     """
+    if "SLURM_JOB_ID" in os.environ:
+        with venue.slurm_client() as client:
+            yield _Dask(client)
+        return
     from distributed import Client, LocalCluster
 
     with LocalCluster(  # type: ignore[no-untyped-call]

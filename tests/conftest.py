@@ -22,6 +22,25 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture(autouse=True)
+def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip the host's venue out of the suite's environment.
+
+    On a NERSC login node every materialize test would otherwise meet the
+    login guard, and inside an allocation the real-cluster test would
+    launch srun across it. The venue tests set these back deliberately.
+    """
+    for name in (
+        "NERSC_HOST",
+        "SLURM_JOB_ID",
+        "SLURMD_NODENAME",
+        "SLURM_JOB_NUM_NODES",
+        "SLURM_NNODES",
+        "SLURM_CPUS_ON_NODE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Fake every external tool convergence shells out to, so the suite is
     hermetic — no network, no real resolution, no subprocesses.
