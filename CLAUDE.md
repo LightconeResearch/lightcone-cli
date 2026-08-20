@@ -1526,8 +1526,9 @@ guarantees.
 discipline, a frozen `container.Runtime` through `worker.materialize` —
 because resolving per task could answer differently mid-run. The rerun
 entry point resolves its own, as it does HEAD: it *is* the driver of its
-one-task run. `lc status` gained the three header lines (mode, image
-state, sandbox) — repository facts only, no runtime and no network
+one-task run. `lc status` gained the header lines (mode, image
+state, sandbox — and, since the hardening pass, crate) — repository
+facts only, no runtime and no network
 required, which is where the denial note and the runtime-missing
 refusal point.
 
@@ -1704,7 +1705,17 @@ is `git archive` / `datalad export-archive` on a repository that is
 already a crate; nothing is copied and there is no bundle directory.
 The rerun entry point deliberately does not regenerate it (it is one
 task's executor, not the driver), so the crate lags until the next
-materialize — recorded residue.
+materialize — and since the hardening pass `lc status` says so: its
+`crate:` line compares the document's own `datePublished` against the
+newest manifest `finished_at` the status walk already read — a content
+check, no git and no rocrate import (the recorded constraint that the
+crate stays the one materialize-only dependency on status's path). The
+`datePublished` pin is therefore load-bearing twice: it keeps the clock
+out of the render *and* it is what makes the lag detectable. A results
+edit that changes no manifest is invisible to the line — harmless, since
+such an edit is either a foreign write (reported stale) or render-
+neutral. `license_of` and `CRATE_FILENAME` moved to `project.py` so
+status can ask about publication intent without the renderer's stack.
 
 **Publication intent is derived, never configured.** A
 `[project].license` in `pyproject.toml` turns crate maintenance on —

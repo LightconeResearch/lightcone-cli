@@ -29,7 +29,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import tomllib
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -43,8 +42,6 @@ from lightcone.engine import assets, plan
 from lightcone.engine.dataset import LastWrite
 from lightcone.engine.plan import Graph, Key
 from lightcone.engine.project import SPEC_FILENAME
-
-CRATE_FILENAME = "ro-crate-metadata.json"
 
 #: The vocabulary the run-level facts come from. Without it in the
 #: ``@context``, terms like ``containerImage`` and ``sha256`` are
@@ -76,33 +73,6 @@ _SHA256_KEY = re.compile(r"^SHA256E?-s(\d+)--([0-9a-f]{64})(?:\..*)?$")
 _KEY_SIZE = re.compile(r"^\w+-s(\d+)")
 
 
-def license_of(root: Path) -> str:
-    """Read the project's declared license out of ``pyproject.toml``.
-
-    Presence is what turns crate maintenance on: RO-Crate requires a
-    license, a run must not refuse over a missing key, and inventing one
-    would assert terms over someone's data — so declaring
-    ``[project].license`` is declaring the intent to publish.
-
-    Args:
-        root: The project root.
-
-    Returns:
-        The license as declared — an SPDX expression, a URL, free text,
-        or a file path for the table forms — or empty when undeclared.
-    """
-    try:
-        data = tomllib.loads((root / "pyproject.toml").read_text())
-    except (OSError, tomllib.TOMLDecodeError):
-        return ""
-    declared = data.get("project", {}).get("license")
-    if isinstance(declared, str):
-        return declared
-    if isinstance(declared, dict):
-        return str(declared.get("text") or declared.get("file") or "")
-    return ""
-
-
 def render(
     root: Path,
     graph: Graph,
@@ -122,7 +92,7 @@ def render(
     Args:
         root: The project root.
         graph: The full task graph — every universe, every output.
-        license: The declared license, from :func:`license_of`.
+        license: The declared license, from :func:`project.license_of`.
         dsid: The dataset UUID, the namespace absolute entity ids are
             minted under so they are stable across clones.
         writer: Answers "which commit last touched this path" —

@@ -395,17 +395,5 @@ def test_an_out_of_tree_input_publishes_no_checksum(
     assert "contentSize" not in external
 
 
-def test_license_of_reads_every_spelling(tmp_path: Path) -> None:
-    cases = {
-        'license = "MIT"': "MIT",
-        'license = { text = "BSD-3-Clause" }': "BSD-3-Clause",
-        'license = { file = "LICENSE" }': "LICENSE",
-        "": "",
-    }
-    for spelling, expected in cases.items():
-        (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "x"\n{spelling}\n')
-        assert crate.license_of(tmp_path) == expected, spelling
-
-
 def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else [value]

@@ -1091,6 +1091,38 @@ def test_a_removed_license_stops_maintenance_but_keeps_the_file(
     assert any("no longer maintained" in w for w in report.warnings)
 
 
+def test_status_places_the_publication_view(root: Path, inline: None) -> None:
+    """The `crate:` header line, through its three plain states."""
+    assert engine.status(root).crate == "not maintained — declare [project].license to enable it"
+
+    _declare_license(root)
+    assert engine.status(root).crate == "will be created by the next `lc materialize`"
+
+    engine.materialize(root, [])
+    assert engine.status(root).crate == "up to date"
+
+
+def test_status_sees_the_crate_lag_a_rerun_leaves(root: Path, inline: None) -> None:
+    """The recorded residue made visible: a rerun rewrites a manifest but
+    never regenerates the view. Status reads the mismatch off the
+    document's own datePublished against the manifests it already read —
+    no git, no rocrate import."""
+    from dataclasses import replace
+
+    _declare_license(root)
+    engine.materialize(root, [])
+    directory = root / "results/baseline/second"
+    manifest = assets.read(directory)
+    assert manifest is not None
+    assets.write(directory, replace(manifest, finished_at="2027-01-01T00:00:00.000+00:00"))
+    dataset.save(root, [directory], "a rerun-shaped manifest rewrite")
+
+    assert engine.status(root).crate.startswith("behind")
+
+    engine.materialize(root, [])
+    assert engine.status(root).crate == "up to date"
+
+
 def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: None) -> None:
     _declare_license(root)
     engine.materialize(root, [])

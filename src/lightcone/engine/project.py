@@ -20,6 +20,9 @@ from lightcone.engine import dataset, templates
 
 SPEC_FILENAME = "astra.yaml"
 
+#: The publication view `lc materialize` converges at the project root.
+CRATE_FILENAME = "ro-crate-metadata.json"
+
 
 class ProjectError(Exception):
     """A project cannot be read or converged."""
@@ -513,6 +516,37 @@ def mode(directory: Path) -> Literal["direct", "containerized"]:
     from lightcone.engine import image
 
     return "direct" if image._table(directory) is None else "containerized"
+
+
+def license_of(directory: Path) -> str:
+    """Read the project's declared license out of ``pyproject.toml``.
+
+    Presence is what turns crate maintenance on: RO-Crate requires a
+    license, a run must not refuse over a missing key, and inventing one
+    would assert terms over someone's data — so declaring
+    ``[project].license`` is declaring the intent to publish. The same
+    derived-never-configured shape as :func:`mode`, and it lives here so
+    ``lc status`` can ask without importing the crate renderer's stack.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        The license as declared — an SPDX expression, a URL, free text,
+        or a file path for the table forms — or empty when undeclared.
+    """
+    import tomllib
+
+    try:
+        data = tomllib.loads((directory / "pyproject.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return ""
+    declared = data.get("project", {}).get("license")
+    if isinstance(declared, str):
+        return declared
+    if isinstance(declared, dict):
+        return str(declared.get("text") or declared.get("file") or "")
+    return ""
 
 
 def env_dir(directory: Path) -> Path:
