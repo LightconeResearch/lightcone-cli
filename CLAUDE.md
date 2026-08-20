@@ -1011,6 +1011,19 @@ its sync touches only ignored paths — so both modes run one order.)
 `--check` needs neither: `env_version` is the lock's bytes, so a drifted
 `.venv` cannot change what it answers.
 
+**A run fetches its declared inputs; the read-only verbs never do.**
+`materialize` batch-runs `git annex get` over the graph's in-tree
+declared inputs before anything hashes (driver-side — the storage
+invariant that nobody is ever asked to run an annex command by hand),
+so a bytes-free clone materializes straight to up-to-date. A failed
+fetch is a *warning*, never a refusal: independent tasks still run and
+the task whose input is unreachable reports its own failure. `--check`
+and `status` stay transfer-free — there an unfetched input is a
+reported fact, and the report now says `lc materialize` resolves it.
+Out-of-tree inputs are not fetched (no annex holds them — the recorded
+weaker promise), and `test_check_mode_never_fetches` pins the read-only
+half.
+
 **A run takes every core, and there is no flag to say otherwise.** How
 much of a machine a run may use — and which machine — is one question, and
 it belongs to a declared execution backend rather than to a `--jobs` knob

@@ -191,7 +191,8 @@ def _classified(
         report.warnings.append(
             "reported as out of date because their content is not in this "
             f"clone, not because they changed: {', '.join(sorted(unfetched))}. "
-            "Fetch with `git annex get <path>`."
+            "`lc materialize` fetches declared inputs before it decides "
+            "anything, so there this resolves itself."
         )
     return classified
 
@@ -427,6 +428,7 @@ def materialize(
     graph, env_version = _graph(root, targets, report)
     if not graph.tasks:
         return report
+    _fetch_inputs(root, graph, report)
     # Materialize is one of the two verbs allowed to build the image (the
     # other is `lc build`); the probe and the rerun entry point only find
     # one. Resolved once, then handed to every task — the HEAD discipline.
@@ -595,6 +597,41 @@ def cluster_for_run() -> Iterator[Scheduler]:
     ) as cluster:
         with Client(cluster) as client:  # type: ignore[no-untyped-call]
             yield _Dask(client)
+
+
+def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
+    """Bring declared inputs' bytes into this clone before anything hashes.
+
+    lc fetches rather than telling anyone to — the storage invariant —
+    and only here: ``--check`` and ``status`` are read-only verbs that
+    must not start network transfers, so there an unfetched input stays a
+    reported fact. In-tree inputs only, because an absolute input outside
+    the repository has no annex to fetch it from (the recorded weaker
+    promise). Unconditional rather than probed: ``git annex get`` on
+    content already present is a fast no-op, and one batch invocation
+    beats a detection walk.
+
+    A failed fetch is a *warning*, never a refusal: independent tasks
+    still run, and the task whose input is genuinely unreachable reports
+    its own failure with the real error — per-task reporting is most of
+    what owning the loop buys.
+    """
+    declared = sorted(
+        {
+            plan.declared_path(root, path)
+            for task in graph.tasks.values()
+            for name, path in task.inputs.items()
+            if name not in task.produced_by and root in path.parents
+        }
+    )
+    if not declared:
+        return
+    got = project._run(["git", "annex", "get", "--", *declared], cwd=root)
+    if got.returncode != 0:
+        report.warnings.append(
+            "some declared inputs could not be fetched into this clone — tasks "
+            f"needing them will report it:\n{got.stderr.strip()}"
+        )
 
 
 # =============================================================================
