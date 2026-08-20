@@ -1593,13 +1593,17 @@ node is exactly where "where does this project stand" gets asked.
 
 **Containerized runs assume a homogeneous allocation**, and the one
 part of that lc can check is *enforced*: a multi-node allocation with a
-containerized project **refuses** unless the runtime is podman-hpc,
-because podman's and docker's stores are node-local — the image loads on
-the driver's node only, and every task scheduled elsewhere would fail at
-`run <id>` with `--pull=never` forbidding the fetch. The check sits in
-`materialize()` before the runtime resolves (a refusal must not cost an
-image build) and not in `runtime_for_run` (the rerun entry point shares
-that, and a rerun is a one-node run wherever it sits). The rest stays a
+containerized project **refuses** unless the runtime's image store spans
+nodes — `container._SHARED_STORE_RUNTIMES`, a positively-stated fact
+like `_PODMAN_FAMILY`, holding podman-hpc alone — because podman's and
+docker's stores are node-local: the image loads on the driver's node
+only, and every task scheduled elsewhere would fail at `run <id>` with
+`--pull=never` forbidding the fetch. The check sits in `materialize()`
+before the runtime resolves (a refusal must not cost an image build, so
+it asks `runtime_hint()`, letting a wholly missing runtime reach
+`runtime_for_run`'s own refusal) and not in `runtime_for_run` (the rerun
+entry point shares that, and a rerun is a one-node run wherever it
+sits). The rest stays a
 recorded assumption: every node offers the same runtime binary and sees
 the shared-filesystem project tree. podman-hpc is what makes multi-node
 true on NERSC — `migrate` squashes the image to the shared filesystem,

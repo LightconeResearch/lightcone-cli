@@ -25,6 +25,10 @@ from typing import Literal
 from lightcone.engine.sandbox.boundary import SANDBOX_ENV
 from lightcone.engine.sandbox.model import Attestation, Capability, Policy
 
+#: The runtimes this backend can speak for — the one statement of the
+#: set, so the type does not get hand-copied out of step at its uses.
+OCIRuntime = Literal["podman", "docker", "podman-hpc"]
+
 
 @dataclass(frozen=True)
 class OCIBackend:
@@ -32,7 +36,7 @@ class OCIBackend:
 
     #: ``podman``, ``podman-hpc`` or ``docker`` — also what the
     #: attestation names.
-    runtime: Literal["podman", "docker", "podman-hpc"]
+    runtime: OCIRuntime
     #: The image id (bare hex). Execution pins on the id, never a tag, so
     #: a retagged image in the local store can never substitute.
     image_id: str

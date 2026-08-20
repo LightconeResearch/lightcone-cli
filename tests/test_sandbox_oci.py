@@ -172,19 +172,15 @@ def test_runtimes_differ_only_in_their_spellings(root: Path, policy: Policy) -> 
     assert "--userns=keep-id" in podman and "--pull=never" in podman
     assert "--user" in docker and "1000:1000" in docker
     # The site wrapper is podman's argv with only the runtime word swapped.
-    assert hpc == [
-        a.replace("=podman", "=podman-hpc")
-        if a == "--env=LC_SANDBOX=podman"
-        else ("podman-hpc" if a == "podman" else a)
-        for a in podman
-    ]
+    swap = {"podman": "podman-hpc", "--env=LC_SANDBOX=podman": "--env=LC_SANDBOX=podman-hpc"}
+    assert hpc == [swap.get(a, a) for a in podman]
     strip = {
         "--userns=keep-id", "--pull=never", "--user", "1000:1000",
         "podman", "docker", "podman-hpc",
         "--env=LC_SANDBOX=podman", "--env=LC_SANDBOX=docker", "--env=LC_SANDBOX=podman-hpc",
     }  # fmt: skip
-    stripped = [[a for a in argv if a not in strip] for argv in (podman, docker, hpc)]
-    assert stripped[0] == stripped[1] == stripped[2]
+    p, d, h = ([a for a in argv if a not in strip] for argv in (podman, docker, hpc))
+    assert p == d == h
 
 
 def test_the_environment_is_an_allowlist_never_ambient(

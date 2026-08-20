@@ -69,21 +69,18 @@ def _allocation(monkeypatch: pytest.MonkeyPatch, *, nodes: int = 1) -> None:
     monkeypatch.setenv("SLURMD_NODENAME", "127.0.0.1")
 
 
-def _stub_srun(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> Path:
-    """Put a bash srun on PATH and return the directory holding it.
-
-    The default body is what a real srun does from lc's point of view:
-    drop the step flags, honor ``--ntasks``, run the worker command.
-    """
+def _stub_srun(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> None:
+    """Put a bash srun with *body* on PATH."""
     stubs = tmp_path / "stubs"
     stubs.mkdir(exist_ok=True)
     stub = stubs / "srun"
     stub.write_text(f"#!/usr/bin/env bash\n{textwrap.dedent(body)}")
     stub.chmod(0o755)
     monkeypatch.setenv("PATH", f"{stubs}{os.pathsep}{os.environ['PATH']}")
-    return stubs
 
 
+#: What a real srun does from lc's point of view: drop the step flags,
+#: honor ``--ntasks``, run the worker command.
 _FAITHFUL = """
 ntasks=1
 while [[ $1 == --* ]]; do
@@ -152,30 +149,27 @@ def test_the_read_only_verbs_work_on_a_login_node(
 
 def test_the_srun_argv_spans_the_allocation() -> None:
     import sys
-    import tempfile
 
-    argv = venue._srun_argv("tcp://10.0.0.1:8786", 4, 128, tempfile.gettempdir())
+    argv = venue._srun_argv("tcp://10.0.0.1:8786", 4, 128, "/scratch")
 
-    assert argv[:5] == [
+    assert argv == [
         "srun",
         "--overlap",
         "--ntasks=4",
         "--ntasks-per-node=1",
         "--cpus-per-task=128",
-    ]
-    assert argv[5:8] == [sys.executable, "-m", "distributed.cli.dask_worker"]
-    assert argv[8] == "tcp://10.0.0.1:8786"
-    rest = argv[9:]
-    for flag, value in (
-        ("--nthreads", "128"),
-        ("--nworkers", "1"),
-        ("--death-timeout", "60"),
-        ("--memory-limit", "0"),
-        ("--local-directory", tempfile.gettempdir()),
-    ):
-        assert rest[rest.index(flag) + 1] == value
-    assert "--no-dashboard" in rest
-    assert "--no-nanny" in rest
+        sys.executable,
+        "-m",
+        "distributed.cli.dask_worker",
+        "tcp://10.0.0.1:8786",
+        "--nthreads", "128",
+        "--nworkers", "1",
+        "--no-dashboard",
+        "--no-nanny",
+        "--death-timeout", "60",
+        "--memory-limit", "0",
+        "--local-directory", "/scratch",
+    ]  # fmt: skip
 
 
 def test_slurm_without_srun_refuses(
@@ -261,8 +255,9 @@ def test_a_dead_srun_reports_its_exit_code(
 def test_slurm_counts_that_are_not_numbers_refuse(monkeypatch: pytest.MonkeyPatch) -> None:
     """A mangled count is the same leak class as SLURM_JOB_ID without an
     srun, and gets the same curated refusal — never a ValueError traceback."""
+    monkeypatch.setenv("SLURM_CPUS_ON_NODE", "72(x2)")
     with pytest.raises(ProjectError, match="SLURM_CPUS_ON_NODE"):
-        venue._int_env("72(x2)", "SLURM_CPUS_ON_NODE")
+        venue._int_env("SLURM_CPUS_ON_NODE", 1)
 
     monkeypatch.setenv("SLURM_JOB_ID", "12345")
     monkeypatch.setenv("SLURM_JOB_NUM_NODES", "four")
@@ -306,12 +301,12 @@ def test_a_multi_node_allocation_refuses_a_node_local_image_store(
     (root / "pyproject.toml").write_text(text + '\n[tool.lightcone.image]\napt-install = ["bc"]\n')
     dataset.save(root, [root], "containerize")
     _allocation(monkeypatch, nodes=2)
-    monkeypatch.setattr(container, "runtime_name", lambda r: "podman")
+    monkeypatch.setattr(container, "runtime_hint", lambda: "podman")
 
     with pytest.raises(ProjectError, match="node-local"):
         engine.materialize(root, [])
 
-    monkeypatch.setattr(container, "runtime_name", lambda r: "podman-hpc")
+    monkeypatch.setattr(container, "runtime_hint", lambda: "podman-hpc")
 
     def reached(r: Path, *, build: bool) -> None:
         raise ProjectError("reached runtime resolution")

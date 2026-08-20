@@ -42,6 +42,12 @@ from lightcone.engine.project import ProjectError, _check_call
 #: inheriting podman behavior through a `!= "docker"` back door.
 _PODMAN_FAMILY = ("podman", "podman-hpc")
 
+#: The runtimes whose image store every node of an allocation can see —
+#: podman-hpc's migrate squashes the image to the shared filesystem.
+#: podman's and docker's overlay stores are node-local, which is what
+#: the multi-node materialize refusal stands on.
+_SHARED_STORE_RUNTIMES = ("podman-hpc",)
+
 
 @dataclass(frozen=True)
 class Runtime:
@@ -127,9 +133,7 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
         _build(root, name, tag, archive)
     _fetch(root, archive)
     image_id, arch = archive_identity(archive)
-    # Before the load: a wrong-arch load *succeeds*, and the failure then
-    # surfaces as `exec format error` deep inside a recipe.
-    _require_arch(root, archive, arch)
+    _require_arch(root, archive, arch)  # before the load — see its docstring
     if not _loaded(root, name, image_id):
         _check_call([name, "load", "-i", str(archive)], cwd=root)
     if name == "podman-hpc":
@@ -248,7 +252,7 @@ def backend(runtime: Runtime) -> sandbox.Backend:
     """
     if runtime.mode == "direct":
         return sandbox.detect()
-    from lightcone.engine.sandbox.oci import OCIBackend
+    from lightcone.engine.sandbox.oci import OCIBackend, OCIRuntime
 
     # `--pull=never` beside the uid flags rather than inside them: it is
     # a pull policy (a typo'd reference must fail, not fetch), the podman
@@ -256,7 +260,7 @@ def backend(runtime: Runtime) -> sandbox.Backend:
     # the next reader would not look.
     pull = ("--pull=never",) if runtime.runtime in _PODMAN_FAMILY else ()
     return OCIBackend(
-        runtime=cast(Literal["podman", "docker", "podman-hpc"], runtime.runtime),
+        runtime=cast(OCIRuntime, runtime.runtime),
         image_id=runtime.image_id,
         root=runtime.root,
         user_flags=(*uid_flags(runtime.runtime), *pull),

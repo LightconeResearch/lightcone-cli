@@ -103,8 +103,19 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 def hpc(
     fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> list[list[str]]:
-    """The same host with the site's podman-hpc wrapper installed too."""
-    monkeypatch.setattr(shutil, "which", lambda name, path=None: f"/usr/bin/{name}")
+    """The same host with the site's podman-hpc wrapper installed too.
+
+    A wrap around `fake`'s stub rather than a replacement, so it changes
+    exactly one fact — anything else `fake` hides stays hidden here.
+    """
+    inner = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, path=None: "/usr/bin/podman-hpc"
+        if name == "podman-hpc"
+        else inner(name, path),
+    )
     return fake
 
 

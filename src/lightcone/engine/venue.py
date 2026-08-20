@@ -93,17 +93,19 @@ def allocation_nodes() -> int:
     """
     if "SLURM_JOB_ID" not in os.environ:
         return 0
-    value = os.environ.get("SLURM_JOB_NUM_NODES") or os.environ.get("SLURM_NNODES")
-    return _int_env(value, "SLURM_JOB_NUM_NODES") if value else 1
+    return _int_env("SLURM_JOB_NUM_NODES", _int_env("SLURM_NNODES", 1))
 
 
-def _int_env(value: str, name: str) -> int:
-    """Parse a SLURM count, refusing garbage rather than tracebacking.
+def _int_env(name: str, default: int) -> int:
+    """Read a SLURM count, refusing garbage rather than tracebacking.
 
     SLURM writes plain integers into the variables read here; anything
     else is a hand-set or mangled environment — the same leak class as
     ``SLURM_JOB_ID`` without an srun, and it gets the same treatment.
     """
+    value = os.environ.get(name)
+    if not value:
+        return default
     try:
         return int(value)
     except ValueError:
@@ -140,9 +142,8 @@ def slurm_client() -> Iterator[Any]:
             "outside — a container, a copied environment — unset it to run on "
             "this machine alone."
         )
-    nodes = allocation_nodes() or 1
-    asked = os.environ.get("SLURM_CPUS_ON_NODE")
-    cpus = _int_env(asked, "SLURM_CPUS_ON_NODE") if asked else os.cpu_count() or 1
+    nodes = allocation_nodes()
+    cpus = _int_env("SLURM_CPUS_ON_NODE", os.cpu_count() or 1)
     host = os.environ.get("SLURMD_NODENAME") or socket.gethostname()
 
     try:
@@ -162,27 +163,26 @@ def slurm_client() -> Iterator[Any]:
             "address this process can bind — workers on the allocation's "
             "other nodes could not have reached it either."
         ) from e
-    with cluster:
-        with Client(cluster) as client:  # type: ignore[no-untyped-call]
-            # Not `project._run`, deliberately: that seam is run-to-completion
-            # capture, and this child lives as long as the run — and its
-            # stderr must reach the terminal live, because srun's own errors
-            # (bad step, drained node) are the user's to see as they happen.
-            env = dict(os.environ)
-            env.setdefault("DASK_LOGGING__DISTRIBUTED", "warning")
-            # Literal `/tmp`, not the driver's resolved tempdir: a site
-            # prolog can scope TMPDIR to the node or job step that set
-            # it, and a driver-side path baked into every worker's argv
-            # would then be absent on the allocation's other nodes.
-            proc = subprocess.Popen(
-                _srun_argv(cluster.scheduler_address, nodes, cpus, "/tmp"),
-                env=env,
-            )
-            try:
-                _await_workers(client, proc, nodes)
-                yield client
-            finally:
-                _wind_down(client, proc)
+    with cluster, Client(cluster) as client:  # type: ignore[no-untyped-call]
+        # Not `project._run`, deliberately: that seam is run-to-completion
+        # capture, and this child lives as long as the run — and its
+        # stderr must reach the terminal live, because srun's own errors
+        # (bad step, drained node) are the user's to see as they happen.
+        env = dict(os.environ)
+        env.setdefault("DASK_LOGGING__DISTRIBUTED", "warning")
+        # Literal `/tmp`, not the driver's resolved tempdir: a site
+        # prolog can scope TMPDIR to the node or job step that set
+        # it, and a driver-side path baked into every worker's argv
+        # would then be absent on the allocation's other nodes.
+        proc = subprocess.Popen(
+            _srun_argv(cluster.scheduler_address, nodes, cpus, "/tmp"),
+            env=env,
+        )
+        try:
+            _await_workers(client, proc, nodes)
+            yield client
+        finally:
+            _wind_down(client, proc)
 
 
 def _srun_argv(scheduler: str, nodes: int, cpus: int, scratch: str) -> list[str]:
