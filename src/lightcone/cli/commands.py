@@ -360,18 +360,17 @@ def status(as_json: bool) -> None:
     lines.append("")
     marks = {"current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]", "stale": "[yellow]![/yellow]"}
     width = max((len(o.output) for o in report.outputs), default=0)
-    for o in report.outputs:
-        # The commit gets a column of its own, for every state and not only
-        # the interesting ones: "which code made this" is the question the
-        # verb exists to answer, and it has an answer for a current output
-        # too.
-        # A foreign write arrives as an ordinary stale with its message in
-        # `why`, so the one rendering path covers it; the dedicated field
-        # exists for machine consumers of `--json`.
-        lines.append(
-            f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
-            f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{o.why}[/dim]" if o.why else "")
-        )
+    # The commit gets a column of its own, for every state and not only
+    # the interesting ones: "which code made this" is the question the
+    # verb exists to answer, and it has an answer for a current output
+    # too. A foreign write arrives as an ordinary stale with its message
+    # in `why`, so this one path covers it; the dedicated field exists
+    # for machine consumers of `--json`.
+    lines += [
+        f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
+        f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{o.why}[/dim]" if o.why else "")
+        for o in report.outputs
+    ]
     lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
 
     counts = report.counts

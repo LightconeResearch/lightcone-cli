@@ -467,18 +467,18 @@ def test_last_writer_names_the_commit_that_last_touched_a_path(repo: Path) -> No
     (out / "value.txt").write_text("42\n")
     dataset.save(repo, [out], "[DATALAD RUNCMD] fit [baseline]\n\nrecord body")
 
-    sha, subject, author, email, date = dataset.last_writer(repo, out)
-    assert sha and date
-    assert subject == "[DATALAD RUNCMD] fit [baseline]"
-    assert (author, email) == ("Test", "t@example.com")
+    write = dataset.last_writer(repo, out)
+    assert write and write.sha and write.date
+    assert write.subject == "[DATALAD RUNCMD] fit [baseline]"
+    assert (write.author, write.email) == ("Test", "t@example.com")
 
     (out / "value.txt").write_text("curated\n")
     dataset.save(repo, [out], "tweak colors")
-    assert dataset.last_writer(repo, out)[1] == "tweak colors"
+    assert dataset.last_writer(repo, out).subject == "tweak colors"
 
 
 def test_last_writer_of_an_untouched_path_is_empty(repo: Path) -> None:
-    assert dataset.last_writer(repo, repo / "results" / "never") == ("", "", "", "", "")
+    assert not dataset.last_writer(repo, repo / "results" / "never")
 
 
 def test_last_writer_answers_inside_an_enclosing_repository(
@@ -501,4 +501,5 @@ def test_last_writer_answers_inside_an_enclosing_repository(
     dataset._git(["add", "-A", "."], cwd=outer)
     dataset._git(["commit", "-q", "-m", "outer edit"], cwd=outer)
 
-    assert dataset.last_writer(project_root, out)[1] == "[DATALAD RUNCMD] fit [baseline]"
+    write = dataset.last_writer(project_root, out)
+    assert write.subject == "[DATALAD RUNCMD] fit [baseline]"

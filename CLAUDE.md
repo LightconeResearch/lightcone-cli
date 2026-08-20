@@ -1778,15 +1778,17 @@ the bytes — so it classifies `stale` and **the next run remakes it**,
 the same philosophy as the dirty refusal's path split: `results/` is
 lc's to write, and a committed hand edit is wreckage with a commit
 message. Three coherent surfaces, one walk: `lc status` reports it
-stale (still exit 0; `OutputStatus.foreign_write` keeps the named
-commit for machine consumers), `--check` plans it, and materialize's
-driver answers the history question up front and hands each worker the
-foreign commit's message — workers have no git, the HEAD discipline on
-a third value. History enters `assets.classify` as **one more input
-value**, exactly like check mode's sentinel: computed by whoever has
-git, handed in, and the rule stays pure — so `calls_for_a_remake`
-remains the one bool that turns a state into an action, with no
-`foreign or …` re-spelled at any call site. `last_writer` answers "cannot say" as
+stale (still exit 0; `OutputStatus.foreign_write` carries the foreign
+commit's sha — what prose cannot give a machine consumer), `--check`
+plans it, and materialize's driver answers the history question up
+front and hands each worker the offending `dataset.LastWrite` —
+workers have no git, the HEAD discipline on a third value. History
+enters `assets.classify` as **one more input value**, exactly like
+check mode's sentinel: computed by whoever has git, handed in as the
+*fact*, and the rule stays pure — the verdict's prose is classify's,
+like every other why, so `calls_for_a_remake` remains the one bool
+that turns a state into an action, with no `foreign or …` re-spelled
+at any call site. `last_writer` answers "cannot say" as
 empty, never an error — a read-only verb must not refuse over an
 unborn HEAD or a stripped `.git`. A full-rehash `lc verify` was
 considered and rejected: O(bytes), blind on unfetched outputs (history

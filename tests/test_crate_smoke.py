@@ -21,16 +21,13 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from lightcone.engine import dataset
 from lightcone.engine import materialize as engine
-from lightcone.engine.worker import TaskResult
 
 REQUIRED_ENV = "LC_CRATE_TESTS_REQUIRED"
 
@@ -110,24 +107,10 @@ def test_the_guard_fails_when_skipping_is_forbidden(
         _gate()
 
 
-class _Inline:
-    def submit(self, fn: Any, *args: Any, key: str) -> Any:
-        return fn(*args)
-
-    def completed(self, handles: list[Any]) -> Iterator[TaskResult]:
-        yield from handles
-
-
 def test_a_materialized_crate_validates_against_the_provenance_profile(
-    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
 ) -> None:
     _gate()
-
-    @contextmanager
-    def inline() -> Iterator[_Inline]:
-        yield _Inline()
-
-    monkeypatch.setattr(engine, "cluster_for_run", inline)
     root = analysis(
         _SPEC,
         files={"data/catalog.fits": "stars\n", "README.md": "# analysis\n\nA demo.\n"},

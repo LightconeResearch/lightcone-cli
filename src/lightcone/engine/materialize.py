@@ -32,6 +32,7 @@ task — that is what puts git back in the workers.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -147,7 +148,7 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
 
 def _classified(
     root: Path, targets: Sequence[str], report: MaterializeReport, *, refresh: bool
-) -> list[tuple[Key, assets.Verdict, assets.Manifest | None, str]]:
+) -> list[tuple[Key, assets.Verdict, assets.Manifest | None, dataset.LastWrite | None]]:
     """Classify every task in topological order, reading nothing but disk.
 
     The walk both read-only modes share, so there is one answer to "what
@@ -169,7 +170,7 @@ def _classified(
         One ``(key, verdict, manifest, foreign write)`` per task, upstream
         first.
     """
-    graph, env_version = _graph(root, targets, report)
+    graph, env_version, _ = _graph(root, targets, report)
     versions = assets.Versions()
     would_run: set[Key] = set()
     unfetched: set[str] = set()
@@ -181,7 +182,7 @@ def _classified(
         # History is git's to answer, so it enters the one classification
         # rule as a value — computed here, where git lives, exactly as
         # the worker's driver computes it for a run.
-        foreign = "" if manifest is None else _foreign_write(root, key)
+        foreign = None if manifest is None else _foreign_write(root, key)
         verdict = assets.classify(
             definition_version=task.definition_version,
             env_version=env_version,
@@ -278,15 +279,15 @@ class OutputStatus:
     #: Its content identity, or empty if it was never materialized.
     data_version: str
     #: Empty when the commit that last touched the output's directory is
-    #: its own run record. Otherwise the foreign commit, named — the
-    #: agent-forged-file fact, which also makes ``status`` read `stale`:
+    #: its own run record. Otherwise that foreign commit's sha — the
+    #: agent-forged-file fact, which also makes the output read `stale`:
     #: the manifest no longer describes the bytes, and a skip would
-    #: return the recorded digest forever. Kept as its own field so a
-    #: machine consumer can tell a foreign write from any other stale
-    #: without parsing prose. History-based on purpose: it costs no
-    #: hashing and answers on a clone that holds none of the bytes. What
-    #: it leaves to existing tools: uncommitted edits are a dirty tree,
-    #: and annex object corruption is `git annex fsck`.
+    #: return the recorded digest forever. The sha rather than prose,
+    #: so a machine consumer gets what `why`'s sentence cannot carry.
+    #: History-based on purpose: it costs no hashing and answers on a
+    #: clone that holds none of the bytes. What it leaves to existing
+    #: tools: uncommitted edits are a dirty tree, and annex object
+    #: corruption is `git annex fsck`.
     foreign_write: str = ""
 
     def as_dict(self) -> dict[str, Any]:
@@ -374,25 +375,22 @@ def status(root: Path) -> StatusReport:
                 why=verdict.why,
                 git_sha=manifest.git_sha if manifest else "",
                 data_version=manifest.data_version if manifest else "",
-                foreign_write=foreign,
+                foreign_write=foreign.sha if foreign else "",
             )
         )
     result.warnings = report.warnings
     return result
 
 
-def _foreign_write(root: Path, key: Key) -> str:
-    """Name the commit that last touched *key*'s directory, unless it is
-    the output's own run record — then empty, the clean answer."""
-    directory = assets.output_dir(root, *key)
-    sha, subject, author, _, date = dataset.last_writer(root, directory)
-    if not sha or subject == datalad_run_subject(key):
-        return ""
-    return (
-        f'last changed by {sha[:7]} ("{subject}", {author}, {date}) rather than '
-        f"its run record, so the manifest no longer describes these bytes — "
-        f"the next run remakes it; inspect first with `git show {sha[:7]}`"
-    )
+def _foreign_write(root: Path, key: Key) -> dataset.LastWrite | None:
+    """Find the commit that last touched *key*'s directory, unless it is
+    the output's own run record — then ``None``, the clean answer. The
+    fact only: the verdict's prose is `classify`'s, like every other
+    why."""
+    write = dataset.last_writer(root, assets.output_dir(root, *key))
+    if not write or write.subject == datalad_run_subject(key):
+        return None
+    return write
 
 
 def _sandbox_line(mode: str) -> str:
@@ -461,12 +459,13 @@ def materialize(
     # before the image: a refusal here must not cost a minutes-long
     # build, and must not leave an archive commit behind a run that
     # "failed" on a typo in the spec.
-    graph, env_version = _graph(root, targets, report)
+    graph, env_version, full = _graph(root, targets, report)
+    dsid = dataset.dataset_id(root)
     if not graph.tasks:
         # No tasks is not no project: a spec whose outputs were all
         # dropped still has a crate describing them, and this is its
         # only maintainer.
-        _converge_crate(root, report, full=graph if not targets else None)
+        _converge_crate(root, report, full, dsid)
         return report
     _fetch_inputs(root, graph, report)
     # Before the runtime resolves, because the refusal must not cost an
@@ -497,7 +496,6 @@ def materialize(
     # rerun does not come through here; its entry point converges too.)
     report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
 
-    dsid = dataset.dataset_id(root)
     # Read once, for every task: the driver commits each output as it lands,
     # so HEAD moves during the run, and a per-task read would give later
     # manifests a commit this run created — nondeterministically, depending
@@ -511,8 +509,16 @@ def materialize(
     # git, by design — so each task is told up front whether its
     # directory was last written by something other than its own run
     # record. A foreign write contradicts the manifest, and a worker that
-    # trusted the recorded digest would skip the output forever.
-    foreign = {key: _foreign_write(root, key) for key in graph.tasks}
+    # trusted the recorded digest would skip the output forever. Guarded
+    # on the manifest's presence, as `_classified` is: without one the
+    # answer is dead — the output is remade regardless — and each ask is
+    # a git process.
+    foreign = {
+        key: _foreign_write(root, key)
+        if (task.output_dir / assets.MANIFEST_FILENAME).is_file()
+        else None
+        for key, task in graph.tasks.items()
+    }
     outstanding: dict[Key, Task] = dict(graph.tasks)
     try:
         with cluster_for_run() as scheduler:
@@ -545,7 +551,7 @@ def materialize(
         # survive.
         for task in outstanding.values():
             dataset.restore(root, [task.output_dir])
-    _converge_crate(root, report, full=graph if not targets else None)
+    _converge_crate(root, report, full, dsid)
     return report
 
 
@@ -713,7 +719,7 @@ def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
 # =============================================================================
 
 
-def _converge_crate(root: Path, report: MaterializeReport, full: Graph | None = None) -> None:
+def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: str) -> None:
     """Bring ``ro-crate-metadata.json`` in line with the repository.
 
     A derived artifact, converged the way ``uv.lock`` is: rendered from
@@ -738,11 +744,11 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph | None = 
     Args:
         root: The project root.
         report: Collects the one maintenance line and any warnings.
-        full: The whole-project graph, when the caller already built one
-            — a targeted run's is narrowed, so it rebuilds here.
+        full: The whole-project graph — never a run's narrowed one.
+        dsid: The dataset's UUID, already read by the caller.
     """
-    import functools
-
+    # Deferred so `lc status` and `--check` never import rocrate — the
+    # crate is the one materialize-only dependency on their shared path.
     from lightcone.engine import crate
 
     spdx = crate.license_of(root)
@@ -756,31 +762,20 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph | None = 
             "publication view is maintained — declare one to enable it"
         )
         return
+    for directory in sorted((root / "results").glob("*/*/")):
+        key = (directory.parent.name, directory.name)
+        if key not in full.tasks and assets.read(directory) is not None:
+            report.warnings.append(
+                f"{plan.declared_path(root, directory)} has a manifest but the "
+                "spec no longer declares it, so it is not in the publication view"
+            )
     try:
-        graph = full if full is not None else plan.build(root)
-        for directory in sorted((root / "results").glob("*/*/")):
-            key = (directory.parent.name, directory.name)
-            if key not in graph.tasks and assets.read(directory) is not None:
-                report.warnings.append(
-                    f"results/{key[0]}/{key[1]} has a manifest but the spec no "
-                    "longer declares it, so it is not in the publication view"
-                )
-        try:
-            engine_url = _repository_url()
-        except ProjectError:
-            engine_url = ""
         document = crate.render(
             root,
-            graph,
+            full,
             license=spdx,
-            dsid=dataset.dataset_id(root),
-            # Cached: the render asks about `astra.yaml` and each run's
-            # directory more than once, and one answer per path per run
-            # is the memo discipline `assets.Versions` already sets.
-            writer=functools.lru_cache(maxsize=None)(
-                functools.partial(dataset.last_writer, root)
-            ),
-            engine_url=engine_url,
+            dsid=dsid,
+            writer=functools.partial(dataset.last_writer, root),
         )
         if not (path.is_file() and path.read_text() == document):
             path.write_text(document)
@@ -915,12 +910,16 @@ def _repository_url() -> str:
 # =============================================================================
 
 
-def _graph(root: Path, targets: Sequence[str], report: MaterializeReport) -> tuple[Graph, str]:
+def _graph(
+    root: Path, targets: Sequence[str], report: MaterializeReport
+) -> tuple[Graph, str, Graph]:
     """The tasks a run covers, and the environment they will be compared to.
 
     The lock scan runs here, once, for both modes: what it refuses is a
     dependency whose bytes the lock does not pin, which makes every hash
-    below it a claim nobody can check.
+    below it a claim nobody can check. The unnarrowed graph is returned
+    beside the narrowed one, because the crate describes the whole
+    project and must not pay a second spec validation to see it.
     """
     scan = identity.scan_lock(root)
     if scan.refusals:
@@ -942,9 +941,8 @@ def _graph(root: Path, targets: Sequence[str], report: MaterializeReport) -> tup
         )
 
     env_version = identity.env_version(root)
-    graph = plan.build(root)
-    if targets:
-        graph = graph.closure(graph.resolve(list(targets)))
+    full = plan.build(root)
+    graph = full.closure(full.resolve(list(targets))) if targets else full
 
     # A declared input outside the project is hashed into the manifest like
     # any other, so a change to it still cascades — but it is not in the
@@ -963,7 +961,7 @@ def _graph(root: Path, targets: Sequence[str], report: MaterializeReport) -> tup
             "not stored in it, so a commit cannot restore them: "
             + ", ".join(sorted(outside))
         )
-    return graph, env_version
+    return graph, env_version, full
 
 
 def _name(key: Key) -> str:

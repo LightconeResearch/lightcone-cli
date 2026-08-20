@@ -38,7 +38,9 @@ from rocrate.model.computerlanguage import ComputerLanguage
 from rocrate.rocrate import ROCrate
 
 from lightcone.engine import assets, plan
+from lightcone.engine.dataset import LastWrite
 from lightcone.engine.plan import Graph, Key
+from lightcone.engine.project import SPEC_FILENAME
 
 CRATE_FILENAME = "ro-crate-metadata.json"
 
@@ -57,10 +59,9 @@ _PROFILES = (
     ("https://w3id.org/workflowhub/workflow-ro-crate/1.0", "Workflow RO-Crate", "1.0"),
 )
 
-#: What one commit that last touched a path looks like:
-#: ``(sha, subject, author name, author email, author date)`` — the shape
-#: :func:`lightcone.engine.dataset.last_writer` returns.
-LastWrite = tuple[str, str, str, str, str]
+#: The files that pin what a run installed — one spelling, so the crate's
+#: data entities and every action's ``object`` list cannot drift apart.
+_ENVIRONMENT = ("pyproject.toml", "uv.lock", ".python-version")
 
 
 def license_of(root: Path) -> str:
@@ -97,14 +98,13 @@ def render(
     license: str,
     dsid: str,
     writer: Callable[[Path], LastWrite],
-    engine_url: str = "",
 ) -> str:
     """Build the crate document for the project as it stands.
 
     Pure given its arguments: reads the tree, runs nothing, and returns
     identical bytes for identical repository state — timestamps come from
     manifests and commits, never from the clock, and entities are built
-    in sorted order.
+    in sorted order. The writer is asked about each path at most once.
 
     Args:
         root: The project root.
@@ -115,13 +115,16 @@ def render(
         writer: Answers "which commit last touched this path" —
             :func:`dataset.last_writer` bound to the root, injected so
             the builder stays free of git.
-        engine_url: The engine's repository URL, or empty.
 
     Returns:
         The ``ro-crate-metadata.json`` text, trailing newline included.
     """
-    build = _Builder(root, graph, license, dsid, writer, engine_url)
+    build = _Builder(root, graph, license, dsid, writer)
     return build.document()
+
+
+def _control_id(key: Key) -> str:
+    return f"#control-{key[0]}-{key[1]}"
 
 
 class _Builder:
@@ -134,14 +137,13 @@ class _Builder:
         license: str,
         dsid: str,
         writer: Callable[[Path], LastWrite],
-        engine_url: str,
     ) -> None:
+        from astra.helpers import load_yaml
+
         self.root = root
         self.graph = graph
         self.license = license
-        self.dsid = dsid
         self.writer = writer
-        self.engine_url = engine_url
         self.crate = ROCrate()
         self.crate.metadata.extra_contexts.append(_WORKFLOW_RUN_CONTEXT)
         #: Every materialized task, sorted: the one iteration order.
@@ -153,28 +155,35 @@ class _Builder:
             ),
             key=lambda pair: pair[0],
         )
+        self.made_keys = {key for key, _ in self.made}
         self.persons: dict[str, str] = {}  # email/name → @id
-        self.images: dict[str, str] = {}  # archive path → @id
-        self.engines: dict[str, str] = {}  # lc_version → @id
-        self.parameters: set[str] = set()  # decision ids declared on the workflow
-        self.actions: list[ContextEntity] = []
+        self.agents: dict[Key, str] = {}  # each action's Person @id, or ""
+        self.images: set[str] = set()  # archive paths already added
+        self.engines: set[str] = set()  # engine @ids already added
+        self.actions: list[str] = []  # action @ids, for the root's mentions
         #: Loop invariants, asked once: the uuid5 namespace every minted
-        #: id lives under, and the project's one recorded remote.
+        #: id lives under, the project's one recorded remote, the spec's
+        #: header and last commit, and which decisions it declares.
         self.namespace = uuid.uuid5(uuid.NAMESPACE_URL, dsid)
         remotes = {m.git_remote for _, m in self.made if m.git_remote}
         self.remote = remotes.pop() if len(remotes) == 1 else ""
+        loaded = load_yaml(root / SPEC_FILENAME)
+        self.spec: dict[str, Any] = dict(loaded) if isinstance(loaded, dict) else {}
+        self.title = str(self.spec.get("name") or root.name)
+        self.spec_write = writer(root / SPEC_FILENAME)
+        self.parameters = {d for t in graph.tasks.values() for d in t.decisions}
 
     def document(self) -> str:
         """Assemble the graph and serialize it, deterministically."""
-        spec = self._spec()
-        workflow = self._workflow(spec)
+        workflow = self._workflow()
         self._steps_and_tools(workflow)
         self._environment_files()
-        datasets = {key: self._dataset(key, manifest) for key, manifest in self.made}
         for key, manifest in self.made:
-            self._control(key, self._action(key, manifest, datasets))
-        self._runs(workflow, datasets)
-        self._root(spec)
+            self._dataset(key, manifest)
+        for key, manifest in self.made:
+            self._control(key, self._action(key, manifest))
+        self._runs(workflow)
+        self._root()
         text: str = json.dumps(
             self.crate.metadata.generate(), indent=1, sort_keys=True, ensure_ascii=False
         )
@@ -182,13 +191,7 @@ class _Builder:
 
     # ----- the workflow and its structure -----
 
-    def _spec(self) -> dict[str, Any]:
-        from astra.helpers import load_yaml
-
-        loaded = load_yaml(self.root / "astra.yaml")
-        return dict(loaded) if isinstance(loaded, dict) else {}
-
-    def _workflow(self, spec: dict[str, Any]) -> Any:
+    def _workflow(self) -> Any:
         # Before `add_workflow` rewrites the descriptor's conformsTo: 1.1
         # is what RO-Crate validators key on, 1.2 is the context actually
         # emitted — the crate is structurally both, and saying only the
@@ -208,21 +211,20 @@ class _Builder:
             },
         )
         self.crate.add(lang)
-        sha, _, author, email, date = self.writer(self.root / "astra.yaml")
         workflow = self.crate.add_workflow(
-            self.root / "astra.yaml",
-            "astra.yaml",
+            self.root / SPEC_FILENAME,
+            SPEC_FILENAME,
             main=True,
             lang=lang,
             properties={
                 # `HowTo` is what licenses the `step` list below — the
                 # Provenance profile's requirement, not decoration.
                 "@type": ["File", "SoftwareSourceCode", "ComputationalWorkflow", "HowTo"],
-                "name": str(spec.get("name") or self.root.name),
+                "name": self.title,
                 "encodingFormat": "application/yaml",
             },
         )
-        if description := spec.get("description"):
+        if description := self.spec.get("description"):
             workflow["description"] = str(description)
         workflow["conformsTo"] = {
             "@id": "https://bioschemas.org/profiles/ComputationalWorkflow/1.0-RELEASE"
@@ -230,13 +232,14 @@ class _Builder:
         workflow["license"] = self._license_ref()
         if self.remote:
             workflow["url"] = self.remote
-        if sha:
+        if self.spec_write:
             # The spec's version is the commit that last changed it — the
             # only version an astra.yaml actually has.
-            workflow["version"] = sha[:7]
-            workflow["dateCreated"] = date
-            workflow["creator"] = {"@id": self._person(author, email)}
-        self.parameters = {d for _, t in self.graph.tasks.items() for d in t.decisions}
+            workflow["version"] = self.spec_write.sha[:7]
+            workflow["dateCreated"] = self.spec_write.date
+            workflow["creator"] = {
+                "@id": self._person(self.spec_write.author, self.spec_write.email)
+            }
         for decision in sorted(self.parameters):
             parameter = ContextEntity(
                 self.crate,
@@ -253,7 +256,8 @@ class _Builder:
         return workflow
 
     def _steps_and_tools(self, workflow: Any) -> None:
-        for position, output_id in enumerate(self._output_ids()):
+        output_ids = sorted({output_id for _, output_id in self.graph.tasks})
+        for position, output_id in enumerate(output_ids):
             tool = ContextEntity(
                 self.crate,
                 self._tool_id(output_id),
@@ -265,8 +269,8 @@ class _Builder:
             )
             if self.remote:
                 tool["url"] = self.remote
-            if version := self._spec_sha():
-                tool["softwareVersion"] = version
+            if self.spec_write:
+                tool["softwareVersion"] = self.spec_write.sha[:7]
             self.crate.add(tool)
             step = ContextEntity(
                 self.crate,
@@ -283,13 +287,6 @@ class _Builder:
             # the tools it orchestrates are its parts.
             workflow.append_to("hasPart", tool)
 
-    def _output_ids(self) -> list[str]:
-        return sorted({output_id for _, output_id in self.graph.tasks})
-
-    def _spec_sha(self) -> str:
-        sha = self.writer(self.root / "astra.yaml")[0]
-        return sha[:7]
-
     def _tool_id(self, output_id: str) -> str:
         """An id for one output's recipe — under the project's own
         repository URL when it has one (an http URI, which is what the
@@ -302,28 +299,31 @@ class _Builder:
 
     def _environment_files(self) -> None:
         """The lock and its companions — what every run consumed."""
-        for name in ("pyproject.toml", "uv.lock", ".python-version", *self._universe_files()):
+        universes = sorted(
+            path.relative_to(self.root).as_posix()
+            for path in (self.root / "universes").glob("*.yaml")
+        )
+        for name in (*_ENVIRONMENT, *universes):
             if (self.root / name).is_file():
                 self._file(name)
         if (self.root / "README.md").is_file():
             readme = self._file("README.md")
             readme["about"] = {"@id": "./"}
 
-    def _universe_files(self) -> list[str]:
-        return sorted(
-            path.relative_to(self.root).as_posix()
-            for path in (self.root / "universes").glob("*.yaml")
-        )
-
-    def _file(self, name: str, **extra: Any) -> Any:
-        properties = dict(extra)
+    def _file(self, name: str) -> Any:
+        properties: dict[str, Any] = {}
         if fmt := _format_of(name):
             properties["encodingFormat"] = fmt
         return self.crate.add_file(self.root / name, name, properties=properties)
 
-    def _dataset(self, key: Key, manifest: assets.Manifest) -> str:
+    def _dataset_id(self, key: Key) -> str:
+        """One output directory's crate id — :func:`plan.declared_path`'s
+        answer, never a second spelling of the results layout."""
+        return plan.declared_path(self.root, self.graph.tasks[key].output_dir) + "/"
+
+    def _dataset(self, key: Key, manifest: assets.Manifest) -> None:
         universe_id, output_id = key
-        dataset_id = f"results/{universe_id}/{output_id}/"
+        dataset_id = self._dataset_id(key)
         entity = self.crate.add_dataset(self.graph.tasks[key].output_dir, dataset_id)
         entity["name"] = f"{output_id} (universe {universe_id})"
         entity["description"] = f"output `{output_id}` materialized under `{universe_id}`"
@@ -331,16 +331,13 @@ class _Builder:
         manifest_file = self._file(f"{dataset_id}{assets.MANIFEST_FILENAME}")
         manifest_file["about"] = {"@id": dataset_id}
         entity["subjectOf"] = {"@id": manifest_file.id}
-        return dataset_id
 
     # ----- the runs -----
 
-    def _action(
-        self, key: Key, manifest: assets.Manifest, datasets: dict[Key, str]
-    ) -> ContextEntity:
+    def _action(self, key: Key, manifest: assets.Manifest) -> str:
         universe_id, output_id = key
-        task = self.graph.tasks[key]
-        sha, _, author, email, _ = self.writer(task.output_dir)
+        write = self.writer(self.graph.tasks[key].output_dir)
+        self.agents[key] = self._person(write.author, write.email) if write else ""
         properties: dict[str, Any] = {
             "@type": "CreateAction",
             "name": f"run of `{output_id}` in universe `{universe_id}`",
@@ -349,39 +346,33 @@ class _Builder:
             # is the canonical record of the execution.
             "description": manifest.recipe,
             "instrument": {"@id": self._tool_id(output_id)},
-            "result": [{"@id": datasets[key]}],
+            "result": [{"@id": self._dataset_id(key)}],
             "actionStatus": "http://schema.org/CompletedActionStatus",
-            "object": self._objects(key, manifest, datasets),
+            "object": self._objects(key, manifest),
         }
         if manifest.started_at:
             properties["startTime"] = manifest.started_at
         if manifest.finished_at:
             properties["endTime"] = manifest.finished_at
-        if sha:
-            properties["agent"] = {"@id": self._person(author, email)}
+        if self.agents[key]:
+            properties["agent"] = {"@id": self.agents[key]}
         if manifest.image is not None:
             properties["containerImage"] = {"@id": self._image(manifest.image)}
         action = ContextEntity(
             self.crate, self._uri(f"action/{universe_id}/{output_id}"), properties
         )
         self.crate.add(action)
-        self.actions.append(action)
-        return action
+        self.actions.append(str(action.id))
+        return str(action.id)
 
-    def _objects(
-        self, key: Key, manifest: assets.Manifest, datasets: dict[Key, str]
-    ) -> list[dict[str, str]]:
+    def _objects(self, key: Key, manifest: assets.Manifest) -> list[dict[str, str]]:
         task = self.graph.tasks[key]
-        refs = [
-            {"@id": name}
-            for name in ("uv.lock", ".python-version", "pyproject.toml")
-            if (self.root / name).is_file()
-        ]
+        refs = [{"@id": name} for name in _ENVIRONMENT if (self.root / name).is_file()]
         for name in sorted(task.inputs):
             upstream = task.produced_by.get(name)
             if upstream is not None:
-                if upstream in datasets:
-                    refs.append({"@id": datasets[upstream]})
+                if upstream in self.made_keys:
+                    refs.append({"@id": self._dataset_id(upstream)})
                 continue
             refs.append({"@id": self._external(name, task.inputs[name], manifest)})
         # The *recorded* decisions: the values the recipe actually ran
@@ -438,22 +429,22 @@ class _Builder:
             self.crate.add(ContextEntity(self.crate, entity_id, properties))
         return entity_id
 
-    def _control(self, key: Key, action: ContextEntity) -> ContextEntity:
+    def _control(self, key: Key, action_id: str) -> None:
         universe_id, output_id = key
-        control = ContextEntity(
-            self.crate,
-            f"#control-{universe_id}-{output_id}",
-            properties={
-                "@type": "ControlAction",
-                "name": f"orchestration of `{output_id}` in universe `{universe_id}`",
-                "instrument": {"@id": f"#step-{output_id}"},
-                "object": {"@id": action.id},
-            },
+        self.crate.add(
+            ContextEntity(
+                self.crate,
+                _control_id(key),
+                properties={
+                    "@type": "ControlAction",
+                    "name": f"orchestration of `{output_id}` in universe `{universe_id}`",
+                    "instrument": {"@id": f"#step-{output_id}"},
+                    "object": {"@id": action_id},
+                },
+            )
         )
-        self.crate.add(control)
-        return control
 
-    def _runs(self, workflow: Any, datasets: dict[Key, str]) -> None:
+    def _runs(self, workflow: Any) -> None:
         """One ``OrganizeAction`` per run — outputs sharing a ``git_sha``
         were made by one ``lc materialize``, the driver's one HEAD read."""
         runs: dict[str, list[tuple[Key, assets.Manifest]]] = {}
@@ -479,18 +470,17 @@ class _Builder:
                         f"one materialization run, starting from commit {sha or '(unrecorded)'}"
                     ),
                     "instrument": {"@id": workflow.id},
-                    "result": [{"@id": datasets[key]} for key, _ in group],
+                    "result": [{"@id": self._dataset_id(key)} for key, _ in group],
                     "actionStatus": "http://schema.org/CompletedActionStatus",
                 },
             )
             if times:
                 run_action["startTime"] = times[0]
                 run_action["endTime"] = times[-1]
-            writer_sha, _, author, email, _ = self.writer(self.graph.tasks[group[0][0]].output_dir)
-            if writer_sha:
-                run_action["agent"] = {"@id": self._person(author, email)}
+            if agent := self.agents.get(group[0][0], ""):
+                run_action["agent"] = {"@id": agent}
             self.crate.add(run_action)
-            self.actions.append(run_action)
+            self.actions.append(str(run_action.id))
             organize = ContextEntity(
                 self.crate,
                 f"#organize-{sha[:7] or 'unknown'}",
@@ -498,33 +488,35 @@ class _Builder:
                     "@type": "OrganizeAction",
                     "name": f"scheduling of the run at {sha[:7] or 'unknown commit'}",
                     "instrument": {"@id": engine},
-                    "object": [
-                        {"@id": f"#control-{key[0]}-{key[1]}"} for key, _ in group
-                    ],
+                    "object": [{"@id": _control_id(key)} for key, _ in group],
                     "result": {"@id": run_action.id},
                 },
             )
             self.crate.add(organize)
 
     def _engine(self, version: str) -> str:
-        """The engine one run's manifests attest, deduplicated by version."""
-        if version not in self.engines:
-            engine_id = (
-                f"https://pypi.org/project/lightcone-cli/{version}/"
-                if version
-                else "#lightcone-cli"
-            )
+        """The engine one run's manifests attest, added once per version.
+
+        Its release page is both the id and the ``url`` — the one address
+        derivable from repository state alone; anything read off the
+        installed engine would differ between collaborators' hosts.
+        """
+        engine_id = (
+            f"https://pypi.org/project/lightcone-cli/{version}/"
+            if version
+            else "#lightcone-cli"
+        )
+        if engine_id not in self.engines:
             properties: dict[str, Any] = {
                 "@type": "SoftwareApplication",
                 "name": "lightcone-cli",
             }
             if version:
                 properties["softwareVersion"] = version
-            if self.engine_url:
-                properties["url"] = self.engine_url
+                properties["url"] = engine_id
             self.crate.add(ContextEntity(self.crate, engine_id, properties))
-            self.engines[version] = engine_id
-        return self.engines[version]
+            self.engines.add(engine_id)
+        return engine_id
 
     def _image(self, image: dict[str, Any]) -> str:
         """The committed archive: identity and payload as one entity."""
@@ -542,8 +534,8 @@ class _Builder:
             if str(image.get("id") or "").startswith("sha256:"):
                 properties["sha256"] = str(image["id"]).removeprefix("sha256:")
             self.crate.add_file(self.root / archive, archive, properties=properties)
-            self.images[archive] = archive
-        return self.images[archive]
+            self.images.add(archive)
+        return archive
 
     # ----- shared entities and the root -----
 
@@ -561,21 +553,19 @@ class _Builder:
             self.persons[person_key] = person_id
         return self.persons[person_key]
 
-    def _root(self, spec: dict[str, Any]) -> None:
+    def _root(self) -> None:
         root = self.crate.root_dataset
-        root["name"] = str(spec.get("name") or self.root.name)
+        root["name"] = self.title
         root["description"] = str(
-            spec.get("description")
-            or f"ASTRA analysis `{spec.get('name') or self.root.name}`, "
-            "materialized by lightcone-cli."
+            self.spec.get("description")
+            or f"ASTRA analysis `{self.title}`, materialized by lightcone-cli."
         )
         root["license"] = self._license_ref()
         # The newest recorded instant, never the clock: the document must
         # be a pure function of repository state, or every render is a
         # fresh diff and convergence commits forever.
         stamps = sorted(m.finished_at for _, m in self.made if m.finished_at)
-        spec_date = self.writer(self.root / "astra.yaml")[4]
-        root["datePublished"] = stamps[-1] if stamps else (spec_date or "1970-01-01")
+        root["datePublished"] = stamps[-1] if stamps else (self.spec_write.date or "1970-01-01")
         root["conformsTo"] = [{"@id": profile_id} for profile_id, _, _ in _PROFILES]
         for profile_id, name, version in _PROFILES:
             self.crate.add(
@@ -594,7 +584,7 @@ class _Builder:
                 {"@id": person_id} for person_id in sorted(self.persons.values())
             ]
         if self.actions:
-            root["mentions"] = [{"@id": action.id} for action in self.actions]
+            root["mentions"] = [{"@id": action_id} for action_id in self.actions]
 
     def _license_ref(self) -> Any:
         """The root's license value, always a linkable entity.
@@ -605,7 +595,8 @@ class _Builder:
         the declared string. Deliberately never a minted spdx.org URL:
         the declaration is not validated against the SPDX list, and a
         fabricated dead URL in a document built for archives is worse
-        than a local entity.
+        than a local entity. Idempotent: `add` replaces by id, so the
+        workflow and the root may both ask.
         """
         if (self.root / self.license).is_file():
             self._file(self.license)

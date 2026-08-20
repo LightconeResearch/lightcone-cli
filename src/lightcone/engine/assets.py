@@ -22,9 +22,13 @@ import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from lightcone.engine.project import ProjectError
+
+if TYPE_CHECKING:
+    # A type only: history is git's, and this module runs no git.
+    from lightcone.engine.dataset import LastWrite
 
 MANIFEST_FILENAME = ".lightcone-manifest.json"
 SCHEMA_VERSION = 1
@@ -402,7 +406,7 @@ def classify(
     env_version: str,
     manifest: Manifest | None,
     inputs: Mapping[str, str | None],
-    foreign: str = "",
+    foreign: LastWrite | None = None,
 ) -> Verdict:
     """Decide what an output is, relative to the project as it now stands.
 
@@ -411,7 +415,9 @@ def classify(
     anything else — history included: whether the output's directory was
     last written by its own run record is git's to answer, so it arrives
     here as a value computed by whoever has git (the driver), and the
-    rule stays pure.
+    rule stays pure. The *prose* for every verdict lives here too, which
+    is why this takes the offending commit rather than a finished
+    sentence.
 
     Args:
         definition_version: What the spec currently says this output is.
@@ -421,11 +427,11 @@ def classify(
             for an input the caller has already decided will be remade —
             check mode's sentinel, meaning "this is going to change",
             since it cannot know whether a rebuild is byte-identical.
-        foreign: Empty when the directory's last commit is the output's
-            own run record; otherwise the foreign commit, named. A hit is
-            a contradiction — the manifest no longer describes the bytes
-            — so it is ``stale``, though an output stale on its
-            definition or inputs keeps that more actionable reason.
+        foreign: The commit that last wrote the output's directory, when
+            it was not the output's own run record; ``None`` when clean.
+            A hit is a contradiction — the manifest no longer describes
+            the bytes — so it is ``stale``, though an output stale on
+            its definition or inputs keeps that more actionable reason.
 
     Returns:
         ``stale``, ``behind`` or ``current``, with the reason for the
@@ -433,8 +439,14 @@ def classify(
     """
     if (reason := _stale(definition_version, manifest, inputs)) is not None:
         return Verdict("stale", str(reason))
-    if foreign:
-        return Verdict("stale", foreign)
+    if foreign is not None:
+        return Verdict(
+            "stale",
+            f'last changed by {foreign.sha[:7]} ("{foreign.subject}", {foreign.author}, '
+            f"{foreign.date}) rather than its run record, so the manifest no longer "
+            f"describes these bytes — the next run remakes it; inspect first with "
+            f"`git show {foreign.sha[:7]}`",
+        )
     assert manifest is not None  # `_stale` returns a reason when it is None
     if manifest.env_version != env_version:
         # The sentence says what happened; *where* it happened is the

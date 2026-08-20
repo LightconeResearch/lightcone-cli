@@ -97,7 +97,7 @@ def materialize(
     head: Head,
     versions: assets.Versions,
     refresh: bool,
-    foreign: str,
+    foreign: dataset.LastWrite | None,
     runtime: container.Runtime,
     *upstream: TaskResult,
 ) -> TaskResult:
@@ -117,8 +117,8 @@ def materialize(
             driver because it commits as outputs land and HEAD moves.
         versions: The run's content-hash memo for declared inputs.
         refresh: Whether to remake an output that is merely behind.
-        foreign: Empty, or the commit that last wrote the output's
-            directory in place of its own run record — answered by the
+        foreign: The commit that last wrote the output's directory in
+            place of its own run record, or ``None`` — answered by the
             driver, because history is git's and workers have no git;
             handed to the one classification rule, where it is `stale`.
         runtime: The execution world, resolved once by the driver — the
@@ -146,7 +146,7 @@ def _materialize(
     head: Head,
     versions: assets.Versions,
     refresh: bool,
-    foreign: str,
+    foreign: dataset.LastWrite | None,
     runtime: container.Runtime,
     upstream: tuple[TaskResult, ...],
 ) -> TaskResult:

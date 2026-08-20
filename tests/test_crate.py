@@ -17,11 +17,12 @@ from typing import Any
 import pytest
 
 from lightcone.engine import assets, crate
+from lightcone.engine.dataset import LastWrite
 from lightcone.engine.plan import Graph, Key, Task
 
 _DSID = "4b7b5c1e-0000-4000-8000-000000000000"
 
-Writer = Callable[[Path], crate.LastWrite]
+Writer = Callable[[Path], LastWrite]
 
 
 @pytest.fixture
@@ -102,8 +103,8 @@ def _graph(root: Path, universes: tuple[str, ...] = ("baseline",)) -> Graph:
     return Graph(tasks)
 
 
-def _writer(path: Path) -> crate.LastWrite:
-    return ("a" * 40, "irrelevant", "Ada Lovelace", "ada@example.org", "2026-08-19")
+def _writer(path: Path) -> LastWrite:
+    return LastWrite("a" * 40, "irrelevant", "Ada Lovelace", "ada@example.org", "2026-08-19")
 
 
 def _render(root: Path, graph: Graph, writer: Writer = _writer) -> dict[str, Any]:

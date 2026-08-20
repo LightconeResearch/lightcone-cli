@@ -5,7 +5,8 @@ from __future__ import annotations
 import shutil
 import subprocess
 import textwrap
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -110,6 +111,34 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
     monkeypatch.setattr(project.shutil, "which", fake_which)
     return calls
+
+
+class _Inline:
+    """Run a graph in this thread, in the order it was submitted.
+
+    Submission is topological, so a dependent is submitted only after its
+    upstreams have already run — which means the "handles" it is passed
+    are the upstream results themselves, exactly what the worker expects.
+    """
+
+    def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
+        return fn(*args)
+
+    def completed(self, handles: list[object]) -> Iterator[object]:
+        yield from handles
+
+
+@pytest.fixture
+def inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace the Dask cluster with an in-thread scheduler — the one
+    monkeypatch point `cluster_for_run` exists to be."""
+    from lightcone.engine import materialize
+
+    @contextmanager
+    def fake() -> Iterator[_Inline]:
+        yield _Inline()
+
+    monkeypatch.setattr(materialize, "cluster_for_run", fake)
 
 
 @pytest.fixture

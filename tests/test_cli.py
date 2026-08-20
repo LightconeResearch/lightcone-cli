@@ -574,7 +574,7 @@ def test_status_renders_a_foreign_write_as_a_stale_output(
                 message,
                 "3f2a1c8ffff",
                 "sha256:one",
-                foreign_write=message,
+                foreign_write="8d31f00" + "0" * 33,
             ),
         ]
     )

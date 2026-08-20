@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import _Inline
 
 from lightcone.engine import assets, dataset, identity
 from lightcone.engine import materialize as engine
@@ -64,30 +65,6 @@ _UNIVERSE = "id: baseline\ndecisions:\n  method: alpha\n"
 @pytest.fixture
 def root(analysis: Callable[..., Path]) -> Path:
     return analysis(_SPEC, universes={"baseline": _UNIVERSE})
-
-
-class _Inline:
-    """Run the graph in this thread, in the order it was submitted.
-
-    Submission is topological, so a dependent is submitted only after its
-    upstreams have already run — which means the "handles" it is passed
-    are the upstream results themselves, exactly what the worker expects.
-    """
-
-    def submit(self, fn: Any, *args: Any, key: str) -> Any:
-        return fn(*args)
-
-    def completed(self, handles: list[Any]) -> Iterator[TaskResult]:
-        yield from handles
-
-
-@pytest.fixture
-def inline(monkeypatch: pytest.MonkeyPatch) -> None:
-    @contextmanager
-    def fake() -> Iterator[_Inline]:
-        yield _Inline()
-
-    monkeypatch.setattr(engine, "cluster_for_run", fake)
 
 
 def _commits(root: Path) -> int:
@@ -935,7 +912,9 @@ def test_a_foreign_write_is_stale_and_names_its_commit(root: Path, inline: None)
     outputs = {o.output: o for o in engine.status(root).outputs}
 
     assert outputs["baseline/first"].status == "stale"
-    assert "tweak colors" in outputs["baseline/first"].foreign_write
+    forged_sha = dataset.last_writer(root, root / "results/baseline/first").sha
+    assert outputs["baseline/first"].foreign_write == forged_sha
+    assert "tweak colors" in outputs["baseline/first"].why
     assert "git show" in outputs["baseline/first"].why
     assert not outputs["baseline/second"].foreign_write
 
@@ -971,7 +950,8 @@ def test_the_foreign_write_fact_survives_a_bytes_free_clone(
     outputs = {o.output: o for o in engine.status(clone).outputs}
 
     assert outputs["baseline/first"].status == "stale"
-    assert "tweak colors" in outputs["baseline/first"].foreign_write
+    assert "tweak colors" in outputs["baseline/first"].why
+    assert outputs["baseline/first"].foreign_write
     assert not outputs["baseline/second"].foreign_write
 
 
@@ -1021,7 +1001,7 @@ def test_a_licensed_materialize_converges_the_crate_and_commits_it(
     crate_path = root / "ro-crate-metadata.json"
     assert crate_path.is_file()
     assert not dataset.status(root)  # committed, tree exactly as clean as before
-    assert dataset.last_writer(root, crate_path)[1] == "Update the RO-Crate publication view"
+    assert dataset.last_writer(root, crate_path).subject == "Update the RO-Crate publication view"
     graph = json.loads(crate_path.read_text())["@graph"]
     types = {e["@id"]: e["@type"] for e in graph}
     assert "OrganizeAction" in types.values()
