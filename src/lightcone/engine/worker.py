@@ -232,7 +232,7 @@ def execute(
     task.output_dir.mkdir(parents=True)
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
-    policy = container.policy_for(runtime, read_paths)
+    policy = container.policy_for(runtime, read_paths, output_dir=task.output_dir)
     started_at = _now()
     with sandbox.scope(policy):
         outcome = sandbox.run(

@@ -414,7 +414,9 @@ def converge(runtime: Runtime) -> list[str]:
     return sync(runtime.root, runtime)
 
 
-def policy_for(runtime: Runtime, read_paths: list[Path]) -> sandbox.Policy:
+def policy_for(
+    runtime: Runtime, read_paths: list[Path], *, output_dir: Path | None = None
+) -> sandbox.Policy:
     """Build the exec policy for a resolved runtime.
 
     The one place the ``env_dir``/``containerized`` pair is assembled —
@@ -426,6 +428,7 @@ def policy_for(runtime: Runtime, read_paths: list[Path]) -> sandbox.Policy:
     Args:
         runtime: The resolved runtime.
         read_paths: Declared inputs, as :func:`sandbox.exec_policy` takes.
+        output_dir: A recipe's own output directory; absent for a probe.
 
     Returns:
         The policy for this world.
@@ -435,6 +438,7 @@ def policy_for(runtime: Runtime, read_paths: list[Path]) -> sandbox.Policy:
         read_paths=read_paths,
         env_dir=runtime.env_dir,
         containerized=runtime.mode == "containerized",
+        output_dir=output_dir,
     )
 
 

@@ -1112,25 +1112,22 @@ one thing it does put on disk is the per-run private `$HOME`
 `rmtree` of that directory has one owner. (`wrap` stays pure; the
 impurity lives in policy construction, once.)
 
-**There is one policy, `exec_policy`, and a recipe gets exactly what a
-probe gets.** The tree is read-only apart from `results/`, for both. So
-layer 5's promise is not "in the direction that matters" — it is simply
-true: a command that works under `lc run` works as a recipe, with nothing
-in between to reason about.
-
-A recipe is deliberately **not** narrowed to its own output directory.
-That would be a second answer to "are these bytes what produced them",
-and the manifest's `data_version` is the first — content-addressed,
-checked by `lc verify`, and the only one that survives a rebuild on
-another machine. Two mechanisms for one guarantee is one more than can be
-kept honest, and the sandbox's is the one that cannot travel.
-
-The residue, recorded rather than argued away: a cross-write that lands
-*before* the victim task hashes leaves a manifest that is self-consistent
-and wrong, which no checksum can see. It needs concurrent tasks and a
-hardcoded sibling path, and the threat model here is accidental leakage
-rather than a hostile recipe — but `lc verify` will not catch that one, so
-do not describe it as covered.
+**There is one policy, `exec_policy`, and it differs between a recipe
+and a probe by one keyword.** The tree is read-only apart from the
+in-tree write scope: a recipe's is **its own output directory**
+(`output_dir=`, handed down from the worker's task), a probe's is
+`results/` whole, because a probe has no output id. This narrowing is
+the hardening pass reversing an earlier decision (see Recorded
+decisions): it exists as leak *prevention*, closing the cross-write
+residue — a concurrent task landing bytes in a sibling's directory
+before the sibling hashes produced a manifest that was self-consistent
+and wrong, which no checksum could ever see, so prevention was the only
+possible fix. The probe→recipe promise ("a command that works under
+`lc run` works as a recipe") now excludes exactly the commands that
+write outside their own output directory — which is the accident being
+prevented, not a loophole in the promise. Integrity-answering is still
+`data_version`'s job alone; the sandbox prevents the write, it does not
+attest the bytes.
 
 **`cluster_for_run()` is the seam, and it is two methods wide.**
 `submit(fn, *args, key=…)` and `completed(handles)`. That is all the
@@ -1466,7 +1463,8 @@ attested by the manifest's image id and the archive's bytes. Read from
 containerized `exec_policy` shape is the same policy minus the host: no
 OS read baseline, no stdlib root, no exec set — the image *is* those,
 and everything in it was declared — leaving exactly the paths that
-become mounts, project `:ro`, `results/` `:rw`, declared inputs `:ro`,
+become mounts, project `:ro`, the write scope `:rw` (a recipe's own
+output directory; a probe's `results/`), declared inputs `:ro`,
 the private HOME `:rw`, `--tmpfs /tmp`, over a **`--read-only` rootfs**:
 without that flag a write outside the declared set *succeeds* into the
 container's ephemeral layer and vanishes while the run attests
@@ -1947,6 +1945,30 @@ unlinks before writing; a new tampering test should too.
   cross-builds) is layer 7's, with the venue that makes it real. Old
   archives accumulate in annex history; reclaiming them is the user's
   `git annex unused`/`drop` — no GC verb.
+- **The hardening pass** (2026-08, post-layer-8) closed the residues that
+  did not need Perlmutter, and re-examined two it then deliberately left:
+  - *A recipe is narrowed to its own output directory* — reversing the
+    layer-5 "not narrowed" decision. The old rationale rejected the
+    sandbox as a second *integrity* mechanism, and that half stands
+    (`data_version` remains the only answer to "are these bytes what
+    produced them"); what the narrowing is instead is leak *prevention*,
+    closing the cross-write residue, whose corruption was undetectable by
+    construction. A probe keeps `results/` whole (no output id), the one
+    probe/recipe asymmetry.
+  - *The network is uncontrolled everywhere*: the OCI wrap dropped
+    `--network none`, its one restriction, so all three mechanisms attest
+    `network: allowed` symmetrically and no consumer can read a promise
+    into "containerized". `denied` stays in the `Attestation` type for a
+    mechanism that genuinely emits a denial flag.
+  - *The forged run-record subject stays a recorded residue*, re-examined
+    and left: the threat model is accidental damage and shortcuts, and a
+    copied `[DATALAD RUNCMD]` subject is already deliberate — a
+    body-verifying comparator raises the forgery cost without changing
+    who it stops, and nothing history-based is adversary-proof anyway.
+  - *The crate validator floor stays pinned at five*: three entries are
+    publisher/affiliation metadata lc genuinely does not know, and a
+    `[tool.lightcone.publication]` surface was considered and rejected —
+    revisit when a real deposit target demands it.
 
 ### Recorded deviations from the spec
 
@@ -1998,17 +2020,20 @@ unlinks before writing; a new tampering test should too.
   into the manifest's `hermeticity` field. `lc run` is still a probe with
   no output (§4), so there the attestation is returned and printed, never
   persisted.
-- **`results/` is writable; the rest of the tree is not**, where §4 gives
-  a probe no output and therefore no in-tree write scope at all. A probe
-  gets the same write scope a recipe does, so a probe that works means a
-  recipe will — and the environment a run starts with is the one it
-  finishes with.
+- **The in-tree write scope is writable; the rest of the tree is not**,
+  where §4 gives a probe no output and therefore no in-tree write scope
+  at all. A probe writes `results/` whole; a recipe, since the hardening
+  pass, writes only its own output directory (the cross-write closure —
+  see the layer-4 policy invariant and Recorded decisions) — and the
+  environment a run starts with is the one it finishes with.
   - **The shape was chosen because all three mechanisms express it
     natively.** A writable directory *nested inside* a read-only tree is
     the widening direction: Landlock unions rights over ancestors, SBPL
     restates the write tier after the guard, and podman mounts the
-    project `:ro` with `results` `:rw` over it — all verified by running
-    them. The reverse — a writable tree with `.venv` carved out — needs
+    project `:ro` with the write scope `:rw` over it — all verified by
+    running them, and the narrowing to one output directory is the same
+    shape one level deeper. The reverse — a writable tree with `.venv`
+    carved out — needs
     rights *subtraction*, which podman and SBPL can do and **Landlock
     cannot at all**. That asymmetry is the whole argument: the read-only
     shape is the only one direct mode and containerized mode can both
