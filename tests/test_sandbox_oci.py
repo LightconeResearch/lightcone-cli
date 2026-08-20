@@ -45,7 +45,11 @@ def policy(root: Path) -> Policy:
 
 
 def _backend(root: Path, runtime: str = "podman") -> OCIBackend:
-    flags = ("--userns=keep-id", "--pull=never") if runtime == "podman" else ("--user", "1000:1000")
+    flags = (
+        ("--user", "1000:1000")
+        if runtime == "docker"
+        else ("--userns=keep-id", "--pull=never")
+    )
     return OCIBackend(
         runtime=runtime,  # type: ignore[arg-type]
         image_id=_IMAGE_ID,
@@ -164,13 +168,19 @@ def test_the_network_is_denied_by_flag(root: Path, policy: Policy) -> None:
 def test_runtimes_differ_only_in_their_spellings(root: Path, policy: Policy) -> None:
     podman = _backend(root, "podman").wrap(policy, ["true"])
     docker = _backend(root, "docker").wrap(policy, ["true"])
+    hpc = _backend(root, "podman-hpc").wrap(policy, ["true"])
     assert "--userns=keep-id" in podman and "--pull=never" in podman
     assert "--user" in docker and "1000:1000" in docker
+    # The site wrapper is podman's argv with only the runtime word swapped.
+    swap = {"podman": "podman-hpc", "--env=LC_SANDBOX=podman": "--env=LC_SANDBOX=podman-hpc"}
+    assert hpc == [swap.get(a, a) for a in podman]
     strip = {
-        "--userns=keep-id", "--pull=never", "--user", "1000:1000", "podman", "docker",
-        "--env=LC_SANDBOX=podman", "--env=LC_SANDBOX=docker",
+        "--userns=keep-id", "--pull=never", "--user", "1000:1000",
+        "podman", "docker", "podman-hpc",
+        "--env=LC_SANDBOX=podman", "--env=LC_SANDBOX=docker", "--env=LC_SANDBOX=podman-hpc",
     }  # fmt: skip
-    assert [a for a in podman if a not in strip] == [a for a in docker if a not in strip]
+    p, d, h = ([a for a in argv if a not in strip] for argv in (podman, docker, hpc))
+    assert p == d == h
 
 
 def test_the_environment_is_an_allowlist_never_ambient(
@@ -197,7 +207,7 @@ def test_no_host_resolved_env_binary_in_the_argv(root: Path, policy: Policy) -> 
 
 
 def test_the_attestation_is_derived_from_the_flags(root: Path, policy: Policy) -> None:
-    for runtime in ("podman", "docker"):
+    for runtime in ("podman", "docker", "podman-hpc"):
         attested = _backend(root, runtime).attest(policy)
         assert attested.mechanism == runtime
         assert attested.fs == "declared"

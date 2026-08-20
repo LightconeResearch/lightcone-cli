@@ -53,7 +53,7 @@ speculatively.
 | 4 | **Fabric** — `lc materialize`, worker sequence, mid-run relock gate | ✅ **done** |
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
-| 7 | Venues — Perlmutter, hub/GKE, Cloud Build | ⬜ |
+| 7 | **Venues** — SLURM in-allocation execution, login guard, podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
 | 8 | `lc verify`, WRROC export | ⬜ |
 
 `lc status` landed with the invalidation model rather than at layer 8:
@@ -1415,7 +1415,8 @@ layer-7 item, as is apptainer/singularity — which is *why* the format is
 `docker-archive`: all four runtimes consume it, and HPC hosts that
 cannot build obtain images through the repository.
 
-**`ensure_image` is one function with three strictnesses**, and the split
+**`runtime_for_run(root, *, build)` is one function with two
+strictnesses**, and the split
 is load-bearing: `lc build` and the materialize preflight may **build +
 save + commit** (announced by the CLI, which owns the console — the
 engine never prints); the probe and the worker entry point only ever
@@ -1431,7 +1432,7 @@ cannot substitute. **A dropped archive never substitutes**: a rebuild is
 a new archive commit under a new id; old manifests keep naming what ran.
 
 **Builds and the archive commit happen only on a clean tree, and only
-after the graph.** The dirty check runs before `ensure_image` in
+after the graph.** The dirty check runs before `runtime_for_run` in
 materialize, and `lc build` refuses dirt itself: `dataset.save` stages
 scoped but commits the whole index, so a build on a dirty tree would
 sweep the user's staged edits into the image commit — and the tag
@@ -1520,6 +1521,168 @@ state, sandbox) — repository facts only, no runtime and no network
 required, which is where the denial note and the runtime-missing
 refusal point.
 
+## Key Invariants (layer 7)
+
+**The venue is detected, never configured, and only in one place.**
+`cluster_for_run()` is the whole ladder — a SLURM allocation
+(`SLURM_JOB_ID` set) spans every node it was granted, anything else is
+the local machine — and nothing outside that function asks where a run
+executes. The allocation *is* the resource declaration: the user already
+answered every sizing question at `salloc`/`sbatch`, so lc adds no venue
+config surface, no report field, and no status line (a venue is host
+state, and the status header is repository facts). The venue speaks only
+when it refuses, and those refusals carry the job facts (nodes expected
+vs connected, srun's exit code). A future submission-model venue
+(dask-jobqueue) is one more branch in this ladder plus the config table
+it genuinely needs — nothing else changes.
+
+**The allocation branch is `venue.slurm_client()`**: a scheduler in the
+driver process bound to `SLURMD_NODENAME` (the default loopback bind is
+unreachable from peer nodes), one `srun --overlap --ntasks=<nodes>
+--ntasks-per-node=1` launching `sys.executable -m
+distributed.cli.dask_worker` — the driver's own interpreter, the tool
+env on the shared filesystem, so driver and workers are the identical
+installation and `-m` cannot resolve to a different install the way a
+PATH-found `dask` can. One worker process per node with
+`--nthreads=<cpus>` (tasks block in `subprocess.wait()` with the GIL
+released — the local branch's own rationale), `--no-nanny` (srun won't
+relaunch either; the nanny logs a spurious death on every clean
+retirement), `--memory-limit 0` (the real work is in subprocesses behind
+the exec boundary, so Dask's memory manager could only pause workers
+over phantom numbers), `--death-timeout 60` (a worker whose driver died
+exits instead of holding its node to walltime), and `--local-directory`
+on a **literal `/tmp`** — never the project tree, explicit so ambient
+`DASK_TEMPORARY_DIRECTORY` cannot point it there, and literal rather
+than the driver's `tempfile.gettempdir()` because a site prolog can
+scope `TMPDIR` to the node or job step that set it, leaving a
+driver-resolved path absent on the allocation's other nodes. The
+driver's node
+hosts a worker too, and a single-node allocation takes the same srun
+path — one path means the venue is exercised on the cheapest allocation.
+
+**The srun child is the one documented exception to `project._run`.**
+That seam is run-to-completion capture; this child lives as long as the
+run, and its stderr must reach the terminal live (srun's own errors are
+the user's to see as they happen). It is a `subprocess.Popen` with the
+rationale at the call site, and the fake-srun tests keep the argv
+inspectable. Worker connection is a poll loop rather than
+`wait_for_workers`, so a dead srun is reported as *its exit code*
+immediately, not as a timeout two minutes later; teardown retires
+workers first (they exit 0, srun ends silently — killing srun prints
+"srun: forcing job termination" on every clean run) and escalates
+wait → terminate → kill, bounded, never a hang. A leaked `SLURM_JOB_ID`
+with no srun on PATH is a loud refusal, never a silent local fallback —
+and the other leak shapes get the same treatment: a non-integer SLURM
+count refuses naming the variable (`venue._int_env`), and a
+`SLURMD_NODENAME` that does not resolve becomes a `ProjectError` naming
+the bind rather than the raw `socket.gaierror` (distributed wraps it in
+a `RuntimeError`, so the constructor catches both).
+
+**The login guard is materialize-scoped, table-driven, and comes
+first.** `venue.require_compute_node()` refuses iff a known center's
+marker is in the environment and `SLURM_JOB_ID` is not (a marker is set
+on compute nodes too; the allocation is what distinguishes them),
+naming that center's copy-pasteable `salloc` and `sbatch --wrap 'lc
+materialize'` commands. The centers live in `venue._SITES` — one row
+each: name, marker variable, and the center's own allocation spellings,
+**verified against the center's documentation, never guessed** (the
+remedies rule). NERSC is the seeded row; supporting another center is
+one row, and nothing else moves — the conftest scrub derives its marker
+list from the table, and `test_a_new_center_is_one_table_row` pins that
+the row alone drives the message. The guard is the first line of
+`materialize()`, before even the tool checks: the allocation is the
+remedy with queue latency, so the user submits it first and fixes
+whatever later refusals name while waiting. The rerun entry point
+(`worker.main`) is guarded too — a rerun executes a recipe, and the
+record's `cmd` is how recipes reach a login node without `lc` in the
+command line. `check()`, `status()` and `lc run` never call it — a login
+node is exactly where "where does this project stand" gets asked.
+
+**Containerized runs assume a homogeneous allocation**, and the one
+part of that lc can check is *enforced*: a multi-node allocation with a
+containerized project **refuses** unless the runtime's image store spans
+nodes — `container._SHARED_STORE_RUNTIMES`, a positively-stated fact
+like `_PODMAN_FAMILY`, holding podman-hpc alone — because podman's and
+docker's stores are node-local: the image loads on the driver's node
+only, and every task scheduled elsewhere would fail at `run <id>` with
+`--pull=never` forbidding the fetch. The check sits in `materialize()`
+before the runtime resolves (a refusal must not cost an image build, so
+it asks `runtime_hint()`, letting a wholly missing runtime reach
+`runtime_for_run`'s own refusal) and not in `runtime_for_run` (the rerun
+entry point shares that, and a rerun is a one-node run wherever it
+sits). The rest stays a
+recorded assumption: every node offers the same runtime binary and sees
+the shared-filesystem project tree. podman-hpc is what makes multi-node
+true on NERSC — `migrate` squashes the image to the shared filesystem,
+where every compute node runs it.
+
+**podman-hpc is a spelling, not a shape.** It rides the existing
+`OCIBackend` (standard podman flags, `--userns=keep-id`,
+`--pull=never`), joins the podman family in `uid_flags`, `_loaded`
+(`image exists`) and `_build` (`save --format docker-archive`) — the
+set stated once as `container._PODMAN_FAMILY` and asked positively at
+every site, so a future runtime falls *outside* it by default instead
+of inheriting podman behavior through a `!= "docker"` back door — and
+adds
+exactly one step: `podman-hpc migrate <image-id>` in `runtime_for_run`,
+**outside the load branch** — after a fresh `lc build` the image is
+already in the store and the load never runs, but compute nodes only see
+migrated images. Migrate runs driver-side wherever `runtime_for_run`
+runs (login node at `lc build`, materialize preflight, the rerun entry
+point); one migrate serves all nodes. Detection order is
+**podman-hpc → podman → docker**: a site installs the wrapper precisely
+because plain podman's node-local overlay store is invisible to compute
+nodes, so where both are on PATH the bare sibling is the broken one.
+Presence-only detection (no daemon, no machine); the no-runtime refusal
+still names only podman/docker — podman-hpc is site-installed, never a
+user remedy. It is build-capable (it wraps `podman build`; NERSC login
+nodes are where a matching-arch archive comes from), so all three
+runtimes are both build- and run-capable and a capability predicate
+would be dead code — it lands with the first run-only runtime.
+
+**The architecture gate refuses before the load.** A wrong-arch
+`load` *succeeds* and then dies as `exec format error` deep inside a
+recipe — so `_require_arch` compares the archive's recorded arch against
+`platform.machine()` (via the closed `_OCI_ARCH` map) before anything is
+loaded, naming both arches and the fix: build on a matching host (on
+NERSC, a login node), commit, push, pull. Ignorance is not a mismatch —
+an archive that does not say, or an unmapped host machine, passes.
+Recorded residue: an arm64 mac that *could* emulate an amd64 archive is
+refused too (emulation is unattested ten-times-slower execution), and
+full multi-arch (arch-suffixed archive paths, `--platform` cross-builds)
+remains open, with the venue that makes it real.
+
+**Design headroom for a daemonless runtime (apptainer/singularity),
+deferred but load-bearing**: `Runtime` stays facts (root/mode/name/
+tag/id/arch), never mechanism — the committed→fetched→loaded ladder
+stays name-branched inside `runtime_for_run`, and a store-less runtime's
+analogue is a one-time archive→SIF conversion into gitignored
+`.lightcone/` cache keyed by the same runtime-independent config-blob
+id (the reason `docker-archive` stays the store format).
+`container.backend()` stays the single construction point; a future
+world-backend is one dataclass in `sandbox/` plus one branch there. A
+runtime that cannot deny network must attest `network: allowed` with no
+denial flag emitted — no consumer may assume containerized ⇒ denied,
+and `_sandbox_line`'s containerized prose is the one place that
+assumption lives today. `boundary.run`'s exit-125 note is a
+podman/docker-family fact, not a `contains_prefix` fact — it becomes
+mechanism-keyed when a non-OCI backend lands.
+
+**Pending the one-time Perlmutter spike** (run `tests/
+test_container_smoke.py` on a login node, then one materialize through
+`sbatch`; record findings here): `--overlap` and `--cpus-per-task`
+behavior inside salloc/sbatch steps; `nidXXXXXX` resolution from peer
+nodes (else `--interface hsn0`); `SLURM_CPUS_ON_NODE` on a CPU node
+(128 vs 256 hyperthreads); cold-Lustre `distributed` import vs the
+120 s worker wait; `podman-hpc migrate` accepting a bare image id and
+re-running cheaply; `--network none` on compute nodes (the
+`network: denied` attestation hangs on it); podman-hpc `--module`
+site-injected mounts vs the honesty of `fs: declared` (the one item
+that could add a flag); whether Landlock is in the SLES boot LSM list
+(either answer is handled — a host without it attests `fs: open` with
+the downgrade note); `git annex add`/`get` timings on `$SCRATCH` and
+`$CFS` (the recorded Lustre residue).
+
 ### Recorded decisions
 
 - **The engine is the host's uv tool, never a project dependency**
@@ -1543,12 +1706,12 @@ refusal point.
     worker process actually needs is `lightcone.engine` importable at a
     matching version — pickle serializes `worker.materialize` by
     reference and `Task`/`Versions`/`TaskResult` by class reference.
-    Verified by hand (2026-08-20), not pinned by the suite — a full
-    materialization through a `LocalCluster(processes=True)`: the
-    current code works unchanged across process boundaries, and workers
+    Pinned by the suite since layer 7
+    (`test_a_processes_cluster_fits_through_the_seam`, a full
+    materialization through a `LocalCluster(processes=True)`): the
+    code works unchanged across process boundaries, and workers
     need **no git and no git-annex** (the driver owns git alone;
-    `data_version` is pure file hashing). The shipped cluster is
-    threads; re-verify when layer 7 makes processes real. So per venue: on HPC the tool env lives on the shared
+    `data_version` is pure file hashing). So per venue: on HPC the tool env lives on the shared
     filesystem and the venue launches workers on the driver's own
     interpreter (`sys.executable` — dask-jobqueue's `python=`), which
     makes driver and workers the identical installation; in containerized
@@ -1766,11 +1929,12 @@ refusal point.
 | Change how a project stores bytes | `src/lightcone/engine/dataset.py` + `templates/files/gitattributes.tmpl` | Every command through `project._run`; test it against a real annex (`real_tools`) |
 | Change how an output is identified | `src/lightcone/engine/identity.py` + `tests/test_identity.py` | Sensitivity tests both ways: what must move the hash, and what must not |
 | Change what the image is made of | `src/lightcone/engine/image.py` + `tests/test_image.py` | Pure; structure-and-ordering tests, never byte goldens; every declaration key is hashed |
-| Change how images are built, stored or entered | `src/lightcone/engine/container.py` (+ `sandbox/oci.py` for the exec argv) + `tests/test_container.py` | Everything through `project._run`; keep the three `ensure_image` strictnesses; runtime differences are spellings inside `OCIBackend`, never new shapes |
+| Change how images are built, stored or entered | `src/lightcone/engine/container.py` (+ `sandbox/oci.py` for the exec argv) + `tests/test_container.py` | Everything through `project._run`; keep `runtime_for_run`'s two strictnesses; runtime differences are spellings inside `OCIBackend`, never new shapes |
 | Change when an output is remade | `src/lightcone/engine/assets.py` + `tests/test_assets.py` | One `classify()`, two callers; `--check` differs by one input value, never by logic. Ask first whether the thing that moved *contradicts* the project or is a *circumstance* — the second is `behind`, not `stale` |
 | Change how the spec becomes a graph | `src/lightcone/engine/plan.py` + `tests/test_plan.py` | Ask `astra.resolve`; if the answer is missing, the fix is a PR to astra-tools. Anything ambiguous is a `ProjectError`, never a guess |
 | Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
 | Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
+| Change where a run executes | `src/lightcone/engine/venue.py` + `materialize.cluster_for_run` + `tests/test_venue.py` | One detection ladder, in `cluster_for_run` alone; venues are detected, never configured; test by faking the host (env vars + a stub srun), never the code |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
 | Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |
@@ -1841,6 +2005,17 @@ The sandbox suite splits along the seam, which is what makes it cheap:
 - `tests/test_run.py` — what `lc run` decides *before* it execs: the
   current-directory project check, declared inputs, the uv hop. Nothing
   spawns.
+- `tests/test_venue.py` — the venue's surface is ambient (env vars, an
+  srun on PATH), so the suite fakes the *host*, never the code: SLURM
+  variables set deliberately, a bash stub standing in for srun, and the
+  end-to-end tests run a real graph through the real detection, bind,
+  launch and teardown path on any machine — real worker processes, no
+  SLURM anywhere. `SLURMD_NODENAME=127.0.0.1` keeps the scheduler bind
+  hermetic against CI DNS. No required-vs-skip gating: nothing depends
+  on host capability. The `venue_env` autouse fixture in conftest scrubs
+  the venue variables suite-wide — without it the whole suite fails on a
+  NERSC login node (the guard) and the real-cluster test would srun
+  across a live allocation.
 - `tests/test_image.py` — **pure**: the declaration, the document, the
   render's structure and ordering, tag sensitivity both ways, and the
   `env_version` integration. `tests/test_sandbox_oci.py` — **pure**: the

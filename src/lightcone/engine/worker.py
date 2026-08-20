@@ -35,7 +35,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-from lightcone.engine import assets, container, dataset, identity, plan, sandbox
+from lightcone.engine import assets, container, dataset, identity, plan, sandbox, venue
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
     ProjectError,
@@ -346,6 +346,9 @@ def main(argv: list[str]) -> int:
 
     universe_id, _, output_id = argv[0].partition("/")
     try:
+        # A rerun executes a recipe, so it is gated the way materialize
+        # is: compute nodes, never a NERSC login node.
+        venue.require_compute_node("datalad rerun <commit>")
         root = declared_project()
         # The graph — and with it the task lookup — before any converge:
         # a typo'd target must cost nothing and mask nothing, and a

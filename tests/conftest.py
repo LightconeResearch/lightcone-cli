@@ -22,6 +22,29 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture(autouse=True)
+def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip the host's venue out of the suite's environment.
+
+    On a known center's login node every materialize test would otherwise
+    meet the login guard, and inside an allocation the real-cluster test
+    would launch srun across it. The site markers come from the guard's
+    own table, so a center added there is scrubbed here for free; the
+    venue tests set these back deliberately.
+    """
+    from lightcone.engine import venue
+
+    for name in (
+        *(site.marker for site in venue._SITES),
+        "SLURM_JOB_ID",
+        "SLURMD_NODENAME",
+        "SLURM_JOB_NUM_NODES",
+        "SLURM_NNODES",
+        "SLURM_CPUS_ON_NODE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Fake every external tool convergence shells out to, so the suite is
     hermetic — no network, no real resolution, no subprocesses.

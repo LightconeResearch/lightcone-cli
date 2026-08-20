@@ -54,13 +54,19 @@ def _write_archive(path: Path, config: bytes = _CONFIG) -> str:
 
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """A podman-having host: records argv, models each command's effect."""
+    """A podman-having host: records argv, models each command's effect.
+
+    Every tool name resolves except ``podman-hpc`` — a site wrapper no
+    laptop has, and it would win detection everywhere. The host's
+    architecture is pinned to the test archives' ``amd64`` so the arch
+    gate answers the same on every CI machine.
+    """
     calls: list[list[str]] = []
     loaded: set[str] = set()
 
     def run(argv: list[str], *, cwd: Path) -> MagicMock:
         calls.append(list(argv))
-        if argv[0] in ("podman", "docker"):
+        if argv[0] in ("podman", "docker", "podman-hpc"):
             if argv[1] == "image":  # the loaded probe, both spellings
                 return MagicMock(returncode=0 if argv[3] in loaded else 1)
             if argv[1] == "load":
@@ -84,8 +90,33 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         return MagicMock(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(project, "_run", run)
-    monkeypatch.setattr(shutil, "which", lambda name, path=None: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, path=None: None if name == "podman-hpc" else f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(container.platform, "machine", lambda: "x86_64")
     return calls
+
+
+@pytest.fixture
+def hpc(
+    fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> list[list[str]]:
+    """The same host with the site's podman-hpc wrapper installed too.
+
+    A wrap around `fake`'s stub rather than a replacement, so it changes
+    exactly one fact — anything else `fake` hides stays hidden here.
+    """
+    inner = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, path=None: "/usr/bin/podman-hpc"
+        if name == "podman-hpc"
+        else inner(name, path),
+    )
+    return fake
 
 
 def _argvs(calls: list[list[str]], *head: str) -> list[list[str]]:
@@ -482,3 +513,99 @@ def test_a_garbled_archive_is_a_pointed_refusal(tmp_path: Path) -> None:
     (tmp_path / "image").write_bytes(b"not a tar at all" * 4096)
     with pytest.raises(ProjectError, match="lc build"):
         container.archive_identity(tmp_path / "image")
+
+
+# ---- podman-hpc -------------------------------------------------------------
+
+
+def test_podman_hpc_is_preferred_where_present(root: Path, hpc: list[list[str]]) -> None:
+    """Where the site wrapper exists, the bare podman beside it is the one
+    whose store compute nodes cannot see."""
+    assert container.runtime_hint() == "podman-hpc"
+    assert container.runtime_name(root) == "podman-hpc"
+
+
+def test_podman_hpc_loads_then_migrates(root: Path, hpc: list[list[str]]) -> None:
+    expected = _write_archive(image.archive_path(root, image.tag(root)))
+
+    runtime = container.runtime_for_run(root, build=False)
+
+    assert runtime.runtime == "podman-hpc"
+    assert _argvs(hpc, "podman-hpc", "image") == [["podman-hpc", "image", "exists", expected]]
+    assert len(_argvs(hpc, "podman-hpc", "load")) == 1
+    assert _argvs(hpc, "podman-hpc", "migrate") == [["podman-hpc", "migrate", expected]]
+
+
+def test_migrate_runs_even_when_the_store_already_holds_the_image(
+    root: Path, hpc: list[list[str]]
+) -> None:
+    """The migrate lives outside the load branch: a store hit (or a fresh
+    build) must still put the squashed copy where compute nodes look."""
+    _write_archive(image.archive_path(root, image.tag(root)))
+
+    container.runtime_for_run(root, build=False)
+    container.runtime_for_run(root, build=False)
+
+    assert len(_argvs(hpc, "podman-hpc", "load")) == 1
+    assert len(_argvs(hpc, "podman-hpc", "migrate")) == 2
+
+
+def test_podman_hpc_builds_saves_and_migrates(root: Path, hpc: list[list[str]]) -> None:
+    """The wrapper is build-capable — NERSC login nodes are where the
+    matching-arch archive comes from — and a fresh build still migrates."""
+    runtime, verdict = container.build(root)
+
+    assert verdict == "built"
+    assert len(_argvs(hpc, "podman-hpc", "build")) == 1
+    (save,) = _argvs(hpc, "podman-hpc", "save")
+    assert save[2:4] == ["--format", "docker-archive"]
+    assert _argvs(hpc, "podman-hpc", "migrate") == [["podman-hpc", "migrate", runtime.image_id]]
+
+
+def test_podman_hpc_keeps_the_uid_and_forbids_pulling(root: Path, hpc: list[list[str]]) -> None:
+    _write_archive(image.archive_path(root, image.tag(root)))
+    runtime = container.runtime_for_run(root, build=False)
+
+    assert container.uid_flags("podman-hpc") == ["--userns=keep-id"]
+    backend = container.backend(runtime)
+    assert backend.capability.kind == "podman-hpc"
+    assert "--pull=never" in backend.user_flags  # type: ignore[attr-defined]
+    assert "--userns=keep-id" in backend.user_flags  # type: ignore[attr-defined]
+
+
+# ---- the architecture gate --------------------------------------------------
+
+
+def test_a_foreign_arch_archive_refuses_before_loading(
+    root: Path, fake: list[list[str]]
+) -> None:
+    """A wrong-arch load *succeeds* and then dies as `exec format error`
+    deep inside a recipe — so the refusal comes first, naming the fix."""
+    _write_archive(
+        image.archive_path(root, image.tag(root)), b'{"architecture":"arm64","os":"linux"}'
+    )
+
+    with pytest.raises(ProjectError, match="built for arm64 and this host is amd64"):
+        container.runtime_for_run(root, build=False)
+
+    assert _argvs(fake, "podman", "load") == []
+
+
+def test_the_matching_arch_loads(root: Path, fake: list[list[str]]) -> None:
+    _write_archive(image.archive_path(root, image.tag(root)))
+
+    assert container.runtime_for_run(root, build=False).arch == "amd64"
+    assert len(_argvs(fake, "podman", "load")) == 1
+
+
+def test_an_unknown_arch_is_not_refused(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ignorance is not a mismatch — an archive that does not say, or a
+    host machine outside the map, passes rather than refusing blind."""
+    _write_archive(image.archive_path(root, image.tag(root)), b'{"os":"linux"}')
+    container.runtime_for_run(root, build=False)
+
+    monkeypatch.setattr(container.platform, "machine", lambda: "riscv64")
+    _write_archive(image.archive_path(root, image.tag(root)))
+    container.runtime_for_run(root, build=False)
