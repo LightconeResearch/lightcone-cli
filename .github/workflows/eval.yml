@@ -35,12 +35,21 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-          activate-environment: true
 
-      - name: Install lightcone-cli (branch under test)
-        # The activated venv puts lc, astra, and (via the mirrored entry
-        # points) git-annex on PATH — the runner needs no system annex.
-        run: uv sync
+      - name: Install lightcone-cli + astra (uv tools)
+        # The engine is the host's uv tool — install the branch under
+        # test the way a user installs a release: `uv tool install`,
+        # which links `lc` and (via the mirrored entry points) the
+        # git-annex executables into ~/.local/bin. The commit under test
+        # is the checkout itself, stamped into the version by hatch-vcs.
+        # astra's executable belongs to astra-tools, so it is its own
+        # tool install, pinned to the version the branch depends on. No
+        # venv is activated: the agent's shell sees the tools exactly as
+        # an end user's would.
+        run: |
+          uv tool install "$GITHUB_WORKSPACE"
+          uv tool install "astra-tools==$(grep -oP 'astra-tools==\K[0-9][0-9.]*' pyproject.toml)"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install Claude Code + astra plugin
         run: |
