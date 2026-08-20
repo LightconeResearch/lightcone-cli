@@ -45,6 +45,8 @@ class Unavailable:
     """
 
     capability: Capability = field(default_factory=lambda: Capability(kind="none"))
+    #: No mechanism, so nothing owns the prefix either.
+    contains_prefix: bool = False
 
     def wrap(self, policy: Policy, argv: Sequence[str]) -> list[str]:
         """Return *argv* unchanged — there is no mechanism to wrap with."""
@@ -143,15 +145,22 @@ def run(
         cwd: Where to run it.
         env: The environment for everything outside the rewrite. The
             policy's own overlay is applied inside it, not merged here.
-        prefix: Spawned *outside* the rewrite — how a caller says "wrap
-            the command, not this". Used for the ``uv run`` hop, since
-            uv's config and caches are trusted plumbing.
+        prefix: The ``uv run`` hop. For a host mechanism it is spawned
+            *outside* the rewrite — uv's config and caches are trusted
+            plumbing. For a backend that is itself a world
+            (``contains_prefix``), it goes *inside*: there is no trusted
+            host plumbing inside a container, and the env overlay is
+            that backend's to apply natively rather than through a
+            host-resolved ``env``.
 
     Returns:
         The exit code, what was actually enforced, and any lines the
         caller should print verbatim.
     """
-    wrapped = [*prefix, *backend.wrap(policy, [*env_argv(policy), *argv])]
+    if backend.contains_prefix:
+        wrapped = backend.wrap(policy, [*prefix, *argv])
+    else:
+        wrapped = [*prefix, *backend.wrap(policy, [*env_argv(policy), *argv])]
     attestation = backend.attest(policy)
     # `policy.env` is deliberately **not** merged here: it went inside
     # the wrap, above, via :func:`env_argv`. Everything *outside* the
@@ -183,13 +192,25 @@ def run(
     # module eagerly, and the shim drags ctypes in for one integer.
     from lightcone._sandbox_exec import SETUP_FAILURE_EXIT
 
-    if returncode == SETUP_FAILURE_EXIT:
-        # The shim's reserved code: the sandbox could not be *built*. Say
-        # so plainly — the trailer would otherwise point the user at their
-        # own command's permissions for a failure that is entirely ours.
+    if returncode == SETUP_FAILURE_EXIT and attestation.mechanism == "landlock":
+        # The shim's reserved code — meaningful only where the shim ran:
+        # under any other mechanism a command legitimately exiting 97 is
+        # just a failed command, and blaming lc for it would misattribute
+        # at the one place nobody is watching. Say the real case plainly —
+        # the trailer would otherwise point the user at their own
+        # command's permissions for a failure that is entirely ours.
         notes.append(
             "lc could not set up the sandbox (see above) — this is an lc "
             "problem, not your command's"
+        )
+    elif returncode == 125 and backend.contains_prefix:
+        # The runtimes reserve 125 for their own failures (a bad flag, a
+        # vanished mount source): the command never ran, so the denial
+        # heuristics have nothing to say about it.
+        notes.append(
+            f"the container runtime failed before the command ran (see "
+            f"above, `{attestation.mechanism}` exit 125) — this is a "
+            "runtime problem, not your command's"
         )
     elif returncode != 0 and attestation.mechanism != "none":
         from lightcone.engine.sandbox import denial

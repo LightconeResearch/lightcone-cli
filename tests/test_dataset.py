@@ -94,6 +94,38 @@ def test_a_plain_git_add_annexes_content_by_itself(repo: Path) -> None:
     assert _annexed(repo, output / "fit.csv")
 
 
+def test_dot_paths_follow_the_storage_policy_not_annex_defaults(repo: Path) -> None:
+    """git-annex routes any file under a dot-directory to git whatever
+    `annex.largefiles` says, unless the add opts in — so the image
+    archive under `.datalad/environments/`, or a `.cache.h5` a recipe
+    writes into results/, would land as a full blob in git, silently,
+    and every clone would carry the bytes forever. `save` opts in
+    unconditionally, so the attributes alone decide: archives and dot
+    outputs reach the annex, dot-named manifests keep their exemption.
+    The mutation check is a *plain* `git add` of the same shape, which
+    keeps git-annex's stock dotfile behavior."""
+    archive = repo / ".datalad" / "environments" / "lc-env-abc" / "image"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"pretend image bytes\n" * 64)
+    output = repo / "results" / "baseline" / "fit"
+    output.mkdir(parents=True)
+    (output / ".cache.h5").write_bytes(b"intermediate\n" * 64)
+    (output / ".lightcone-manifest.json").write_text("{}\n")
+
+    dataset.save(repo, [archive.parent, output], "routed")
+
+    assert _annexed(repo, archive)
+    assert _annexed(repo, output / ".cache.h5")
+    assert not _annexed(repo, output / ".lightcone-manifest.json")
+
+    plain = repo / ".datalad" / "environments" / "lc-env-def" / "image"
+    plain.parent.mkdir(parents=True)
+    plain.write_bytes(b"pretend image bytes\n" * 64)
+    dataset._git(["add", "-A", "--", ".datalad/environments/lc-env-def"], cwd=repo)
+    dataset._git(["commit", "-q", "-m", "plain add"], cwd=repo)
+    assert not _annexed(repo, plain)
+
+
 def test_analysis_code_stays_in_git_and_stays_writable(repo: Path) -> None:
     """The default `annex.largefiles=nothing` is what keeps `filter=annex`
     from routing source files into the annex along with the data."""

@@ -69,6 +69,11 @@ def test_an_undeclared_tool_is_named_with_its_remedy(policy: Policy, project: Pa
     joined = "\n".join(lines)
     assert f"cannot execute {tool}" in joined
     assert "uv add" in joined
+    # The system-layer remedy is real now — `lc build` exists — so the
+    # standing cap on remedies makes naming it mandatory, not optional.
+    assert "[tool.lightcone.image]" in joined
+    assert "apt-install" in joined
+    assert "behind" in joined
 
 
 def test_an_undeclared_data_file_gets_the_astra_snippet(

@@ -78,6 +78,17 @@ def test_an_unbuilt_project_is_told_to_build_it(project: Path) -> None:
     assert "lc init" in str(raised.value)
 
 
+def test_a_containerized_project_needs_no_host_venv(project: Path) -> None:
+    """The host `.venv` is inert in containerized mode — the environment
+    the verbs enter is `.lightcone/venv`, created by their own converge
+    inside the image — so a clone is runnable without it."""
+    (project / ".venv").rmdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "proj"\n\n[tool.lightcone.image]\napt-install = ["bc"]\n'
+    )
+    assert current_project(project) == project.resolve()
+
+
 def test_the_wrong_directory_is_told_to_move_not_to_scaffold(tmp_path: Path) -> None:
     """The complaint that produced this split: standing in `$HOME`, being
     told to run `lc init` is advice to scaffold a project in your home

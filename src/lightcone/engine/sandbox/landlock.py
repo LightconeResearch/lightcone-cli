@@ -73,6 +73,8 @@ class LandlockBackend:
 
     capability: Capability = field(default_factory=capability)
     interpreter: str = sys.executable
+    #: The uv hop stays outside the wrap: trusted host plumbing.
+    contains_prefix: bool = False
 
     def wrap(self, policy: Policy, argv: Sequence[str]) -> list[str]:
         """Rewrite *argv* to run under the Landlock shim.

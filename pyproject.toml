@@ -94,3 +94,7 @@ follow_untyped_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The container smoke tests leave ~200 MB image archives in each test's
+# tmp_path; keeping every passing run's directories exhausts a tmpfs.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1

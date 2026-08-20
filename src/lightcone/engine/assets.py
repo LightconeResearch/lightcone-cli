@@ -107,12 +107,12 @@ def data_version(path: Path) -> str:
             being in this clone, in either of the shapes that takes.
     """
     if path.is_symlink() and not path.exists():
-        _refuse_unfetched(path)
+        require_fetched(path)
     if not path.exists():
         raise FileNotFoundError(path)
     h = hashlib.sha256()
     if path.is_file():
-        _refuse_unfetched(path)
+        require_fetched(path)
         h.update(b"file:")
         _feed(h, path)
         return f"sha256:{h.hexdigest()}"
@@ -130,7 +130,7 @@ def data_version(path: Path) -> str:
         if p.name not in _HASH_EXCLUDE and (p.is_file() or (p.is_symlink() and not p.exists()))
     ]
     for p in sorted(files, key=lambda x: x.relative_to(path).as_posix()):
-        _refuse_unfetched(p)
+        require_fetched(p)
         h.update(b"path:")
         h.update(p.relative_to(path).as_posix().encode())
         h.update(b"\0data:")
@@ -175,7 +175,7 @@ class Versions:
         return known
 
 
-def _refuse_unfetched(path: Path) -> None:
+def require_fetched(path: Path) -> None:
     """Refuse a file whose content this clone does not hold.
 
     An annexed file takes one of two shapes, and a researcher can convert
@@ -187,7 +187,7 @@ def _refuse_unfetched(path: Path) -> None:
     without the content simply dangles.
 
     Args:
-        path: A file about to be hashed.
+        path: A file whose bytes are about to be used.
 
     Raises:
         ContentNotFetchedError: If *path* is either shape without its
@@ -255,6 +255,13 @@ class Manifest:
     lc_version: str
     #: What the sandbox actually enforced, as the boundary attested it.
     hermeticity: dict[str, Any]
+    #: The image the recipe ran in — ``{tag, id, archive, arch}`` — or
+    #: ``None`` on the host. Defaulted, and that is not back-compat
+    #: machinery: ``None`` is the *true* value for every manifest a
+    #: container-less engine wrote, and without the default those
+    #: manifests would read as absent and the whole project would go
+    #: stale over a field that changes nothing about the bytes.
+    image: dict[str, Any] | None = None
     schema_version: int = field(default=SCHEMA_VERSION)
 
     def as_dict(self) -> dict[str, Any]:

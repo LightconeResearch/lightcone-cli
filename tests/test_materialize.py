@@ -687,6 +687,76 @@ def _clone(root: Path, into: Path) -> Path:
     return clone
 
 
+_FETCH_SPEC = """
+version: "0.0.13"
+name: analysis
+
+inputs:
+  - id: catalog
+    type: data
+    source: data/catalog.fits
+
+outputs:
+  - id: copy
+    type: metric
+    inputs: [catalog]
+    recipe:
+      command: cat {inputs.catalog} > {output}/copy.txt
+"""
+
+
+def test_a_bytes_free_clone_fetches_its_inputs_and_is_up_to_date(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """lc fetches declared inputs rather than telling anyone to — a clone
+    holding only pointers materializes straight to up-to-date, hashing
+    the same bytes the origin recorded. Without the fetch this run
+    *failed*: the worker's hash refused the pointer file."""
+    root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
+    assert engine.materialize(root, []).ok
+
+    clone = _clone(root, tmp_path)
+    with pytest.raises(assets.ContentNotFetchedError):
+        assets.data_version(clone / "data" / "catalog.fits")
+
+    again = engine.materialize(clone, [])
+
+    assert again.up_to_date, (again.failed, again.warnings)
+    assert assets.data_version(clone / "data" / "catalog.fits")  # the bytes came
+    assert not dataset.status(clone)
+
+
+def test_an_unreachable_input_is_a_warning_and_a_per_task_failure(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path
+) -> None:
+    """A failed fetch must not refuse the whole run — independent tasks
+    still run, and the task whose input is unreachable reports its own
+    failure. Reaching the state honestly: clone, then delete the origin
+    the annex would fetch from."""
+    root = analysis(_FETCH_SPEC, files={"data/catalog.fits": "stars\n"})
+    assert engine.materialize(root, []).ok
+    clone = _clone(root, tmp_path)
+    dataset._git(["remote", "remove", "origin"], cwd=clone)
+
+    report = engine.materialize(clone, [])
+
+    assert not report.ok
+    assert report.failed == ["baseline/copy"]
+    assert any("could not be fetched" in w for w in report.warnings)
+
+
+def test_check_mode_never_fetches(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--check` and `status` are read-only verbs: an unfetched input is a
+    reported fact there, never a network transfer."""
+
+    def refuse(*args: Any) -> None:
+        raise AssertionError("check mode fetched")
+
+    monkeypatch.setattr(engine, "_fetch_inputs", refuse)
+    engine.check(root, [])
+    engine.status(root)
+
+
 def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     root: Path, inline: None
 ) -> None:
@@ -710,30 +780,6 @@ def test_a_drifted_environment_is_made_to_match_before_anything_runs(
 
     assert report.ok
     assert project_mod._env_is_current(root)
-
-
-@pytest.fixture(scope="session")
-def engine_dist(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, Path]:
-    """Build the engine under test into a wheel the pinned record can find.
-
-    The record pins ``lightcone-cli==<v>`` and the suite's build is not
-    published, so the rerun's ephemeral environment is pointed here via
-    ``UV_FIND_LINKS`` — which is what lets the suite execute the same
-    record shape every real commit carries, rather than a test-only one.
-
-    Returns:
-        The wheel's exact version, and the directory serving it.
-    """
-    dist = tmp_path_factory.mktemp("engine-dist")
-    subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(dist)],
-        cwd=Path(__file__).parent.parent,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    wheel = next(dist.glob("*.whl"))
-    return wheel.name.split("-")[1], dist
 
 
 def test_the_recorded_command_reproduces_the_output(

@@ -35,13 +35,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-from lightcone.engine import assets, dataset, identity, plan, sandbox
+from lightcone.engine import assets, container, dataset, identity, plan, sandbox
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
     ProjectError,
     child_env,
     declared_project,
-    sync,
     uv_prefix,
 )
 
@@ -97,6 +96,7 @@ def materialize(
     head: Head,
     versions: assets.Versions,
     refresh: bool,
+    runtime: container.Runtime,
     *upstream: TaskResult,
 ) -> TaskResult:
     """Make *task* if it needs making. What Dask submits, once per task.
@@ -115,6 +115,9 @@ def materialize(
             driver because it commits as outputs land and HEAD moves.
         versions: The run's content-hash memo for declared inputs.
         refresh: Whether to remake an output that is merely behind.
+        runtime: The execution world, resolved once by the driver — the
+            same discipline as *head*, because resolving per task could
+            answer differently mid-run.
         *upstream: The results of this task's dependencies, arriving as
             the futures it was given — which is what makes Dask the
             scheduler rather than a loop here.
@@ -123,7 +126,7 @@ def materialize(
         What happened. Never raises.
     """
     try:
-        return _materialize(root, task, env_version, head, versions, refresh, upstream)
+        return _materialize(root, task, env_version, head, versions, refresh, runtime, upstream)
     except Exception as e:  # the contract is that this function returns
         return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
 
@@ -135,6 +138,7 @@ def _materialize(
     head: Head,
     versions: assets.Versions,
     refresh: bool,
+    runtime: container.Runtime,
     upstream: tuple[TaskResult, ...],
 ) -> TaskResult:
     reported = {u.key: u for u in upstream if u.usable}
@@ -155,7 +159,7 @@ def _materialize(
         inputs=inputs,
     )
     if verdict.calls_for_a_remake(refresh=refresh):
-        return execute(root, task, env_version, inputs, head=head)
+        return execute(root, task, env_version, inputs, head=head, runtime=runtime)
 
     # Left alone, so the bytes on disk stand. Their *recorded* digest,
     # never a recomputed one: on a clone that has fetched no annex content
@@ -179,6 +183,7 @@ def execute(
     input_versions: Mapping[str, str],
     *,
     head: Head,
+    runtime: container.Runtime,
 ) -> TaskResult:
     """Run *task*'s recipe and record what it produced.
 
@@ -195,6 +200,9 @@ def execute(
         input_versions: Each declared input's content identity, recorded
             in the manifest as the chain.
         head: The run's ``(commit sha, origin URL)``.
+        runtime: The execution world the recipe enters — the host under
+            the platform's mechanism, or the project image behind its
+            mount table.
 
     Returns:
         ``ok`` with the output's ``data_version``, or ``failed``. Commits
@@ -214,10 +222,10 @@ def execute(
     task.output_dir.mkdir(parents=True)
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
-    policy = sandbox.exec_policy(root, read_paths=read_paths)
+    policy = container.policy_for(runtime, read_paths)
     with sandbox.scope(policy):
         outcome = sandbox.run(
-            sandbox.detect(),
+            container.backend(runtime),
             policy,
             [_SHELL, "-c", task.recipe],
             cwd=root,
@@ -256,6 +264,7 @@ def execute(
                 git_remote=remote,
                 lc_version=lc_version(),
                 hermeticity=asdict(outcome.attestation),
+                image=runtime.manifest_image(),
             ),
         )
     except (OSError, ProjectError) as e:
@@ -319,6 +328,11 @@ def main(argv: list[str]) -> int:
     ``--locked``, so a lock that no longer matches ``pyproject.toml`` is a
     loud refusal rather than a quiet relock.
 
+    The image, by contrast, is *found*, never built: the run record lists
+    the committed archive in ``extra_inputs``, so ``datalad rerun`` has
+    fetched the exact bytes before this runs — and a build would be a
+    commit, which nothing here makes.
+
     Args:
         argv: One argument, ``<universe>/<output_id>``.
 
@@ -333,17 +347,25 @@ def main(argv: list[str]) -> int:
     universe_id, _, output_id = argv[0].partition("/")
     try:
         root = declared_project()
-        sync(root)
-        env_version = identity.env_version(root)
+        # The graph — and with it the task lookup — before any converge:
+        # a typo'd target must cost nothing and mask nothing, and a
+        # failing sync must not bury "no output `x`" under its own error.
         graph = plan.build(root)
         if (task := graph.tasks.get((universe_id, output_id))) is None:
             print(f"no output `{argv[0]}` in this project", file=sys.stderr)
             return 2
-        # This one-task run reads HEAD for itself, because it *is* the
-        # driver here — the rule is that the run's commit is read once by
-        # whoever owns the run, not that a worker never reads it.
+        # This one-task run resolves its own runtime and HEAD, because it
+        # *is* the driver here — the rule is that each is read once by
+        # whoever owns the run, not that a worker never reads them.
+        runtime = container.runtime_for_run(root, build=False)
+        container.converge(runtime)
         result = execute(
-            root, task, env_version, _from_disk(task), head=dataset.head(root)
+            root,
+            task,
+            identity.env_version(root),
+            _from_disk(task),
+            head=dataset.head(root),
+            runtime=runtime,
         )
     except ProjectError as e:
         print(f"error: {e}", file=sys.stderr)

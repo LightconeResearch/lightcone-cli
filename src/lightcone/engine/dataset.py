@@ -209,6 +209,18 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
     `git add` and whose tools very much do open files for update, so it is
     passed per-add and never written to the repository's config.
 
+    ``annex.dotfiles`` is set for the same reason ``annex.thin`` is:
+    without it, git-annex routes any file under a dot-directory to git
+    *regardless* of what ``annex.largefiles`` says — so the image archive
+    under ``.datalad/environments/``, or a ``.cache.h5`` a recipe writes
+    into its output directory, would land as a full blob in git,
+    silently, with every test green, and every clone would carry the
+    bytes forever. With it, ``annex.largefiles`` alone decides — which is
+    the storage policy the ``.gitattributes`` template already states,
+    dot-named manifests staying in git through their own exemption.
+    Per-add and never written to the repository's config, so a user's
+    own ``git add`` keeps git-annex's stock behavior.
+
     Args:
         directory: The repository root.
         paths: What to stage, absolute or repository-relative.
@@ -218,7 +230,10 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
         False if there was nothing to commit.
     """
     relative = [_rel(directory, p) for p in paths]
-    _git(["-c", "annex.thin=true", "add", "-A", "--", *relative], cwd=directory)
+    _git(
+        ["-c", "annex.thin=true", "-c", "annex.dotfiles=true", "add", "-A", "--", *relative],
+        cwd=directory,
+    )
     if _git_ok(["diff", "--cached", "--quiet"], cwd=directory):
         return False
     _git(["commit", "-q", "-m", message], cwd=directory)
