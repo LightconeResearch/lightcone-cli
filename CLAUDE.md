@@ -1578,11 +1578,18 @@ count refuses naming the variable (`venue._int_env`), and a
 the bind rather than the raw `socket.gaierror` (distributed wraps it in
 a `RuntimeError`, so the constructor catches both).
 
-**The login guard is materialize-scoped and comes first.**
-`venue.require_compute_node()` refuses iff `NERSC_HOST` is set and
-`SLURM_JOB_ID` is not (NERSC_HOST is set on compute nodes too; the
-allocation is what distinguishes them), naming copy-pasteable `salloc`
-and `sbatch --wrap 'lc materialize'` commands. It is the first line of
+**The login guard is materialize-scoped, table-driven, and comes
+first.** `venue.require_compute_node()` refuses iff a known center's
+marker is in the environment and `SLURM_JOB_ID` is not (a marker is set
+on compute nodes too; the allocation is what distinguishes them),
+naming that center's copy-pasteable `salloc` and `sbatch --wrap 'lc
+materialize'` commands. The centers live in `venue._SITES` — one row
+each: name, marker variable, and the center's own allocation spellings,
+**verified against the center's documentation, never guessed** (the
+remedies rule). NERSC is the seeded row; supporting another center is
+one row, and nothing else moves — the conftest scrub derives its marker
+list from the table, and `test_a_new_center_is_one_table_row` pins that
+the row alone drives the message. The guard is the first line of
 `materialize()`, before even the tool checks: the allocation is the
 remedy with queue latency, so the user submits it first and fixes
 whatever later refusals name while waiting. The rerun entry point

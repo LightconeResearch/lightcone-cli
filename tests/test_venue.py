@@ -129,8 +129,38 @@ def test_an_allocation_passes_the_guard(monkeypatch: pytest.MonkeyPatch) -> None
     venue.require_compute_node()
 
 
-def test_a_machine_that_is_not_nersc_passes_the_guard() -> None:
+def test_a_host_no_site_marker_names_passes_the_guard() -> None:
     venue.require_compute_node()
+
+
+def test_a_new_center_is_one_table_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard is data: a center lands as its marker plus its own
+    verified allocation spellings, and the message carries them."""
+    monkeypatch.setattr(
+        venue,
+        "_SITES",
+        (
+            venue._Site(
+                name="Fictional Computing",
+                marker="FCC_HOST",
+                salloc="salloc --partition=work --time=01:00:00",
+                sbatch="sbatch --partition=work --time=01:00:00",
+            ),
+        ),
+    )
+    monkeypatch.setenv("FCC_HOST", "cluster9")
+
+    with pytest.raises(ProjectError) as err:
+        venue.require_compute_node()
+
+    message = str(err.value)
+    assert "Fictional Computing login node" in message
+    assert "FCC_HOST" in message
+    assert "salloc --partition=work --time=01:00:00" in message
+    assert "sbatch --partition=work --time=01:00:00" in message
+
+    monkeypatch.setenv("SLURM_JOB_ID", "12345")
+    venue.require_compute_node()  # inside an allocation the same site passes
 
 
 def test_the_read_only_verbs_work_on_a_login_node(

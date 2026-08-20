@@ -31,6 +31,7 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from lightcone.engine.project import ProjectError
@@ -45,36 +46,75 @@ _WORKER_WAIT = 120.0
 _REAP_GRACE = 20.0
 
 
+@dataclass(frozen=True)
+class _Site:
+    """One HPC center whose login nodes must not run recipes.
+
+    A row is the whole cost of knowing a center: the variable its
+    systems put in every environment, and the center's own allocation
+    spellings for the refusal's remedies — copy-pasteable, so they are
+    verified against the center's documentation, never guessed.
+    """
+
+    #: The center's name, as the refusal states it.
+    name: str
+    #: The environment variable whose presence identifies the center's
+    #: machines — set on login and compute nodes alike; an active
+    #: allocation (SLURM_JOB_ID) is what tells the two apart.
+    marker: str
+    #: An interactive allocation, with concrete numbers the user edits.
+    salloc: str
+    #: The batch form of the same request; the guard appends ``--wrap``.
+    sbatch: str
+
+
+#: The centers the guard knows. Supporting another is one row here —
+#: nothing else changes, including the test-suite scrub, which derives
+#: its variable list from this table.
+_SITES = (
+    _Site(
+        name="NERSC",
+        marker="NERSC_HOST",
+        salloc="salloc --nodes=1 --constraint=cpu --qos=interactive --time=02:00:00",
+        sbatch="sbatch --nodes=1 --constraint=cpu --qos=regular --time=02:00:00",
+    ),
+)
+
+
 def require_compute_node(command: str = "lc materialize") -> None:
-    """Refuse to execute recipes on a NERSC login node.
+    """Refuse to execute recipes on a known HPC center's login node.
 
     A login node is for editing and submitting, not computing — and every
     node of an allocation becomes a worker, so the remedy is to run the
-    same command inside one. NERSC_HOST is set on compute nodes too; an
-    active allocation (SLURM_JOB_ID) is what distinguishes them.
+    same command inside one. A center's marker is set on compute nodes
+    too; an active allocation (SLURM_JOB_ID) is what distinguishes them.
 
     Args:
         command: What to name in the refusal — the command whose recipes
             would have run here.
 
     Raises:
-        ProjectError: On a NERSC login node, naming the salloc and sbatch
-            commands to run instead.
+        ProjectError: On a known center's login node, naming that
+            center's salloc and sbatch commands to run instead.
     """
-    if "NERSC_HOST" not in os.environ or "SLURM_JOB_ID" in os.environ:
+    if "SLURM_JOB_ID" in os.environ:
+        return
+    site = next((s for s in _SITES if s.marker in os.environ), None)
+    if site is None:
         return
     raise ProjectError(
-        f"{command} executes recipes on compute nodes, and this is a NERSC "
-        "login node (NERSC_HOST is set with no SLURM allocation active).\n"
+        f"{command} executes recipes on compute nodes, and this is a "
+        f"{site.name} login node ({site.marker} is set with no SLURM "
+        "allocation active).\n"
         "\n"
         "Get an allocation and run it there:\n"
         "\n"
         "  interactive:\n"
-        "      salloc --nodes=1 --constraint=cpu --qos=interactive --time=02:00:00\n"
+        f"      {site.salloc}\n"
         f"      {command}\n"
         "\n"
         "  batch (from the project root):\n"
-        "      sbatch --nodes=1 --constraint=cpu --qos=regular --time=02:00:00 \\\n"
+        f"      {site.sbatch} \\\n"
         f"          --wrap '{command}'\n"
         "\n"
         "lc materialize --check, lc status and lc run work anywhere."

@@ -25,12 +25,16 @@ def runner() -> CliRunner:
 def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip the host's venue out of the suite's environment.
 
-    On a NERSC login node every materialize test would otherwise meet the
-    login guard, and inside an allocation the real-cluster test would
-    launch srun across it. The venue tests set these back deliberately.
+    On a known center's login node every materialize test would otherwise
+    meet the login guard, and inside an allocation the real-cluster test
+    would launch srun across it. The site markers come from the guard's
+    own table, so a center added there is scrubbed here for free; the
+    venue tests set these back deliberately.
     """
+    from lightcone.engine import venue
+
     for name in (
-        "NERSC_HOST",
+        *(site.marker for site in venue._SITES),
         "SLURM_JOB_ID",
         "SLURMD_NODENAME",
         "SLURM_JOB_NUM_NODES",
