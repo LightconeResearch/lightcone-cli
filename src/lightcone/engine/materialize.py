@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -551,12 +552,14 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
     it is written and none of it abbreviated. ``datalad rerun`` reads it
     with a regex and reports "no command; skipping" on any mismatch.
 
-    ``cmd`` is the worker module: the bare recipe would reconstruct nothing
-    lc adds, and ``lc materialize`` cannot be it because a rerun removes
-    the declared outputs first, dirtying the tree materialize refuses to
-    start from. The worker rebuilds the *project* environment itself from
-    the lock of the commit being rerun; what becomes of the *engine* is
-    :func:`_worker_cmd`'s decision.
+    ``cmd`` is the worker module, never a console script, behind an
+    ephemeral ``uv run`` pinning the engine that made the output
+    (:func:`_engine_requirement`) — so the rerun executes that engine
+    rather than whatever the host has grown into. The bare recipe would
+    reconstruct nothing lc adds, and ``lc materialize`` cannot be it
+    because a rerun removes the declared outputs first, dirtying the tree
+    materialize refuses to start from. The worker rebuilds the *project*
+    environment itself from the lock of the commit being rerun.
 
     Args:
         root: The project root.
@@ -568,7 +571,12 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
     """
     info = {
         "chain": [],
-        "cmd": _worker_cmd(f"{task.universe_id}/{task.output_id}"),
+        # Single-quoted because datalad hands cmd to a shell and the git
+        # form of the requirement contains spaces.
+        "cmd": (
+            f"uv run --no-project --with '{_engine_requirement()}' -- "
+            f"python -m lightcone.engine.worker {task.universe_id}/{task.output_id}"
+        ),
         "dsid": dsid,
         "exit": 0,
         "inputs": sorted(plan.declared_path(root, path) for path in task.inputs.values()),
@@ -584,29 +592,44 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
     )
 
 
-def _worker_cmd(target: str) -> str:
-    """Build the rerun invocation for one output.
+def _engine_requirement() -> str:
+    """Build the requirement that reconstructs the running engine.
 
-    Always the module spelling, never a console script. A released engine
-    is put behind an ephemeral ``uv run`` pinning its own version, so the
-    rerun executes the engine that made the output rather than whatever
-    the host has grown into. A dev build cannot be: its version is not
-    published, so pinning it would fail resolution — and a dev engine
-    exists only in a checkout whose ambient ``python`` already imports it,
-    which is what the bare form resolves. So the dev record is the weaker
-    of the two, and says nothing about which engine it will find.
-
-    Args:
-        target: ``<universe>/<output_id>``.
+    A release pins by version, resolvable from an index. A dev build's
+    version is not published, but hatch-vcs embeds its source commit —
+    so the pin becomes that commit at the engine's own repository, and a
+    rerun during development still reconstructs the engine that ran. An
+    unpushed commit fails a rerun loudly at resolution, which beats
+    silently finding another engine. A dirty tree is the one
+    approximation: the commit names the code as last committed, and the
+    version's own dirty marker is what keeps that visible.
 
     Returns:
-        The command line ``datalad rerun`` will hand to a shell.
+        A PEP 508 requirement for ``uv run --with``.
     """
-    module = f"python -m lightcone.engine.worker {target}"
     v = worker.lc_version()
-    if v and "dev" not in v:
-        return f"uv run --no-project --with lightcone-cli=={v} -- {module}"
-    return module
+    commit = re.search(r"\+g([0-9a-f]+)", v)
+    if "dev" not in v or commit is None:
+        return f"lightcone-cli=={v}"
+    return f"lightcone-cli @ git+{_repository_url()}@{commit.group(1)}"
+
+
+def _repository_url() -> str:
+    """Read the engine's repository URL out of its own metadata.
+
+    From ``[project.urls]`` rather than a constant here, so the one place
+    the URL lives is the package metadata every install carries.
+    """
+    from importlib.metadata import metadata
+
+    for entry in metadata("lightcone-cli").get_all("Project-URL") or []:
+        label, _, url = str(entry).partition(",")
+        if label.strip().lower() == "repository":
+            return url.strip()
+    raise ProjectError(
+        "lightcone-cli's own metadata names no Repository URL, so a dev "
+        "engine cannot be pinned by commit — reinstall the engine."
+    )
 
 
 # =============================================================================

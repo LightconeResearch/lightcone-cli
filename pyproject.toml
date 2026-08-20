@@ -44,6 +44,9 @@ docs = [
 ]
 
 
+[project.urls]
+Repository = "https://github.com/LightconeResearch/lightcone-cli"
+
 [project.scripts]
 lc = "lightcone.cli:main"
 

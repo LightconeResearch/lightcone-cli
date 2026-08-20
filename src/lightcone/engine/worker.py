@@ -5,9 +5,9 @@ Also an entry point:
     python -m lightcone.engine.worker <universe>/<output_id>
 
 which is what the ``[DATALAD RUNCMD]`` record in every materialization
-commit names, behind whatever engine pin
-:func:`~lightcone.engine.materialize._worker_cmd` decided on. That is why
-it is a module rather than an ``lc`` verb: it makes the output
+commit names, behind an engine-pinning ``uv run --no-project --with …`` —
+by version for a released engine, by source commit for a dev build. That
+is why it is a module rather than an ``lc`` verb: it makes the output
 unconditionally, commits nothing, and leaves the tree dirty by design —
 precisely the state ``lc materialize`` refuses to start from — so
 advertising it in ``lc --help`` would hand people a footgun.

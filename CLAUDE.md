@@ -985,30 +985,33 @@ in the record's `inputs` writes `.git/annex/objects/SHA256E-…` — the
 storage rather than the input, and a path nothing can `datalad get`. This
 shipped once; `_inside` is lexical now.
 
-**The run record is genuinely re-runnable, and its `cmd` is the worker
-module.** `python -m lightcone.engine.worker <universe>/<output_id>`,
-behind `uv run --no-project --with lightcone-cli==<v>` when the engine
-that made the output is a published release — an ephemeral environment
-that reconstructs the *engine* by version, while the worker itself
+**The run record is genuinely re-runnable, and every record pins its
+engine.** `uv run --no-project --with '<requirement>' -- python -m
+lightcone.engine.worker <universe>/<output_id>` — an ephemeral
+environment that reconstructs the *engine*, while the worker itself
 reconstructs the *project* environment from the rerun commit's own lock
 (`main()` syncs before anything executes; `uv run --no-sync` against a
 missing `.venv` silently creates an empty one, so a clone's rerun would
 otherwise run recipes in a bare environment under a manifest recording
-the lock's `env_version`). A dev build's version is unpublished, so its
-record is the bare module, which only ever exists in a checkout whose own
-interpreter imports it. The bare recipe would reconstruct nothing lc adds
-(no locked environment, no boundary, no gates, no manifest) and would
-commit bytes the identity model never produced; `lc materialize` cannot
-be it either, because `datalad rerun` removes the declared outputs first
-and that dirties the tree materialize refuses to start from.
+the lock's `env_version`). The bare recipe would reconstruct nothing lc
+adds (no locked environment, no boundary, no gates, no manifest) and
+would commit bytes the identity model never produced; `lc materialize`
+cannot be it either, because `datalad rerun` removes the declared outputs
+first and that dirties the tree materialize refuses to start from.
 
-The **shipped** shape is the one the suite cannot execute, and that is
-worth knowing rather than discovering. The tests run a dev build, so both
-end-to-end rerun tests exercise the bare-module branch; the pinned branch
-every real commit will carry is covered only by a string assertion over a
-monkeypatched version. Verified by hand instead, against a wheel built
-from the branch — record it that way again when the branch changes, and
-treat "the suite is green" as saying nothing about it.
+The requirement (`materialize._engine_requirement`) pins a release by
+version and a dev build by its source commit — hatch-vcs embeds the
+commit in the version, and the repository URL comes from
+`[project.urls]`, the engine's own metadata rather than a constant. So a
+rerun works during development too, against the commit that ran
+(verified against GitHub: uv resolves the short sha and hatch-vcs builds
+the matching version from the clone). An unpushed commit fails a rerun
+loudly at resolution, which beats silently finding another engine; a
+dirty tree pins the last commit, and the version's `.dYYYYMMDD` marker in
+the manifest is what says the bytes had drifted from it. The e2e rerun
+tests monkeypatch the requirement seam to a wheel built from the working
+tree (`UV_FIND_LINKS`), because a git pin can only ever build *committed*
+code and the suite must execute the code under test.
 
 **The worker module is not an `lc` verb and not a console script.** It
 makes the output unconditionally, commits nothing, leaves the tree dirty by
@@ -1264,10 +1267,11 @@ only checks that the guard is present. Verified empirically, not assumed.
     `env_version` out of `definition_version`. The engine is attestation
     (`lc_version` in every manifest, `worker.lc_version()`), not identity.
   - *Reruns reconstruct the exact engine from the commit's lock.*
-    Re-provided in the run record itself: `cmd` pins the engine by version
-    through `uv run --no-project --with lightcone-cli==<v>` (see the
-    layer-4 run-record invariant). Needs PyPI or a warm uv cache at rerun
-    time where the lock needed neither; recorded, not hidden.
+    Re-provided in the run record itself: `cmd` pins the engine through
+    `uv run --no-project --with '<requirement>'` — by version for a
+    release, by source commit for a dev build (see the layer-4 run-record
+    invariant). Needs PyPI or the git remote reachable at rerun time
+    where the lock needed neither; recorded, not hidden.
   - *Driver/worker version skew "structurally impossible".* Moot while
     workers are in-process threads; when a venue larger than a laptop
     lands (layer 7), its connect path must probe the remote engine version

@@ -560,7 +560,9 @@ def test_an_interrupted_run_restores_what_never_reported(
 # ---- the commit message ----------------------------------------------------
 
 
-def test_the_run_record_is_what_datalad_reads(root: Path, inline: None) -> None:
+def test_the_run_record_is_what_datalad_reads(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Asserted through datalad's own parser rather than against our JSON:
     it matches with a regex and returns nothing on any mismatch, after
     which `rerun` reports "no command; skipping" and exits 0 — so a golden
@@ -568,6 +570,7 @@ def test_the_run_record_is_what_datalad_reads(root: Path, inline: None) -> None:
     from datalad.api import Dataset
     from datalad.local.rerun import get_run_info
 
+    monkeypatch.setattr(engine.worker, "lc_version", lambda: "1.2.3")
     engine.materialize(root, ["second"])
     message = dataset._git(["log", "-1", "--format=%B"], cwd=root)
 
@@ -575,14 +578,36 @@ def test_the_run_record_is_what_datalad_reads(root: Path, inline: None) -> None:
 
     assert subject == "second [baseline]"
     assert info is not None
-    # Full-string, not endswith: the suite runs a dev build, whose record
-    # is the bare module — an engine-pin prefix appearing or vanishing here
-    # must fail this test, not slip past a suffix match.
-    assert info["cmd"] == "python -m lightcone.engine.worker baseline/second"
+    # Full-string, not endswith: a flag appearing or vanishing here must
+    # fail this test, not slip past a suffix match.
+    assert info["cmd"] == (
+        "uv run --no-project --with 'lightcone-cli==1.2.3' -- "
+        "python -m lightcone.engine.worker baseline/second"
+    )
     assert info["inputs"] == ["results/baseline/first"]
     assert info["outputs"] == ["results/baseline/second"]
     assert info["dsid"] == "4b7b5c1e-0000-4000-8000-000000000000"
     assert info["chain"] == [] and info["pwd"] == "."
+
+
+def test_the_engine_pin_follows_the_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A release resolves from an index by version; a dev build cannot,
+    but hatch-vcs embeds its source commit, so the pin becomes that commit
+    at the engine's own repository — read from the engine's metadata, not
+    a constant. Dirty or clean, the commit is the last one; the version's
+    dirty marker is what says which."""
+    monkeypatch.setattr(engine.worker, "lc_version", lambda: "1.2.3")
+    assert engine._engine_requirement() == "lightcone-cli==1.2.3"
+
+    url = engine._repository_url()
+    assert url.startswith("https://")
+    monkeypatch.setattr(engine.worker, "lc_version", lambda: "1.3.dev2+g19986bb8")
+    assert engine._engine_requirement() == f"lightcone-cli @ git+{url}@19986bb8"
+
+    monkeypatch.setattr(
+        engine.worker, "lc_version", lambda: "1.3.dev2+g19986bb8.d20260820"
+    )
+    assert engine._engine_requirement() == f"lightcone-cli @ git+{url}@19986bb8"
 
 
 def test_the_record_names_the_declared_input_not_the_annex_object(
@@ -687,14 +712,46 @@ def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     assert project_mod._env_is_current(root)
 
 
-def test_the_recorded_command_reproduces_the_output(root: Path, inline: None) -> None:
+@pytest.fixture(scope="session")
+def engine_dist(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, Path]:
+    """Build the engine under test into a wheel the pinned record can find.
+
+    The record pins ``lightcone-cli==<v>`` and the suite's build is not
+    published, so the rerun's ephemeral environment is pointed here via
+    ``UV_FIND_LINKS`` — which is what lets the suite execute the same
+    record shape every real commit carries, rather than a test-only one.
+
+    Returns:
+        The wheel's exact version, and the directory serving it.
+    """
+    dist = tmp_path_factory.mktemp("engine-dist")
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(dist)],
+        cwd=Path(__file__).parent.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    wheel = next(dist.glob("*.whl"))
+    return wheel.name.split("-")[1], dist
+
+
+def test_the_recorded_command_reproduces_the_output(
+    root: Path,
+    inline: None,
+    engine_dist: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The claim the record makes, run literally. `datalad rerun` removes
     the output, executes the recorded command, and commits what came
-    back — so the manifest is regenerated inside the same commit. Under a
-    dev build the record is the bare worker module, which the suite's own
-    interpreter resolves; the released shape is pinned by
-    `test_the_record_pins_a_released_engine`."""
+    back — so the manifest is regenerated inside the same commit, by the
+    pinned engine resolved into an ephemeral environment."""
     pytest.importorskip("datalad")
+    version, dist = engine_dist
+    # The requirement seam, not `lc_version`: a git pin can only ever
+    # build committed code, so the suite pins the wheel built from the
+    # working tree — the code actually under test.
+    monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
     engine.materialize(root, ["first"])
     original = assets.read(root / "results/baseline/first")
     assert original is not None
@@ -704,7 +761,7 @@ def test_the_recorded_command_reproduces_the_output(root: Path, inline: None) ->
         cwd=root,
         capture_output=True,
         text=True,
-        env=child_env(),
+        env={**child_env(), "UV_FIND_LINKS": str(dist)},
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -716,7 +773,11 @@ def test_the_recorded_command_reproduces_the_output(root: Path, inline: None) ->
 
 
 def test_the_recorded_command_holds_on_a_fresh_clone(
-    root: Path, inline: None, tmp_path: Path
+    root: Path,
+    inline: None,
+    tmp_path: Path,
+    engine_dist: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A clone checks out the lock but never `.venv`, and `uv run --no-sync`
     against a missing environment silently creates an *empty* one — so the
@@ -724,6 +785,8 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
     environment for itself. The in-place rerun above cannot catch a missing
     sync; this is the test that does."""
     pytest.importorskip("datalad")
+    version, dist = engine_dist
+    monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
     engine.materialize(root, ["first"])
     original = assets.read(root / "results/baseline/first")
     assert original is not None
@@ -736,7 +799,7 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
         cwd=clone,
         capture_output=True,
         text=True,
-        env=child_env(),
+        env={**child_env(), "UV_FIND_LINKS": str(dist)},
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -744,28 +807,6 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
     assert rerun is not None
     assert rerun.data_version == original.data_version
     assert (clone / ".venv").exists()
-
-
-def test_the_record_pins_a_released_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A released engine is pinned by version through an ephemeral uv
-    environment; a dev build's version is unpublished, so pinning it would
-    fail resolution loudly, and the bare module is what a dev checkout's
-    own interpreter resolves."""
-    monkeypatch.setattr(engine.worker, "lc_version", lambda: "1.2.3")
-    assert engine._worker_cmd("baseline/first") == (
-        "uv run --no-project --with lightcone-cli==1.2.3 -- "
-        "python -m lightcone.engine.worker baseline/first"
-    )
-
-    monkeypatch.setattr(engine.worker, "lc_version", lambda: "1.2.3.dev4+gabc")
-    assert engine._worker_cmd("baseline/first") == (
-        "python -m lightcone.engine.worker baseline/first"
-    )
-
-    monkeypatch.setattr(engine.worker, "lc_version", lambda: "")
-    assert engine._worker_cmd("baseline/first") == (
-        "python -m lightcone.engine.worker baseline/first"
-    )
 
 
 # ---- the scheduler seam ----------------------------------------------------
