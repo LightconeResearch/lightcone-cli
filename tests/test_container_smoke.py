@@ -48,8 +48,15 @@ outputs:
 
 
 def _available() -> list[str]:
-    """The runtimes this host can actually run, probed once at collection."""
+    """The runtimes this host can actually run, probed once at collection.
+
+    podman-hpc exists only where a site installed it (NERSC login nodes),
+    so its parametrization never fires in CI — running this suite on such
+    a host is the site spike.
+    """
     found = []
+    if shutil.which("podman-hpc"):
+        found.append("podman-hpc")
     if shutil.which("podman"):
         found.append("podman")
     try:
@@ -90,7 +97,7 @@ def runtime(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> 
         shutil,
         "which",
         lambda tool, path=None: None
-        if tool in ("podman", "docker") and tool != name
+        if tool in ("podman-hpc", "podman", "docker") and tool != name
         else real_which(tool, path=path),
     )
     return name

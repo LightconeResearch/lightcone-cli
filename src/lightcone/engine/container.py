@@ -9,10 +9,11 @@ it has, so the bytes that made an output are the bytes a rerun enters,
 name-pinned apt notwithstanding. A dropped archive never substitutes: a
 rebuild is a new archive under a new id, never the old reference.
 
-Runtime is host capability, not project state — podman is preferred,
-docker accepted — and the archive format is the one all of podman,
-docker, and (later, on HPC) apptainer/singularity consume, which is why
-build-capable and run-capable are separate questions.
+Runtime is host capability, not project state — podman-hpc where a site
+provides it, podman preferred, docker accepted — and the archive format
+is the one all of podman, docker, and (later) apptainer/singularity
+consume, which is why build-capable and run-capable are separate
+questions.
 
 Every command goes through :func:`~lightcone.engine.project._run`, the
 seam the whole engine shares, so the suite never spawns a runtime.
@@ -23,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import sys
@@ -51,7 +53,7 @@ class Runtime:
     #: Where the project environment lives: ``.venv``, or the in-image
     #: ``.lightcone/venv``.
     env_dir: Path
-    #: ``podman`` or ``docker``; empty in direct mode.
+    #: ``podman``, ``podman-hpc`` or ``docker``; empty in direct mode.
     runtime: str = ""
     image_tag: str = ""
     #: The image id (bare hex of its config blob) — execution pins on
@@ -120,8 +122,18 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
         _build(root, name, tag, archive)
     _fetch(root, archive)
     image_id, arch = archive_identity(archive)
+    # Before the load: a wrong-arch load *succeeds*, and the failure then
+    # surfaces as `exec format error` deep inside a recipe.
+    _require_arch(root, archive, arch)
     if not _loaded(root, name, image_id):
         _check_call([name, "load", "-i", str(archive)], cwd=root)
+    if name == "podman-hpc":
+        # Compute nodes run only migrated images — the squashed copy on
+        # the shared filesystem — never the login node's overlay store.
+        # Outside the load branch, because after a fresh `lc build` the
+        # image is already in the store and the load never runs; on an
+        # already-migrated image this is a cheap no-op.
+        _check_call([name, "migrate", image_id], cwd=root)
     return Runtime(
         root=root,
         mode="containerized",
@@ -175,20 +187,25 @@ def _committed(archive: Path) -> bool:
 def runtime_name(root: Path) -> str:
     """Detect which container runtime this host offers.
 
-    podman first — rootless podman needs no daemon and no group — then
-    docker, whose CLI without a reachable daemon is probed rather than
-    trusted, because `docker` on PATH with the daemon down is the common
-    broken state and "cannot connect to the socket" mid-run is a worse
-    message than this one.
+    podman-hpc first: a site installs the wrapper precisely because plain
+    podman does not work on its compute nodes — the node-local overlay
+    store is invisible there, only the wrapper's migrated copies run — so
+    where both are on PATH, the bare sibling is the broken one. Then
+    podman — rootless, no daemon, no group — then docker, whose CLI
+    without a reachable daemon is probed rather than trusted, because
+    `docker` on PATH with the daemon down is the common broken state and
+    "cannot connect to the socket" mid-run is a worse message than this
+    one. podman-hpc is presence-only: no daemon to probe, and no machine
+    (it is a Linux-site tool).
 
     Args:
         root: The project root, for the probe's working directory.
 
     Returns:
-        ``"podman"`` or ``"docker"``.
+        ``"podman-hpc"``, ``"podman"`` or ``"docker"``.
 
     Raises:
-        ProjectError: If neither is usable.
+        ProjectError: If none is usable.
     """
     name = runtime_hint()
     if name == "podman":
@@ -200,7 +217,7 @@ def runtime_name(root: Path) -> str:
                 "(or install podman, which needs no daemon), then retry. "
                 "`lc status` shows what this project needs."
             )
-    else:
+    elif not name:
         raise ProjectError(
             "this project is containerized and needs a container runtime: install "
             "podman (recommended: https://podman.io/docs/installation) or docker. "
@@ -228,12 +245,12 @@ def backend(runtime: Runtime) -> sandbox.Backend:
     from lightcone.engine.sandbox.oci import OCIBackend
 
     # `--pull=never` beside the uid flags rather than inside them: it is
-    # a pull policy (a typo'd reference must fail, not fetch), podman's
-    # spelling only, and filing it under uid mapping is where the next
-    # reader would not look.
-    pull = ("--pull=never",) if runtime.runtime == "podman" else ()
+    # a pull policy (a typo'd reference must fail, not fetch), the podman
+    # family's spelling only, and filing it under uid mapping is where
+    # the next reader would not look.
+    pull = ("--pull=never",) if runtime.runtime in ("podman", "podman-hpc") else ()
     return OCIBackend(
-        runtime=cast(Literal["podman", "docker"], runtime.runtime),
+        runtime=cast(Literal["podman", "docker", "podman-hpc"], runtime.runtime),
         image_id=runtime.image_id,
         root=runtime.root,
         user_flags=(*uid_flags(runtime.runtime), *pull),
@@ -287,9 +304,9 @@ def runtime_hint() -> str:
     is skipped because a header must not cost a subprocess.
 
     Returns:
-        ``"podman"``, ``"docker"``, or ``""``.
+        ``"podman-hpc"``, ``"podman"``, ``"docker"``, or ``""``.
     """
-    for name in ("podman", "docker"):
+    for name in ("podman-hpc", "podman", "docker"):
         if shutil.which(name):
             return name
     return ""
@@ -446,23 +463,58 @@ def archive_identity(path: Path) -> tuple[str, str]:
     )
 
 
+#: `platform.machine()` spellings mapped onto the OCI architecture names
+#: an archive's config records. Closed deliberately: an unmapped host
+#: cannot be refused on ignorance.
+_OCI_ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+
+
+def _require_arch(root: Path, archive: Path, arch: str) -> None:
+    """Refuse an archive built for another architecture.
+
+    The archive is single-arch — it is the exact bytes that ran, which is
+    the point of committing it — so a host on the other architecture gets
+    a refusal naming the fix, not an emulated run ten times slower than
+    the attestation implies, and not an `exec format error` deep inside
+    a recipe. Skipped when either side is unknown.
+
+    Args:
+        root: The project root, for naming the archive.
+        archive: The committed archive.
+        arch: Its recorded architecture; empty means unknown.
+
+    Raises:
+        ProjectError: On a mismatch.
+    """
+    host = _OCI_ARCH.get(platform.machine().lower(), "")
+    if not host or not arch or host == arch:
+        return
+    relative = archive.relative_to(root).as_posix()
+    raise ProjectError(
+        f"the committed image archive `{relative}` was built for {arch} and this "
+        f"host is {host} — it cannot run here. Run `lc build` on a host whose "
+        "architecture matches (on NERSC, a login node), commit and push; then "
+        "`git pull` here."
+    )
+
+
 def uid_flags(runtime: str) -> list[str]:
     """The flags that keep files written through a mount owned by the user.
 
-    podman maps the invoking uid into the container (``--userns=keep-id``);
-    docker has no equivalent spelling, so the container simply runs as the
-    invoking uid — without which a rootful docker writes root-owned files
-    into ``results/`` that the host's git cannot manage. The missing
-    passwd entry that leaves behind is covered by the private-HOME
-    overlay every exec already gets.
+    The podman family maps the invoking uid into the container
+    (``--userns=keep-id``); docker has no equivalent spelling, so the
+    container simply runs as the invoking uid — without which a rootful
+    docker writes root-owned files into ``results/`` that the host's git
+    cannot manage. The missing passwd entry that leaves behind is covered
+    by the private-HOME overlay every exec already gets.
 
     Args:
-        runtime: ``"podman"`` or ``"docker"``.
+        runtime: ``"podman"``, ``"podman-hpc"`` or ``"docker"``.
 
     Returns:
         The argv fragment.
     """
-    if runtime == "podman":
+    if runtime in ("podman", "podman-hpc"):
         return ["--userns=keep-id"]
     return ["--user", f"{os.getuid()}:{os.getgid()}"]
 
@@ -512,7 +564,7 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     # dies midway must not leave a partial archive that the dirty-tree
     # refusal would then tell the user to commit.
     partial = archive.parent / "image.partial"
-    save_format = ["--format", "docker-archive"] if runtime == "podman" else []
+    save_format = [] if runtime == "docker" else ["--format", "docker-archive"]
     try:
         _check_call([runtime, "save", *save_format, "-o", str(partial), tag], cwd=root)
     except ProjectError:
@@ -578,7 +630,7 @@ def _build_failure(tag: str, stderr: str) -> str:
 
 def _loaded(root: Path, runtime: str, image_id: str) -> bool:
     """Whether the runtime's local store already holds *image_id*."""
-    probe = ["image", "exists" if runtime == "podman" else "inspect", image_id]
+    probe = ["image", "inspect" if runtime == "docker" else "exists", image_id]
     return project._run([runtime, *probe], cwd=root).returncode == 0
 
 

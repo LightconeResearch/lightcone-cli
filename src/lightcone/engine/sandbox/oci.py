@@ -1,8 +1,8 @@
 """The containerized backend: the mount table is the mechanism.
 
-One backend for podman and docker, data-parameterized — the two differ
-in spellings (how the invoking uid is kept, whether pulling must be
-forbidden), not in shape. The policy's path sets map one-to-one onto
+One backend for podman, podman-hpc and docker, data-parameterized — they
+differ in spellings (how the invoking uid is kept, whether pulling must
+be forbidden), not in shape. The policy's path sets map one-to-one onto
 mounts: ``read`` becomes ``:ro``, ``write`` becomes ``:rw``, and the
 image itself is the OS baseline and the exec set — everything present in
 it was declared, which is why the containerized policy carries no
@@ -30,8 +30,9 @@ from lightcone.engine.sandbox.model import Attestation, Capability, Policy
 class OCIBackend:
     """A container runtime, expressed as an argv rewrite."""
 
-    #: ``podman`` or ``docker`` — also what the attestation names.
-    runtime: Literal["podman", "docker"]
+    #: ``podman``, ``podman-hpc`` or ``docker`` — also what the
+    #: attestation names.
+    runtime: Literal["podman", "docker", "podman-hpc"]
     #: The image id (bare hex). Execution pins on the id, never a tag, so
     #: a retagged image in the local store can never substitute.
     image_id: str
