@@ -400,8 +400,9 @@ def test_ignore_rule_sees_through_a_tracked_path(repo: Path) -> None:
 
 def test_our_bin_goes_to_the_front_of_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prepend, never append. `git annex` dispatches by searching PATH for
-    a `git-annex` executable — a system copy winning would make the version
-    the project's lock records a fiction."""
+    a `git-annex` executable — the annex we resolved is the one the engine
+    was installed with and tested against, and a system copy of another
+    vintage winning that race is a difference nothing records."""
     ours = str(Path(sys.executable).parent)
     monkeypatch.setenv("PATH", "/somewhere/else")
 
@@ -416,5 +417,21 @@ def test_git_dispatches_annex_after_the_prepend(repo: Path) -> None:
     """The claim the prepend makes, checked by the spelling git itself uses
     rather than by resolving `git-annex` ourselves."""
     assert "git-annex version:" in dataset._git(["annex", "version"], cwd=repo)
+
+
+def test_the_annex_executables_are_ours_to_install() -> None:
+    """An installer links only the requested package's executables, and the
+    researcher's own `git add` needs git-annex on the *shell's* PATH — so
+    lightcone-cli re-declares the git-annex wheel's entry points verbatim.
+    Mirrored, not invented: asserted against the wheel's own metadata, so
+    an executable upstream adds, drops, or renames fails this test instead
+    of failing `uv tool install lightcone-cli` for every user."""
+    from importlib.metadata import distribution
+
+    ours = {e.name: e.value for e in distribution("lightcone-cli").entry_points}
+    theirs = {e.name: e.value for e in distribution("git-annex").entry_points}
+    assert theirs  # the wheel stopped declaring entry points ⇒ redesign
+    for name, value in theirs.items():
+        assert ours.get(name) == value, f"{name} is not re-declared as {value}"
 
 

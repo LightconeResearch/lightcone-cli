@@ -500,16 +500,26 @@ lock, the prepend is the *only* way git finds git-annex; there is no
 project `.venv/bin` fallback to mask a regression.
 
 The prepend covers **lc's own subprocesses only**. The researcher's own
-shell — where "just type `git add`" has to work — is a separate question,
-and there is no pyproject metadata that can declare "link my dependency's
-executables" (and no entry-point re-export either: the wheel already
-installs a script named `git-annex` into the venv, so an entry point of
-the same name collides). uv's answer is an install-time flag, verified
-here: `uv tool install --with-executables-from git-annex lightcone-cli`
-links `git-annex`, `git-annex-shell` and the two `git-remote-*` helpers
-beside `lc`, after which a bare `git add` works in any shell whose PATH
-has the tool bin. That spelling belongs in the install docs when they are
-rewritten.
+shell — where a plain `git add` has to work — is covered **by
+construction at install time**: lightcone-cli re-declares the git-annex
+wheel's four entry points verbatim in its own `[project.scripts]`
+(`git-annex`, `git-annex-shell`, `git-remote-annex`,
+`git-remote-tor-annex`, all `git_annex:cli`). The wheel ships no raw
+binaries in `bin/` — its executables *are* that dispatcher, which
+`execv`s the real binary out of package data with `argv[0]` preserved,
+and git-annex dispatches on `argv[0]` busybox-style. An installer links
+the requested package's own entry points, so a plain
+`uv tool install lightcone-cli` puts all five names on `PATH` — verified,
+including the duplicate-name question: both distributions generate
+byte-identical scripts, so whichever writes the venv's copy, the result
+is the same. The declaration is mirrored, never invented:
+`test_the_annex_executables_are_ours_to_install` asserts ours match the
+wheel's exactly, so an upstream rename fails the suite rather than every
+user's install. (Considered and rejected: there is no pyproject metadata
+to link a *dependency's* executables; `--with-executables-from` is an
+install-time flag users won't type; vendoring the binaries into
+platform-specific lightcone-cli wheels is five 14–36 MB wheels and a
+repack pipeline for what four lines of metadata provide.)
 
 **A project can sit inside a larger repository, so `dataset.status` is
 scoped and relativised.** `lc init subdir/` adopts an enclosing work
