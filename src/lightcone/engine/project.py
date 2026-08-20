@@ -652,18 +652,79 @@ def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+#: The ambient ``UV_*`` variables :func:`child_env` keeps. Plumbing only —
+#: where bytes come from and how fast, never *what* a sync installs: the
+#: cache location (shared-filesystem hosts point it at scratch), network
+#: timeouts and concurrency, TLS trust, air-gap mode, and index
+#: credentials. Anything with install semantics (``UV_NO_BINARY``,
+#: ``UV_PYTHON``, ``UV_INDEX_URL``, …) is dropped: the same settings are
+#: hashed into ``env_version`` when a project declares them, so an ambient
+#: spelling would steer a sync while every hash agrees nothing changed.
+_UV_KEPT = frozenset(
+    {
+        "UV_CACHE_DIR",
+        "UV_HTTP_TIMEOUT",
+        "UV_REQUEST_TIMEOUT",
+        "UV_CONCURRENT_BUILDS",
+        "UV_CONCURRENT_DOWNLOADS",
+        "UV_CONCURRENT_INSTALLS",
+        "UV_NATIVE_TLS",
+        "UV_INSECURE_HOST",
+        "UV_OFFLINE",
+        # uv's own recursion guard, set on every `uv run` child — lc
+        # itself frequently *is* one. Dropping it disables the guard and
+        # makes the scrub report uv's variable as the user's.
+        "UV_RUN_RECURSION_DEPTH",
+    }
+)
+
+
+def _uv_scrubbed(name: str) -> bool:
+    """Decide whether one ambient variable is dropped by the UV scrub."""
+    if not name.startswith("UV_"):
+        return False
+    # UV_INTERNAL__* is uv talking to its own children, never a setting.
+    if name in _UV_KEPT or name.startswith("UV_INTERNAL__"):
+        return False
+    # Index credentials (UV_INDEX_<NAME>_USERNAME / _PASSWORD) are how a
+    # private registry authenticates; the registry itself is the
+    # project's `[tool.uv.index]` to declare.
+    return not (
+        name.startswith("UV_INDEX_") and name.endswith(("_USERNAME", "_PASSWORD"))
+    )
+
+
 def child_env() -> dict[str, str]:
     """Build the environment external tools run in.
 
-    Ours, minus ``VIRTUAL_ENV``. Every uv invocation names its project
-    explicitly, so an activated environment elsewhere is never what we
-    mean — and uv warns once per invocation when it ignores one, which
-    would otherwise land in the report and in ``--json``.
+    Ours, minus ``VIRTUAL_ENV`` and minus every ``UV_*`` variable outside
+    the :data:`_UV_KEPT` plumbing allowlist. Every uv invocation names its
+    project explicitly, so an activated environment elsewhere is never
+    what we mean — and an ambient install setting would change what a
+    sync installs without moving ``env_version``, which is the identity
+    hole the scrub closes.
 
     Returns:
-        The current environment without ``VIRTUAL_ENV``.
+        The current environment without ``VIRTUAL_ENV`` or scrubbed ``UV_*``.
     """
-    return {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k != "VIRTUAL_ENV" and not _uv_scrubbed(k)
+    }
+
+
+def scrubbed_uv_vars() -> list[str]:
+    """Name the ambient non-empty ``UV_*`` variables the scrub drops.
+
+    The run verbs surface these as a warning: a user whose ``UV_PYTHON``
+    stopped steering a sync deserves a pointer to why. One predicate with
+    :func:`child_env`, so the report can never disagree with the scrub.
+
+    Returns:
+        Sorted variable names, set and non-empty in this process.
+    """
+    return sorted(k for k, v in os.environ.items() if v and _uv_scrubbed(k))
 
 
 def _check_call(argv: list[str], *, cwd: Path) -> list[str]:

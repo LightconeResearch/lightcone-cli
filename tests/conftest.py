@@ -46,6 +46,21 @@ def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def machine_uv_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Blind the suite to the host's machine-level uv configuration.
+
+    The advisory probe reads ``~/.config/uv/uv.toml`` and
+    ``/etc/uv/uv.toml`` — host state a fixture cannot scrub through the
+    environment (``/etc`` has no variable), so a developer's own config
+    would add a warning to every scan. The probe's own tests monkeypatch
+    the paths back to fixtures deliberately.
+    """
+    from lightcone.engine import identity
+
+    monkeypatch.setattr(identity, "_machine_config_paths", tuple)
+
+
+@pytest.fixture(autouse=True)
 def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Fake every external tool convergence shells out to, so the suite is
     hermetic — no network, no real resolution, no subprocesses.

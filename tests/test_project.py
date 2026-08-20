@@ -674,6 +674,50 @@ def test_ambient_virtualenv_is_not_passed_to_tools(
     assert env["LC_TEST_CANARY"] == "kept", "the rest of the environment is untouched"
 
 
+def test_ambient_uv_install_settings_are_scrubbed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ambient install setting would steer what a sync installs without
+    moving env_version — the identity hole the scrub closes. Plumbing (the
+    cache, timeouts, index credentials) survives: it decides where bytes
+    come from and how fast, never what gets installed."""
+    import os
+
+    from lightcone.engine.project import child_env, scrubbed_uv_vars
+
+    for name in [k for k in os.environ if k.startswith("UV_")]:
+        monkeypatch.delenv(name)  # the suite itself may run under `uv run`
+    monkeypatch.setenv("UV_NO_BINARY", "1")
+    monkeypatch.setenv("UV_PYTHON", "3.10")
+    monkeypatch.setenv("UV_INDEX_URL", "https://elsewhere.invalid/simple")
+    monkeypatch.setenv("UV_CACHE_DIR", "/scratch/uv")
+    monkeypatch.setenv("UV_INDEX_INTERNAL_PASSWORD", "hunter2")
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setenv("LC_TEST_CANARY", "kept")
+
+    env = child_env()
+    assert "UV_NO_BINARY" not in env
+    assert "UV_PYTHON" not in env
+    assert "UV_INDEX_URL" not in env
+    assert env["UV_CACHE_DIR"] == "/scratch/uv", "shared-cache plumbing survives"
+    assert env["UV_INDEX_INTERNAL_PASSWORD"] == "hunter2", "credentials survive"
+    assert env["UV_OFFLINE"] == "1", "air-gap mode survives"
+    assert env["LC_TEST_CANARY"] == "kept"
+    assert scrubbed_uv_vars() == ["UV_INDEX_URL", "UV_NO_BINARY", "UV_PYTHON"], (
+        "the report names exactly what the scrub dropped"
+    )
+
+
+def test_an_empty_scrubbed_variable_is_not_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty variable steers nothing, so warning about it is noise."""
+    from lightcone.engine.project import scrubbed_uv_vars
+
+    monkeypatch.setenv("UV_NO_BUILD", "")
+    assert "UV_NO_BUILD" not in scrubbed_uv_vars()
+
+
 def test_relays_uv_warnings_into_the_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

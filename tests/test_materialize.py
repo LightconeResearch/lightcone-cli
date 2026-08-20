@@ -450,6 +450,35 @@ def test_a_lock_that_builds_from_source_is_a_warning_not_a_refusal(root: Path) -
     assert any("oldlib" in w for w in report.warnings)
 
 
+def test_machine_level_uv_config_is_reported(
+    root: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The config-file half of the same hole the ambient scrub closes:
+    env_version cannot see it, so the run says so."""
+    from lightcone.engine import identity
+
+    user = tmp_path / "user-uv.toml"
+    user.write_text("no-binary = true\n")
+    monkeypatch.setattr(identity, "_machine_config_paths", lambda: (user,))
+
+    report = engine.check(root, [])
+
+    assert any("env_version cannot see it" in w and str(user) in w for w in report.warnings)
+
+
+def test_ambient_uv_settings_are_scrubbed_and_reported(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scrub protects env_version's install-settings term; the warning
+    is what tells a user why their variable stopped steering the sync."""
+    monkeypatch.setenv("UV_NO_BINARY", "1")
+
+    report = engine.materialize(root, [])
+
+    assert report.ok
+    assert any("UV_NO_BINARY" in w for w in report.warnings)
+
+
 # ---- leaving the tree as clean as it was found -----------------------------
 
 

@@ -449,6 +449,12 @@ def materialize(
     project.require_git_annex()
     dataset.require_committer(root)
     report = MaterializeReport()
+    if dropped := project.scrubbed_uv_vars():
+        report.warnings.append(
+            f"ignored ambient {', '.join(dropped)} — an install setting is "
+            "the project's to declare (pyproject.toml), and an ambient one "
+            "would steer the sync without moving env_version"
+        )
     # The dirty check comes before anything that writes: the image
     # converge below *commits*, and `dataset.save` stages scoped but
     # commits the whole index — on a dirty tree the user's staged edits
@@ -938,6 +944,12 @@ def _graph(
         report.warnings.append(
             "dependency groups outside uv's default set are installable states "
             f"the environment's identity does not distinguish: {', '.join(scan.non_default_groups)}"
+        )
+    if scan.machine_config:
+        report.warnings.append(
+            "machine-level uv configuration steers install settings underneath "
+            "the project's own, and env_version cannot see it: "
+            + "; ".join(scan.machine_config)
         )
 
     env_version = identity.env_version(root)

@@ -165,9 +165,16 @@ def run(command: tuple[str, ...]) -> None:
     """Run COMMAND in the project environment, under isolation.
     """
     from lightcone.engine import run as engine_run
-    from lightcone.engine.project import current_project
+    from lightcone.engine.project import current_project, scrubbed_uv_vars
 
-    outcome = engine_run.probe(current_project(), command)
+    directory = current_project()
+    if dropped := scrubbed_uv_vars():
+        click.echo(
+            f"ignored ambient {', '.join(dropped)} — an install setting is "
+            "the project's to declare (pyproject.toml)",
+            err=True,
+        )
+    outcome = engine_run.probe(directory, command)
     if outcome.notes:
         click.echo("\n".join(["", *outcome.notes]), err=True)
     # `Popen.returncode` is negative for a signal, and `sys.exit(-9)`
