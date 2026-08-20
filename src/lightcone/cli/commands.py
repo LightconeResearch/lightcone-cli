@@ -182,14 +182,6 @@ def run(command: tuple[str, ...]) -> None:
 # =============================================================================
 
 
-def _announce_build(tag: str) -> None:
-    """Say a minutes-long image build is coming — one wording, both verbs."""
-    _console().print(
-        f"building [bold]{tag}[/bold] if nothing refuses first — the first build "
-        "after an environment change can take minutes"
-    )
-
-
 @main.command()
 @click.option(
     "--json",
@@ -222,7 +214,7 @@ def build(as_json: bool) -> None:
             )
         return
     if state == "absent" and not as_json:
-        _announce_build(tag)
+        _console().print(f"building [bold]{tag}[/bold] — this can take minutes")
     runtime, action = engine_container.build(root)
     if as_json:
         click.echo(
@@ -303,7 +295,10 @@ def materialize(
         # first and cost no build, so this must promise nothing.
         state, tag, _ = engine_container.image_state(root)
         if state == "absent":
-            _announce_build(tag)
+            _console().print(
+                f"image absent — the run rebuilds [bold]{tag}[/bold] first "
+                "(this can take minutes)"
+            )
     if check_only:
         report = engine.check(root, targets, refresh=refresh)
     else:
@@ -358,7 +353,7 @@ def status(as_json: bool) -> None:
         described = {
             "present": "built",
             "absent": "needs build — run `lc build`",
-            "unfetched": f"content not fetched — git annex get {report.image['archive']}",
+            "unfetched": "content not in this clone — the next build or run fetches it",
         }[state]
         lines.append(f"  image:   {tag} — {described}")
     lines.append(f"  sandbox: {report.sandbox}")

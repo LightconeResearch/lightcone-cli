@@ -24,6 +24,14 @@ carries no project files, so a code edit can never trigger a build.
 
 This module is pure: no subprocess, and no filesystem beyond reading
 ``pyproject.toml`` and ``.python-version``.
+
+The render is assembled by hand rather than through a library, checked
+rather than assumed (2026-08): no established Containerfile-*authoring*
+library exists — the maintained ones are Engine clients, and the
+generators are small templating wrappers — and everything hard here is
+the validation and the identity, which none of them carry. Assembling
+lines from a validated model is also what the ecosystem's own generators
+(Modal, repo2docker) do.
 """
 
 from __future__ import annotations
@@ -43,6 +51,13 @@ from lightcone.engine.project import ProjectError
 #: stays a pure function of the repository plus the engine. An engine
 #: release that bumps this moves both the tag and ``env_version`` for
 #: containerized projects — the system layer genuinely changed.
+#:
+#: Vanilla debian-slim, deliberately *without* Python — the same family
+#: as Modal's ``debian_slim()`` default but not the same content: Modal's
+#: carries their own Python build, while here the base never supplies the
+#: interpreter. uv installs the exact ``.python-version`` pin during the
+#: build, so "which python ran" is identical under any base — swap in a
+#: CUDA image and the interpreter, and its identity, do not move.
 DEFAULT_BASE = (
     "docker.io/library/debian:bookworm-slim"
     "@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241"

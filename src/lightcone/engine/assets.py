@@ -27,7 +27,7 @@ from typing import Any, Literal
 from lightcone.engine.project import ProjectError
 
 MANIFEST_FILENAME = ".lightcone-manifest.json"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 1
 
 #: Excluded from the content hash: the manifest is written *after* the
 #: hash it contains, so hashing it would be circular.

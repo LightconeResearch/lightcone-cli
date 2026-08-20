@@ -85,13 +85,13 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
     """Resolve the execution world, converging the image where allowed.
 
     The three image checks are repository questions first and runtime
-    questions second: archive committed, content fetched, loaded into the
-    local store. Only the first check's miss differs by caller — *build*
-    is true for ``lc build`` and the materialize preflight, which may
-    build and commit on a tree their own dirty check just proved clean;
-    everything else (the probe, the rerun entry point) refuses naming the
-    exact ``lc build``, because ``lc run`` never builds and the worker
-    never writes git.
+    questions second: archive committed, content fetched (through the
+    annex, by lc itself), loaded into the local store. Only the first
+    check's miss differs by caller — *build* is true for ``lc build`` and
+    the materialize preflight, which may build and commit on a tree their
+    own dirty check just proved clean; everything else (the probe, the
+    rerun entry point) refuses naming the exact ``lc build``, because
+    ``lc run`` never builds and the worker never commits.
 
     Args:
         root: The project root.
@@ -102,8 +102,8 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
 
     Raises:
         ProjectError: If no runtime is usable, the archive is missing and
-            *build* is false, its content is not in this clone, or the
-            build fails.
+            *build* is false, its content cannot be fetched from any
+            reachable copy, or the build fails.
     """
     if project.mode(root) == "direct":
         return Runtime(root=root, mode="direct", env_dir=project.env_dir(root))
@@ -118,9 +118,7 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
                 "never builds one. Run `lc build` first."
             )
         _build(root, name, tag, archive)
-    # Both annexed shapes of an absent archive — the pointer file and the
-    # dangling symlink — refuse here with the exact `git annex get` line.
-    assets.require_fetched(archive)
+    _fetch(root, archive)
     image_id, arch = archive_identity(archive)
     if not _loaded(root, name, image_id):
         _check_call([name, "load", "-i", str(archive)], cwd=root)
@@ -133,6 +131,35 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
         image_id=image_id,
         arch=arch,
     )
+
+
+def _fetch(root: Path, archive: Path) -> None:
+    """Bring the archive's bytes into this clone, if they are elsewhere.
+
+    lc fetches its own artifact rather than printing a git-annex command —
+    the storage invariant is that nobody is ever asked to run one by hand.
+    Covers both annexed shapes of absent content (the pointer file and the
+    dangling symlink); the refusal is reserved for a fetch that genuinely
+    cannot happen, with git-annex's own reason.
+
+    Raises:
+        ProjectError: If no reachable copy could supply the content.
+    """
+    relative = archive.relative_to(root).as_posix()
+    try:
+        assets.require_fetched(archive)
+        return
+    except assets.ContentNotFetchedError:
+        pass
+    got = project._run(["git", "annex", "get", "--", relative], cwd=root)
+    if got.returncode != 0:
+        raise ProjectError(
+            f"the image archive `{relative}` is not in this clone, and fetching it "
+            f"failed:\n{got.stderr.strip()}\n"
+            "It needs a reachable remote that holds the content — or rebuild a new "
+            "image with `lc build`."
+        )
+    assets.require_fetched(archive)
 
 
 def _committed(archive: Path) -> bool:

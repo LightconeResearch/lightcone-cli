@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lightcone.engine import assets, container, image, project
+from lightcone.engine import container, image, project
 from lightcone.engine.project import ProjectError
 
 _TABLE = '[tool.lightcone.image]\napt-install = ["bc"]\n'
@@ -78,6 +78,9 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             return MagicMock(
                 returncode=0, stdout=f"{argv[-1]}: annex.largefiles: anything\n", stderr=""
             )
+        if argv[:3] == ["git", "annex", "get"]:
+            _write_archive(cwd / argv[-1])  # the fetch's observable effect
+            return MagicMock(returncode=0, stdout="", stderr="")
         return MagicMock(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(project, "_run", run)
@@ -153,14 +156,32 @@ def test_a_missing_archive_refuses_unless_the_caller_may_build(
     assert container.runtime_for_run(root, build=False).image_id == runtime.image_id
 
 
-def test_unfetched_archive_content_names_git_annex_get(
-    root: Path, fake: list[list[str]]
+def test_unfetched_archive_content_is_fetched_by_lc_itself(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Nobody is ever asked to run a git-annex command by hand — the
+    storage invariant. lc gets its own artifact; the refusal is reserved
+    for a fetch with no reachable copy, which is the second half."""
     archive = image.archive_path(root, image.tag(root))
     archive.parent.mkdir(parents=True)
     archive.write_bytes(b"/annex/objects/SHA256E-s323--abc\n")  # the pointer shape
 
-    with pytest.raises(assets.ContentNotFetchedError, match="git annex get"):
+    runtime = container.runtime_for_run(root, build=False)
+
+    assert runtime.image_id
+    (got,) = [c for c in fake if c[:3] == ["git", "annex", "get"]]
+    assert got[-1] == f".datalad/environments/{image.tag(root)}/image"
+
+    archive.write_bytes(b"/annex/objects/SHA256E-s323--abc\n")  # unfetched again
+    inner = project._run
+
+    def failing(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:3] == ["git", "annex", "get"]:
+            return MagicMock(returncode=1, stdout="", stderr="no reachable copy")
+        return inner(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", failing)
+    with pytest.raises(ProjectError, match="fetching it failed"):
         container.runtime_for_run(root, build=False)
 
 

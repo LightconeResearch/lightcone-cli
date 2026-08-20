@@ -1141,8 +1141,9 @@ provides that, and for what workers do *not* need (git, git-annex).
   `definition_version`, `env_version`, `data_version`, `decisions`,
   `input_versions`, `git_sha`,
   `git_remote`, `lc_version`, `hermeticity` — and, since layer 6,
-  `image` (`{tag, id, archive, arch}`, `None` on the host; see the
-  layer-6 invariants for why it is defaulted). Spec §3's longer list —
+  `image` (`{tag, id, archive, arch}`, defaulting to ``None`` because
+  that is the true value for a host run — not back-compat machinery,
+  and `SCHEMA_VERSION` stays 1 pre-release). Spec §3's longer list —
   `uv_version`, `platform`, `worker_runtime`, `python_build`,
   `dpkg_snapshot_sha256`, `sdist_built`, `env_snapshot`, `gpu_driver` —
   is attestation nothing here reads; it lands with the verb that reads
@@ -1406,10 +1407,11 @@ is load-bearing: `lc build` and the materialize preflight may **build +
 save + commit** (announced by the CLI, which owns the console — the
 engine never prints); the probe and the worker entry point only ever
 **find** — a missing archive refuses naming the exact `lc build`
-(`lc run` never builds; the worker never writes git), unfetched content
-refuses naming the exact `git annex get` (the existing
-`ContentNotFetchedError` machinery, verbatim), and an unloaded image is
-a silent `<runtime> load`. Execution pins the **id** — sha256 of the
+(`lc run` never builds; the worker never commits), unfetched content is
+**fetched by lc itself** (`git annex get`, driver-side — the storage
+invariant is that nobody is ever asked to run an annex command by hand,
+so the refusal is reserved for a fetch with no reachable copy), and an
+unloaded image is a silent `<runtime> load`. Execution pins the **id** — sha256 of the
 archive's config blob, readable with no runtime, the same computation
 datalad's docker adapter makes — never a tag, so a retagged store image
 cannot substitute. **A dropped archive never substitutes**: a rebuild is
