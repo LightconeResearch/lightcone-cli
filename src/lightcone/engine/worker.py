@@ -41,7 +41,6 @@ from lightcone.engine.project import (
     ProjectError,
     child_env,
     declared_project,
-    sync,
     uv_prefix,
 )
 
@@ -223,12 +222,7 @@ def execute(
     task.output_dir.mkdir(parents=True)
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
-    policy = sandbox.exec_policy(
-        root,
-        read_paths=read_paths,
-        env_dir=runtime.env_dir,
-        containerized=runtime.mode == "containerized",
-    )
+    policy = container.policy_for(runtime, read_paths)
     with sandbox.scope(policy):
         outcome = sandbox.run(
             container.backend(runtime),
@@ -270,14 +264,7 @@ def execute(
                 git_remote=remote,
                 lc_version=lc_version(),
                 hermeticity=asdict(outcome.attestation),
-                image=None
-                if runtime.mode == "direct"
-                else {
-                    "tag": runtime.image_tag,
-                    "id": runtime.image_id,
-                    "archive": runtime.archive,
-                    "arch": runtime.arch,
-                },
+                image=runtime.manifest_image(),
             ),
         )
     except (OSError, ProjectError) as e:
@@ -371,10 +358,7 @@ def main(argv: list[str]) -> int:
         # *is* the driver here — the rule is that each is read once by
         # whoever owns the run, not that a worker never reads them.
         runtime = container.runtime_for_run(root, build=False)
-        if runtime.mode == "direct":
-            sync(root)
-        else:
-            container.sync(root, runtime)
+        container.converge(runtime)
         result = execute(
             root,
             task,

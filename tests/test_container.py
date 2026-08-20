@@ -33,7 +33,6 @@ def root(tmp_path: Path) -> Path:
         'requires-python = ">=3.11"\ndependencies = []\n' + _TABLE
     )
     (project_dir / ".python-version").write_text("3.12.11\n")
-    (project_dir / "uv.lock").write_text("version = 1\n")
     return project_dir
 
 
@@ -434,9 +433,11 @@ def test_a_stopped_machine_is_a_refusal_naming_start(
 
 
 def test_image_state_reports_repository_facts_only(root: Path, fake: list[list[str]]) -> None:
-    assert container.image_state(root) == ("absent", image.tag(root))
+    tag = image.tag(root)
+    relative = f".datalad/environments/{tag}/image"
+    assert container.image_state(root) == ("absent", tag, relative)
 
-    archive = image.archive_path(root, image.tag(root))
+    archive = image.archive_path(root, tag)
     archive.parent.mkdir(parents=True)
     archive.write_bytes(b"/annex/objects/SHA256E-s1--abc\n")
     assert container.image_state(root)[0] == "unfetched"

@@ -46,14 +46,12 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
 
     runtime = container.runtime_for_run(project, build=False)
     if runtime.mode == "containerized":
+        # The probe's converge. Direct mode's is the syncing hop below —
+        # the deliberate exception to `container.converge`, because there
+        # the hop itself is what converges.
         container.sync(project, runtime)
 
-    built = sandbox.exec_policy(
-        project,
-        read_paths=input_paths(project, spec),
-        env_dir=runtime.env_dir,
-        containerized=runtime.mode == "containerized",
-    )
+    built = container.policy_for(runtime, input_paths(project, spec))
     with sandbox.scope(built) as policy:
         return sandbox.run(
             container.backend(runtime),

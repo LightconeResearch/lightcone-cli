@@ -137,8 +137,11 @@ def identity_document(root: Path) -> str | None:
         The document, or ``None`` for a direct-mode project.
     """
     declared = declaration(root)
-    if declared is None:
-        return None
+    return None if declared is None else _document(declared)
+
+
+def _document(declared: Declaration) -> str:
+    """*declared* as its canonical JSON."""
     return json.dumps(
         {
             "apt": list(declared.apt_install),
@@ -175,6 +178,11 @@ def containerfile(root: Path) -> str:
     declared = declaration(root)
     if declared is None:
         raise ProjectError(f"{root} declares no [tool.lightcone.image] — nothing to build.")
+    return _render(root, declared)
+
+
+def _render(root: Path, declared: Declaration) -> str:
+    """The Containerfile for *declared* — one parse, however it is reached."""
     pin = root / ".python-version"
     if not pin.is_file():
         raise ProjectError(
@@ -226,7 +234,7 @@ def containerfile(root: Path) -> str:
         # final environment then forbids. `never` makes a missing
         # interpreter a loud error at run time instead of a silent fetch.
         f"ENV UV_PYTHON_INSTALL_DIR={PYTHON_INSTALL_DIR} UV_PYTHON_DOWNLOADS=never",
-        f"LABEL io.lightcone.image={_quoted(identity_document(root) or '')}",
+        f"LABEL io.lightcone.image={_quoted(_document(declared))}",
     ]
     return "\n".join(lines) + "\n"
 
@@ -245,7 +253,10 @@ def tag(root: Path) -> str:
     Returns:
         ``lc-env-<16 hex>``.
     """
-    framed = json.dumps([containerfile(root), identity_document(root)])
+    declared = declaration(root)
+    if declared is None:
+        raise ProjectError(f"{root} declares no [tool.lightcone.image] — nothing to tag.")
+    framed = json.dumps([_render(root, declared), _document(declared)])
     return "lc-env-" + hashlib.sha256(framed.encode()).hexdigest()[:16]
 
 

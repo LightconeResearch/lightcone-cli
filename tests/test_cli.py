@@ -525,7 +525,11 @@ def test_status_headers_answer_mode_image_and_sandbox(
     report = _report()
     assert isinstance(report, StatusReport)
     report.mode = "containerized"
-    report.image = {"tag": "lc-env-0123456789abcdef", "state": "absent"}
+    report.image = {
+        "tag": "lc-env-0123456789abcdef",
+        "state": "absent",
+        "archive": ".datalad/environments/lc-env-0123456789abcdef/image",
+    }
     report.sandbox = "podman (fs: declared, network: denied)"
     _status_stub(monkeypatch, report)
 

@@ -44,12 +44,12 @@ def policy(root: Path) -> Policy:
     shutil.rmtree(built.tmp_home, ignore_errors=True)
 
 
-def _backend(runtime: str = "podman", **kwargs: Any) -> OCIBackend:
+def _backend(root: Path, runtime: str = "podman") -> OCIBackend:
     flags = ("--userns=keep-id", "--pull=never") if runtime == "podman" else ("--user", "1000:1000")
     return OCIBackend(
         runtime=runtime,  # type: ignore[arg-type]
         image_id=_IMAGE_ID,
-        root=kwargs.pop("root"),
+        root=root,
         user_flags=flags,
     )
 
@@ -91,13 +91,13 @@ def test_the_overlay_points_uv_at_the_image_environment(root: Path, policy: Poli
 
 def test_wrap_is_pure(root: Path, policy: Policy, tmp_path: Path) -> None:
     before = set(tmp_path.rglob("*"))
-    backend = _backend(root=root)
+    backend = _backend(root)
     assert backend.wrap(policy, ["true"]) == backend.wrap(policy, ["true"])
     assert set(tmp_path.rglob("*")) == before
 
 
 def test_reads_mount_ro_and_writes_mount_rw(root: Path, policy: Policy) -> None:
-    argv = _backend(root=root).wrap(policy, ["true"])
+    argv = _backend(root).wrap(policy, ["true"])
     assert f"--volume={root.resolve()}:{root}:ro" in argv
     results = root / "results"
     assert f"--volume={results.resolve()}:{results}:rw" in argv
@@ -130,7 +130,7 @@ def test_a_symlinked_input_mounts_at_its_declared_path(root: Path, tmp_path: Pat
         containerized=True,
     )
     try:
-        argv = _backend(root=root).wrap(built, ["true"])
+        argv = _backend(root).wrap(built, ["true"])
         assert f"--volume={store / 'catalog.h5'}:{declared}:ro" in argv
     finally:
         import shutil
@@ -143,27 +143,27 @@ def test_the_rootfs_is_read_only_and_labels_are_disabled(root: Path, policy: Pol
     *succeeds* into the container's ephemeral layer and vanishes, while
     the run attests `fs: declared` — the silent-loss path. And
     `label=disable`: SELinux hosts otherwise refuse every bind read."""
-    argv = _backend(root=root).wrap(policy, ["true"])
+    argv = _backend(root).wrap(policy, ["true"])
     assert "--read-only" in argv
     assert "--security-opt" in argv
     assert argv[argv.index("--security-opt") + 1] == "label=disable"
 
 
 def test_execution_pins_the_image_by_id_never_a_tag(root: Path, policy: Policy) -> None:
-    argv = _backend(root=root).wrap(policy, ["bash", "-c", "true"])
+    argv = _backend(root).wrap(policy, ["bash", "-c", "true"])
     assert _IMAGE_ID in argv
     assert argv[argv.index(_IMAGE_ID) + 1 :] == ["bash", "-c", "true"]
     assert not any("lc-env-" in part for part in argv)
 
 
 def test_the_network_is_denied_by_flag(root: Path, policy: Policy) -> None:
-    argv = _backend(root=root).wrap(policy, ["true"])
+    argv = _backend(root).wrap(policy, ["true"])
     assert "--network" in argv and argv[argv.index("--network") + 1] == "none"
 
 
 def test_runtimes_differ_only_in_their_spellings(root: Path, policy: Policy) -> None:
-    podman = _backend("podman", root=root).wrap(policy, ["true"])
-    docker = _backend("docker", root=root).wrap(policy, ["true"])
+    podman = _backend(root, "podman").wrap(policy, ["true"])
+    docker = _backend(root, "docker").wrap(policy, ["true"])
     assert "--userns=keep-id" in podman and "--pull=never" in podman
     assert "--user" in docker and "1000:1000" in docker
     strip = {
@@ -178,7 +178,7 @@ def test_the_environment_is_an_allowlist_never_ambient(
 ) -> None:
     """A secret in the invoking shell must never reach the container."""
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "hunter2")
-    argv = _backend(root=root).wrap(policy, ["true"])
+    argv = _backend(root).wrap(policy, ["true"])
     assert not any("hunter2" in part or "AWS_SECRET" in part for part in argv)
     for key, value in policy.env.items():
         assert f"--env={key}={value}" in argv
@@ -189,7 +189,7 @@ def test_no_host_resolved_env_binary_in_the_argv(root: Path, policy: Policy) -> 
     """The overlay travels as `--env` flags: a host path for `env` (NixOS
     keeps it under /run/current-system/sw) need not exist in the image,
     and argv[0] dying there would blame the user's command."""
-    argv = _backend(root=root).wrap(policy, ["true"])
+    argv = _backend(root).wrap(policy, ["true"])
     assert not any(part.endswith("/env") for part in argv)
 
 
@@ -198,7 +198,7 @@ def test_no_host_resolved_env_binary_in_the_argv(root: Path, policy: Policy) -> 
 
 def test_the_attestation_is_derived_from_the_flags(root: Path, policy: Policy) -> None:
     for runtime in ("podman", "docker"):
-        attested = _backend(runtime, root=root).attest(policy)
+        attested = _backend(root, runtime).attest(policy)
         assert attested.mechanism == runtime
         assert attested.fs == "declared"
         assert attested.network == "denied"
@@ -241,7 +241,7 @@ def test_a_world_backend_takes_the_prefix_inside(
     monkeypatch.setattr(subprocess, "Popen", recorder)
 
     boundary.run(
-        _backend(root=root),
+        _backend(root),
         policy,
         ["bash", "-c", "true"],
         cwd=root,
@@ -285,7 +285,7 @@ def test_exit_97_is_the_shims_only_under_landlock(
     container — a recipe legitimately exiting 97 must not be told lc
     could not set up the sandbox."""
     monkeypatch.setattr(subprocess, "Popen", _Recorder(returncode=97))
-    outcome = boundary.run(_backend(root=root), policy, ["true"], cwd=root, env={})
+    outcome = boundary.run(_backend(root), policy, ["true"], cwd=root, env={})
     assert not any("could not set up" in note for note in outcome.notes)
 
 
@@ -296,6 +296,6 @@ def test_exit_125_names_the_runtime_not_the_command(
     never ran, so neither the denial heuristics nor the trailer should
     point at it."""
     monkeypatch.setattr(subprocess, "Popen", _Recorder(returncode=125))
-    outcome = boundary.run(_backend(root=root), policy, ["true"], cwd=root, env={})
+    outcome = boundary.run(_backend(root), policy, ["true"], cwd=root, env={})
     assert any("runtime failed before the command ran" in note for note in outcome.notes)
     assert not any("ran under the lc sandbox" in note for note in outcome.notes)

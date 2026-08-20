@@ -7,7 +7,6 @@ import os
 import re
 import shutil
 import subprocess
-import tomllib
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -509,15 +508,11 @@ def mode(directory: Path) -> Literal["direct", "containerized"]:
     Raises:
         ProjectError: If ``pyproject.toml`` is not valid TOML.
     """
-    path = directory / "pyproject.toml"
-    if not path.is_file():
-        return "direct"
-    try:
-        parsed = tomllib.loads(path.read_text())
-    except tomllib.TOMLDecodeError as e:
-        raise ProjectError(f"{path}: invalid TOML: {e}") from e
-    table = parsed.get("tool", {}).get("lightcone", {}).get("image")
-    return "direct" if table is None else "containerized"
+    # image.py is the table's one reader; imported lazily because it
+    # imports ProjectError from here.
+    from lightcone.engine import image
+
+    return "direct" if image._table(directory) is None else "containerized"
 
 
 def env_dir(directory: Path) -> Path:

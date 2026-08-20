@@ -182,6 +182,14 @@ def run(command: tuple[str, ...]) -> None:
 # =============================================================================
 
 
+def _announce_build(tag: str) -> None:
+    """Say a minutes-long image build is coming — one wording, both verbs."""
+    _console().print(
+        f"building [bold]{tag}[/bold] if nothing refuses first — the first build "
+        "after an environment change can take minutes"
+    )
+
+
 @main.command()
 @click.option(
     "--json",
@@ -203,7 +211,7 @@ def build(as_json: bool) -> None:
     from lightcone.engine.project import current_project
 
     root = current_project()
-    state, tag = engine_container.image_state(root)
+    state, tag, _ = engine_container.image_state(root)
     if state == "direct":
         if as_json:
             click.echo(json.dumps({"mode": "direct"}))
@@ -214,10 +222,7 @@ def build(as_json: bool) -> None:
             )
         return
     if state == "absent" and not as_json:
-        _console().print(
-            f"building [bold]{tag}[/bold] — first build after an environment change; "
-            "this can take minutes"
-        )
+        _announce_build(tag)
     runtime, action = engine_container.build(root)
     if as_json:
         click.echo(
@@ -296,12 +301,9 @@ def materialize(
         # so before handing over. Conditional mood, deliberately: the
         # engine's own refusals (a dirty tree, an invalid spec) come
         # first and cost no build, so this must promise nothing.
-        state, tag = engine_container.image_state(root)
+        state, tag, _ = engine_container.image_state(root)
         if state == "absent":
-            _console().print(
-                f"this run will build [bold]{tag}[/bold] — first run after an "
-                "environment change; this can take minutes"
-            )
+            _announce_build(tag)
     if check_only:
         report = engine.check(root, targets, refresh=refresh)
     else:
@@ -356,8 +358,7 @@ def status(as_json: bool) -> None:
         described = {
             "present": "built",
             "absent": "needs build — run `lc build`",
-            "unfetched": f"content not fetched — git annex get "
-            f".datalad/environments/{tag}/image",
+            "unfetched": f"content not fetched — git annex get {report.image['archive']}",
         }[state]
         lines.append(f"  image:   {tag} — {described}")
     lines.append(f"  sandbox: {report.sandbox}")

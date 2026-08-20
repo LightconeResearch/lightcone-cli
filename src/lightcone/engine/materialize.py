@@ -344,9 +344,9 @@ def status(root: Path) -> StatusReport:
     report = MaterializeReport()
     result = StatusReport()
     result.mode = project.mode(root)
-    state, tag = container.image_state(root)
+    state, tag, archive = container.image_state(root)
     if state != "direct":
-        result.image = {"tag": tag, "state": state}
+        result.image = {"tag": tag, "state": state, "archive": archive}
     result.sandbox = _sandbox_line(result.mode)
     for key, verdict, manifest in _classified(root, [], report, refresh=False):
         result.outputs.append(
@@ -363,7 +363,13 @@ def status(root: Path) -> StatusReport:
 
 
 def _sandbox_line(mode: str) -> str:
-    """One line naming the enforcement a run on this host would get."""
+    """One line naming the enforcement a run on this host would get.
+
+    The prose restates each backend's constant attestation, because
+    `Backend.attest` needs a built policy and a status header must not
+    build one. Keep it in step with the `attest` implementations — the
+    manifests, which record the real thing, are always authoritative.
+    """
     if mode == "containerized":
         if runtime := container.runtime_hint():
             return f"{runtime} (fs: declared, network: denied)"
@@ -427,11 +433,8 @@ def materialize(
     runtime = container.runtime_for_run(root, build=True)
     # Converge the environment: workers pass `--no-sync`, so this is the
     # only place on a run's path where it is made to match the lock. (A
-    # rerun does not come through here; its entry point syncs.)
-    synced = (
-        project.sync(root) if runtime.mode == "direct" else container.sync(root, runtime)
-    )
-    report.warnings.extend(f"uv: {w}" for w in synced)
+    # rerun does not come through here; its entry point converges too.)
+    report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
 
     dsid = dataset.dataset_id(root)
     # Read once, for every task: the driver commits each output as it lands,

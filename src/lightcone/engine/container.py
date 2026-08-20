@@ -57,11 +57,28 @@ class Runtime:
     #: The image id (bare hex of its config blob) — execution pins on
     #: this, never the tag, so a retagged image cannot substitute.
     image_id: str = ""
-    #: The committed archive, project-relative — what the run record's
-    #: ``extra_inputs`` names and the manifest's ``image`` records.
-    archive: str = ""
     #: The architecture the archive was built for.
     arch: str = ""
+
+    @property
+    def archive(self) -> str:
+        """The committed archive, project-relative — what the run record's
+        ``extra_inputs`` names. Derived through :func:`image.archive_path`
+        so this cannot become a second spelling of the layout."""
+        return image.archive_path(self.root, self.image_tag).relative_to(self.root).as_posix()
+
+    def manifest_image(self) -> dict[str, str] | None:
+        """This world as the manifest's ``image`` field; ``None`` on the
+        host. Beside the data, so a field added here cannot be forgotten
+        at the write site — the ``asdict(attestation)`` discipline."""
+        if self.mode == "direct":
+            return None
+        return {
+            "tag": self.image_tag,
+            "id": self.image_id,
+            "archive": self.archive,
+            "arch": self.arch,
+        }
 
 
 def runtime_for_run(root: Path, *, build: bool) -> Runtime:
@@ -94,7 +111,7 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
     name = runtime_name(root)
     tag = image.tag(root)
     archive = image.archive_path(root, tag)
-    if not archive.exists() and not archive.is_symlink():
+    if not _committed(archive):
         if not build:
             raise ProjectError(
                 f"the system-layer image `{tag}` has not been built — this verb "
@@ -106,7 +123,7 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
     assets.require_fetched(archive)
     image_id, arch = archive_identity(archive)
     if not _loaded(root, name, image_id):
-        _check(root, [name, "load", "-i", str(archive)])
+        _check_call([name, "load", "-i", str(archive)], cwd=root)
     return Runtime(
         root=root,
         mode="containerized",
@@ -114,9 +131,18 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
         runtime=name,
         image_tag=tag,
         image_id=image_id,
-        archive=archive.relative_to(root).as_posix(),
         arch=arch,
     )
+
+
+def _committed(archive: Path) -> bool:
+    """Whether the repository carries the archive, in either annexed shape.
+
+    A dangling symlink *is* a committed archive (a locked clone without
+    the content), so the naive ``exists()`` misreads it as never built
+    and tells the user to rebuild an image the repository already has.
+    """
+    return archive.exists() or archive.is_symlink()
 
 
 def runtime_name(root: Path) -> str:
@@ -137,22 +163,23 @@ def runtime_name(root: Path) -> str:
     Raises:
         ProjectError: If neither is usable.
     """
-    if shutil.which("podman"):
+    name = runtime_hint()
+    if name == "podman":
         _machine_preflight(root)
-        return "podman"
-    if shutil.which("docker"):
+    elif name == "docker":
         if project._run(["docker", "info"], cwd=root).returncode != 0:
             raise ProjectError(
                 "docker is installed but its daemon is not reachable — start it "
                 "(or install podman, which needs no daemon), then retry. "
                 "`lc status` shows what this project needs."
             )
-        return "docker"
-    raise ProjectError(
-        "this project is containerized and needs a container runtime: install "
-        "podman (recommended: https://podman.io/docs/installation) or docker. "
-        "`lc status` shows what this project needs."
-    )
+    else:
+        raise ProjectError(
+            "this project is containerized and needs a container runtime: install "
+            "podman (recommended: https://podman.io/docs/installation) or docker. "
+            "`lc status` shows what this project needs."
+        )
+    return name
 
 
 def backend(runtime: Runtime) -> sandbox.Backend:
@@ -173,11 +200,16 @@ def backend(runtime: Runtime) -> sandbox.Backend:
         return sandbox.detect()
     from lightcone.engine.sandbox.oci import OCIBackend
 
+    # `--pull=never` beside the uid flags rather than inside them: it is
+    # a pull policy (a typo'd reference must fail, not fetch), podman's
+    # spelling only, and filing it under uid mapping is where the next
+    # reader would not look.
+    pull = ("--pull=never",) if runtime.runtime == "podman" else ()
     return OCIBackend(
         runtime=cast(Literal["podman", "docker"], runtime.runtime),
         image_id=runtime.image_id,
         root=runtime.root,
-        user_flags=tuple(uid_flags(runtime.runtime)),
+        user_flags=(*uid_flags(runtime.runtime), *pull),
     )
 
 
@@ -216,8 +248,7 @@ def build(root: Path) -> tuple[Runtime, str]:
             "committed into the repository, so `lc build` needs the tree to say "
             "what it is building from. Commit first, then re-run `lc build`."
         )
-    archive = image.archive_path(root, image.tag(root))
-    existed = archive.exists() or archive.is_symlink()
+    existed = image_state(root)[0] != "absent"
     return runtime_for_run(root, build=True), ("present" if existed else "built")
 
 
@@ -237,7 +268,7 @@ def runtime_hint() -> str:
     return ""
 
 
-def image_state(root: Path) -> tuple[str, str]:
+def image_state(root: Path) -> tuple[str, str, str]:
     """Report where the project's image stands, without a runtime.
 
     Repository facts only, so ``lc status`` and the CLI's pre-build
@@ -247,20 +278,23 @@ def image_state(root: Path) -> tuple[str, str]:
         root: The project root.
 
     Returns:
-        ``(state, tag)`` — state is ``direct``, ``absent`` (never built),
-        ``unfetched`` (committed, content elsewhere) or ``present``.
+        ``(state, tag, archive)`` — state is ``direct``, ``absent``
+        (never built), ``unfetched`` (committed, content elsewhere) or
+        ``present``; archive is the project-relative path a remedy can
+        name, carried here so no renderer respells the layout.
     """
     if project.mode(root) == "direct":
-        return ("direct", "")
+        return ("direct", "", "")
     tag = image.tag(root)
     archive = image.archive_path(root, tag)
-    if not archive.exists() and not archive.is_symlink():
-        return ("absent", tag)
+    relative = archive.relative_to(root).as_posix()
+    if not _committed(archive):
+        return ("absent", tag, relative)
     try:
         assets.require_fetched(archive)
     except assets.ContentNotFetchedError:
-        return ("unfetched", tag)
-    return ("present", tag)
+        return ("unfetched", tag, relative)
+    return ("present", tag, relative)
 
 
 def sync(root: Path, runtime: Runtime) -> list[str]:
@@ -285,7 +319,10 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
     Raises:
         ProjectError: If uv fails inside the container.
     """
-    cache = _check(root, ["uv", "cache", "dir"]).strip()
+    asked = project._run(["uv", "cache", "dir"], cwd=root)
+    if asked.returncode != 0:
+        raise ProjectError(f"`uv cache dir` failed:\n{asked.stderr.strip()}")
+    cache = asked.stdout.strip()
     argv = [
         runtime.runtime, "run", "--rm", "--entrypoint", "",
         # Same reason as the exec boundary's flag: SELinux hosts refuse
@@ -298,9 +335,53 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
         "--env", f"UV_PROJECT_ENVIRONMENT={runtime.env_dir}",
         "-w", str(root),
         runtime.image_id,
-        "uv", "sync", "--locked", "--exact", "--compile-bytecode", "--project", str(root),
+        # The same sync `project.sync` runs, spelled once for both modes.
+        "uv", *project._SYNC_ARGS, "--project", str(root),
     ]  # fmt: skip
     return _check_call(argv, cwd=root)
+
+
+def converge(runtime: Runtime) -> list[str]:
+    """Make the environment match the lock, whichever world this is.
+
+    The one spelling of the mode dispatch, so the entry points that
+    converge (materialize, the rerun worker) cannot drift apart. The
+    probe deliberately does not call this in direct mode — its syncing
+    ``uv run`` hop *is* its converge, documented at the call site.
+
+    Args:
+        runtime: The resolved runtime.
+
+    Returns:
+        Whatever uv warned about.
+    """
+    if runtime.mode == "direct":
+        return project.sync(runtime.root)
+    return sync(runtime.root, runtime)
+
+
+def policy_for(runtime: Runtime, read_paths: list[Path]) -> sandbox.Policy:
+    """Build the exec policy for a resolved runtime.
+
+    The one place the ``env_dir``/``containerized`` pair is assembled —
+    two settings that must always agree, projected from the single value
+    every caller already holds. Lives here rather than in the policy
+    module so the mechanism-free policy layer never learns what a
+    ``Runtime`` is.
+
+    Args:
+        runtime: The resolved runtime.
+        read_paths: Declared inputs, as :func:`sandbox.exec_policy` takes.
+
+    Returns:
+        The policy for this world.
+    """
+    return sandbox.exec_policy(
+        runtime.root,
+        read_paths=read_paths,
+        env_dir=runtime.env_dir,
+        containerized=runtime.mode == "containerized",
+    )
 
 
 def archive_identity(path: Path) -> tuple[str, str]:
@@ -355,7 +436,7 @@ def uid_flags(runtime: str) -> list[str]:
         The argv fragment.
     """
     if runtime == "podman":
-        return ["--userns=keep-id", "--pull=never"]
+        return ["--userns=keep-id"]
     return ["--user", f"{os.getuid()}:{os.getgid()}"]
 
 
@@ -381,8 +462,8 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     # MB blob would land in git itself, silently, and every clone would
     # carry it forever. The same probe-don't-assume rule as the ignore
     # check on `results/`.
-    routed = project._run(["git", "check-attr", "annex.largefiles", "--", relative], cwd=root)
-    if "anything" not in routed.stdout:
+    routed = dataset._git(["check-attr", "annex.largefiles", "--", relative], cwd=root)
+    if "anything" not in routed:
         raise ProjectError(
             "the image archive would be committed to git itself instead of the "
             f"annex — .gitattributes does not route `{relative}`. Add the line\n"
@@ -406,7 +487,7 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     partial = archive.parent / "image.partial"
     save_format = ["--format", "docker-archive"] if runtime == "podman" else []
     try:
-        _check(root, [runtime, "save", *save_format, "-o", str(partial), tag])
+        _check_call([runtime, "save", *save_format, "-o", str(partial), tag], cwd=root)
     except ProjectError:
         partial.unlink(missing_ok=True)
         raise
@@ -424,9 +505,9 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
             "docker-archive:{img} {cmd}",
         ),
     ):
-        _check(
-            root,
-            ["git", "config", "-f", ".datalad/config", f"datalad.containers.{tag}.{key}", value],
+        dataset._git(
+            ["config", "-f", ".datalad/config", f"datalad.containers.{tag}.{key}", value],
+            cwd=root,
         )
     dataset.save(
         root,
@@ -517,14 +598,3 @@ def _machine_preflight(root: Path) -> None:
         )
 
 
-# =============================================================================
-# Running tools
-# =============================================================================
-
-
-def _check(root: Path, argv: list[str]) -> str:
-    """Run a tool via the shared seam; a nonzero exit is a refusal."""
-    proc = project._run(argv, cwd=root)
-    if proc.returncode != 0:
-        raise ProjectError(f"`{' '.join(argv)}` failed:\n{proc.stderr.strip()}")
-    return str(proc.stdout or "")
