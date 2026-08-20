@@ -44,8 +44,21 @@ docs = [
 ]
 
 
+[project.urls]
+Repository = "https://github.com/LightconeResearch/lightcone-cli"
+
 [project.scripts]
 lc = "lightcone.cli:main"
+# The git-annex wheel's own entry points, re-declared verbatim: an
+# installer links only the requested package's executables, and a plain
+# `uv tool install lightcone-cli` must put git-annex on the shell's PATH
+# — `filter=annex` makes the researcher's own `git add` need it. The
+# suite pins these against the wheel's, so an upstream change fails
+# loudly here rather than silently at install time.
+git-annex = "git_annex:cli"
+git-annex-shell = "git_annex:cli"
+git-remote-annex = "git_annex:cli"
+git-remote-tor-annex = "git_annex:cli"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

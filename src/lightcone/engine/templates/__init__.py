@@ -78,13 +78,14 @@ def pyproject(*, name: str) -> str:
         name: The project name.
 
     Returns:
-        A virtual uv project depending on lightcone-cli.
+        A virtual uv project with no dependencies. The engine is not among
+        them: lc runs from the host's tool install, and the project's lock
+        carries only what the analysis itself imports.
     """
     return _render(
         "pyproject.toml.tmpl",
         name=name,
         requires_python=requires_python(),
-        lc_requirement=lightcone_requirement(),
     )
 
 
@@ -105,47 +106,15 @@ def python_version() -> str:
 def requires_python() -> str:
     """Render the scaffolded ``requires-python``.
 
-    Taken verbatim from lightcone-cli's own ``Requires-Python``: a
-    scaffolded project depends on the engine, so uv enforces this bound
-    during resolution regardless, and declaring the same specifier states
-    it rather than inventing a second one. It cannot conflict with
-    :func:`python_version`, since lc only runs on an interpreter that
-    already satisfies it.
+    The running interpreter's minor version, consistent with
+    :func:`python_version`, which pins the exact patch of the same
+    interpreter — the bound and the pin come from one place, so they
+    cannot disagree.
 
     Returns:
-        The specifier, or the running interpreter's minor version for a
-        metadata-less install.
+        The specifier.
     """
-    from importlib.metadata import PackageNotFoundError, metadata
-
-    try:
-        # Message-style lookup: absent keys come back as None, not KeyError.
-        declared = metadata("lightcone-cli")["Requires-Python"]
-    except PackageNotFoundError:
-        declared = None
-    if declared:
-        return str(declared)
     return f">={sys.version_info.major}.{sys.version_info.minor}"
-
-
-def lightcone_requirement() -> str:
-    """Render the ``lightcone-cli`` requirement for the scaffold.
-
-    The engine lives inside the experiment's lock, pinned to the version
-    that ran ``lc init``, so the engine that produced a result stays
-    recoverable.
-
-    Returns:
-        A pinned requirement, or an unpinned one for a dev build, whose
-        version is not published and would make the lock unsolvable.
-    """
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        v = version("lightcone-cli")
-    except PackageNotFoundError:
-        v = ""
-    return f"lightcone-cli=={v}" if v and "dev" not in v else "lightcone-cli"
 
 
 # =============================================================================
@@ -333,7 +302,8 @@ def datalad_config(*, dataset_id: str) -> str:
     """Render ``.datalad/config``, the file that makes a project a dataset.
 
     A dataset id is the one thing a git + git-annex repository lacks to
-    *be* a DataLad dataset. lc never reads this back; datalad does.
+    *be* a DataLad dataset. Read back only through ``dataset.dataset_id``,
+    for the run record's ``dsid``.
 
     Args:
         dataset_id: A UUID, generated once and never regenerated.

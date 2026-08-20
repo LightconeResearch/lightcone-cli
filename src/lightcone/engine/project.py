@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
@@ -280,19 +280,21 @@ def require_git() -> None:
 def require_git_annex() -> None:
     """Refuse early when git-annex is not reachable as git reaches it.
 
-    Probed after :func:`~lightcone.engine.dataset.put_our_bin_first`, and
-    by the name git itself searches for: ``git annex`` is git finding a
-    ``git-annex`` executable on ``PATH``, not a builtin.
+    Probed by the name git itself searches for: ``git annex`` is git
+    finding a ``git-annex`` executable on ``PATH``, not a builtin. Every
+    install channel puts one there by construction — lightcone-cli
+    declares the git-annex wheel's entry points as its own, so installers
+    link them beside ``lc`` — which makes this a refusal for broken
+    installs only.
 
     Raises:
         ProjectError: If ``git-annex`` is not on ``PATH``.
     """
-    dataset.put_our_bin_first()
     if shutil.which("git-annex") is None:
         raise ProjectError(
             "git-annex is required (it stores the bytes results are made of) "
-            "and is not on PATH. It ships as a wheel and installs with the "
-            "engine: `uv sync` in the project, or reinstall lightcone-cli."
+            "and is not on PATH. It installs with lc itself: "
+            "`uv tool install --force lightcone-cli` repairs the install."
         )
 
 
@@ -320,10 +322,11 @@ def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
 def sync(directory: Path) -> list[str]:
     """Make ``.venv`` match ``uv.lock``.
 
-    A run calls this before it starts rather than checking and refusing:
-    workers pass ``--no-sync``, so nothing else would notice a lock edited
-    without a sync, and a manifest recording an environment the recipe did
-    not run under is the identity model saying something untrue.
+    Both entry points that execute recipes call this before they start,
+    rather than checking and refusing: workers pass ``--no-sync``, so
+    nothing else would notice a lock edited without a sync, and a manifest
+    recording an environment the recipe did not run under is the identity
+    model saying something untrue.
 
     Args:
         directory: The project root.
@@ -340,25 +343,13 @@ def sync(directory: Path) -> list[str]:
 def _converge_uv_project(c: _Converger, directory: Path) -> None:
     """pyproject.toml + .python-version — the environment definition.
 
-    An existing ``pyproject.toml`` is the user's: read, possibly warned
-    about, never edited. The warning is decided against the *pre-existing*
-    file, so one we just wrote — which always names the engine — can never
-    trigger it.
+    An existing ``pyproject.toml`` is the user's: read, never edited.
     """
-    pyproject_path = directory / "pyproject.toml"
-    adopted = pyproject_path.exists()
     c.file(
         "pyproject.toml",
-        pyproject_path,
+        directory / "pyproject.toml",
         lambda: templates.pyproject(name=project_name(directory)),
     )
-    if adopted and "lightcone-cli" not in pyproject_path.read_text():
-        c.warn(
-            "pyproject.toml does not depend on lightcone-cli — the "
-            "engine should live inside the experiment's lock: "
-            "`uv add lightcone-cli`."
-        )
-
     c.file(".python-version", directory / ".python-version", templates.python_version)
 
 
@@ -393,9 +384,9 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     routes results and inputs into the annex and keeps manifests in git,
     and ``.datalad/config`` carries a dataset id — the one thing a git +
     git-annex repository lacks to *be* a DataLad dataset, so a project is
-    one from birth rather than by later adoption. Neither is read back by
-    lc; the id is generated once and never regenerated, because ``file``
-    writes only what is missing.
+    one from birth rather than by later adoption. The id is generated
+    once and never regenerated, because ``file`` writes only what is
+    missing; the run record reads it back through ``dataset.dataset_id``.
     """
     c.item(".git", _in_repository(directory), lambda: dataset.init_git(directory))
     # After the item above, so a fresh project has a repository to annex.
@@ -497,17 +488,24 @@ def project_name(directory: Path) -> str:
     return name or "analysis"
 
 
-#: What makes a directory a project root: the environment ``lc run``
-#: enters. ``astra.yaml`` is deliberately not among them — a command can
-#: be probed in any uv project, spec or no spec.
-_ENVIRONMENT_FILES = ("pyproject.toml", "uv.lock", ".venv")
+#: What the repository itself carries of the environment. ``astra.yaml``
+#: is deliberately not among them — a command can be probed in any uv
+#: project, spec or no spec.
+_DECLARED_FILES = ("pyproject.toml", "uv.lock")
+
+#: …plus the built environment. ``.venv`` is the one piece that is local
+#: state rather than repository content, which is the whole difference
+#: between the two questions below.
+_ENVIRONMENT_FILES = (*_DECLARED_FILES, ".venv")
 
 
-def current_project(directory: Path | None = None) -> Path:
-    """Take a directory as the project root, checking it is one.
+def declared_project(directory: Path | None = None) -> Path:
+    """Take a directory as a project root, needing only what git carries.
 
-    There is no walk-up: the directory you are in is the directory that is
-    used, or it is an error.
+    The weaker of the two questions: it asks whether the project is
+    *declared*, not whether it is built. That is what the worker entry
+    point needs — a clone holds the lock and no ``.venv``, and the worker
+    converges the environment for itself a moment later.
 
     Args:
         directory: Defaults to the working directory.
@@ -516,14 +514,45 @@ def current_project(directory: Path | None = None) -> Path:
         The resolved project root.
 
     Raises:
-        ProjectError: If the environment is not there. The two ways that
-            fails get different advice — a directory with no project
+        ProjectError: If ``pyproject.toml`` or ``uv.lock`` is absent.
+    """
+    return _project_root(directory, _DECLARED_FILES)
+
+
+def current_project(directory: Path | None = None) -> Path:
+    """Take a directory as the project root, built environment and all.
+
+    The question every verb that runs something asks, and the stronger of
+    the two: a ``.venv`` that is not there is not something these callers
+    are going to create.
+
+    Args:
+        directory: Defaults to the working directory.
+
+    Returns:
+        The resolved project root.
+
+    Raises:
+        ProjectError: If any of the environment is absent.
+    """
+    return _project_root(directory, _ENVIRONMENT_FILES)
+
+
+def _project_root(directory: Path | None, required: Sequence[str]) -> Path:
+    """Check *directory* against *required* and resolve it.
+
+    There is no walk-up: the directory you are in is the directory that is
+    used, or it is an error.
+
+    Raises:
+        ProjectError: If anything in *required* is absent. The two ways
+            that fails get different advice — a directory with no project
             markers is the wrong *place*, while one that declares a
-            project but lacks the built environment is the right place,
-            not yet converged, which is what a fresh clone is.
+            project but lacks a piece of the environment is the right
+            place, not yet converged.
     """
     directory = (directory or Path.cwd()).resolve()
-    missing = [name for name in _ENVIRONMENT_FILES if not (directory / name).exists()]
+    missing = [name for name in required if not (directory / name).exists()]
     if not missing:
         return directory
     declared = (directory / "pyproject.toml").exists() or (directory / SPEC_FILENAME).exists()

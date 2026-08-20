@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 
 from lightcone.engine import run as engine_run
-from lightcone.engine.project import ProjectError, current_project, uv_prefix
+from lightcone.engine.project import (
+    ProjectError,
+    current_project,
+    declared_project,
+    uv_prefix,
+)
 
 SPEC = """\
 title: Test
@@ -89,6 +94,25 @@ def test_the_default_is_the_working_directory(
 ) -> None:
     monkeypatch.chdir(project)
     assert current_project() == project.resolve()
+
+
+def test_a_declared_project_needs_only_what_git_carries(project: Path) -> None:
+    """The weaker question, and the difference between the two: a clone
+    holds the lock and no `.venv`, and the worker entry point builds one
+    rather than refusing."""
+    (project / ".venv").rmdir()
+    assert declared_project(project) == project.resolve()
+    with pytest.raises(ProjectError, match="not been built yet"):
+        current_project(project)
+
+
+def test_a_declared_project_still_needs_the_lock(project: Path) -> None:
+    """It is weaker, not absent: without `uv.lock` there is no environment
+    to converge and nothing to be exact about."""
+    (project / "uv.lock").unlink()
+    with pytest.raises(ProjectError, match="not been built yet") as raised:
+        declared_project(project)
+    assert "missing uv.lock" in str(raised.value)
 
 
 def test_a_missing_spec_reads_as_an_empty_one(project: Path) -> None:

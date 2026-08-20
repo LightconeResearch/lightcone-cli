@@ -5,13 +5,15 @@ Also an entry point:
     python -m lightcone.engine.worker <universe>/<output_id>
 
 which is what the ``[DATALAD RUNCMD]`` record in every materialization
-commit names. That is why it is a module rather than an ``lc`` verb: it
-makes the output unconditionally, commits nothing, and leaves the tree dirty by
-design — precisely the state ``lc materialize`` refuses to start from —
-so advertising it in ``lc --help`` would hand people a footgun. A
-``uv run --locked --project .`` in front of it reconstructs the exact
-engine that produced an output from the lock of the commit that recorded
-it, module path included.
+commit names, behind an engine-pinning ``uv run --no-project --with …`` —
+by version for a released engine, by source commit for a dev build. That
+is why it is a module rather than an ``lc`` verb: it makes the output
+unconditionally, commits nothing, and leaves the tree dirty by design —
+precisely the state ``lc materialize`` refuses to start from — so
+advertising it in ``lc --help`` would hand people a footgun.
+:func:`main` converges the project environment from the rerun commit's
+own lock before anything executes, so the record holds on a clone that
+has never built one.
 
 Keep this module cheap to import: no click, no rich. It is on the
 ``python -m`` path of every rerun, and of every task in every run.
@@ -25,6 +27,7 @@ owning the loop.
 
 from __future__ import annotations
 
+import functools
 import shutil
 import sys
 from collections.abc import Mapping
@@ -37,7 +40,8 @@ from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
     ProjectError,
     child_env,
-    current_project,
+    declared_project,
+    sync,
     uv_prefix,
 )
 
@@ -250,7 +254,7 @@ def execute(
                 input_versions=dict(input_versions),
                 git_sha=sha,
                 git_remote=remote,
-                lc_version=_lc_version(),
+                lc_version=lc_version(),
                 hermeticity=asdict(outcome.attestation),
             ),
         )
@@ -275,7 +279,18 @@ def _gate(root: Path, env_version: str) -> str:
     )
 
 
-def _lc_version() -> str:
+@functools.cache
+def lc_version() -> str:
+    """Report the running engine's version, empty for a bare source tree.
+
+    The one lookup behind both places the engine attests itself: the
+    manifest's ``lc_version`` and the run record's version pin. One
+    function, so the two cannot disagree about which engine ran.
+
+    Cached: the metadata scan walks ``sys.path``, both callers are once
+    per output, and an installed version cannot change under a running
+    process.
+    """
     from importlib.metadata import PackageNotFoundError, version
 
     try:
@@ -297,6 +312,13 @@ def main(argv: list[str]) -> int:
     thin wrapper over :func:`execute`, so this is an entry point rather
     than a second implementation. Nothing is classified: a rerun is a rerun.
 
+    The environment is converged here, not assumed: a rerun checks out the
+    lock but never the ``.venv``, and the recipe's own ``uv run --no-sync``
+    would silently hand it an *empty* environment while the manifest
+    recorded the lock's ``env_version``. The sync also carries
+    ``--locked``, so a lock that no longer matches ``pyproject.toml`` is a
+    loud refusal rather than a quiet relock.
+
     Args:
         argv: One argument, ``<universe>/<output_id>``.
 
@@ -310,7 +332,8 @@ def main(argv: list[str]) -> int:
 
     universe_id, _, output_id = argv[0].partition("/")
     try:
-        root = current_project()
+        root = declared_project()
+        sync(root)
         env_version = identity.env_version(root)
         graph = plan.build(root)
         if (task := graph.tasks.get((universe_id, output_id))) is None:

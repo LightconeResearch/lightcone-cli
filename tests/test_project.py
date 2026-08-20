@@ -286,21 +286,18 @@ def test_check_mode_agrees_with_a_real_run(tmp_path: Path) -> None:
 # ---- warnings and blocked items ------------------------------------------
 
 
-def test_warns_when_pyproject_lacks_the_engine(tmp_path: Path) -> None:
-    """The engine belongs inside the experiment's lock; a pyproject we
-    didn't write is the user's, so warn rather than edit."""
+def test_an_adopted_pyproject_is_never_edited(tmp_path: Path) -> None:
+    """A pyproject we didn't write is the user's: read, never edited."""
     project = tmp_path / "proj"
     project.mkdir()
     (project / "pyproject.toml").write_text('[project]\nname = "mine"\nversion = "0"\n')
 
     report = converge(project)
-    assert any("does not depend on lightcone-cli" in w for w in report.warnings)
+    assert report.warnings == []
     assert 'name = "mine"' in (project / "pyproject.toml").read_text()
 
 
-def test_no_engine_warning_for_a_pyproject_we_wrote(tmp_path: Path) -> None:
-    """The warning is decided against the pre-existing file, so a scaffolded
-    one — which always names the engine — can never trigger it."""
+def test_a_fresh_scaffold_warns_about_nothing(tmp_path: Path) -> None:
     report = converge(tmp_path / "proj")
     assert report.warnings == []
 
@@ -613,9 +610,8 @@ def test_a_stale_lock_is_repaired_not_ignored(
 def test_a_stale_environment_is_repaired_not_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The case layer 3's launcher depends on: an environment that no longer
-    satisfies the lock must be re-synced, not waved through because `.venv`
-    happens to be a directory."""
+    """An environment that no longer satisfies the lock must be re-synced,
+    not waved through because `.venv` happens to be a directory."""
     from unittest.mock import MagicMock
 
     from lightcone.engine import project as project_mod

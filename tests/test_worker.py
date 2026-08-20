@@ -111,6 +111,9 @@ def test_the_manifest_is_complete_before_anything_is_saved(root: Path) -> None:
     assert manifest.env_version == identity.env_version(root)
     assert manifest.git_sha == _HEAD[0] and manifest.git_remote == _HEAD[1]
     assert manifest.hermeticity["mechanism"]
+    # The engine's version is attestation, not identity: with lc outside
+    # the project's lock, this field is the record of which engine ran.
+    assert manifest.lc_version == worker.lc_version()
 
 
 def test_the_recipe_runs_under_the_boundary(root: Path) -> None:
@@ -414,6 +417,24 @@ def test_the_module_reruns_unconditionally(
 
     assert worker.main(["baseline/first"]) == 0
     assert (root / "results/baseline/first/value.txt").exists()
+
+
+def test_the_module_converges_the_environment(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rerun checks out the lock but never `.venv`, and the recipe's own
+    `uv run --no-sync` silently creates an *empty* environment where none
+    exists — so the entry point syncs before anything executes, or a fresh
+    clone's rerun would record the lock's `env_version` over a recipe that
+    ran in a bare venv."""
+    import shutil
+
+    monkeypatch.chdir(root)
+    shutil.rmtree(root / ".venv")
+
+    assert worker.main(["baseline/first"]) == 0
+    assert (root / ".venv").exists()
+    assert (root / "results/baseline/first/value.txt").read_text() == "one\n"
 
 
 def test_the_module_refuses_an_argument_it_cannot_use(root: Path) -> None:

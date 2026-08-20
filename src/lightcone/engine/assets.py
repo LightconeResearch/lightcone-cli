@@ -250,6 +250,8 @@ class Manifest:
     git_sha: str
     #: The `origin` URL, or empty when the repository has no remote.
     git_remote: str
+    #: The engine that made it. Attestation, not identity: outside both
+    #: hashes, so an lc upgrade neither stales an output nor puts it behind.
     lc_version: str
     #: What the sandbox actually enforced, as the boundary attested it.
     hermeticity: dict[str, Any]
