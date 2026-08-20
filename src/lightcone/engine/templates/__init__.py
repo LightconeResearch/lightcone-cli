@@ -302,7 +302,8 @@ def datalad_config(*, dataset_id: str) -> str:
     """Render ``.datalad/config``, the file that makes a project a dataset.
 
     A dataset id is the one thing a git + git-annex repository lacks to
-    *be* a DataLad dataset. lc never reads this back; datalad does.
+    *be* a DataLad dataset. Read back only through ``dataset.dataset_id``,
+    for the run record's ``dsid``.
 
     Args:
         dataset_id: A UUID, generated once and never regenerated.

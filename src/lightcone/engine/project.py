@@ -382,9 +382,9 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     routes results and inputs into the annex and keeps manifests in git,
     and ``.datalad/config`` carries a dataset id — the one thing a git +
     git-annex repository lacks to *be* a DataLad dataset, so a project is
-    one from birth rather than by later adoption. Neither is read back by
-    lc; the id is generated once and never regenerated, because ``file``
-    writes only what is missing.
+    one from birth rather than by later adoption. The id is generated
+    once and never regenerated, because ``file`` writes only what is
+    missing; the run record reads it back through ``dataset.dataset_id``.
     """
     c.item(".git", _in_repository(directory), lambda: dataset.init_git(directory))
     # After the item above, so a fresh project has a repository to annex.

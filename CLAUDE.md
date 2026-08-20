@@ -23,13 +23,16 @@ lc's whole ASTRA surface is ten functions; see Key Invariants (layer 4).
 
 ## ⚠️ This repository is a clean rebuild in progress
 
-The codebase is being **re-added layer by layer** on top of the normative
-design spec:
+The codebase is being **re-added layer by layer** on top of the design
+spec:
 
 > **`../lightcone-cli/docs/design/execution-environment.md`** — *"the
-> locked environment is the execution environment"*, v6.1. Normative.
-> Read it before adding anything. It lives in the sibling checkout for
-> now (branch `redesign_prototype`), alongside its decision records
+> locked environment is the execution environment"*, v6.1. Read it before
+> adding anything — but read it as a **reference, not gospel**: the
+> rebuild deliberately drifts from it as implementation teaches better
+> answers, and where this file's Recorded decisions disagree with the
+> spec, the decisions win. It lives in the sibling checkout for now
+> (branch `redesign_prototype`), alongside its decision records
 > (rationale, substrate tradeoffs, hermeticity enforcement, the v6
 > review); it moves into this repo's `docs/design/` when the docs are
 > rewritten at the end of the rebuild.
@@ -107,7 +110,9 @@ Each of these has been asked for in review at least once; none is optional.
   rebuild is complete. Same for `README.md` and `zensical.toml`.
 - **Port with intent.** Prior implementations (this repo's git history,
   and the `redesign_prototype` branch of the sibling `lightcone-cli`
-  checkout) are references, not sources of truth. The spec is.
+  checkout) are references, not sources of truth. Neither is the spec by
+  itself: the spec plus this file's Recorded decisions is the current
+  design, and the decisions override the spec where they disagree.
 - **Every layer ships tests.** See the per-layer test list in spec §11.
 
 ## Architecture (target)
@@ -152,7 +157,7 @@ src/lightcone/              # namespace — NO __init__.py
 ├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
 ├── cli/                    # the CLI only: flags, rendering, exit codes
 │   ├── __init__.py         # exposes main(), lazily
-│   └── commands.py         # lc init, lc run, lc materialize
+│   └── commands.py         # lc init, lc run, lc materialize, lc status
 └── engine/
     ├── __init__.py         # docstring only
     ├── project.py          # what a project is: convergence + discovery
@@ -172,7 +177,7 @@ src/lightcone/              # namespace — NO __init__.py
     │   ├── seatbelt.py     # macOS backend
     │   └── denial.py       # the denial UX
     └── templates/          # the scaffold's file content
-        ├── __init__.py     # loader + one renderer per scaffolded file
+        ├── __init__.py     # loader; a renderer only where there is a value to decide
         └── files/*.tmpl    # the templates themselves, as real files
 
 evals/                      # agentic eval seed: prompt.md + tasks/<id>/
@@ -182,17 +187,19 @@ tests/                      # pytest — mirrors src/
 ## Development Commands
 
 ```bash
-uv sync --group dev              # installs pytest, ruff, mypy
+uv sync --group dev              # pytest (+ pytest-cov), ruff, mypy, datalad
 uv run pytest
 uv run ruff check src/ tests/    # --fix to apply
 uv run mypy src/
-uv build                         # wheel + sdist
+uv build                         # wheel + sdist (CI runs this only to publish)
 ```
 
-These four are the whole loop, and they are exactly what CI runs
-(`.github/workflows/{tests,lint}.yml`). There is deliberately no task
+Test, lint and type-check are the whole loop, and they are what
+`.github/workflows/{tests,lint}.yml` run. There is deliberately no task
 runner in between — the pre-rebuild `justfile` was 90 lines of wrappers
-around them plus recipes for the frozen docs and the dormant eval.
+around them plus recipes for the frozen docs and the dormant eval. The
+other workflows are `eval.yml` (the agentic eval, on dispatch or PR
+label), `pypi-publish.yaml`, and `docs-deploy.yml` for the frozen docs.
 
 ## Key Invariants (layer 1)
 
@@ -275,14 +282,15 @@ one place, so they can't conflict, and neither is a number to maintain.
 Identity follows the project's files from there: `env_version` hashes
 `.python-version`'s bytes, not anything in the engine (spec §3).
 
-**`.gitignore` converges entry-wise, not by marker.**
-`templates.gitignore_entries()` is the template minus comments and blanks;
-`missing_gitignore_entries(text)` is what a repair appends, in template
+**`.gitignore` and `.gitattributes` converge entry-wise, not by marker.**
+`templates.entries(name)` is a template minus comments and blanks;
+`templates.missing(name, text)` is what a repair appends, in template
 order. Idempotency is therefore structural — a pattern already in the file
 is never re-added, whoever wrote it — and a pattern introduced by a later
 lc release still reaches projects that already have a `.gitignore`, which
-a "marker present ⇒ done" check would have skipped. `GITIGNORE_HEADER` is
-cosmetic only; never make correctness depend on it.
+a "marker present ⇒ done" check would have skipped. The header comment
+(`templates.header`) is cosmetic only; never make correctness depend on
+it.
 
 **What `lc init` converges** — idempotently, never overwriting a file the
 user owns:
@@ -292,11 +300,11 @@ user owns:
 | `astra.yaml` + `universes/baseline.yaml` | astra's boilerplate spec, verbatim, as **one item keyed on `astra.yaml`** — the baseline references the boilerplate's example decision, so it must never land beside a user-authored spec. Its `container:` key is ignored outright — see Recorded decisions |
 | `pyproject.toml` | The uv project: **virtual** (no `[build-system]`), no dependencies — the engine is the host's uv tool, never a project dependency (see Recorded decisions), so the lock carries only what the analysis imports |
 | `.python-version` | The exact patch of the interpreter `lc` is running on |
-| `uv.lock`, `.venv` | **Derived** — converged by correctness, not existence: `uv lock --check` / `uv sync --check` decide, then `uv lock` / `uv sync --locked --exact --compile-bytecode` repair |
+| `uv.lock`, `.venv` | **Derived** — converged by correctness, not existence: `uv lock --check` / `uv sync --locked --exact --check` decide, then `uv lock` / `uv sync --locked --exact --compile-bytecode` repair |
 | `.gitignore` | One managed block of patterns; convergence ensures each is present |
 | `.git` + the annex | `git init` then `git annex init` — results are versioned in the project's own repository |
 | `.gitattributes` | The storage policy: what git-annex holds and what git carries. Line-managed, like `.gitignore` |
-| `.datalad/config` | A `datalad.dataset.id` UUID, generated once. lc never reads it back |
+| `.datalad/config` | A `datalad.dataset.id` UUID, generated once. Read back only by `dataset.dataset_id`, through `git config -f`, for the run record's `dsid` |
 | `data/` + `README.md` | Where declared inputs live; annexed, and committed before anything computes on them |
 | `results/` + `README.md` | Where outputs land; the README states the materialize-don't-hand-write contract |
 | `myst.yml`, `index.md` | Template MyST report referencing `astra.yaml` *by path* |
@@ -369,8 +377,8 @@ user owns:
   storage substrate, and results are versioned in the repository, so there
   is no useful project without any of them. git is the one tool uv cannot
   install and the single admitted exception to a uv-installable stack;
-  git-annex ships as a wheel and is therefore a locked dependency, which
-  makes its wheel platforms the CLI's install floor.
+  git-annex ships as a wheel and is therefore a dependency of the lc tool
+  itself, which makes its wheel platforms the CLI's install floor.
   (This reverses layer 1's original "git is optional" — a project without
   version control had nowhere to put a result.)
 - **Two questions about git, not one.** `_in_repository` is a pure
@@ -459,10 +467,10 @@ set on their clone, so the shape a file arrives in is not ours to assume.
 - **Unlocked** — what `filter=annex` writes, hard-linked or copied alike.
   A clone without content holds a ~100-byte *pointer file* where the data
   would be: it exists, it is readable, and hashing it yields a perfectly
-  well-formed digest of the wrong thing. The test is git-annex's own
-  `isPointerFile` — a `/annex/objects/` prefix within the first 32 KiB.
-  Measured before it was fixed: the same input hashed differently on a
-  clone, silently.
+  well-formed digest of the wrong thing. The test follows git-annex's own
+  `isPointerFile`: a file no larger than 32 KiB whose bytes begin
+  `/annex/objects/`. Measured before it was fixed: the same input hashed
+  differently on a clone, silently.
 - **Locked** — a symlink into the object store, which without the content
   dangles. This one is quieter and worse: `is_file()` answers False for a
   dangling symlink, so a directory walk filtered on that alone drops the
@@ -480,15 +488,28 @@ dispatches it by searching `PATH` for a `git-annex` executable, and
 `uv tool install lightcone-cli` links only lc's own entry points into
 `~/.local/bin`. So `dataset.put_our_bin_first()` **prepends**
 `Path(sys.executable).parent`, idempotently, before any git call. Prepend,
-never append: a system copy winning would make the version the project's
-lock records a fiction. `project.require_git_annex()` probes after the
-prepend and by the name git itself searches for.
+never append: the annex we resolved is the one the engine was installed
+with and tested against, and a system copy of another vintage winning
+that race is a difference nothing records. `project.require_git_annex()`
+probes after the prepend and by the name git itself searches for.
 
 Measured, not assumed: with only the tool's `lc` on `PATH` — exactly what
 `uv tool install` produces — `git annex version` fails, and with the
 prepend disabled `lc init` refuses. With the engine out of the project's
 lock, the prepend is the *only* way git finds git-annex; there is no
 project `.venv/bin` fallback to mask a regression.
+
+The prepend covers **lc's own subprocesses only**. The researcher's own
+shell — where "just type `git add`" has to work — is a separate question,
+and there is no pyproject metadata that can declare "link my dependency's
+executables" (and no entry-point re-export either: the wheel already
+installs a script named `git-annex` into the venv, so an entry point of
+the same name collides). uv's answer is an install-time flag, verified
+here: `uv tool install --with-executables-from git-annex lightcone-cli`
+links `git-annex`, `git-annex-shell` and the two `git-remote-*` helpers
+beside `lc`, after which a bare `git add` works in any shell whose PATH
+has the tool bin. That spelling belongs in the install docs when they are
+rewritten.
 
 **A project can sit inside a larger repository, so `dataset.status` is
 scoped and relativised.** `lc init subdir/` adopts an enclosing work
@@ -606,9 +627,11 @@ any dependency change, and every output in every project on an lc upgrade.
 That was recorded as an accepted cost; it was the bug.)
 
 Nothing is lost by not rebuilding: the manifest records the environment
-*and* the commit, and that commit's `uv.lock` reconstructs the
-environment exactly. Over-sensitivity in `env_version` is affordable
-precisely because it no longer spends compute.
+*and* the commit, and that commit's `uv.lock` reconstructs the project
+environment exactly. (The engine is not in that lock — its reconstruction
+is the run record's job, and its version the manifest's `lc_version`.)
+Over-sensitivity in `env_version` is affordable precisely because it no
+longer spends compute.
 
 **Both are length-framed.** Concatenating fields raw lets a boundary shift
 between them produce one digest from two different inputs.  `_frame`
@@ -752,8 +775,8 @@ path component.** An empty universe or output id collapses
 `results/<u>/<o>` onto a *parent* — `results/` itself, for two — and the
 worker empties that directory before running a recipe in it, so the
 consequence of an unchecked id is deleting every other universe's
-outputs. A `/`, `.` or `..` is refused for the same reason. This is the
-guard that lets the reset stay a whole-directory operation.
+outputs. A `/`, `\`, `.` or `..` is refused for the same reason. This is
+the guard that lets the reset stay a whole-directory operation.
 
 **The reset takes the whole directory, and cannot take a named list.** A
 recipe declares an output *id*, never filenames, so there is no set of
@@ -950,8 +973,9 @@ workers pass `--no-sync` — so a lock edited without a sync would leave
 recipes importing packages the lock does not describe while every manifest
 recorded the *new* lock's `env_version`. Measured: the recipe imported
 `packaging 26.3` under a lock saying `24.2`, and uv accepted it silently.
-`materialize()` calls `project.sync()` before anything else, so the state
-is made impossible rather than detected. `--check` needs neither:
+`materialize()` calls `project.sync()` right after the tool and committer
+preflight — before the dirty check and the graph — so the state is made
+impossible rather than detected. `--check` needs neither:
 `env_version` is the lock's bytes, so a drifted `.venv` cannot change what
 it answers.
 
@@ -983,7 +1007,7 @@ than a trap.
 declared input under `data/` is an annex symlink, so a `Path.resolve()`
 in the record's `inputs` writes `.git/annex/objects/SHA256E-…` — the
 storage rather than the input, and a path nothing can `datalad get`. This
-shipped once; `_inside` is lexical now.
+shipped once; `plan.declared_path` is lexical now, never resolved.
 
 **The run record is genuinely re-runnable, and every record pins its
 engine.** `uv run --no-project --with '<requirement>' -- python -m
@@ -1019,7 +1043,11 @@ design. `lc --help` advertising it would hand people a footgun, and a
 `[project.scripts]` entry would put it on `$PATH` through
 `uv tool install`. `lightcone/_sandbox_exec.py` is the same shape for the
 same reason. Keep it cheap to import — **no click, no rich** — it is on
-the path of every task and every rerun; two tests pin that.
+the path of every task and every rerun.
+`test_the_worker_module_imports_neither_click_nor_rich` pins the imports
+and `test_help_does_not_advertise_the_worker` the absence from `--help`;
+nothing pins the absence of a `[project.scripts]` entry, so treat that
+as a review item.
 
 **The record's format is datalad's, so it is tested through datalad.**
 `get_run_info` matches with a regex and returns `(None, None)` on any
@@ -1029,13 +1057,14 @@ So the suite asserts through datalad's parser *and* runs a real
 `datalad rerun`, and `datalad` is a **dev** dependency only. Nothing in lc
 imports it.
 
-**A policy is a description, and `scope()` owns every policy's lifetime.**
-`exec_policy` creates no directory — the worker resets the output
-directory, so the whole of an output's lifecycle stays in the module that
-owns it, and a policy that could not be built without touching the
-filesystem would be the impurity `wrap` is already pinned against.
-`sandbox.scope` takes a *built* policy, so the `rmtree` of the private
-`$HOME` has one owner.
+**A policy describes the project; it never prepares it.** `exec_policy`
+creates nothing in the project tree — the worker resets the output
+directory, so the whole of an output's lifecycle stays in the module
+that owns it, and `results/` is granted only if it already exists. The
+one thing it does put on disk is the per-run private `$HOME`
+(`mkdtemp`), and that is why `sandbox.scope` takes a *built* policy: the
+`rmtree` of that directory has one owner. (`wrap` stays pure; the
+impurity lives in policy construction, once.)
 
 **There is one policy, `exec_policy`, and a recipe gets exactly what a
 probe gets.** The tree is read-only apart from `results/`, for both. So
@@ -1061,7 +1090,11 @@ do not describe it as covered.
 `submit(fn, *args, key=…)` and `completed(handles)`. That is all the
 driver asks of a scheduler and all a venue has to supply — which is what
 lets the suite run a graph inline in-process, and what will let something
-larger than a laptop land behind it without the driver noticing.
+larger than a laptop land behind it without the driver noticing. A venue
+owes one thing beyond the two methods: its worker processes must run an
+interpreter that imports `lightcone.engine` at the driver's version —
+see the engine-is-the-host's-uv-tool decision for how each venue
+provides that, and for what workers do *not* need (git, git-annex).
 
 ### Recorded deviations from the spec (layers 2 and 4)
 
@@ -1145,10 +1178,13 @@ Landlock unions rights over ancestors, so a single EXECUTE grant on
 layer enforcing nothing — while every test still passes, because the
 allowlisted binaries are exactly the ones that were going to work. This
 shipped once: the venv interpreter's *install root* was granted EXECUTE
-so the resolved symlink target would be runnable, which is `/usr` for
-any venv built on a system python (`uv venv --python-preference
-only-system`, most CI images, HPC site pythons). The grant is on the
-interpreter **file**; only READ goes to the install root, for the stdlib.
+unconditionally, which is `/usr` for any venv built on a system python
+(`uv venv --python-preference only-system`, most CI images, HPC site
+pythons). The rule now: the interpreter **file** always; its install
+root gets EXECUTE only when it is the interpreter's *own tree* (a
+uv-managed store, a framework version directory — macOS framework
+builds re-exec into `Resources/Python.app`), never a `_SHARED_PREFIXES`
+member; and READ goes to the root regardless, for the stdlib.
 `test_a_system_interpreter_does_not_make_the_whole_prefix_executable`
 pins it.
 
@@ -1272,10 +1308,27 @@ only checks that the guard is present. Verified empirically, not assumed.
     release, by source commit for a dev build (see the layer-4 run-record
     invariant). Needs PyPI or the git remote reachable at rerun time
     where the lock needed neither; recorded, not hidden.
-  - *Driver/worker version skew "structurally impossible".* Moot while
-    workers are in-process threads; when a venue larger than a laptop
-    lands (layer 7), its connect path must probe the remote engine version
-    — the pin no longer does it structurally.
+  - *Driver/worker version skew "structurally impossible".* Re-provided
+    by sharing the **installation** instead of the lock. What a Dask
+    worker process actually needs is `lightcone.engine` importable at a
+    matching version — pickle serializes `worker.materialize` by
+    reference and `Task`/`Versions`/`TaskResult` by class reference.
+    Verified by hand (2026-08-20), not pinned by the suite — a full
+    materialization through a `LocalCluster(processes=True)`: the
+    current code works unchanged across process boundaries, and workers
+    need **no git and no git-annex** (the driver owns git alone;
+    `data_version` is pure file hashing). The shipped cluster is
+    threads; re-verify when layer 7 makes processes real. So per venue: on HPC the tool env lives on the shared
+    filesystem and the venue launches workers on the driver's own
+    interpreter (`sys.executable` — dask-jobqueue's `python=`), which
+    makes driver and workers the identical installation; in containerized
+    mode driver and workers share the image, same result. Both also
+    satisfy `distributed`'s own client/scheduler/worker coherence
+    requirement for free. A connect-time engine-version probe is needed
+    only for a cluster lc did not launch (a pre-existing gateway with its
+    own image). One venue cost to remember: the `assets.Versions` memo
+    degrades to once **per worker process**, so a declared input shared
+    by many tasks is re-hashed per process — efficiency, not correctness.
   - *The engine's dependency closure left the record entirely, and is not
     replaced.* The project lock used to pin what the engine resolved —
     most concretely the git-annex build that wrote the bytes. Now
@@ -1391,13 +1444,17 @@ only checks that the guard is present. Verified empirically, not assumed.
   future-facing surface; a system-layer declaration is currently inert,
   like `astra.yaml`'s `container:` key.
 - **The denial's remedies are only what works today** — `uv add` for a
-  Python package, plus the ASTRA input declaration. Nothing in a denial
-  message names a verb, flag, or declaration that does not exist.
-- **No manifest is written, and no serializer for one.** A probe has no
-  output (§4), so the `Attestation` is returned and printed rather than
-  persisted. An earlier draft carried a `to_manifest()` with no caller —
-  deleted, because "no dead code" applies to this layer's own
-  conveniences too. It lands with layer 4, which is what needs it.
+  Python package, the ASTRA input declaration for data, and "output goes
+  in `results/`" plus `tempfile.mkdtemp()` for a write denial. Nothing in
+  a denial message names a verb, flag, or declaration that does not
+  exist.
+- **`Attestation` has no serializer of its own.** An earlier draft
+  carried a `to_manifest()` with no caller — deleted, because "no dead
+  code" applies to this layer's own conveniences too. It is persisted by
+  the layer that needs it: the worker writes `asdict(outcome.attestation)`
+  into the manifest's `hermeticity` field. `lc run` is still a probe with
+  no output (§4), so there the attestation is returned and printed, never
+  persisted.
 - **`results/` is writable; the rest of the tree is not**, where §4 gives
   a probe no output and therefore no in-tree write scope at all. A probe
   gets the same write scope a recipe does, so a probe that works means a
@@ -1417,11 +1474,13 @@ only checks that the guard is present. Verified empirically, not assumed.
     bind-mounts the working tree read-write". True of the default, not of
     the mount table we will write — and the experiment that settled it is
     two `podman -v` flags. Don't re-derive it from the default again.
-  - **`_exec_set` grants no directory anywhere**, including `.venv/bin`.
-    A directory grant is a grant on whatever the directory holds *later*,
-    which was a live hole for as long as the tree was writable: `cp
-    /usr/bin/git .venv/bin/` ran a tool the allowlist denies by name.
-    Belt-and-braces under a read-only tree, one scandir, keep it.
+  - **`_exec_set` grants no directory except the interpreter's own
+    install tree** (see the layer-5 EXECUTE invariant) — and never
+    `.venv/bin`. A directory grant is a grant on whatever the directory
+    holds *later*, which was a live hole for as long as the tree was
+    writable: `cp /usr/bin/git .venv/bin/` ran a tool the allowlist
+    denies by name. Belt-and-braces under a read-only tree, one scandir,
+    keep it.
   - **A write-denial test must target a path the OS would let you
     write.** `printf x > /etc/…` passes with no sandbox at all — the OS
     refuses it for any non-root user — so it pins nothing. The sound
@@ -1468,15 +1527,19 @@ only checks that the guard is present. Verified empirically, not assumed.
   `engine.project._run`, emulating each tool's observable effect (`uv lock`
   writes `uv.lock`, `uv sync` makes `.venv`, `git init` makes `.git`,
   `git annex init` marks the repository annexed) and recording every argv.
-  `uv_calls(tools)` narrows it to uv. Tests are hermetic: no network, no
+  `uv_calls(tools)` narrows it to uv; `probes(calls)` to the read-only
+  `--check` probes. Under the stub, tests are hermetic: no network, no
   resolution, no subprocesses. The `real_tools` fixture opts back out,
-  putting the real `_run` back.
-- `tests/test_dataset.py` — the storage seam, and **the one place in the
-  non-sandbox suite that runs real tools**, via `real_tools`. That is
-  deliberate: the question is whether bytes land in the annex or as a blob
-  in git, and a fake answering it would only restate what the code already
-  believes. Every bug this file found (the missing `.gitattributes`
-  default, the pointer-file trap, `filter=annex`) was invisible to a stub.
+  putting the real `_run` back — and everything built on it (`analysis`,
+  and `test_materialize.py`'s `engine_dist` wheel build plus the rerun
+  tests' ephemeral `uv run --with` resolve) does spawn, resolve, and may
+  touch the network.
+- `tests/test_dataset.py` — the storage seam, tested against real tools
+  via `real_tools`, deliberately: the question is whether bytes land in
+  the annex or as a blob in git, and a fake answering it would only
+  restate what the code already believes. Every bug this file found (the
+  missing `.gitattributes` default, the pointer-file trap, `filter=annex`)
+  was invisible to a stub.
 - `tests/test_project.py` — discovery and convergence semantics, called
   directly. This is where scaffold behavior is tested.
 - `tests/test_plan.py` tests what lc adds — directories, edges,
