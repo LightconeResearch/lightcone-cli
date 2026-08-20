@@ -18,37 +18,10 @@ asks anyone to run a git-annex command by hand.
 
 from __future__ import annotations
 
-import os
-import sys
 from collections.abc import Iterable
 from pathlib import Path
 
 from lightcone.engine import project
-
-
-def put_our_bin_first() -> None:
-    """Prepend the directory holding our own interpreter to ``PATH``.
-
-    ``git annex`` is dispatched by git searching ``PATH`` for a
-    ``git-annex`` executable, and ``uv tool install lightcone-cli`` links
-    only *our* entry points into ``~/.local/bin`` — the git-annex we
-    resolved as a dependency sits beside the interpreter instead, and this
-    prepend is the only way git finds it. Verified: with only the tool's
-    ``lc`` on ``PATH``, ``git annex version`` fails and ``lc init``
-    refuses.
-
-    Prepend, never append: the annex we resolved is the one the engine was
-    installed with and the one its behaviour is tested against, and a
-    system copy of another vintage winning that race is a difference
-    nothing records. Idempotent, and applied to our own environment
-    because that is what child processes inherit.
-    """
-    ours = str(Path(sys.executable).parent)
-    path = os.environ.get("PATH", "")
-    if path.split(os.pathsep)[:1] == [ours]:
-        return
-    os.environ["PATH"] = ours + os.pathsep + path if path else ours
-
 
 # =============================================================================
 # The repository
@@ -170,7 +143,6 @@ def require_committer(directory: Path) -> None:
     Raises:
         ProjectError: If no committer identity resolves.
     """
-    put_our_bin_first()
     proc = project._run(["git", "var", "GIT_COMMITTER_IDENT"], cwd=directory)
     if proc.returncode != 0:
         raise project.ProjectError(
@@ -279,7 +251,6 @@ def restore(directory: Path, paths: Iterable[Path]) -> None:
 
 def _git(argv: list[str], *, cwd: Path) -> str:
     """Run git in *cwd*, returning its stdout; a nonzero exit raises."""
-    put_our_bin_first()
     proc = project._run(["git", *argv], cwd=cwd)
     if proc.returncode != 0:
         raise project.ProjectError(f"`git {' '.join(argv)}` failed:\n{proc.stderr.strip()}")
@@ -288,7 +259,6 @@ def _git(argv: list[str], *, cwd: Path) -> str:
 
 def _git_ok(argv: list[str], *, cwd: Path) -> bool:
     """Run git as a yes/no probe: exit status is the answer, not a failure."""
-    put_our_bin_first()
     return bool(project._run(["git", *argv], cwd=cwd).returncode == 0)
 
 

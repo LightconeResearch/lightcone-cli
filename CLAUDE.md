@@ -483,43 +483,42 @@ set on their clone, so the shape a file arrives in is not ours to assume.
 "changed", because the two are different facts and only one of them means
 a rebuild.
 
-**PATH is part of the contract.** `git annex` is not a builtin — git
-dispatches it by searching `PATH` for a `git-annex` executable, and
-`uv tool install lightcone-cli` links only lc's own entry points into
-`~/.local/bin`. So `dataset.put_our_bin_first()` **prepends**
-`Path(sys.executable).parent`, idempotently, before any git call. Prepend,
-never append: the annex we resolved is the one the engine was installed
-with and tested against, and a system copy of another vintage winning
-that race is a difference nothing records. `project.require_git_annex()`
-probes after the prepend and by the name git itself searches for.
+**git-annex is on `PATH` by construction, not by runtime repair.**
+`git annex` is not a builtin — git dispatches it by searching `PATH` for
+a `git-annex` executable — and an installer links only the requested
+package's own executables, so a plain `uv tool install lightcone-cli`
+would have left the one git command we tell people to type unable to run.
+The fix is metadata: lightcone-cli re-declares the git-annex wheel's four
+entry points verbatim in its own `[project.scripts]` (`git-annex`,
+`git-annex-shell`, `git-remote-annex`, `git-remote-tor-annex`, all
+`git_annex:cli`). The wheel ships no raw binaries in `bin/` — its
+executables *are* that dispatcher, which `execv`s the real binary out of
+package data with `argv[0]` preserved, and git-annex dispatches on
+`argv[0]` busybox-style. So every install channel carries the
+executables wherever it carries `lc`: the tool install links all five
+names (verified), `uv run` and `uvx` front the venv's bin, and the
+rerun's ephemeral engine environment gets them the same way. That covers
+lc's own subprocesses *and* the researcher's bare `git add` with one
+mechanism, which is why the old `put_our_bin_first()` PATH-prepend was
+deleted rather than kept as a belt: a second answer to "which annex runs"
+that could disagree with the shell's.
 
-Measured, not assumed: with only the tool's `lc` on `PATH` — exactly what
-`uv tool install` produces — `git annex version` fails, and with the
-prepend disabled `lc init` refuses. With the engine out of the project's
-lock, the prepend is the *only* way git finds git-annex; there is no
-project `.venv/bin` fallback to mask a regression.
-
-The prepend covers **lc's own subprocesses only**. The researcher's own
-shell — where a plain `git add` has to work — is covered **by
-construction at install time**: lightcone-cli re-declares the git-annex
-wheel's four entry points verbatim in its own `[project.scripts]`
-(`git-annex`, `git-annex-shell`, `git-remote-annex`,
-`git-remote-tor-annex`, all `git_annex:cli`). The wheel ships no raw
-binaries in `bin/` — its executables *are* that dispatcher, which
-`execv`s the real binary out of package data with `argv[0]` preserved,
-and git-annex dispatches on `argv[0]` busybox-style. An installer links
-the requested package's own entry points, so a plain
-`uv tool install lightcone-cli` puts all five names on `PATH` — verified,
-including the duplicate-name question: both distributions generate
-byte-identical scripts, so whichever writes the venv's copy, the result
-is the same. The declaration is mirrored, never invented:
+The declaration is mirrored, never invented:
 `test_the_annex_executables_are_ours_to_install` asserts ours match the
-wheel's exactly, so an upstream rename fails the suite rather than every
-user's install. (Considered and rejected: there is no pyproject metadata
-to link a *dependency's* executables; `--with-executables-from` is an
-install-time flag users won't type; vendoring the binaries into
-platform-specific lightcone-cli wheels is five 14–36 MB wheels and a
-repack pipeline for what four lines of metadata provide.)
+wheel's exactly, so an executable upstream adds, drops or renames fails
+the suite rather than every user's install. (Considered and rejected:
+there is no pyproject metadata to link a *dependency's* executables;
+`--with-executables-from` is an install-time flag users won't type; a
+post-install link repair contradicts "the install command is enough";
+vendoring the binaries into platform-specific lightcone-cli wheels is
+five 14–36 MB wheels and a repack pipeline for what four lines of
+metadata provide.)
+
+The accepted residue of dropping the prepend: `PATH` order is the
+user's, so a system git-annex fronting the install's wins the dispatch —
+for lc's subprocesses exactly as for their own git, and no different
+from which `git` itself runs. Nothing records the annex version anyway
+(see the Recorded decision on the engine's dependency closure).
 
 **A project can sit inside a larger repository, so `dataset.status` is
 scoped and relativised.** `lc init subdir/` adopts an enclosing work

@@ -9,9 +9,7 @@ restating what the code already believes.
 
 from __future__ import annotations
 
-import os
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -398,24 +396,13 @@ def test_ignore_rule_sees_through_a_tracked_path(repo: Path) -> None:
 # ---- how git finds git-annex -----------------------------------------------
 
 
-def test_our_bin_goes_to_the_front_of_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prepend, never append. `git annex` dispatches by searching PATH for
-    a `git-annex` executable — the annex we resolved is the one the engine
-    was installed with and tested against, and a system copy of another
-    vintage winning that race is a difference nothing records."""
-    ours = str(Path(sys.executable).parent)
-    monkeypatch.setenv("PATH", "/somewhere/else")
-
-    dataset.put_our_bin_first()
-    assert os.environ["PATH"] == f"{ours}{os.pathsep}/somewhere/else"
-
-    dataset.put_our_bin_first()
-    assert os.environ["PATH"].count(ours) == 1
-
-
-def test_git_dispatches_annex_after_the_prepend(repo: Path) -> None:
-    """The claim the prepend makes, checked by the spelling git itself uses
-    rather than by resolving `git-annex` ourselves."""
+def test_git_dispatches_annex_from_the_ambient_path(repo: Path) -> None:
+    """`git annex` is git finding a `git-annex` executable on PATH, not a
+    builtin — and lc no longer arranges PATH for its subprocesses: every
+    install channel carries the entry points beside the interpreter, so
+    the environment lc inherits already resolves them. Checked by the
+    spelling git itself uses rather than by resolving `git-annex`
+    ourselves."""
     assert "git-annex version:" in dataset._git(["annex", "version"], cwd=repo)
 
 

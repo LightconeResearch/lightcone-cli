@@ -280,18 +280,20 @@ def require_git() -> None:
 def require_git_annex() -> None:
     """Refuse early when git-annex is not reachable as git reaches it.
 
-    Probed after :func:`~lightcone.engine.dataset.put_our_bin_first`, and
-    by the name git itself searches for: ``git annex`` is git finding a
-    ``git-annex`` executable on ``PATH``, not a builtin.
+    Probed by the name git itself searches for: ``git annex`` is git
+    finding a ``git-annex`` executable on ``PATH``, not a builtin. Every
+    install channel puts one there by construction — lightcone-cli
+    declares the git-annex wheel's entry points as its own, so installers
+    link them beside ``lc`` — which makes this a refusal for broken
+    installs only.
 
     Raises:
         ProjectError: If ``git-annex`` is not on ``PATH``.
     """
-    dataset.put_our_bin_first()
     if shutil.which("git-annex") is None:
         raise ProjectError(
             "git-annex is required (it stores the bytes results are made of) "
-            "and is not on PATH. It ships as a wheel beside lc itself: "
+            "and is not on PATH. It installs with lc itself: "
             "`uv tool install --force lightcone-cli` repairs the install."
         )
 
