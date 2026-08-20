@@ -414,6 +414,13 @@ def materialize(
     # would be swept into the image commit.
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes))
+    # The graph — and with it the spec validation and the lock scan —
+    # before the image: a refusal here must not cost a minutes-long
+    # build, and must not leave an archive commit behind a run that
+    # "failed" on a typo in the spec.
+    graph, env_version = _graph(root, targets, report)
+    if not graph.tasks:
+        return report
     # Materialize is one of the two verbs allowed to build the image (the
     # other is `lc build`); the probe and the rerun entry point only find
     # one. Resolved once, then handed to every task — the HEAD discipline.
@@ -425,10 +432,6 @@ def materialize(
         project.sync(root) if runtime.mode == "direct" else container.sync(root, runtime)
     )
     report.warnings.extend(f"uv: {w}" for w in synced)
-
-    graph, env_version = _graph(root, targets, report)
-    if not graph.tasks:
-        return report
 
     dsid = dataset.dataset_id(root)
     # Read once, for every task: the driver commits each output as it lands,

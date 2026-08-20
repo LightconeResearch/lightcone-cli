@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,6 +109,8 @@ def declaration(root: Path) -> Declaration | None:
             "the repository. Pin it: `base = \"<ref>@sha256:<digest>\"` "
             "(find the digest with `podman image inspect` after a pull)."
         )
+    if re.search(r"\s", base):
+        raise ProjectError(f"[tool.lightcone.image] `base` is not an image reference: `{base}`.")
     return Declaration(
         base=base,
         apt_install=tuple(sorted(_strings(table, "apt-install"))),
@@ -178,6 +181,14 @@ def containerfile(root: Path) -> str:
             f"{root}: no .python-version — the image bakes the exact interpreter, "
             "so the pin is an input to it; run `lc init` to scaffold one."
         )
+    version = pin.read_text().strip()
+    # One version token: the pin splices into the install layer's RUN
+    # line, and a multi-line or annotated file would splice instructions.
+    if not re.match(r"^[A-Za-z0-9.+@-]+$", version):
+        raise ProjectError(
+            f"{root}/.python-version: `{version!r}` is not a single interpreter "
+            "version — the image bakes exactly one; run `lc init` to repin."
+        )
 
     lines = [
         f"FROM {declared.base}",
@@ -201,7 +212,7 @@ def containerfile(root: Path) -> str:
         # copy-on-write every byte it touches, doubling the interpreter
         # in every archive.
         f"RUN UV_PYTHON_INSTALL_DIR={PYTHON_INSTALL_DIR} uv python install "
-        + pin.read_text().strip()
+        + version
         + " && chmod -R a+rX /opt",
     ]
     lines += [f"ENV {key}={_quoted(value)}" for key, value in declared.env]
@@ -277,24 +288,73 @@ def _table(root: Path) -> dict[str, Any] | None:
     return table
 
 
+#: What an apt package name may contain (Debian source/package charset).
+#: Anything else is joined verbatim into a shell line by the apt layer,
+#: so the closed charset is what keeps `apt-install` a list of *names*
+#: rather than a second `run-commands`.
+_APT_NAME = re.compile(r"^[a-z0-9][a-z0-9.+-]*$")
+
+#: A shell-safe environment variable name. Anything else hits Docker's
+#: legacy `ENV key value` parse and silently defines the wrong variable.
+_ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
 def _strings(table: dict[str, Any], key: str) -> list[str]:
-    """A list-of-strings key, defaulting empty."""
+    """A list-of-strings key, defaulting empty. No control characters:
+    every value here is interpolated into a Containerfile line, and a
+    newline would splice an instruction of its own into an
+    identity-hashed surface."""
     value = table.get(key, [])
     if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
         raise ProjectError(f"[tool.lightcone.image] `{key}` must be a list of strings.")
+    for entry in value:
+        _plain(key, entry)
+    if key == "apt-install":
+        for name in value:
+            if not _APT_NAME.match(name):
+                raise ProjectError(
+                    f"[tool.lightcone.image] apt-install: `{name}` is not an apt "
+                    "package name — names are lowercase letters, digits, `.`, `+` "
+                    "and `-`. A command belongs in `run-commands`."
+                )
     return value
 
 
 def _env(table: dict[str, Any]) -> dict[str, str]:
-    """The ``env`` key, defaulting empty."""
+    """The ``env`` key, defaulting empty. Keys must be shell-safe names
+    and values control-character-free, for the reason `_strings` gives."""
     value = table.get("env", {})
     if not isinstance(value, dict) or not all(
         isinstance(k, str) and isinstance(v, str) for k, v in value.items()
     ):
         raise ProjectError("[tool.lightcone.image] `env` must be a table of strings.")
+    for key, entry in value.items():
+        if not _ENV_KEY.match(key):
+            raise ProjectError(
+                f"[tool.lightcone.image] env: `{key}` is not an environment "
+                "variable name (letters, digits and `_`, not starting with a digit)."
+            )
+        _plain("env", entry)
     return value
 
 
+def _plain(key: str, value: str) -> None:
+    """Refuse control characters in a value bound for a Containerfile line."""
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+        raise ProjectError(
+            f"[tool.lightcone.image] `{key}` values cannot contain control "
+            "characters — each renders into a single Containerfile line."
+        )
+
+
 def _quoted(value: str) -> str:
-    """Quote a value for a Containerfile ``ENV``/``LABEL`` line."""
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    """Quote a value for a Containerfile ``ENV``/``LABEL`` line.
+
+    ``$`` is escaped along with the quoting characters, because these
+    lines undergo build-time variable expansion — measured: an unescaped
+    ``cost$5`` bakes as ``cost``, and a ``$`` inside the identity LABEL
+    silently corrupts the document the image carries. Declared ``env``
+    values are therefore *literals*, never expansions.
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+    return f'"{escaped}"'

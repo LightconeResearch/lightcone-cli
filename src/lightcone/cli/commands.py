@@ -291,14 +291,16 @@ def materialize(
 
     root = current_project()
     if not check_only and not as_json:
-        # The engine never prints, and the build it is about to run can
-        # take minutes — so the one place that owns the console says so
-        # before handing over, instead of after.
+        # The engine never prints, and the build it may be about to run
+        # can take minutes — so the one place that owns the console says
+        # so before handing over. Conditional mood, deliberately: the
+        # engine's own refusals (a dirty tree, an invalid spec) come
+        # first and cost no build, so this must promise nothing.
         state, tag = engine_container.image_state(root)
         if state == "absent":
             _console().print(
-                f"building [bold]{tag}[/bold] — first run after an environment change; "
-                "this can take minutes"
+                f"this run will build [bold]{tag}[/bold] — first run after an "
+                "environment change; this can take minutes"
             )
     if check_only:
         report = engine.check(root, targets, refresh=refresh)

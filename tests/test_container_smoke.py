@@ -52,11 +52,17 @@ def _available() -> list[str]:
     found = []
     if shutil.which("podman"):
         found.append("podman")
-    if (
-        shutil.which("docker")
-        and subprocess.run(["docker", "info"], capture_output=True).returncode == 0
-    ):
-        found.append("docker")
+    try:
+        if (
+            shutil.which("docker")
+            and subprocess.run(
+                ["docker", "info"], capture_output=True, timeout=10
+            ).returncode
+            == 0
+        ):
+            found.append("docker")
+    except subprocess.TimeoutExpired:
+        pass  # a hung daemon at collection time must not hang the suite
     return found
 
 
@@ -177,6 +183,15 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path) -> None:
     finally:
         outside.unlink()
 
+    # The rootfs is read-only: a write outside the declared set is a
+    # loud denial, not bytes vanishing with the container. The mutation
+    # check is the same write into results/, which must succeed.
+    rootfs = engine_run.probe(cproject, ["bash", "-c", "mkdir /output"])
+    assert rootfs.returncode != 0
+    results = engine_run.probe(cproject, ["bash", "-c", "touch results/probe-write"])
+    assert results.returncode == 0
+    (cproject / "results" / "probe-write").unlink()
+
     loopback = engine_run.probe(
         cproject,
         ["python", "-c", 'import socket; socket.socket().bind(("127.0.0.1", 0))'],
@@ -238,6 +253,11 @@ def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
     archive through the annex (it is in `extra_inputs`), the worker loads
     it and syncs `.lightcone/venv` in-image, and the output reproduces."""
     pytest.importorskip("datalad")
+    if runtime != _RUNTIMES[0]:
+        # The rerun is a subprocess and detects the host's preferred
+        # runtime for itself — a monkeypatch cannot reach it, so running
+        # this under any other parameter would silently retest the first.
+        pytest.skip("the rerun subprocess always uses the host's preferred runtime")
     version, dist = engine_dist
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
     report = engine.materialize(cproject, [])

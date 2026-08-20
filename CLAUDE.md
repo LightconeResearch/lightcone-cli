@@ -562,6 +562,16 @@ the rule for the next. The item records **`blocked`**, not a warning —
 success and commit nothing — and it names `<file>:<line>:<pattern>`,
 because `.gitignore` convergence only ever appends and cannot fix this.
 
+**A new managed `.gitattributes` line is always appended at the *end* of
+the template.** Repair is append-only, so a project scaffolded under an
+older template receives new lines at the bottom of its file — and
+`gitattributes_disorder` judges against template order. A line added
+anywhere but last makes lc write an order it then reports as blocked, on
+every project scaffolded before the line existed. The layer-6 image line
+sits after the manifest exemption for exactly this reason (the patterns
+are disjoint, so the order is free), and every future line takes the
+same slot.
+
 **`.gitattributes` can be *unrepairable*, and that is a second blocked
 item.** The file is last-match-wins, and a repair only appends — so a
 project that already carries `results/** annex.largefiles=anything`
@@ -1375,9 +1385,17 @@ spec's `dpkg_snapshot_sha256` residue: apt is name-pinned, so a rebuild
 months later yields different bytes under the same tag, and the archive
 keeps the bytes themselves. The dot-path is the trap:
 **git-annex routes dotfiles to git whatever `annex.largefiles` says**,
-so the add must opt in (`dataset.save(..., dotfiles=True)`, per-add like
-`annex.thin`) or the archive lands as a full blob in git, silently, with
-every test green — `test_dataset.py` pins both directions. The archive
+so `dataset.save` opts in unconditionally (`annex.dotfiles=true`,
+per-add like `annex.thin`) — without it the archive, or a `.cache.h5` a
+recipe writes into its output directory, lands as a full blob in git,
+silently, with every test green. The attributes alone decide from
+there (dot-named manifests keep their own exemption); a user's plain
+`git add` keeps git-annex's stock behavior. `test_dataset.py` pins both
+directions. And because `.gitattributes` is user-authored and lc only
+appends, the build **probes the routing with `git check-attr` before
+saving** — an archive the attributes would hand to git is a refusal
+naming the line, the same probe-don't-assume rule as the `results/`
+ignore check. The archive
 is the arch it was built for (recorded in the manifest); multi-arch is a
 layer-7 item, as is apptainer/singularity — which is *why* the format is
 `docker-archive`: all four runtimes consume it, and HPC hosts that
@@ -1397,12 +1415,17 @@ datalad's docker adapter makes — never a tag, so a retagged store image
 cannot substitute. **A dropped archive never substitutes**: a rebuild is
 a new archive commit under a new id; old manifests keep naming what ran.
 
-**Builds and the archive commit happen only on a clean tree.** The dirty
-check runs before `ensure_image` in materialize, and `lc build` refuses
-dirt itself: `dataset.save` stages scoped but commits the whole index, so
-a build on a dirty tree would sweep the user's staged edits into the
-image commit — and the tag derives from `pyproject.toml`, so the
-declaration must be committed before the image it defines.
+**Builds and the archive commit happen only on a clean tree, and only
+after the graph.** The dirty check runs before `ensure_image` in
+materialize, and `lc build` refuses dirt itself: `dataset.save` stages
+scoped but commits the whole index, so a build on a dirty tree would
+sweep the user's staged edits into the image commit — and the tag
+derives from `pyproject.toml`, so the declaration must be committed
+before the image it defines. The graph (spec validation, the lock scan)
+resolves before the image too, in materialize and in the worker entry
+point alike: a refusal over a typo must not cost a minutes-long build or
+leave an archive commit behind a failed run, and a failing sync must not
+bury "no output `x`".
 
 **Two identities, one document.** The canonical identity document
 (declaration resolved + the uv digest; the interpreter pin deliberately
@@ -1422,14 +1445,24 @@ containerized `exec_policy` shape is the same policy minus the host: no
 OS read baseline, no stdlib root, no exec set — the image *is* those,
 and everything in it was declared — leaving exactly the paths that
 become mounts, project `:ro`, `results/` `:rw`, declared inputs `:ro`,
-the private HOME `:rw`, `--tmpfs /tmp`. No in-container Landlock, no
-seccomp probe, no shim-in-image: the engine container never gets the
-tree `:rw`, so mounts alone express the whole policy, and the
-attestation (`mechanism: podman|docker`, `fs: declared`,
-`network: denied`) is derived flag-for-flag from the argv — `--network
-none` is the codebase's one honest `denied`, loopback intact. One
-`OCIBackend`, data-parameterized: podman and docker differ in spellings
-(`--userns=keep-id`+`--pull=never` vs `--user uid:gid`), not shape.
+the private HOME `:rw`, `--tmpfs /tmp`, over a **`--read-only` rootfs**:
+without that flag a write outside the declared set *succeeds* into the
+container's ephemeral layer and vanishes while the run attests
+`fs: declared` — the silent-loss path, closed by making it a denial.
+Mounts are **resolved source, declared destination** — the containerized
+policy is the one shape that keeps its paths unresolved, because they
+are addresses the recipe uses (a symlinked `/data` input resolved on
+both sides would leave the container with no `/data` at all).
+`--security-opt label=disable`, because SELinux hosts otherwise refuse
+every bind read and `:z` would relabel the user's own files. No
+in-container Landlock, no seccomp probe, no shim-in-image: the engine
+container never gets the tree `:rw`, so mounts alone express the whole
+policy, and the attestation (`mechanism: podman|docker`,
+`fs: declared`, `network: denied`) is derived flag-for-flag from the
+argv — `--network none` is the codebase's one honest `denied`, loopback
+intact. One `OCIBackend`, data-parameterized: podman and docker differ
+in spellings (`--userns=keep-id`+`--pull=never` vs `--user uid:gid`),
+not shape.
 Runtime is **host capability** — detected podman → docker, the
 `detect()` discipline on a second axis, with `container.backend()`
 holding the only mode branch — and never part of any identity. The

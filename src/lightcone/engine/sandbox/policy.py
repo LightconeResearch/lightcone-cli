@@ -229,9 +229,15 @@ def exec_policy(
         (tmp_home / sub).mkdir(parents=True, exist_ok=True)
 
     if containerized:
+        # Declared spellings, not realpaths — the one shape that keeps
+        # its paths unresolved. These become mount *destinations*, and a
+        # recipe addresses the declared path: resolving here would mount
+        # a symlinked `/data/catalog.h5` at its target and leave the
+        # container with no `/data` at all. (The backend resolves the
+        # *source* side itself.)
         return Policy(
-            read=_existing([project, *read_paths]),
-            write=_existing([tmp_home, project / "results"]),
+            read=_declared([project, *read_paths]),
+            write=_declared([tmp_home, project / "results"]),
             execute=(),
             tmp_home=tmp_home,
             env=home_overlay(tmp_home, env_dir, containerized=True),
@@ -434,6 +440,15 @@ def _loader_patterns() -> dict[str, set[str]]:
         directory, _, name = pattern.rpartition("/")
         grouped.setdefault(os.path.realpath(directory), set()).add(name)
     return grouped
+
+
+def _declared(paths: Iterable[Path]) -> tuple[Path, ...]:
+    """Drop what is not there, de-duplicate, keep the declared spelling."""
+    found: dict[Path, None] = {}
+    for path in paths:
+        if Path(path).exists():
+            found.setdefault(Path(path), None)
+    return tuple(found)
 
 
 def _existing(paths: Iterable[Path]) -> tuple[Path, ...]:

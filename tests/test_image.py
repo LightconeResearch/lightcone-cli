@@ -86,6 +86,37 @@ def test_a_wrong_type_is_refused(tmp_path: Path, table: str) -> None:
         image.declaration(_project(tmp_path / "p", table))
 
 
+@pytest.mark.parametrize(
+    "table",
+    [
+        # An apt "name" that is really a command reaches a raw RUN line.
+        '[tool.lightcone.image]\napt-install = ["foo; rm -rf /"]\n',
+        # A key with a space hits Docker's legacy `ENV key value` parse
+        # and silently defines the wrong variable.
+        '[tool.lightcone.image]\nenv = { "A B" = "v" }\n',
+        # A newline in a value splices a Containerfile instruction of its
+        # own into an identity-hashed surface.
+        '[tool.lightcone.image]\nenv = { K = "a\\nUSER root" }\n',
+        '[tool.lightcone.image]\nrun-commands = ["true\\nUSER root"]\n',
+        '[tool.lightcone.image]\nbase = "a b@sha256:0000"\n',
+    ],
+)
+def test_values_that_cannot_render_as_one_line_are_refused(tmp_path: Path, table: str) -> None:
+    """Everything in the declaration is interpolated into Containerfile
+    lines, so structural validation is what keeps the closed surface
+    closed — a value that smuggles an instruction is not a value."""
+    with pytest.raises(ProjectError):
+        image.declaration(_project(tmp_path / "p", table))
+
+
+def test_a_multiline_interpreter_pin_is_refused(tmp_path: Path) -> None:
+    """The pin splices into the install layer's RUN line."""
+    root = _project(tmp_path / "p", "[tool.lightcone.image]\n")
+    (root / ".python-version").write_text("3.12.11\nUSER root\n")
+    with pytest.raises(ProjectError, match="single interpreter"):
+        image.containerfile(root)
+
+
 def test_reads_pyproject_only_never_the_uv_config(tmp_path: Path) -> None:
     """A `uv.toml` replaces `[tool.uv]` — uv's rule about uv's own
     settings, which must not reach this table."""
@@ -175,14 +206,17 @@ def test_the_render_refuses_a_direct_project(tmp_path: Path) -> None:
         image.containerfile(_project(tmp_path / "p"))
 
 
-def test_env_values_are_quoted(tmp_path: Path) -> None:
-    """The label is JSON full of double quotes and an env value may hold
-    spaces — both must survive the Containerfile's own parsing."""
+def test_env_values_are_quoted_and_dollar_is_literal(tmp_path: Path) -> None:
+    """The label is JSON full of double quotes, an env value may hold
+    spaces, and `$` undergoes build-time expansion — measured, an
+    unescaped `cost$5` bakes as `cost`. Declared values are literals."""
     root = _project(
-        tmp_path / "p", '[tool.lightcone.image]\nenv = { OPTS = "-a \\"b\\" c" }\n'
+        tmp_path / "p",
+        '[tool.lightcone.image]\nenv = { OPTS = "-a \\"b\\" c", PRICE = "cost$5" }\n',
     )
     text = image.containerfile(root)
     assert 'ENV OPTS="-a \\"b\\" c"' in text
+    assert 'ENV PRICE="cost\\$5"' in text
     assert 'LABEL io.lightcone.image="{' in text
 
 

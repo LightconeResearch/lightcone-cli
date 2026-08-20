@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
@@ -287,6 +288,9 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
     cache = _check(root, ["uv", "cache", "dir"]).strip()
     argv = [
         runtime.runtime, "run", "--rm", "--entrypoint", "",
+        # Same reason as the exec boundary's flag: SELinux hosts refuse
+        # bind reads from container_t, and relabeling user data is worse.
+        "--security-opt", "label=disable",
         *uid_flags(runtime.runtime),
         "-v", f"{root}:{root}:rw",
         "-v", f"{cache}:{cache}:rw",
@@ -370,6 +374,22 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     plus ``.datalad/config`` (the ``datalad containers-run`` interop
     keys), and the caller has already proven the tree clean.
     """
+    relative = archive.relative_to(root).as_posix()
+    # The archive is committed, so its routing must be checked *before*
+    # the bytes exist: with `.gitattributes` not sending it to the annex
+    # — a user-authored file lc only ever appends to — a several-hundred-
+    # MB blob would land in git itself, silently, and every clone would
+    # carry it forever. The same probe-don't-assume rule as the ignore
+    # check on `results/`.
+    routed = project._run(["git", "check-attr", "annex.largefiles", "--", relative], cwd=root)
+    if "anything" not in routed.stdout:
+        raise ProjectError(
+            "the image archive would be committed to git itself instead of the "
+            f"annex — .gitattributes does not route `{relative}`. Add the line\n"
+            "  .datalad/environments/*/image annex.largefiles=anything\n"
+            "(`lc init` repairs this), then re-run."
+        )
+
     with tempfile.TemporaryDirectory(prefix="lc-build-") as context:
         containerfile = Path(context) / "Containerfile"
         containerfile.write_text(image.containerfile(root))
@@ -380,15 +400,29 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
             raise ProjectError(_build_failure(tag, proc.stderr))
 
     archive.parent.mkdir(parents=True, exist_ok=True)
+    # Saved beside its final name and renamed into place: a save that
+    # dies midway must not leave a partial archive that the dirty-tree
+    # refusal would then tell the user to commit.
+    partial = archive.parent / "image.partial"
     save_format = ["--format", "docker-archive"] if runtime == "podman" else []
-    _check(root, [runtime, "save", *save_format, "-o", str(archive), tag])
+    try:
+        _check(root, [runtime, "save", *save_format, "-o", str(partial), tag])
+    except ProjectError:
+        partial.unlink(missing_ok=True)
+        raise
+    partial.replace(archive)
 
-    relative = archive.relative_to(root).as_posix()
     for key, value in (
         ("image", relative),
         # Doubled braces survive datalad's record-time `.format`, so
         # `{pwd}` is substituted at run time like any datalad command.
-        ("cmdexec", "podman run --rm -v {{pwd}}:{{pwd}} -w {{pwd}} docker-archive:{img} {cmd}"),
+        # The template names the runtime that built the image — best-
+        # effort interop for humans, outside lc's guarantees either way.
+        (
+            "cmdexec",
+            f"{runtime} run --rm -v {{{{pwd}}}}:{{{{pwd}}}} -w {{{{pwd}}}} "
+            "docker-archive:{img} {cmd}",
+        ),
     ):
         _check(
             root,
@@ -398,9 +432,6 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
         root,
         [archive.parent, root / ".datalad" / "config"],
         f"Add the system-layer image {tag}",
-        # Without this the archive lands as a full blob in git — the
-        # annex routes dotfile paths to git whatever the attributes say.
-        dotfiles=True,
     )
 
 
@@ -414,16 +445,19 @@ def _build_failure(tag: str, stderr: str) -> str:
                 f"[tool.lightcone.image] apt-install (search with "
                 f"`apt-cache search {package}`)."
             )
+    # Anchored on the failing instruction as well as the code: the error
+    # names the STEP that died, and a user's own run-command exiting 43
+    # (curl does) must not be diagnosed as a musl base.
     contract = {
-        "43": "the base image is musl-based — manylinux wheels and uv-managed "
-        "interpreters need glibc; use a Debian-family `base`.",
-        "44": "the base image has no bash, and recipes run through `bash -c` — "
-        "use a base that carries bash, or a Debian-family `base`.",
-        "45": "the base image has no apt, and `apt-install` is declared — use a "
-        "Debian-family `base`, or move the packages to `run-commands`.",
+        ("43", "ldd --version"): "the base image is musl-based — manylinux wheels and "
+        "uv-managed interpreters need glibc; use a Debian-family `base`.",
+        ("44", "command -v bash"): "the base image has no bash, and recipes run through "
+        "`bash -c` — use a base that carries bash, or a Debian-family `base`.",
+        ("45", "command -v apt-get"): "the base image has no apt, and `apt-install` is "
+        "declared — use a Debian-family `base`, or move the packages to `run-commands`.",
     }
-    for code, message in contract.items():
-        if f"exit status {code}" in stderr or f"exit code: {code}" in stderr:
+    for (code, instruction), message in contract.items():
+        if re.search(rf"exit (status|code):? {code}\b", stderr) and instruction in stderr:
             return message
     tail = "\n".join(stderr.strip().splitlines()[-15:])
     return f"building `{tag}` failed:\n{tail}"
@@ -456,20 +490,30 @@ def _machine_preflight(root: Path) -> None:
             "none — one-time setup:\n  podman machine init\n  podman machine start"
         )
     try:
-        mounts = [
-            str(m.get("Source", "")) for m in json.loads(proc.stdout)[0].get("Mounts", [])
-        ]
+        machine = json.loads(proc.stdout)[0]
+        state = str(machine.get("State", ""))
+        mounts = [str(m.get("Source", "")) for m in machine.get("Mounts", [])]
     except (json.JSONDecodeError, IndexError, KeyError, TypeError):
         return  # an unreadable inspect is not a refusal; the mount will speak
+    if state and state != "running":
+        # `inspect` succeeds on a stopped machine, so without this the
+        # preflight passes and the run dies later on a raw connection
+        # error, far from the one-command fix.
+        raise ProjectError(
+            f"the podman machine is {state}, not running — start it:\n"
+            "  podman machine start"
+        )
     shared = [m for m in mounts if m]
-    if shared and not any(
-        str(root) == m or str(root).startswith(m.rstrip("/") + "/") for m in shared
-    ):
+    if not any(str(root) == m or str(root).startswith(m.rstrip("/") + "/") for m in shared):
+        # An empty share list refuses too: a bind whose source the VM
+        # does not share arrives *empty*, no error — a project with
+        # nothing in it. (Declared inputs outside the tree are not
+        # checked here; their mounts carry the same risk, recorded.)
         raise ProjectError(
             f"{root} is outside the podman machine's shared directories "
-            f"({', '.join(shared)}), so its bind mount would arrive empty. Share "
-            f"it:\n  podman machine stop\n  podman machine set --volume {root}\n"
-            "  podman machine start"
+            f"({', '.join(shared) or 'none'}), so its bind mount would arrive "
+            f"empty. Share it:\n  podman machine stop\n"
+            f"  podman machine set --volume {root}\n  podman machine start"
         )
 
 

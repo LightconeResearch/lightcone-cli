@@ -75,6 +75,10 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             return MagicMock(returncode=0, stdout="/home/user/.cache/uv\n", stderr="")
         if argv[:3] == ["git", "diff", "--cached"]:
             return MagicMock(returncode=1)  # something staged: commits proceed
+        if argv[:2] == ["git", "check-attr"]:
+            return MagicMock(
+                returncode=0, stdout=f"{argv[-1]}: annex.largefiles: anything\n", stderr=""
+            )
         return MagicMock(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(project, "_run", run)
@@ -199,7 +203,12 @@ def test_the_build_saves_and_commits_the_archive(root: Path, fake: list[list[str
     runtime = container.runtime_for_run(root, build=True)
 
     (save,) = _argvs(fake, "podman", "save")
-    assert save[save.index("-o") + 1] == str(image.archive_path(root, runtime.image_tag))
+    # Saved beside its final name and renamed into place, so a save that
+    # dies midway leaves no partial archive for the dirty refusal to
+    # tell the user to commit.
+    archive = image.archive_path(root, runtime.image_tag)
+    assert save[save.index("-o") + 1] == str(archive.parent / "image.partial")
+    assert archive.is_file() and not (archive.parent / "image.partial").exists()
     assert "--format" in save and save[save.index("--format") + 1] == "docker-archive"
     configured = {c[-2] for c in _argvs(fake, "git", "config", "-f", ".datalad/config")}
     assert f"datalad.containers.{runtime.image_tag}.image" in configured
@@ -211,42 +220,91 @@ def test_the_build_saves_and_commits_the_archive(root: Path, fake: list[list[str
     assert len(_argvs(fake, "git", "commit")) == 1
 
 
+def test_an_unrouted_archive_refuses_before_building(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The archive is committed, and `.gitattributes` is a user-authored
+    file lc only appends to — so an archive it does not route to the
+    annex would land in git as a several-hundred-MB blob, silently. The
+    probe fires before any build is paid for. Mutation check: the `fake`
+    fixture's routed answer is what every other build test passes with."""
+    original = project._run
+
+    def unrouted(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["git", "check-attr"]:
+            return MagicMock(
+                returncode=0, stdout=f"{argv[-1]}: annex.largefiles: unspecified\n", stderr=""
+            )
+        return original(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", unrouted)
+    with pytest.raises(ProjectError, match="annex.largefiles=anything"):
+        container.runtime_for_run(root, build=True)
+    assert _argvs(fake, "podman", "build") == []
+
+
 def test_a_bad_apt_name_is_parsed_out_of_the_build_log(
     root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def failing(argv: list[str], *, cwd: Path) -> MagicMock:
-        if argv[:2] == ["podman", "build"]:
-            return MagicMock(
-                returncode=1, stdout="", stderr="E: Unable to locate package texlive-latex-bass"
-            )
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(project, "_run", failing)
+    _failing_build("E: Unable to locate package texlive-latex-bass", monkeypatch)
     with pytest.raises(ProjectError, match="texlive-latex-bass"):
         container.runtime_for_run(root, build=True)
 
 
+def _failing_build(stderr: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route only the build through failure; everything else keeps the
+    `fake` fixture's modelled answers (the routing probe included)."""
+    from lightcone.engine import project as project_module
+
+    inner = project_module._run
+
+    def failing(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["podman", "build"]:
+            return MagicMock(returncode=1, stdout="", stderr=stderr)
+        return inner(argv, cwd=cwd)
+
+    monkeypatch.setattr(project_module, "_run", failing)
+
+
 @pytest.mark.parametrize(
-    ("code", "expected"),
-    [("43", "glibc"), ("44", "bash"), ("45", "apt")],
+    ("code", "instruction", "expected"),
+    [
+        ("43", "RUN if ldd --version 2>&1 | grep -qi musl", "glibc"),
+        ("44", "RUN command -v bash >/dev/null", "bash"),
+        ("45", "RUN command -v apt-get >/dev/null", "apt"),
+    ],
 )
 def test_a_contract_violation_names_the_base_not_the_log(
     root: Path,
     fake: list[list[str]],
     monkeypatch: pytest.MonkeyPatch,
     code: str,
+    instruction: str,
     expected: str,
 ) -> None:
-    def failing(argv: list[str], *, cwd: Path) -> MagicMock:
-        if argv[:2] == ["podman", "build"]:
-            return MagicMock(
-                returncode=1, stdout="", stderr=f'Error: building at STEP: exit status {code}'
-            )
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(project, "_run", failing)
+    _failing_build(
+        f'Error: building at STEP "{instruction}": while running runtime: '
+        f"exit status {code}",
+        monkeypatch,
+    )
     with pytest.raises(ProjectError, match=expected):
         container.runtime_for_run(root, build=True)
+
+
+def test_a_run_command_exiting_a_contract_code_is_not_misdiagnosed(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """curl exits 43 for its own reasons; blaming the base for it would
+    point the user away from their own failing command. The anchor is
+    the failing instruction, not the code alone."""
+    _failing_build(
+        'Error: building at STEP "RUN curl -fsSL https://example.org/tool.tar": '
+        "exit status 43",
+        monkeypatch,
+    )
+    with pytest.raises(ProjectError, match="curl") as raised:
+        container.runtime_for_run(root, build=True)
+    assert "musl" not in str(raised.value)
 
 
 def test_lc_build_refuses_a_dirty_tree(
@@ -333,7 +391,9 @@ def test_a_project_outside_the_machine_shares_is_a_refusal(
     _darwin(monkeypatch)
 
     def machine(shares: list[str]) -> None:
-        inspect = json.dumps([{"Mounts": [{"Source": s} for s in shares]}])
+        inspect = json.dumps(
+            [{"State": "running", "Mounts": [{"Source": s} for s in shares]}]
+        )
         monkeypatch.setattr(
             project,
             "_run",
@@ -344,8 +404,30 @@ def test_a_project_outside_the_machine_shares_is_a_refusal(
     with pytest.raises(ProjectError, match="podman machine set"):
         container.runtime_name(root)
 
+    # A machine sharing nothing at all is the same refusal, not a pass.
+    machine([])
+    with pytest.raises(ProjectError, match="podman machine set"):
+        container.runtime_name(root)
+
     machine([str(root.parent)])
     assert container.runtime_name(root) == "podman"
+
+
+def test_a_stopped_machine_is_a_refusal_naming_start(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`podman machine inspect` succeeds on a stopped machine — without
+    the state check the preflight passes and the run dies later on a raw
+    connection error, far from the one-command fix."""
+    _darwin(monkeypatch)
+    inspect = json.dumps([{"State": "stopped", "Mounts": [{"Source": "/Users"}]}])
+    monkeypatch.setattr(
+        project,
+        "_run",
+        lambda argv, *, cwd: MagicMock(returncode=0, stdout=inspect, stderr=""),
+    )
+    with pytest.raises(ProjectError, match="podman machine start"):
+        container.runtime_name(root)
 
 
 # ---- state for status and the CLI -------------------------------------------

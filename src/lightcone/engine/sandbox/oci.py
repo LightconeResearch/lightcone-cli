@@ -67,13 +67,31 @@ class OCIBackend:
         Returns:
             The rewritten command.
         """
-        mounts = [f"--volume={path}:{path}:ro" for path in policy.read]
-        mounts += [f"--volume={path}:{path}:rw" for path in policy.write]
+        # Resolved source, declared destination: the host bind must name
+        # the real file, while the recipe addresses the path the analysis
+        # declared — a symlinked `/data` input mounted at its target
+        # would leave the container with no `/data` at all. Residue,
+        # recorded: a declared input living under `/tmp` is shadowed by
+        # the tmpfs on runtimes that mount over it — the same class of
+        # host-layout collision `_write_roots` documents for direct mode.
+        mounts = [f"--volume={path.resolve()}:{path}:ro" for path in policy.read]
+        mounts += [f"--volume={path.resolve()}:{path}:rw" for path in policy.write]
         overlay = [f"--env={k}={v}" for k, v in sorted(policy.env.items())]
         return [
             self.runtime, "run", "--rm",
             "--network", "none",
             "--entrypoint", "",
+            # The rootfs is read-only so a write outside the declared set
+            # is a loud denial rather than bytes vanishing with the
+            # container — without this, `mkdir /output` *succeeds* into
+            # the ephemeral layer and the run attests `fs: declared`
+            # over silently lost output.
+            "--read-only",
+            # SELinux hosts (Fedora/RHEL, podman's home turf) would
+            # otherwise refuse every bind read from container_t. Label
+            # separation is disabled rather than relabeling (`:z`), which
+            # would rewrite the user's own file contexts on disk.
+            "--security-opt", "label=disable",
             *self.user_flags,
             *mounts,
             "--tmpfs", "/tmp:rw,exec",
@@ -88,10 +106,11 @@ class OCIBackend:
     def attest(self, policy: Policy) -> Attestation:
         """Report what the wrapped command will actually have enforced.
 
-        Every value is a flag in :meth:`wrap`'s output: the mounts bound
-        the filesystem to the declared set, and ``--network none`` is a
-        real denial — the one place in the codebase that honestly says
-        ``denied`` (loopback stays intact, which is the meaning of it).
+        Every value is a flag in :meth:`wrap`'s output: the mounts plus
+        the read-only rootfs bound the filesystem to the declared set,
+        and ``--network none`` is a real denial — the one place in the
+        codebase that honestly says ``denied`` (loopback stays intact,
+        which is the meaning of it).
 
         Args:
             policy: The policy being wrapped.

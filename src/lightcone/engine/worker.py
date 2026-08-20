@@ -360,6 +360,13 @@ def main(argv: list[str]) -> int:
     universe_id, _, output_id = argv[0].partition("/")
     try:
         root = declared_project()
+        # The graph — and with it the task lookup — before any converge:
+        # a typo'd target must cost nothing and mask nothing, and a
+        # failing sync must not bury "no output `x`" under its own error.
+        graph = plan.build(root)
+        if (task := graph.tasks.get((universe_id, output_id))) is None:
+            print(f"no output `{argv[0]}` in this project", file=sys.stderr)
+            return 2
         # This one-task run resolves its own runtime and HEAD, because it
         # *is* the driver here — the rule is that each is read once by
         # whoever owns the run, not that a worker never reads them.
@@ -368,13 +375,13 @@ def main(argv: list[str]) -> int:
             sync(root)
         else:
             container.sync(root, runtime)
-        env_version = identity.env_version(root)
-        graph = plan.build(root)
-        if (task := graph.tasks.get((universe_id, output_id))) is None:
-            print(f"no output `{argv[0]}` in this project", file=sys.stderr)
-            return 2
         result = execute(
-            root, task, env_version, _from_disk(task), head=dataset.head(root), runtime=runtime
+            root,
+            task,
+            identity.env_version(root),
+            _from_disk(task),
+            head=dataset.head(root),
+            runtime=runtime,
         )
     except ProjectError as e:
         print(f"error: {e}", file=sys.stderr)

@@ -192,13 +192,25 @@ def run(
     # module eagerly, and the shim drags ctypes in for one integer.
     from lightcone._sandbox_exec import SETUP_FAILURE_EXIT
 
-    if returncode == SETUP_FAILURE_EXIT:
-        # The shim's reserved code: the sandbox could not be *built*. Say
-        # so plainly — the trailer would otherwise point the user at their
-        # own command's permissions for a failure that is entirely ours.
+    if returncode == SETUP_FAILURE_EXIT and attestation.mechanism == "landlock":
+        # The shim's reserved code — meaningful only where the shim ran:
+        # under any other mechanism a command legitimately exiting 97 is
+        # just a failed command, and blaming lc for it would misattribute
+        # at the one place nobody is watching. Say the real case plainly —
+        # the trailer would otherwise point the user at their own
+        # command's permissions for a failure that is entirely ours.
         notes.append(
             "lc could not set up the sandbox (see above) — this is an lc "
             "problem, not your command's"
+        )
+    elif returncode == 125 and backend.contains_prefix:
+        # The runtimes reserve 125 for their own failures (a bad flag, a
+        # vanished mount source): the command never ran, so the denial
+        # heuristics have nothing to say about it.
+        notes.append(
+            f"the container runtime failed before the command ran (see "
+            f"above, `{attestation.mechanism}` exit 125) — this is a "
+            "runtime problem, not your command's"
         )
     elif returncode != 0 and attestation.mechanism != "none":
         from lightcone.engine.sandbox import denial
