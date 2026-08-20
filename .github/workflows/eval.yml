@@ -111,6 +111,9 @@ jobs:
           # one output actually got materialized
           lc materialize --check --json | jq -e \
             '.up_to_date and ((.current | length) > 0)'
+          # The publication view: declaring a license and materializing
+          # once more is part of the task
+          test -f ro-crate-metadata.json
 
       - name: Build report
         if: always()
