@@ -459,6 +459,35 @@ def test_the_annex_executables_are_ours_to_install() -> None:
 # ---- who last wrote a path -------------------------------------------------
 
 
+def test_annex_keys_maps_every_annexed_file_content_present_or_not(repo: Path) -> None:
+    """The crate's per-file checksums come from here, and they must
+    answer on a clone that holds none of the bytes — `--include=*` is
+    what turns `find` from "present files" into "annexed files"."""
+    out = repo / "results" / "fit"
+    out.mkdir()
+    (out / "value.dat").write_bytes(b"x" * 300)
+    dataset.save(repo, [out], "make fit")
+
+    keys = dataset.annex_keys(repo)
+    key = keys["results/fit/value.dat"]
+    assert key.startswith("SHA256E-s300--"), key
+    assert ".gitattributes" not in keys, "git-carried files have no key"
+
+    clone = repo.parent / "clone"
+    dataset._git(["clone", "-q", str(repo), str(clone)], cwd=repo.parent)
+    dataset.init_annex(clone)
+    assert dataset.annex_keys(clone)["results/fit/value.dat"] == key, (
+        "keys are repository state, bytes not required"
+    )
+
+
+def test_annex_keys_of_a_plain_directory_is_empty(tmp_path: Path, real_tools: None) -> None:
+    """Cannot say is empty, never an error — the last_writer discipline."""
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert dataset.annex_keys(bare) == {}
+
+
 def test_last_writer_names_the_commit_that_last_touched_a_path(repo: Path) -> None:
     """The foreign-write fact's whole mechanism: every output is committed,
     so a hand edit needs a commit, and history names it."""

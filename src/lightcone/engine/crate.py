@@ -26,10 +26,12 @@ workflow's ``HowToStep`` s.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import tomllib
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +64,16 @@ _PROFILES = (
 #: The files that pin what a run installed — one spelling, so the crate's
 #: data entities and every action's ``object`` list cannot drift apart.
 _ENVIRONMENT = ("pyproject.toml", "uv.lock", ".python-version")
+
+#: A SHA-256-backed annex key: ``SHA256E-s<size>--<64 hex><ext>`` (the E
+#: backend keeps the extension). The hex *is* the raw sha256 of the
+#: content, which is what makes a checksum publishable with none of the
+#: bytes fetched. Any other backend yields a size and no digest — never
+#: a wrong one.
+_SHA256_KEY = re.compile(r"^SHA256E?-s(\d+)--([0-9a-f]{64})(?:\..*)?$")
+
+#: Any backend key's size field, for ``contentSize`` alone.
+_KEY_SIZE = re.compile(r"^\w+-s(\d+)")
 
 
 def license_of(root: Path) -> str:
@@ -98,6 +110,7 @@ def render(
     license: str,
     dsid: str,
     writer: Callable[[Path], LastWrite],
+    keys: Mapping[str, str],
 ) -> str:
     """Build the crate document for the project as it stands.
 
@@ -115,11 +128,15 @@ def render(
         writer: Answers "which commit last touched this path" —
             :func:`dataset.last_writer` bound to the root, injected so
             the builder stays free of git.
+        keys: Each annexed file's key, repository-relative —
+            :func:`dataset.annex_keys`'s answer, injected for the same
+            reason as *writer*. SHA-256-backed keys become per-file
+            checksums an archive can verify with ``sha256sum``.
 
     Returns:
         The ``ro-crate-metadata.json`` text, trailing newline included.
     """
-    build = _Builder(root, graph, license, dsid, writer)
+    build = _Builder(root, graph, license, dsid, writer, keys)
     return build.document()
 
 
@@ -137,6 +154,7 @@ class _Builder:
         license: str,
         dsid: str,
         writer: Callable[[Path], LastWrite],
+        keys: Mapping[str, str],
     ) -> None:
         from astra.helpers import load_yaml
 
@@ -144,6 +162,7 @@ class _Builder:
         self.graph = graph
         self.license = license
         self.writer = writer
+        self.keys = dict(keys)
         self.crate = ROCrate()
         self.crate.metadata.extra_contexts.append(_WORKFLOW_RUN_CONTEXT)
         #: Every materialized task, sorted: the one iteration order.
@@ -314,7 +333,29 @@ class _Builder:
         properties: dict[str, Any] = {}
         if fmt := _format_of(name):
             properties["encodingFormat"] = fmt
+        properties.update(self._integrity(name))
         return self.crate.add_file(self.root / name, name, properties=properties)
+
+    def _integrity(self, name: str) -> dict[str, str]:
+        """``sha256`` and ``contentSize`` for one repository file.
+
+        An annexed file answers from its key — the working tree may hold
+        only a pointer, and hashing that would publish a digest of the
+        wrong bytes — and a git-carried file from the bytes themselves.
+        Both are repository state, so the render stays pure. A file
+        neither annexed nor readable carries no claim at all.
+        """
+        if key := self.keys.get(name):
+            if digest := _SHA256_KEY.match(key):
+                return {"contentSize": digest.group(1), "sha256": digest.group(2)}
+            if size := _KEY_SIZE.match(key):
+                return {"contentSize": size.group(1)}
+            return {}
+        try:
+            data = (self.root / name).read_bytes()
+        except OSError:
+            return {}
+        return {"contentSize": str(len(data)), "sha256": hashlib.sha256(data).hexdigest()}
 
     def _dataset_id(self, key: Key) -> str:
         """One output directory's crate id — :func:`plan.declared_path`'s
@@ -331,6 +372,13 @@ class _Builder:
         manifest_file = self._file(f"{dataset_id}{assets.MANIFEST_FILENAME}")
         manifest_file["about"] = {"@id": dataset_id}
         entity["subjectOf"] = {"@id": manifest_file.id}
+        # Every file the directory holds, each with the checksum its
+        # annex key already carries — the claim `sha256sum` can check
+        # after a `git archive` deposit, where `version` above is lc's
+        # own framed directory digest and deliberately is not that.
+        parts = [manifest_file]
+        parts += [self._file(name) for name in sorted(self.keys) if name.startswith(dataset_id)]
+        entity["hasPart"] = [{"@id": part.id} for part in parts]
 
     # ----- the runs -----
 
@@ -374,7 +422,7 @@ class _Builder:
                 if upstream in self.made_keys:
                     refs.append({"@id": self._dataset_id(upstream)})
                 continue
-            refs.append({"@id": self._external(name, task.inputs[name], manifest)})
+            refs.append({"@id": self._external(name, task.inputs[name])})
         # The *recorded* decisions: the values the recipe actually ran
         # under, whatever the spec says today. A decision the workflow no
         # longer declares gets no exampleOfWork — there is no parameter
@@ -394,33 +442,31 @@ class _Builder:
             refs.append({"@id": value.id})
         return refs
 
-    def _external(self, name: str, path: Path, manifest: assets.Manifest) -> str:
+    def _external(self, name: str, path: Path) -> str:
         """A declared input the spec points at, in or out of the tree.
 
         In-or-out is :func:`plan.declared_path`'s answer — relative
         inside the tree, absolute outside it — never a second spelling
         of that rule here: two copies of one path rule is how the first
         one shipped a bug.
+
+        An in-tree input's checksum comes from its annex key, like every
+        other file. An out-of-tree input carries none: its recorded
+        ``input_versions`` digest is lc's *framed* hash, not a raw
+        sha256, so publishing it under the workflow-run ``sha256`` term
+        would be a checksum nothing can verify — the manifests keep the
+        full story, which is the layer's stated weaker promise.
         """
         declared = plan.declared_path(self.root, path)
         in_tree = not Path(declared).is_absolute()
         entity_id = declared if in_tree else Path(declared).as_uri()
-        recorded = manifest.input_versions.get(name, "")
-        digest = recorded.removeprefix("sha256:") if recorded.startswith("sha256:") else ""
-        if (existing := self.crate.dereference(entity_id)) is not None:
-            # Two manifests can testify to different bytes for one input
-            # — a half-rebuilt project. Publishing either digest would
-            # contradict a manifest in the same crate, so publish
-            # neither; the manifests themselves keep the full story.
-            if digest and existing.get("sha256") not in (None, digest):
-                existing.pop("sha256")
+        if self.crate.dereference(entity_id) is not None:
             return entity_id
         properties: dict[str, Any] = {"@type": "File", "name": declared}
         if fmt := _format_of(declared):
             properties["encodingFormat"] = fmt
-        if digest:
-            properties["sha256"] = digest
         if in_tree:
+            properties.update(self._integrity(declared))
             self.crate.add_file(path, declared, properties=properties)
         else:
             # Outside the repository: recorded by content, not stored

@@ -786,6 +786,7 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             license=spdx,
             dsid=dsid,
             writer=functools.partial(dataset.last_writer, root),
+            keys=dataset.annex_keys(root),
         )
         if not (path.is_file() and path.read_text() == document):
             path.write_text(document)

@@ -241,6 +241,38 @@ def last_writer(directory: Path, path: Path) -> LastWrite:
     return LastWrite(*out.split("\0"))
 
 
+def annex_keys(directory: Path) -> dict[str, str]:
+    """Map every annexed file to its key, repository-relative.
+
+    One process for the whole tree. ``--include=*`` is load-bearing: a
+    bare ``find`` lists only files whose *content* is present, and the
+    crate must answer on a clone that holds none of the bytes — the keys
+    are repository state, which is what keeps the render pure.
+
+    "Cannot say" — no annex, no git, an unborn repository — is the empty
+    answer, never an error, the :func:`last_writer` discipline.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        ``{relative path: key}`` for every annexed file.
+    """
+    argv = ["annex", "find", "--include=*", "--format=${file}\\t${key}\\n"]
+    try:
+        proc = project._run(["git", *argv], cwd=directory)
+    except OSError:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    keys: dict[str, str] = {}
+    for line in str(proc.stdout or "").splitlines():
+        file, sep, key = line.partition("\t")
+        if sep and file and key:
+            keys[file] = key
+    return keys
+
+
 def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
     """Commit *paths*.
 
