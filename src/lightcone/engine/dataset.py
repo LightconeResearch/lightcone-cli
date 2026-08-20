@@ -200,19 +200,28 @@ def last_writer(directory: Path, path: Path) -> tuple[str, str, str, str, str]:
     repository — and since nothing parses paths out of its output, no
     prefix handling is needed.
 
+    "Cannot say" is the empty answer, never an error: the callers are
+    ``lc status`` and the crate render, and a read-only verb must not
+    refuse a project over an unborn HEAD, a deposit stripped of its
+    ``.git``, or a host without git — states such projects are actually
+    in.
+
     Args:
         directory: The project root.
         path: The path to ask about, absolute or repository-relative.
 
     Returns:
         ``(sha, subject, author name, author email, author date)``, all
-        empty when no commit has touched the path.
+        empty when no commit has touched the path — or when git cannot
+        answer at all.
     """
-    out = _git(
-        ["log", "-1", "--format=%H%x00%s%x00%an%x00%ae%x00%as", "--", _rel(directory, path)],
-        cwd=directory,
-    ).strip("\n")
-    if not out:
+    argv = ["log", "-1", "--format=%H%x00%s%x00%an%x00%ae%x00%as", "--", _rel(directory, path)]
+    try:
+        proc = project._run(["git", *argv], cwd=directory)
+    except OSError:
+        return ("", "", "", "", "")
+    out = str(proc.stdout or "").strip("\n")
+    if proc.returncode != 0 or not out:
         return ("", "", "", "", "")
     sha, subject, author, email, date = out.split("\0")
     return (sha, subject, author, email, date)

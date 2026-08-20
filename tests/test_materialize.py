@@ -922,22 +922,38 @@ def test_a_materialized_output_has_no_foreign_write(root: Path, inline: None) ->
     assert all(not o.foreign_write for o in engine.status(root).outputs)
 
 
-def test_status_names_a_foreign_commit_that_touched_an_output(
-    root: Path, inline: None
-) -> None:
-    """The agent-forged-file fact: a hand-edited-and-committed output reads
-    `current` forever, because a skip returns the recorded digest — so
-    status says who wrote it last, since it was not the run record."""
+def test_a_foreign_write_is_stale_and_names_its_commit(root: Path, inline: None) -> None:
+    """The agent-forged-file fact: a hand-edited-and-committed output would
+    read `current` forever, because a skip returns the recorded digest —
+    so a directory last written by anything but its own run record is a
+    *contradiction*, and contradiction is what `stale` means."""
     engine.materialize(root, [])
     forged = root / "results" / "baseline" / "first" / "value.txt"
     _forge(forged, "curated by hand\n")
     dataset.save(root, [forged.parent], "tweak colors")
 
-    flagged = {o.output: o.foreign_write for o in engine.status(root).outputs}
+    outputs = {o.output: o for o in engine.status(root).outputs}
 
-    assert "tweak colors" in flagged["baseline/first"]
-    assert "git show" in flagged["baseline/first"]
-    assert not flagged["baseline/second"]
+    assert outputs["baseline/first"].status == "stale"
+    assert "tweak colors" in outputs["baseline/first"].foreign_write
+    assert "git show" in outputs["baseline/first"].why
+    assert not outputs["baseline/second"].foreign_write
+
+
+def test_check_plans_the_remake_of_a_foreign_written_output(
+    root: Path, inline: None
+) -> None:
+    """Status and `--check` answer from one walk, so they cannot disagree
+    about a foreign write — and the gate exits nonzero over it."""
+    engine.materialize(root, [])
+    forged = root / "results" / "baseline" / "first" / "value.txt"
+    _forge(forged, "curated by hand\n")
+    dataset.save(root, [forged.parent], "tweak colors")
+
+    report = engine.check(root, [])
+
+    assert any("tweak colors" in why for why in report.planned.values())
+    assert not report.up_to_date
 
 
 def test_the_foreign_write_fact_survives_a_bytes_free_clone(
@@ -952,31 +968,27 @@ def test_the_foreign_write_fact_survives_a_bytes_free_clone(
     dataset.save(root, [forged.parent], "tweak colors")
     clone = _clone(root, tmp_path)
 
-    flagged = {o.output: o.foreign_write for o in engine.status(clone).outputs}
+    outputs = {o.output: o for o in engine.status(clone).outputs}
 
-    assert "tweak colors" in flagged["baseline/first"]
-    assert not flagged["baseline/second"]
+    assert outputs["baseline/first"].status == "stale"
+    assert "tweak colors" in outputs["baseline/first"].foreign_write
+    assert not outputs["baseline/second"].foreign_write
 
 
-def test_a_rebuild_clears_the_foreign_write(root: Path, inline: None) -> None:
-    """Deleting the directory is the consent that remakes a current output;
-    the rebuild's own run record then becomes the last writer again."""
+def test_the_next_run_remakes_a_foreign_written_output(root: Path, inline: None) -> None:
+    """`results/` is lc's to write — the same philosophy as the dirty-tree
+    refusal's path split — so a committed hand edit is remade, and the
+    rebuild's own run record becomes the last writer again."""
     engine.materialize(root, [])
     forged = root / "results" / "baseline" / "first" / "value.txt"
     _forge(forged, "curated by hand\n")
     dataset.save(root, [forged.parent], "tweak colors")
-    _rmtree_and_commit(root, forged.parent)
 
-    engine.materialize(root, [])
+    report = engine.materialize(root, [])
 
+    assert "baseline/first" in report.made
+    assert forged.read_text() == "alpha\n"  # the recipe's bytes, not the hand's
     assert all(not o.foreign_write for o in engine.status(root).outputs)
-
-
-def _rmtree_and_commit(root: Path, directory: Path) -> None:
-    import shutil
-
-    shutil.rmtree(directory)
-    dataset.save(root, [directory], "drop the forged output")
 
 
 # ---- the publication view --------------------------------------------------

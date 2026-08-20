@@ -134,7 +134,7 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
             read, or a target matches nothing.
     """
     report = MaterializeReport()
-    for key, verdict, _ in _classified(root, targets, report, refresh=refresh):
+    for key, verdict, _, _ in _classified(root, targets, report, refresh=refresh):
         name = _name(key)
         if verdict.calls_for_a_remake(refresh=refresh):
             report.planned[name] = verdict.why
@@ -147,7 +147,7 @@ def check(root: Path, targets: Sequence[str], *, refresh: bool = False) -> Mater
 
 def _classified(
     root: Path, targets: Sequence[str], report: MaterializeReport, *, refresh: bool
-) -> list[tuple[Key, assets.Verdict, assets.Manifest | None]]:
+) -> list[tuple[Key, assets.Verdict, assets.Manifest | None, str]]:
     """Classify every task in topological order, reading nothing but disk.
 
     The walk both read-only modes share, so there is one answer to "what
@@ -166,7 +166,8 @@ def _classified(
             decides whether their dependents see the sentinel.
 
     Returns:
-        One ``(key, verdict, manifest)`` per task, upstream first.
+        One ``(key, verdict, manifest, foreign write)`` per task, upstream
+        first.
     """
     graph, env_version = _graph(root, targets, report)
     versions = assets.Versions()
@@ -183,9 +184,18 @@ def _classified(
             manifest=manifest,
             inputs=_predicted(root, task, would_run, versions, unfetched),
         )
+        # A foreign write is a *contradiction*, not a circumstance: the
+        # directory was last written by something other than its own run
+        # record, so the manifest no longer describes the bytes. That is
+        # `stale` by the model's own definition — escalated here, driver-
+        # side, because history is git's to answer and `classify` stays
+        # pure. An output already stale keeps its more actionable why.
+        foreign = "" if manifest is None else _foreign_write(root, key)
+        if foreign and verdict.status != "stale":
+            verdict = assets.Verdict("stale", foreign)
         if verdict.calls_for_a_remake(refresh=refresh):
             would_run.add(key)
-        classified.append((key, verdict, manifest))
+        classified.append((key, verdict, manifest, foreign))
 
     if unfetched:
         report.warnings.append(
@@ -273,12 +283,14 @@ class OutputStatus:
     data_version: str
     #: Empty when the commit that last touched the output's directory is
     #: its own run record. Otherwise the foreign commit, named — the
-    #: agent-forged-file fact: a hand-edited-and-committed output reads
-    #: `current` forever, because a skip returns the recorded digest, and
-    #: this is the one place that says so. History-based on purpose: it
-    #: costs no hashing and answers on a clone that holds none of the
-    #: bytes. What it leaves to existing tools: uncommitted edits are a
-    #: dirty tree, and annex object corruption is `git annex fsck`.
+    #: agent-forged-file fact, which also makes ``status`` read `stale`:
+    #: the manifest no longer describes the bytes, and a skip would
+    #: return the recorded digest forever. Kept as its own field so a
+    #: machine consumer can tell a foreign write from any other stale
+    #: without parsing prose. History-based on purpose: it costs no
+    #: hashing and answers on a clone that holds none of the bytes. What
+    #: it leaves to existing tools: uncommitted edits are a dirty tree,
+    #: and annex object corruption is `git annex fsck`.
     foreign_write: str = ""
 
     def as_dict(self) -> dict[str, Any]:
@@ -358,7 +370,7 @@ def status(root: Path) -> StatusReport:
     if state != "direct":
         result.image = {"tag": tag, "state": state, "archive": archive}
     result.sandbox = _sandbox_line(result.mode)
-    for key, verdict, manifest in _classified(root, [], report, refresh=False):
+    for key, verdict, manifest, foreign in _classified(root, [], report, refresh=False):
         result.outputs.append(
             OutputStatus(
                 output=_name(key),
@@ -366,7 +378,7 @@ def status(root: Path) -> StatusReport:
                 why=verdict.why,
                 git_sha=manifest.git_sha if manifest else "",
                 data_version=manifest.data_version if manifest else "",
-                foreign_write="" if manifest is None else _foreign_write(root, key),
+                foreign_write=foreign,
             )
         )
     result.warnings = report.warnings
@@ -378,12 +390,12 @@ def _foreign_write(root: Path, key: Key) -> str:
     the output's own run record — then empty, the clean answer."""
     directory = assets.output_dir(root, *key)
     sha, subject, author, _, date = dataset.last_writer(root, directory)
-    if not sha or subject == run_subject(key):
+    if not sha or subject == datalad_run_subject(key):
         return ""
     return (
         f'last changed by {sha[:7]} ("{subject}", {author}, {date}) rather than '
-        f"its run record, so the manifest may not describe these bytes — "
-        f"inspect with `git show {sha[:7]}`, or rebuild by deleting the directory"
+        f"its run record, so the manifest no longer describes these bytes — "
+        f"the next run remakes it; inspect first with `git show {sha[:7]}`"
     )
 
 
@@ -455,6 +467,10 @@ def materialize(
     # "failed" on a typo in the spec.
     graph, env_version = _graph(root, targets, report)
     if not graph.tasks:
+        # No tasks is not no project: a spec whose outputs were all
+        # dropped still has a crate describing them, and this is its
+        # only maintainer.
+        _converge_crate(root, report, full=graph if not targets else None)
         return report
     _fetch_inputs(root, graph, report)
     # Before the runtime resolves, because the refusal must not cost an
@@ -495,6 +511,12 @@ def materialize(
     # declared input shared by several outputs — or by one output across
     # several universes — is the same bytes every time it is asked for.
     versions = assets.Versions()
+    # The history question is the driver's to answer — workers have no
+    # git, by design — so each task is told up front whether its
+    # directory was last written by something other than its own run
+    # record. A foreign write contradicts the manifest, and a worker that
+    # trusted the recorded digest would skip the output forever.
+    foreign = {key: bool(_foreign_write(root, key)) for key in graph.tasks}
     outstanding: dict[Key, Task] = dict(graph.tasks)
     try:
         with cluster_for_run() as scheduler:
@@ -512,6 +534,7 @@ def materialize(
                     head,
                     versions,
                     refresh,
+                    foreign[key],
                     runtime,
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
@@ -526,7 +549,7 @@ def materialize(
         # survive.
         for task in outstanding.values():
             dataset.restore(root, [task.output_dir])
-    _converge_crate(root, report)
+    _converge_crate(root, report, full=graph if not targets else None)
     return report
 
 
@@ -694,7 +717,7 @@ def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
 # =============================================================================
 
 
-def _converge_crate(root: Path, report: MaterializeReport) -> None:
+def _converge_crate(root: Path, report: MaterializeReport, full: Graph | None = None) -> None:
     """Bring ``ro-crate-metadata.json`` in line with the repository.
 
     A derived artifact, converged the way ``uv.lock`` is: rendered from
@@ -707,6 +730,20 @@ def _converge_crate(root: Path, report: MaterializeReport) -> None:
     run's targets — the crate describes the project, not one invocation.
     (The rerun entry point does not come through here: it is one task's
     executor, so the crate lags until the next materialize.)
+
+    Contained on purpose: by the time this runs every output is already
+    committed, so a failure here becomes a warning and the report still
+    reaches the user — the crate is the publication view, not the run.
+    An interrupt between the write and its commit restores the file, so
+    the tree ends as clean as the loop left it; and the save runs even
+    when the text already matches, healing a previously interrupted
+    converge whose write survived uncommitted.
+
+    Args:
+        root: The project root.
+        report: Collects the one maintenance line and any warnings.
+        full: The whole-project graph, when the caller already built one
+            — a targeted run's is narrowed, so it rebuilds here.
     """
     import functools
 
@@ -723,30 +760,44 @@ def _converge_crate(root: Path, report: MaterializeReport) -> None:
             "publication view is maintained — declare one to enable it"
         )
         return
-    full = plan.build(root)
-    for directory in sorted((root / "results").glob("*/*/")):
-        key = (directory.parent.name, directory.name)
-        if key not in full.tasks and assets.read(directory) is not None:
-            report.warnings.append(
-                f"results/{key[0]}/{key[1]} has a manifest but the spec no "
-                "longer declares it, so it is not in the publication view"
-            )
     try:
-        engine_url = _repository_url()
-    except ProjectError:
-        engine_url = ""
-    document = crate.render(
-        root,
-        full,
-        license=spdx,
-        dsid=dataset.dataset_id(root),
-        writer=functools.partial(dataset.last_writer, root),
-        engine_url=engine_url,
-    )
-    if path.is_file() and path.read_text() == document:
-        return
-    path.write_text(document)
-    dataset.save(root, [path], "Update the RO-Crate publication view")
+        graph = full if full is not None else plan.build(root)
+        for directory in sorted((root / "results").glob("*/*/")):
+            key = (directory.parent.name, directory.name)
+            if key not in graph.tasks and assets.read(directory) is not None:
+                report.warnings.append(
+                    f"results/{key[0]}/{key[1]} has a manifest but the spec no "
+                    "longer declares it, so it is not in the publication view"
+                )
+        try:
+            engine_url = _repository_url()
+        except ProjectError:
+            engine_url = ""
+        document = crate.render(
+            root,
+            graph,
+            license=spdx,
+            dsid=dataset.dataset_id(root),
+            # Cached: the render asks about `astra.yaml` and each run's
+            # directory more than once, and one answer per path per run
+            # is the memo discipline `assets.Versions` already sets.
+            writer=functools.lru_cache(maxsize=None)(
+                functools.partial(dataset.last_writer, root)
+            ),
+            engine_url=engine_url,
+        )
+        if not (path.is_file() and path.read_text() == document):
+            path.write_text(document)
+        try:
+            dataset.save(root, [path], "Update the RO-Crate publication view")
+        except BaseException:
+            # An interrupt or a git failure between the write and its
+            # commit must not leave a file lc wrote for the next run's
+            # dirty refusal to blame on the user.
+            dataset.restore(root, [path])
+            raise
+    except Exception as e:
+        report.warnings.append(f"the RO-Crate publication view could not be updated: {e}")
 
 
 # =============================================================================
@@ -803,17 +854,19 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         info["extra_inputs"] = [runtime.archive]
     body = json.dumps(info, indent=1, sort_keys=True, ensure_ascii=False)
     return (
-        f"{run_subject(task.key)}\n\n"
+        f"{datalad_run_subject(task.key)}\n\n"
         "=== Do not change lines below ===\n"
         f"{body}\n"
         "^^^ Do not change lines above ^^^"
     )
 
 
-def run_subject(key: Key) -> str:
-    """The subject line of *key*'s run-record commit.
+def datalad_run_subject(key: Key) -> str:
+    """The subject line of *key*'s ``[DATALAD RUNCMD]`` commit — datalad's
+    format, which its ``rerun`` matches with a regex, not a spelling of
+    ours to adjust.
 
-    One spelling, shared with the foreign-write check: an output is
+    One function, shared with the foreign-write check: an output is
     cleanly written iff the commit that last touched its directory
     carries exactly this subject, so the composer and the comparator must
     not be two strings that can drift apart.

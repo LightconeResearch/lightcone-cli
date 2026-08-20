@@ -296,11 +296,19 @@ def test_a_never_materialized_project_still_describes_its_workflow(project: Path
     assert "astra.yaml" in entities
 
 
-def test_the_license_is_an_spdx_entity(project: Path) -> None:
+def test_the_license_is_a_local_entity_never_a_minted_url(project: Path) -> None:
+    """The declaration is not validated against the SPDX list, so a minted
+    spdx.org URL could be a fabricated dead link — a local CreativeWork
+    carries the declared string instead, and a URL license is used as
+    given."""
     entities = _entities(_render(project, _graph(project)))
 
-    assert entities["./"]["license"] == {"@id": "https://spdx.org/licenses/MIT"}
-    assert entities["https://spdx.org/licenses/MIT"]["@type"] == "CreativeWork"
+    assert entities["./"]["license"] == {"@id": "#license"}
+    assert entities["#license"] == {
+        "@id": "#license",
+        "@type": "CreativeWork",
+        "name": "MIT",
+    }
 
 
 def test_license_of_reads_every_spelling(tmp_path: Path) -> None:

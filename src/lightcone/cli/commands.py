@@ -365,12 +365,13 @@ def status(as_json: bool) -> None:
         # the interesting ones: "which code made this" is the question the
         # verb exists to answer, and it has an answer for a current output
         # too.
+        # A foreign write arrives as an ordinary stale with its message in
+        # `why`, so the one rendering path covers it; the dedicated field
+        # exists for machine consumers of `--json`.
         lines.append(
             f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
             f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{o.why}[/dim]" if o.why else "")
         )
-        if o.foreign_write:
-            lines.append(f"      [yellow]! foreign write:[/yellow] {o.foreign_write}")
     lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
 
     counts = report.counts

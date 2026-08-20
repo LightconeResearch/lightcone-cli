@@ -54,7 +54,7 @@ speculatively.
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
 | 7 | **Venues** — SLURM in-allocation execution, login guard, podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
-| 8 | **Publication view** — the RO-Crate converged by materialize, the foreign-write status fact; **no `lc verify`, no `lc export`, by decision** | ✅ **done** |
+| 8 | **Publication view** — the RO-Crate converged by materialize, foreign writes stale by history; **no `lc verify`, no `lc export`, by decision** | ✅ **done** |
 
 `lc status` landed with the invalidation model rather than at layer 8:
 once an output can be *behind*, something has to say which ones are, and
@@ -1762,30 +1762,39 @@ floor to shrink. Gated like the container smoke suite:
 `LC_CRATE_TESTS_REQUIRED=1` in CI turns the no-validator skip into a
 failure, two tests cover the guard.
 
-**Integrity is a status fact, not a verb — and it is history, not
+**A foreign write is `stale`, everywhere, and it is history, not
 hashing.** The hole layer 4 recorded: a skip returns the *recorded*
 digest, so a hand-edited-and-committed output (the agent-forged-file
 scenario) reads `current` forever. The check: every output is
-committed, so a hand edit requires a commit, and
-`dataset.last_writer` names it — an output is cleanly written iff the
-commit that last touched its directory carries its own run-record
-subject. `materialize.run_subject` is the one spelling of that subject,
+committed, so a hand edit requires a commit, and `dataset.last_writer`
+names it — an output is cleanly written iff the commit that last
+touched its directory carries its own run-record subject.
+`materialize.datalad_run_subject` is the one spelling of that subject
+(named for whose format it is — datalad's, matched by `rerun`'s regex),
 shared by `run_record` (the composer) and `_foreign_write` (the
-comparator), because two strings here would drift. Surfaced as
-`OutputStatus.foreign_write` with the commit, author, date and a
-`git show` remedy — better forensics than "hash differs", O(history)
-not O(bytes), and it answers on a bytes-free clone, which a rehash
-cannot. Status still always exits 0. A full-rehash `lc verify` was
-considered and rejected: unaffordable per run, blind on unfetched
-outputs, and with no lifecycle moment enforcing it — while status runs
-every time anyone asks where the project stands. What it leaves to
-existing tools, on purpose: uncommitted edits are a dirty tree, annex
-object corruption (the thin-write hazard included) is `git annex
-fsck`, and a manifest lc itself mis-recorded is the accepted residue
-only a rehash would catch. A commit that *forges* the run-record
-subject defeats the check — as a regenerated hash would defeat a
-rehash; the threat model is accidental damage and shortcuts, not
-adversaries (spec §7's line).
+comparator), because two strings here would drift. A hit is a
+*contradiction*, not a circumstance — the manifest no longer describes
+the bytes — so it classifies `stale` and **the next run remakes it**,
+the same philosophy as the dirty refusal's path split: `results/` is
+lc's to write, and a committed hand edit is wreckage with a commit
+message. Three coherent surfaces, one walk: `lc status` reports it
+stale (still exit 0; `OutputStatus.foreign_write` keeps the named
+commit for machine consumers), `--check` plans it, and materialize's
+driver answers the history question up front and hands each worker a
+`foreign` flag — workers have no git, the HEAD discipline on a third
+value. The escalation lives in `_classified`, driver-side;
+`assets.classify` stays pure. `last_writer` answers "cannot say" as
+empty, never an error — a read-only verb must not refuse over an
+unborn HEAD or a stripped `.git`. A full-rehash `lc verify` was
+considered and rejected: O(bytes), blind on unfetched outputs (history
+answers on a bytes-free clone), and with no lifecycle moment enforcing
+it. What it leaves to existing tools, on purpose: uncommitted edits
+are a dirty tree, annex object corruption (the thin-write hazard
+included) is `git annex fsck`, and a manifest lc itself mis-recorded
+is the accepted residue only a rehash would catch. A commit that
+*forges* the run-record subject defeats the check — as a regenerated
+hash would defeat a rehash; the threat model is accidental damage and
+shortcuts, not adversaries (spec §7's line).
 
 **Forging in a test must break the hard link first.** Results are
 committed thin, so two byte-identical outputs share one annex object —
@@ -2046,7 +2055,7 @@ unlinks before writing; a new tampering test should too.
 | Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
 | Change where a run executes | `src/lightcone/engine/venue.py` + `materialize.cluster_for_run` + `tests/test_venue.py` | One detection ladder, in `cluster_for_run` alone; venues are detected, never configured; test by faking the host (env vars + a stub srun), never the code |
 | Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
-| Change how a foreign write is detected | `dataset.last_writer` + `materialize._foreign_write` + `tests/test_dataset.py` | History, never hashing; `run_subject` is the one spelling of the record's subject |
+| Change how a foreign write is detected | `dataset.last_writer` + `materialize._foreign_write` + `tests/test_dataset.py` | History, never hashing; `datalad_run_subject` is the one spelling of the record's subject; a foreign write classifies `stale` in every verb |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
 | Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |

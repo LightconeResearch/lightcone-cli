@@ -37,7 +37,7 @@ from rocrate.model import ContextEntity
 from rocrate.model.computerlanguage import ComputerLanguage
 from rocrate.rocrate import ROCrate
 
-from lightcone.engine import assets, plan, worker
+from lightcone.engine import assets, plan
 from lightcone.engine.plan import Graph, Key
 
 CRATE_FILENAME = "ro-crate-metadata.json"
@@ -155,7 +155,14 @@ class _Builder:
         )
         self.persons: dict[str, str] = {}  # email/name → @id
         self.images: dict[str, str] = {}  # archive path → @id
+        self.engines: dict[str, str] = {}  # lc_version → @id
+        self.parameters: set[str] = set()  # decision ids declared on the workflow
         self.actions: list[ContextEntity] = []
+        #: Loop invariants, asked once: the uuid5 namespace every minted
+        #: id lives under, and the project's one recorded remote.
+        self.namespace = uuid.uuid5(uuid.NAMESPACE_URL, dsid)
+        remotes = {m.git_remote for _, m in self.made if m.git_remote}
+        self.remote = remotes.pop() if len(remotes) == 1 else ""
 
     def document(self) -> str:
         """Assemble the graph and serialize it, deterministically."""
@@ -198,7 +205,6 @@ class _Builder:
                 "name": "ASTRA",
                 "alternateName": "Agentic Schema for Transparent Research Analysis",
                 "url": "https://pypi.org/project/astra-tools/",
-                "version": _astra_version(),
             },
         )
         self.crate.add(lang)
@@ -222,15 +228,16 @@ class _Builder:
             "@id": "https://bioschemas.org/profiles/ComputationalWorkflow/1.0-RELEASE"
         }
         workflow["license"] = self._license_ref()
-        if remote := self._remote():
-            workflow["url"] = remote
+        if self.remote:
+            workflow["url"] = self.remote
         if sha:
             # The spec's version is the commit that last changed it — the
             # only version an astra.yaml actually has.
             workflow["version"] = sha[:7]
             workflow["dateCreated"] = date
             workflow["creator"] = {"@id": self._person(author, email)}
-        for decision in sorted({d for _, t in self.graph.tasks.items() for d in t.decisions}):
+        self.parameters = {d for _, t in self.graph.tasks.items() for d in t.decisions}
+        for decision in sorted(self.parameters):
             parameter = ContextEntity(
                 self.crate,
                 f"#param-{decision}",
@@ -256,8 +263,8 @@ class _Builder:
                     "description": f"the recipe of output `{output_id}`",
                 },
             )
-            if remote := self._remote():
-                tool["url"] = remote
+            if self.remote:
+                tool["url"] = self.remote
             if version := self._spec_sha():
                 tool["softwareVersion"] = version
             self.crate.add(tool)
@@ -283,17 +290,12 @@ class _Builder:
         sha = self.writer(self.root / "astra.yaml")[0]
         return sha[:7]
 
-    def _remote(self) -> str:
-        """The project's one remote as its manifests recorded it, or empty."""
-        remotes = {m.git_remote for _, m in self.made if m.git_remote}
-        return remotes.pop() if len(remotes) == 1 else ""
-
     def _tool_id(self, output_id: str) -> str:
         """An id for one output's recipe — under the project's own
         repository URL when it has one (an http URI, which is what the
         profiles prefer for an application), a ``urn:uuid`` otherwise."""
-        if remote := self._remote():
-            return f"{remote}#tool/{output_id}"
+        if self.remote:
+            return f"{self.remote}#tool/{output_id}"
         return self._uri(f"tool/{output_id}")
 
     # ----- the data entities -----
@@ -314,7 +316,9 @@ class _Builder:
         )
 
     def _file(self, name: str, **extra: Any) -> Any:
-        properties = {"encodingFormat": _format_of(name), **extra}
+        properties = dict(extra)
+        if fmt := _format_of(name):
+            properties["encodingFormat"] = fmt
         return self.crate.add_file(self.root / name, name, properties=properties)
 
     def _dataset(self, key: Key, manifest: assets.Manifest) -> str:
@@ -340,7 +344,10 @@ class _Builder:
         properties: dict[str, Any] = {
             "@type": "CreateAction",
             "name": f"run of `{output_id}` in universe `{universe_id}`",
-            "description": task.recipe,
+            # The *recorded* recipe, not the graph's: the action states
+            # what ran, and the spec may have moved since — the manifest
+            # is the canonical record of the execution.
+            "description": manifest.recipe,
             "instrument": {"@id": self._tool_id(output_id)},
             "result": [{"@id": datasets[key]}],
             "actionStatus": "http://schema.org/CompletedActionStatus",
@@ -377,39 +384,58 @@ class _Builder:
                     refs.append({"@id": datasets[upstream]})
                 continue
             refs.append({"@id": self._external(name, task.inputs[name], manifest)})
-        for decision in sorted(task.decisions):
+        # The *recorded* decisions: the values the recipe actually ran
+        # under, whatever the spec says today. A decision the workflow no
+        # longer declares gets no exampleOfWork — there is no parameter
+        # for it to exemplify.
+        for decision in sorted(manifest.decisions):
+            properties: dict[str, Any] = {
+                "@type": "PropertyValue",
+                "name": decision,
+                "value": manifest.decisions[decision],
+            }
+            if decision in self.parameters:
+                properties["exampleOfWork"] = {"@id": f"#param-{decision}"}
             value = ContextEntity(
-                self.crate,
-                f"#value-{key[0]}-{key[1]}-{decision}",
-                properties={
-                    "@type": "PropertyValue",
-                    "name": decision,
-                    "value": task.decisions[decision],
-                    "exampleOfWork": {"@id": f"#param-{decision}"},
-                },
+                self.crate, f"#value-{key[0]}-{key[1]}-{decision}", properties
             )
             self.crate.add(value)
             refs.append({"@id": value.id})
         return refs
 
     def _external(self, name: str, path: Path, manifest: assets.Manifest) -> str:
-        """A declared input the spec points at, in or out of the tree."""
+        """A declared input the spec points at, in or out of the tree.
+
+        In-or-out is :func:`plan.declared_path`'s answer — relative
+        inside the tree, absolute outside it — never a second spelling
+        of that rule here: two copies of one path rule is how the first
+        one shipped a bug.
+        """
         declared = plan.declared_path(self.root, path)
-        entity_id = declared if self.root in path.parents else path.as_uri()
-        if self.crate.dereference(entity_id) is None:
-            properties: dict[str, Any] = {"@type": "File", "name": declared}
-            if fmt := _format_of(declared):
-                properties["encodingFormat"] = fmt
-            digest = manifest.input_versions.get(name, "")
-            if digest.startswith("sha256:"):
-                properties["sha256"] = digest.removeprefix("sha256:")
-            if self.root in path.parents:
-                self.crate.add_file(path, declared, properties=properties)
-            else:
-                # Outside the repository: recorded by content, not stored
-                # in it — the layer's stated weaker promise, so a context
-                # entity rather than a data entity the crate cannot hold.
-                self.crate.add(ContextEntity(self.crate, entity_id, properties))
+        in_tree = not Path(declared).is_absolute()
+        entity_id = declared if in_tree else Path(declared).as_uri()
+        recorded = manifest.input_versions.get(name, "")
+        digest = recorded.removeprefix("sha256:") if recorded.startswith("sha256:") else ""
+        if (existing := self.crate.dereference(entity_id)) is not None:
+            # Two manifests can testify to different bytes for one input
+            # — a half-rebuilt project. Publishing either digest would
+            # contradict a manifest in the same crate, so publish
+            # neither; the manifests themselves keep the full story.
+            if digest and existing.get("sha256") not in (None, digest):
+                existing.pop("sha256")
+            return entity_id
+        properties: dict[str, Any] = {"@type": "File", "name": declared}
+        if fmt := _format_of(declared):
+            properties["encodingFormat"] = fmt
+        if digest:
+            properties["sha256"] = digest
+        if in_tree:
+            self.crate.add_file(path, declared, properties=properties)
+        else:
+            # Outside the repository: recorded by content, not stored
+            # in it — the layer's stated weaker promise, so a context
+            # entity rather than a data entity the crate cannot hold.
+            self.crate.add(ContextEntity(self.crate, entity_id, properties))
         return entity_id
 
     def _control(self, key: Key, action: ContextEntity) -> ContextEntity:
@@ -433,9 +459,15 @@ class _Builder:
         runs: dict[str, list[tuple[Key, assets.Manifest]]] = {}
         for key, manifest in self.made:
             runs.setdefault(manifest.git_sha, []).append((key, manifest))
-        engine = self._engine()
         for sha in sorted(runs):
             group = runs[sha]
+            # The engine *that run* recorded, never the one installed
+            # here: the render must be a function of repository state,
+            # or two collaborators on different lc versions re-commit
+            # the crate at each other forever — and an lc upgrade is
+            # recorded as moving nothing. One run has one engine by
+            # construction; every manifest of the group agrees.
+            engine = self._engine(group[0][1].lc_version)
             times = sorted(t for _, m in group for t in (m.started_at, m.finished_at) if t)
             run_action = ContextEntity(
                 self.crate,
@@ -474,14 +506,14 @@ class _Builder:
             )
             self.crate.add(organize)
 
-    def _engine(self) -> str:
-        version = worker.lc_version()
-        engine_id = (
-            f"https://pypi.org/project/lightcone-cli/{version}/"
-            if version
-            else "#lightcone-cli"
-        )
-        if self.crate.dereference(engine_id) is None:
+    def _engine(self, version: str) -> str:
+        """The engine one run's manifests attest, deduplicated by version."""
+        if version not in self.engines:
+            engine_id = (
+                f"https://pypi.org/project/lightcone-cli/{version}/"
+                if version
+                else "#lightcone-cli"
+            )
             properties: dict[str, Any] = {
                 "@type": "SoftwareApplication",
                 "name": "lightcone-cli",
@@ -491,7 +523,8 @@ class _Builder:
             if self.engine_url:
                 properties["url"] = self.engine_url
             self.crate.add(ContextEntity(self.crate, engine_id, properties))
-        return engine_id
+            self.engines[version] = engine_id
+        return self.engines[version]
 
     def _image(self, image: dict[str, Any]) -> str:
         """The committed archive: identity and payload as one entity."""
@@ -564,21 +597,24 @@ class _Builder:
             root["mentions"] = [{"@id": action.id} for action in self.actions]
 
     def _license_ref(self) -> Any:
-        """The root's license value, as an entity where one can be named.
+        """The root's license value, always a linkable entity.
 
-        A path in the tree becomes a File data entity; a URL or a
-        single-token SPDX id becomes a CreativeWork; an SPDX *expression*
-        or free text stays a plain string, which RO-Crate allows.
+        A path in the tree becomes a File data entity; a URL becomes a
+        CreativeWork at that URL; anything else — an SPDX id, an SPDX
+        expression, free text — becomes a *local* CreativeWork carrying
+        the declared string. Deliberately never a minted spdx.org URL:
+        the declaration is not validated against the SPDX list, and a
+        fabricated dead URL in a document built for archives is worse
+        than a local entity.
         """
         if (self.root / self.license).is_file():
             self._file(self.license)
             return {"@id": self.license}
-        if self.license.startswith(("http://", "https://")):
-            license_id = self.license
-        elif " " not in self.license:
-            license_id = f"https://spdx.org/licenses/{self.license}"
-        else:
-            return self.license
+        license_id = (
+            self.license
+            if self.license.startswith(("http://", "https://"))
+            else "#license"
+        )
         self.crate.add(
             ContextEntity(
                 self.crate,
@@ -595,17 +631,7 @@ class _Builder:
         same id in every clone and every render — and an absolute URI is
         what the profiles ask of an application id.
         """
-        namespace = uuid.uuid5(uuid.NAMESPACE_URL, self.dsid)
-        return f"urn:uuid:{uuid.uuid5(namespace, kind)}"
-
-
-def _astra_version() -> str:
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        return version("astra-tools")
-    except PackageNotFoundError:  # pragma: no cover - only in a source tree
-        return ""
+        return f"urn:uuid:{uuid.uuid5(self.namespace, kind)}"
 
 
 #: A closed suffix → media type map, deliberately not ``mimetypes``:
