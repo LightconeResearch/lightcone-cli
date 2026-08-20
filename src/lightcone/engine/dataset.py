@@ -192,6 +192,32 @@ def dataset_id(directory: Path) -> str:
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
+def last_writer(directory: Path, path: Path) -> tuple[str, str, str, str, str]:
+    """Find the commit that last touched *path*.
+
+    Run from the project root with a relative pathspec, so it answers
+    about the project's own subdirectory even inside an enclosing
+    repository — and since nothing parses paths out of its output, no
+    prefix handling is needed.
+
+    Args:
+        directory: The project root.
+        path: The path to ask about, absolute or repository-relative.
+
+    Returns:
+        ``(sha, subject, author name, author email, author date)``, all
+        empty when no commit has touched the path.
+    """
+    out = _git(
+        ["log", "-1", "--format=%H%x00%s%x00%an%x00%ae%x00%as", "--", _rel(directory, path)],
+        cwd=directory,
+    ).strip("\n")
+    if not out:
+        return ("", "", "", "", "")
+    sha, subject, author, email, date = out.split("\0")
+    return (sha, subject, author, email, date)
+
+
 def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
     """Commit *paths*.
 

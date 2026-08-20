@@ -271,6 +271,15 @@ class OutputStatus:
     git_sha: str
     #: Its content identity, or empty if it was never materialized.
     data_version: str
+    #: Empty when the commit that last touched the output's directory is
+    #: its own run record. Otherwise the foreign commit, named — the
+    #: agent-forged-file fact: a hand-edited-and-committed output reads
+    #: `current` forever, because a skip returns the recorded digest, and
+    #: this is the one place that says so. History-based on purpose: it
+    #: costs no hashing and answers on a clone that holds none of the
+    #: bytes. What it leaves to existing tools: uncommitted edits are a
+    #: dirty tree, and annex object corruption is `git annex fsck`.
+    foreign_write: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         """Return the record as JSON-ready data.
@@ -357,10 +366,25 @@ def status(root: Path) -> StatusReport:
                 why=verdict.why,
                 git_sha=manifest.git_sha if manifest else "",
                 data_version=manifest.data_version if manifest else "",
+                foreign_write="" if manifest is None else _foreign_write(root, key),
             )
         )
     result.warnings = report.warnings
     return result
+
+
+def _foreign_write(root: Path, key: Key) -> str:
+    """Name the commit that last touched *key*'s directory, unless it is
+    the output's own run record — then empty, the clean answer."""
+    directory = assets.output_dir(root, *key)
+    sha, subject, author, _, date = dataset.last_writer(root, directory)
+    if not sha or subject == run_subject(key):
+        return ""
+    return (
+        f'last changed by {sha[:7]} ("{subject}", {author}, {date}) rather than '
+        f"its run record, so the manifest may not describe these bytes — "
+        f"inspect with `git show {sha[:7]}`, or rebuild by deleting the directory"
+    )
 
 
 def _sandbox_line(mode: str) -> str:
@@ -502,6 +526,7 @@ def materialize(
         # survive.
         for task in outstanding.values():
             dataset.restore(root, [task.output_dir])
+    _converge_crate(root, report)
     return report
 
 
@@ -665,6 +690,66 @@ def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
 
 
 # =============================================================================
+# The publication view
+# =============================================================================
+
+
+def _converge_crate(root: Path, report: MaterializeReport) -> None:
+    """Bring ``ro-crate-metadata.json`` in line with the repository.
+
+    A derived artifact, converged the way ``uv.lock`` is: rendered from
+    repository state, compared, and committed only on a difference — so
+    an idempotent re-run commits nothing and nobody has to remember a
+    verb. Maintenance is derived from publication intent: a declared
+    ``[project].license`` turns it on, the same shape as
+    ``[tool.lightcone.image]`` deriving containerized mode. Runs after
+    the consume loop, driver-side, on the full graph rather than the
+    run's targets — the crate describes the project, not one invocation.
+    (The rerun entry point does not come through here: it is one task's
+    executor, so the crate lags until the next materialize.)
+    """
+    import functools
+
+    from lightcone.engine import crate
+
+    spdx = crate.license_of(root)
+    path = root / crate.CRATE_FILENAME
+    if not spdx:
+        report.warnings.append(
+            f"pyproject.toml no longer declares [project].license, so "
+            f"{crate.CRATE_FILENAME} is no longer maintained"
+            if path.exists()
+            else "no [project].license in pyproject.toml, so no RO-Crate "
+            "publication view is maintained — declare one to enable it"
+        )
+        return
+    full = plan.build(root)
+    for directory in sorted((root / "results").glob("*/*/")):
+        key = (directory.parent.name, directory.name)
+        if key not in full.tasks and assets.read(directory) is not None:
+            report.warnings.append(
+                f"results/{key[0]}/{key[1]} has a manifest but the spec no "
+                "longer declares it, so it is not in the publication view"
+            )
+    try:
+        engine_url = _repository_url()
+    except ProjectError:
+        engine_url = ""
+    document = crate.render(
+        root,
+        full,
+        license=spdx,
+        dsid=dataset.dataset_id(root),
+        writer=functools.partial(dataset.last_writer, root),
+        engine_url=engine_url,
+    )
+    if path.is_file() and path.read_text() == document:
+        return
+    path.write_text(document)
+    dataset.save(root, [path], "Update the RO-Crate publication view")
+
+
+# =============================================================================
 # The commit
 # =============================================================================
 
@@ -718,11 +803,22 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         info["extra_inputs"] = [runtime.archive]
     body = json.dumps(info, indent=1, sort_keys=True, ensure_ascii=False)
     return (
-        f"[DATALAD RUNCMD] {task.output_id} [{task.universe_id}]\n\n"
+        f"{run_subject(task.key)}\n\n"
         "=== Do not change lines below ===\n"
         f"{body}\n"
         "^^^ Do not change lines above ^^^"
     )
+
+
+def run_subject(key: Key) -> str:
+    """The subject line of *key*'s run-record commit.
+
+    One spelling, shared with the foreign-write check: an output is
+    cleanly written iff the commit that last touched its directory
+    carries exactly this subject, so the composer and the comparator must
+    not be two strings that can drift apart.
+    """
+    return f"[DATALAD RUNCMD] {key[1]} [{key[0]}]"
 
 
 def _engine_requirement() -> str:

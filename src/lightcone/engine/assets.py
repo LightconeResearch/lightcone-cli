@@ -255,6 +255,13 @@ class Manifest:
     lc_version: str
     #: What the sandbox actually enforced, as the boundary attested it.
     hermeticity: dict[str, Any]
+    #: When the recipe entered and left the boundary, ISO 8601 UTC with
+    #: millisecond precision. Attestation, like ``lc_version``: outside
+    #: both hashes, never a rebuild signal — and defaulted empty because
+    #: that is the true value for a manifest written before the fields
+    #: existed, not back-compat machinery.
+    started_at: str = ""
+    finished_at: str = ""
     #: The image the recipe ran in — ``{tag, id, archive, arch}`` — or
     #: ``None`` on the host. Defaulted, and that is not back-compat
     #: machinery: ``None`` is the *true* value for every manifest a

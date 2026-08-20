@@ -360,15 +360,17 @@ def status(as_json: bool) -> None:
     lines.append("")
     marks = {"current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]", "stale": "[yellow]![/yellow]"}
     width = max((len(o.output) for o in report.outputs), default=0)
-    lines += [
+    for o in report.outputs:
         # The commit gets a column of its own, for every state and not only
         # the interesting ones: "which code made this" is the question the
         # verb exists to answer, and it has an answer for a current output
         # too.
-        f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
-        f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{o.why}[/dim]" if o.why else "")
-        for o in report.outputs
-    ]
+        lines.append(
+            f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
+            f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{o.why}[/dim]" if o.why else "")
+        )
+        if o.foreign_write:
+            lines.append(f"      [yellow]! foreign write:[/yellow] {o.foreign_write}")
     lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
 
     counts = report.counts

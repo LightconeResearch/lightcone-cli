@@ -54,7 +54,7 @@ speculatively.
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
 | 7 | **Venues** — SLURM in-allocation execution, login guard, podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
-| 8 | `lc verify`, WRROC export | ⬜ |
+| 8 | **Publication view** — the RO-Crate converged by materialize, the foreign-write status fact; **no `lc verify`, no `lc export`, by decision** | ✅ **done** |
 
 `lc status` landed with the invalidation model rather than at layer 8:
 once an output can be *behind*, something has to say which ones are, and
@@ -165,6 +165,7 @@ src/lightcone/              # namespace — NO __init__.py
     ├── identity.py         # env_version, definition_version, the lock scan
     ├── image.py            # the system layer: declaration, Containerfile, tag — pure
     ├── container.py        # runtimes, the build, the archived image — impure
+    ├── crate.py            # the publication view: the repo as an RO-Crate — pure
     ├── assets.py           # an output: its directory, its manifest, its state
     ├── plan.py             # the spec, read as a graph of tasks
     ├── worker.py           # making one output; also the `python -m` entry point
@@ -1156,7 +1157,11 @@ provides that, and for what workers do *not* need (git, git-annex).
   `git_remote`, `lc_version`, `hermeticity` — and, since layer 6,
   `image` (`{tag, id, archive, arch}`, defaulting to ``None`` because
   that is the true value for a host run — not back-compat machinery,
-  and `SCHEMA_VERSION` stays 1 pre-release). Spec §3's longer list —
+  and `SCHEMA_VERSION` stays 1 pre-release), and since layer 8
+  `started_at` / `finished_at` (ISO 8601 UTC, **millisecond** precision
+  because RO-Crate consumers parse `endTime` with at most three
+  fractional digits; attestation like `lc_version`, defaulted `""`,
+  never read by `classify`). Spec §3's longer list —
   `uv_version`, `platform`, `worker_runtime`, `python_build`,
   `dpkg_snapshot_sha256`, `sdist_built`, `env_snapshot`, `gpu_driver` —
   is attestation nothing here reads; it lands with the verb that reads
@@ -1683,6 +1688,111 @@ that could add a flag); whether Landlock is in the SLES boot LSM list
 the downgrade note); `git annex add`/`get` timings on `$SCRATCH` and
 `$CFS` (the recorded Lustre residue).
 
+## Key Invariants (layer 8)
+
+**The project is the crate, and materialize maintains it — there is no
+export verb.** `ro-crate-metadata.json` sits at the project root as a
+derived artifact, converged by `lc materialize` the way `uv.lock` is:
+`engine/crate.py` renders it from repository state, the hook
+(`materialize._converge_crate`) string-compares it against the tree, and
+only a difference is written and committed — alone, in its own trailing
+commit, which `datalad rerun` skips harmlessly as "no command". Deposit
+is `git archive` / `datalad export-archive` on a repository that is
+already a crate; nothing is copied and there is no bundle directory.
+The rerun entry point deliberately does not regenerate it (it is one
+task's executor, not the driver), so the crate lags until the next
+materialize — recorded residue.
+
+**Publication intent is derived, never configured.** A
+`[project].license` in `pyproject.toml` turns crate maintenance on —
+RO-Crate *requires* a license, materialize must not refuse to run
+science over a missing key, and inventing CC-BY-4.0 (the pre-rebuild
+default) asserts terms over someone's data. Absent ⇒ no crate and one
+report line; removed later ⇒ the file is left (it is in committed
+history either way) and the line says it is no longer maintained. The
+same shape as `[tool.lightcone.image]` deriving containerized mode.
+
+**The document is a pure function of repository state, and that is what
+makes convergence sound.** The clock never enters it: `datePublished` is
+the newest manifest `finished_at` (the spec file's own last-commit date
+for a never-materialized project) and **must override rocrate's
+default**, which stamps construction time — the old exporter carried a
+`datePublished` its code never set. Entities are built in sorted order
+and serialized with `sort_keys`;
+`test_rendering_twice_at_the_same_state_is_byte_identical` pins it. The
+render is also injected-pure: `dataset.last_writer` comes in as a
+callable and `dsid` as a value, so `tests/test_crate.py` runs with no
+git at all.
+
+**Run identity comes free from `git_sha`.** The driver reads HEAD once
+per run and hands it down, so every output of one materialize carries
+the same sha — grouping manifests by it *is* grouping by run, and that
+is what makes the Provenance profile expressible with no new manifest
+field: one `OrganizeAction` + workflow-level `CreateAction` per run, a
+`ControlAction` per output execution, a `HowToStep` per output id
+(deduped across universes: a step is spec structure, an action is one
+execution — exactly how the multiverse maps on).
+
+**The crate's `Person` is the author of the output's *saving* commit,
+via `last_writer` — never the manifest's `git_sha`**, which is the
+commit the run *started* at and can be someone else's. No `--author`
+flag, no env var, no config probe: `require_committer` already
+guarantees the commit has an author.
+
+**The manifest stays canonical; the crate does not transliterate it.**
+`env_version`, `definition_version` and `hermeticity` get no schema.org
+spelling — the manifest itself is in the crate as a `File`, `subjectOf`
+its output's `Dataset`, so nothing is lost and no vocabulary is
+invented. What does get real vocabulary comes from the workflow-run
+`@context` (`https://w3id.org/ro/terms/workflow-run`), without which
+`containerImage`, `sha256` and `ContainerImage` are undefined terms
+JSON-LD drops on expansion — the pre-rebuild exporter's silent failure.
+The committed archive is one entity, `["File", "ContainerImage"]`,
+identity (`sha256` = config-blob id) and payload together.
+
+**The validator floor is pinned as a set, not a count.**
+`tests/test_crate_smoke.py` materializes a real project and runs the
+official `rocrate-validator` (dev dependency) against Provenance Run
+Crate 0.5: REQUIRED must be clean, and RECOMMENDED failures must stay
+within `_FLOOR` — checks the crate cannot truthfully satisfy (the
+workflow's id is its in-crate path and the shape wants `^http`; an
+annex-stored image has no registry; lc knows no publisher and no
+affiliation). A new failure is a regression, a disappearing one is the
+floor to shrink. Gated like the container smoke suite:
+`LC_CRATE_TESTS_REQUIRED=1` in CI turns the no-validator skip into a
+failure, two tests cover the guard.
+
+**Integrity is a status fact, not a verb — and it is history, not
+hashing.** The hole layer 4 recorded: a skip returns the *recorded*
+digest, so a hand-edited-and-committed output (the agent-forged-file
+scenario) reads `current` forever. The check: every output is
+committed, so a hand edit requires a commit, and
+`dataset.last_writer` names it — an output is cleanly written iff the
+commit that last touched its directory carries its own run-record
+subject. `materialize.run_subject` is the one spelling of that subject,
+shared by `run_record` (the composer) and `_foreign_write` (the
+comparator), because two strings here would drift. Surfaced as
+`OutputStatus.foreign_write` with the commit, author, date and a
+`git show` remedy — better forensics than "hash differs", O(history)
+not O(bytes), and it answers on a bytes-free clone, which a rehash
+cannot. Status still always exits 0. A full-rehash `lc verify` was
+considered and rejected: unaffordable per run, blind on unfetched
+outputs, and with no lifecycle moment enforcing it — while status runs
+every time anyone asks where the project stands. What it leaves to
+existing tools, on purpose: uncommitted edits are a dirty tree, annex
+object corruption (the thin-write hazard included) is `git annex
+fsck`, and a manifest lc itself mis-recorded is the accepted residue
+only a rehash would catch. A commit that *forges* the run-record
+subject defeats the check — as a regenerated hash would defeat a
+rehash; the threat model is accidental damage and shortcuts, not
+adversaries (spec §7's line).
+
+**Forging in a test must break the hard link first.** Results are
+committed thin, so two byte-identical outputs share one annex object —
+an in-place `write_text` on one dirties the other, which is the
+recorded thin hazard demonstrating itself. `test_materialize._forge`
+unlinks before writing; a new tampering test should too.
+
 ### Recorded decisions
 
 - **The engine is the host's uv tool, never a project dependency**
@@ -1935,6 +2045,8 @@ the downgrade note); `git annex add`/`get` timings on `$SCRATCH` and
 | Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
 | Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
 | Change where a run executes | `src/lightcone/engine/venue.py` + `materialize.cluster_for_run` + `tests/test_venue.py` | One detection ladder, in `cluster_for_run` alone; venues are detected, never configured; test by faking the host (env vars + a stub srun), never the code |
+| Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
+| Change how a foreign write is detected | `dataset.last_writer` + `materialize._foreign_write` + `tests/test_dataset.py` | History, never hashing; `run_subject` is the one spelling of the record's subject |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
 | Change what a sandboxed command may touch | `sandbox/policy.py` + `tests/test_sandbox_policy.py` | Path sets only — no mechanism ever leaks in here |
@@ -2034,6 +2146,15 @@ The sandbox suite splits along the seam, which is what makes it cheap:
   a real annex, materializes through the real Dask cluster, and runs a
   real `datalad rerun` on a bytes-free clone — the record's whole claim.
   Each denial sits beside its mutation check.
+- `tests/test_crate.py` — **pure**: fixture manifests on `tmp_path`, a
+  hand-built graph, a stub `writer` — no git anywhere. Structure and
+  ordering only; the single byte-level assertion is
+  render-twice-identical, the property convergence rests on.
+  `tests/test_crate_smoke.py` — **the validator's answer**, gated with
+  `LC_CRATE_TESTS_REQUIRED=1` (all CI runners — the validator is a dev
+  dependency, so none may skip): a real materialize, then the official
+  `rocrate-validator` against the Provenance profile, REQUIRED clean and
+  RECOMMENDED pinned to the recorded `_FLOOR` set.
 
 Note the autouse `tools` fixture stubs `engine.project._run` only —
 sandbox tests spawn real processes deliberately, and are the one place in
