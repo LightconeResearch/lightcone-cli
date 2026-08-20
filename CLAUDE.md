@@ -1369,9 +1369,10 @@ stays self-describing without one.
 **The engine never enters the image.** The container is the *recipe's*
 execution world: driver, git, annex, dask and classification all stay the
 host's `lc`, and exactly two things ever run in-image — the environment
-converge (`container.sync`, network on, project `:rw`, host uv cache
-mounted, into `.lightcone/venv`) and each recipe/probe exec
-(`--network none`). This deviates from spec v6.1's full-stack rule,
+converge (`container.sync`, project `:rw`, host uv cache mounted, into
+`.lightcone/venv`) and each recipe/probe exec (mount table only — the
+converge differs by its writable mounts, not by network: the network is
+uncontrolled on every mechanism). This deviates from spec v6.1's full-stack rule,
 recorded: v6.1's reason was the host-sync deadlock, which the
 in-container sync solves, and the spec's own Perlmutter row ("recipe
 wrap, step 3 only — never the dask worker") is this exact shape. What it
@@ -1479,9 +1480,9 @@ every bind read and `:z` would relabel the user's own files. No
 in-container Landlock, no seccomp probe, no shim-in-image: the engine
 container never gets the tree `:rw`, so mounts alone express the whole
 policy, and the attestation (`mechanism: podman|docker`,
-`fs: declared`, `network: denied`) is derived flag-for-flag from the
-argv — `--network none` is the codebase's one honest `denied`, loopback
-intact. One `OCIBackend`, data-parameterized: podman and docker differ
+`fs: declared`, `network: allowed`) is derived flag-for-flag from the
+argv — no flag touches the network, the same non-control every
+mechanism attests. One `OCIBackend`, data-parameterized: podman and docker differ
 in spellings (`--userns=keep-id`+`--pull=never` vs `--user uid:gid`),
 not shape.
 Runtime is **host capability** — detected podman → docker, the
@@ -1665,11 +1666,10 @@ analogue is a one-time archive→SIF conversion into gitignored
 `.lightcone/` cache keyed by the same runtime-independent config-blob
 id (the reason `docker-archive` stays the store format).
 `container.backend()` stays the single construction point; a future
-world-backend is one dataclass in `sandbox/` plus one branch there. A
-runtime that cannot deny network must attest `network: allowed` with no
-denial flag emitted — no consumer may assume containerized ⇒ denied,
-and `_sandbox_line`'s containerized prose is the one place that
-assumption lives today. `boundary.run`'s exit-125 note is a
+world-backend is one dataclass in `sandbox/` plus one branch there.
+Since the hardening pass every mechanism attests `network: allowed`
+with no denial flag emitted, so a store-less runtime has nothing to
+imitate there. `boundary.run`'s exit-125 note is a
 podman/docker-family fact, not a `contains_prefix` fact — it becomes
 mechanism-keyed when a non-OCI backend lands.
 
@@ -1680,8 +1680,7 @@ behavior inside salloc/sbatch steps; `nidXXXXXX` resolution from peer
 nodes (else `--interface hsn0`); `SLURM_CPUS_ON_NODE` on a CPU node
 (128 vs 256 hyperthreads); cold-Lustre `distributed` import vs the
 120 s worker wait; `podman-hpc migrate` accepting a bare image id and
-re-running cheaply; `--network none` on compute nodes (the
-`network: denied` attestation hangs on it); podman-hpc `--module`
+re-running cheaply; podman-hpc `--module`
 site-injected mounts vs the honesty of `fs: declared` (the one item
 that could add a flag); whether Landlock is in the SLES boot LSM list
 (either answer is handled — a host without it attests `fs: open` with
@@ -1970,12 +1969,16 @@ unlinks before writing; a new tampering test should too.
   invokes the shim on lc's own interpreter, so writer and reader are the
   same lightcone-cli by construction, and a compatibility field would be
   backward-compat machinery with no consumer.
-- **Network is not controlled, on either platform**, by decision. §7's
+- **Network is not controlled, on any mechanism**, by decision. §7's
   matrix has Seatbelt record `denied`; the generated SBPL explicitly
-  allows network and both platforms attest `network: allowed`. Symmetric
-  and honest — nothing pretends to a control it does not apply. (codex
-  ships a seccomp denylist for this; adding one is a live option, not a
-  gap we are hiding.)
+  allows network, and since the hardening pass the OCI backend emits no
+  `--network` flag either (it briefly shipped `--network none`, dropped
+  for consistency: three mechanisms, one answer). Every mechanism
+  attests `network: allowed` — symmetric and honest, nothing pretends
+  to a control it does not apply. (codex ships a seccomp denylist for
+  this; adding one is a live option, not a gap we are hiding — and it,
+  or a runtime that genuinely denies, is what the `denied` literal in
+  `Attestation` is reserved for.)
 - **`lc run` has no rename guard and no sandbox flags.** §4's guard
   against `lc run <output_id>` existed only for muscle memory from the
   pre-rebuild CLI — backward compatibility we do not promise — and §7's

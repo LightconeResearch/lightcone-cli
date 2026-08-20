@@ -87,10 +87,10 @@ class Attestation:
     """The hermeticity record for one exec.
 
     Derived from the flags actually applied, never from the mechanism
-    matrix's expectations. ``network`` is ``allowed`` wherever lc applied
-    no restriction — the direct-mode mechanisms — and ``denied`` only
-    where a flag actually denied it, which today is the OCI backend's
-    ``--network none``.
+    matrix's expectations. ``network`` is ``allowed`` everywhere today —
+    lc controls the filesystem, not the network, and every mechanism says
+    so identically. ``denied`` stays in the type for a mechanism that
+    genuinely emits a denial flag; nothing may attest it without one.
     """
 
     mechanism: Literal["landlock", "seatbelt", "podman", "docker", "podman-hpc", "none"]

@@ -355,9 +355,9 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
     """Converge ``.lightcone/venv`` inside the image. The containerized twin
     of ``project.sync``.
 
-    The one container run that gets the network and a writable project
-    mount — converge once, then execute without writing to the
-    environment, the same discipline as direct mode. The host's uv cache
+    The one container run that gets a writable project mount — converge
+    once, then execute without writing to the environment, the same
+    discipline as direct mode. The host's uv cache
     is mounted at its identical path, so a complete environment
     materializes from cache hits in about a second; the cache location is
     ``uv cache dir``'s answer, never a guess, because that is uv's own

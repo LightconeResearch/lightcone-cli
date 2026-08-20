@@ -403,7 +403,7 @@ def _sandbox_line(mode: str) -> str:
     """
     if mode == "containerized":
         if runtime := container.runtime_hint():
-            return f"{runtime} (fs: declared, network: denied)"
+            return f"{runtime} (fs: declared, network: allowed)"
         return "no container runtime — install podman (or docker)"
     from lightcone.engine import sandbox
 

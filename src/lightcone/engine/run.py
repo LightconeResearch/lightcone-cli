@@ -59,8 +59,8 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
             list(command),
             cwd=project,
             # The direct hop converges; the containerized one must not —
-            # the converge above already did, and the exec runs with the
-            # network denied, where a sync cannot.
+            # the converge above already did, into the in-image
+            # environment the hop is about to enter.
             prefix=uv_prefix(project, sync=runtime.mode == "direct"),
             # Same reason as convergence: this uv invocation names its
             # project explicitly, so an environment activated elsewhere

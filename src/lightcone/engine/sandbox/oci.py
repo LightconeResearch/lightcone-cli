@@ -84,7 +84,6 @@ class OCIBackend:
         overlay = [f"--env={k}={v}" for k, v in sorted(policy.env.items())]
         return [
             self.runtime, "run", "--rm",
-            "--network", "none",
             "--entrypoint", "",
             # The rootfs is read-only so a write outside the declared set
             # is a loud denial rather than bytes vanishing with the
@@ -113,9 +112,9 @@ class OCIBackend:
 
         Every value is a flag in :meth:`wrap`'s output: the mounts plus
         the read-only rootfs bound the filesystem to the declared set,
-        and ``--network none`` is a real denial — the one place in the
-        codebase that honestly says ``denied`` (loopback stays intact,
-        which is the meaning of it).
+        and no flag touches the network — ``allowed``, the same answer
+        every mechanism gives, because lc does not control the network
+        anywhere and the attestation says only what was enforced.
 
         Args:
             policy: The policy being wrapped.
@@ -126,5 +125,4 @@ class OCIBackend:
         return Attestation(
             mechanism=self.runtime,
             fs="declared",
-            network="denied",
         )

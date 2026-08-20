@@ -160,9 +160,11 @@ def test_execution_pins_the_image_by_id_never_a_tag(root: Path, policy: Policy) 
     assert not any("lc-env-" in part for part in argv)
 
 
-def test_the_network_is_denied_by_flag(root: Path, policy: Policy) -> None:
+def test_no_flag_touches_the_network(root: Path, policy: Policy) -> None:
+    """lc does not control the network on any mechanism, and the argv is
+    where that has to be true for the `allowed` attestation to be honest."""
     argv = _backend(root).wrap(policy, ["true"])
-    assert "--network" in argv and argv[argv.index("--network") + 1] == "none"
+    assert "--network" not in argv
 
 
 def test_runtimes_differ_only_in_their_spellings(root: Path, policy: Policy) -> None:
@@ -211,7 +213,7 @@ def test_the_attestation_is_derived_from_the_flags(root: Path, policy: Policy) -
         attested = _backend(root, runtime).attest(policy)
         assert attested.mechanism == runtime
         assert attested.fs == "declared"
-        assert attested.network == "denied"
+        assert attested.network == "allowed"
         assert attested.landlock_abi is None
 
 

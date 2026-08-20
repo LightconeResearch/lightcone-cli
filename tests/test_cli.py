@@ -530,7 +530,7 @@ def test_status_headers_answer_mode_image_and_sandbox(
         "state": "absent",
         "archive": ".datalad/environments/lc-env-0123456789abcdef/image",
     }
-    report.sandbox = "podman (fs: declared, network: denied)"
+    report.sandbox = "podman (fs: declared, network: allowed)"
     _status_stub(monkeypatch, report)
 
     output = runner.invoke(main, ["status"]).output
