@@ -494,6 +494,37 @@ def test_ambient_uv_settings_are_scrubbed_and_reported(
     assert any("UV_NO_BINARY" in w for w in report.warnings)
 
 
+def test_an_edit_while_the_graph_runs_is_reported(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dirty check runs at start of run and manifests are written
+    per-output later, so an edit in between leaves manifests whose
+    git_sha no longer describes the code that ran. The run ends with one
+    status call and says so — the honest floor under the unwritten
+    `git_dirty` field."""
+
+    class Editing(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            (root / "notes.md").write_text("scribbled while the graph ran\n")
+            yield from handles
+
+    @contextmanager
+    def fake() -> Iterator[_Inline]:
+        yield Editing()
+
+    monkeypatch.setattr(engine, "cluster_for_run", fake)
+
+    report = engine.materialize(root, [])
+
+    assert report.ok
+    assert any("notes.md" in w and "in flight" in w for w in report.warnings)
+
+
+def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None:
+    report = engine.materialize(root, [])
+    assert not any("in flight" in w for w in report.warnings)
+
+
 # ---- leaving the tree as clean as it was found -----------------------------
 
 

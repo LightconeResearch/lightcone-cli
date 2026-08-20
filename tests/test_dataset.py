@@ -454,6 +454,22 @@ def test_the_annex_executables_are_ours_to_install() -> None:
         assert ours.get(name) == value, f"{name} is not re-declared as {value}"
 
 
+def test_the_worker_and_the_shim_are_never_console_scripts() -> None:
+    """`python -m lightcone.engine.worker` makes an output unconditionally,
+    commits nothing, and leaves the tree dirty by design; the shim is the
+    sandbox's own plumbing. A `[project.scripts]` entry would put either
+    on `$PATH` through `uv tool install` — a footgun `lc --help` already
+    refuses to advertise. Every entry point is either the CLI or a
+    mirrored git-annex executable, and nothing else."""
+    from importlib.metadata import distribution
+
+    theirs = {e.value for e in distribution("git-annex").entry_points}
+    for entry in distribution("lightcone-cli").entry_points:
+        assert "lightcone.engine" not in entry.value
+        assert "_sandbox_exec" not in entry.value
+        assert entry.value.startswith("lightcone.cli") or entry.value in theirs, entry
+
+
 
 
 # ---- who last wrote a path -------------------------------------------------

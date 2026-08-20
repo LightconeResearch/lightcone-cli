@@ -1090,10 +1090,10 @@ design. `lc --help` advertising it would hand people a footgun, and a
 `uv tool install`. `lightcone/_sandbox_exec.py` is the same shape for the
 same reason. Keep it cheap to import — **no click, no rich** — it is on
 the path of every task and every rerun.
-`test_the_worker_module_imports_neither_click_nor_rich` pins the imports
-and `test_help_does_not_advertise_the_worker` the absence from `--help`;
-nothing pins the absence of a `[project.scripts]` entry, so treat that
-as a review item.
+`test_the_worker_module_imports_neither_click_nor_rich` pins the imports,
+`test_help_does_not_advertise_the_worker` the absence from `--help`, and
+`test_the_worker_and_the_shim_are_never_console_scripts` the absence of
+a `[project.scripts]` entry.
 
 **The record's format is datalad's, so it is tested through datalad.**
 `get_run_info` matches with a regex and returns `(None, None)` on any
@@ -1145,8 +1145,13 @@ provides that, and for what workers do *not* need (git, git-annex).
   refusal makes it constant. The limitation that comes with that, stated:
   the check is at start of run while manifests are written per-output much
   later, so a user who edits `src/fit.py` while a long graph runs gets a
-  manifest whose `git_sha` no longer describes the code that ran, and
-  nothing records it.
+  manifest whose `git_sha` no longer describes the code that ran. Since
+  the hardening pass the run *says* so — one `dataset.status` call after
+  the consume loop, warning with the edited paths (the tree started
+  clean and save/restore keeps `results/` clean, so any dirt appeared
+  mid-run) — but still records nothing in the manifest: the driver does
+  not rewrite files the worker owns, and per-output attribution would
+  need a per-save probe nothing has asked for yet.
 - **The manifest carries what this layer can honestly fill.**
   `schema_version`, `output_id`, `universe_id`, `recipe`,
   `definition_version`, `env_version`, `data_version`, `decisions`,

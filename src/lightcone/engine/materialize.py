@@ -601,6 +601,18 @@ def materialize(
         # survive.
         for task in outstanding.values():
             dataset.restore(root, [task.output_dir])
+    # The tree was clean at the start-of-run refusal and save/restore
+    # keeps `results/` clean, so anything dirty *now* was edited while
+    # the graph ran — and every manifest records the starting commit,
+    # which no longer describes that code. A warning, not a manifest
+    # field: the spec's `git_dirty` stays unwritten (see the recorded
+    # deviation), and the driver does not rewrite files the worker owns.
+    if edited := dataset.status(root):
+        names = ", ".join(sorted(path for _, path in edited))
+        report.warnings.append(
+            f"edited while the run was in flight: {names} — the manifests "
+            "record the starting commit, which no longer describes this code"
+        )
     _converge_crate(root, report, full, dsid)
     return report
 
