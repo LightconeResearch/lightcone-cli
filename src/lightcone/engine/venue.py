@@ -28,7 +28,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -46,13 +45,17 @@ _WORKER_WAIT = 120.0
 _REAP_GRACE = 20.0
 
 
-def require_compute_node() -> None:
-    """Refuse to materialize on a NERSC login node.
+def require_compute_node(command: str = "lc materialize") -> None:
+    """Refuse to execute recipes on a NERSC login node.
 
     A login node is for editing and submitting, not computing — and every
     node of an allocation becomes a worker, so the remedy is to run the
     same command inside one. NERSC_HOST is set on compute nodes too; an
     active allocation (SLURM_JOB_ID) is what distinguishes them.
+
+    Args:
+        command: What to name in the refusal — the command whose recipes
+            would have run here.
 
     Raises:
         ProjectError: On a NERSC login node, naming the salloc and sbatch
@@ -61,21 +64,53 @@ def require_compute_node() -> None:
     if "NERSC_HOST" not in os.environ or "SLURM_JOB_ID" in os.environ:
         return
     raise ProjectError(
-        "lc materialize executes on compute nodes, and this is a NERSC login "
-        "node (NERSC_HOST is set with no SLURM allocation active).\n"
+        f"{command} executes recipes on compute nodes, and this is a NERSC "
+        "login node (NERSC_HOST is set with no SLURM allocation active).\n"
         "\n"
-        "Get an allocation and run it there — every node becomes a worker:\n"
+        "Get an allocation and run it there:\n"
         "\n"
         "  interactive:\n"
         "      salloc --nodes=1 --constraint=cpu --qos=interactive --time=02:00:00\n"
-        "      lc materialize\n"
+        f"      {command}\n"
         "\n"
         "  batch (from the project root):\n"
         "      sbatch --nodes=1 --constraint=cpu --qos=regular --time=02:00:00 \\\n"
-        "          --wrap 'lc materialize'\n"
+        f"          --wrap '{command}'\n"
         "\n"
         "lc materialize --check, lc status and lc run work anywhere."
     )
+
+
+def allocation_nodes() -> int:
+    """How many nodes the surrounding SLURM allocation holds; 0 outside one.
+
+    Returns:
+        The node count, or 0 when this process is not inside an
+        allocation.
+
+    Raises:
+        ProjectError: If the allocation's node count is not a number.
+    """
+    if "SLURM_JOB_ID" not in os.environ:
+        return 0
+    value = os.environ.get("SLURM_JOB_NUM_NODES") or os.environ.get("SLURM_NNODES")
+    return _int_env(value, "SLURM_JOB_NUM_NODES") if value else 1
+
+
+def _int_env(value: str, name: str) -> int:
+    """Parse a SLURM count, refusing garbage rather than tracebacking.
+
+    SLURM writes plain integers into the variables read here; anything
+    else is a hand-set or mangled environment — the same leak class as
+    ``SLURM_JOB_ID`` without an srun, and it gets the same treatment.
+    """
+    try:
+        return int(value)
+    except ValueError:
+        raise ProjectError(
+            f"{name}={value!r} is not a number — this does not look like a real "
+            "SLURM allocation. If the variable leaked in from outside, unset it."
+        ) from None
 
 
 @contextmanager
@@ -105,15 +140,29 @@ def slurm_client() -> Iterator[Any]:
             "outside — a container, a copied environment — unset it to run on "
             "this machine alone."
         )
-    nodes = int(os.environ.get("SLURM_JOB_NUM_NODES") or os.environ.get("SLURM_NNODES") or 1)
-    cpus = int(os.environ.get("SLURM_CPUS_ON_NODE") or os.cpu_count() or 1)
+    nodes = allocation_nodes() or 1
+    asked = os.environ.get("SLURM_CPUS_ON_NODE")
+    cpus = _int_env(asked, "SLURM_CPUS_ON_NODE") if asked else os.cpu_count() or 1
     host = os.environ.get("SLURMD_NODENAME") or socket.gethostname()
 
-    with LocalCluster(  # type: ignore[no-untyped-call]
-        n_workers=0,
-        host=host,
-        dashboard_address=None,
-    ) as cluster:
+    try:
+        cluster = LocalCluster(  # type: ignore[no-untyped-call]
+            n_workers=0,
+            host=host,
+            dashboard_address=None,
+        )
+    except (OSError, RuntimeError) as e:
+        # SLURM's NodeName is an alias, not a promise of a resolvable
+        # hostname — a site where it differs from NodeHostname would
+        # otherwise die here as a raw traceback (distributed wraps the
+        # socket.gaierror in a RuntimeError of its own).
+        raise ProjectError(
+            f"cannot start the run's scheduler bound to `{host}` ({e}). The "
+            "usual cause is a node's SLURM name that did not resolve to an "
+            "address this process can bind — workers on the allocation's "
+            "other nodes could not have reached it either."
+        ) from e
+    with cluster:
         with Client(cluster) as client:  # type: ignore[no-untyped-call]
             # Not `project._run`, deliberately: that seam is run-to-completion
             # capture, and this child lives as long as the run — and its
@@ -121,8 +170,12 @@ def slurm_client() -> Iterator[Any]:
             # (bad step, drained node) are the user's to see as they happen.
             env = dict(os.environ)
             env.setdefault("DASK_LOGGING__DISTRIBUTED", "warning")
+            # Literal `/tmp`, not the driver's resolved tempdir: a site
+            # prolog can scope TMPDIR to the node or job step that set
+            # it, and a driver-side path baked into every worker's argv
+            # would then be absent on the allocation's other nodes.
             proc = subprocess.Popen(
-                _srun_argv(cluster.scheduler_address, nodes, cpus, tempfile.gettempdir()),
+                _srun_argv(cluster.scheduler_address, nodes, cpus, "/tmp"),
                 env=env,
             )
             try:

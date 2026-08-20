@@ -433,6 +433,21 @@ def materialize(
     if not graph.tasks:
         return report
     _fetch_inputs(root, graph, report)
+    # Before the runtime resolves, because the refusal must not cost an
+    # image build: a containerized graph can span an allocation only if
+    # every node can see the image, and of the shipped runtimes only
+    # podman-hpc (whose migrate squashes to the shared filesystem)
+    # provides that — podman's and docker's stores are node-local, so
+    # every task scheduled off the driver's node would fail to find an
+    # image `--pull=never` forbids it to fetch.
+    if (nodes := venue.allocation_nodes()) > 1 and project.mode(root) == "containerized":
+        if (name := container.runtime_name(root)) != "podman-hpc":
+            raise ProjectError(
+                f"this allocation spans {nodes} nodes and `{name}`'s image store is "
+                "node-local, so recipes scheduled on the other nodes would not find "
+                "the image. Use a single-node allocation, or a system whose runtime "
+                "shares images across nodes (NERSC's podman-hpc)."
+            )
     # Materialize is one of the two verbs allowed to build the image (the
     # other is `lc build`); the probe and the rerun entry point only find
     # one. Resolved once, then handed to every task — the HEAD discipline.

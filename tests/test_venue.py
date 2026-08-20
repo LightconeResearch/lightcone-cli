@@ -253,3 +253,82 @@ def test_a_dead_srun_reports_its_exit_code(
     with pytest.raises(ProjectError, match="exited with code 3"):
         with venue.slurm_client():
             pass
+
+
+# ---- the fixes the first review asked for -----------------------------------
+
+
+def test_slurm_counts_that_are_not_numbers_refuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mangled count is the same leak class as SLURM_JOB_ID without an
+    srun, and gets the same curated refusal — never a ValueError traceback."""
+    with pytest.raises(ProjectError, match="SLURM_CPUS_ON_NODE"):
+        venue._int_env("72(x2)", "SLURM_CPUS_ON_NODE")
+
+    monkeypatch.setenv("SLURM_JOB_ID", "12345")
+    monkeypatch.setenv("SLURM_JOB_NUM_NODES", "four")
+    with pytest.raises(ProjectError, match="SLURM_JOB_NUM_NODES"):
+        venue.allocation_nodes()
+
+
+def test_allocation_nodes_answers_zero_outside_an_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert venue.allocation_nodes() == 0
+    monkeypatch.setenv("SLURM_JOB_ID", "12345")
+    assert venue.allocation_nodes() == 1  # in one, count unstated
+    monkeypatch.setenv("SLURM_JOB_NUM_NODES", "3")
+    assert venue.allocation_nodes() == 3
+
+
+def test_an_unresolvable_node_name_is_a_refusal_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SLURM's NodeName is an alias, not a promise of a hostname."""
+    _allocation(monkeypatch)
+    monkeypatch.setenv("SLURMD_NODENAME", "no-such-node.invalid")
+    _stub_srun(tmp_path, monkeypatch, "exit 0\n")
+
+    with pytest.raises(ProjectError, match="did not resolve"):
+        with venue.slurm_client():
+            pass
+
+
+def test_a_multi_node_allocation_refuses_a_node_local_image_store(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """podman's and docker's stores are node-local; only podman-hpc's
+    migrate makes an image visible to the allocation's other nodes.
+    Mutation check: the same state under podman-hpc reaches runtime
+    resolution — the gate itself is what stands between them."""
+    from lightcone.engine import container
+
+    text = (root / "pyproject.toml").read_text()
+    (root / "pyproject.toml").write_text(text + '\n[tool.lightcone.image]\napt-install = ["bc"]\n')
+    dataset.save(root, [root], "containerize")
+    _allocation(monkeypatch, nodes=2)
+    monkeypatch.setattr(container, "runtime_name", lambda r: "podman")
+
+    with pytest.raises(ProjectError, match="node-local"):
+        engine.materialize(root, [])
+
+    monkeypatch.setattr(container, "runtime_name", lambda r: "podman-hpc")
+
+    def reached(r: Path, *, build: bool) -> None:
+        raise ProjectError("reached runtime resolution")
+
+    monkeypatch.setattr(container, "runtime_for_run", reached)
+    with pytest.raises(ProjectError, match="reached runtime resolution"):
+        engine.materialize(root, [])
+
+
+def test_the_rerun_entry_point_is_guarded_like_materialize(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A rerun executes a recipe, so a NERSC login node refuses it too."""
+    from lightcone.engine import worker
+
+    monkeypatch.setenv("NERSC_HOST", "perlmutter")
+
+    assert worker.main(["baseline/first"]) == 2
+    err = capsys.readouterr().err
+    assert "login node" in err and "salloc" in err

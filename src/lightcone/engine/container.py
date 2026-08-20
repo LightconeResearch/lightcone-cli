@@ -10,10 +10,9 @@ name-pinned apt notwithstanding. A dropped archive never substitutes: a
 rebuild is a new archive under a new id, never the old reference.
 
 Runtime is host capability, not project state — podman-hpc where a site
-provides it, podman preferred, docker accepted — and the archive format
-is the one all of podman, docker, and (later) apptainer/singularity
-consume, which is why build-capable and run-capable are separate
-questions.
+provides it, podman preferred, docker accepted — and every one of them
+consumes the same ``docker-archive``, which is what lets the repository
+stay the one store.
 
 Every command goes through :func:`~lightcone.engine.project._run`, the
 seam the whole engine shares, so the suite never spawns a runtime.
@@ -36,6 +35,12 @@ from typing import Literal, cast
 
 from lightcone.engine import assets, dataset, image, project, sandbox
 from lightcone.engine.project import ProjectError, _check_call
+
+#: The runtimes that are podman underneath and share its spellings —
+#: the one statement of the set, spelled positively everywhere it is
+#: asked, so a future runtime falls outside it by default rather than
+#: inheriting podman behavior through a `!= "docker"` back door.
+_PODMAN_FAMILY = ("podman", "podman-hpc")
 
 
 @dataclass(frozen=True)
@@ -131,8 +136,9 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
         # Compute nodes run only migrated images — the squashed copy on
         # the shared filesystem — never the login node's overlay store.
         # Outside the load branch, because after a fresh `lc build` the
-        # image is already in the store and the load never runs; on an
-        # already-migrated image this is a cheap no-op.
+        # image is already in the store and the load never runs.
+        # Unconditional: nothing here can ask whether the squashed copy
+        # already exists, so re-migrate cost is podman-hpc's to bound.
         _check_call([name, "migrate", image_id], cwd=root)
     return Runtime(
         root=root,
@@ -248,7 +254,7 @@ def backend(runtime: Runtime) -> sandbox.Backend:
     # a pull policy (a typo'd reference must fail, not fetch), the podman
     # family's spelling only, and filing it under uid mapping is where
     # the next reader would not look.
-    pull = ("--pull=never",) if runtime.runtime in ("podman", "podman-hpc") else ()
+    pull = ("--pull=never",) if runtime.runtime in _PODMAN_FAMILY else ()
     return OCIBackend(
         runtime=cast(Literal["podman", "docker", "podman-hpc"], runtime.runtime),
         image_id=runtime.image_id,
@@ -514,7 +520,7 @@ def uid_flags(runtime: str) -> list[str]:
     Returns:
         The argv fragment.
     """
-    if runtime in ("podman", "podman-hpc"):
+    if runtime in _PODMAN_FAMILY:
         return ["--userns=keep-id"]
     return ["--user", f"{os.getuid()}:{os.getgid()}"]
 
@@ -564,7 +570,7 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     # dies midway must not leave a partial archive that the dirty-tree
     # refusal would then tell the user to commit.
     partial = archive.parent / "image.partial"
-    save_format = [] if runtime == "docker" else ["--format", "docker-archive"]
+    save_format = ["--format", "docker-archive"] if runtime in _PODMAN_FAMILY else []
     try:
         _check_call([runtime, "save", *save_format, "-o", str(partial), tag], cwd=root)
     except ProjectError:
@@ -630,7 +636,7 @@ def _build_failure(tag: str, stderr: str) -> str:
 
 def _loaded(root: Path, runtime: str, image_id: str) -> bool:
     """Whether the runtime's local store already holds *image_id*."""
-    probe = ["image", "inspect" if runtime == "docker" else "exists", image_id]
+    probe = ["image", "exists" if runtime in _PODMAN_FAMILY else "inspect", image_id]
     return project._run([runtime, *probe], cwd=root).returncode == 0
 
 

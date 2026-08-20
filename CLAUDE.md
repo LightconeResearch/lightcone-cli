@@ -1551,8 +1551,12 @@ retirement), `--memory-limit 0` (the real work is in subprocesses behind
 the exec boundary, so Dask's memory manager could only pause workers
 over phantom numbers), `--death-timeout 60` (a worker whose driver died
 exits instead of holding its node to walltime), and `--local-directory`
-on node-local tmp — never the project tree, and explicit so ambient
-`DASK_TEMPORARY_DIRECTORY` cannot point it there. The driver's node
+on a **literal `/tmp`** — never the project tree, explicit so ambient
+`DASK_TEMPORARY_DIRECTORY` cannot point it there, and literal rather
+than the driver's `tempfile.gettempdir()` because a site prolog can
+scope `TMPDIR` to the node or job step that set it, leaving a
+driver-resolved path absent on the allocation's other nodes. The
+driver's node
 hosts a worker too, and a single-node allocation takes the same srun
 path — one path means the venue is exercised on the cheapest allocation.
 
@@ -1567,7 +1571,12 @@ immediately, not as a timeout two minutes later; teardown retires
 workers first (they exit 0, srun ends silently — killing srun prints
 "srun: forcing job termination" on every clean run) and escalates
 wait → terminate → kill, bounded, never a hang. A leaked `SLURM_JOB_ID`
-with no srun on PATH is a loud refusal, never a silent local fallback.
+with no srun on PATH is a loud refusal, never a silent local fallback —
+and the other leak shapes get the same treatment: a non-integer SLURM
+count refuses naming the variable (`venue._int_env`), and a
+`SLURMD_NODENAME` that does not resolve becomes a `ProjectError` naming
+the bind rather than the raw `socket.gaierror` (distributed wraps it in
+a `RuntimeError`, so the constructor catches both).
 
 **The login guard is materialize-scoped and comes first.**
 `venue.require_compute_node()` refuses iff `NERSC_HOST` is set and
@@ -1576,22 +1585,34 @@ allocation is what distinguishes them), naming copy-pasteable `salloc`
 and `sbatch --wrap 'lc materialize'` commands. It is the first line of
 `materialize()`, before even the tool checks: the allocation is the
 remedy with queue latency, so the user submits it first and fixes
-whatever later refusals name while waiting. `check()`, `status()` and
-`lc run` never call it — a login node is exactly where "where does this
-project stand" gets asked.
+whatever later refusals name while waiting. The rerun entry point
+(`worker.main`) is guarded too — a rerun executes a recipe, and the
+record's `cmd` is how recipes reach a login node without `lc` in the
+command line. `check()`, `status()` and `lc run` never call it — a login
+node is exactly where "where does this project stand" gets asked.
 
-**Containerized runs assume a homogeneous allocation**, recorded: the
-runtime resolves driver-side once (the HEAD discipline) and workers exec
-that runtime's CLI on their own node, so every node must offer the same
-runtime and see the shared-filesystem project tree. podman-hpc is what
-makes this true multi-node on NERSC — `migrate` squashes the image to
-the shared filesystem, where every compute node runs it; plain
-podman/docker multi-node would need per-node stores and is out of scope.
+**Containerized runs assume a homogeneous allocation**, and the one
+part of that lc can check is *enforced*: a multi-node allocation with a
+containerized project **refuses** unless the runtime is podman-hpc,
+because podman's and docker's stores are node-local — the image loads on
+the driver's node only, and every task scheduled elsewhere would fail at
+`run <id>` with `--pull=never` forbidding the fetch. The check sits in
+`materialize()` before the runtime resolves (a refusal must not cost an
+image build) and not in `runtime_for_run` (the rerun entry point shares
+that, and a rerun is a one-node run wherever it sits). The rest stays a
+recorded assumption: every node offers the same runtime binary and sees
+the shared-filesystem project tree. podman-hpc is what makes multi-node
+true on NERSC — `migrate` squashes the image to the shared filesystem,
+where every compute node runs it.
 
 **podman-hpc is a spelling, not a shape.** It rides the existing
 `OCIBackend` (standard podman flags, `--userns=keep-id`,
 `--pull=never`), joins the podman family in `uid_flags`, `_loaded`
-(`image exists`) and `_build` (`save --format docker-archive`), and adds
+(`image exists`) and `_build` (`save --format docker-archive`) — the
+set stated once as `container._PODMAN_FAMILY` and asked positively at
+every site, so a future runtime falls *outside* it by default instead
+of inheriting podman behavior through a `!= "docker"` back door — and
+adds
 exactly one step: `podman-hpc migrate <image-id>` in `runtime_for_run`,
 **outside the load branch** — after a fresh `lc build` the image is
 already in the store and the load never runs, but compute nodes only see
