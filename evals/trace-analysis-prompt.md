@@ -8,7 +8,7 @@ Write a section titled exactly `### Confusion & pain points` containing
 
 - failed commands or errored tool results, and their root cause
 - moments where the agent misunderstood the spec format, the CLI
-  surface, or the execution/container environment
+  surface, the sandbox, or the execution environment
 - detours: reverse-engineering source code, probing the environment,
   redoing work, or fixing things the harness should have provided
 - workarounds the agent invented that hint at a product gap (these are
