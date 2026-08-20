@@ -19,9 +19,25 @@ asks anyone to run a git-annex command by hand.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from lightcone.engine import project
+
+
+@dataclass(frozen=True)
+class LastWrite:
+    """The commit that last touched a path — empty fields mean "cannot
+    say", and the whole record is falsy then."""
+
+    sha: str = ""
+    subject: str = ""
+    author: str = ""
+    email: str = ""
+    date: str = ""
+
+    def __bool__(self) -> bool:
+        return bool(self.sha)
 
 # =============================================================================
 # The repository
@@ -190,6 +206,39 @@ def dataset_id(directory: Path) -> str:
         cwd=directory,
     )
     return found.stdout.strip() if found.returncode == 0 else ""
+
+
+def last_writer(directory: Path, path: Path) -> LastWrite:
+    """Find the commit that last touched *path*.
+
+    Run from the project root with a relative pathspec, so it answers
+    about the project's own subdirectory even inside an enclosing
+    repository — and since nothing parses paths out of its output, no
+    prefix handling is needed.
+
+    "Cannot say" is the empty answer, never an error: the callers are
+    ``lc status`` and the crate render, and a read-only verb must not
+    refuse a project over an unborn HEAD, a deposit stripped of its
+    ``.git``, or a host without git — states such projects are actually
+    in.
+
+    Args:
+        directory: The project root.
+        path: The path to ask about, absolute or repository-relative.
+
+    Returns:
+        The commit, falsy-empty when none has touched the path — or when
+        git cannot answer at all.
+    """
+    argv = ["log", "-1", "--format=%H%x00%s%x00%an%x00%ae%x00%as", "--", _rel(directory, path)]
+    try:
+        proc = project._run(["git", *argv], cwd=directory)
+    except OSError:
+        return LastWrite()
+    out = str(proc.stdout or "").strip("\n")
+    if proc.returncode != 0 or not out:
+        return LastWrite()
+    return LastWrite(*out.split("\0"))
 
 
 def save(directory: Path, paths: Iterable[Path], message: str) -> bool:

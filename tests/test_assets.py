@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from lightcone.engine import assets
+from lightcone.engine import assets, dataset
 from lightcone.engine.assets import Manifest, classify, data_version, output_dir
 from lightcone.engine.project import ProjectError
 
@@ -277,6 +277,11 @@ def test_writing_a_manifest_replaces_the_previous_one_whole(tmp_path: Path) -> N
 _ENV = "sha256:env"
 
 
+_TWEAK = dataset.LastWrite(
+    "8d31f00" + "0" * 33, "tweak colors", "Ada", "ada@example.org", "2026-08-19"
+)
+
+
 def _classify(**overrides: object) -> assets.Verdict:
     """Classify against the manifest `_manifest()` builds, unchanged."""
     call: dict[str, object] = {
@@ -383,6 +388,35 @@ def test_stale_wins_over_behind() -> None:
     verdict = _classify(definition_version="sha256:other", env_version="sha256:moved")
     assert verdict.status == "stale"
     assert verdict.calls_for_a_remake(refresh=False)
+
+
+def test_a_foreign_write_is_stale_and_the_prose_is_composed_here() -> None:
+    """History enters the one rule as a value — the caller with git hands
+    over the offending commit, and a hit is a contradiction: the manifest
+    no longer describes the bytes. The sentence, like every other why,
+    is this module's."""
+    verdict = _classify(foreign=_TWEAK)
+    assert verdict.status == "stale"
+    assert verdict.calls_for_a_remake(refresh=False)
+    assert "8d31f00" in verdict.why and "tweak colors" in verdict.why
+    assert "git show 8d31f00" in verdict.why
+
+
+def test_a_definition_stale_output_keeps_its_own_why_over_a_foreign_write() -> None:
+    """Both call for the same remake, and the definition drift is the more
+    actionable reason to report."""
+    verdict = _classify(definition_version="sha256:other", foreign=_TWEAK)
+    assert verdict.status == "stale"
+    assert "tweak colors" not in verdict.why
+
+
+def test_a_foreign_write_wins_over_behind() -> None:
+    """A behind output is not wrong; a foreign-written one is — reporting
+    "left alone" about something the run is about to remake is the one
+    wrong answer, the same rule as stale-over-behind."""
+    verdict = _classify(env_version="sha256:moved", foreign=_TWEAK)
+    assert verdict.status == "stale"
+    assert "tweak colors" in verdict.why
 
 
 def test_an_environment_that_did_not_move_is_not_behind() -> None:

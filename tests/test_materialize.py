@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import _Inline
 
 from lightcone.engine import assets, dataset, identity
 from lightcone.engine import materialize as engine
@@ -64,30 +65,6 @@ _UNIVERSE = "id: baseline\ndecisions:\n  method: alpha\n"
 @pytest.fixture
 def root(analysis: Callable[..., Path]) -> Path:
     return analysis(_SPEC, universes={"baseline": _UNIVERSE})
-
-
-class _Inline:
-    """Run the graph in this thread, in the order it was submitted.
-
-    Submission is topological, so a dependent is submitted only after its
-    upstreams have already run — which means the "handles" it is passed
-    are the upstream results themselves, exactly what the worker expects.
-    """
-
-    def submit(self, fn: Any, *args: Any, key: str) -> Any:
-        return fn(*args)
-
-    def completed(self, handles: list[Any]) -> Iterator[TaskResult]:
-        yield from handles
-
-
-@pytest.fixture
-def inline(monkeypatch: pytest.MonkeyPatch) -> None:
-    @contextmanager
-    def fake() -> Iterator[_Inline]:
-        yield _Inline()
-
-    monkeypatch.setattr(engine, "cluster_for_run", fake)
 
 
 def _commits(root: Path) -> int:
@@ -901,3 +878,186 @@ def test_the_report_is_json_ready(root: Path, inline: None) -> None:
 
     assert data["ok"] is True
     assert data["made"] == ["baseline/first"]
+
+
+# ---- the foreign-write fact ------------------------------------------------
+
+
+def _forge(path: Path, text: str) -> None:
+    """Overwrite a committed result the way a hand edit would — unlinking
+    first, because results are committed thin: an in-place truncate would
+    rewrite the shared annex object and dirty every file hard-linked to it
+    (the recorded thin-write hazard, demonstrated by this very test suite
+    when it forged in place)."""
+    path.unlink()
+    path.write_text(text)
+
+
+def test_a_materialized_output_has_no_foreign_write(root: Path, inline: None) -> None:
+    engine.materialize(root, [])
+
+    assert all(not o.foreign_write for o in engine.status(root).outputs)
+
+
+def test_a_foreign_write_is_stale_and_names_its_commit(root: Path, inline: None) -> None:
+    """The agent-forged-file fact: a hand-edited-and-committed output would
+    read `current` forever, because a skip returns the recorded digest —
+    so a directory last written by anything but its own run record is a
+    *contradiction*, and contradiction is what `stale` means."""
+    engine.materialize(root, [])
+    forged = root / "results" / "baseline" / "first" / "value.txt"
+    _forge(forged, "curated by hand\n")
+    dataset.save(root, [forged.parent], "tweak colors")
+
+    outputs = {o.output: o for o in engine.status(root).outputs}
+
+    assert outputs["baseline/first"].status == "stale"
+    forged_sha = dataset.last_writer(root, root / "results/baseline/first").sha
+    assert outputs["baseline/first"].foreign_write == forged_sha
+    assert "tweak colors" in outputs["baseline/first"].why
+    assert "git show" in outputs["baseline/first"].why
+    assert not outputs["baseline/second"].foreign_write
+
+
+def test_check_plans_the_remake_of_a_foreign_written_output(
+    root: Path, inline: None
+) -> None:
+    """Status and `--check` answer from one walk, so they cannot disagree
+    about a foreign write — and the gate exits nonzero over it."""
+    engine.materialize(root, [])
+    forged = root / "results" / "baseline" / "first" / "value.txt"
+    _forge(forged, "curated by hand\n")
+    dataset.save(root, [forged.parent], "tweak colors")
+
+    report = engine.check(root, [])
+
+    assert any("tweak colors" in why for why in report.planned.values())
+    assert not report.up_to_date
+
+
+def test_the_foreign_write_fact_survives_a_bytes_free_clone(
+    root: Path, inline: None, tmp_path: Path
+) -> None:
+    """History-based on purpose: content changes move pointers in git, so
+    the fact needs no annex content — where a rehash would have nothing to
+    hash."""
+    engine.materialize(root, [])
+    forged = root / "results" / "baseline" / "first" / "value.txt"
+    _forge(forged, "curated by hand\n")
+    dataset.save(root, [forged.parent], "tweak colors")
+    clone = _clone(root, tmp_path)
+
+    outputs = {o.output: o for o in engine.status(clone).outputs}
+
+    assert outputs["baseline/first"].status == "stale"
+    assert "tweak colors" in outputs["baseline/first"].why
+    assert outputs["baseline/first"].foreign_write
+    assert not outputs["baseline/second"].foreign_write
+
+
+def test_the_next_run_remakes_a_foreign_written_output(root: Path, inline: None) -> None:
+    """`results/` is lc's to write — the same philosophy as the dirty-tree
+    refusal's path split — so a committed hand edit is remade, and the
+    rebuild's own run record becomes the last writer again."""
+    engine.materialize(root, [])
+    forged = root / "results" / "baseline" / "first" / "value.txt"
+    _forge(forged, "curated by hand\n")
+    dataset.save(root, [forged.parent], "tweak colors")
+
+    report = engine.materialize(root, [])
+
+    assert "baseline/first" in report.made
+    assert forged.read_text() == "alpha\n"  # the recipe's bytes, not the hand's
+    assert all(not o.foreign_write for o in engine.status(root).outputs)
+
+
+# ---- the publication view --------------------------------------------------
+
+
+def _declare_license(root: Path) -> None:
+    """Declare publication intent the way a researcher would: one key,
+    committed like any other edit."""
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text() + 'license = "MIT"\n')
+    dataset.save(root, [pyproject], "declare a license")
+
+
+def test_an_unlicensed_project_gets_no_crate_and_one_report_line(
+    root: Path, inline: None
+) -> None:
+    report = engine.materialize(root, [])
+
+    assert not (root / "ro-crate-metadata.json").exists()
+    assert any("[project].license" in w for w in report.warnings)
+
+
+def test_a_licensed_materialize_converges_the_crate_and_commits_it(
+    root: Path, inline: None
+) -> None:
+    _declare_license(root)
+
+    engine.materialize(root, [])
+
+    crate_path = root / "ro-crate-metadata.json"
+    assert crate_path.is_file()
+    assert not dataset.status(root)  # committed, tree exactly as clean as before
+    assert dataset.last_writer(root, crate_path).subject == "Update the RO-Crate publication view"
+    graph = json.loads(crate_path.read_text())["@graph"]
+    types = {e["@id"]: e["@type"] for e in graph}
+    assert "OrganizeAction" in types.values()
+    assert types["results/baseline/first/"] == "Dataset"
+
+
+def test_an_idempotent_rerun_commits_nothing(root: Path, inline: None) -> None:
+    """The document is a pure function of repository state — a re-render at
+    the same state is a string compare, not a commit."""
+    _declare_license(root)
+    engine.materialize(root, [])
+    before = _commits(root)
+
+    engine.materialize(root, [])
+
+    assert _commits(root) == before
+
+
+def test_declaring_a_license_later_creates_the_crate_then(root: Path, inline: None) -> None:
+    engine.materialize(root, [])
+    assert not (root / "ro-crate-metadata.json").exists()
+
+    _declare_license(root)
+    engine.materialize(root, [])
+
+    assert (root / "ro-crate-metadata.json").is_file()
+
+
+def test_a_removed_license_stops_maintenance_but_keeps_the_file(
+    root: Path, inline: None
+) -> None:
+    """The crate is in committed history either way; deleting a file over a
+    possibly temporary edit is not convergence's call."""
+    _declare_license(root)
+    engine.materialize(root, [])
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text().replace('license = "MIT"\n', ""))
+    dataset.save(root, [pyproject], "drop the license")
+
+    report = engine.materialize(root, [])
+
+    assert (root / "ro-crate-metadata.json").is_file()
+    assert any("no longer maintained" in w for w in report.warnings)
+
+
+def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: None) -> None:
+    _declare_license(root)
+    engine.materialize(root, [])
+    spec_path = root / "astra.yaml"
+    spec = spec_path.read_text()
+    block = spec[spec.index("  - id: second") : spec.index("\ndecisions:") + 1]
+    spec_path.write_text(spec.replace(block, ""))
+    dataset.save(root, [spec_path], "drop the second output")
+
+    report = engine.materialize(root, [])
+
+    assert any("results/baseline/second" in w for w in report.warnings)
+    document = (root / "ro-crate-metadata.json").read_text()
+    assert "results/baseline/second/" not in document

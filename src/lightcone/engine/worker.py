@@ -32,6 +32,7 @@ import shutil
 import sys
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -96,6 +97,7 @@ def materialize(
     head: Head,
     versions: assets.Versions,
     refresh: bool,
+    foreign: dataset.LastWrite | None,
     runtime: container.Runtime,
     *upstream: TaskResult,
 ) -> TaskResult:
@@ -115,6 +117,10 @@ def materialize(
             driver because it commits as outputs land and HEAD moves.
         versions: The run's content-hash memo for declared inputs.
         refresh: Whether to remake an output that is merely behind.
+        foreign: The commit that last wrote the output's directory in
+            place of its own run record, or ``None`` — answered by the
+            driver, because history is git's and workers have no git;
+            handed to the one classification rule, where it is `stale`.
         runtime: The execution world, resolved once by the driver — the
             same discipline as *head*, because resolving per task could
             answer differently mid-run.
@@ -126,7 +132,9 @@ def materialize(
         What happened. Never raises.
     """
     try:
-        return _materialize(root, task, env_version, head, versions, refresh, runtime, upstream)
+        return _materialize(
+            root, task, env_version, head, versions, refresh, foreign, runtime, upstream
+        )
     except Exception as e:  # the contract is that this function returns
         return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
 
@@ -138,6 +146,7 @@ def _materialize(
     head: Head,
     versions: assets.Versions,
     refresh: bool,
+    foreign: dataset.LastWrite | None,
     runtime: container.Runtime,
     upstream: tuple[TaskResult, ...],
 ) -> TaskResult:
@@ -157,6 +166,7 @@ def _materialize(
         env_version=env_version,
         manifest=manifest,
         inputs=inputs,
+        foreign=foreign,
     )
     if verdict.calls_for_a_remake(refresh=refresh):
         return execute(root, task, env_version, inputs, head=head, runtime=runtime)
@@ -223,6 +233,7 @@ def execute(
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
     policy = container.policy_for(runtime, read_paths)
+    started_at = _now()
     with sandbox.scope(policy):
         outcome = sandbox.run(
             container.backend(runtime),
@@ -232,6 +243,7 @@ def execute(
             prefix=uv_prefix(root, sync=False),
             env=child_env(),
         )
+    finished_at = _now()
 
     if outcome.returncode != 0:
         return TaskResult(
@@ -264,6 +276,8 @@ def execute(
                 git_remote=remote,
                 lc_version=lc_version(),
                 hermeticity=asdict(outcome.attestation),
+                started_at=started_at,
+                finished_at=finished_at,
                 image=runtime.manifest_image(),
             ),
         )
@@ -275,6 +289,16 @@ def execute(
             notes=outcome.notes,
         )
     return TaskResult(task.key, "ok", data_version=data_version, notes=outcome.notes)
+
+
+def _now() -> str:
+    """The current instant, as a manifest timestamp.
+
+    Milliseconds, not microseconds: RO-Crate consumers parse
+    ``schema:endTime`` with at most three fractional digits, and the
+    manifest is where that string is minted.
+    """
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
 def _gate(root: Path, env_version: str) -> str:

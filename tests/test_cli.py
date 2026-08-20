@@ -553,6 +553,40 @@ def test_build_on_a_direct_project_is_an_explanatory_no_op(
     assert "[tool.lightcone.image]" in result.output
 
 
+def test_status_renders_a_foreign_write_as_a_stale_output(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A foreign write arrives as a stale with its message in `why`, so
+    the one rendering path covers it — and it does not change the exit
+    code: status reports."""
+    from lightcone.engine.materialize import OutputStatus, StatusReport
+
+    message = (
+        'last changed by 8d31f00 ("tweak colors", Ada, 2026-08-19) rather '
+        "than its run record, so the manifest no longer describes these "
+        "bytes — the next run remakes it; inspect first with `git show 8d31f00`"
+    )
+    report = StatusReport(
+        outputs=[
+            OutputStatus(
+                "baseline/first",
+                "stale",
+                message,
+                "3f2a1c8ffff",
+                "sha256:one",
+                foreign_write="8d31f00" + "0" * 33,
+            ),
+        ]
+    )
+    _status_stub(monkeypatch, report)
+
+    result = runner.invoke(main, ["status"])
+
+    assert result.exit_code == 0
+    assert "stale" in result.output
+    assert "8d31f00" in result.output
+
+
 def test_status_exits_zero_even_with_stale_outputs(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -583,6 +617,7 @@ def test_status_json_is_machine_readable(
                 "why": "",
                 "git_sha": "3f2a1c8ffff",
                 "data_version": "sha256:one",
+                "foreign_write": "",
             },
             {
                 "output": "baseline/second",
@@ -590,6 +625,7 @@ def test_status_json_is_machine_readable(
                 "why": "made under an earlier environment",
                 "git_sha": "3f2a1c8ffff",
                 "data_version": "sha256:two",
+                "foreign_write": "",
             },
             {
                 "output": "baseline/third",
@@ -597,6 +633,7 @@ def test_status_json_is_machine_readable(
                 "why": "the input `first` changed",
                 "git_sha": "",
                 "data_version": "",
+                "foreign_write": "",
             },
         ],
         "warnings": [],

@@ -29,6 +29,7 @@ dependencies = [
     "rich>=13.0",
     "git-annex>=10.2026",
     "distributed>=2026.7",
+    "rocrate>=0.15",
 ]
 
 [dependency-groups]
@@ -38,6 +39,7 @@ dev = [
     "ruff",
     "mypy",
     "datalad",
+    "roc-validator>=0.11.3",
 ]
 docs = [
     "zensical>=0.0.33",
@@ -88,9 +90,15 @@ explicit_package_bases = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["astra.*"]
+module = ["astra.*", "rocrate.*"]
 ignore_missing_imports = true
 follow_untyped_imports = true
+
+# rocrate ships no type information, and engine/crate.py is a client of
+# little else — one module-scoped relaxation beats an ignore on every call.
+[[tool.mypy.overrides]]
+module = ["lightcone.engine.crate"]
+disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

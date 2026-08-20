@@ -454,3 +454,52 @@ def test_the_annex_executables_are_ours_to_install() -> None:
         assert ours.get(name) == value, f"{name} is not re-declared as {value}"
 
 
+
+
+# ---- who last wrote a path -------------------------------------------------
+
+
+def test_last_writer_names_the_commit_that_last_touched_a_path(repo: Path) -> None:
+    """The foreign-write fact's whole mechanism: every output is committed,
+    so a hand edit needs a commit, and history names it."""
+    out = repo / "results" / "fit"
+    out.mkdir()
+    (out / "value.txt").write_text("42\n")
+    dataset.save(repo, [out], "[DATALAD RUNCMD] fit [baseline]\n\nrecord body")
+
+    write = dataset.last_writer(repo, out)
+    assert write and write.sha and write.date
+    assert write.subject == "[DATALAD RUNCMD] fit [baseline]"
+    assert (write.author, write.email) == ("Test", "t@example.com")
+
+    (out / "value.txt").write_text("curated\n")
+    dataset.save(repo, [out], "tweak colors")
+    assert dataset.last_writer(repo, out).subject == "tweak colors"
+
+
+def test_last_writer_of_an_untouched_path_is_empty(repo: Path) -> None:
+    assert not dataset.last_writer(repo, repo / "results" / "never")
+
+
+def test_last_writer_answers_inside_an_enclosing_repository(
+    tmp_path: Path, real_tools: None
+) -> None:
+    """A project can sit inside a larger repository, and the answer must be
+    about the project's own subdirectory — a later commit elsewhere in the
+    tree must not become every output's last writer."""
+    outer = tmp_path / "outer"
+    project_root = outer / "project"
+    out = project_root / "results" / "fit"
+    out.mkdir(parents=True)
+    (out / "value.txt").write_text("42\n")
+    dataset.init_git(outer)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key, value], cwd=outer)
+    dataset._git(["add", "-A", "."], cwd=outer)
+    dataset._git(["commit", "-q", "-m", "[DATALAD RUNCMD] fit [baseline]"], cwd=outer)
+    (outer / "unrelated.txt").write_text("someone else's work\n")
+    dataset._git(["add", "-A", "."], cwd=outer)
+    dataset._git(["commit", "-q", "-m", "outer edit"], cwd=outer)
+
+    write = dataset.last_writer(project_root, out)
+    assert write.subject == "[DATALAD RUNCMD] fit [baseline]"
