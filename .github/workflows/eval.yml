@@ -3,10 +3,12 @@ name: Eval
 # Minimal agentic eval: scaffold a project from the eval seed on the
 # runner, let Claude Code (with the astra plugin) build it using the
 # branch's lc/astra, then check the results with astra validate and
-# lc status.
+# lc materialize --check.
 
 on:
   workflow_dispatch:
+  pull_request:
+    types: [labeled]
 
 # Only one eval per PR at a time — cancel in-progress runs
 concurrency:
@@ -19,7 +21,7 @@ permissions:
 
 jobs:
   eval:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-eval'
     runs-on: ubuntu-latest
     # Step-level timeout on the agent step (below) is what actually
     # bounds the run: a job-level timeout would cancel the always()
@@ -36,11 +38,9 @@ jobs:
           activate-environment: true
 
       - name: Install lightcone-cli (branch under test)
-        run: |
-          uv sync
-          # Scientific deps the task's analysis scripts will need — the
-          # agent can add more with `uv pip install`
-          uv pip install numpy scipy matplotlib
+        # The activated venv puts lc, astra, and (via the mirrored entry
+        # points) git-annex on PATH — the runner needs no system annex.
+        run: uv sync
 
       - name: Install Claude Code + astra plugin
         run: |
@@ -69,6 +69,14 @@ jobs:
           rm -f universes/baseline.yaml
           astra universe generate -n baseline \
             -d 'Default configuration using standard practices'
+          # Scientific deps the task's recipes import land in the
+          # project's own locked environment — recipes see nothing else;
+          # the agent adds more with `uv add`
+          uv add numpy scipy matplotlib
+          # lc materialize refuses a dirty tree — commit the seed so the
+          # agent starts from a clean one
+          git add -A
+          git commit -q -m 'Seed the eval task'
 
       - name: Run Claude Code
         id: agent
@@ -91,11 +99,11 @@ jobs:
         working-directory: ${{ env.PROJECT }}
         run: |
           astra validate astra.yaml
-          lc status --universe baseline
-          # Fail unless every materializable output is ok
-          lc status --json | jq -e \
-            '[.universes[].outputs[] | select(.status != "alias")]
-             | length > 0 and all(.status == "ok")'
+          lc status
+          # The gate: nothing failed, nothing left to make — and at least
+          # one output actually got materialized
+          lc materialize --check --json | jq -e \
+            '.up_to_date and ((.current | length) > 0)'
 
       - name: Build report
         if: always()
@@ -135,7 +143,7 @@ jobs:
             echo '<details><summary>lc status</summary>'
             echo ""
             echo '```'
-            (cd "$PROJECT" && lc status --universe baseline) || echo "unavailable"
+            (cd "$PROJECT" && lc status) || echo "unavailable"
             echo '```'
             echo ""
             echo '</details>'
@@ -198,11 +206,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: eval-project
-          # include-hidden-files keeps the .lightcone-manifest.json
-          # provenance files; the venv and snakemake scratch are excluded
+          # include-hidden-files keeps the manifests, the run records in
+          # .git, and the annexed results; the venv and lc's per-run
+          # machine state are excluded
           path: |
             ${{ env.PROJECT }}
             !${{ env.PROJECT }}/.venv/**
-            !${{ env.PROJECT }}/.snakemake/**
+            !${{ env.PROJECT }}/.lightcone/**
           include-hidden-files: true
           if-no-files-found: warn
