@@ -1780,10 +1780,13 @@ lc's to write, and a committed hand edit is wreckage with a commit
 message. Three coherent surfaces, one walk: `lc status` reports it
 stale (still exit 0; `OutputStatus.foreign_write` keeps the named
 commit for machine consumers), `--check` plans it, and materialize's
-driver answers the history question up front and hands each worker a
-`foreign` flag — workers have no git, the HEAD discipline on a third
-value. The escalation lives in `_classified`, driver-side;
-`assets.classify` stays pure. `last_writer` answers "cannot say" as
+driver answers the history question up front and hands each worker the
+foreign commit's message — workers have no git, the HEAD discipline on
+a third value. History enters `assets.classify` as **one more input
+value**, exactly like check mode's sentinel: computed by whoever has
+git, handed in, and the rule stays pure — so `calls_for_a_remake`
+remains the one bool that turns a state into an action, with no
+`foreign or …` re-spelled at any call site. `last_writer` answers "cannot say" as
 empty, never an error — a read-only verb must not refuse over an
 unborn HEAD or a stripped `.git`. A full-rehash `lc verify` was
 considered and rejected: O(bytes), blind on unfetched outputs (history

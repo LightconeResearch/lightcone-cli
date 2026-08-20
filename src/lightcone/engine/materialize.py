@@ -178,21 +178,17 @@ def _classified(
     for key in graph.order():
         task = graph.tasks[key]
         manifest = assets.read(task.output_dir)
+        # History is git's to answer, so it enters the one classification
+        # rule as a value — computed here, where git lives, exactly as
+        # the worker's driver computes it for a run.
+        foreign = "" if manifest is None else _foreign_write(root, key)
         verdict = assets.classify(
             definition_version=task.definition_version,
             env_version=env_version,
             manifest=manifest,
             inputs=_predicted(root, task, would_run, versions, unfetched),
+            foreign=foreign,
         )
-        # A foreign write is a *contradiction*, not a circumstance: the
-        # directory was last written by something other than its own run
-        # record, so the manifest no longer describes the bytes. That is
-        # `stale` by the model's own definition — escalated here, driver-
-        # side, because history is git's to answer and `classify` stays
-        # pure. An output already stale keeps its more actionable why.
-        foreign = "" if manifest is None else _foreign_write(root, key)
-        if foreign and verdict.status != "stale":
-            verdict = assets.Verdict("stale", foreign)
         if verdict.calls_for_a_remake(refresh=refresh):
             would_run.add(key)
         classified.append((key, verdict, manifest, foreign))
@@ -516,7 +512,7 @@ def materialize(
     # directory was last written by something other than its own run
     # record. A foreign write contradicts the manifest, and a worker that
     # trusted the recorded digest would skip the output forever.
-    foreign = {key: bool(_foreign_write(root, key)) for key in graph.tasks}
+    foreign = {key: _foreign_write(root, key) for key in graph.tasks}
     outstanding: dict[Key, Task] = dict(graph.tasks)
     try:
         with cluster_for_run() as scheduler:

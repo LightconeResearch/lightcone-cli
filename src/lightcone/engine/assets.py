@@ -402,12 +402,16 @@ def classify(
     env_version: str,
     manifest: Manifest | None,
     inputs: Mapping[str, str | None],
+    foreign: str = "",
 ) -> Verdict:
     """Decide what an output is, relative to the project as it now stands.
 
     The only place this rule lives. Values rather than objects, because
-    the two callers arrive at them differently and must not diverge in
-    anything else.
+    the callers arrive at them differently and must not diverge in
+    anything else — history included: whether the output's directory was
+    last written by its own run record is git's to answer, so it arrives
+    here as a value computed by whoever has git (the driver), and the
+    rule stays pure.
 
     Args:
         definition_version: What the spec currently says this output is.
@@ -417,6 +421,11 @@ def classify(
             for an input the caller has already decided will be remade —
             check mode's sentinel, meaning "this is going to change",
             since it cannot know whether a rebuild is byte-identical.
+        foreign: Empty when the directory's last commit is the output's
+            own run record; otherwise the foreign commit, named. A hit is
+            a contradiction — the manifest no longer describes the bytes
+            — so it is ``stale``, though an output stale on its
+            definition or inputs keeps that more actionable reason.
 
     Returns:
         ``stale``, ``behind`` or ``current``, with the reason for the
@@ -424,6 +433,8 @@ def classify(
     """
     if (reason := _stale(definition_version, manifest, inputs)) is not None:
         return Verdict("stale", str(reason))
+    if foreign:
+        return Verdict("stale", foreign)
     assert manifest is not None  # `_stale` returns a reason when it is None
     if manifest.env_version != env_version:
         # The sentence says what happened; *where* it happened is the

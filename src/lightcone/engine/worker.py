@@ -97,7 +97,7 @@ def materialize(
     head: Head,
     versions: assets.Versions,
     refresh: bool,
-    foreign: bool,
+    foreign: str,
     runtime: container.Runtime,
     *upstream: TaskResult,
 ) -> TaskResult:
@@ -117,11 +117,10 @@ def materialize(
             driver because it commits as outputs land and HEAD moves.
         versions: The run's content-hash memo for declared inputs.
         refresh: Whether to remake an output that is merely behind.
-        foreign: Whether the output's directory was last written by
-            something other than its own run record — answered by the
-            driver, because history is git's and workers have no git.
-            True forces a remake: the manifest no longer describes the
-            bytes, so the recorded digest a skip would return is a lie.
+        foreign: Empty, or the commit that last wrote the output's
+            directory in place of its own run record — answered by the
+            driver, because history is git's and workers have no git;
+            handed to the one classification rule, where it is `stale`.
         runtime: The execution world, resolved once by the driver — the
             same discipline as *head*, because resolving per task could
             answer differently mid-run.
@@ -147,7 +146,7 @@ def _materialize(
     head: Head,
     versions: assets.Versions,
     refresh: bool,
-    foreign: bool,
+    foreign: str,
     runtime: container.Runtime,
     upstream: tuple[TaskResult, ...],
 ) -> TaskResult:
@@ -167,8 +166,9 @@ def _materialize(
         env_version=env_version,
         manifest=manifest,
         inputs=inputs,
+        foreign=foreign,
     )
-    if foreign or verdict.calls_for_a_remake(refresh=refresh):
+    if verdict.calls_for_a_remake(refresh=refresh):
         return execute(root, task, env_version, inputs, head=head, runtime=runtime)
 
     # Left alone, so the bytes on disk stand. Their *recorded* digest,

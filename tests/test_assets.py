@@ -385,6 +385,33 @@ def test_stale_wins_over_behind() -> None:
     assert verdict.calls_for_a_remake(refresh=False)
 
 
+def test_a_foreign_write_is_stale() -> None:
+    """History enters the one rule as a value — the caller with git asks
+    who last wrote the directory, and a hit is a contradiction: the
+    manifest no longer describes the bytes."""
+    verdict = _classify(foreign='last changed by 8d31f00 ("tweak colors")')
+    assert verdict.status == "stale"
+    assert verdict.calls_for_a_remake(refresh=False)
+    assert "8d31f00" in verdict.why
+
+
+def test_a_definition_stale_output_keeps_its_own_why_over_a_foreign_write() -> None:
+    """Both call for the same remake, and the definition drift is the more
+    actionable reason to report."""
+    verdict = _classify(definition_version="sha256:other", foreign="also hand-edited")
+    assert verdict.status == "stale"
+    assert "also hand-edited" not in verdict.why
+
+
+def test_a_foreign_write_wins_over_behind() -> None:
+    """A behind output is not wrong; a foreign-written one is — reporting
+    "left alone" about something the run is about to remake is the one
+    wrong answer, the same rule as stale-over-behind."""
+    verdict = _classify(env_version="sha256:moved", foreign="hand-edited")
+    assert verdict.status == "stale"
+    assert verdict.why == "hand-edited"
+
+
 def test_an_environment_that_did_not_move_is_not_behind() -> None:
     """The negative half of the sensitivity pair: `behind` has to be off by
     default, or every output reports it forever and the signal is dead."""
