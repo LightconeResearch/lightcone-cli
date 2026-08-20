@@ -5,13 +5,11 @@
 [![PyPI](https://img.shields.io/pypi/v/lightcone-cli?style=flat&color=f8f7f3)](https://pypi.org/project/lightcone-cli/)
 [![Tests](https://img.shields.io/github/actions/workflow/status/LightconeResearch/lightcone-cli/tests.yml?style=flat&color=darkgreen)](https://github.com/LightconeResearch/lightcone-cli/actions/workflows/tests.yml)
 
-<!-- [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff) -->
-
 **lightcone-cli** (`lc`) is the execution layer for
 [ASTRA](https://astra-spec.org/latest/) (Agentic Schema for Transparent
 Research Analysis). Describe your analysis in an `astra.yaml`
-specification and `lc` takes care of the rest — execution and
-provenance.
+specification and `lc` takes care of the rest — execution, environments,
+and provenance.
 
 ## Quick Start
 
@@ -19,8 +17,12 @@ provenance.
 uv tool install lightcone-cli   # or: pip install lightcone-cli
 lc init my-analysis
 cd my-analysis
-# describe your analysis in astra.yaml, then:
-lc run
+# describe your analysis in astra.yaml, write your scripts,
+# declare what they import:
+uv add numpy
+# then commit and build:
+git add -A && git commit -m "First analysis"
+lc materialize
 ```
 
 ASTRA specs are plain, structured YAML — they work well hand-written or
@@ -30,10 +32,11 @@ drafted with any AI coding assistant.
 
 ## Capabilities
 
-- **Multiverse analysis** — define methodological decisions with multiple options; `lc` runs your analysis across all defensible paths automatically
-- **Provenance integrity** — every output gets a content-addressed manifest; `lc verify` detects tampering or broken chains
-- **HPC-ready execution** — Snakemake-backed DAG dispatch with SLURM and container support (Docker, Podman, Apptainer) out of the box
-- **Reproducible publishing** — `lc export wrroc` emits a [Workflow Run RO-Crate](https://www.researchobject.org/workflow-run-crate/) bundle ready for Zenodo or WorkflowHub
+- **Multiverse analysis** — declare methodological decisions with multiple defensible options; `lc` materializes your analysis across every universe you define
+- **Provenance by construction** — every output is committed to git together with a content-addressed manifest and a re-runnable run record; git-annex carries the bytes, so results travel with the repository
+- **Locked, isolated execution** — a project's environment is `pyproject.toml` + `uv.lock`; recipes run in it under a sandbox (Landlock on Linux, Seatbelt on macOS) that keeps undeclared files out and stray writes contained
+- **Containers and HPC** — declare `[tool.lightcone.image]` and recipes run in a content-addressed image archived in the repository itself; a SLURM allocation is detected and used automatically, every node included
+- **Publication view** — declare a license and `lc materialize` maintains an [RO-Crate](https://www.researchobject.org/ro-crate/) of the project and its provenance, ready to archive or deposit
 
 → [Full documentation](https://docs.lightconeresearch.org)
 

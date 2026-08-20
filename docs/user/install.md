@@ -1,78 +1,40 @@
 # Install
 
-To get started on a lightcone project, you need two things on your machine: Python 3.11+ and the lightcone command line tool `lc`.  
-A container runtime is optional but recommended.
+To work on a lightcone project you need two things on your machine:
+[uv](https://docs.astral.sh/uv/) and git. Everything else — Python
+itself, git-annex, the `astra` spec tooling — is installed by uv or
+ships with `lc`.
 
-## 1. Python
+!!! note "Supported platforms"
+    Linux (glibc 2.34+, x86_64 or aarch64) and macOS (14+ on Apple
+    silicon, 15+ on Intel). git-annex ships as a binary wheel inside
+    the install, and its platforms are the floor: below it, the install
+    fails cleanly rather than half-working. On Windows, use WSL.
 
-If you don't already have a recent Python
+## 1. uv and git
 
-=== "macOS"
+`lc` uses uv as its only environment substrate — projects are
+`pyproject.toml` + `uv.lock`, and uv manages the Python interpreters
+too, so there is no separate Python install step.
+
+=== "macOS / Linux"
     ```bash
-    brew install python@3.12
+    curl -LsSf https://astral.sh/uv/install.sh | sh
     ```
 
-=== "Linux"
-    Your package manager (`apt install python3.12`, etc.) or
-    [pyenv](https://github.com/pyenv/pyenv)
-
-=== "Windows"
-    [python.org](https://www.python.org/downloads/) or WSL
+    git is preinstalled on macOS; on Linux use your package manager
+    (`apt install git`, `dnf install git`, …).
 
 === "NERSC Perlmutter"
-    NERSC doesn't ship `uv`, but it installs into your home dir with a
-    single curl:
+    NERSC doesn't ship `uv`, but it installs into your home directory
+    with a single curl:
 
     ```bash
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    uv python install 3.12
     ```
 
-    Both `uv` and an isolated Python 3.12 land under `~/.local/`.
-    Make sure `~/.local/bin` is on your `PATH`.
-
-    ??? note "Alternative: NERSC's `python` module"
-        `module load python` gives you a ready-to-use distribution with
-        `conda`, `pip`, and many scientific packages already installed:
-
-        ```bash
-        module load python      # NERSC Python (3.11+)
-        ```
-
-        Convenient, but the module is shared and read-only. For custom
-        packages, build a conda env on top:
-
-        ```bash
-        conda create -n your-env-name python=3.11 -y
-        conda activate your-env-name
-        ```
-
-        This is NERSC's [recommended path for `pip install`](https://docs.nersc.gov/development/languages/python/nersc-python/)
-        when you need custom packages.
-
-    !!! warning "Storage: 40 GB home quota"
-        Conda envs land under `~/.conda/envs/` by default. The
-        Perlmutter home quota is **40 GB**, which gets eaten quickly.
-        NERSC recommends `/global/common/software/<project>/` for
-        larger envs. If you want them on `$SCRATCH` (note: 12-week
-        purge), move and symlink:
-
-        ```bash
-        conda deactivate
-        mv ~/.conda/envs/your-env-name $SCRATCH/conda-envs/
-        ln -s $SCRATCH/conda-envs/your-env-name ~/.conda/envs/your-env-name
-        ```
-
-!!! tip "Recommendation"
-    We highly recommend the use of [uv](https://docs.astral.sh/uv/) to manage Python installation and virtual environments.
-
-    `uv` can be installed in a single commandline
-
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-
-    and a subsequent version of Python
-
-        uv python install 3.12
+    `uv` lands under `~/.local/bin` — make sure it's on your `PATH`.
+    git is already on the system.
 
 ## 2. lightcone-cli
 
@@ -89,74 +51,50 @@ is `lc`.
     python -m pip install lightcone-cli
     ```
 
-=== "NERSC Perlmutter"
-    With `uv` (recommended — isolates `lc` under `~/.local/share/uv/tools/`):
+The install also puts `git-annex` on your `PATH` — `lc` versions every
+result in the project's own git repository, and git-annex is what
+carries the data bytes. You never run it by hand, but git dispatches to
+it, so it has to be installed; the wheel takes care of that.
 
-    ```bash
-    uv tool install lightcone-cli
-    ```
-
-    With pip, the exact command depends on which Python you're using:
-
-    ```bash
-    # NERSC python module
-    module load python
-    python -m pip install --user lightcone-cli   # lands in ~/.local/bin/
-
-    # Conda env
-    conda activate your-env-name
-    python -m pip install lightcone-cli
-    ```
-
-    `astra-tools` is a transitive dependency — pulled in automatically.
-
-    ??? note "From source (contributors only)"
-        ```bash
-        git clone https://github.com/LightconeResearch/lightcone-cli.git
-        uv pip install -e ./lightcone-cli
-        ```
-
-        To also hack on `astra-tools`:
-
-        ```bash
-        git clone https://github.com/LightconeResearch/ASTRA.git
-        uv pip install -e ./ASTRA
-        ```
+`astra-tools` is a dependency, so the `astra` CLI (spec validation,
+universe management) arrives with it.
 
 Get a confirmation of the proper installation by running
 
-    lc --version                # → lightcone-cli, version ...
+    lc --version                # → lc, version ...
+    git annex version           # → git-annex version: ...
 
-> **Note** Some people may have already set a personal shell alias `lc='ls --color'`. If that's you, installing lightcone-cli will shadow the alias — make sure to rebind it (e.g. `alias l='ls --color'`).
+> **Note** Some people may have already set a personal shell alias
+> `lc='ls --color'`. If that's you, installing lightcone-cli will shadow
+> the alias — make sure to rebind it (e.g. `alias l='ls --color'`).
 
-## 3. Global configuration
+## 3. Tell git who you are
 
-`~/.lightcone/config.yaml` is created automatically the first time you
-run any `lc` command. No manual setup step is needed. The file starts
-as:
+Every output `lc` makes is committed, so git needs an identity before
+the first build — `lc materialize` checks up front rather than failing
+after your recipes have run:
 
-```yaml
-container:
-  runtime: auto
+```bash
+git config --global user.name "Ada Lovelace"
+git config --global user.email "ada@example.org"
 ```
 
-`auto` detects whichever of `podman`, `docker`, or `podman-hpc` is on
-your PATH (and skips docker if its daemon isn't running). Feel free to pin the runtime later by editing this file directly.
+If you already commit from this machine, you're done.
 
-## 4. (Optional) Docker or Podman
+## 4. (Optional) Podman or Docker
 
-If your analysis declares a `container:` (which it usually should — it
-makes the result reproducible across machines), you need a container
-runtime:
+Only *containerized* projects need a container runtime — a project opts
+in by declaring `[tool.lightcone.image]` in its `pyproject.toml`, and
+until it does, recipes run directly on your machine in the project's
+own locked environment.
 
-- Local laptop: install [Podman](https://podman.io/) (rootless, no
+- Local machine: install [Podman](https://podman.io/) (rootless, no
   daemon) or [Docker](https://docs.docker.com/get-docker/).
 - HPC login node: see [Running on a Cluster](cluster.md).
 
-The `auto` mode picks whichever container runtime you have. If you don't
-have either, you can still use `lc` — set `runtime: none` in
-`~/.lightcone/config.yaml` and recipes will run on the host without
-isolation.
+There is nothing to configure: `lc` detects whichever runtime is
+available (`podman-hpc`, then `podman`, then `docker` — skipping docker
+if its daemon isn't running).
 
 ## Sanity check
 
@@ -164,8 +102,7 @@ isolation.
     lc init --help
 
 Both should print help text. If `lc` is shadowed by an `ls` alias,
-unset it (`unalias lc`) or use the full path
-(`$(which lc) --version`).
+unset it (`unalias lc`) or use the full path (`$(which lc) --version`).
 
 ## Updating
 
@@ -176,19 +113,12 @@ unset it (`unalias lc`) or use the full path
 
 === "pip"
     ```bash
-    pip install -U lightcone-cli astra-tools
+    pip install -U lightcone-cli
     ```
 
-=== "Source"
-    ```bash
-    cd path/to/lightcone-cli
-    git pull
-    uv pip install -e .        # only needed if pyproject.toml changed
-    ```
-
-    Editable installs auto-follow source edits — switching branches or
-    pulling new commits is reflected immediately in `lc`. Re-install
-    only when `pyproject.toml` adds a new dependency.
+An upgrade never invalidates your results: the engine's version is
+recorded in every output's manifest, but it is not part of any output's
+identity, so nothing gets rebuilt just because `lc` moved.
 
 ## Uninstalling
 
@@ -202,6 +132,5 @@ unset it (`unalias lc`) or use the full path
     pip uninstall lightcone-cli
     ```
 
-!!! note "Keep your config?"
-    `~/.lightcone/config.yaml` survives the uninstall. Delete it too
-    if you want a clean slate.
+Your projects are untouched — everything `lc` knows about an analysis
+lives in the project's own repository, not in any global state.
