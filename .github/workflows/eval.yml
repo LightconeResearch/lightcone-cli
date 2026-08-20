@@ -69,10 +69,8 @@ jobs:
           rm -f universes/baseline.yaml
           astra universe generate -n baseline \
             -d 'Default configuration using standard practices'
-          # Scientific deps the task's recipes import land in the
-          # project's own locked environment — recipes see nothing else;
-          # the agent adds more with `uv add`
-          uv add numpy scipy matplotlib
+          # No scientific deps are pre-seeded — declaring what the
+          # recipes import (`uv add`) is part of what the eval measures
           # lc materialize refuses a dirty tree — commit the seed so the
           # agent starts from a clean one
           git add -A

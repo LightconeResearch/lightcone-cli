@@ -67,10 +67,15 @@ Recipes run in the project's own locked environment (`pyproject.toml` +
 each recipe's own output directory under `results/`, and only declared
 tools are executable.
 
-- Every package a recipe script imports must be added to the project
-  with `uv add <package>`, run in the project root, before
-  materializing. numpy, scipy, and matplotlib are already added. Plain
-  `pip` or `uv pip` installs reach nothing a recipe sees.
+- The project is managed by uv and starts with **no dependencies**.
+  Every package a recipe script imports must be declared before
+  materializing: run `uv add <package> [<package> ...]` in the project
+  root (e.g. `uv add numpy scipy`). That updates `pyproject.toml`,
+  re-locks `uv.lock`, and syncs `.venv` in one step — commit all of it
+  along with your scripts, like any other edit.
+- To remove a package use `uv remove <package>`; to pin a version,
+  `uv add 'numpy>=2'`. Do **not** use plain `pip` or `uv pip install` —
+  an install that bypasses the lock reaches nothing a recipe sees.
 - A sandbox denial names the path or tool that was denied and the
   remedy — follow the remedy rather than working around the sandbox.
 
