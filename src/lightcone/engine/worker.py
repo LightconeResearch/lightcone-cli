@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from lightcone.engine import assets, container, dataset, identity, plan, sandbox, venue
+from lightcone.engine import assets, container, dataset, identity, plan, project, sandbox, venue
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
     ProjectError,
@@ -99,6 +99,7 @@ def materialize(
     refresh: bool,
     foreign: dataset.LastWrite | None,
     runtime: container.Runtime,
+    uv_version: str,
     *upstream: TaskResult,
 ) -> TaskResult:
     """Make *task* if it needs making. What Dask submits, once per task.
@@ -124,6 +125,8 @@ def materialize(
         runtime: The execution world, resolved once by the driver — the
             same discipline as *head*, because resolving per task could
             answer differently mid-run.
+        uv_version: The uv the run converges environments with, probed
+            once by the driver. Attestation only.
         *upstream: The results of this task's dependencies, arriving as
             the futures it was given — which is what makes Dask the
             scheduler rather than a loop here.
@@ -133,7 +136,7 @@ def materialize(
     """
     try:
         return _materialize(
-            root, task, env_version, head, versions, refresh, foreign, runtime, upstream
+            root, task, env_version, head, versions, refresh, foreign, runtime, uv_version, upstream
         )
     except Exception as e:  # the contract is that this function returns
         return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
@@ -148,6 +151,7 @@ def _materialize(
     refresh: bool,
     foreign: dataset.LastWrite | None,
     runtime: container.Runtime,
+    uv_version: str,
     upstream: tuple[TaskResult, ...],
 ) -> TaskResult:
     reported = {u.key: u for u in upstream if u.usable}
@@ -169,7 +173,9 @@ def _materialize(
         foreign=foreign,
     )
     if verdict.calls_for_a_remake(refresh=refresh):
-        return execute(root, task, env_version, inputs, head=head, runtime=runtime)
+        return execute(
+            root, task, env_version, inputs, head=head, runtime=runtime, uv_version=uv_version
+        )
 
     # Left alone, so the bytes on disk stand. Their *recorded* digest,
     # never a recomputed one: on a clone that has fetched no annex content
@@ -194,6 +200,7 @@ def execute(
     *,
     head: Head,
     runtime: container.Runtime,
+    uv_version: str = "",
 ) -> TaskResult:
     """Run *task*'s recipe and record what it produced.
 
@@ -213,6 +220,7 @@ def execute(
         runtime: The execution world the recipe enters — the host under
             the platform's mechanism, or the project image behind its
             mount table.
+        uv_version: The uv that converged the environment. Attestation.
 
     Returns:
         ``ok`` with the output's ``data_version``, or ``failed``. Commits
@@ -275,6 +283,7 @@ def execute(
                 git_sha=sha,
                 git_remote=remote,
                 lc_version=lc_version(),
+                uv_version=uv_version,
                 hermeticity=asdict(outcome.attestation),
                 started_at=started_at,
                 finished_at=finished_at,
@@ -393,6 +402,7 @@ def main(argv: list[str]) -> int:
             _from_disk(task),
             head=dataset.head(root),
             runtime=runtime,
+            uv_version=project.uv_version(root),
         )
     except ProjectError as e:
         print(f"error: {e}", file=sys.stderr)

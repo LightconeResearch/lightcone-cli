@@ -727,6 +727,29 @@ def scrubbed_uv_vars() -> list[str]:
     return sorted(k for k, v in os.environ.items() if v and _uv_scrubbed(k))
 
 
+def uv_version(directory: Path) -> str:
+    """Ask uv its version, for the manifest's attestation.
+
+    Read once per run by whoever owns the run — the driver, or the rerun
+    entry point — and handed down, the HEAD discipline. Empty on any
+    failure: attestation must never fail a run.
+
+    Args:
+        directory: Where to run the probe.
+
+    Returns:
+        The version token (``0.12.5``), or ``""``.
+    """
+    try:
+        proc = _run(["uv", "--version"], cwd=directory)
+    except OSError:
+        return ""
+    words = str(proc.stdout or "").split()
+    if proc.returncode != 0 or len(words) < 2 or words[0] != "uv":
+        return ""
+    return words[1]
+
+
 def _check_call(argv: list[str], *, cwd: Path) -> list[str]:
     """Run a tool, surfacing a nonzero exit as :class:`ProjectError`.
 

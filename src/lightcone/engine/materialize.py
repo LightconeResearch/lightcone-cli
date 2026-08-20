@@ -507,6 +507,9 @@ def materialize(
     # manifests a commit this run created — nondeterministically, depending
     # on whether a recipe finished before or after the previous save.
     head = dataset.head(root)
+    # Probed once and handed down, like HEAD: attestation for every
+    # manifest this run writes, and empty is an answer, not a failure.
+    uv = project.uv_version(root)
     # One memo for the run, for the same reason as one HEAD read: a
     # declared input shared by several outputs — or by one output across
     # several universes — is the same bytes every time it is asked for.
@@ -544,6 +547,7 @@ def materialize(
                     refresh,
                     foreign[key],
                     runtime,
+                    uv,
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
                 )

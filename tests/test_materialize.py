@@ -179,6 +179,21 @@ def test_refresh_remakes_what_is_behind_and_commits_it(root: Path, inline: None)
     assert manifest.env_version == identity.env_version(root)
 
 
+def test_the_manifest_records_the_uv_that_converged_the_environment(
+    root: Path, inline: None
+) -> None:
+    """Probed once by the driver and handed to every task — attestation
+    beside lc_version, never a rebuild signal."""
+    from lightcone.engine import project
+
+    engine.materialize(root, ["first"])
+
+    manifest = assets.read(root / "results/baseline/first")
+    assert manifest is not None
+    assert manifest.uv_version == project.uv_version(root)
+    assert manifest.uv_version.count(".") >= 1, "a real version token, not prose"
+
+
 def test_check_reports_behind_without_planning_it(root: Path, inline: None) -> None:
     """`--check` is a gate, and `behind` must not close it — a project of
     curated results would never pass again."""

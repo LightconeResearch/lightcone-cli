@@ -266,6 +266,12 @@ class Manifest:
     #: existed, not back-compat machinery.
     started_at: str = ""
     finished_at: str = ""
+    #: The uv that resolved and installed the environment the recipe ran
+    #: in — the one tool between the lock and the installed artifacts.
+    #: Attestation, like ``lc_version``: outside both hashes, never a
+    #: rebuild signal, defaulted empty because that is the true value for
+    #: a manifest written before the field existed.
+    uv_version: str = ""
     #: The image the recipe ran in — ``{tag, id, archive, arch}`` — or
     #: ``None`` on the host. Defaulted, and that is not back-compat
     #: machinery: ``None`` is the *true* value for every manifest a

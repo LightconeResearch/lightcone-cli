@@ -81,6 +81,7 @@ def _make(
         refresh,
         None,
         _runtime(root),
+        "0.0.0-test",
         *upstream,
     )
 
@@ -127,6 +128,9 @@ def test_the_manifest_is_complete_before_anything_is_saved(root: Path) -> None:
     # The engine's version is attestation, not identity: with lc outside
     # the project's lock, this field is the record of which engine ran.
     assert manifest.lc_version == worker.lc_version()
+    # And so is the uv that converged the environment: probed once by the
+    # driver, handed down, never a rebuild signal.
+    assert manifest.uv_version == "0.0.0-test"
 
 
 def test_the_recipe_runs_under_the_boundary(root: Path) -> None:

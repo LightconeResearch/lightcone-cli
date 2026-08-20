@@ -40,6 +40,7 @@ def _manifest(**overrides: object) -> Manifest:
         "git_sha": "abc123",
         "git_remote": "https://example/demo.git",
         "lc_version": "0.4.2",
+        "uv_version": "0.12.5",
         "hermeticity": {"mechanism": "landlock", "fs": "declared", "network": "allowed"},
     }
     return Manifest(**{**base, **overrides})  # type: ignore[arg-type]

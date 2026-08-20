@@ -1158,12 +1158,18 @@ provides that, and for what workers do *not* need (git, git-annex).
   `started_at` / `finished_at` (ISO 8601 UTC, **millisecond** precision
   because RO-Crate consumers parse `endTime` with at most three
   fractional digits; attestation like `lc_version`, defaulted `""`,
-  never read by `classify`). Spec §3's longer list —
-  `uv_version`, `platform`, `worker_runtime`, `python_build`,
+  never read by `classify`), and since the hardening pass `uv_version`
+  (probed once per run by the driver — `project.uv_version` — and
+  handed down, the HEAD discipline; the rerun entry point probes its
+  own; empty on failure, attestation must not fail a run). Spec §3's
+  remaining list —
+  `platform`, `worker_runtime`, `python_build`,
   `dpkg_snapshot_sha256`, `sdist_built`, `env_snapshot`, `gpu_driver` —
   is attestation nothing here reads; it lands with the verb that reads
   it (`worker_runtime` is additionally derivable from
-  `hermeticity.mechanism`, so it may never land at all).
+  `hermeticity.mechanism`, so it may never land at all — the hardening
+  pass considered `platform` too and took only `uv_version`, the one
+  field the engine-closure decision named as its concrete loss).
 - **`env_version` has four terms.** Layer 6 added the image term —
   the system layer's identity document, hashed as the literal `null`
   for a direct project so the formula stays one formula. (The spec's
@@ -1843,13 +1849,16 @@ unlinks before writing; a new tampering test should too.
     own image). One venue cost to remember: the `assets.Versions` memo
     degrades to once **per worker process**, so a declared input shared
     by many tasks is re-hashed per process — efficiency, not correctness.
-  - *The engine's dependency closure left the record entirely, and is not
-    replaced.* The project lock used to pin what the engine resolved —
-    most concretely the git-annex build that wrote the bytes. Now
-    `lc_version` names the engine and nothing pins what it was made of.
-    Accepted rather than re-provided: the alternative is hashing an
+  - *The engine's dependency closure left the record entirely, and is
+    mostly not replaced.* The project lock used to pin what the engine
+    resolved — most concretely the git-annex build that wrote the bytes.
+    Now `lc_version` names the engine, the hardening pass added
+    `uv_version` beside it (the one closure member that decides which
+    artifacts a lock installs), and nothing pins the rest. Accepted
+    rather than re-provided: the alternative is hashing an
     environment lc does not own into artifacts it does, which is the
-    over-sensitivity the `behind` model exists to avoid.
+    over-sensitivity the `behind` model exists to avoid — both fields
+    are attestation, never identity.
   - *Layer 6 resolved its note the other way:* the image gets **no
     engine layer at all**. The engine stays on the host in containerized
     mode too — the container is the recipe's world, never the engine's —
