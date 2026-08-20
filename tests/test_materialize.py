@@ -520,6 +520,38 @@ def test_an_edit_while_the_graph_runs_is_reported(
     assert any("notes.md" in w and "in flight" in w for w in report.warnings)
 
 
+def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`dataset.save` stages scoped and commits scoped — a partial
+    commit — so work the user staged while the graph ran ends the run
+    exactly where they left it: staged, warned about, and in none of
+    lc's commits (the per-output saves and the trailing crate commit
+    alike)."""
+    _declare_license(root)
+
+    class Staging(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            (root / "notes.py").write_text("draft = True\n")
+            dataset._git(["add", "--", "notes.py"], cwd=root)
+            yield from handles
+
+    @contextmanager
+    def fake() -> Iterator[_Inline]:
+        yield Staging()
+
+    monkeypatch.setattr(engine, "cluster_for_run", fake)
+
+    report = engine.materialize(root, [])
+
+    assert report.ok
+    assert any("notes.py" in w and "in flight" in w for w in report.warnings)
+    staged = dataset._git(["diff", "--cached", "--name-only"], cwd=root).split()
+    assert staged == ["notes.py"]
+    ever_committed = dataset._git(["log", "--name-only", "--format="], cwd=root).split()
+    assert "notes.py" not in ever_committed
+
+
 def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None:
     report = engine.materialize(root, [])
     assert not any("in flight" in w for w in report.warnings)
@@ -1130,7 +1162,7 @@ def test_status_places_the_publication_view(root: Path, inline: None) -> None:
     assert engine.status(root).crate == "will be created by the next `lc materialize`"
 
     engine.materialize(root, [])
-    assert engine.status(root).crate == "up to date"
+    assert engine.status(root).crate == "up to date with the outputs"
 
 
 def test_status_sees_the_crate_lag_a_rerun_leaves(root: Path, inline: None) -> None:
@@ -1151,7 +1183,7 @@ def test_status_sees_the_crate_lag_a_rerun_leaves(root: Path, inline: None) -> N
     assert engine.status(root).crate.startswith("behind")
 
     engine.materialize(root, [])
-    assert engine.status(root).crate == "up to date"
+    assert engine.status(root).crate == "up to date with the outputs"
 
 
 def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: None) -> None:

@@ -198,6 +198,8 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     require_git_annex()
 
     c = _Converger(write=write)
+    if warning := uv_scrub_warning():
+        c.warn(warning)
 
     if write:
         directory.mkdir(parents=True, exist_ok=True)
@@ -705,6 +707,20 @@ _UV_KEPT = frozenset(
         "UV_NATIVE_TLS",
         "UV_INSECURE_HOST",
         "UV_OFFLINE",
+        # How package content lands (hardlink/copy/symlink) — the same
+        # line the install-settings hash draws: `link-mode` is not an
+        # audited setting either.
+        "UV_LINK_MODE",
+        # The managed-interpreter store — the shared-filesystem story
+        # `UV_CACHE_DIR` is kept for, and *which* interpreter is pinned
+        # by `.python-version`, not by where its bytes live. There is no
+        # project-level spelling for this one, so scrubbing it would
+        # come with a remedy that does not exist.
+        "UV_PYTHON_INSTALL_DIR",
+        # Where the pinned interpreter downloads from, not which one.
+        "UV_PYTHON_INSTALL_MIRROR",
+        # Auth plumbing, the credentials family.
+        "UV_KEYRING_PROVIDER",
         # uv's own recursion guard, set on every `uv run` child — lc
         # itself frequently *is* one. Dropping it disables the guard and
         # makes the scrub report uv's variable as the user's.
@@ -751,14 +767,34 @@ def child_env() -> dict[str, str]:
 def scrubbed_uv_vars() -> list[str]:
     """Name the ambient non-empty ``UV_*`` variables the scrub drops.
 
-    The run verbs surface these as a warning: a user whose ``UV_PYTHON``
-    stopped steering a sync deserves a pointer to why. One predicate with
-    :func:`child_env`, so the report can never disagree with the scrub.
+    One predicate with :func:`child_env`, so the report can never
+    disagree with the scrub.
 
     Returns:
         Sorted variable names, set and non-empty in this process.
     """
     return sorted(k for k, v in os.environ.items() if v and _uv_scrubbed(k))
+
+
+def uv_scrub_warning() -> str:
+    """Compose the dropped-ambient-variables warning, once for every verb.
+
+    A user whose ``UV_PYTHON`` or ``UV_INDEX_URL`` stopped steering uv
+    deserves a pointer to why on *whichever* verb they hit first —
+    ``lc init`` resolving against the wrong index fails with uv's raw
+    error otherwise. One spelling here, so the verbs cannot drift from
+    each other or from the scrub.
+
+    Returns:
+        The warning, or ``""`` when nothing non-empty was dropped.
+    """
+    if dropped := scrubbed_uv_vars():
+        return (
+            f"ignored ambient {', '.join(dropped)} — an install setting is "
+            "the project's to declare (pyproject.toml), and an ambient one "
+            "would steer uv without moving env_version"
+        )
+    return ""
 
 
 def uv_version(directory: Path) -> str:

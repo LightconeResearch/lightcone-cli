@@ -178,7 +178,7 @@ def test_a_missing_archive_refuses_unless_the_caller_may_build(
     with pytest.raises(ProjectError, match="lc build"):
         container.runtime_for_run(root, build=False)
     assert _argvs(fake, "podman", "build") == []
-    assert _argvs(fake, "git", "commit") == []
+    assert [c for c in fake if c[0] == "git" and "commit" in c] == []
 
     runtime = container.runtime_for_run(root, build=True)
 
@@ -268,7 +268,7 @@ def test_the_build_saves_and_commits_the_archive(root: Path, fake: list[list[str
     assert f".datalad/environments/{runtime.image_tag}" in " ".join(add)
     # The dot-path routing: without it the archive is a full blob in git.
     assert "annex.dotfiles=true" in add
-    assert len(_argvs(fake, "git", "commit")) == 1
+    assert len([c for c in fake if c[0] == "git" and "commit" in c]) == 1
 
 
 def test_an_unrouted_archive_refuses_before_building(

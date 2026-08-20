@@ -395,12 +395,16 @@ def _crate_line(root: Path, newest: str) -> str:
     """One line placing the publication view, from repository facts alone.
 
     Lag is read off the document itself, not history: the render pins
-    ``datePublished`` to the newest manifest ``finished_at``, so a crate
-    whose date no longer matches the manifests was written before the
-    newest output — the rerun residue made visible, since a rerun never
-    regenerates the view. No rocrate import (the crate is the one
-    materialize-only dependency on status's path) and no git: the
-    manifests were already read by the walk.
+    ``datePublished`` to the newest manifest ``finished_at``, so a date
+    that no longer matches the manifests — in either direction, a rerun
+    adds an output the view predates and a dropped output regresses the
+    newest — means the view no longer describes the outputs. That is the
+    line's whole claim, and it is worded to it: a crate-affecting edit
+    that moves no manifest (the lock's bytes, the spec) is invisible
+    here, and fine — the next materialize converges those anyway, where
+    a rerun's lag has no other surface. No rocrate import (the crate is
+    the one materialize-only dependency on status's path) and no git:
+    the manifests were already read by the walk.
     """
     spdx = project.license_of(root)
     path = root / project.CRATE_FILENAME
@@ -418,8 +422,8 @@ def _crate_line(root: Path, newest: str) -> str:
     except (OSError, ValueError, AttributeError):
         return "unreadable — the next `lc materialize` rewrites it"
     if newest and published != newest:
-        return "behind — outputs changed after it was written; `lc materialize` refreshes it"
-    return "up to date"
+        return "behind the outputs — `lc materialize` refreshes it"
+    return "up to date with the outputs"
 
 
 def _foreign_write(root: Path, key: Key) -> dataset.LastWrite | None:
@@ -489,12 +493,8 @@ def materialize(
     project.require_git_annex()
     dataset.require_committer(root)
     report = MaterializeReport()
-    if dropped := project.scrubbed_uv_vars():
-        report.warnings.append(
-            f"ignored ambient {', '.join(dropped)} — an install setting is "
-            "the project's to declare (pyproject.toml), and an ambient one "
-            "would steer the sync without moving env_version"
-        )
+    if warning := project.uv_scrub_warning():
+        report.warnings.append(warning)
     # The dirty check comes before anything that writes: the image
     # converge below *commits*, and `dataset.save` stages scoped but
     # commits the whole index — on a dirty tree the user's staged edits
@@ -604,9 +604,8 @@ def materialize(
     # The tree was clean at the start-of-run refusal and save/restore
     # keeps `results/` clean, so anything dirty *now* was edited while
     # the graph ran — and every manifest records the starting commit,
-    # which no longer describes that code. A warning, not a manifest
-    # field: the spec's `git_dirty` stays unwritten (see the recorded
-    # deviation), and the driver does not rewrite files the worker owns.
+    # which no longer describes that code. A warning, never a manifest
+    # field: the driver does not rewrite files the worker owns.
     if edited := dataset.status(root):
         names = ", ".join(sorted(path for _, path in edited))
         report.warnings.append(

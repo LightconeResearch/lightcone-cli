@@ -693,6 +693,8 @@ def test_ambient_uv_install_settings_are_scrubbed(
     monkeypatch.setenv("UV_CACHE_DIR", "/scratch/uv")
     monkeypatch.setenv("UV_INDEX_INTERNAL_PASSWORD", "hunter2")
     monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", "/scratch/uv/python")
+    monkeypatch.setenv("UV_LINK_MODE", "copy")
     monkeypatch.setenv("LC_TEST_CANARY", "kept")
 
     env = child_env()
@@ -702,10 +704,27 @@ def test_ambient_uv_install_settings_are_scrubbed(
     assert env["UV_CACHE_DIR"] == "/scratch/uv", "shared-cache plumbing survives"
     assert env["UV_INDEX_INTERNAL_PASSWORD"] == "hunter2", "credentials survive"
     assert env["UV_OFFLINE"] == "1", "air-gap mode survives"
+    assert env["UV_PYTHON_INSTALL_DIR"] == "/scratch/uv/python", (
+        "the interpreter store is plumbing, and it has no project-level spelling"
+    )
+    assert env["UV_LINK_MODE"] == "copy", "link-mode is not an audited setting either"
     assert env["LC_TEST_CANARY"] == "kept"
     assert scrubbed_uv_vars() == ["UV_INDEX_URL", "UV_NO_BINARY", "UV_PYTHON"], (
         "the report names exactly what the scrub dropped"
     )
+
+
+def test_converge_reports_the_uv_scrub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lc init` resolves and syncs, so a user whose ambient UV_INDEX_URL
+    was dropped must hear it here — not only on the verbs they have not
+    reached when resolution fails with uv's raw error."""
+    monkeypatch.setenv("UV_INDEX_URL", "https://mirror.invalid/simple")
+
+    report = converge(tmp_path / "proj")
+
+    assert any("UV_INDEX_URL" in w for w in report.warnings)
 
 
 def test_an_empty_scrubbed_variable_is_not_reported(

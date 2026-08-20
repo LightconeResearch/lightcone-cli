@@ -248,7 +248,12 @@ def _machine_config_paths() -> tuple[Path, ...]:
             if var in os.environ
         )
     config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return (config_home / "uv" / "uv.toml", Path("/etc/uv/uv.toml"))
+    config_dirs = os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg"
+    return (
+        config_home / "uv" / "uv.toml",
+        *(Path(d) / "uv" / "uv.toml" for d in config_dirs.split(":") if d),
+        Path("/etc/uv/uv.toml"),
+    )
 
 
 def _machine_config() -> tuple[str, ...]:

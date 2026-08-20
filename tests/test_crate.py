@@ -354,6 +354,22 @@ def test_a_non_sha256_key_yields_size_and_no_digest(project: Path) -> None:
     assert "sha256" not in part
 
 
+def test_pointer_shaped_bytes_never_become_a_checksum(project: Path) -> None:
+    """`annex_keys` answers empty for the whole repository whenever
+    git-annex cannot answer at all, and an unlocked pointer file reads
+    perfectly well — so the byte fallback re-checks the pointer shape
+    instead of publishing a well-formed digest of the pointer text."""
+    _made(project, "baseline", "first", git_sha="aaa111")
+    pointer = "/annex/objects/SHA256E-s300--" + "a" * 64 + ".csv\n"
+    (project / "data" / "catalog.csv").write_text(pointer)
+
+    entities = _entities(_render(project, _graph(project), keys={}))
+
+    catalog = entities["data/catalog.csv"]
+    assert "sha256" not in catalog
+    assert "contentSize" not in catalog
+
+
 def test_git_carried_files_are_hashed_by_their_bytes(project: Path) -> None:
     """The lock and its companions are in git, so their working-tree
     bytes are the content — repository state, and the render stays

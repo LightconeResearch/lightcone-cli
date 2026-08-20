@@ -1349,10 +1349,20 @@ follows POSIX — unlinking a directory needs write on its *parent* — so a
 recipe granted write on its output directory cannot remove that
 directory. Seatbelt's `(allow file-write* (subpath …))` covers the
 directory node, and permits it. Found by CI, which is the point of
-running one suite on both. Nothing depends on either answer (the worker
-resets the directory anyway, and a recipe that removes it fails to record
-its output), so the asymmetry is documented rather than papered over —
-but a test that asserts one mechanism's answer will go red on the other.
+running one suite on both. Since the hardening pass narrowed a recipe's
+write scope to its own output directory, the asymmetry sits exactly on
+the node a ported recipe likes to `rm -rf` as a prelude (measured on
+real Landlock: `rm -rf "$OUT" && mkdir "$OUT"` is EACCES on Linux and
+succeeds on macOS) — so such a recipe is green on a laptop and red on
+the Linux venue. Nothing in *lc* depends on either answer: the worker
+resets the directory before every execution, so the prelude is
+redundant and the fix is deleting it; likewise a temp-then-rename
+through a `results/` sibling now fails on both platforms — scratch
+belongs in `$TMPDIR` (the private HOME), which is what the write-denial
+remedy says. The asymmetry cannot be closed without granting write on
+the *parent*, which is precisely the sibling-write hole the narrowing
+exists to close; documented rather than papered over, and a test that
+asserts one mechanism's answer will go red on the other.
 
 **SBPL is last-match-wins; Landlock unions.** This asymmetry decides
 where a rule can live, and it cuts both ways. A later `(deny …)` can take
@@ -1729,10 +1739,15 @@ newest manifest `finished_at` the status walk already read — a content
 check, no git and no rocrate import (the recorded constraint that the
 crate stays the one materialize-only dependency on status's path). The
 `datePublished` pin is therefore load-bearing twice: it keeps the clock
-out of the render *and* it is what makes the lag detectable. A results
-edit that changes no manifest is invisible to the line — harmless, since
-such an edit is either a foreign write (reported stale) or render-
-neutral. `license_of` and `CRATE_FILENAME` moved to `project.py` so
+out of the render *and* it is what makes the lag detectable. The line's
+claim is scoped to what the proxy can see and worded to it ("up to date
+**with the outputs**" / "behind **the outputs**"): a crate-affecting
+edit that moves no manifest — the lock's bytes in a `File` entity, a
+spec edit — is invisible here, and fine, because the next materialize
+converges those anyway; a rerun's lag is the case with no other
+surface, and the proxy is exact for it in both directions (a dropped
+output regresses the newest stamp just as a rerun advances it).
+`license_of` and `CRATE_FILENAME` moved to `project.py` so
 status can ask about publication intent without the renderer's stack.
 
 **Publication intent is derived, never configured.** A
@@ -1796,7 +1811,13 @@ publish *no* digest: their recorded `input_versions` value is the framed
 hash, which shipped once under the `sha256` term as though `sha256sum`
 could check it — the manifests keep that story. The dataset's `version`
 stays lc's framed directory digest, deliberately distinct from the
-per-file claims.
+per-file claims. The move re-scoped what an in-tree input's `sha256`
+*means*, and the old conflict rule went with it deliberately: a `File`
+entity's checksum now describes the deposit — the bytes a `git archive`
+carries — never what any particular run consumed, so two manifests
+recording different digests for a shared input (a half-rebuilt project)
+no longer suppress it; which bytes a *run* consumed is its own
+manifest's `input_versions`, in the crate as that manifest `File`.
 
 **The validator floor is pinned as a set, not a count.**
 `tests/test_crate_smoke.py` materializes a real project and runs the
@@ -2024,6 +2045,20 @@ unlinks before writing; a new tampering test should too.
     publisher/affiliation metadata lc genuinely does not know, and a
     `[tool.lightcone.publication]` surface was considered and rejected —
     revisit when a real deposit target demands it.
+  - *lc's commits are partial commits, and a frozen execution worktree
+    is deferred, not rejected.* `dataset.save` commits with the same
+    pathspec it stages, so each save is built from HEAD plus its own
+    paths alone — work the user staged while a graph ran stays staged
+    and is named by the end-of-run warning, never swept into an output
+    or crate commit. The stronger move — executing in a dedicated
+    `git worktree` at the starting commit, which would also freeze the
+    *code* a long run reads — was considered and deferred to the venue
+    era: the branch dance under a live checkout, result propagation
+    back into it, and a second environment/mid-run-gate story outweigh
+    a hazard the warning now names precisely, and the case that makes
+    it genuinely worth it (editing on a login node while an `sbatch`
+    materialize runs for hours) arrives with the submission-model
+    venue.
 
 ### Recorded deviations from the spec
 
@@ -2065,7 +2100,8 @@ unlinks before writing; a new tampering test should too.
 - **The denial's remedies are only what works today** — `uv add` for a
   Python package, the system layer (`apt-install` + the containerize
   note, real since layer 6), the ASTRA input declaration for data, and
-  "output goes in `results/`" plus `tempfile.mkdtemp()` for a write
+  "a recipe writes only its own output directory; a probe writes
+  `results/`" plus `tempfile.mkdtemp()` for a write
   denial. Nothing in a denial message names a verb, flag, or declaration
   that does not exist.
 - **`Attestation` has no serializer of its own.** An earlier draft

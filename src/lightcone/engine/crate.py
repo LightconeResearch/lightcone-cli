@@ -300,6 +300,10 @@ class _Builder:
             readme["about"] = {"@id": "./"}
 
     def _file(self, name: str) -> Any:
+        # Idempotent by id, so the second asker (the license file is
+        # asked for by the workflow and the root) does not hash again.
+        if (existing := self.crate.dereference(name)) is not None:
+            return existing
         properties: dict[str, Any] = {}
         if fmt := _format_of(name):
             properties["encodingFormat"] = fmt
@@ -314,6 +318,13 @@ class _Builder:
         wrong bytes — and a git-carried file from the bytes themselves.
         Both are repository state, so the render stays pure. A file
         neither annexed nor readable carries no claim at all.
+
+        The byte path re-checks the pointer shape rather than trusting
+        the key map's absence: ``annex_keys`` answers empty for a whole
+        repository whenever git-annex cannot answer at all, and a
+        pointer file reads perfectly well — so without the guard, one
+        failed ``git annex find`` would publish a well-formed digest of
+        the pointer text for every annexed file, silently.
         """
         if key := self.keys.get(name):
             if digest := _SHA256_KEY.match(key):
@@ -321,8 +332,14 @@ class _Builder:
             if size := _KEY_SIZE.match(key):
                 return {"contentSize": size.group(1)}
             return {}
+        path = self.root / name
         try:
-            data = (self.root / name).read_bytes()
+            if path.is_symlink() or (
+                path.stat().st_size <= assets._POINTER_MAX_BYTES
+                and path.read_bytes().startswith(assets._POINTER_PREFIX)
+            ):
+                return {}
+            data = path.read_bytes()
         except OSError:
             return {}
         return {"contentSize": str(len(data)), "sha256": hashlib.sha256(data).hexdigest()}
@@ -421,11 +438,16 @@ class _Builder:
         one shipped a bug.
 
         An in-tree input's checksum comes from its annex key, like every
-        other file. An out-of-tree input carries none: its recorded
-        ``input_versions`` digest is lc's *framed* hash, not a raw
-        sha256, so publishing it under the workflow-run ``sha256`` term
-        would be a checksum nothing can verify — the manifests keep the
-        full story, which is the layer's stated weaker promise.
+        other file: a ``File`` entity's ``sha256`` describes the
+        *deposit* — the bytes a ``git archive`` carries — never what any
+        particular run consumed, so manifests disagreeing about a shared
+        input (a half-rebuilt project) do not suppress it; which bytes a
+        run consumed is its own manifest's ``input_versions``. An
+        out-of-tree input carries none: its recorded digest is lc's
+        *framed* hash, not a raw sha256, so publishing it under the
+        workflow-run ``sha256`` term would be a checksum nothing can
+        verify — the manifests keep the full story, which is the layer's
+        stated weaker promise.
         """
         declared = plan.declared_path(self.root, path)
         in_tree = not Path(declared).is_absolute()

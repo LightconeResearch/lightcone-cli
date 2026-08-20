@@ -531,7 +531,7 @@ def test_status_headers_answer_mode_image_and_sandbox(
         "archive": ".datalad/environments/lc-env-0123456789abcdef/image",
     }
     report.sandbox = "podman (fs: declared, network: allowed)"
-    report.crate = "up to date"
+    report.crate = "up to date with the outputs"
     _status_stub(monkeypatch, report)
 
     output = runner.invoke(main, ["status"]).output
@@ -540,7 +540,7 @@ def test_status_headers_answer_mode_image_and_sandbox(
     assert "lc-env-0123456789abcdef" in output
     assert "needs build" in output and "lc build" in output
     assert "podman" in output
-    assert "crate:   up to date" in output
+    assert "crate:   up to date with the outputs" in output
 
 
 def test_build_on_a_direct_project_is_an_explanatory_no_op(

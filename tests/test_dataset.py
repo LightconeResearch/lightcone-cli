@@ -231,6 +231,35 @@ def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
 # ---- committing ------------------------------------------------------------
 
 
+def test_save_leaves_foreign_staged_work_staged_and_uncommitted(repo: Path) -> None:
+    """The user can `git add` while a graph runs; the next save must not
+    sweep it. The commit is a partial commit — built from HEAD plus the
+    saved paths alone — so their work stays exactly where they left it:
+    staged, and in no commit of lc's."""
+    (repo / "notes.py").write_text("draft = True\n")
+    dataset._git(["add", "--", "notes.py"], cwd=repo)
+    out = repo / "results" / "fit"
+    out.mkdir()
+    (out / "value.txt").write_text("42\n")
+
+    assert dataset.save(repo, [out], "make fit")
+
+    committed = dataset._git(["show", "--name-only", "--format=", "HEAD"], cwd=repo).split()
+    assert "notes.py" not in committed
+    assert sorted(committed) == ["results/fit/value.txt"]
+    staged = dataset._git(["diff", "--cached", "--name-only"], cwd=repo).split()
+    assert staged == ["notes.py"], "still staged, exactly as the user left it"
+
+
+def test_save_sees_nothing_to_commit_past_foreign_staged_work(repo: Path) -> None:
+    """The nothing-to-commit probe is scoped like the commit, or foreign
+    staged content would make an empty save attempt a commit and fail."""
+    (repo / "notes.py").write_text("draft = True\n")
+    dataset._git(["add", "--", "notes.py"], cwd=repo)
+
+    assert not dataset.save(repo, [repo / "results"], "nothing here")
+
+
 def test_save_reports_when_there_was_nothing_to_commit(repo: Path) -> None:
     """`lc materialize` may not leave an empty commit behind for an output
     that produced nothing new."""
@@ -495,6 +524,18 @@ def test_annex_keys_maps_every_annexed_file_content_present_or_not(repo: Path) -
     assert dataset.annex_keys(clone)["results/fit/value.dat"] == key, (
         "keys are repository state, bytes not required"
     )
+
+
+def test_annex_keys_survives_a_tab_in_a_filename(repo: Path) -> None:
+    """git-annex emits ${file} unescaped, so the parse splits from the
+    *last* tab — keys never contain one, filenames legally can."""
+    out = repo / "results" / "fit"
+    out.mkdir()
+    (out / "run\t1.dat").write_bytes(b"x" * 300)
+    dataset.save(repo, [out], "make fit")
+
+    keys = dataset.annex_keys(repo)
+    assert keys["results/fit/run\t1.dat"].startswith("SHA256E-s300--")
 
 
 def test_annex_keys_of_a_plain_directory_is_empty(tmp_path: Path, real_tools: None) -> None:
