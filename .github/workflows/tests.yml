@@ -33,6 +33,10 @@ jobs:
       # Landlock or Seatbelt would otherwise report green while testing
       # nothing at all.
       LC_SANDBOX_TESTS_REQUIRED: "1"
+      # Same rule for the container smoke tests, on the runners that carry
+      # the runtimes (ubuntu ships podman and a running docker daemon).
+      # macOS runners have no podman machine, so there the suite skips.
+      LC_CONTAINER_TESTS_REQUIRED: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
 
     steps:
       - uses: actions/checkout@v4

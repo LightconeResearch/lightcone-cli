@@ -192,7 +192,7 @@ def dataset_id(directory: Path) -> str:
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
-def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
+def save(directory: Path, paths: Iterable[Path], message: str, *, dotfiles: bool = False) -> bool:
     """Commit *paths*.
 
     A plain ``git add``: ``.gitattributes`` sets ``filter=annex``, so git's
@@ -213,12 +213,22 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
         directory: The repository root.
         paths: What to stage, absolute or repository-relative.
         message: The commit message.
+        dotfiles: Let the annex take files under dot-directories.
+            git-annex routes dotfiles to git regardless of what
+            ``annex.largefiles`` says unless this is set, so the image
+            archive under ``.datalad/environments/`` would land as a
+            full blob in git — silently, with every test green — and
+            every clone would carry the bytes forever. Per-add and
+            opt-in, because the driver's ordinary saves never touch a
+            dotfile and a repo-wide setting would change what a user's
+            own ``git add`` does.
 
     Returns:
         False if there was nothing to commit.
     """
     relative = [_rel(directory, p) for p in paths]
-    _git(["-c", "annex.thin=true", "add", "-A", "--", *relative], cwd=directory)
+    routing = ["-c", "annex.dotfiles=true"] if dotfiles else []
+    _git(["-c", "annex.thin=true", *routing, "add", "-A", "--", *relative], cwd=directory)
     if _git_ok(["diff", "--cached", "--quiet"], cwd=directory):
         return False
     _git(["commit", "-q", "-m", message], cwd=directory)

@@ -7,11 +7,13 @@ import os
 import re
 import shutil
 import subprocess
+import tomllib
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
+from typing import Literal
 
 from astra.scaffold import create_boilerplate
 
@@ -238,12 +240,20 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
         lambda: _uv(c, ["lock"], directory=directory),
         is_current=lambda: _lock_is_current(directory),
     )
-    c.item(
-        ".venv",
-        (directory / ".venv").exists(),
-        lambda: _uv(c, _SYNC_ARGS, directory=directory),
-        is_current=lambda: _env_is_current(directory),
-    )
+    # Locking is resolution and works on the bare host in both modes; a
+    # *sync* of a containerized project is the host-sync deadlock in
+    # miniature — the lock's system-level dependencies (the reason the
+    # project containerized at all) are not on the host, so the sync
+    # fails and `--check` would report unconverged forever. The
+    # environment converge in containerized mode belongs to the verbs,
+    # which run it inside the image.
+    if mode(directory) == "direct":
+        c.item(
+            ".venv",
+            (directory / ".venv").exists(),
+            lambda: _uv(c, _SYNC_ARGS, directory=directory),
+            is_current=lambda: _env_is_current(directory),
+        )
 
     return c.report
 
@@ -320,13 +330,16 @@ def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
 
 
 def sync(directory: Path) -> list[str]:
-    """Make ``.venv`` match ``uv.lock``.
+    """Make the host ``.venv`` match ``uv.lock``. Direct mode's converge.
 
-    Both entry points that execute recipes call this before they start,
+    Both entry points that execute recipes converge before they start,
     rather than checking and refusing: workers pass ``--no-sync``, so
     nothing else would notice a lock edited without a sync, and a manifest
     recording an environment the recipe did not run under is the identity
-    model saying something untrue.
+    model saying something untrue. The containerized twin is
+    ``container.sync``, which runs the same uv command inside the image —
+    callers pick by :func:`mode`, because only they know whether an image
+    has been ensured.
 
     Args:
         directory: The project root.
@@ -475,6 +488,59 @@ def _can_ask_git(directory: Path) -> bool:
     return directory.is_dir() and _in_repository(directory)
 
 
+def mode(directory: Path) -> Literal["direct", "containerized"]:
+    """Read which execution world this project declares.
+
+    Derived, never configured: a ``[tool.lightcone.image]`` table in
+    ``pyproject.toml`` *is* the escalation to containerized mode, and
+    deleting it is the way back. Presence only — what the table means is
+    :mod:`~lightcone.engine.image`'s question, asked by the verbs that
+    consume it, so an invalid declaration refuses there with the line at
+    fault rather than here with none.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        ``"containerized"`` if the table is declared, else ``"direct"`` —
+        including for a directory with no ``pyproject.toml`` yet, which is
+        what lets convergence scaffold one.
+
+    Raises:
+        ProjectError: If ``pyproject.toml`` is not valid TOML.
+    """
+    path = directory / "pyproject.toml"
+    if not path.is_file():
+        return "direct"
+    try:
+        parsed = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise ProjectError(f"{path}: invalid TOML: {e}") from e
+    table = parsed.get("tool", {}).get("lightcone", {}).get("image")
+    return "direct" if table is None else "containerized"
+
+
+def env_dir(directory: Path) -> Path:
+    """Locate the project environment for this project's mode.
+
+    The one spelling of where the environment lives. Direct mode syncs
+    ``.venv`` on the host; containerized mode syncs ``.lightcone/venv``
+    *inside* the image, against the baked interpreter — so its symlinks
+    dangle on the host, deliberately, and the host ``.venv`` (if any) is
+    inert. Two directories, because sharing one means every sync flips it
+    between worlds and breaks whichever side is not looking.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        The environment prefix for the current mode.
+    """
+    if mode(directory) == "containerized":
+        return directory / ".lightcone" / "venv"
+    return directory / ".venv"
+
+
 def project_name(directory: Path) -> str:
     """Derive a project name from a directory name.
 
@@ -524,7 +590,10 @@ def current_project(directory: Path | None = None) -> Path:
 
     The question every verb that runs something asks, and the stronger of
     the two: a ``.venv`` that is not there is not something these callers
-    are going to create.
+    are going to create. In containerized mode the host ``.venv`` is
+    inert and never required — the environment those verbs enter is
+    ``.lightcone/venv``, which their own converge creates inside the
+    image, so only what the repository carries is asked for.
 
     Args:
         directory: Defaults to the working directory.
@@ -533,9 +602,12 @@ def current_project(directory: Path | None = None) -> Path:
         The resolved project root.
 
     Raises:
-        ProjectError: If any of the environment is absent.
+        ProjectError: If any of the required environment is absent.
     """
-    return _project_root(directory, _ENVIRONMENT_FILES)
+    resolved = (directory or Path.cwd()).resolve()
+    if mode(resolved) == "containerized":
+        return _project_root(resolved, _DECLARED_FILES)
+    return _project_root(resolved, _ENVIRONMENT_FILES)
 
 
 def _project_root(directory: Path | None, required: Sequence[str]) -> Path:

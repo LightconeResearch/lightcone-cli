@@ -106,6 +106,8 @@ class SeatbeltBackend:
     """Seatbelt, expressed as an argv rewrite."""
 
     capability: Capability = field(default_factory=lambda: Capability(kind="seatbelt"))
+    #: The uv hop stays outside the wrap: trusted host plumbing.
+    contains_prefix: bool = False
 
     def wrap(self, policy: Policy, argv: Sequence[str]) -> list[str]:
         """Rewrite *argv* to run under ``sandbox-exec``.

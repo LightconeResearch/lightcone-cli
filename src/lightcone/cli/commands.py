@@ -178,6 +178,65 @@ def run(command: tuple[str, ...]) -> None:
 
 
 # =============================================================================
+# lc build
+# =============================================================================
+
+
+@main.command()
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the result as JSON on stdout.",
+)
+def build(as_json: bool) -> None:
+    """Build the project's system-layer image, and commit it.
+
+    Containerized projects only — a project containerizes by declaring
+    [tool.lightcone.image] in pyproject.toml. The image is saved into the
+    repository (.datalad/environments/) as versioned content, so clones
+    obtain the exact bytes with `git annex get` instead of rebuilding.
+    Idempotent: an image that is already built and committed is left
+    alone.
+    """
+    from lightcone.engine import container as engine_container
+    from lightcone.engine.project import current_project
+
+    root = current_project()
+    state, tag = engine_container.image_state(root)
+    if state == "direct":
+        if as_json:
+            click.echo(json.dumps({"mode": "direct"}))
+        else:
+            _console().print(
+                "direct mode — no image to build; declare [bold]\\[tool.lightcone.image][/bold] "
+                "in pyproject.toml to containerize this project."
+            )
+        return
+    if state == "absent" and not as_json:
+        _console().print(
+            f"building [bold]{tag}[/bold] — first build after an environment change; "
+            "this can take minutes"
+        )
+    runtime, action = engine_container.build(root)
+    if as_json:
+        click.echo(
+            json.dumps(
+                {
+                    "mode": "containerized",
+                    "tag": runtime.image_tag,
+                    "id": runtime.image_id,
+                    "archive": runtime.archive,
+                    "action": action,
+                }
+            )
+        )
+        return
+    verb = "Built and committed" if action == "built" else "Already built —"
+    _console().print(f"[green]✓[/green] {verb} {runtime.image_tag} ({runtime.archive})")
+
+
+# =============================================================================
 # lc materialize
 # =============================================================================
 
@@ -226,10 +285,21 @@ def materialize(
     records the environment and the commit that produced it. Pass
     --refresh to remake those too.
     """
+    from lightcone.engine import container as engine_container
     from lightcone.engine import materialize as engine
     from lightcone.engine.project import current_project
 
     root = current_project()
+    if not check_only and not as_json:
+        # The engine never prints, and the build it is about to run can
+        # take minutes — so the one place that owns the console says so
+        # before handing over, instead of after.
+        state, tag = engine_container.image_state(root)
+        if state == "absent":
+            _console().print(
+                f"building [bold]{tag}[/bold] — first run after an environment change; "
+                "this can take minutes"
+            )
     if check_only:
         report = engine.check(root, targets, refresh=refresh)
     else:
@@ -278,9 +348,21 @@ def status(as_json: bool) -> None:
         click.echo(json.dumps(report.as_dict(), indent=2))
         return
 
+    lines = [f"  mode:    {report.mode}"]
+    if report.image is not None:
+        tag, state = report.image["tag"], report.image["state"]
+        described = {
+            "present": "built",
+            "absent": "needs build — run `lc build`",
+            "unfetched": f"content not fetched — git annex get "
+            f".datalad/environments/{tag}/image",
+        }[state]
+        lines.append(f"  image:   {tag} — {described}")
+    lines.append(f"  sandbox: {report.sandbox}")
+    lines.append("")
     marks = {"current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]", "stale": "[yellow]![/yellow]"}
     width = max((len(o.output) for o in report.outputs), default=0)
-    lines = [
+    lines += [
         # The commit gets a column of its own, for every state and not only
         # the interesting ones: "which code made this" is the question the
         # verb exists to answer, and it has an answer for a current output

@@ -45,6 +45,8 @@ class Unavailable:
     """
 
     capability: Capability = field(default_factory=lambda: Capability(kind="none"))
+    #: No mechanism, so nothing owns the prefix either.
+    contains_prefix: bool = False
 
     def wrap(self, policy: Policy, argv: Sequence[str]) -> list[str]:
         """Return *argv* unchanged — there is no mechanism to wrap with."""
@@ -143,15 +145,22 @@ def run(
         cwd: Where to run it.
         env: The environment for everything outside the rewrite. The
             policy's own overlay is applied inside it, not merged here.
-        prefix: Spawned *outside* the rewrite — how a caller says "wrap
-            the command, not this". Used for the ``uv run`` hop, since
-            uv's config and caches are trusted plumbing.
+        prefix: The ``uv run`` hop. For a host mechanism it is spawned
+            *outside* the rewrite — uv's config and caches are trusted
+            plumbing. For a backend that is itself a world
+            (``contains_prefix``), it goes *inside*: there is no trusted
+            host plumbing inside a container, and the env overlay is
+            that backend's to apply natively rather than through a
+            host-resolved ``env``.
 
     Returns:
         The exit code, what was actually enforced, and any lines the
         caller should print verbatim.
     """
-    wrapped = [*prefix, *backend.wrap(policy, [*env_argv(policy), *argv])]
+    if backend.contains_prefix:
+        wrapped = backend.wrap(policy, [*prefix, *argv])
+    else:
+        wrapped = [*prefix, *backend.wrap(policy, [*env_argv(policy), *argv])]
     attestation = backend.attest(policy)
     # `policy.env` is deliberately **not** merged here: it went inside
     # the wrap, above, via :func:`env_argv`. Everything *outside* the

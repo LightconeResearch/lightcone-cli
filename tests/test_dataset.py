@@ -94,6 +94,26 @@ def test_a_plain_git_add_annexes_content_by_itself(repo: Path) -> None:
     assert _annexed(repo, output / "fit.csv")
 
 
+def test_the_image_archive_reaches_the_annex_despite_its_dot_path(repo: Path) -> None:
+    """git-annex routes dotfile paths to git whatever `annex.largefiles`
+    says, unless the add opts in — so without `dotfiles=True` the image
+    archive under `.datalad/environments/` lands as a full blob in git,
+    silently, and every clone carries the bytes forever. The mutation
+    check is the plain save: same file, same attributes, git's blob."""
+    archive = repo / ".datalad" / "environments" / "lc-env-abc" / "image"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"pretend image bytes\n" * 64)
+
+    dataset.save(repo, [archive.parent], "with routing", dotfiles=True)
+    assert _annexed(repo, archive)
+
+    plain = repo / ".datalad" / "environments" / "lc-env-def" / "image"
+    plain.parent.mkdir(parents=True)
+    plain.write_bytes(b"pretend image bytes\n" * 64)
+    dataset.save(repo, [plain.parent], "without routing")
+    assert not _annexed(repo, plain)
+
+
 def test_analysis_code_stays_in_git_and_stays_writable(repo: Path) -> None:
     """The default `annex.largefiles=nothing` is what keeps `filter=annex`
     from routing source files into the annex along with the data."""

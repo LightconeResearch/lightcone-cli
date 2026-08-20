@@ -54,6 +54,11 @@ EXEC_ALLOWLIST: tuple[str, ...] = (
 #: profile is listed too or nothing but `/bin/sh` ever resolves there.
 _UTILITY_PATH = "/usr/local/bin:/usr/bin:/bin:/run/current-system/sw/bin"
 
+#: The ``PATH`` tail inside a containerized exec. The image's own FHS —
+#: never :data:`_UTILITY_PATH`, whose NixOS entry names a directory no
+#: Debian-family image has.
+_IMAGE_PATH = "/usr/local/bin:/usr/bin:/bin"
+
 
 def utility(name: str) -> Path | None:
     """Resolve an allowlisted tool from the fixed search path.
@@ -169,7 +174,13 @@ _HOME_LAYOUT = {
 }
 
 
-def exec_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
+def exec_policy(
+    project: Path,
+    *,
+    read_paths: Sequence[Path] = (),
+    env_dir: Path | None = None,
+    containerized: bool = False,
+) -> Policy:
     """Build what a sandboxed command may touch.
 
     The tree is read-only apart from ``results/``, so ``lc run`` and a
@@ -183,9 +194,19 @@ def exec_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     leaves a manifest that is self-consistent and wrong, which no checksum
     can see.
 
+    The containerized shape is the same policy with the host stripped
+    out: the *image* is the OS baseline and the exec set — everything
+    present in it was declared — so the path sets carry only the project
+    world, which is exactly what the OCI backend turns into mounts. One
+    builder for both, so a probe still gets what a recipe gets per mode.
+
     Args:
         project: The project root, granted read.
         read_paths: Declared inputs outside the tree.
+        env_dir: The project environment prefix; defaults to the host
+            ``.venv``.
+        containerized: Build the mount-shaped policy instead of the host
+            one.
 
     Returns:
         The policy. ``results/`` is granted only if it exists — a policy
@@ -193,11 +214,30 @@ def exec_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
         the caller owns removing it (see
         :func:`~lightcone.engine.sandbox.boundary.scope`).
     """
-    tmp_home = Path(tempfile.mkdtemp(prefix="lc-home-")).resolve()
+    env_dir = env_dir if env_dir is not None else project / ".venv"
+    # The containerized HOME lives under the project's own (gitignored)
+    # `.lightcone/`, not the system temp dir: it is a mount source, and
+    # on macOS the podman machine shares the project's tree while the
+    # host's /var/folders temp roots arrive empty.
+    if containerized:
+        parent = project / ".lightcone"
+        parent.mkdir(parents=True, exist_ok=True)
+        tmp_home = Path(tempfile.mkdtemp(prefix="lc-home-", dir=parent)).resolve()
+    else:
+        tmp_home = Path(tempfile.mkdtemp(prefix="lc-home-")).resolve()
     for sub in _HOME_LAYOUT.values():
         (tmp_home / sub).mkdir(parents=True, exist_ok=True)
 
-    python = _venv_python(project)
+    if containerized:
+        return Policy(
+            read=_existing([project, *read_paths]),
+            write=_existing([tmp_home, project / "results"]),
+            execute=(),
+            tmp_home=tmp_home,
+            env=home_overlay(tmp_home, env_dir, containerized=True),
+        )
+
+    python = _venv_python(env_dir)
     # EXECUTE on the interpreter *file*; READ on the install root beside
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
@@ -207,9 +247,9 @@ def exec_policy(project: Path, *, read_paths: Sequence[Path] = ()) -> Policy:
     return Policy(
         read=read,
         write=write,
-        execute=_existing(_exec_set(project, python)),
+        execute=_existing(_exec_set(env_dir, python)),
         tmp_home=tmp_home,
-        env=home_overlay(tmp_home, project),
+        env=home_overlay(tmp_home, env_dir),
     )
 
 
@@ -229,7 +269,7 @@ def _write_roots(project: Path) -> list[Path]:
     return [root for root in roots if not resolved.is_relative_to(root)]
 
 
-def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
+def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) -> dict[str, str]:
     """Point ``HOME`` and friends at a fresh private directory.
 
     The real ``$HOME`` is neither readable nor writable inside the
@@ -245,12 +285,16 @@ def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
 
     Args:
         tmp_home: The per-run directory to point at.
-        project: The project, whose ``.venv/bin`` fronts ``PATH``.
+        env_dir: The project environment whose ``bin`` fronts ``PATH``.
+        containerized: Use the image's own FHS as the ``PATH`` tail
+            rather than the host allowlist search path, and pin uv to the
+            in-image environment — the ``uv run`` hop executes inside the
+            container, and this is how it finds ``.lightcone/venv``.
 
     Returns:
         The environment overlay the boundary applies inside the wrap.
     """
-    return {
+    overlay = {
         "HOME": str(tmp_home),
         # The search path *is* the exec set. Without this the command
         # resolves tools through the host's ambient PATH while the policy
@@ -258,20 +302,25 @@ def home_overlay(tmp_home: Path, project: Path) -> dict[str, str]:
         # whose PATH fronts another copy (homebrew's bash on macOS, say)
         # the sandbox denies `bash` itself, and the message blames the
         # user's command for lc's own incoherence.
-        "PATH": os.pathsep.join([str(project / ".venv" / "bin"), _UTILITY_PATH]),
+        "PATH": os.pathsep.join(
+            [str(env_dir / "bin"), _IMAGE_PATH if containerized else _UTILITY_PATH]
+        ),
         **{k: str(tmp_home / v) for k, v in _HOME_LAYOUT.items()},
     }
+    if containerized:
+        overlay["UV_PROJECT_ENVIRONMENT"] = str(env_dir)
+    return overlay
 
 
-def _venv_python(project: Path) -> Path | None:
+def _venv_python(env_dir: Path) -> Path | None:
     """The realpath of the venv's interpreter, if there is one.
 
-    Resolved, because ``.venv/bin/python`` is a symlink and Landlock
-    evaluates the target. What gets granted on it is
-    :func:`_exec_set`'s decision, and its install root is separately a
-    read root (:func:`exec_policy`) for the standard library beside it.
+    Resolved, because ``bin/python`` is a symlink and Landlock evaluates
+    the target. What gets granted on it is :func:`_exec_set`'s decision,
+    and its install root is separately a read root (:func:`exec_policy`)
+    for the standard library beside it.
     """
-    python = project / ".venv" / "bin" / "python"
+    python = env_dir / "bin" / "python"
     return python.resolve() if python.exists() else None
 
 
@@ -297,7 +346,7 @@ def _stdlib_root(python: Path | None) -> list[Path]:
     return [] if Path.home().resolve().is_relative_to(root) else [root]
 
 
-def _exec_set(project: Path, python: Path | None) -> list[Path]:
+def _exec_set(env_dir: Path, python: Path | None) -> list[Path]:
     """The two exec tiers: the environment, and the utility allowlist.
 
     Grants are per *file* for the utilities, never per directory:
@@ -318,7 +367,7 @@ def _exec_set(project: Path, python: Path | None) -> list[Path]:
     runnable and silently outrank this whole allowlist.
     """
     paths: list[Path] = []
-    bin_dir = project / ".venv" / "bin"
+    bin_dir = env_dir / "bin"
     if bin_dir.is_dir():
         # Per *file*, never the directory, for the same reason `/usr/bin`
         # is: a directory grant is a grant on whatever the directory holds

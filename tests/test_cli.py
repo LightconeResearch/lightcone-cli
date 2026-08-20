@@ -27,9 +27,9 @@ def test_help_advertises_exactly_the_verbs_that_work(runner: CliRunner) -> None:
     """`lc --help` advertises only verbs that work — advertising others
     before they do would be a lie."""
     result = runner.invoke(main, ["--help"])
-    for verb in ("init", "materialize", "run", "status"):
+    for verb in ("init", "build", "materialize", "run", "status"):
         assert f"  {verb}" in result.output
-    for verb in ("verify", "build", "export"):
+    for verb in ("verify", "export"):
         assert f"  {verb}" not in result.output
 
 
@@ -515,6 +515,40 @@ def test_status_shows_each_output_its_state_and_its_commit(
         assert fragment in result.output
 
 
+def test_status_headers_answer_mode_image_and_sandbox(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The three facts nothing else surfaces — where the denial note and
+    the runtime-missing refusal both point."""
+    from lightcone.engine.materialize import StatusReport
+
+    report = _report()
+    assert isinstance(report, StatusReport)
+    report.mode = "containerized"
+    report.image = {"tag": "lc-env-0123456789abcdef", "state": "absent"}
+    report.sandbox = "podman (fs: declared, network: denied)"
+    _status_stub(monkeypatch, report)
+
+    output = runner.invoke(main, ["status"]).output
+
+    assert "mode:    containerized" in output
+    assert "lc-env-0123456789abcdef" in output
+    assert "needs build" in output and "lc build" in output
+    assert "podman" in output
+
+
+def test_build_on_a_direct_project_is_an_explanatory_no_op(
+    runner: CliRunner, project: Path
+) -> None:
+    """Not an error: `lc build` answers "what would building do here",
+    and for a direct project the answer names the escalation."""
+    result = runner.invoke(main, ["build"])
+
+    assert result.exit_code == 0
+    assert "direct mode" in result.output
+    assert "[tool.lightcone.image]" in result.output
+
+
 def test_status_exits_zero_even_with_stale_outputs(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -534,6 +568,9 @@ def test_status_json_is_machine_readable(
     result = runner.invoke(main, ["status", "--json"])
 
     assert json.loads(result.output) == {
+        "mode": "direct",
+        "image": None,
+        "sandbox": "",
         "counts": {"current": 1, "behind": 1, "stale": 1},
         "outputs": [
             {

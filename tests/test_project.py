@@ -122,6 +122,32 @@ def test_converge_scaffolds_no_environment_escalation(tmp_path: Path) -> None:
     assert "[tool.lightcone.image]" not in (project / "pyproject.toml").read_text()
 
 
+def test_a_containerized_project_converges_no_host_venv(
+    tmp_path: Path, tools: list[list[str]]
+) -> None:
+    """The host sync is the host-sync deadlock in miniature: the lock's
+    system-level dependencies — the reason the project containerized at
+    all — are not on the host, so a host `uv sync` fails and `--check`
+    would report unconverged forever. The verbs converge the environment
+    inside the image instead; init owes neither podman nor minutes."""
+    project = tmp_path / "proj"
+    converge(project)
+    text = (project / "pyproject.toml").read_text()
+    (project / "pyproject.toml").write_text(
+        text + '\n[tool.lightcone.image]\napt-install = ["bc"]\n'
+    )
+    shutil.rmtree(project / ".venv")
+
+    report = converge(project)
+
+    assert ".venv" not in [*report.created, *report.repaired, *report.unchanged]
+    assert report.converged
+    assert not (project / ".venv").exists()
+    # The lock still converges: locking is resolution, which the bare
+    # host can do in both modes.
+    assert "uv.lock" in report.unchanged
+
+
 def test_converge_scaffolds_no_src_directory(tmp_path: Path) -> None:
     """astra stopped creating it (astra-tools#100) and so do we: the
     boilerplate's `python src/main.py` is a TODO placeholder, and git drops

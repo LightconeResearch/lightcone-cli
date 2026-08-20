@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
@@ -200,3 +201,27 @@ def uv_calls(calls: list[list[str]]) -> list[list[str]]:
 def probes(calls: list[list[str]]) -> list[list[str]]:
     """Just the read-only ``--check`` probes."""
     return [c for c in uv_calls(calls) if "--check" in c]
+
+
+@pytest.fixture(scope="session")
+def engine_dist(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, Path]:
+    """Build the engine under test into a wheel the pinned record can find.
+
+    The record pins ``lightcone-cli==<v>`` and the suite's build is not
+    published, so the rerun's ephemeral environment is pointed here via
+    ``UV_FIND_LINKS`` — which is what lets the suite execute the same
+    record shape every real commit carries, rather than a test-only one.
+
+    Returns:
+        The wheel's exact version, and the directory serving it.
+    """
+    dist = tmp_path_factory.mktemp("engine-dist")
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(dist)],
+        cwd=Path(__file__).parent.parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    wheel = next(dist.glob("*.whl"))
+    return wheel.name.split("-")[1], dist

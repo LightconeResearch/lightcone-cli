@@ -18,12 +18,18 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from lightcone.engine import sandbox
+from lightcone.engine import container, sandbox
 from lightcone.engine.project import SPEC_FILENAME, child_env, require_uv, uv_prefix
 
 
 def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
     """Run a command in the project environment, inside the boundary.
+
+    A containerized probe never builds the image — it finds one, or
+    refuses naming the exact ``lc build`` — and converges the in-image
+    environment before executing, which is the same promise the direct
+    probe makes through its syncing ``uv run`` hop: the environment a
+    probe describes is one it just converged.
 
     Args:
         project: The project root.
@@ -38,14 +44,26 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
     require_uv()
     spec = read_spec(project)
 
-    built = sandbox.exec_policy(project, read_paths=input_paths(project, spec))
+    runtime = container.runtime_for_run(project, build=False)
+    if runtime.mode == "containerized":
+        container.sync(project, runtime)
+
+    built = sandbox.exec_policy(
+        project,
+        read_paths=input_paths(project, spec),
+        env_dir=runtime.env_dir,
+        containerized=runtime.mode == "containerized",
+    )
     with sandbox.scope(built) as policy:
         return sandbox.run(
-            sandbox.detect(),
+            container.backend(runtime),
             policy,
             list(command),
             cwd=project,
-            prefix=uv_prefix(project, sync=True),
+            # The direct hop converges; the containerized one must not —
+            # the converge above already did, and the exec runs with the
+            # network denied, where a sync cannot.
+            prefix=uv_prefix(project, sync=runtime.mode == "direct"),
             # Same reason as convergence: this uv invocation names its
             # project explicitly, so an environment activated elsewhere
             # is never what we mean — and uv says so, once per run, in

@@ -147,8 +147,15 @@ def _render_tool(path: Path) -> list[str]:
     return _message(
         f"cannot execute {path}",
         [
-            "  if this is a tool the command needs, declare it in the environment:",
+            "  if this is a Python tool, declare it in the environment:",
             f"      uv add <package providing {path.name}>",
+            "",
+            "  if this is a system tool, declare it in the system layer:",
+            "      [tool.lightcone.image]",
+            f'      apt-install = ["<apt package providing {path.name}>"]',
+            "    (apt package names — unsure? try: apt-cache search <name>)",
+            "    note: this containerizes the project — podman (or docker) required —",
+            "    and puts every materialized output behind.",
         ],
     )
 

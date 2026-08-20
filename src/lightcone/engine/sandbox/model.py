@@ -75,7 +75,7 @@ class Policy:
 class Capability:
     """What enforcement this host can provide, as probed."""
 
-    kind: Literal["landlock", "seatbelt", "none"]
+    kind: Literal["landlock", "seatbelt", "podman", "docker", "none"]
     landlock_abi: int | None = None
     #: Why, when ``kind`` is ``none``. Reaches the user — a downgrade is
     #: never silent.
@@ -87,14 +87,15 @@ class Attestation:
     """The hermeticity record for one exec.
 
     Derived from the flags actually applied, never from the mechanism
-    matrix's expectations. ``network`` is ``allowed`` on every path here
-    by recorded decision: lc applies no network restriction, and saying
-    so is the honest value.
+    matrix's expectations. ``network`` is ``allowed`` wherever lc applied
+    no restriction — the direct-mode mechanisms — and ``denied`` only
+    where a flag actually denied it, which today is the OCI backend's
+    ``--network none``.
     """
 
-    mechanism: Literal["landlock", "seatbelt", "none"]
+    mechanism: Literal["landlock", "seatbelt", "podman", "docker", "none"]
     fs: Literal["declared", "open"]
-    network: Literal["allowed"] = "allowed"
+    network: Literal["allowed", "denied"] = "allowed"
     landlock_abi: int | None = None
     exec_allowlist_version: int | None = None
 
@@ -107,6 +108,20 @@ class Backend(Protocol):
     path below it stay mechanism-blind, and what makes a backend
     testable on a host that cannot run it.
     """
+
+    @property
+    def contains_prefix(self) -> bool:
+        """Whether the wrap owns the whole command line, prefix included.
+
+        A host mechanism restricts the command and leaves the ``uv run``
+        hop outside as trusted host plumbing; a backend that is itself a
+        *world* (a container) has no trusted host plumbing inside it —
+        uv is part of what is being entered — so the seam hands it the
+        prefix too, and the env overlay becomes the backend's to apply
+        natively. Declared on every backend rather than defaulted at the
+        call site, so a new mechanism must answer the question.
+        """
+        ...
 
     @property
     def capability(self) -> Capability:

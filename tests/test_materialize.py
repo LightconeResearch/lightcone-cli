@@ -712,30 +712,6 @@ def test_a_drifted_environment_is_made_to_match_before_anything_runs(
     assert project_mod._env_is_current(root)
 
 
-@pytest.fixture(scope="session")
-def engine_dist(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, Path]:
-    """Build the engine under test into a wheel the pinned record can find.
-
-    The record pins ``lightcone-cli==<v>`` and the suite's build is not
-    published, so the rerun's ephemeral environment is pointed here via
-    ``UV_FIND_LINKS`` — which is what lets the suite execute the same
-    record shape every real commit carries, rather than a test-only one.
-
-    Returns:
-        The wheel's exact version, and the directory serving it.
-    """
-    dist = tmp_path_factory.mktemp("engine-dist")
-    subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(dist)],
-        cwd=Path(__file__).parent.parent,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    wheel = next(dist.glob("*.whl"))
-    return wheel.name.split("-")[1], dist
-
-
 def test_the_recorded_command_reproduces_the_output(
     root: Path,
     inline: None,

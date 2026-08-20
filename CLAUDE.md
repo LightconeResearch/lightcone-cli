@@ -52,7 +52,7 @@ speculatively.
 | 3 | ~~The `lc` entrypoint — launcher~~ | ❌ **removed by decision** (2026-08) — see Recorded decisions: the host `lc` is the engine, so there is nothing to delegate to |
 | 4 | **Fabric** — `lc materialize`, worker sequence, mid-run relock gate | ✅ **done** |
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
-| 6 | Container hatch — `[tool.lightcone.image]`, generated Containerfile, `lc build` | ⬜ |
+| 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
 | 7 | Venues — Perlmutter, hub/GKE, Cloud Build | ⬜ |
 | 8 | `lc verify`, WRROC export | ⬜ |
 
@@ -160,9 +160,11 @@ src/lightcone/              # namespace — NO __init__.py
 │   └── commands.py         # lc init, lc run, lc materialize, lc status
 └── engine/
     ├── __init__.py         # docstring only
-    ├── project.py          # what a project is: convergence + discovery
+    ├── project.py          # what a project is: convergence, discovery, mode
     ├── dataset.py          # the git + git-annex seam: how a project stores
     ├── identity.py         # env_version, definition_version, the lock scan
+    ├── image.py            # the system layer: declaration, Containerfile, tag — pure
+    ├── container.py        # runtimes, the build, the archived image — impure
     ├── assets.py           # an output: its directory, its manifest, its state
     ├── plan.py             # the spec, read as a graph of tasks
     ├── worker.py           # making one output; also the `python -m` entry point
@@ -175,6 +177,7 @@ src/lightcone/              # namespace — NO __init__.py
     │   ├── boundary.py     # detect() + run(): the mechanism-blind half
     │   ├── landlock.py     # Linux backend
     │   ├── seatbelt.py     # macOS backend
+    │   ├── oci.py          # containerized backend: the mount table as mechanism
     │   └── denial.py       # the denial UX
     └── templates/          # the scaffold's file content
         ├── __init__.py     # loader; a renderer only where there is a value to decide
@@ -275,12 +278,15 @@ wrong, and one the type checker cannot catch. The two `*_repair`
 functions stay named because `_Converger.file` hands them the text alone,
 so the template name has to be bound before the call site.
 
-**No engine constants for the environment.** The scaffolded
-`.python-version` is the interpreter `lc` itself is running on, and
-`requires-python` is that interpreter's minor as a floor. Both come from
-one place, so they can't conflict, and neither is a number to maintain.
-Identity follows the project's files from there: `env_version` hashes
-`.python-version`'s bytes, not anything in the engine (spec §3).
+**No engine constants for the environment — in direct mode.** The
+scaffolded `.python-version` is the interpreter `lc` itself is running
+on, and `requires-python` is that interpreter's minor as a floor. Both
+come from one place, so they can't conflict, and neither is a number to
+maintain. Identity follows the project's files from there: a direct
+project's `env_version` hashes `.python-version`'s bytes, not anything
+in the engine. The scoping is deliberate: containerized mode's default
+base and uv digests *are* engine constants, by spec-§2 design — see the
+layer-6 invariants for what moves when they do.
 
 **`.gitignore` and `.gitattributes` converge entry-wise, not by marker.**
 `templates.entries(name)` is a template minus comments and blanks;
@@ -577,9 +583,12 @@ regenerated — it identifies the dataset across clones and siblings.
 Verified, not assumed: `datalad status` recognises a freshly scaffolded
 project with no `--force` adoption step, and `Dataset('.').id` is the UUID
 we wrote. The reciprocal is a standing non-goal: **lc never requires
-datalad, never imports it, and never parses `.datalad/`.** A researcher
-who wants `datalad get`, siblings or RIA stores runs `uv add datalad` in
-their own project.
+datalad, never imports it, and never parses `.datalad/`.** lc *writes*
+under it — the dataset id, and since layer 6 the image archives and the
+`datalad.containers.*` config keys — but reads nothing back except
+through `git config -f`, and the archive is read as an image, never as
+datalad state. A researcher who wants `datalad get`, siblings or RIA
+stores runs `uv add datalad` in their own project.
 
 **Annexed files are ordinary writable files.** `filter=annex` keeps them
 unlocked, so an output can be overwritten in place and nothing needs to
@@ -982,11 +991,15 @@ workers pass `--no-sync` — so a lock edited without a sync would leave
 recipes importing packages the lock does not describe while every manifest
 recorded the *new* lock's `env_version`. Measured: the recipe imported
 `packaging 26.3` under a lock saying `24.2`, and uv accepted it silently.
-`materialize()` calls `project.sync()` right after the tool and committer
-preflight — before the dirty check and the graph — so the state is made
-impossible rather than detected. `--check` needs neither:
-`env_version` is the lock's bytes, so a drifted `.venv` cannot change what
-it answers.
+`materialize()` converges right after the dirty check — before the graph
+— so the state is made impossible rather than detected. (The dirty check
+moved *in front* of the converge with layer 6: in containerized mode the
+converge can commit an image archive, and `dataset.save` stages scoped
+but commits the whole index, so on a dirty tree the user's staged edits
+would be swept into the image commit. Direct mode is order-insensitive —
+its sync touches only ignored paths — so both modes run one order.)
+`--check` needs neither: `env_version` is the lock's bytes, so a drifted
+`.venv` cannot change what it answers.
 
 **A run takes every core, and there is no flag to say otherwise.** How
 much of a machine a run may use — and which machine — is one question, and
@@ -1117,14 +1130,19 @@ provides that, and for what workers do *not* need (git, git-annex).
   `schema_version`, `output_id`, `universe_id`, `recipe`,
   `definition_version`, `env_version`, `data_version`, `decisions`,
   `input_versions`, `git_sha`,
-  `git_remote`, `lc_version`, `hermeticity`. Spec §3's longer list —
-  `uv_version`, `platform`, `python_build`, `worker_runtime`, `image`,
+  `git_remote`, `lc_version`, `hermeticity` — and, since layer 6,
+  `image` (`{tag, id, archive, arch}`, `None` on the host; see the
+  layer-6 invariants for why it is defaulted). Spec §3's longer list —
+  `uv_version`, `platform`, `worker_runtime`, `python_build`,
   `dpkg_snapshot_sha256`, `sdist_built`, `env_snapshot`, `gpu_driver` —
-  is either layer 6's or attestation nothing here reads; it lands with the
-  verb that reads it.
-- **`env_version` has three terms, not five.** The
-  `[tool.lightcone.image]` and `Containerfile.extra` terms are layer 6's,
-  and hashing an empty shape for them now would be foreshadowing.
+  is attestation nothing here reads; it lands with the verb that reads
+  it (`worker_runtime` is additionally derivable from
+  `hermeticity.mechanism`, so it may never land at all).
+- **`env_version` has four terms.** Layer 6 added the image term —
+  the system layer's identity document, hashed as the literal `null`
+  for a direct project so the formula stays one formula. (The spec's
+  separate `Containerfile.extra` term went with the concept; see the
+  layer-6 decisions.)
 - **A recipe is handed to `bash -c`.** ASTRA recipes are command lines,
   not argv, and `bash` is in the exec allowlist — so it is granted by the
   same rule that grants everything else a recipe may run.
@@ -1225,9 +1243,11 @@ from anything a command could return, and it never falls through to
 running the command unsandboxed.
 
 **Layer boundaries showed up as parameters we did *not* add.**
-`writable_project`, output-dir write scope, scratch dirs, `in_container()`,
-and the `podman*`/`pod*` attestation branches all belong to layers 4 and 6
-and are absent, not stubbed.
+`writable_project`, output-dir write scope, and scratch dirs belong to
+later layers and are absent, not stubbed. (Layer 6 then landed the
+`podman`/`docker` attestation values and the containerized policy shape
+— as one keyword on `exec_policy` and one backend, not as the stubs this
+rule kept out.)
 
 **The macOS profile is vendored, not authored.**
 `sandbox/profiles/{base,network,platform-defaults}.sbpl` come from the codex CLI
@@ -1299,6 +1319,159 @@ last**, after the guard. Get that order wrong and layer 4 materializes on
 Linux and refuses on macOS, with the golden test still green because it
 only checks that the guard is present. Verified empirically, not assumed.
 
+## Key Invariants (layer 6)
+
+**Mode is derived, never configured.** A `[tool.lightcone.image]` table
+in `pyproject.toml` *is* the escalation to containerized mode; deleting
+it is the way back. `project.mode()` reads presence only; what the table
+*means* is `engine/image.py`'s question, so an invalid declaration
+refuses where it is consumed, naming the key at fault.
+
+**The user never sees a Containerfile.** The whole declaration surface is
+Modal-shaped TOML — `base` (digest-pinned or the default constant),
+`apt-install`, `run-commands`, `env` — a closed set, because every key is
+hashed. `pip_install` deliberately has no equivalent: the Python
+environment is the lock's business, never the image's, and `run-commands`
+is the bounded escape (this deletes spec §2's `Containerfile.extra`).
+The render exists only inside a transient build context; the image's
+`LABEL io.lightcone.image` carries the identity document, so the archive
+stays self-describing without one.
+
+**The engine never enters the image.** The container is the *recipe's*
+execution world: driver, git, annex, dask and classification all stay the
+host's `lc`, and exactly two things ever run in-image — the environment
+converge (`container.sync`, network on, project `:rw`, host uv cache
+mounted, into `.lightcone/venv`) and each recipe/probe exec
+(`--network none`). This deviates from spec v6.1's full-stack rule,
+recorded: v6.1's reason was the host-sync deadlock, which the
+in-container sync solves, and the spec's own Perlmutter row ("recipe
+wrap, step 3 only — never the dask worker") is this exact shape. What it
+buys: no delegation machinery, no git through a `--userns=keep-id` bind
+mount, no engine version in the tag, and one engine per run by
+construction. The host `.venv` is inert in containerized mode
+(`current_project` does not require it; `lc init` converges no
+environment — a host sync of a containerized lock is the deadlock in
+miniature); `.lightcone/` is gitignored machine state.
+
+**The image is the system layer only.** Base + apt (only when
+`apt-install` is nonempty — the engine needs nothing from apt, so spec
+§2's rule is restored) + the pinned uv + the pinned interpreter into
+`/opt/python`. No git, no engine, and **no project file ever enters the
+build context** — the context is a scratch directory holding one rendered
+Containerfile, which is what makes "code edits never trigger a build"
+structural. `bash` is a base-contract check (recipes are `bash -c`), and
+each contract violation is a reserved exit code mapped to a refusal
+naming the base (43 musl, 44 no bash, 45 no apt), never a raw build log.
+The readability `chmod` rides inside the layers that write `/opt` — a
+layer of its own would copy-on-write the whole interpreter tree into
+every archive, doubling it.
+
+**The dataset is the image store; runtime stores are caches.** `lc build`
+saves the image as a `docker-archive` at
+`.datalad/environments/<tag>/image` — the `datalad containers-add`
+layout — annexed and committed, so the exact bytes travel through
+`git annex get` with no registry and no credentials. This supersedes the
+spec's `dpkg_snapshot_sha256` residue: apt is name-pinned, so a rebuild
+months later yields different bytes under the same tag, and the archive
+keeps the bytes themselves. The dot-path is the trap:
+**git-annex routes dotfiles to git whatever `annex.largefiles` says**,
+so the add must opt in (`dataset.save(..., dotfiles=True)`, per-add like
+`annex.thin`) or the archive lands as a full blob in git, silently, with
+every test green — `test_dataset.py` pins both directions. The archive
+is the arch it was built for (recorded in the manifest); multi-arch is a
+layer-7 item, as is apptainer/singularity — which is *why* the format is
+`docker-archive`: all four runtimes consume it, and HPC hosts that
+cannot build obtain images through the repository.
+
+**`ensure_image` is one function with three strictnesses**, and the split
+is load-bearing: `lc build` and the materialize preflight may **build +
+save + commit** (announced by the CLI, which owns the console — the
+engine never prints); the probe and the worker entry point only ever
+**find** — a missing archive refuses naming the exact `lc build`
+(`lc run` never builds; the worker never writes git), unfetched content
+refuses naming the exact `git annex get` (the existing
+`ContentNotFetchedError` machinery, verbatim), and an unloaded image is
+a silent `<runtime> load`. Execution pins the **id** — sha256 of the
+archive's config blob, readable with no runtime, the same computation
+datalad's docker adapter makes — never a tag, so a retagged store image
+cannot substitute. **A dropped archive never substitutes**: a rebuild is
+a new archive commit under a new id; old manifests keep naming what ran.
+
+**Builds and the archive commit happen only on a clean tree.** The dirty
+check runs before `ensure_image` in materialize, and `lc build` refuses
+dirt itself: `dataset.save` stages scoped but commits the whole index, so
+a build on a dirty tree would sweep the user's staged edits into the
+image commit — and the tag derives from `pyproject.toml`, so the
+declaration must be committed before the image it defines.
+
+**Two identities, one document.** The canonical identity document
+(declaration resolved + the uv digest; the interpreter pin deliberately
+absent — its raw bytes are already an `env_version` frame) feeds
+`env_version` as its fourth frame, `null` for direct projects — so
+declaring an image, or an engine release that bumps the default-base or
+uv constants, puts containerized outputs `behind`, honestly, while
+direct projects never move on an engine release. The **tag** hashes the
+rendered Containerfile *and* the document, so a render-only generator
+change rebuilds the image without staling anything — accepted residue,
+attested by the manifest's image id and the archive's bytes. Read from
+`pyproject.toml` only, never `identity._uv_config()` — uv's
+"`uv.toml` replaces `[tool.uv]`" rule must not reach this table.
+
+**The mount table is the mechanism** (`sandbox/oci.py`). The
+containerized `exec_policy` shape is the same policy minus the host: no
+OS read baseline, no stdlib root, no exec set — the image *is* those,
+and everything in it was declared — leaving exactly the paths that
+become mounts, project `:ro`, `results/` `:rw`, declared inputs `:ro`,
+the private HOME `:rw`, `--tmpfs /tmp`. No in-container Landlock, no
+seccomp probe, no shim-in-image: the engine container never gets the
+tree `:rw`, so mounts alone express the whole policy, and the
+attestation (`mechanism: podman|docker`, `fs: declared`,
+`network: denied`) is derived flag-for-flag from the argv — `--network
+none` is the codebase's one honest `denied`, loopback intact. One
+`OCIBackend`, data-parameterized: podman and docker differ in spellings
+(`--userns=keep-id`+`--pull=never` vs `--user uid:gid`), not shape.
+Runtime is **host capability** — detected podman → docker, the
+`detect()` discipline on a second axis, with `container.backend()`
+holding the only mode branch — and never part of any identity. The
+containerized `tmp_home` lives under the project's `.lightcone/` rather
+than the system temp dir: it is a mount source, and macOS's podman
+machine shares the project tree while `/var/folders` arrives empty.
+
+**The seam learned one asymmetry, `contains_prefix`.** A host mechanism
+keeps the `uv run` hop *outside* the wrap (trusted host plumbing); a
+backend that is itself a world takes it *inside* — there is no trusted
+host plumbing inside a container — and applies the env overlay natively
+as `--env` flags, never through `boundary.env_argv`'s host-resolved
+`env` binary (NixOS resolves it to a path no Debian image has). Declared
+on every backend, so a new mechanism must answer the question. The
+container environment is an allowlist: the overlay plus `LC_SANDBOX`,
+never the ambient environment.
+
+**The record stays runtime-neutral, and the worker is its executor.**
+`cmd` is still the engine-pinned worker — verified against
+datalad-container's source before deciding: `containers-run` expands its
+`cmdexec` template at *record* time and `datalad rerun` executes the
+literal string (the extension has no rerun hook), so a bare-recipe `cmd`
+would rerun on the host, unconfined, with no manifest. Instead the
+record is declarative — the task id, the commit's own spec, the
+committed archive — and the worker re-resolves container *and runtime*
+on the rerun host, keeping the sandbox, the gates and the manifest. The
+containerized record adds `extra_inputs: [<archive>]`, which stock
+`datalad rerun` fetches through the annex before executing — the smoke
+suite proves the whole claim on a bytes-free clone. `lc build` also
+writes `datalad.containers.<tag>.{image,cmdexec}` so ad-hoc
+`datalad containers-run` works for humans, explicitly outside lc's
+guarantees.
+
+**The runtime is resolved once per run and handed down** — the HEAD
+discipline, a frozen `container.Runtime` through `worker.materialize` —
+because resolving per task could answer differently mid-run. The rerun
+entry point resolves its own, as it does HEAD: it *is* the driver of its
+one-task run. `lc status` gained the three header lines (mode, image
+state, sandbox) — repository facts only, no runtime and no network
+required, which is where the denial note and the runtime-missing
+refusal point.
+
 ### Recorded decisions
 
 - **The engine is the host's uv tool, never a project dependency**
@@ -1345,10 +1518,11 @@ only checks that the guard is present. Verified empirically, not assumed.
     Accepted rather than re-provided: the alternative is hashing an
     environment lc does not own into artifacts it does, which is the
     over-sensitivity the `behind` model exists to avoid.
-  - *Layer 6 note:* the generated image can no longer get its in-image
-    engine from the lock (`/opt/venv/bin/lc` existed because the pin did).
-    The Containerfile must install the engine as an explicit layer, and
-    that version becomes a tag input.
+  - *Layer 6 resolved its note the other way:* the image gets **no
+    engine layer at all**. The engine stays on the host in containerized
+    mode too — the container is the recipe's world, never the engine's —
+    so the engine version is not a tag input and an lc upgrade still
+    rebuilds nothing. See the layer-6 invariants.
   What it buys: a project's resolution is freed from the engine's own
   pins (no astra-tools/click/rich/distributed/git-annex in any project
   lock); the git-annex wheel floor gates only the tool install; the eval
@@ -1414,6 +1588,31 @@ only checks that the guard is present. Verified empirically, not assumed.
   (spec §2), so a scaffolded project simply carries a key no code path
   consults. Don't "fix" this by reconciling the two — a later layer will
   decide whether the key is dropped upstream, refused, or migrated.
+- **Multi-runtime, podman recommended** (2026-08, layer 6 — superseding
+  an earlier "podman only" plan decision). podman and docker ship
+  tested; the backend seam and the `docker-archive` format are chosen so
+  apptainer/singularity become thin layer-7 backends over the same
+  archive (they exec `docker-archive:` content directly, and HPC hosts
+  that cannot build obtain images through the annex). Build-capable
+  (podman|docker) and run-capable (all four, eventually) are therefore
+  separate questions in `container.py`. docker's daemon is probed at
+  detection — a CLI with the daemon down is the common broken state.
+- **Bare-recipe run records: considered and rejected** (2026-08).
+  datalad expands container templates at *record* time and `rerun`
+  executes the literal string — datalad-container has no rerun hook — so
+  a record whose `cmd` is the recipe replays on the host, unconfined,
+  with no manifest, and a containerized spelling would freeze one
+  runtime's flags into git forever. The worker-as-executor keeps the
+  record declarative and runtime-neutral; mechanical no-lc replay is
+  layer 8's WRROC export, for which the manifest + archive now carry
+  everything.
+- **Single-arch archives, recorded residue** (layer 6 → layer 7). The
+  committed archive is the architecture it was built for, and the
+  manifest says which. An Apple-silicon build cannot serve an amd64
+  venue; solving that (arch-suffixed archive paths, `--platform`
+  cross-builds) is layer 7's, with the venue that makes it real. Old
+  archives accumulate in annex history; reclaiming them is the user's
+  `git annex unused`/`drop` — no GC verb.
 
 ### Recorded deviations from the spec
 
@@ -1448,15 +1647,12 @@ only checks that the guard is present. Verified empirically, not assumed.
   `--require-sandbox` / `--no-sandbox` / `--sandbox-debug` are all
   absent: there is no hatch to escape the sandbox, so there is nothing
   for the flags to switch. The verb takes a command and nothing else.
-- **`lc run` does not detect containerized mode.** The
-  `[tool.lightcone.image]` refusal was removed with the rest of the
-  future-facing surface; a system-layer declaration is currently inert,
-  like `astra.yaml`'s `container:` key.
 - **The denial's remedies are only what works today** — `uv add` for a
-  Python package, the ASTRA input declaration for data, and "output goes
-  in `results/`" plus `tempfile.mkdtemp()` for a write denial. Nothing in
-  a denial message names a verb, flag, or declaration that does not
-  exist.
+  Python package, the system layer (`apt-install` + the containerize
+  note, real since layer 6), the ASTRA input declaration for data, and
+  "output goes in `results/`" plus `tempfile.mkdtemp()` for a write
+  denial. Nothing in a denial message names a verb, flag, or declaration
+  that does not exist.
 - **`Attestation` has no serializer of its own.** An earlier draft
   carried a `to_manifest()` with no caller — deleted, because "no dead
   code" applies to this layer's own conveniences too. It is persisted by
@@ -1521,6 +1717,8 @@ only checks that the guard is present. Verified empirically, not assumed.
 | Change what gets converged | `src/lightcone/engine/project.py` + `tests/test_project.py` | `_Converger.item` / `.file`; repairs only ever append |
 | Change how a project stores bytes | `src/lightcone/engine/dataset.py` + `templates/files/gitattributes.tmpl` | Every command through `project._run`; test it against a real annex (`real_tools`) |
 | Change how an output is identified | `src/lightcone/engine/identity.py` + `tests/test_identity.py` | Sensitivity tests both ways: what must move the hash, and what must not |
+| Change what the image is made of | `src/lightcone/engine/image.py` + `tests/test_image.py` | Pure; structure-and-ordering tests, never byte goldens; every declaration key is hashed |
+| Change how images are built, stored or entered | `src/lightcone/engine/container.py` (+ `sandbox/oci.py` for the exec argv) + `tests/test_container.py` | Everything through `project._run`; keep the three `ensure_image` strictnesses; runtime differences are spellings inside `OCIBackend`, never new shapes |
 | Change when an output is remade | `src/lightcone/engine/assets.py` + `tests/test_assets.py` | One `classify()`, two callers; `--check` differs by one input value, never by logic. Ask first whether the thing that moved *contradicts* the project or is a *circumstance* — the second is `behind`, not `stale` |
 | Change how the spec becomes a graph | `src/lightcone/engine/plan.py` + `tests/test_plan.py` | Ask `astra.resolve`; if the answer is missing, the fix is a PR to astra-tools. Anything ambiguous is a `ProjectError`, never a guess |
 | Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
@@ -1595,6 +1793,24 @@ The sandbox suite splits along the seam, which is what makes it cheap:
 - `tests/test_run.py` — what `lc run` decides *before* it execs: the
   current-directory project check, declared inputs, the uv hop. Nothing
   spawns.
+- `tests/test_image.py` — **pure**: the declaration, the document, the
+  render's structure and ordering, tag sensitivity both ways, and the
+  `env_version` integration. `tests/test_sandbox_oci.py` — **pure**: the
+  mount table, the argv spellings, the attestation, and the
+  `contains_prefix` composition through a recorded fake `Popen`.
+- `tests/test_container.py` — the image lifecycle against a **stubbed**
+  `project._run` that models each runtime command's observable effect
+  (a `save` writes a structurally real docker-archive, a `load` marks
+  the id present), so every refusal and every strictness is asserted on
+  recorded argv with nothing spawned.
+- `tests/test_container_smoke.py` — **the runtime's answer**, gated like
+  the enforcement suite: skips without a runtime,
+  `LC_CONTAINER_TESTS_REQUIRED=1` on Linux CI turns the skip into a hard
+  failure, and two tests cover the guard itself. Parameterized over the
+  runtimes present. It builds a real image, commits a real archive into
+  a real annex, materializes through the real Dask cluster, and runs a
+  real `datalad rerun` on a bytes-free clone — the record's whole claim.
+  Each denial sits beside its mutation check.
 
 Note the autouse `tools` fixture stubs `engine.project._run` only —
 sandbox tests spawn real processes deliberately, and are the one place in

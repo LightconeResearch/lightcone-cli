@@ -41,7 +41,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from lightcone.engine import assets, dataset, identity, plan, project, worker
+from lightcone.engine import assets, container, dataset, identity, plan, project, worker
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
 
@@ -287,6 +287,17 @@ class StatusReport:
     outputs: list[OutputStatus] = field(default_factory=list)
     #: The lock scan's prose, and inputs this clone has not fetched.
     warnings: list[str] = field(default_factory=list)
+    #: The three header facts nothing else surfaces: which world this
+    #: project executes in, where its image stands, and what would
+    #: enforce a run on this host. This is where the denial note and the
+    #: runtime-missing refusal point.
+    mode: str = "direct"
+    #: ``{tag, state}`` for a containerized project; ``None`` in direct
+    #: mode. ``state`` is repository fact only — ``present``, ``absent``
+    #: or ``unfetched`` — so status needs no runtime and no network.
+    image: dict[str, str] | None = None
+    #: One line naming the enforcement a run here would get.
+    sandbox: str = ""
 
     @property
     def counts(self) -> dict[str, int]:
@@ -303,6 +314,9 @@ class StatusReport:
             The counts, then every output, then the warnings.
         """
         return {
+            "mode": self.mode,
+            "image": self.image,
+            "sandbox": self.sandbox,
             "counts": self.counts,
             "outputs": [output.as_dict() for output in self.outputs],
             "warnings": self.warnings,
@@ -329,6 +343,11 @@ def status(root: Path) -> StatusReport:
     """
     report = MaterializeReport()
     result = StatusReport()
+    result.mode = project.mode(root)
+    state, tag = container.image_state(root)
+    if state != "direct":
+        result.image = {"tag": tag, "state": state}
+    result.sandbox = _sandbox_line(result.mode)
     for key, verdict, manifest in _classified(root, [], report, refresh=False):
         result.outputs.append(
             OutputStatus(
@@ -341,6 +360,21 @@ def status(root: Path) -> StatusReport:
         )
     result.warnings = report.warnings
     return result
+
+
+def _sandbox_line(mode: str) -> str:
+    """One line naming the enforcement a run on this host would get."""
+    if mode == "containerized":
+        if runtime := container.runtime_hint():
+            return f"{runtime} (fs: declared, network: denied)"
+        return "no container runtime — install podman (or docker)"
+    from lightcone.engine import sandbox
+
+    found = sandbox.detect().capability
+    if found.kind == "none":
+        detail = f" — {found.detail}" if found.detail else ""
+        return f"none{detail}; runs record `fs: open`"
+    return f"{found.kind} (fs: declared, network: allowed)"
 
 
 # =============================================================================
@@ -373,13 +407,24 @@ def materialize(
     project.require_git()
     project.require_git_annex()
     dataset.require_committer(root)
-    # Before anything else: workers pass `--no-sync`, so this is the only
-    # place on a run's path where the environment is made to match the
-    # lock. (A rerun does not come through here; its entry point syncs.)
     report = MaterializeReport()
-    report.warnings.extend(f"uv: {w}" for w in project.sync(root))
+    # The dirty check comes before anything that writes: the image
+    # converge below *commits*, and `dataset.save` stages scoped but
+    # commits the whole index — on a dirty tree the user's staged edits
+    # would be swept into the image commit.
     if changes := dataset.status(root):
         raise ProjectError(_dirty(root, changes))
+    # Materialize is one of the two verbs allowed to build the image (the
+    # other is `lc build`); the probe and the rerun entry point only find
+    # one. Resolved once, then handed to every task — the HEAD discipline.
+    runtime = container.runtime_for_run(root, build=True)
+    # Converge the environment: workers pass `--no-sync`, so this is the
+    # only place on a run's path where it is made to match the lock. (A
+    # rerun does not come through here; its entry point syncs.)
+    synced = (
+        project.sync(root) if runtime.mode == "direct" else container.sync(root, runtime)
+    )
+    report.warnings.extend(f"uv: {w}" for w in synced)
 
     graph, env_version = _graph(root, targets, report)
     if not graph.tasks:
@@ -412,11 +457,12 @@ def materialize(
                     head,
                     versions,
                     refresh,
+                    runtime,
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
                 )
             for result in scheduler.completed(list(pending.values())):
-                _consume(root, graph.tasks[result.key], result, dsid, report)
+                _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
                 outstanding.pop(result.key, None)
     finally:
         # Whatever never reported — an interrupt, a dead cluster — left a
@@ -429,7 +475,12 @@ def materialize(
 
 
 def _consume(
-    root: Path, task: Task, result: worker.TaskResult, dsid: str, report: MaterializeReport
+    root: Path,
+    task: Task,
+    result: worker.TaskResult,
+    dsid: str,
+    runtime: container.Runtime,
+    report: MaterializeReport,
 ) -> None:
     """Record one finished task, and commit or undo what it left on disk."""
     name = _name(task.key)
@@ -440,7 +491,7 @@ def _consume(
         report.notes.extend([f"{name}:", *lines])
 
     if result.status == "ok":
-        dataset.save(root, [task.output_dir], run_record(root, task, dsid))
+        dataset.save(root, [task.output_dir], run_record(root, task, dsid, runtime))
         report.made.append(name)
         return
 
@@ -545,7 +596,7 @@ def cluster_for_run() -> Iterator[Scheduler]:
 # =============================================================================
 
 
-def run_record(root: Path, task: Task, dsid: str) -> str:
+def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) -> str:
     """Build the commit message for one materialized output.
 
     A ``[DATALAD RUNCMD]`` record — datalad's format, not ours, so all of
@@ -565,6 +616,13 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
         root: The project root.
         task: The output that was made.
         dsid: The dataset's UUID, which ``rerun`` reads.
+        runtime: The run's execution world. A containerized run lists its
+            committed image archive under ``extra_inputs``, which
+            ``datalad rerun`` fetches before executing — so the worker
+            enters the exact bytes that made the output, on whatever
+            runtime the rerun host has. The ``cmd`` itself stays
+            runtime-neutral for the same reason: the worker is the
+            executor that resolves the container at rerun time.
 
     Returns:
         The full commit message, subject and record.
@@ -583,6 +641,8 @@ def run_record(root: Path, task: Task, dsid: str) -> str:
         "outputs": [plan.declared_path(root, task.output_dir)],
         "pwd": ".",
     }
+    if runtime.mode == "containerized":
+        info["extra_inputs"] = [runtime.archive]
     body = json.dumps(info, indent=1, sort_keys=True, ensure_ascii=False)
     return (
         f"[DATALAD RUNCMD] {task.output_id} [{task.universe_id}]\n\n"

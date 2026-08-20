@@ -8,8 +8,9 @@ when it moves, the artifact on disk is no longer an instance of the thing
 the spec describes, so keeping it would be mislabelling it.
 
 ``env_version`` is the environment's identity: the lock's bytes, the
-interpreter pin's bytes, and the settings that decide *which artifacts*
-``uv sync`` materializes from that lock. It is deliberately
+interpreter pin's bytes, the settings that decide *which artifacts*
+``uv sync`` materializes from that lock, and — for a containerized
+project — the system layer's identity document. It is deliberately
 over-sensitive — raw lock bytes, so a comment reflow moves it — because
 the alternative is a parse that silently disagrees with uv about what the
 lock means.
@@ -47,6 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from lightcone.engine import image
 from lightcone.engine.project import ProjectError
 
 #: The closed, audited list of uv settings that change *which artifacts* a
@@ -75,9 +77,11 @@ def env_version(root: Path) -> str:
     """Compute the environment identity of a project.
 
     ``sha256(uv.lock bytes ‖ .python-version bytes ‖ canonical
-    install-settings JSON)``, length-framed. Read fresh on every call: this
-    is also the mid-run gate's baseline, and a cached value would check
-    nothing.
+    install-settings JSON ‖ canonical image identity document)``,
+    length-framed. A direct-mode project hashes the literal ``null`` for
+    the image term, so this stays one formula rather than two. Read fresh
+    on every call: this is also the mid-run gate's baseline, and a cached
+    value would check nothing.
 
     Args:
         root: The project root.
@@ -100,6 +104,7 @@ def env_version(root: Path) -> str:
     _frame(h, "uv.lock", lock.read_bytes())
     _frame(h, "python-version", pin.read_bytes())
     _frame(h, "install-settings", _install_settings(root).encode())
+    _frame(h, "image", (image.identity_document(root) or "null").encode())
     return f"sha256:{h.hexdigest()}"
 
 
