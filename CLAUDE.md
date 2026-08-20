@@ -691,18 +691,31 @@ two projects that install the same artifacts are one environment however
 they spell it. `scan_lock` reads `default-groups` through the same
 function, because it is asking uv's question too.
 
-What this deliberately cannot reach is **user-level configuration**
-(`~/.config/uv/uv.toml`), which uv merges in underneath the project's own
-(measured). That is machine state, not project state: hashing it would
+What this deliberately cannot reach is **machine-level configuration**
+(user `~/.config/uv/uv.toml` and system `/etc/uv/uv.toml`), which uv
+merges in underneath the project's own (measured). That is machine
+state, not project state: hashing it would
 make one commit answer differently on two hosts, so a colleague's clone
-would report every output as behind. The residue is real and unguarded —
-a user-level `no-build` changes what a sync installs and nothing records
-it. **There is no flag that closes it**: `--config-file` refuses a
+would report every output as behind. **There is no flag that closes
+it**: `--config-file` refuses a
 `pyproject.toml` outright, and both `--config-file <empty>` and
 `--no-config` drop the project's own `[tool.uv]` along with everything
 else (measured; `--no-config` also drops `[tool.uv.index]`, which is the
-GPU mechanism, so adopting it would break working projects). Tracked as
-issue #176 with the options and the measurements; don't re-derive them.
+GPU mechanism, so adopting it would break working projects). Since the
+hardening pass the hole is *annotated at run time* (issue #176's
+advisory option): `identity._machine_config` checks the two documented
+paths per platform — those levels can only ever be a `uv.toml`, so the
+probe is complete, and it tests which *keys* a file sets because list
+settings concatenate across levels — and a hit lands in `scan_lock`'s
+advisory tier beside `sdist_built`. Never hashed, still. The env-var
+spelling of the same hole (`UV_NO_BINARY` and friends) is *closed*, not
+annotated: `project.child_env` scrubs ambient `UV_*` outside a plumbing
+allowlist (`_UV_KEPT` — cache dir, timeouts, TLS, air-gap, index
+credentials, uv's own recursion guard), and the run verbs warn with the
+names of any non-empty variable dropped, from the same predicate
+(issue #179). The suite blinds itself to the host's machine config via
+the autouse `machine_uv_config` fixture — `/etc/uv/uv.toml` has no
+environment variable to scrub.
 
 **The git commit is recorded, never hashed, and never a signal.** It goes
 in the manifest so the code that produced a result stays recoverable. It
@@ -1769,6 +1782,22 @@ JSON-LD drops on expansion — the pre-rebuild exporter's silent failure.
 The committed archive is one entity, `["File", "ContainerImage"]`,
 identity (`sha256` = config-blob id) and payload together.
 
+**A published `sha256` is always a raw digest an outsider can verify** —
+since the hardening pass, never lc's framed hash. Every file in an
+output directory is a `File` under its dataset's `hasPart`, with
+`sha256` and `contentSize` parsed from its SHA256E annex key
+(`dataset.annex_keys`, one `git annex find --include=*` — the
+`--include=*` is load-bearing, bare `find` lists only *present* files
+and the crate must answer bytes-free; the key map is injected into
+`render` like the writer, so the builder stays git-free). A non-SHA-256
+backend key yields size and no digest, never a wrong one; git-carried
+files hash their own working-tree bytes. Out-of-tree declared inputs
+publish *no* digest: their recorded `input_versions` value is the framed
+hash, which shipped once under the `sha256` term as though `sha256sum`
+could check it — the manifests keep that story. The dataset's `version`
+stays lc's framed directory digest, deliberately distinct from the
+per-file claims.
+
 **The validator floor is pinned as a set, not a count.**
 `tests/test_crate_smoke.py` materializes a real project and runs the
 official `rocrate-validator` (dev dependency) against Provenance Run
@@ -1887,9 +1916,10 @@ unlinks before writing; a new tampering test should too.
   resolved from PyPI; and recipes no longer find `lc` or `git-annex` on
   the sandbox PATH — the project `.venv/bin` no longer carries them,
   which is the boundary telling the truth. The `UV_*` ambient scrub the
-  launcher would have done is still worth having and is tracked
-  separately; it protects `env_version`'s install-settings term, not the
-  delegation that is gone.
+  launcher would have done landed in the hardening pass, in
+  `project.child_env` — it protects `env_version`'s install-settings
+  term, not the delegation that is gone (see the layer-2 residue note
+  for the allowlist).
 - **Reads stay restricted, and the OS baseline is ours to maintain.**
   Codex restricts reads too now, but its Linux read baseline is a *mount
   table*, not a path list — there is nothing to adopt there. Keeping the
@@ -2112,7 +2142,7 @@ unlinks before writing; a new tampering test should too.
 | Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
 | Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
 | Change where a run executes | `src/lightcone/engine/venue.py` + `materialize.cluster_for_run` + `tests/test_venue.py` | One detection ladder, in `cluster_for_run` alone; venues are detected, never configured; test by faking the host (env vars + a stub srun), never the code |
-| Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
+| Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer` and the annex key map as `keys`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
 | Change how a foreign write is detected | `dataset.last_writer` + `materialize._foreign_write` + `tests/test_dataset.py` | History, never hashing; `datalad_run_subject` is the one spelling of the record's subject; a foreign write classifies `stale` in every verb |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
