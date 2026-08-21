@@ -1,0 +1,57 @@
+@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Light mode ─────────────────────────────────────────────────────────── */
+
+:root > * {
+  --md-primary-fg-color:        #4e5a70;
+  --md-primary-fg-color--light: #6b7a8d;
+  --md-primary-fg-color--dark:  #3a4456;
+  --md-accent-fg-color:         #426b78;
+  --md-default-bg-color:        #f8f7f3;
+  --md-default-bg-color--light: #ffffff;
+  --md-default-bg-color--dark:  #f1efe9;
+  --md-text-font:               "Libre Baskerville", Georgia, serif;
+  --md-code-font:               "JetBrains Mono", "Fira Code", monospace;
+}
+
+body,
+.md-header,
+.md-main,
+.md-main__inner,
+.md-content,
+.md-tabs,
+.md-sidebar {
+  background-color: #f8f7f3;
+}
+
+/* ── Dark mode ──────────────────────────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #221f20;
+  --md-hue:              219;
+}
+
+[data-md-color-scheme="slate"] body,
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-main,
+[data-md-color-scheme="slate"] .md-main__inner,
+[data-md-color-scheme="slate"] .md-content,
+[data-md-color-scheme="slate"] .md-tabs,
+[data-md-color-scheme="slate"] .md-sidebar {
+  background-color: #221f20;
+}
+
+[data-md-color-scheme="slate"] .md-nav__link--active,
+[data-md-color-scheme="slate"] .md-nav__item--active > .md-nav__link {
+  background-color: rgba(106, 147, 160, 0.20);
+  color: #f8f7f3;
+}
+
+[data-md-color-scheme="slate"] .md-content a {
+  color: #85c0d0;
+}
+
+[data-md-color-scheme="slate"] .md-content :not(pre) > code {
+  background-color: rgba(76, 63, 70, 0.15);
+  color: #c8dde5;
+}
