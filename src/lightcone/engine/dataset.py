@@ -103,6 +103,57 @@ def ignore_rule(directory: Path, path: str) -> str | None:
 
 
 # =============================================================================
+# The annex filter: a missing git-annex must not be silent
+# =============================================================================
+
+
+def set_annex_filter_required(directory: Path) -> None:
+    """Make git refuse, rather than corrupt, when the annex filter cannot run.
+
+    ``git annex init`` wires ``filter.annex.*`` to a bare ``git-annex``,
+    resolved from the ``PATH`` of whichever git runs — and the
+    researcher's shell, unlike lc's own environment, may hold none.
+    Measured: a ``git add`` whose clean filter cannot start prints an
+    error, **exits 0**, and stages the raw bytes into git history, so a
+    2 GB input lands in git proper on every clone forever. This flag is
+    what turns that into git's own hard failure instead
+    (``fatal: <path>: clean filter 'annex' failed``), which is the whole
+    difference between a loud stop and silent corruption.
+
+    Args:
+        directory: A directory inside the repository.
+    """
+    _git(["config", "filter.annex.required", "true"], cwd=directory)
+
+
+def annex_filter_required(directory: Path) -> bool:
+    """Whether *this repository* already carries that flag.
+
+    ``--local`` because the write is repository-local, and a probe that
+    read the merged config would answer for the *host* instead: a user
+    who once set ``filter.annex.required`` in ``~/.gitconfig`` would have
+    every project report converged while its own ``.git/config`` carried
+    nothing, leaving the protection behind the moment that repository is
+    used under another ``HOME`` — a clone, CI, a container. ``--type=bool``
+    because git's booleans are not one spelling: ``1``, ``yes``, ``on``
+    and a valueless key all mean true to the filter, and reading them as
+    drift would rewrite a repository that was already correct.
+
+    Args:
+        directory: A directory inside the repository.
+
+    Returns:
+        True if ``filter.annex.required`` is set, in this repository, to
+        anything git reads as true.
+    """
+    set_to = _ask(
+        ["config", "--local", "--get", "--type=bool", "filter.annex.required"],
+        cwd=directory,
+    )
+    return (set_to or "").strip() == "true"
+
+
+# =============================================================================
 # What a run does to the repository
 # =============================================================================
 

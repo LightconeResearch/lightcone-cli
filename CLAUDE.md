@@ -327,7 +327,7 @@ user owns:
 | `.python-version` | The exact patch of the interpreter `lc` is running on |
 | `uv.lock`, `.venv` | **Derived** — converged by correctness, not existence: `uv lock --check` / `uv sync --locked --exact --check` decide, then `uv lock` / `uv sync --locked --exact --compile-bytecode` repair |
 | `.gitignore` | One managed block of patterns; convergence ensures each is present |
-| `.git` + the annex | `git init` then `git annex init` — results are versioned in the project's own repository |
+| `.git` + the annex | `git init` then `git annex init` — results are versioned in the project's own repository — then **`filter.annex.required=true`**, the one key git-annex does not set and the difference between a loud refusal and silent corruption (see the storage invariants) |
 | `.gitattributes` | The storage policy: what git-annex holds and what git carries. Line-managed, like `.gitignore` |
 | `.datalad/config` | A `datalad.dataset.id` UUID, generated once. Read back only by `dataset.dataset_id`, through `git config -f`, for the run record's `dsid` |
 | `data/` + `README.md` | Where declared inputs live; annexed, and committed before anything computes on them |
@@ -342,8 +342,9 @@ user owns:
   Universes are discovered by `glob("*.yaml")`, which is empty-not-error on
   a missing directory. `tests/test_project.py::test_a_clone_of_a_converged_project_is_converged`
   pins this: a clone must need nothing but `.venv` and `git annex init`.
-  Those two are the exemptions, and for one reason — they are local state
-  git does not clone.
+  Those (with the annex filter, a `.git/config` entry) are the
+  exemptions, and for one reason — they are local state git does not
+  clone.
 - **Convergence, not scaffolding.** Each item is created if missing,
   offered to a conservative `repair(text) -> str | None` hook otherwise,
   and left alone when the hook returns `None`. `--check` computes the
@@ -544,6 +545,62 @@ user's, so a system git-annex fronting the install's wins the dispatch —
 for lc's subprocesses exactly as for their own git, and no different
 from which `git` itself runs. Nothing records the annex version anyway
 (see the Recorded decision on the engine's dependency closure).
+
+**"By construction" covers every install channel — except the
+researcher's own shell**, which is the one place `filter=annex` sends
+git looking for git-annex (the filter config `git annex init` writes is
+`PATH`-resolved). Under `uvx` nothing lands on the user's `PATH`, and a
+`git add` whose clean filter cannot start prints an error, **exits 0,
+and stages the raw bytes into git history** (measured, and pinned by
+`test_stock_plumbing_without_required_stages_raw_bytes_silently`). So
+dataset convergence sets one key as an item (`annex-filter`, 2026-08):
+**`filter.annex.required=true`, always** — git's own hard failure
+instead of silent corruption.
+
+**That flag is the whole of it, by decision.** lc writes no absolute
+path into a repository and rewrites no filter driver or hook: how git
+dispatches git-annex stays `PATH` resolution, which is git-annex's own
+design and git-lfs's too (it writes `filter.lfs.required = true` beside
+`PATH`-relative drivers and has never baked a path).
+
+**The hazard is Linux's, the guarantee is ours.** The exits-0-and-stages-raw-bytes
+behaviour is what Linux git does; macOS git aborts the same handshake
+outright (exit 128, `fatal: the remote end hung up unexpectedly`) and
+would have been safe without the flag — found by CI, which is why the
+suite runs on both. So `test_stock_plumbing_without_required_stages_raw_bytes_silently`
+is Linux-only by `skipif`, and the loud-refusal test asserts the facts
+(nonzero exit, nothing staged) rather than either platform's wording.
+Do not read macOS's accident as a reason to scope the flag: an
+implementation detail that can change on the next git release is not a
+guarantee, and Linux is where the venues are.
+
+The rule the neighbours agree on is **route through a filter ⇒ set
+`required`**, and both halves were measured. git-lfs routes and sets
+it. `datalad create` does *neither*: no `required`, and no
+`* filter=annex` in its `.gitattributes` (just `* annex.backend=MD5E`
+and `**/.git* annex.largefiles=nothing`) — so a plain `git add big.bin`
+in a DataLad dataset stages 200 000 raw bytes into git *even with
+git-annex working*, and the safeguard is procedural: use `datalad
+save`. lc made the opposite promise — the researcher types the git they
+already know — so lc owns the failure mode that promise creates. The
+honest cost, also measured: once a project holds committed annexed
+content, the refusal covers `git status`, `git diff` and `git checkout`
+too, not just `git add`. Pinning the filter
+and the four hooks to the engine's bundled executable was implemented
+and reverted before merge: it writes durable state pointing at a
+prunable `uvx` cache, `core.hooksPath` can send the hooks into a
+machine-shared directory that breaks commits in unrelated
+repositories, and uv documents `uvx` environments as disposable. The
+reachability problem is the *install's* to solve, not the
+repository's — `uv tool install lightcone-cli` links the git-annex
+wheel's entry points beside `lc` (verified), so `ambient` git-annex is
+on `PATH` for free and the whole question disappears. `uvx` is fine for
+running lc and cannot support the researcher's bare `git add`; that is
+what the docs and the troubleshooting entry say, and reporting it from
+`lc init`/`lc status` is an open follow-up, not a promise made here.
+`require_git_annex` stays a `PATH` check, deliberately — it gates lc's
+*own* `git annex` subprocesses, which dispatch from lc's environment,
+where every install channel fronts the bundled copy.
 
 **A project can sit inside a larger repository, so `dataset.status` is
 scoped and relativised.** `lc init subdir/` adopts an enclosing work

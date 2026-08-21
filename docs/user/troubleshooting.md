@@ -114,6 +114,49 @@ read-only verbs (`lc status`, `--check`) never transfer data, so they
 report the fact instead. Fetch by hand only when you want the bytes
 for your own inspection.
 
+## "fatal: … clean filter 'annex' failed"
+
+```
+git-annex filter-process: line 1: git-annex: command not found
+error: could not read greeting from subprocess 'git-annex filter-process'
+error: initialization for subprocess 'git-annex filter-process' failed
+fatal: data/catalog.fits: clean filter 'annex' failed
+```
+
+Your shell's `PATH` has no `git-annex`, so git could not run the filter
+that turns a large file into an annex pointer. **Nothing was staged**,
+which is the point: without `filter.annex.required=true` — which
+`lc init` sets — git would have exited 0 and committed the raw bytes
+into history instead.
+
+Once a project holds committed annexed content, this is not limited to
+`git add`. Any command that has to run the filter over that content
+stops the same way, `git status`, `git diff` and `git checkout`
+included — so the whole project reads as broken until git-annex is back
+on your `PATH`. That is the intended shape of the failure: a repository
+you cannot use is recoverable in one command, and one that quietly
+absorbed a multi-gigabyte file is not.
+
+`git-annex` ships with `lc`, so a tool install puts both on your `PATH`:
+
+```bash
+uv tool install lightcone-cli
+git-annex version
+```
+
+If `lc` runs but `git-annex` does not, uv's tool directory is not on
+your `PATH` — run `uv tool update-shell` and open a new shell. Running
+`lc` through `uvx` puts nothing on your `PATH` at all, so a plain
+`git add` cannot work that way.
+
+This failure is deliberately loud. `lc init` sets
+`filter.annex.required=true` in every project precisely because
+without it git handles the same situation by printing the error,
+**exiting 0, and staging your data's raw bytes into git history** —
+committing a multi-gigabyte dataset into git proper, silently, where
+every clone carries it forever. A refused `git add` costs you one
+`lc init`; the silent version costs you the repository.
+
 ## "… and this is a NERSC login node"
 
 `lc materialize` executes recipes, and on centers `lc` recognizes it

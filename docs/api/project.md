@@ -38,9 +38,15 @@ Source: `src/lightcone/engine/project.py` (+
   `.gitattributes` are converged entry-wise, order judged against the
   template).
 - **Only what git can carry is converged.** No `src/`, no empty
-  directories — a clone must need nothing but `.venv` and
-  `git annex init`, and
-  `test_a_clone_of_a_converged_project_is_converged` pins it.
+  directories — a clone must need nothing but `.venv`, `git annex
+  init` and the annex filter (all three local state git does not
+  clone), and `test_a_clone_of_a_converged_project_is_converged` pins
+  it.
+- **The annex filter is one config key.** `filter.annex.required=true`,
+  always, so a `git add` that cannot reach git-annex refuses instead of
+  silently staging raw bytes. Nothing else about how git dispatches
+  git-annex is lc's to write: the filter drivers and hooks stay exactly
+  as `git annex init` left them, resolved from `PATH`.
 - **There is no discovery.** The invoked directory is the project or
   it is a clean error; every uv call carries an explicit `--project`.
 - **Templates are files** (`templates/files/*.tmpl`, `string.Template`
