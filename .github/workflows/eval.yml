@@ -31,11 +31,19 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so hatch-vcs sees the tags and stamps a truthful
+          # dev version into the installed engine (and every manifest's
+          # lc_version) instead of a 0.1.dev fallback
+          fetch-depth: 0
 
       - name: Set up uv
+        # No python-version input: it would export an ambient UV_PYTHON,
+        # which lc's install-settings scrub then rightly warns about on
+        # every single invocation the agent makes. The interpreter is
+        # pinned per tool install below instead.
         uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.12"
           enable-cache: true
 
       - name: Install lightcone-cli + astra (uv tools)
@@ -49,8 +57,8 @@ jobs:
         # venv is activated: the agent's shell sees the tools exactly as
         # an end user's would.
         run: |
-          uv tool install "$GITHUB_WORKSPACE"
-          uv tool install "astra-tools==$(grep -oP 'astra-tools==\K[0-9][0-9.]*' pyproject.toml)"
+          uv tool install --python 3.12 "$GITHUB_WORKSPACE"
+          uv tool install --python 3.12 "astra-tools==$(grep -oP 'astra-tools==\K[0-9][0-9.]*' pyproject.toml)"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install Claude Code + astra plugin

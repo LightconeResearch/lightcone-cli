@@ -13,7 +13,10 @@ lc run COMMAND...
 ```
 
 Everything after `run` is the command, verbatim — flags included.
-`lc run` takes no options of its own, so nothing needs escaping:
+Argv, the `docker run` / `uv run` convention: a single quoted string
+would be exec'd as one filename, so probe shell syntax through
+`bash -c` instead. `lc run` takes no options of its own, so nothing
+else needs escaping:
 
 ```bash
 lc run python -c "import numpy; print(numpy.__version__)"

@@ -26,7 +26,10 @@ This project is driven by two CLIs — use them rather than improvising:
       making.
     - `lc run <command>` runs an ad-hoc command in the project
       environment under the same isolation a recipe gets — useful for
-      probing why a recipe would fail.
+      probing why a recipe would fail. Argv style, like `docker run` or
+      `uv run`: `lc run python scripts/fit.py --output /tmp/x`, never a
+      single quoted shell string; for shell syntax use
+      `lc run bash -c '...'`.
     - Outputs land in `results/baseline/<output_id>/`, each with a
       `.lightcone-manifest.json` manifest written and committed by the
       engine. Never write into `results/` yourself: a hand-placed file
