@@ -20,7 +20,7 @@ Source: `src/lightcone/engine/dataset.py` (+
 | `last_writer(root, dir)` | Who last touched an output's directory — the foreign-write question. Answers "cannot say" as empty, never an error. |
 | `require_committer(root)` | Refuses a repository with no git identity, before any recipe spends time. Asked as `git var`, the question a commit itself asks. |
 | `dataset_id(root)` | The DataLad dataset UUID, read via `git config -f`. |
-| `require_annex_filter(root)` | Set `filter.annex.required=true`, so a `git add` that cannot reach git-annex fails loudly instead of staging raw bytes. |
+| `set_annex_filter_required(root)` | Set `filter.annex.required=true`, so a `git add` that cannot reach git-annex fails loudly instead of staging raw bytes. |
 | `annex_filter_required(root)` | Whether that flag is already set — `lc init --check`'s question. |
 
 ## What must stay true

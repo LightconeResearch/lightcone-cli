@@ -107,7 +107,7 @@ def ignore_rule(directory: Path, path: str) -> str | None:
 # =============================================================================
 
 
-def require_annex_filter(directory: Path) -> None:
+def set_annex_filter_required(directory: Path) -> None:
     """Make git refuse, rather than corrupt, when the annex filter cannot run.
 
     ``git annex init`` wires ``filter.annex.*`` to a bare ``git-annex``,

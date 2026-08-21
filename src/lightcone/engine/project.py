@@ -413,11 +413,11 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     annexed = _can_ask_git(directory) and dataset.is_annexed(directory)
     c.item("git-annex", annexed, lambda: dataset.init_annex(directory))
     # The one thing `git annex init` does not set, and the reason it
-    # matters is in `dataset.require_annex_filter`.
+    # matters is in `dataset.set_annex_filter_required`.
     c.item(
         "annex-filter",
         annexed,
-        lambda: dataset.require_annex_filter(directory),
+        lambda: dataset.set_annex_filter_required(directory),
         is_current=lambda: dataset.annex_filter_required(directory),
     )
     attributes = directory / ".gitattributes"

@@ -551,7 +551,7 @@ def test_required_true_makes_the_missing_filter_loud_not_silent(
     resolve git-annex gets git's own hard refusal — nothing staged, exit
     nonzero — instead of raw bytes in git history."""
     assert not dataset.annex_filter_required(repo)
-    dataset.require_annex_filter(repo)
+    dataset.set_annex_filter_required(repo)
     assert dataset.annex_filter_required(repo)
     (repo / "data" / "catalog.fits").write_bytes(b"\x00" * 4096)
 
@@ -581,7 +581,7 @@ def test_the_flag_is_read_from_the_repository_never_the_users_global_config(
 
     assert not dataset.annex_filter_required(repo)
 
-    dataset.require_annex_filter(repo)
+    dataset.set_annex_filter_required(repo)
     assert dataset.annex_filter_required(repo)
     assert "required = true" in (repo / ".git" / "config").read_text()
 
