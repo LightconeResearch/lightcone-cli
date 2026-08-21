@@ -368,8 +368,8 @@ def status(as_json: bool) -> None:
             "unfetched": "content not in this clone — the next build or run fetches it",
         }[state]
         lines.append(f"  image:   {tag} — {described}")
-    lines.append(f"  sandbox: {report.sandbox}")
-    lines.append(f"  crate:   {report.crate}")
+    lines.append(f"  sandbox: {escape(report.sandbox)}")
+    lines.append(f"  crate:   {escape(report.crate)}")
     lines.append("")
     marks = {"current": "[dim]·[/dim]", "behind": "[cyan]·[/cyan]", "stale": "[yellow]![/yellow]"}
     width = max((len(o.output) for o in report.outputs), default=0)
