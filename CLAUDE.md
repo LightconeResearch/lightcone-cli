@@ -195,6 +195,14 @@ evals/                      # agentic eval seed: prompt.md + tasks/<id>/
 tests/                      # pytest — mirrors src/
 ```
 
+## Documentation versioning (mike)
+
+The whole docs site is versioned with [mike](https://github.com/squidfunk/mike) — specifically squidfunk's fork, which Zensical's versioning provider depends on. Each release deploys a full copy of the site to a subdirectory of the `gh-pages` branch (`/0.0.9/`, `/latest/`, etc.). Mike is enabled via `[project.extra.version] provider = "mike"` in `zensical.toml`; the version dropdown in the header is rendered natively.
+
+Release flow: `.github/workflows/docs-deploy.yml` runs on every published release — it runs `mike deploy --push --update-aliases X.Y.Z latest` (version taken from the tag) followed by `mike set-default --push latest`, so the bare site root always redirects to `/latest/`. For an intermediate redeploy of an existing version, trigger the workflow manually from the Actions tab. For local/manual operations, run the same mike commands directly (`uv run mike list`, `uv run mike deploy ...`, `uv run mike delete ...` — the docs dependency group installs mike).
+
+Hosting: mike pushes to `gh-pages`. GitHub Pages (which serves docs.lightconeresearch.org) must be configured to "Deploy from a branch" / `gh-pages` in the repo's Pages settings, not via the Actions artifact deploy. Without this, `mike deploy` runs successfully but the site doesn't pick up versioned URLs in production.
+
 ## Development Commands
 
 ```bash
