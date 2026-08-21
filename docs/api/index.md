@@ -1,61 +1,38 @@
-# Python API Reference
+# Engine Internals
 
-The interesting public surface lives in `lightcone.engine.*`. The CLI
-is a thin Click wrapper around these modules.
+The `lightcone.engine.*` modules, one page each: what the module owns,
+its key symbols, and the invariants a change must keep. These are
+hand-written tours, not generated API dumps — the engine is not a
+public API (projects don't depend on lightcone-cli), so what matters
+is responsibility and contract, not every signature.
 
-## Module map
+## The map
 
-| Module | Role |
-|--------|------|
-| [`lightcone.cli.commands`](cli.md) | Click CLI: `init`, `run`, `build`, `status`, `verify`, `setup`. |
-| [`lightcone.engine.manifest`](manifest.md) | Per-output `.lightcone-manifest.json` write/read; `code_version`, `sha256_dir`. The integrity layer. |
-| [`lightcone.engine.snakefile`](snakefile.md) | Generate `.lightcone/Snakefile` and `snakefile-config.json` from `astra.yaml`. |
-| [`lightcone.engine.container`](container.md) | Runtime detection, content-addressed image tags, `wrap_recipe`. |
-| [`lightcone.engine.dask_cluster`](dask_cluster.md) | Cluster lifecycle for `lc run` (local / SLURM / external). |
-| [`lightcone.engine.status`](status.md) | Manifest-driven status walker. |
-| [`lightcone.engine.verify`](verify.md) | Recompute hashes; walk the input chain. |
-| [`lightcone.engine.tree`](tree.md) | Sub-analysis tree helpers — outputs, decisions, `from:` resolution. |
-| [`lightcone.engine.validation`](validation.md) | Post-recipe sanity checks (empty dir, all-NaN columns, …). |
-| [`snakemake_executor_plugin_dask`](dask_executor.md) | Snakemake executor plugin → `dask.distributed`. |
-| `lightcone.engine.site_registry` | Vestigial — no active code path imports it. See [api/site_registry](site_registry.md). |
+| Module | Owns | Character |
+|---|---|---|
+| [`project`](project.md) | What a project is: convergence, discovery, mode, the `_run` seam | impure |
+| [`dataset`](dataset.md) | How a project stores: git + git-annex, run records, restore | impure |
+| [`identity`](identity.md) | `env_version`, `definition_version`, the lock scan | pure |
+| [`plan`](plan.md) | The spec, read as a graph of tasks (through ASTRA) | pure |
+| [`assets`](assets.md) | One output: its directory, manifest, and state | pure |
+| [`worker`](worker.md) | Making one output; the rerun entry point | impure |
+| [`materialize`](materialize.md) | The driver: gates, scheduling, the save/restore loop, status | impure |
+| [`venue`](venue.md) | Where a run executes: SLURM detection, the login guard | impure |
+| [`sandbox`](sandbox.md) | The exec boundary: policy, backends, attestation, denials | mixed |
+| [`image` & `container`](container.md) | The container hatch: declaration → image → archive → runtime | pure / impure |
+| [`crate`](crate.md) | The publication view: the repo as an RO-Crate | pure |
 
-## Common entry points
+"Pure" here is a testing fact: pure modules are tested with nothing on
+disk beyond `tmp_path` and nothing spawned; impure ones go through the
+one subprocess seam (`project._run`) that the suite stubs — see
+[Testing](../contributing/testing.md).
 
-```python
-from pathlib import Path
-from lightcone.engine.snakefile import generate, discover_universes
-from lightcone.engine.container import load_runtime
+Two files sit outside the engine on purpose:
 
-project = Path("my-analysis")
-runtime = load_runtime(project_path=project).runtime
-universes = discover_universes(project)        # ['baseline', 'experiment']
-snakefile, cfg = generate(project, universes=universes, runtime=runtime)
-# Now invoke `snakemake -s snakefile -d project --executor dask ...`
-```
-
-```python
-from lightcone.engine.status import get_output_status
-
-for s in get_output_status(project, universe_id="baseline"):
-    print(s.status, s.output_id)        # 'ok', 'stale', 'missing', or 'alias'
-```
-
-```python
-from lightcone.engine.verify import verify_outputs
-
-failed = [r for r in verify_outputs(project, universe_id="baseline") if not r.passed]
-for r in failed:
-    print(r.failure, r.output_id, r.detail)
-```
-
-```python
-from lightcone.engine.container import (
-    detect_runtime,
-    compute_image_tag,
-    build_image,
-)
-
-runtime = detect_runtime()                                   # 'podman' / 'docker' / 'podman-hpc' / None
-tag = compute_image_tag("my-project", Path("Containerfile"), Path("."))
-build_image(tag, Path("Containerfile"), Path("."), runtime=runtime)
-```
+- **`lightcone/_sandbox_exec.py`** — the Landlock shim. Stdlib-only,
+  zero lightcone imports; it runs on every sandboxed exec, and an
+  engine import there would put click and the astra stack on that
+  path. Pinned by tests.
+- **`lightcone/cli/commands.py`** — the CLI: flags, rendering, exit
+  codes. Imports the engine inside callbacks so `lc --help` stays
+  cheap; never contains logic worth testing beyond rendering.
