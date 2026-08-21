@@ -123,18 +123,23 @@ error: initialization for subprocess 'git-annex filter-process' failed
 fatal: data/catalog.fits: clean filter 'annex' failed
 ```
 
-Your `git add` could not reach git-annex — either your shell's `PATH`
-lost it, or the project's plumbing is pinned to an `lc` install that no
-longer exists (a pruned `uv` cache, a moved install). The remedy is
-one command, from the project root:
+Your shell's `PATH` has no `git-annex`, so git could not run the filter
+that turns a large file into an annex pointer. **Nothing was staged**,
+which is the point: without `filter.annex.required=true` — which
+`lc init` sets — git would have exited 0 and committed the raw bytes
+into history instead.
+
+`git-annex` ships with `lc`, so a tool install puts both on your `PATH`:
 
 ```bash
-lc init
+uv tool install lightcone-cli
+git-annex version
 ```
 
-It reports the plumbing `repaired` and re-points it at a git-annex
-that actually runs — the one that ships with `lc` itself when your
-`PATH` has none.
+If `lc` runs but `git-annex` does not, uv's tool directory is not on
+your `PATH` — run `uv tool update-shell` and open a new shell. Running
+`lc` through `uvx` puts nothing on your `PATH` at all, so a plain
+`git add` cannot work that way.
 
 This failure is deliberately loud. `lc init` sets
 `filter.annex.required=true` in every project precisely because

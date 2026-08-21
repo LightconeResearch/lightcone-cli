@@ -7,7 +7,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -313,62 +312,6 @@ def require_git_annex() -> None:
         )
 
 
-def bundled_annex() -> Path | None:
-    """Locate the git-annex this engine carries, beside its interpreter.
-
-    Every install of lightcone-cli links the git-annex wheel's entry
-    points into the same bin directory as ``lc`` and its python, so the
-    sibling of :data:`sys.executable` is the one place the engine's own
-    git-annex is by construction — never ambient ``PATH``, which is the
-    researcher's and answers a different question.
-
-    Returns:
-        The executable, or ``None`` on a broken install.
-    """
-    found = shutil.which("git-annex", path=str(_engine_bin()))
-    return Path(found) if found else None
-
-
-def _engine_bin() -> Path:
-    """The bin directory the engine's executables live in.
-
-    The *parent* of ``sys.executable``, resolved as a directory only: in
-    a venv the python file itself is a symlink to the managed
-    interpreter, and following it first would answer with a directory
-    that holds no entry point of ours.
-    """
-    return Path(sys.executable).parent.resolve()
-
-
-def ambient_annex() -> Path | None:
-    """Locate the git-annex the researcher's *own* shell would find.
-
-    ``PATH`` minus the engine's bin directory: launchers front that
-    directory on lc's environment (uvx, ``uv run``), so a naive
-    ``which`` from inside lc always finds the bundled copy — while the
-    shell the researcher types ``git add`` into may hold nothing of the
-    sort. This is the probe that decides whether stock, PATH-resolved
-    annex plumbing actually works for them.
-
-    Returns:
-        The executable as the shell would resolve it, or ``None``.
-    """
-    ours = _engine_bin()
-    kept = [
-        entry
-        for entry in os.environ.get("PATH", "").split(os.pathsep)
-        if entry and Path(entry).resolve() != ours
-    ]
-    found = shutil.which("git-annex", path=os.pathsep.join(kept))
-    # Directories are compared, never the file's own symlink target: a
-    # tool install's `~/.local/bin/git-annex` points into the engine's
-    # venv, and it is still genuinely the shell's — PATH keeps resolving
-    # it for exactly as long as that install exists.
-    if found is None or Path(found).parent.resolve() == ours:
-        return None
-    return Path(found)
-
-
 def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
     """Build the ``uv run`` hop that pins a command to a project.
 
@@ -465,11 +408,18 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     c.item(".git", _in_repository(directory), lambda: dataset.init_git(directory))
     # After the item above, so a fresh project has a repository to annex.
     # `annexed` is read *before* the item applies: in write mode the init
-    # runs inline, and the plumbing item below must still know whether
-    # this run created the annex (created) or found one (repaired).
+    # runs inline, and the filter item below must still know whether this
+    # run created the annex (created) or found one (repaired).
     annexed = _can_ask_git(directory) and dataset.is_annexed(directory)
     c.item("git-annex", annexed, lambda: dataset.init_annex(directory))
-    _converge_annex_plumbing(c, directory, present=annexed)
+    # The one thing `git annex init` does not set, and the reason it
+    # matters is in `dataset.require_annex_filter`.
+    c.item(
+        "annex-filter",
+        annexed,
+        lambda: dataset.require_annex_filter(directory),
+        is_current=lambda: dataset.annex_filter_required(directory),
+    )
     attributes = directory / ".gitattributes"
     # Read before the repair, not after: the check is on the text a repair
     # would leave behind, and check mode never writes one.
@@ -496,60 +446,6 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
         lambda: templates.datalad_config(dataset_id=str(uuid.uuid4())),
     )
     _converge_committable(c, directory)
-
-
-def _converge_annex_plumbing(c: _Converger, directory: Path, *, present: bool) -> None:
-    """The plumbing that lets the researcher's *own* git find git-annex.
-
-    ``git annex init`` wires the filter drivers and four hooks to a bare
-    ``git-annex``, resolved from the PATH of whichever git runs — and the
-    researcher's shell, unlike lc's environment, may hold no git-annex at
-    all (the engine invoked through uvx puts nothing on it). Measured:
-    a ``git add`` whose clean filter cannot start prints an error, exits
-    0, and stages the raw bytes into git history. So convergence owns the
-    plumbing: ``filter.annex.required=true`` always, making that failure
-    git's own hard refusal with ``lc init`` as the remedy — and where the
-    shell would not resolve git-annex, the filter and hooks are pinned to
-    the engine's bundled executable by absolute path, so the ordinary
-    ``git add`` the docs promise keeps working. Where the shell *does*
-    resolve one, the stock form is kept: it already works, and it outlives
-    a prunable engine path.
-
-    The repair rule is asymmetric on purpose. A pin that still runs is
-    left alone even when it is not this engine's copy or PATH could now
-    serve — both work, and rewriting would flip-flop between a tool
-    install and a uvx cache. Only a broken state is rewritten: toward
-    stock when the shell resolves git-annex, else to this engine's copy.
-
-    Args:
-        c: The converger.
-        directory: The project root.
-        present: Whether the annex existed before this convergence —
-            plumbing written over a fresh ``git annex init`` is created,
-            plumbing brought up to date on an adopted annex is repaired.
-    """
-    recorded = dataset.pinned_annex(directory) if present else None
-    keep = recorded if recorded is not None and dataset.annex_runs(recorded) else None
-    ambient = ambient_annex()
-    target = keep or (None if ambient is not None else bundled_annex())
-    if keep is None and ambient is None and target is None:
-        # Near-unreachable — require_git_annex found one somewhere — but a
-        # missing bundled copy must degrade to advice, not a wrong write.
-        c.warn(
-            "the annex plumbing was left as git-annex wrote it: no git-annex "
-            "on PATH for the shell's own `git add` to find, and lc's bundled "
-            "copy is missing beside its interpreter. "
-            "`uv tool install --force lightcone-cli` repairs the install."
-        )
-        return
-    c.item(
-        "annex-plumbing",
-        present,
-        lambda: dataset.converge_annex_plumbing(directory, target),
-        is_current=lambda: dataset.annex_plumbing_current(
-            directory, stock_ok=ambient is not None
-        ),
-    )
 
 
 def _converge_committable(c: _Converger, directory: Path) -> None:

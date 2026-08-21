@@ -102,9 +102,9 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     # rather than on disk because `.git` is a *file* in a linked
     # worktree, so there is nowhere inside it to leave a marker.
     annexed: set[Path] = set()
-    # What `git config` has been told, per repository — the annex
-    # plumbing converges through config reads and writes, and a fake
-    # that forgot them would report the same items repaired forever.
+    # What `git config` has been told, per repository — the annex filter
+    # converges through a config write and a config read, and a fake that
+    # forgot the write would report the same item repaired forever.
     config: dict[tuple[Path, str], str] = {}
 
     def fake_run(argv: list[str], *, cwd: Path) -> MagicMock:
@@ -119,9 +119,7 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         elif argv[:2] == ["uv", "sync"]:
             (project / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
         elif argv[:2] == ["git", "init"]:
-            # With the hooks directory, as the real `git init` makes it —
-            # the annex plumbing writes hook files into it.
-            (cwd / ".git" / "hooks").mkdir(parents=True, exist_ok=True)
+            (cwd / ".git").mkdir(exist_ok=True)
         elif argv[:3] == ["git", "annex", "init"]:
             annexed.add(_repo(cwd))
         elif argv[:2] == ["git", "config"] and argv[-1] == "annex.uuid":
@@ -132,10 +130,6 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             return MagicMock(returncode=code, stdout=(value or "") + "\n", stderr="")
         elif argv[:2] == ["git", "config"] and len(argv) == 4 and not argv[2].startswith("-"):
             config[(_repo(cwd), argv[2])] = argv[3]
-        elif argv[:3] == ["git", "rev-parse", "--git-path"]:
-            return MagicMock(
-                returncode=0, stdout=str(_repo(cwd) / ".git" / argv[3]) + "\n", stderr=""
-            )
         elif argv[:2] == ["git", "check-ignore"]:
             return _fake_check_ignore(cwd, argv[-1])
         return MagicMock(returncode=0, stdout="", stderr="")
