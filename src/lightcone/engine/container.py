@@ -134,6 +134,11 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
     _fetch(root, archive)
     image_id, arch = archive_identity(archive)
     _require_arch(root, archive, arch)  # before the load — see its docstring
+    if name == "podman-hpc":
+        # Before the load, not just the migrate: a wedged squash store
+        # (see _heal_squash) fails the load too, on a node whose local
+        # store does not hold the image yet.
+        _heal_squash(root, tag, image_id)
     if not _loaded(root, name, image_id):
         _check_call([name, "load", "-i", str(archive)], cwd=root)
     if name == "podman-hpc":
@@ -192,6 +197,36 @@ def _committed(archive: Path) -> bool:
     and tells the user to rebuild an image the repository already has.
     """
     return archive.exists() or archive.is_symlink()
+
+
+def _heal_squash(root: Path, tag: str, image_id: str) -> None:
+    """Remove a stale squashed image before migrating the current one.
+
+    The tag is deterministic but builds are not bit-reproducible, so a
+    rebuild migrated under an unchanged tag puts a second image with the
+    same name into podman-hpc's read-only squash store — after which
+    *every* storage operation fails ("read-only image store assigns the
+    same name to multiple images"), runs included (measured on
+    Perlmutter). ``rmsqi`` removes only the squashed copy, and the
+    migrate that follows re-squashes the current id. A heal must never
+    break a run whose store is healthy, so a probe outcome it does not
+    recognize is left for migrate's own loud path.
+    """
+    probe = project._run(
+        ["podman-hpc", "images", "--format", "{{.Id}} {{.ReadOnly}}", f"localhost/{tag}"],
+        cwd=root,
+    )
+    if probe.returncode == 0:
+        rows = [line.split() for line in probe.stdout.splitlines()]
+        stale = any(
+            len(row) == 2 and row[1] == "true" and row[0] != image_id for row in rows
+        )
+    else:
+        # A wedged store fails the listing too, with the same message
+        # every other operation gets — the shape a pre-heal lc left.
+        stale = "assigns the same name to multiple images" in probe.stderr
+    if stale:
+        _check_call(["podman-hpc", "rmsqi", tag], cwd=root)
 
 
 def runtime_name(root: Path) -> str:
@@ -377,6 +412,11 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
     if asked.returncode != 0:
         raise ProjectError(f"`uv cache dir` failed:\n{asked.stderr.strip()}")
     cache = asked.stdout.strip()
+    # A bind mount's source must exist — and in containerized mode uv
+    # never runs on the host, so nothing else has created it. Otherwise
+    # the first sync of a fresh project dies as the runtime's `statfs`
+    # error about a path the user never named.
+    Path(cache).mkdir(parents=True, exist_ok=True)
     argv = [
         runtime.runtime, "run", "--rm", "--entrypoint", "",
         # Same reason as the exec boundary's flag: SELinux hosts refuse

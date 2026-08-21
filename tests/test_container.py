@@ -53,7 +53,7 @@ def _write_archive(path: Path, config: bytes = _CONFIG) -> str:
 
 
 @pytest.fixture
-def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+def fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[str]]:
     """A podman-having host: records argv, models each command's effect.
 
     Every tool name resolves except ``podman-hpc`` — a site wrapper no
@@ -77,7 +77,10 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
                 return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
         if argv[:2] == ["uv", "cache"]:
-            return MagicMock(returncode=0, stdout="/home/user/.cache/uv\n", stderr="")
+            # Under tmp_path, not a fictional `/home/user`: the sync
+            # creates this directory, because a bind mount's source must
+            # exist and nothing on the host has made it in this mode.
+            return MagicMock(returncode=0, stdout=f"{tmp_path / 'uv-cache'}\n", stderr="")
         if argv[:3] == ["git", "diff", "--cached"]:
             return MagicMock(returncode=1)  # something staged: commits proceed
         if argv[:2] == ["git", "check-attr"]:
@@ -399,16 +402,21 @@ def test_lc_build_on_a_direct_project_says_so(tmp_path: Path, fake: list[list[st
 
 
 def test_sync_runs_uv_inside_the_image_with_the_host_cache(
-    root: Path, fake: list[list[str]]
+    root: Path, fake: list[list[str]], tmp_path: Path
 ) -> None:
     runtime = container.runtime_for_run(root, build=True)
     fake.clear()
 
     container.sync(root, runtime)
 
+    cache = tmp_path / "uv-cache"
     (sync,) = _argvs(fake, "podman", "run")
     assert f"{root}:{root}:rw" in " ".join(sync)
-    assert "/home/user/.cache/uv:/home/user/.cache/uv:rw" in " ".join(sync)
+    assert f"{cache}:{cache}:rw" in " ".join(sync)
+    assert cache.is_dir(), (
+        "a bind mount's source must exist, and in containerized mode uv "
+        "never runs on the host to create it"
+    )
     assert f"UV_PROJECT_ENVIRONMENT={root / '.lightcone' / 'venv'}" in " ".join(sync)
     assert "--userns=keep-id" in sync
     assert runtime.image_id in sync
@@ -554,6 +562,102 @@ def test_migrate_runs_even_when_the_store_already_holds_the_image(
 
     assert len(_argvs(hpc, "podman-hpc", "load")) == 1
     assert len(_argvs(hpc, "podman-hpc", "migrate")) == 2
+
+
+def _squash_probe(
+    monkeypatch: pytest.MonkeyPatch, hpc: list[list[str]], answer: MagicMock
+) -> None:
+    """Make the store-listing probe answer *answer*; everything else keeps
+    the `hpc` stub's behavior — the fixture's one-fact-at-a-time rule."""
+    inner = project._run
+
+    def run(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["podman-hpc", "images"]:
+            hpc.append(list(argv))
+            return answer
+        return inner(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", run)
+
+
+def test_a_stale_squashed_image_is_removed_before_migrate(
+    root: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tag is deterministic but builds are not bit-reproducible, so a
+    rebuild migrated under an unchanged tag would put a second same-named
+    image into the read-only squash store — which then refuses every
+    storage operation. The heal removes the stale copy first."""
+    expected = _write_archive(image.archive_path(root, image.tag(root)))
+    stale = "f" * 64
+    _squash_probe(
+        monkeypatch,
+        hpc,
+        MagicMock(returncode=0, stdout=f"{expected} false\n{stale} true\n", stderr=""),
+    )
+
+    container.runtime_for_run(root, build=False)
+
+    tag = image.tag(root)
+    assert _argvs(hpc, "podman-hpc", "rmsqi") == [["podman-hpc", "rmsqi", tag]]
+    order = [c[1] for c in _argvs(hpc, "podman-hpc") if c[1] in ("images", "rmsqi", "migrate")]
+    assert order == ["images", "rmsqi", "migrate"]
+
+
+def test_a_current_squashed_image_is_left_alone(
+    root: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The healthy pair — the overlay copy and its own squash — is exactly
+    what a migrate leaves behind; removing it would re-squash every run."""
+    expected = _write_archive(image.archive_path(root, image.tag(root)))
+    _squash_probe(
+        monkeypatch,
+        hpc,
+        MagicMock(returncode=0, stdout=f"{expected} false\n{expected} true\n", stderr=""),
+    )
+
+    container.runtime_for_run(root, build=False)
+
+    assert _argvs(hpc, "podman-hpc", "rmsqi") == []
+    assert len(_argvs(hpc, "podman-hpc", "migrate")) == 1
+
+
+def test_a_failing_probe_never_blocks_a_healthy_run(
+    root: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A heal must not introduce a failure mode of its own: an
+    unrecognized probe failure is left for migrate's own loud path."""
+    _write_archive(image.archive_path(root, image.tag(root)))
+    _squash_probe(
+        monkeypatch, hpc, MagicMock(returncode=125, stdout="", stderr="some other complaint")
+    )
+
+    container.runtime_for_run(root, build=False)
+
+    assert _argvs(hpc, "podman-hpc", "rmsqi") == []
+    assert len(_argvs(hpc, "podman-hpc", "migrate")) == 1
+
+
+def test_an_already_wedged_store_is_healed(
+    root: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store wedged before the heal existed fails the listing too, with
+    the same message every operation gets — that signature is the one
+    probe failure the heal acts on."""
+    _write_archive(image.archive_path(root, image.tag(root)))
+    _squash_probe(
+        monkeypatch,
+        hpc,
+        MagicMock(
+            returncode=125,
+            stdout="",
+            stderr="Error: configure storage: read-only image store assigns "
+            "the same name to multiple images",
+        ),
+    )
+
+    container.runtime_for_run(root, build=False)
+
+    assert _argvs(hpc, "podman-hpc", "rmsqi") == [["podman-hpc", "rmsqi", image.tag(root)]]
 
 
 def test_podman_hpc_builds_saves_and_migrates(root: Path, hpc: list[list[str]]) -> None:

@@ -305,7 +305,10 @@ def main(argv: list[str] | None = None) -> None:
             raise ValueError("policy must be a JSON object")
         abi_level = abi()
         if abi_level == 0:
-            raise ValueError("landlock unavailable (kernel < 5.13, or blocked by seccomp)")
+            raise ValueError(
+                "landlock unavailable (not in the kernel's boot-time LSM list, "
+                "kernel < 5.13, or blocked by seccomp)"
+            )
         fd = build_ruleset(policy, abi_level)
         restrict_self(fd)
         os.close(fd)

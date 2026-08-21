@@ -38,7 +38,10 @@ def capability() -> Capability:
         return Capability(kind="landlock", landlock_abi=abi)
     return Capability(
         kind="none",
-        detail="landlock unavailable (kernel < 5.13, blocked by seccomp, or unsupported arch)",
+        detail=(
+            "landlock unavailable (not in the kernel's boot-time LSM list, "
+            "kernel < 5.13, blocked by seccomp, or unsupported arch)"
+        ),
     )
 
 

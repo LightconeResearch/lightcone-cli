@@ -24,8 +24,8 @@ from lightcone.engine.project import (
     SPEC_FILENAME,
     child_env,
     require_uv,
+    scrub_warning,
     uv_prefix,
-    uv_scrub_warning,
 )
 
 
@@ -77,7 +77,7 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
         )
     # The probe is what called `child_env`, so the probe's outcome is
     # where the scrub's fact belongs — the caller prints notes verbatim.
-    if warning := uv_scrub_warning():
+    if warning := scrub_warning():
         outcome = replace(outcome, notes=(warning, *outcome.notes))
     return outcome
 

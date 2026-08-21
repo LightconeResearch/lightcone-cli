@@ -47,21 +47,22 @@ def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def ambient_uv(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip scrubbable ``UV_*`` out of the suite's environment.
+    """Strip scrubbable variables out of the suite's environment.
 
     CI pins its matrix interpreter through an ambient ``UV_PYTHON``,
     which the scrub correctly drops and reports — so without this every
     converge in the suite carries the warning and every ``warnings ==
-    []`` assertion depends on the host. Derived from the scrub's own
-    predicate, so a variable the allowlist later admits stops being
+    []`` assertion depends on the host; a dev shell exporting a site's
+    ``MOUNT_*`` gates is the same shape. Derived from the scrub's own
+    predicates, so a variable the allowlist later admits stops being
     stripped here for free; the scrub tests set their own variables
     back deliberately.
     """
     import os
 
-    from lightcone.engine.project import _uv_scrubbed
+    from lightcone.engine.project import _mount_scrubbed, _uv_scrubbed
 
-    for name in [k for k in os.environ if _uv_scrubbed(k)]:
+    for name in [k for k in os.environ if _uv_scrubbed(k) or _mount_scrubbed(k)]:
         monkeypatch.delenv(name)
 
 
