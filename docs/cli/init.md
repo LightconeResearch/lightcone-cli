@@ -89,7 +89,11 @@ Inside `.git`, convergence sets one configuration key — reported as the
   shell cannot find git-annex prints an error, **exits 0, and stages
   the raw bytes into git history** — a 2 GB dataset in git proper, on
   every clone, forever. With it, the same situation is a hard, loud
-  failure and nothing is staged.
+  failure and nothing is staged. Once the project holds committed
+  annexed content that refusal covers every command that must run the
+  filter, `git status` and `git diff` included — a project you cannot
+  use until git-annex is back, rather than one that silently absorbed
+  your data.
 
 That is the only thing `lc init` adds to what `git annex init` wrote.
 How git finds git-annex is still ordinary `PATH` resolution, which is

@@ -107,7 +107,8 @@ ordinary `git add` / `git commit`.
 That ordinary `git add` dispatches git-annex from the *researcher's*
 `PATH`, and a shell that cannot resolve it stages the raw bytes into
 git history while exiting 0 — so `lc init` sets
-`filter.annex.required=true`, which makes git refuse loudly instead.
+`filter.annex.required=true`, which makes git refuse loudly instead
+(every filtered command, not only `git add`).
 Getting git-annex onto that `PATH` is the install's job, not the
 repository's: `uv tool install lightcone-cli` puts it there alongside
 `lc`.

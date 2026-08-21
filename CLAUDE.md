@@ -561,7 +561,20 @@ instead of silent corruption.
 path into a repository and rewrites no filter driver or hook: how git
 dispatches git-annex stays `PATH` resolution, which is git-annex's own
 design and git-lfs's too (it writes `filter.lfs.required = true` beside
-`PATH`-relative drivers and has never baked a path). Pinning the filter
+`PATH`-relative drivers and has never baked a path).
+
+The rule the neighbours agree on is **route through a filter ⇒ set
+`required`**, and both halves were measured. git-lfs routes and sets
+it. `datalad create` does *neither*: no `required`, and no
+`* filter=annex` in its `.gitattributes` (just `* annex.backend=MD5E`
+and `**/.git* annex.largefiles=nothing`) — so a plain `git add big.bin`
+in a DataLad dataset stages 200 000 raw bytes into git *even with
+git-annex working*, and the safeguard is procedural: use `datalad
+save`. lc made the opposite promise — the researcher types the git they
+already know — so lc owns the failure mode that promise creates. The
+honest cost, also measured: once a project holds committed annexed
+content, the refusal covers `git status`, `git diff` and `git checkout`
+too, not just `git add`. Pinning the filter
 and the four hooks to the engine's bundled executable was implemented
 and reverted before merge: it writes durable state pointing at a
 prunable `uvx` cache, `core.hooksPath` can send the hooks into a

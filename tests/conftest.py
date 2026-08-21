@@ -124,8 +124,11 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             annexed.add(_repo(cwd))
         elif argv[:2] == ["git", "config"] and argv[-1] == "annex.uuid":
             return MagicMock(returncode=0 if _repo(cwd) in annexed else 1)
-        elif argv[:3] == ["git", "config", "--get"]:
-            value = config.get((_repo(cwd), argv[3]))
+        elif argv[:3] == ["git", "config", "--local"] and "--get" in argv:
+            # The key is last; the flags in between are git's own reading
+            # conventions (`--type=bool`), which the store does not model
+            # because the engine only ever writes one value.
+            value = config.get((_repo(cwd), argv[-1]))
             code = 0 if value is not None else 1
             return MagicMock(returncode=code, stdout=(value or "") + "\n", stderr="")
         elif argv[:2] == ["git", "config"] and len(argv) == 4 and not argv[2].startswith("-"):

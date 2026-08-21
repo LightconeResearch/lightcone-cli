@@ -127,15 +127,29 @@ def require_annex_filter(directory: Path) -> None:
 
 
 def annex_filter_required(directory: Path) -> bool:
-    """Whether the repository already carries that flag.
+    """Whether *this repository* already carries that flag.
+
+    ``--local`` because the write is repository-local, and a probe that
+    read the merged config would answer for the *host* instead: a user
+    who once set ``filter.annex.required`` in ``~/.gitconfig`` would have
+    every project report converged while its own ``.git/config`` carried
+    nothing, leaving the protection behind the moment that repository is
+    used under another ``HOME`` — a clone, CI, a container. ``--type=bool``
+    because git's booleans are not one spelling: ``1``, ``yes``, ``on``
+    and a valueless key all mean true to the filter, and reading them as
+    drift would rewrite a repository that was already correct.
 
     Args:
         directory: A directory inside the repository.
 
     Returns:
-        True if ``filter.annex.required`` is set to ``true``.
+        True if ``filter.annex.required`` is set, in this repository, to
+        anything git reads as true.
     """
-    set_to = _ask(["config", "--get", "filter.annex.required"], cwd=directory)
+    set_to = _ask(
+        ["config", "--local", "--get", "--type=bool", "filter.annex.required"],
+        cwd=directory,
+    )
     return (set_to or "").strip() == "true"
 
 

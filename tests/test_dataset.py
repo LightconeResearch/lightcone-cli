@@ -516,7 +516,14 @@ def _researcher_shell(tmp_path: Path) -> dict[str, str] | None:
         return None
     if any((d / "git-annex").exists() for d in dirs):
         return None
-    return {"PATH": ":".join(str(d) for d in dirs), "HOME": str(tmp_path)}
+    # `HOME` takes the global config out of play; `GIT_CONFIG_NOSYSTEM`
+    # does the same for `/etc/gitconfig`, where a site-wide
+    # `filter.annex.required` would otherwise decide these outcomes.
+    return {
+        "PATH": ":".join(str(d) for d in dirs),
+        "HOME": str(tmp_path),
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
 
 
 def _shell_git(repo: Path, env: dict[str, str], *argv: str) -> subprocess.CompletedProcess[str]:
@@ -553,6 +560,38 @@ def test_required_true_makes_the_missing_filter_loud_not_silent(
     assert "clean filter 'annex' failed" in added.stderr
     staged = _shell_git(repo, no_annex_shell, "diff", "--cached", "--name-only")
     assert staged.stdout.strip() == ""
+
+
+def test_the_flag_is_read_from_the_repository_never_the_users_global_config(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The write is repository-local, so the read must be too. A user who
+    once set the flag in `~/.gitconfig` would otherwise have every project
+    report converged while its own `.git/config` carried nothing — and
+    since this is local state a clone never receives, the protection would
+    vanish the moment the repository moved to CI or another account."""
+    global_config = tmp_path / "gitconfig"
+    global_config.write_text('[filter "annex"]\n\trequired = true\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+
+    assert not dataset.annex_filter_required(repo)
+
+    dataset.require_annex_filter(repo)
+    assert dataset.annex_filter_required(repo)
+    assert "required = true" in (repo / ".git" / "config").read_text()
+
+
+@pytest.mark.parametrize("spelling", ["true", "1", "yes", "on"])
+def test_any_spelling_git_reads_as_true_is_not_reported_as_drift(
+    repo: Path, spelling: str
+) -> None:
+    """git's booleans are not one string. A repository someone configured
+    by hand as `required = 1` is fully protected — reading it as drift
+    would rewrite a repository that was already correct, and report every
+    `lc init --check` on it as unconverged."""
+    dataset._git(["config", "filter.annex.required", spelling], cwd=repo)
+
+    assert dataset.annex_filter_required(repo)
 
 
 def test_stock_plumbing_without_required_stages_raw_bytes_silently(

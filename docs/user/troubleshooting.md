@@ -129,6 +129,14 @@ which is the point: without `filter.annex.required=true` — which
 `lc init` sets — git would have exited 0 and committed the raw bytes
 into history instead.
 
+Once a project holds committed annexed content, this is not limited to
+`git add`. Any command that has to run the filter over that content
+stops the same way, `git status`, `git diff` and `git checkout`
+included — so the whole project reads as broken until git-annex is back
+on your `PATH`. That is the intended shape of the failure: a repository
+you cannot use is recoverable in one command, and one that quietly
+absorbed a multi-gigabyte file is not.
+
 `git-annex` ships with `lc`, so a tool install puts both on your `PATH`:
 
 ```bash
