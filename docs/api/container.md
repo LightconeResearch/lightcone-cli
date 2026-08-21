@@ -60,14 +60,19 @@ Sources: `src/lightcone/engine/image.py`,
   Detection order podman-hpc → podman → docker; docker's daemon is
   probed at detection.
 - **Site container modules are named, not silenced.** `site_modules()`
-  reports the `ENABLE_*` gates set for podman-hpc, which the runtime
-  applies from its own environment: a module can widen the container
-  past the mount table (`ENABLE_CVMFS` binds `/cvmfs`,
-  `ENABLE_MPICH_SS` adds `--privileged` and the host namespaces), so
-  they reach `Attestation.site_modules` and every manifest rather than
-  leaving `fs: declared` to overstate the boundary. `MOUNT_*` never
-  appears there — `project.child_env` scrubs it before the runtime
-  sees it.
+  reports the gates set for podman-hpc, which the runtime applies from
+  its own environment. The gate names are **read from the site's own
+  module table** (each module declares its `env:` key; the directory
+  comes from `podman-hpc infohpc`), never matched by prefix — GitHub's
+  `ENABLE_RUNNER_TRACING` was enough to make a prefix match name a
+  module the host does not have. A table that cannot be read reports
+  nothing rather than refusing: attestation must not fail a run.
+  They are recorded because a module widens the container past the
+  mount table — `ENABLE_CVMFS` binds `/cvmfs`, `ENABLE_MPICH_SS` adds
+  `--privileged` and the host namespaces — so `Attestation.site_modules`
+  carries them into every manifest rather than leaving `fs: declared`
+  to overstate the boundary. `MOUNT_*` never appears there:
+  `project.child_env` scrubs it before the runtime sees it.
 - **A stale squashed image is healed before the load.** The tag is
   deterministic but builds are not bit-reproducible, so a rebuild
   migrated under an unchanged tag would put a second same-named image

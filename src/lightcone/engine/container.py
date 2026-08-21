@@ -329,16 +329,15 @@ def backend(runtime: Runtime) -> sandbox.Backend:
         image_id=runtime.image_id,
         root=runtime.root,
         user_flags=(*uid_flags(runtime.runtime), *pull),
-        site_modules=site_modules(runtime.runtime),
+        site_modules=site_modules(runtime.runtime, runtime.root),
     )
 
 
-def site_modules(runtime: str) -> tuple[str, ...]:
+def site_modules(runtime: str, root: Path) -> tuple[str, ...]:
     """Name the site container modules the runtime will apply, if any.
 
-    podman-hpc reads a site's module table
-    (``/etc/podman_hpc/modules.d``) from its own environment, and a
-    module widens the container by more than lc declared: NERSC's
+    podman-hpc reads a site's module table from its own environment, and
+    a module widens the container by more than lc declared: NERSC's
     ``ENABLE_CVMFS`` binds the whole ``/cvmfs`` hierarchy — reference
     data a recipe can read without declaring it — and
     ``ENABLE_MPICH_SS`` adds ``--privileged`` plus the host's network,
@@ -347,21 +346,45 @@ def site_modules(runtime: str) -> tuple[str, ...]:
     named in the attestation instead, so no manifest claims the mount
     table was the whole boundary.
 
-    Read from :func:`project.child_env`, which is what the runtime
-    actually receives — the ``MOUNT_*`` gates it scrubs are absent by
-    the time this asks.
+    The table is **asked for, never guessed**: each module declares its
+    own gate in an ``env:`` key, and the directory holding them comes
+    from ``podman-hpc infohpc`` (a site can move it). Matching a
+    ``MOUNT_``/``ENABLE_`` prefix instead would record any passing
+    variable that happens to share it — GitHub's ``ENABLE_RUNNER_TRACING``
+    was enough to make a manifest name a module the host does not
+    have, which is the opposite of what the field is for.
+
+    The environment consulted is :func:`project.child_env`, what the
+    runtime actually receives — so the ``MOUNT_*`` gates scrubbed there
+    are already gone and cannot be reported as applied.
 
     Args:
         runtime: The resolved runtime's name.
+        root: The project root, for the probe's working directory.
 
     Returns:
         The gate names that are set, sorted; empty for a runtime with no
-        module system.
+        module system, and empty rather than a refusal when the table
+        cannot be read — attestation must not fail a run.
     """
     if runtime != "podman-hpc":
         return ()
+    info = project._run(["podman-hpc", "infohpc"], cwd=root)
+    # Greedy up to the *last* colon: the line reads
+    # `modules_dir (file: modules_dir): /etc/podman_hpc/modules.d`.
+    found = re.search(r"^modules_dir.*:\s*(\S+)\s*$", info.stdout, re.MULTILINE)
+    if info.returncode != 0 or not found:
+        return ()
+    gates = set()
+    for module in sorted(Path(found.group(1)).glob("*.yaml")):
+        try:
+            text = module.read_text()
+        except OSError:
+            continue
+        if gate := re.search(r"^env:\s*(\S+)", text, re.MULTILINE):
+            gates.add(gate.group(1))
     env = project.child_env()
-    return tuple(sorted(k for k, v in env.items() if k.startswith("ENABLE_") and v))
+    return tuple(sorted(g for g in gates if env.get(g)))
 
 
 def build(root: Path) -> tuple[Runtime, str]:

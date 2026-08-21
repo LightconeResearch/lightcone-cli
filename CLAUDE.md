@@ -2122,6 +2122,13 @@ unlinks before writing; a new tampering test should too.
     `container.site_modules()` names the set gates, `OCIBackend` carries
     them as a resolved field (the `user_flags` pattern — `wrap` stays
     pure), and `Attestation.site_modules` puts them in every manifest.
+    The gate names are **asked of the site's module table** (each
+    module declares its own `env:` key; the directory comes from
+    `podman-hpc infohpc`), never matched by prefix: CI caught a prefix
+    match recording GitHub's own `ENABLE_RUNNER_TRACING` as a module
+    the host does not have, which is the exact dishonesty the field
+    exists to prevent. Unreadable table ⇒ empty, never a refusal —
+    attestation must not fail a run, the `uv_version` discipline.
     This is the one attestation value not derived from lc's own argv,
     and the docstring says so: the runtime applies them from its own
     environment. A per-module allowlist was rejected — the module table

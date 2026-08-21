@@ -398,8 +398,29 @@ def test_lc_build_on_a_direct_project_says_so(tmp_path: Path, fake: list[list[st
         container.build(plain)
 
 
+def _module_table(tmp_path: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch,
+                  gates: dict[str, str]) -> None:
+    """Stand in for a site's podman-hpc module table: one yaml per module,
+    each declaring its own gate, and `infohpc` pointing at the directory."""
+    modules = tmp_path / "modules.d"
+    modules.mkdir(exist_ok=True)
+    for name, gate in gates.items():
+        (modules / f"{name}.yaml").write_text(f"name: {name}\nenv: {gate}\nbind:\n  - /x:/x\n")
+    inner = project._run
+
+    def run(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["podman-hpc", "infohpc"]:
+            hpc.append(list(argv))
+            return MagicMock(
+                returncode=0, stdout=f"modules_dir (file: modules_dir): {modules}\n", stderr=""
+            )
+        return inner(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", run)
+
+
 def test_the_backend_names_the_site_modules_the_runtime_will_apply(
-    root: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
+    root: Path, tmp_path: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ENABLE_* is left working — it is how a GPU or MPI recipe reaches
     its hardware — so the honesty has to come from naming it. MOUNT_* is
@@ -407,8 +428,13 @@ def test_the_backend_names_the_site_modules_the_runtime_will_apply(
     it, which is why only one family reaches the attestation."""
     monkeypatch.setenv("ENABLE_GPU", "1")
     monkeypatch.setenv("ENABLE_CVMFS", "1")
-    monkeypatch.setenv("ENABLE_UNSET", "")
+    monkeypatch.setenv("ENABLE_MPICH_SS", "")
     monkeypatch.setenv("MOUNT_HOME", "1")
+    _module_table(
+        tmp_path, hpc, monkeypatch,
+        {"gpu": "ENABLE_GPU", "cvmfs": "ENABLE_CVMFS",
+         "mpich": "ENABLE_MPICH_SS", "home": "MOUNT_HOME"},
+    )
     _write_archive(image.archive_path(root, image.tag(root)))
     runtime = container.runtime_for_run(root, build=False)
 
@@ -417,18 +443,50 @@ def test_the_backend_names_the_site_modules_the_runtime_will_apply(
     )
 
     assert attested.site_modules == ("ENABLE_CVMFS", "ENABLE_GPU")
-    assert "MOUNT_HOME" not in attested.site_modules
-    assert "ENABLE_UNSET" not in attested.site_modules
+    assert "MOUNT_HOME" not in attested.site_modules, "scrubbed, so never applied"
+    assert "ENABLE_MPICH_SS" not in attested.site_modules, "set but empty: not enabled"
 
 
-def test_a_runtime_without_a_module_system_names_none(root: Path, fake: list[list[str]],
-                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+def test_only_the_table_s_own_gates_are_named(
+    root: Path, tmp_path: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gates are read from the site's module table, never matched by
+    prefix: GitHub's own ENABLE_RUNNER_TRACING was enough to make a
+    manifest name a module the host does not have."""
+    monkeypatch.setenv("ENABLE_RUNNER_TRACING", "true")
+    monkeypatch.setenv("ENABLE_GPU", "1")
+    _module_table(tmp_path, hpc, monkeypatch, {"gpu": "ENABLE_GPU"})
+
+    assert container.site_modules("podman-hpc", root) == ("ENABLE_GPU",)
+
+
+def test_an_unreadable_module_table_names_nothing_rather_than_refusing(
+    root: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attestation must never fail a run: a probe that cannot answer
+    reports nothing, the same discipline as uv_version."""
+    monkeypatch.setenv("ENABLE_GPU", "1")
+    inner = project._run
+    monkeypatch.setattr(
+        project,
+        "_run",
+        lambda argv, *, cwd: MagicMock(returncode=1, stdout="", stderr="boom")
+        if argv[:2] == ["podman-hpc", "infohpc"]
+        else inner(argv, cwd=cwd),
+    )
+
+    assert container.site_modules("podman-hpc", root) == ()
+
+
+def test_a_runtime_without_a_module_system_names_none(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """podman and docker read no site module table, so an ENABLE_* in the
     environment is inert there and must not imply otherwise."""
     monkeypatch.setenv("ENABLE_GPU", "1")
 
-    assert container.site_modules("podman") == ()
-    assert container.site_modules("docker") == ()
+    assert container.site_modules("podman", root) == ()
+    assert container.site_modules("docker", root) == ()
 
 
 # ---- the containerized converge ---------------------------------------------
