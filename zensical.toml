@@ -14,6 +14,7 @@ nav = [
     {"Welcome" = "user/index.md"},
     {"Install" = "user/install.md"},
     {"Getting Started" = "user/getting-started.md"},
+    {"Core Concepts" = "user/concepts.md"},
     {"Running on a Cluster" = "user/cluster.md"},
     {"Troubleshooting" = "user/troubleshooting.md"},
     {"Glossary" = "user/glossary.md"},
