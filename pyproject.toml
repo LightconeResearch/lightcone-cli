@@ -26,7 +26,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "astra-tools>=0.2.10",
+    # Pinned: astra-tools 0.2.14 made `astra init` idempotent, changing
+    # the callback signature this release's `lc init` delegates to.
+    "astra-tools==0.2.11",
     "click>=8.0",
     "pyyaml>=6.0",
     "rich>=13.0",
@@ -61,8 +63,10 @@ dev = [
 ]
 docs = [
     "zensical>=0.0.33",
+    # squidfunk's mike fork — required by zensical's versioning provider.
+    # Not on PyPI; install from git.
+    "mike @ git+https://github.com/squidfunk/mike.git ; python_version >= '3.10'",
 ]
-
 
 [project.scripts]
 lc = "lightcone.cli:main"

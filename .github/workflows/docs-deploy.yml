@@ -1,28 +1,53 @@
 name: Deploy Docs
 
+# Deploys a versioned snapshot of the docs to the gh-pages branch via
+# mike; GitHub Pages serves that branch as docs.lightconeresearch.org
+# (Settings → Pages must be set to "Deploy from a branch" / gh-pages).
+# Each version lives under its own subdirectory (/0.4.1/, /0.5.0/, …).
+#
+# This is the v0.4 maintenance-branch variant: it deploys the version
+# subdirectory ONLY and never touches the `latest` alias or the site
+# default — `latest` belongs to the newest release series, which main's
+# copy of this workflow maintains. A 0.4.x release published after 0.5
+# must not pull `latest` back to the old series.
+#
+# The site tracks the *released* CLI, not main: deploys happen on the
+# same trigger as the PyPI publish, so the docs never document behavior
+# that `pip install lightcone-cli` can't deliver yet. For an
+# intermediate deploy (typo fix, clarification), trigger manually from
+# the Actions tab — workflow_dispatch runs against the selected ref and
+# redeploys the snapshot for the given version (defaults to the latest
+# tag reachable from that ref).
+
 on:
-  push:
-    branches: [main]
-    paths:
-      - "docs/**"
-      - "zensical.toml"
-      - ".github/workflows/docs-deploy.yml"
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Docs version to (re)deploy, e.g. 0.4.1 (empty: latest tag on the selected ref)"
+        required: false
+        default: ""
 
+# mike commits and pushes to the gh-pages branch.
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
+# Deploys append commits to gh-pages — queue them, never cancel one
+# mid-push.
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: docs-deploy
+  cancel-in-progress: false
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # mike needs the gh-pages branch, and version resolution
+          # needs tags — fetch everything.
+          fetch-depth: 0
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
@@ -33,21 +58,28 @@ jobs:
       - name: Install docs dependencies
         run: uv sync --group docs
 
-      - name: Build docs
-        run: uv run zensical build
+      - name: Resolve docs version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            v="$INPUT_VERSION"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(git describe --tags --abbrev=0)"
+            v="${v#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Deploying docs version $v"
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: site/
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4
+      # No alias, no set-default: a maintenance release never becomes
+      # the site's `latest`.
+      - name: Deploy versioned docs to gh-pages
+        run: uv run mike deploy --push "${{ steps.version.outputs.version }}"

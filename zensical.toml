@@ -72,6 +72,13 @@ nav = [
   {"ASTRA docs" = "https://astra-spec.org/latest/"},
 ]
 
+# Versioning is handled by mike (squidfunk's fork; see the docs
+# dependency group). Each version of the site is deployed as a
+# subdirectory of the gh-pages branch (e.g. /0.4.1/, /latest/).
+# The version picker is rendered natively in the header.
+[project.extra.version]
+provider = "mike"
+
 [project.theme]
 variant = "modern"
 logo = "assets/logo.svg"
