@@ -9,11 +9,13 @@ name: Deploy Docs
 #
 # The site tracks the *released* CLI, not main: deploys happen on the
 # same trigger as the PyPI publish, so the docs never document behavior
-# that `pip install lightcone-cli` can't deliver yet. For an
-# intermediate deploy (typo fix, clarification), trigger manually from
-# the Actions tab — workflow_dispatch runs against the selected ref and
-# redeploys the snapshot for the given version (defaults to the latest
-# tag reachable from that ref).
+# that `pip install lightcone-cli` can't deliver yet. Pre-releases are
+# skipped for the same reason — PyPI hands an rc only to someone who
+# asks for it by name, so the site must keep serving the last full
+# release. For an intermediate deploy (typo fix, clarification),
+# trigger manually from the Actions tab — workflow_dispatch runs
+# against the selected ref and redeploys the snapshot for the given
+# version (defaults to the latest tag reachable from that ref).
 
 on:
   release:
@@ -37,6 +39,9 @@ concurrency:
 
 jobs:
   deploy:
+    # A pre-release deploys nothing. `github.event.release` is null on a
+    # workflow_dispatch run, so the manual path stays unconditional.
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
