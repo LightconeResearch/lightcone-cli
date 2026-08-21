@@ -48,6 +48,12 @@ _PODMAN_FAMILY = ("podman", "podman-hpc")
 #: the multi-node materialize refusal stands on.
 _SHARED_STORE_RUNTIMES = ("podman-hpc",)
 
+#: How many blind removals the squash heal will make against a store it
+#: cannot list. Bounded rather than looped-until-clean: each pass is a
+#: real deletion, and a store still unlistable after this many is not
+#: one more `rmsqi` away from working.
+_HEAL_ATTEMPTS = 3
+
 
 @dataclass(frozen=True)
 class Runtime:
@@ -200,32 +206,56 @@ def _committed(archive: Path) -> bool:
 
 
 def _heal_squash(root: Path, tag: str, image_id: str) -> None:
-    """Remove a stale squashed image before migrating the current one.
+    """Remove stale squashed images before migrating the current one.
 
     The tag is deterministic but builds are not bit-reproducible, so a
     rebuild migrated under an unchanged tag puts a second image with the
     same name into podman-hpc's read-only squash store — after which
     *every* storage operation fails ("read-only image store assigns the
     same name to multiple images"), runs included (measured on
-    Perlmutter). ``rmsqi`` removes only the squashed copy, and the
-    migrate that follows re-squashes the current id. A heal must never
-    break a run whose store is healthy, so a probe outcome it does not
-    recognize is left for migrate's own loud path.
+    Perlmutter). ``rmsqi`` drops only the squashed copy, and the migrate
+    that follows re-squashes the current id.
+
+    Removal is **by id, one call per stale image**: ``rmsqi <tag>``
+    resolves a single record and takes that one, so against the very
+    state this heals — two records sharing a name — it can just as
+    easily take the current image and leave the stale one, re-wedging
+    the store on the next migrate. Only the wedged branch has to spell
+    the tag, because a store that cannot be listed cannot be enumerated;
+    it re-probes so a second stale record is still reached.
+
+    A heal must never break a run whose store is healthy, so a probe
+    outcome it does not recognize is left for migrate's own loud path.
+
+    Recorded hazard: the squash store is shared across a user's nodes
+    and allocations, so removing a stale image drops layers that a run
+    started earlier — under a tag whose id has since moved — may still
+    be executing from. The alternative is leaving the store wedged for
+    every later verb, which breaks that run too; cross-run coordination
+    is not something a heal can offer.
     """
-    probe = project._run(
-        ["podman-hpc", "images", "--format", "{{.Id}} {{.ReadOnly}}", f"localhost/{tag}"],
-        cwd=root,
-    )
-    if probe.returncode == 0:
-        rows = [line.split() for line in probe.stdout.splitlines()]
-        stale = any(
-            len(row) == 2 and row[1] == "true" and row[0] != image_id for row in rows
+    for _ in range(_HEAL_ATTEMPTS):
+        probe = project._run(
+            [
+                "podman-hpc", "images", "--format",
+                "{{.Id}} {{.ReadOnly}}", f"localhost/{tag}",
+            ],  # fmt: skip
+            cwd=root,
         )
-    else:
+        if probe.returncode == 0:
+            rows = [line.split() for line in probe.stdout.splitlines()]
+            stale = {
+                row[0]
+                for row in rows
+                if len(row) == 2 and row[1] == "true" and row[0] != image_id
+            }
+            for victim in sorted(stale):
+                _check_call(["podman-hpc", "rmsqi", victim], cwd=root)
+            return
         # A wedged store fails the listing too, with the same message
         # every other operation gets — the shape a pre-heal lc left.
-        stale = "assigns the same name to multiple images" in probe.stderr
-    if stale:
+        if "assigns the same name to multiple images" not in probe.stderr:
+            return
         _check_call(["podman-hpc", "rmsqi", tag], cwd=root)
 
 
@@ -299,7 +329,39 @@ def backend(runtime: Runtime) -> sandbox.Backend:
         image_id=runtime.image_id,
         root=runtime.root,
         user_flags=(*uid_flags(runtime.runtime), *pull),
+        site_modules=site_modules(runtime.runtime),
     )
+
+
+def site_modules(runtime: str) -> tuple[str, ...]:
+    """Name the site container modules the runtime will apply, if any.
+
+    podman-hpc reads a site's module table
+    (``/etc/podman_hpc/modules.d``) from its own environment, and a
+    module widens the container by more than lc declared: NERSC's
+    ``ENABLE_CVMFS`` binds the whole ``/cvmfs`` hierarchy — reference
+    data a recipe can read without declaring it — and
+    ``ENABLE_MPICH_SS`` adds ``--privileged`` plus the host's network,
+    pid and ipc namespaces. They are left working, because they are how
+    a GPU or MPI recipe reaches the hardware it was written for, and
+    named in the attestation instead, so no manifest claims the mount
+    table was the whole boundary.
+
+    Read from :func:`project.child_env`, which is what the runtime
+    actually receives — the ``MOUNT_*`` gates it scrubs are absent by
+    the time this asks.
+
+    Args:
+        runtime: The resolved runtime's name.
+
+    Returns:
+        The gate names that are set, sorted; empty for a runtime with no
+        module system.
+    """
+    if runtime != "podman-hpc":
+        return ()
+    env = project.child_env()
+    return tuple(sorted(k for k, v in env.items() if k.startswith("ENABLE_") and v))
 
 
 def build(root: Path) -> tuple[Runtime, str]:
@@ -416,7 +478,14 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
     # never runs on the host, so nothing else has created it. Otherwise
     # the first sync of a fresh project dies as the runtime's `statfs`
     # error about a path the user never named.
-    Path(cache).mkdir(parents=True, exist_ok=True)
+    try:
+        Path(cache).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise ProjectError(
+            f"uv's cache directory `{cache}` cannot be created ({e}). It is "
+            "mounted into the image to converge the environment; set "
+            "UV_CACHE_DIR to a writable path and retry."
+        ) from e
     argv = [
         runtime.runtime, "run", "--rm", "--entrypoint", "",
         # Same reason as the exec boundary's flag: SELinux hosts refuse

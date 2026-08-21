@@ -59,14 +59,26 @@ Sources: `src/lightcone/engine/image.py`,
   outside the load branch) and joins `_SHARED_STORE_RUNTIMES`.
   Detection order podman-hpc → podman → docker; docker's daemon is
   probed at detection.
+- **Site container modules are named, not silenced.** `site_modules()`
+  reports the `ENABLE_*` gates set for podman-hpc, which the runtime
+  applies from its own environment: a module can widen the container
+  past the mount table (`ENABLE_CVMFS` binds `/cvmfs`,
+  `ENABLE_MPICH_SS` adds `--privileged` and the host namespaces), so
+  they reach `Attestation.site_modules` and every manifest rather than
+  leaving `fs: declared` to overstate the boundary. `MOUNT_*` never
+  appears there — `project.child_env` scrubs it before the runtime
+  sees it.
 - **A stale squashed image is healed before the load.** The tag is
   deterministic but builds are not bit-reproducible, so a rebuild
   migrated under an unchanged tag would put a second same-named image
   into podman-hpc's read-only squash store — after which every storage
-  operation fails. `_heal_squash` probes the store and `rmsqi`s the
-  stale copy first (before the load, which a wedged store also fails);
-  a probe outcome it does not recognize is left for migrate's own loud
-  path, so the heal can never break a healthy run.
+  operation fails. `_heal_squash` probes the store and `rmsqi`s each
+  stale copy **by id** first (before the load, which a wedged store
+  also fails) — `rmsqi <tag>` resolves only one record and could take
+  the current image instead. A store too wedged to list is removed by
+  tag and re-probed, bounded by `_HEAL_ATTEMPTS`; a probe outcome the
+  heal does not recognize is left for migrate's own loud path, so it
+  can never break a healthy run.
 - **The architecture gate refuses before the load** — a wrong-arch
   `load` succeeds and then dies as `exec format error` deep inside a
   recipe. Ignorance passes; a recorded mismatch refuses, naming the

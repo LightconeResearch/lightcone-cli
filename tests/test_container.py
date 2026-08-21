@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lightcone.engine import container, image, project
+from lightcone.engine import container, image, project, sandbox
 from lightcone.engine.project import ProjectError
 
 _TABLE = '[tool.lightcone.image]\napt-install = ["bc"]\n'
@@ -398,6 +398,39 @@ def test_lc_build_on_a_direct_project_says_so(tmp_path: Path, fake: list[list[st
         container.build(plain)
 
 
+def test_the_backend_names_the_site_modules_the_runtime_will_apply(
+    root: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENABLE_* is left working — it is how a GPU or MPI recipe reaches
+    its hardware — so the honesty has to come from naming it. MOUNT_* is
+    absent by construction: child_env scrubs it before the runtime sees
+    it, which is why only one family reaches the attestation."""
+    monkeypatch.setenv("ENABLE_GPU", "1")
+    monkeypatch.setenv("ENABLE_CVMFS", "1")
+    monkeypatch.setenv("ENABLE_UNSET", "")
+    monkeypatch.setenv("MOUNT_HOME", "1")
+    _write_archive(image.archive_path(root, image.tag(root)))
+    runtime = container.runtime_for_run(root, build=False)
+
+    attested = container.backend(runtime).attest(
+        sandbox.exec_policy(root, containerized=True)
+    )
+
+    assert attested.site_modules == ("ENABLE_CVMFS", "ENABLE_GPU")
+    assert "MOUNT_HOME" not in attested.site_modules
+    assert "ENABLE_UNSET" not in attested.site_modules
+
+
+def test_a_runtime_without_a_module_system_names_none(root: Path, fake: list[list[str]],
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """podman and docker read no site module table, so an ENABLE_* in the
+    environment is inert there and must not imply otherwise."""
+    monkeypatch.setenv("ENABLE_GPU", "1")
+
+    assert container.site_modules("podman") == ()
+    assert container.site_modules("docker") == ()
+
+
 # ---- the containerized converge ---------------------------------------------
 
 
@@ -597,10 +630,37 @@ def test_a_stale_squashed_image_is_removed_before_migrate(
 
     container.runtime_for_run(root, build=False)
 
-    tag = image.tag(root)
-    assert _argvs(hpc, "podman-hpc", "rmsqi") == [["podman-hpc", "rmsqi", tag]]
+    assert _argvs(hpc, "podman-hpc", "rmsqi") == [["podman-hpc", "rmsqi", stale]], (
+        "removal is by id: `rmsqi <tag>` resolves one record and could take "
+        "the current image, leaving the stale one to re-wedge the store"
+    )
     order = [c[1] for c in _argvs(hpc, "podman-hpc") if c[1] in ("images", "rmsqi", "migrate")]
     assert order == ["images", "rmsqi", "migrate"]
+
+
+def test_every_stale_squashed_image_is_removed(
+    root: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`rmsqi` takes one record per call, so a store holding two stale
+    rows needs two — one call would leave the second to re-wedge it."""
+    expected = _write_archive(image.archive_path(root, image.tag(root)))
+    older, newer = "a" * 64, "b" * 64
+    _squash_probe(
+        monkeypatch,
+        hpc,
+        MagicMock(
+            returncode=0,
+            stdout=f"{expected} false\n{older} true\n{newer} true\n",
+            stderr="",
+        ),
+    )
+
+    container.runtime_for_run(root, build=False)
+
+    assert _argvs(hpc, "podman-hpc", "rmsqi") == [
+        ["podman-hpc", "rmsqi", older],
+        ["podman-hpc", "rmsqi", newer],
+    ]
 
 
 def test_a_current_squashed_image_is_left_alone(
@@ -642,7 +702,42 @@ def test_an_already_wedged_store_is_healed(
 ) -> None:
     """A store wedged before the heal existed fails the listing too, with
     the same message every operation gets — that signature is the one
-    probe failure the heal acts on."""
+    probe failure the heal acts on, and it re-probes so the blind
+    removal stops as soon as the store can be read again."""
+    expected = _write_archive(image.archive_path(root, image.tag(root)))
+    wedged = MagicMock(
+        returncode=125,
+        stdout="",
+        stderr="Error: configure storage: read-only image store assigns "
+        "the same name to multiple images",
+    )
+    healthy = MagicMock(returncode=0, stdout=f"{expected} false\n{expected} true\n", stderr="")
+    answers = [wedged, healthy]
+    inner = project._run
+
+    def run(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["podman-hpc", "images"]:
+            hpc.append(list(argv))
+            return answers.pop(0) if answers else healthy
+        return inner(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", run)
+
+    container.runtime_for_run(root, build=False)
+
+    assert _argvs(hpc, "podman-hpc", "rmsqi") == [["podman-hpc", "rmsqi", image.tag(root)]], (
+        "a store that cannot be listed cannot be enumerated, so this one "
+        "branch has to spell the tag — once, because the re-probe then reads"
+    )
+    assert len(_argvs(hpc, "podman-hpc", "images")) == 2
+
+
+def test_a_store_that_never_recovers_stops_rather_than_looping(
+    root: Path, hpc: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each blind pass is a real deletion, so the heal is bounded: a
+    store still unlistable after that is not one more `rmsqi` away from
+    working, and migrate's own refusal is the honest end."""
     _write_archive(image.archive_path(root, image.tag(root)))
     _squash_probe(
         monkeypatch,
@@ -657,7 +752,7 @@ def test_an_already_wedged_store_is_healed(
 
     container.runtime_for_run(root, build=False)
 
-    assert _argvs(hpc, "podman-hpc", "rmsqi") == [["podman-hpc", "rmsqi", image.tag(root)]]
+    assert len(_argvs(hpc, "podman-hpc", "rmsqi")) == container._HEAL_ATTEMPTS
 
 
 def test_podman_hpc_builds_saves_and_migrates(root: Path, hpc: list[list[str]]) -> None:

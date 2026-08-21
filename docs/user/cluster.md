@@ -150,9 +150,15 @@ Perlmutter itself:
   ignored ambient MOUNT_HOME — a site container module would bind-mount undeclared host directories into recipe containers
   ```
 
-  The library gates (`ENABLE_GPU`, `ENABLE_MPICH_SS`, …) survive: a
-  GPU recipe gets CUDA by exporting `ENABLE_GPU=1`, the site's own
-  mechanism.
+  The `ENABLE_*` gates survive, because they are how a GPU or MPI
+  recipe reaches the hardware it was written for — a GPU recipe gets
+  CUDA by exporting `ENABLE_GPU=1`, the site's own mechanism. They are
+  **recorded in the manifest instead**, under
+  `hermeticity.site_modules`, because a module can widen the container
+  well past the mounts `lc` declared: `ENABLE_CVMFS` binds the whole
+  `/cvmfs` hierarchy, and `ENABLE_MPICH_SS` adds `--privileged` plus
+  the host's network, pid and ipc namespaces. If you enable one, the
+  outputs of that run say so.
 
 - **BLAS may be silently throttled.** NERSC's allocation environment
   exports `OMP_NUM_THREADS` (often `2`), and `srun` propagates it into
