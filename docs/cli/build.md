@@ -1,7 +1,9 @@
 # lc build
 
-Build container images declared in `astra.yaml` (or pre-pull registry
-images so `lc run` can use `--pull=never`).
+Build the project's system-layer image, and commit it. Containerized
+projects only — a project containerizes by declaring a
+`[tool.lightcone.image]` table in `pyproject.toml`, and on a direct
+project this verb just says so and exits.
 
 ## Synopsis
 
@@ -9,82 +11,80 @@ images so `lc run` can use `--pull=never`).
 lc build [OPTIONS]
 ```
 
+Idempotent: an image that is already built and committed is left
+alone.
+
+## What the image is
+
+The image is the *system layer* only: the declared base (digest-pinned,
+or the default), the declared apt packages, and the pinned Python
+interpreter. Your analysis environment is not in it — recipes' Python
+packages come from the project's lock, synced into the container at run
+time — and neither is `lc` itself. That is what makes "editing code
+never rebuilds the image" structural: no project file enters the build
+context at all.
+
+The declaration is a closed set of keys, hashed into the image's
+identity:
+
+```toml
+[tool.lightcone.image]
+base = "docker.io/library/debian@sha256:..."   # optional; default pinned by lc
+apt-install = ["libfftw3-dev"]                 # optional
+run-commands = ["curl -L ... | tar xz"]        # optional, the bounded escape
+env = { OMP_NUM_THREADS = "1" }                # optional
+```
+
+## The archive is the store
+
+`lc build` saves the built image into the repository —
+`.datalad/environments/<tag>/image`, a `docker-archive` committed
+through git-annex — so the exact bytes travel with the project: a
+clone obtains them with a fetch, no registry and no credentials
+involved. Execution always pins the image's content *id*, never a tag,
+so nothing can substitute a different image under the same name.
+
+The archive records the architecture it was built for, and a host that
+can't execute that architecture is refused up front — build where the
+architecture matches the machines that will run recipes (on NERSC, a
+login node).
+
+## Requirements
+
+- A clean tree — the image commit must not sweep your staged edits in,
+  and the tag derives from the committed declaration.
+- A build-capable runtime: `podman-hpc`, `podman`, or `docker`
+  (detected in that order; nothing to configure).
+
+`lc materialize` also builds as a preflight when the committed
+declaration has no image yet, announcing it first — `lc build` exists
+so you can pay the minutes when *you* choose to.
+
 ## Options
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `--force` | off | Rebuild / re-pull even if the tag already exists locally. |
-| `--runtime {docker,podman,podman-hpc,kubernetes}` | resolved from `~/.lightcone/config.yaml` | Override the runtime for this build. |
+| `--json` | off | Emit the result as JSON on stdout. |
 
-## What it does
+## The JSON result
 
-For every distinct `container:` value found in the project (root,
-sub-analysis, or recipe-level):
-
-- **Path to a Containerfile** → compute the content-addressed tag
-  `lc-<project>-<sha256[:12]>`, build the image, and (for `podman-hpc`)
-  migrate it into the per-node container cache.
-- **Anything else** (e.g. `python:3.12-slim`, `ghcr.io/foo/bar:tag`) →
-  pull it into the local image store. This is what lets `lc run` pass
-  `--pull=never` to the runtime, sidestepping `unqualified-search-registries`
-  resolution issues with content-addressed tags.
-
-On the `kubernetes` runtime (a lightcone JupyterHub deployment, where
-no local OCI runtime exists) the same command builds through the
-deployment's **GCP Cloud Build** service instead: the staged build
-context is uploaded to the deployment's build bucket and the resulting
-image is pushed as `$LIGHTCONE_REGISTRY/lc-<project>:<sha256[:12]>` —
-the same content-addressed identity, so an unchanged environment is a
-single registry check and no build at all. Pre-built registry images
-are left alone (worker pods pull them directly). Auth is the pod's
-Workload Identity; nothing to configure.
-
-If the runtime is `none` (either by config or because `auto` couldn't
-find one), `lc build` prints a friendly note and exits 0. There is
-nothing to build.
-
-## Tag computation
-
-```text
-lc-<sanitized-project-name>-<sha256[:12]>
+```json
+{
+  "mode": "containerized",
+  "tag": "lc-env-1a2b3c4d5e6f7a8b",
+  "id": "sha256:...",
+  "archive": ".datalad/environments/lc-env-1a2b3c4d5e6f7a8b/image",
+  "action": "built"
+}
 ```
 
-The hash covers the Containerfile contents plus any of these dependency
-files at the project root:
-
-- `requirements.txt`
-- `requirements-dev.txt`
-- `requirements-test.txt`
-- `pyproject.toml`
-- `setup.py`
-- `setup.cfg`
-- `poetry.lock`
-- `Pipfile.lock`
-
-Edit any one of those and the tag changes. That, in turn, changes
-`code_version` in every recipe that uses the image, which marks all
-downstream outputs `stale` in `lc status`.
+`action` is `"built"` when this invocation built and committed the
+image, `"present"` when it was already there. On a direct project the
+result is just `{"mode": "direct"}`.
 
 ## Examples
 
 ```bash
-lc build                       # build / pull whatever's missing
-lc build --force               # rebuild / re-pull everything
-lc build --runtime podman-hpc  # force the HPC runtime
+lc build           # build + commit, or confirm it's already there
+lc build --json    # the machine-readable form
 ```
-
-## Pre-staging for HPC
-
-On a login node:
-
-```bash
-$EDITOR ~/.lightcone/config.yaml      # container.runtime: podman-hpc
-lc build                              # builds + migrates everything
-```
-
-Then submit a SLURM job for `lc run`. The compute nodes will find every
-image already cached.
-
-See [api/container](../api/container.md) for the implementation and
-[Architecture](../architecture.md) for why we wrap recipes ourselves
-instead of using Snakemake's `container:` directive.

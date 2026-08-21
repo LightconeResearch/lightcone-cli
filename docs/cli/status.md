@@ -1,7 +1,10 @@
 # lc status
 
-Manifest-driven status report for every output declared in
-`astra.yaml`.
+Report what state each of the analysis's outputs is in. Reads only: it
+runs nothing, commits nothing, transfers no data, does not mind an
+unclean tree, and always exits `0` — a state is not a failure. The
+moment you most need to know where a project stands is when it isn't
+clean, so this verb works there.
 
 ## Synopsis
 
@@ -9,59 +12,79 @@ Manifest-driven status report for every output declared in
 lc status [OPTIONS]
 ```
 
+## Output
+
+```text
+  mode:    direct
+  sandbox: landlock (fs: declared, network: allowed)
+
+  · current  baseline/fit       a3f1f11
+  · current  baseline/fit_plot  a3f1f11
+  · behind   robust/fit         00cc14e  made under an earlier environment
+  ! stale    robust/fit_plot    —        no manifest — it has never been materialized
+
+2 current · 1 behind · 1 stale
+```
+
+The header is repository facts: which mode the project executes in
+(and, for a containerized project, the image's tag and state), and
+what enforcement a run on this host would get. No runtime and no
+network is needed to answer either.
+
+Then one line per output the spec declares, in dependency order: its
+state, **the commit it was made at**, and — for anything not current —
+why. The commit column is the verb's reason to exist: "which code made
+this?" has an answer for a current output too, and for a `behind`
+output that commit is where the environment that produced it can be
+read back.
+
+## States
+
+- `current` — exactly what the spec asks for. Nothing to do.
+- `behind` — still what the spec asks for; the environment moved since.
+  Left alone by runs; `--refresh` remakes.
+- `stale` — contradicts the project: definition changed, an input's
+  content changed, or the output was edited by hand since it was made
+  (a *foreign write* — the offending commit is named).
+
+## Report vs gate
+
+`lc status` reports; **`lc materialize --check` gates.** Two verbs
+answering the same question with different exit codes is how a script
+comes to depend on the wrong one, so the split is sharp: use status for
+eyes, check for exit codes.
+
 ## Options
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `--universe`, `-u NAME` | every universe in `universes/*.yaml` | Restrict to one universe. |
-| `--json` | off | Emit machine-readable JSON instead of a styled table. |
+| `--json` | off | Emit the report as JSON on stdout. |
 
-## Output
+## The JSON report
 
-Per universe, one line per declared output:
-
-```
-Universe baseline
-  ✓ ok    accuracy
-  ✸ stale precision
-  ✗ miss  recall
-  → alias inference
-```
-
-Statuses (defined in `lightcone.engine.status.StatusLiteral`):
-
-| Status | Meaning | When you see it |
-|--------|---------|-----------------|
-| `ok` | Manifest present, recomputed `code_version` matches what the manifest recorded. | The output is up to date. |
-| `stale` | Manifest present, but `code_version` drifted. | You changed the recipe, image, or a decision since the last run. `lc run` will re-execute. |
-| `missing` | No manifest at the expected output path. | Never built, or the directory was deleted. |
-| `alias` | The output has no `recipe:` of its own — it's just a name pointing at a sibling output (typical for ASTRA "promoted" outputs from sub-analyses). | Status is implicitly determined by the upstream. |
-
-## Why it doesn't import Snakemake
-
-`lc status` reads only the per-output `.lightcone-manifest.json` files
-and recomputes `code_version` against the current spec. It never
-imports Snakemake or touches `.snakemake/`. That makes it usable on:
-
-- A fresh clone before any `lc run`.
-- A frozen archive copied off a cluster.
-- A read-only workspace.
-
-If a manifest is missing, the output reports `missing`. If a manifest is
-unparseable, `read_manifest` returns `None` and you also see `missing`
-— that is the agent-forged-file scenario; investigate with `lc verify`.
-
-## Examples
-
-```bash
-lc status                       # every output, every universe
-lc status --universe baseline   # just baseline
-lc status --json                # machine-readable JSON output
+```json
+{
+  "mode": "direct",
+  "image": null,
+  "sandbox": "landlock (fs: declared, network: allowed)",
+  "counts": {"current": 4, "behind": 0, "stale": 0},
+  "outputs": [
+    {
+      "output": "baseline/fit",
+      "status": "current",
+      "why": "",
+      "git_sha": "a3f1f11791430d1becbe5548477b5910ab59a94a",
+      "data_version": "sha256:939e9a55...",
+      "foreign_write": ""
+    }
+  ],
+  "warnings": []
+}
 ```
 
-## Related
-
-- [`lc verify`](verify.md) — recomputes data hashes too (slower; catches
-  tampering and broken chains).
-- [api/status](../api/status.md) — the Python API.
-- [api/manifest](../api/manifest.md) — the manifest schema.
+Per output: the state, the reason (empty for `current`), the commit it
+was materialized at and its content identity (both empty if it never
+was), and `foreign_write` — the sha of a hand-edit's commit when one
+was detected, which the prose `why` cannot carry for a machine
+consumer. For a containerized project, `image` is
+`{"tag": ..., "state": "present" | "absent" | "unfetched"}`.

@@ -7,21 +7,27 @@ and audit it.
 
 ## Global behavior
 
-- `~/.lightcone/config.yaml` is created automatically on first use of
-  any `lc` command. You do not need to create it manually.
-- All commands except `init` walk up from the cwd looking for
-  `astra.yaml`. If none is found, the command errors out.
+- **The current directory is the project.** Every command except
+  `init` assumes it is invoked from the project root; there is no
+  walk-up and no global configuration. Outside a project, a command
+  errors cleanly.
+- **Nothing waits on a human.** No command prompts or opens an
+  interactive shell — every verb runs to completion on its arguments
+  alone, which is what makes the CLI safe to drive from scripts and
+  agents.
+- **Refusals carry their remedy.** When a command refuses (a dirty
+  tree, a login node, a missing image), the message names the exact
+  command that fixes it.
 
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
-| [`lc init`](init.md) | Scaffold a new ASTRA project (`astra.yaml`, `Containerfile`, `.lightcone/`, MyST report template, optional venv & git). |
-| [`lc run`](run.md) | Generate the Snakefile and dispatch through Snakemake + Dask. |
-| [`lc build`](build.md) | Build container images declared in `astra.yaml`. |
-| [`lc status`](status.md) | Manifest-driven status report. No Snakemake import needed. |
-| [`lc verify`](verify.md) | Recompute hashes, walk the input chain, surface tampering. |
-| [`lc export`](export.md) | Emit interoperable bundles (Workflow Run RO-Crate) for publication. |
+| [`lc init`](init.md) | Converge a directory into a Lightcone project (idempotent). |
+| [`lc materialize`](materialize.md) | Make the analysis's outputs; commit each one as it lands. |
+| [`lc status`](status.md) | Report the state of every output. Reads only; always exits 0. |
+| [`lc run`](run.md) | Run an ad-hoc command in the project environment, under isolation. |
+| [`lc build`](build.md) | Containerized projects: build the image and commit it. |
 
 ## Global options
 
@@ -33,7 +39,15 @@ Options:
   --help     Show this message and exit.
 ```
 
-## Removed commands
+## Exit codes
 
-For historical context: `lc dev`, `lc setup`, `lc target`, and `lc update` no
-longer exist as explicit commands. See the removal pages for details.
+- `0` — the command did what it says.
+- `1` — a refusal or a failure, with the reason on stderr. For
+  `lc materialize --check` and `lc init --check`, exit 1 means "work
+  would be done" — the gate form scripts branch on.
+- `lc run` is a proxy: it exits with the command's own code
+  (`128 + N` for a signal), so pipelines read it exactly as they would
+  the bare command.
+
+Every verb with a report takes `--json` for the machine-readable form;
+each verb's page shows its shape.
