@@ -520,6 +520,11 @@ def test_annex_keys_maps_every_annexed_file_content_present_or_not(repo: Path) -
 
     clone = repo.parent / "clone"
     dataset._git(["clone", "-q", str(repo), str(clone)], cwd=repo.parent)
+    # A clone inherits no local config, and annex init in a *clone* has
+    # remote git-annex branch state to commit — identity required, where
+    # a fresh repo's init tolerates its absence.
+    for key_, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key_, value], cwd=clone)
     dataset.init_annex(clone)
     assert dataset.annex_keys(clone)["results/fit/value.dat"] == key, (
         "keys are repository state, bytes not required"
