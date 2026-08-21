@@ -377,6 +377,8 @@ themselves follow with `git annex get` whenever you actually need them.
 
 ## Where to next
 
+- [Core Concepts](concepts.md) — the model behind what you just did:
+  the three states, the commit discipline, the two execution modes.
 - [Running on a Cluster](cluster.md) — take the same project to SLURM.
 - [Troubleshooting](troubleshooting.md) — when something goes sideways.
 - [Glossary](glossary.md) — terms like universe, decision, and manifest

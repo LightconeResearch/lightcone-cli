@@ -18,6 +18,9 @@ recipe, the decisions, the input data, the environment, and the commit.
   machine or on a cluster.
 - [Getting Started](getting-started.md) — create your first project,
   build it end-to-end, and understand what each piece does.
+- [Core Concepts](concepts.md) — the model behind the tool: what the
+  states mean, why everything is committed, and how the two execution
+  modes differ.
 - [Running on a Cluster](cluster.md) — taking your analysis to a SLURM
   HPC system.
 - [Troubleshooting](troubleshooting.md) — common issues and how to
