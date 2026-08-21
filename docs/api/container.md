@@ -32,8 +32,10 @@ Sources: `src/lightcone/engine/image.py`,
   business, never the image's.
 - **The engine never enters the image.** The container is the
   *recipe's* world: driver, git, annex, and classification stay the
-  host's `lc`; exactly two things run in-image (the sync and each
-  exec, `--network none`).
+  host's `lc`; exactly two things run in-image — the sync and each
+  exec. Network is uncontrolled on every mechanism, symmetrically, and
+  the attestation says so — no consumer may read a promise into
+  "containerized".
 - **No project file enters the build context** — that is what makes
   "code edits never rebuild" structural rather than incidental.
 - **The dataset is the store; runtime stores are caches.** Execution
