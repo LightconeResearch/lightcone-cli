@@ -974,6 +974,36 @@ def test_a_processes_cluster_fits_through_the_seam(
     assert not dataset.status(root)
 
 
+def test_the_scheduler_adapter_releases_each_future_as_it_yields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A future still held at teardown makes the scheduler preserve its
+    key, so retiring workers replicate every key onto each other — all
+    retiring — stall past the reap grace, and get killed: every clean
+    SLURM run ends in "srun: forcing job termination". Releasing as each
+    result lands is what lets the wind-down be silent."""
+    import distributed
+
+    class Fut:
+        released = False
+
+        def release(self) -> None:
+            self.released = True
+
+    futs = [Fut(), Fut()]
+
+    def fake_as_completed(handles: list[Fut], with_results: bool) -> Iterator[tuple[Fut, int]]:
+        return iter((f, i) for i, f in enumerate(handles))
+
+    monkeypatch.setattr(distributed, "as_completed", fake_as_completed)
+
+    seen = []
+    for result in engine._Dask(client=None).completed(list(futs)):
+        assert futs[result].released, "released before its result is handed over"
+        seen.append(result)
+    assert seen == [0, 1]
+
+
 # ---- the report ------------------------------------------------------------
 
 

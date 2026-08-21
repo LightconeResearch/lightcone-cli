@@ -190,6 +190,12 @@ git config --global user.email "ada@example.org"
   refused before the recipe would have died mid-run. Build on a
   matching host (on NERSC, a login node), commit, push, and pull on
   the other side.
+- **"read-only image store assigns the same name to multiple images"**
+  (podman-hpc) — two builds of the same image tag landed in the shared
+  squash store, and podman then refuses every storage operation. `lc`
+  heals this itself before each migrate, so a run clears it; if a
+  store was wedged by something other than `lc`, the manual remedy is
+  `podman-hpc rmsqi <tag>` for the name podman's error names.
 
 ## Filing a bug
 

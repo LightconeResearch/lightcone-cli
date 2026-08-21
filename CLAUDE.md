@@ -788,7 +788,7 @@ annotated: `project.child_env` scrubs ambient `UV_*` outside a plumbing
 allowlist (`_UV_KEPT` — cache dir, link mode, the managed-interpreter
 store and its mirror, timeouts, TLS, air-gap, credentials, uv's own
 recursion guard), and every uv-acting verb names the non-empty
-variables dropped through `project.uv_scrub_warning` — one composer,
+variables dropped through `project.scrub_warning` — one composer,
 one predicate with the scrub: convergence puts it in the report (so
 `lc init` says it), materialize in its warnings, and the probe in its
 outcome's notes, which is why the CLI never composes it (issue #179).
@@ -2140,6 +2140,90 @@ unlinks before writing; a new tampering test should too.
     it genuinely worth it (editing on a login node while an `sbatch`
     materialize runs for hours) arrives with the submission-model
     venue.
+
+- **The NERSC seamlessness pass** (2026-08, post-spike — findings in
+  issue #192):
+  - *The site registry supplies uv's plumbing* — spec §4's row, made
+    real: `child_env` fills unset/empty `UV_CACHE_DIR` and
+    `UV_PYTHON_INSTALL_DIR` from `$SCRATCH/.lightcone/` on a known
+    center (`venue.site_env`; the `_Site` row gained `scratch`).
+    Both move state off a home filesystem measurement found unusable
+    from compute nodes, in two independent ways: `flock` fails there
+    outright (os error 524), killing every uv-touching verb, and an
+    interpreter stored there starts in 0.4–9 s rather than 0.05 s —
+    enough, under load, to exceed uv's own 60 s startup ceiling and
+    fail a sync mid-run with "Python startup timed out". Both are
+    disposable, so a scratch purge costs a re-download, never a
+    result; `_UV_KEPT` already kept both for exactly this story.
+    Per variable, ambient always wins; silent by design — the scrub
+    warning is for user configuration that stopped taking effect, not
+    for a default doing its job. Deterministic in the ambient
+    environment, so every node of an allocation derives the same
+    answer with nothing handed down.
+  - *`MOUNT_*` is scrubbed; `ENABLE_*` is kept and **attested**.*
+    podman-hpc's site modules are env-gated. The mount gates bind
+    `$HOME`/`$SCRATCH`/`$CFS` into every container — undeclared inputs
+    under a manifest attesting `fs: declared` (measured) — so they are
+    dropped, and named by `scrub_warning` (the `uv_scrub_warning`
+    rename). The `ENABLE_*` gates are **not** scrubbed: they are how a
+    GPU or MPI recipe reaches its hardware, and removing them would
+    take a working capability away with no replacement.
+    But the first draft kept them on the stated ground that they bind
+    "system libraries only, never a channel undeclared inputs arrive
+    through", and review measured that false: `ENABLE_CVMFS` binds the
+    whole populated `/cvmfs` hierarchy (reference data a recipe can
+    read undeclared) and `ENABLE_MPICH_SS` adds `--privileged` with the
+    host's network, pid and ipc namespaces — the mount table stops
+    being the boundary at all. Only `ENABLE_GPU`/`ENABLE_NCCL*` fit the
+    original description. So the honesty comes from the record instead:
+    `container.site_modules()` names the set gates, `OCIBackend` carries
+    them as a resolved field (the `user_flags` pattern — `wrap` stays
+    pure), and `Attestation.site_modules` puts them in every manifest.
+    The gate names are **asked of the site's module table** (each
+    module declares its own `env:` key; the directory comes from
+    `podman-hpc infohpc`), never matched by prefix: CI caught a prefix
+    match recording GitHub's own `ENABLE_RUNNER_TRACING` as a module
+    the host does not have, which is the exact dishonesty the field
+    exists to prevent. Unreadable table ⇒ empty, never a refusal —
+    attestation must not fail a run, the `uv_version` discipline.
+    This is the one attestation value not derived from lc's own argv,
+    and the docstring says so: the runtime applies them from its own
+    environment. A per-module allowlist was rejected — the module table
+    is site-configurable, so a center adding a data-binding module lc
+    has never heard of would slip through a hardcoded judgement.
+  - *A stale squashed image is healed before the load.* The tag is
+    deterministic, builds are not bit-reproducible, and podman-hpc's
+    read-only squash store refuses two images under one name — after
+    which *every* storage operation fails (measured: a same-tag
+    rebuild wedged the store for runs, listings, everything).
+    `container._heal_squash` probes and `rmsqi`s the stale copies; an
+    unrecognized probe outcome is left for migrate's own loud path,
+    so the heal cannot break a healthy run. Before the *load*, not
+    just the migrate — a wedged store fails the load too on a node
+    that has not loaded yet. Removal is **by id, one call per stale
+    image**: `rmsqi <tag>` resolves a single record (podman-hpc's
+    `remove_image` → `get_img_info` takes the first name match), so
+    against the very state being healed it can take the *current*
+    image and leave the stale one to re-wedge the store on the next
+    migrate. Only the wedged branch spells the tag — a store that
+    cannot be listed cannot be enumerated — and it re-probes, bounded
+    by `_HEAL_ATTEMPTS`, because each blind pass is a real deletion.
+    Recorded hazard, accepted: the squash store is shared across a
+    user's nodes and allocations, so a heal can drop layers an
+    earlier run is still executing from. Leaving the store wedged
+    breaks that run too, and cross-run coordination is not something
+    a heal can offer.
+  - *The driver releases each future as its result is consumed*
+    (`_Dask.completed`). A key still client-held at teardown makes
+    `retire_workers` replicate it onto peers that are also retiring —
+    every clean SLURM run stalled past the reap grace and ended in
+    "srun: forcing job termination" / "task Killed" / lose-tasks
+    warnings (measured, and measured gone: the fix cut a clean 2-node
+    run by the full escalation grace). Warnings on an *unclean* path
+    still fire, honestly.
+  - The downgrade note now names the LSM list first — Perlmutter's
+    kernels are 6.4 with Landlock simply absent from the boot list,
+    so "kernel < 5.13" was three causes none of which applied.
 
 ### Recorded deviations from the spec
 

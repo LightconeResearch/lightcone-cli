@@ -48,6 +48,12 @@ _PODMAN_FAMILY = ("podman", "podman-hpc")
 #: the multi-node materialize refusal stands on.
 _SHARED_STORE_RUNTIMES = ("podman-hpc",)
 
+#: How many blind removals the squash heal will make against a store it
+#: cannot list. Bounded rather than looped-until-clean: each pass is a
+#: real deletion, and a store still unlistable after this many is not
+#: one more `rmsqi` away from working.
+_HEAL_ATTEMPTS = 3
+
 
 @dataclass(frozen=True)
 class Runtime:
@@ -134,6 +140,11 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
     _fetch(root, archive)
     image_id, arch = archive_identity(archive)
     _require_arch(root, archive, arch)  # before the load — see its docstring
+    if name == "podman-hpc":
+        # Before the load, not just the migrate: a wedged squash store
+        # (see _heal_squash) fails the load too, on a node whose local
+        # store does not hold the image yet.
+        _heal_squash(root, tag, image_id)
     if not _loaded(root, name, image_id):
         _check_call([name, "load", "-i", str(archive)], cwd=root)
     if name == "podman-hpc":
@@ -192,6 +203,60 @@ def _committed(archive: Path) -> bool:
     and tells the user to rebuild an image the repository already has.
     """
     return archive.exists() or archive.is_symlink()
+
+
+def _heal_squash(root: Path, tag: str, image_id: str) -> None:
+    """Remove stale squashed images before migrating the current one.
+
+    The tag is deterministic but builds are not bit-reproducible, so a
+    rebuild migrated under an unchanged tag puts a second image with the
+    same name into podman-hpc's read-only squash store — after which
+    *every* storage operation fails ("read-only image store assigns the
+    same name to multiple images"), runs included (measured on
+    Perlmutter). ``rmsqi`` drops only the squashed copy, and the migrate
+    that follows re-squashes the current id.
+
+    Removal is **by id, one call per stale image**: ``rmsqi <tag>``
+    resolves a single record and takes that one, so against the very
+    state this heals — two records sharing a name — it can just as
+    easily take the current image and leave the stale one, re-wedging
+    the store on the next migrate. Only the wedged branch has to spell
+    the tag, because a store that cannot be listed cannot be enumerated;
+    it re-probes so a second stale record is still reached.
+
+    A heal must never break a run whose store is healthy, so a probe
+    outcome it does not recognize is left for migrate's own loud path.
+
+    Recorded hazard: the squash store is shared across a user's nodes
+    and allocations, so removing a stale image drops layers that a run
+    started earlier — under a tag whose id has since moved — may still
+    be executing from. The alternative is leaving the store wedged for
+    every later verb, which breaks that run too; cross-run coordination
+    is not something a heal can offer.
+    """
+    for _ in range(_HEAL_ATTEMPTS):
+        probe = project._run(
+            [
+                "podman-hpc", "images", "--format",
+                "{{.Id}} {{.ReadOnly}}", f"localhost/{tag}",
+            ],  # fmt: skip
+            cwd=root,
+        )
+        if probe.returncode == 0:
+            rows = [line.split() for line in probe.stdout.splitlines()]
+            stale = {
+                row[0]
+                for row in rows
+                if len(row) == 2 and row[1] == "true" and row[0] != image_id
+            }
+            for victim in sorted(stale):
+                _check_call(["podman-hpc", "rmsqi", victim], cwd=root)
+            return
+        # A wedged store fails the listing too, with the same message
+        # every other operation gets — the shape a pre-heal lc left.
+        if "assigns the same name to multiple images" not in probe.stderr:
+            return
+        _check_call(["podman-hpc", "rmsqi", tag], cwd=root)
 
 
 def runtime_name(root: Path) -> str:
@@ -264,7 +329,62 @@ def backend(runtime: Runtime) -> sandbox.Backend:
         image_id=runtime.image_id,
         root=runtime.root,
         user_flags=(*uid_flags(runtime.runtime), *pull),
+        site_modules=site_modules(runtime.runtime, runtime.root),
     )
+
+
+def site_modules(runtime: str, root: Path) -> tuple[str, ...]:
+    """Name the site container modules the runtime will apply, if any.
+
+    podman-hpc reads a site's module table from its own environment, and
+    a module widens the container by more than lc declared: NERSC's
+    ``ENABLE_CVMFS`` binds the whole ``/cvmfs`` hierarchy — reference
+    data a recipe can read without declaring it — and
+    ``ENABLE_MPICH_SS`` adds ``--privileged`` plus the host's network,
+    pid and ipc namespaces. They are left working, because they are how
+    a GPU or MPI recipe reaches the hardware it was written for, and
+    named in the attestation instead, so no manifest claims the mount
+    table was the whole boundary.
+
+    The table is **asked for, never guessed**: each module declares its
+    own gate in an ``env:`` key, and the directory holding them comes
+    from ``podman-hpc infohpc`` (a site can move it). Matching a
+    ``MOUNT_``/``ENABLE_`` prefix instead would record any passing
+    variable that happens to share it — GitHub's ``ENABLE_RUNNER_TRACING``
+    was enough to make a manifest name a module the host does not
+    have, which is the opposite of what the field is for.
+
+    The environment consulted is :func:`project.child_env`, what the
+    runtime actually receives — so the ``MOUNT_*`` gates scrubbed there
+    are already gone and cannot be reported as applied.
+
+    Args:
+        runtime: The resolved runtime's name.
+        root: The project root, for the probe's working directory.
+
+    Returns:
+        The gate names that are set, sorted; empty for a runtime with no
+        module system, and empty rather than a refusal when the table
+        cannot be read — attestation must not fail a run.
+    """
+    if runtime != "podman-hpc":
+        return ()
+    info = project._run(["podman-hpc", "infohpc"], cwd=root)
+    # Greedy up to the *last* colon: the line reads
+    # `modules_dir (file: modules_dir): /etc/podman_hpc/modules.d`.
+    found = re.search(r"^modules_dir.*:\s*(\S+)\s*$", info.stdout, re.MULTILINE)
+    if info.returncode != 0 or not found:
+        return ()
+    gates = set()
+    for module in sorted(Path(found.group(1)).glob("*.yaml")):
+        try:
+            text = module.read_text()
+        except OSError:
+            continue
+        if gate := re.search(r"^env:\s*(\S+)", text, re.MULTILINE):
+            gates.add(gate.group(1))
+    env = project.child_env()
+    return tuple(sorted(g for g in gates if env.get(g)))
 
 
 def build(root: Path) -> tuple[Runtime, str]:
@@ -377,6 +497,18 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
     if asked.returncode != 0:
         raise ProjectError(f"`uv cache dir` failed:\n{asked.stderr.strip()}")
     cache = asked.stdout.strip()
+    # A bind mount's source must exist — and in containerized mode uv
+    # never runs on the host, so nothing else has created it. Otherwise
+    # the first sync of a fresh project dies as the runtime's `statfs`
+    # error about a path the user never named.
+    try:
+        Path(cache).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise ProjectError(
+            f"uv's cache directory `{cache}` cannot be created ({e}). It is "
+            "mounted into the image to converge the environment; set "
+            "UV_CACHE_DIR to a writable path and retry."
+        ) from e
     argv = [
         runtime.runtime, "run", "--rm", "--entrypoint", "",
         # Same reason as the exec boundary's flag: SELinux hosts refuse

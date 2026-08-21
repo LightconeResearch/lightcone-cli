@@ -66,6 +66,12 @@ class _Site:
     salloc: str
     #: The batch form of the same request; the guard appends ``--wrap``.
     sbatch: str
+    #: The environment variable naming the center's per-user scratch
+    #: root, which is where uv's disposable state has to live when the
+    #: center's home filesystem is unusable from compute nodes (see
+    #: :func:`site_env`). ``None`` for a center whose home works
+    #: everywhere.
+    scratch: str | None = None
 
 
 #: The centers the guard knows. Supporting another is one row here —
@@ -77,8 +83,43 @@ _SITES = (
         marker="NERSC_HOST",
         salloc="salloc --nodes=1 --constraint=cpu --qos=interactive --time=02:00:00",
         sbatch="sbatch --nodes=1 --constraint=cpu --qos=regular --time=02:00:00",
+        scratch="SCRATCH",
     ),
 )
+
+
+def site_env() -> dict[str, str]:
+    """The uv plumbing a known center's filesystems require.
+
+    Both entries move state off the center's home filesystem, which is
+    the one thing measurement said is unusable from its compute nodes —
+    and both are disposable by design, so scratch purge policies cost a
+    re-download rather than a result:
+
+    * ``UV_CACHE_DIR`` — home cannot take uv's cache lock at all
+      (measured on Perlmutter: ``flock`` fails with os error 524), so
+      every uv-touching verb dies without this.
+    * ``UV_PYTHON_INSTALL_DIR`` — an interpreter on home starts in
+      0.4–9 s rather than 0.05 s (measured, same node), which under
+      load exceeds uv's own 60 s startup ceiling and fails a sync
+      mid-run with "Python startup timed out".
+
+    Paths are derived, never configured, and the caller applies each
+    only where the user has not set that variable themselves.
+
+    Returns:
+        The variables to supply, empty off a known center or where its
+        scratch variable is unset.
+    """
+    for site in _SITES:
+        if site.marker in os.environ and site.scratch:
+            if root := os.environ.get(site.scratch):
+                base = os.path.join(root, ".lightcone")
+                return {
+                    "UV_CACHE_DIR": os.path.join(base, "uv-cache"),
+                    "UV_PYTHON_INSTALL_DIR": os.path.join(base, "uv-python"),
+                }
+    return {}
 
 
 def require_compute_node(command: str = "lc materialize") -> None:

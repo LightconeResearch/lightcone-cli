@@ -17,7 +17,7 @@ Source: `src/lightcone/engine/venue.py` (consumed by
 | `slurm_client()` | The allocation branch: a scheduler in the driver process bound to `SLURMD_NODENAME`, one `srun --overlap` launching a worker per node on `sys.executable`. |
 | `require_compute_node(command)` | The login guard: refuses iff a known center's marker is set and `SLURM_JOB_ID` is not, printing that center's own `salloc`/`sbatch` spellings. |
 | `allocation_nodes()` | How many nodes the allocation holds; 0 outside one. |
-| `_SITES` | One row per known center — name, marker, remedies, **verified against the center's documentation, never guessed**. NERSC is the seeded row. |
+| `_SITES` | One row per known center — name, marker, remedies, and the scratch variable that hosts uv's cache and interpreter store where home cannot (`site_env`, consumed by `project.child_env`), **verified against the center's documentation, never guessed**. NERSC is the seeded row. |
 
 ## What must stay true
 

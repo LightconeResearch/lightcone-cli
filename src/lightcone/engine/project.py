@@ -198,7 +198,7 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     require_git_annex()
 
     c = _Converger(write=write)
-    if warning := uv_scrub_warning():
+    if warning := scrub_warning():
         c.warn(warning)
 
     if write:
@@ -752,33 +752,65 @@ def _uv_scrubbed(name: str) -> bool:
     )
 
 
+def _mount_scrubbed(name: str) -> bool:
+    """Decide whether one ambient variable is dropped by the mount scrub.
+
+    podman-hpc's site modules are gated on ambient environment variables
+    (``/etc/podman_hpc/modules.d``), and the ``MOUNT_*`` family
+    (``MOUNT_HOME``, ``MOUNT_SCRATCH``, ``MOUNT_CFS`` at NERSC)
+    bind-mounts host trees into every container the runtime launches —
+    undeclared inputs arriving under a manifest that attests
+    ``fs: declared``. ``ENABLE_*`` is deliberately kept: those modules
+    bind CUDA and MPI system libraries, the same generosity class as the
+    ``/dev`` and ``/sys`` grants, and none is a channel undeclared
+    inputs arrive through.
+    """
+    return name.startswith("MOUNT_")
+
+
 def child_env() -> dict[str, str]:
     """Build the environment external tools run in.
 
-    Ours, minus ``VIRTUAL_ENV`` and minus every ``UV_*`` variable outside
-    the :data:`_UV_KEPT` plumbing allowlist. Every uv invocation names its
-    project explicitly, so an activated environment elsewhere is never
-    what we mean — and an ambient install setting would change what a
-    sync installs without moving ``env_version``, which is the identity
-    hole the scrub closes.
+    Ours, minus ``VIRTUAL_ENV``, minus every ``UV_*`` variable outside
+    the :data:`_UV_KEPT` plumbing allowlist, and minus ``MOUNT_*`` (a
+    site container module's mount gates — see :func:`_mount_scrubbed`).
+    Every uv invocation names its project explicitly, so an activated
+    environment elsewhere is never what we mean — and an ambient install
+    setting would change what a sync installs without moving
+    ``env_version``, which is the identity hole the scrub closes.
+
+    On a known center, the uv plumbing whose home-filesystem default is
+    unusable from compute nodes is supplied from the center's scratch
+    root (:func:`venue.site_env`) — per variable, and only where the
+    user set none, so an ambient value always wins. The rule is
+    deterministic in the ambient environment, so every node of an
+    allocation derives the same answer with nothing handed down.
 
     Returns:
-        The current environment without ``VIRTUAL_ENV`` or scrubbed ``UV_*``.
+        The current environment, scrubbed, with the site plumbing
+        supplied.
     """
-    return {
+    env = {
         k: v
         for k, v in os.environ.items()
-        if k != "VIRTUAL_ENV" and not _uv_scrubbed(k)
+        if k != "VIRTUAL_ENV" and not _uv_scrubbed(k) and not _mount_scrubbed(k)
     }
+    # Function-local: venue imports ProjectError from this module.
+    from lightcone.engine import venue
+
+    for name, value in venue.site_env().items():
+        if not env.get(name):
+            env[name] = value
+    return env
 
 
-def uv_scrub_warning() -> str:
+def scrub_warning() -> str:
     """Compose the dropped-ambient-variables warning, once for every verb.
 
     A user whose ``UV_PYTHON`` or ``UV_INDEX_URL`` stopped steering uv
     deserves a pointer to why on *whichever* verb they hit first —
     ``lc init`` resolving against the wrong index fails with uv's raw
-    error otherwise. One spelling here, and one predicate with
+    error otherwise. One spelling here, and one predicate per scrub with
     :func:`child_env`, so the verbs cannot drift from each other or the
     report from the scrub. Empty variables steer nothing and are not
     reported.
@@ -786,13 +818,20 @@ def uv_scrub_warning() -> str:
     Returns:
         The warning, or ``""`` when nothing non-empty was dropped.
     """
+    clauses = []
     if dropped := sorted(k for k, v in os.environ.items() if v and _uv_scrubbed(k)):
-        return (
+        clauses.append(
             f"ignored ambient {', '.join(dropped)} — an install setting is "
             "the project's to declare (pyproject.toml), and an ambient one "
             "would steer uv without moving env_version"
         )
-    return ""
+    if mounts := sorted(k for k, v in os.environ.items() if v and _mount_scrubbed(k)):
+        clauses.append(
+            f"ignored ambient {', '.join(mounts)} — a site container module "
+            "would bind-mount undeclared host directories into recipe "
+            "containers"
+        )
+    return "; ".join(clauses)
 
 
 def uv_version(directory: Path) -> str:

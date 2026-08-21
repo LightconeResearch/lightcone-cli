@@ -15,7 +15,7 @@ Source: `src/lightcone/engine/materialize.py`.
 | `check(root, targets, *, refresh)` | The same classification without executing, committing, or fetching. Exempt from the dirty refusal. |
 | `status(root)` | The report: every output's state and provenance commit, plus the mode/image/sandbox header facts. |
 | `MaterializeReport` / `StatusReport` | The JSON surfaces; `ok` and `up_to_date` first. |
-| `cluster_for_run()` | The venue ladder, and the two-method scheduler seam (`submit`, `completed`). |
+| `cluster_for_run()` | The venue ladder, and the two-method scheduler seam (`submit`, `completed`). `completed` releases each future as its result lands — a key still held at teardown makes the scheduler fight worker retirement, and every clean SLURM run ends in "srun: forcing job termination". |
 | `run_record(...)` / `datalad_run_subject(...)` | The commit message `datalad rerun` replays, and the one spelling of its subject line — shared with the foreign-write comparator, because two strings here would drift. |
 | `_engine_requirement()` | How a record pins its engine: by version for a release, by source commit (hatch-vcs) for a dev build. |
 

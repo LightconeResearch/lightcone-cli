@@ -215,6 +215,27 @@ def test_the_attestation_is_derived_from_the_flags(root: Path, policy: Policy) -
         assert attested.fs == "declared"
         assert attested.network == "allowed"
         assert attested.landlock_abi is None
+        assert attested.site_modules == ()
+
+
+def test_site_modules_are_named_in_the_attestation(root: Path, policy: Policy) -> None:
+    """A site module widens the container past the mount table — NERSC's
+    ENABLE_CVMFS binds the whole /cvmfs hierarchy, ENABLE_MPICH_SS adds
+    --privileged and the host namespaces — so `fs: declared` alone would
+    overstate what bounded the run. They stay working and get named."""
+    from lightcone.engine.sandbox.oci import OCIBackend
+
+    backend = OCIBackend(
+        runtime="podman-hpc",
+        image_id="a" * 64,
+        root=root,
+        site_modules=("ENABLE_CVMFS", "ENABLE_GPU"),
+    )
+
+    attested = backend.attest(policy)
+
+    assert attested.site_modules == ("ENABLE_CVMFS", "ENABLE_GPU")
+    assert attested.fs == "declared", "the mount table is still what lc composed"
 
 
 # ---- the seam's composition -------------------------------------------------

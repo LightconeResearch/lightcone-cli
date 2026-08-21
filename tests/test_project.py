@@ -771,7 +771,7 @@ def test_ambient_uv_install_settings_are_scrubbed(
     come from and how fast, never what gets installed."""
     import os
 
-    from lightcone.engine.project import child_env, uv_scrub_warning
+    from lightcone.engine.project import child_env, scrub_warning
 
     for name in [k for k in os.environ if k.startswith("UV_")]:
         monkeypatch.delenv(name)  # the suite itself may run under `uv run`
@@ -797,7 +797,7 @@ def test_ambient_uv_install_settings_are_scrubbed(
     )
     assert env["UV_LINK_MODE"] == "copy", "link-mode is not an audited setting either"
     assert env["LC_TEST_CANARY"] == "kept"
-    assert "UV_INDEX_URL, UV_NO_BINARY, UV_PYTHON" in uv_scrub_warning(), (
+    assert "UV_INDEX_URL, UV_NO_BINARY, UV_PYTHON" in scrub_warning(), (
         "the warning names exactly what the scrub dropped"
     )
 
@@ -819,10 +819,84 @@ def test_an_empty_scrubbed_variable_is_not_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An empty variable steers nothing, so warning about it is noise."""
-    from lightcone.engine.project import uv_scrub_warning
+    from lightcone.engine.project import scrub_warning
 
     monkeypatch.setenv("UV_NO_BUILD", "")
-    assert "UV_NO_BUILD" not in uv_scrub_warning()
+    monkeypatch.setenv("MOUNT_X", "")
+    warning = scrub_warning()
+    assert "UV_NO_BUILD" not in warning
+    assert "MOUNT_X" not in warning
+
+
+def test_ambient_site_mount_gates_are_scrubbed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A site container module's MOUNT_* gate would bind-mount undeclared
+    host directories into every recipe container while the manifest
+    attests `fs: declared`. ENABLE_* survives: those modules bind CUDA
+    and MPI system libraries — the /dev,/sys generosity class, not a
+    channel undeclared inputs arrive through."""
+    from lightcone.engine.project import child_env, scrub_warning
+
+    monkeypatch.setenv("MOUNT_CFS", "1")
+    monkeypatch.setenv("ENABLE_GPU", "1")
+
+    env = child_env()
+    assert "MOUNT_CFS" not in env
+    assert env["ENABLE_GPU"] == "1", "the GPU module gate is deliberately kept"
+    assert "MOUNT_CFS" in scrub_warning(), "the warning names the dropped gate"
+
+
+def test_a_known_site_supplies_its_uv_plumbing_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The center's home filesystem is unusable from compute nodes — it
+    cannot take uv's cache lock at all, and an interpreter there starts
+    slowly enough to blow uv's own timeout — so both land on scratch,
+    deterministically in the ambient environment, which is what lets
+    every node of an allocation derive the same answer."""
+    from lightcone.engine.project import child_env
+
+    monkeypatch.setenv("NERSC_HOST", "perlmutter")
+    monkeypatch.setenv("SCRATCH", "/pscratch/sd/u/user")
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising=False)
+
+    env = child_env()
+    assert env["UV_CACHE_DIR"] == "/pscratch/sd/u/user/.lightcone/uv-cache"
+    assert env["UV_PYTHON_INSTALL_DIR"] == "/pscratch/sd/u/user/.lightcone/uv-python"
+
+
+def test_ambient_uv_plumbing_wins_over_the_site_supply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """These locations are the user's plumbing to choose; the site
+    default fills silence, never overrides a voice — and per variable,
+    so setting one does not suppress the other."""
+    from lightcone.engine.project import child_env
+
+    monkeypatch.setenv("NERSC_HOST", "perlmutter")
+    monkeypatch.setenv("SCRATCH", "/pscratch/sd/u/user")
+    monkeypatch.setenv("UV_CACHE_DIR", "/pscratch/sd/u/user/custom")
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising=False)
+
+    env = child_env()
+    assert env["UV_CACHE_DIR"] == "/pscratch/sd/u/user/custom"
+    assert env["UV_PYTHON_INSTALL_DIR"] == "/pscratch/sd/u/user/.lightcone/uv-python"
+
+
+def test_no_site_means_no_supply(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Off a known center — or on one whose scratch variable is absent —
+    uv's own defaults stand."""
+    from lightcone.engine.project import child_env
+
+    monkeypatch.setenv("SCRATCH", "/pscratch/sd/u/user")  # scratch alone: no
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    assert "UV_CACHE_DIR" not in child_env()
+
+    monkeypatch.setenv("NERSC_HOST", "perlmutter")  # marker without scratch: no
+    monkeypatch.delenv("SCRATCH")
+    assert "UV_CACHE_DIR" not in child_env()
 
 
 def test_relays_uv_warnings_into_the_report(

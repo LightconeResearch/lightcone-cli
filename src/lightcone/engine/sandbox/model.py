@@ -98,6 +98,15 @@ class Attestation:
     network: Literal["allowed", "denied"] = "allowed"
     landlock_abi: int | None = None
     exec_allowlist_version: int | None = None
+    #: Site container modules the runtime applied on top of the mount
+    #: table, named by the gates that enabled them. A module widens the
+    #: world by more than lc declared — NERSC's ``ENABLE_CVMFS`` binds
+    #: the whole ``/cvmfs`` hierarchy, ``ENABLE_MPICH_SS`` adds
+    #: ``--privileged`` and the host's network, pid and ipc namespaces —
+    #: so ``fs: declared`` alone would overstate what was enforced.
+    #: Naming them is what keeps the record honest while leaving the
+    #: site's own GPU and MPI mechanisms working.
+    site_modules: tuple[str, ...] = ()
 
 
 class Backend(Protocol):

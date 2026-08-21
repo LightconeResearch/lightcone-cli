@@ -46,6 +46,13 @@ class OCIBackend:
     #: resolved by the caller so the wrap stays a pure function of its
     #: fields (``--userns=keep-id`` / ``--user uid:gid``).
     user_flags: tuple[str, ...] = ()
+    #: Site container modules this runtime will apply on top of the
+    #: mount table, named by the gates that enable them. Resolved by the
+    #: caller, like ``user_flags``, because the runtime reads them from
+    #: its own environment and the wrap stays a pure function of its
+    #: fields. Reported by :meth:`attest`, never acted on here — a
+    #: module is the site's mechanism, applied by the runtime itself.
+    site_modules: tuple[str, ...] = ()
     contains_prefix: bool = True
 
     @property
@@ -116,6 +123,12 @@ class OCIBackend:
         every mechanism gives, because lc does not control the network
         anywhere and the attestation says only what was enforced.
 
+        The exception is :attr:`site_modules`, which the *runtime*
+        applies from its own environment rather than from this argv.
+        They are named rather than silently dropped: a module can widen
+        the world well past the mount table, so a record saying only
+        ``fs: declared`` would overstate what bounded the run.
+
         Args:
             policy: The policy being wrapped.
 
@@ -125,4 +138,5 @@ class OCIBackend:
         return Attestation(
             mechanism=self.runtime,
             fs="declared",
+            site_modules=self.site_modules,
         )

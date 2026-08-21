@@ -19,6 +19,7 @@ Source: `src/lightcone/engine/project.py` (+
 | `uv_prefix(root, *, sync)` | The one spelling of the project uv hop. Callers differ only in `sync`: a probe converges the environment, a recipe must not. |
 | `project_name(dir)` | PEP 503-ish name from the directory name. |
 | `_run` / `_check_call` | Every external tool invocation, and the suite's one monkeypatch point. |
+| `child_env()` / `scrub_warning()` | The one composer of the environment external tools run in: drops `VIRTUAL_ENV`, ambient `UV_*` outside the `_UV_KEPT` plumbing allowlist, and `MOUNT_*` (a site container module's mount gates); supplies a known center's uv plumbing (`UV_CACHE_DIR`, `UV_PYTHON_INSTALL_DIR`) from its scratch root where unset (`venue.site_env`). The warning names every non-empty variable dropped. |
 | `ProjectError` | The engine's one exception; the CLI translates it once. |
 
 ## What must stay true

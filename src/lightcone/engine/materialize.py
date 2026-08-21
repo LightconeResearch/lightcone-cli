@@ -493,7 +493,7 @@ def materialize(
     project.require_git_annex()
     dataset.require_committer(root)
     report = MaterializeReport()
-    if warning := project.uv_scrub_warning():
+    if warning := project.scrub_warning():
         report.warnings.append(warning)
     # The dirty check comes before anything that writes: the image
     # converge below *commits*, and `dataset.save` stages scoped but
@@ -698,7 +698,16 @@ class _Dask:
         # annotated rather than the module exempted.
         from distributed import as_completed
 
-        for _, result in as_completed(handles, with_results=True):  # type: ignore[no-untyped-call]
+        for fut, result in as_completed(handles, with_results=True):  # type: ignore[no-untyped-call]
+            # Released the moment its result is local: a future still
+            # held at teardown makes the scheduler preserve its key —
+            # retiring workers then replicate every key onto each other
+            # (all retiring), stall past the reap grace, and get killed,
+            # ending every clean SLURM run in "srun: forcing job
+            # termination". A dependent's claim on the data is
+            # scheduler-side and unaffected; an abort mid-loop still
+            # holds the rest, and warnings on an unclean path are honest.
+            fut.release()
             yield result
 
 

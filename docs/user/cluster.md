@@ -106,6 +106,70 @@ know:
   refuses a multi-node containerized run unless the runtime is
   `podman-hpc`. Single-node allocations work with any runtime.
 
+## NERSC (Perlmutter) specifics
+
+Facts of the site that shape how `lc` behaves there — all verified on
+Perlmutter itself:
+
+- **uv's cache and interpreters are put on scratch for you.** The
+  home filesystem is unusable from compute nodes in two separate ways:
+  it cannot take uv's cache lock at all (`flock` fails with os error
+  524), and an interpreter stored there starts in 0.4-9 s instead of
+  0.05 s, slow enough under load to exceed uv's own 60 s startup
+  ceiling and fail a sync mid-run. So on NERSC machines `lc` runs uv
+  with `UV_CACHE_DIR=$SCRATCH/.lightcone/uv-cache` and
+  `UV_PYTHON_INSTALL_DIR=$SCRATCH/.lightcone/uv-python` — each only
+  where you have not set that variable yourself:
+
+  ```bash
+  export UV_CACHE_DIR=$SCRATCH/my-uv-cache   # optional; this wins
+  ```
+
+  Both are disposable by design, so scratch purge policies cost a
+  re-download rather than a result.
+
+- **The sandbox does not enforce here.** Perlmutter's kernels boot
+  without Landlock in the LSM list, so direct-mode recipes run
+  unconfined and every run says so:
+
+  ```text
+  not sandboxed on this host — landlock unavailable (not in the kernel's boot-time LSM list, kernel < 5.13, blocked by seccomp, or unsupported arch); recorded as `fs: open`
+  ```
+
+  Manifests record `fs: open` honestly. A containerized project is
+  the real boundary on this site: recipes see only the declared mount
+  table, attested as `fs: declared`.
+
+- **`MOUNT_*` is ignored; `ENABLE_*` passes through.** podman-hpc's
+  site modules are switched by environment variables. The mount gates
+  (`MOUNT_HOME`, `MOUNT_SCRATCH`, `MOUNT_CFS`) would bind-mount those
+  filesystems into every recipe container — undeclared inputs under a
+  manifest attesting `fs: declared` — so `lc` drops them and says so:
+
+  ```text
+  ignored ambient MOUNT_HOME — a site container module would bind-mount undeclared host directories into recipe containers
+  ```
+
+  The `ENABLE_*` gates survive, because they are how a GPU or MPI
+  recipe reaches the hardware it was written for — a GPU recipe gets
+  CUDA by exporting `ENABLE_GPU=1`, the site's own mechanism. They are
+  **recorded in the manifest instead**, under
+  `hermeticity.site_modules`, because a module can widen the container
+  well past the mounts `lc` declared: `ENABLE_CVMFS` binds the whole
+  `/cvmfs` hierarchy, and `ENABLE_MPICH_SS` adds `--privileged` plus
+  the host's network, pid and ipc namespaces. If you enable one, the
+  outputs of that run say so.
+
+- **BLAS may be silently throttled.** NERSC's allocation environment
+  exports `OMP_NUM_THREADS` (often `2`), and `srun` propagates it into
+  every step — so numpy or BLAS inside a recipe uses 2 of the node's
+  256 hardware threads unless you say otherwise. `lc` does not touch
+  the variable; set it yourself before materializing:
+
+  ```bash
+  export OMP_NUM_THREADS=32   # or whatever your recipe's math wants
+  ```
+
 ## Data on parallel filesystems
 
 Keep active projects on the filesystem your center recommends for job
