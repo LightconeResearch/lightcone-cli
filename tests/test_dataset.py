@@ -231,6 +231,35 @@ def test_a_locked_file_without_its_content_is_refused_too(repo: Path) -> None:
 # ---- committing ------------------------------------------------------------
 
 
+def test_save_leaves_foreign_staged_work_staged_and_uncommitted(repo: Path) -> None:
+    """The user can `git add` while a graph runs; the next save must not
+    sweep it. The commit is a partial commit — built from HEAD plus the
+    saved paths alone — so their work stays exactly where they left it:
+    staged, and in no commit of lc's."""
+    (repo / "notes.py").write_text("draft = True\n")
+    dataset._git(["add", "--", "notes.py"], cwd=repo)
+    out = repo / "results" / "fit"
+    out.mkdir()
+    (out / "value.txt").write_text("42\n")
+
+    assert dataset.save(repo, [out], "make fit")
+
+    committed = dataset._git(["show", "--name-only", "--format=", "HEAD"], cwd=repo).split()
+    assert "notes.py" not in committed
+    assert sorted(committed) == ["results/fit/value.txt"]
+    staged = dataset._git(["diff", "--cached", "--name-only"], cwd=repo).split()
+    assert staged == ["notes.py"], "still staged, exactly as the user left it"
+
+
+def test_save_sees_nothing_to_commit_past_foreign_staged_work(repo: Path) -> None:
+    """The nothing-to-commit probe is scoped like the commit, or foreign
+    staged content would make an empty save attempt a commit and fail."""
+    (repo / "notes.py").write_text("draft = True\n")
+    dataset._git(["add", "--", "notes.py"], cwd=repo)
+
+    assert not dataset.save(repo, [repo / "results"], "nothing here")
+
+
 def test_save_reports_when_there_was_nothing_to_commit(repo: Path) -> None:
     """`lc materialize` may not leave an empty commit behind for an output
     that produced nothing new."""
@@ -454,9 +483,71 @@ def test_the_annex_executables_are_ours_to_install() -> None:
         assert ours.get(name) == value, f"{name} is not re-declared as {value}"
 
 
+def test_the_worker_and_the_shim_are_never_console_scripts() -> None:
+    """`python -m lightcone.engine.worker` makes an output unconditionally,
+    commits nothing, and leaves the tree dirty by design; the shim is the
+    sandbox's own plumbing. A `[project.scripts]` entry would put either
+    on `$PATH` through `uv tool install` — a footgun `lc --help` already
+    refuses to advertise. Every entry point is either the CLI or a
+    mirrored git-annex executable, and nothing else."""
+    from importlib.metadata import distribution
+
+    theirs = {e.value for e in distribution("git-annex").entry_points}
+    for entry in distribution("lightcone-cli").entry_points:
+        assert "lightcone.engine" not in entry.value
+        assert "_sandbox_exec" not in entry.value
+        assert entry.value.startswith("lightcone.cli") or entry.value in theirs, entry
+
+
 
 
 # ---- who last wrote a path -------------------------------------------------
+
+
+def test_annex_keys_maps_every_annexed_file_content_present_or_not(repo: Path) -> None:
+    """The crate's per-file checksums come from here, and they must
+    answer on a clone that holds none of the bytes — `--include=*` is
+    what turns `find` from "present files" into "annexed files"."""
+    out = repo / "results" / "fit"
+    out.mkdir()
+    (out / "value.dat").write_bytes(b"x" * 300)
+    dataset.save(repo, [out], "make fit")
+
+    keys = dataset.annex_keys(repo)
+    key = keys["results/fit/value.dat"]
+    assert key.startswith("SHA256E-s300--"), key
+    assert ".gitattributes" not in keys, "git-carried files have no key"
+
+    clone = repo.parent / "clone"
+    dataset._git(["clone", "-q", str(repo), str(clone)], cwd=repo.parent)
+    # A clone inherits no local config, and annex init in a *clone* has
+    # remote git-annex branch state to commit — identity required, where
+    # a fresh repo's init tolerates its absence.
+    for key_, value in (("user.email", "t@example.com"), ("user.name", "Test")):
+        dataset._git(["config", key_, value], cwd=clone)
+    dataset.init_annex(clone)
+    assert dataset.annex_keys(clone)["results/fit/value.dat"] == key, (
+        "keys are repository state, bytes not required"
+    )
+
+
+def test_annex_keys_survives_a_tab_in_a_filename(repo: Path) -> None:
+    """git-annex emits ${file} unescaped, so the parse splits from the
+    *last* tab — keys never contain one, filenames legally can."""
+    out = repo / "results" / "fit"
+    out.mkdir()
+    (out / "run\t1.dat").write_bytes(b"x" * 300)
+    dataset.save(repo, [out], "make fit")
+
+    keys = dataset.annex_keys(repo)
+    assert keys["results/fit/run\t1.dat"].startswith("SHA256E-s300--")
+
+
+def test_annex_keys_of_a_plain_directory_is_empty(tmp_path: Path, real_tools: None) -> None:
+    """Cannot say is empty, never an error — the last_writer discipline."""
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert dataset.annex_keys(bare) == {}
 
 
 def test_last_writer_names_the_commit_that_last_touched_a_path(repo: Path) -> None:

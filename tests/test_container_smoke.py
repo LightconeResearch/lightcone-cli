@@ -169,8 +169,8 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path) -> None:
     `lc run` never builds: the first probe refuses naming `lc build`, and
     succeeding after one is the mutation check. The mounts are the
     mechanism: an undeclared host file simply is not there (while the
-    host itself reads it fine). And `--network none` is a real denial
-    with loopback intact — the meaning of `network: denied`."""
+    host itself reads it fine). The network is not controlled here any
+    more than on the host mechanisms — `allowed`, symmetrically."""
     with pytest.raises(ProjectError, match="lc build"):
         engine_run.probe(cproject, ["bc", "--version"])
 
@@ -178,7 +178,7 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path) -> None:
     outcome = engine_run.probe(cproject, ["bc", "--version"])
     assert outcome.returncode == 0
     assert outcome.attestation.mechanism == runtime
-    assert outcome.attestation.network == "denied"
+    assert outcome.attestation.network == "allowed"
     assert outcome.attestation.fs == "declared"
 
     outside = Path.home() / ".lc-smoke-outside.txt"
@@ -205,16 +205,6 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path) -> None:
     )
     assert loopback.returncode == 0
 
-    egress = engine_run.probe(
-        cproject,
-        [
-            "python", "-c",
-            "import socket, urllib.request; socket.setdefaulttimeout(3); "
-            'urllib.request.urlopen("http://1.1.1.1")',
-        ],  # fmt: skip
-    )
-    assert egress.returncode != 0
-
 
 # ---- lc materialize ---------------------------------------------------------
 
@@ -234,7 +224,7 @@ def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path) -> No
     manifest = assets.read(cproject / "results/baseline/sums")
     assert manifest is not None
     assert manifest.hermeticity["mechanism"] == runtime
-    assert manifest.hermeticity["network"] == "denied"
+    assert manifest.hermeticity["network"] == "allowed"
     assert manifest.hermeticity["fs"] == "declared"
     assert manifest.image is not None
     assert manifest.image["id"] == _inspect_id(runtime, manifest.image["id"])

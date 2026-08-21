@@ -231,14 +231,40 @@ def last_writer(directory: Path, path: Path) -> LastWrite:
         git cannot answer at all.
     """
     argv = ["log", "-1", "--format=%H%x00%s%x00%an%x00%ae%x00%as", "--", _rel(directory, path)]
-    try:
-        proc = project._run(["git", *argv], cwd=directory)
-    except OSError:
-        return LastWrite()
-    out = str(proc.stdout or "").strip("\n")
-    if proc.returncode != 0 or not out:
+    out = _ask(argv, cwd=directory)
+    if not (out := (out or "").strip("\n")):
         return LastWrite()
     return LastWrite(*out.split("\0"))
+
+
+def annex_keys(directory: Path) -> dict[str, str]:
+    """Map every annexed file to its key, repository-relative.
+
+    One process for the whole tree. ``--include=*`` is load-bearing: a
+    bare ``find`` lists only files whose *content* is present, and the
+    crate must answer on a clone that holds none of the bytes — the keys
+    are repository state, which is what keeps the render pure.
+
+    "Cannot say" — no annex, no git, an unborn repository — is the empty
+    answer, never an error, the :func:`last_writer` discipline.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        ``{relative path: key}`` for every annexed file.
+    """
+    out = _ask(["annex", "find", "--include=*", "--format=${file}\\t${key}\\n"], cwd=directory)
+    keys: dict[str, str] = {}
+    for line in (out or "").splitlines():
+        # From the *last* tab: git-annex emits ${file} unescaped, so a
+        # tab in a filename would otherwise split inside the path and
+        # hand back a truncated file with a corrupted key. Keys never
+        # contain tabs, so the rightmost split is always the real one.
+        file, sep, key = line.rpartition("\t")
+        if sep and file and key:
+            keys[file] = key
+    return keys
 
 
 def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
@@ -270,6 +296,14 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
     Per-add and never written to the repository's config, so a user's
     own ``git add`` keeps git-annex's stock behavior.
 
+    The commit carries the same pathspec as the add, making it a
+    *partial* commit: git builds it from HEAD plus these paths alone and
+    leaves anything else in the index staged and untouched. Without the
+    pathspec, ``git commit`` commits the whole index — so a file the
+    user staged while a graph was running would be swept, silently,
+    into whichever save landed next. The end-of-run warning names such
+    edits; this is what keeps lc's commits from eating them.
+
     Args:
         directory: The repository root.
         paths: What to stage, absolute or repository-relative.
@@ -279,13 +313,16 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
         False if there was nothing to commit.
     """
     relative = [_rel(directory, p) for p in paths]
-    _git(
-        ["-c", "annex.thin=true", "-c", "annex.dotfiles=true", "add", "-A", "--", *relative],
-        cwd=directory,
-    )
-    if _git_ok(["diff", "--cached", "--quiet"], cwd=directory):
+    annex = ["-c", "annex.thin=true", "-c", "annex.dotfiles=true"]
+    _git([*annex, "add", "-A", "--", *relative], cwd=directory)
+    # Scoped like the commit: foreign staged content must neither count
+    # as "something to commit" here nor be committed below.
+    if _git_ok(["diff", "--cached", "--quiet", "--", *relative], cwd=directory):
         return False
-    _git(["commit", "-q", "-m", message], cwd=directory)
+    # The annex config rides on the commit too: a partial commit takes
+    # the paths' content through the clean filter again, and without the
+    # flags that pass would route the bytes by stock rules.
+    _git([*annex, "commit", "-q", "-m", message, "--", *relative], cwd=directory)
     return True
 
 
@@ -311,6 +348,25 @@ def restore(directory: Path, paths: Iterable[Path]) -> None:
 # =============================================================================
 # Running git
 # =============================================================================
+
+
+def _ask(argv: list[str], *, cwd: Path) -> str | None:
+    """Run git where "cannot say" must be an answer, never an error.
+
+    The read-only-verbs discipline, as one seam: an unborn HEAD, a
+    stripped ``.git``, a host without git — states a project can really
+    be in — come back as ``None``, and the caller renders its own empty.
+
+    Returns:
+        git's stdout, or ``None`` when git cannot answer.
+    """
+    try:
+        proc = project._run(["git", *argv], cwd=cwd)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return str(proc.stdout or "")
 
 
 def _git(argv: list[str], *, cwd: Path) -> str:

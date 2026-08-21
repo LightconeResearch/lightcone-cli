@@ -6,7 +6,8 @@ touch; :mod:`~lightcone.engine.sandbox.landlock` and
 
 The shape it encodes is what a container gives the command, minus the
 container: the project and the declared inputs and the OS baseline
-readable, ``results/`` and a private scratch scope writable, and only
+readable, the in-tree write scope (a recipe's own output directory; a
+probe's ``results/``) and a private scratch scope writable, and only
 the project's own environment plus a versioned utility allowlist
 runnable. What it catches is a command reaching *outside* that set — a
 tool, a library, or a data file that is on this machine and would not be
@@ -180,19 +181,18 @@ def exec_policy(
     read_paths: Sequence[Path] = (),
     env_dir: Path | None = None,
     containerized: bool = False,
+    output_dir: Path | None = None,
 ) -> Policy:
     """Build what a sandboxed command may touch.
 
-    The tree is read-only apart from ``results/``, so ``lc run`` and a
-    recipe get the same scope: a command that works under one works under
-    the other.
-
-    A recipe is not narrowed to its own output directory. Whether an
-    output's bytes are its own is what the manifest's ``data_version``
-    answers, and that answer travels; a second mechanism for it would not.
-    The residue: a cross-write landing before the victim task hashes
-    leaves a manifest that is self-consistent and wrong, which no checksum
-    can see.
+    The tree is read-only apart from the write scope: a recipe writes its
+    own output directory and nothing else in the tree, so a concurrent
+    task cannot land bytes in a sibling's directory before that sibling
+    hashes — the one corruption ``data_version`` could never see, because
+    the manifest it produces is self-consistent and wrong. A probe has no
+    output, so ``lc run`` gets ``results/`` whole; the probe→recipe
+    promise therefore excludes exactly the commands that write outside
+    their own output directory, which is the accident being prevented.
 
     The containerized shape is the same policy with the host stripped
     out: the *image* is the OS baseline and the exec set — everything
@@ -207,11 +207,14 @@ def exec_policy(
             ``.venv``.
         containerized: Build the mount-shaped policy instead of the host
             one.
+        output_dir: The one in-tree directory a recipe may write; absent
+            for a probe, which gets ``results/`` whole.
 
     Returns:
-        The policy. ``results/`` is granted only if it exists — a policy
-        describes, it does not prepare. Creates the per-run HOME on disk;
-        the caller owns removing it (see
+        The policy. The in-tree write scope is granted only if it exists —
+        a policy describes, it does not prepare (the worker resets the
+        output directory before building one). Creates the per-run HOME on
+        disk; the caller owns removing it (see
         :func:`~lightcone.engine.sandbox.boundary.scope`).
     """
     env_dir = env_dir if env_dir is not None else project / ".venv"
@@ -228,6 +231,7 @@ def exec_policy(
     for sub in _HOME_LAYOUT.values():
         (tmp_home / sub).mkdir(parents=True, exist_ok=True)
 
+    in_tree_write = output_dir if output_dir is not None else project / "results"
     if containerized:
         # Declared spellings, not realpaths — the one shape that keeps
         # its paths unresolved. These become mount *destinations*, and a
@@ -237,7 +241,7 @@ def exec_policy(
         # *source* side itself.)
         return Policy(
             read=_declared([project, *read_paths]),
-            write=_declared([tmp_home, project / "results"]),
+            write=_declared([tmp_home, in_tree_write]),
             execute=(),
             tmp_home=tmp_home,
             env=home_overlay(tmp_home, env_dir, containerized=True),
@@ -247,7 +251,7 @@ def exec_policy(
     # EXECUTE on the interpreter *file*; READ on the install root beside
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
-    write = _existing([tmp_home, project / "results", *_write_roots(project)])
+    write = _existing([tmp_home, in_tree_write, *_write_roots(project)])
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
     return Policy(

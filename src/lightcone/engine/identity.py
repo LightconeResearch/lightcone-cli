@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import tomllib
 from collections.abc import Mapping
@@ -174,6 +175,10 @@ class LockScan:
     #: Groups outside uv's default set. Advisory: they are installable
     #: states `env_version` does not distinguish.
     non_default_groups: tuple[str, ...]
+    #: Machine-level uv config files setting audited install settings.
+    #: Advisory: they steer the sync underneath the project's own
+    #: settings, and ``env_version`` deliberately cannot see them.
+    machine_config: tuple[str, ...]
 
 
 def scan_lock(root: Path) -> LockScan:
@@ -225,7 +230,52 @@ def scan_lock(root: Path) -> LockScan:
         refusals=tuple(sorted(refusals)),
         sdist_built=tuple(sorted(sdist_built)),
         non_default_groups=tuple(sorted(non_default)),
+        machine_config=_machine_config(),
     )
+
+
+def _machine_config_paths() -> tuple[Path, ...]:
+    """uv's user- and system-level config files, per its documented rule.
+
+    These levels can only ever be a ``uv.toml`` — never a
+    ``pyproject.toml`` — so two known paths per platform make the probe
+    complete rather than a heuristic.
+    """
+    if os.name == "nt":
+        return tuple(
+            Path(os.environ[var]) / "uv" / "uv.toml"
+            for var in ("APPDATA", "PROGRAMDATA")
+            if var in os.environ
+        )
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    config_dirs = os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg"
+    return (
+        config_home / "uv" / "uv.toml",
+        *(Path(d) / "uv" / "uv.toml" for d in config_dirs.split(":") if d),
+        Path("/etc/uv/uv.toml"),
+    )
+
+
+def _machine_config() -> tuple[str, ...]:
+    """Name the machine-level uv config files that steer install settings.
+
+    uv merges user- and system-level configuration *underneath* the
+    project's, and list settings concatenate across levels — a user-level
+    ``no-binary-package`` adds to the project's — so the test is which
+    keys a file sets, never whether the file exists. Deliberately never
+    hashed: machine state in ``env_version`` would make one commit answer
+    differently on two hosts. A file uv itself cannot parse is skipped —
+    the sync fails loudly on it without our help.
+    """
+    findings = []
+    for path in _machine_config_paths():
+        try:
+            data = tomllib.loads(path.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        if keys := sorted(set(data) & set(_INSTALL_SETTINGS)):
+            findings.append(f"{path} sets {', '.join(keys)}")
+    return tuple(findings)
 
 
 # =============================================================================
@@ -262,11 +312,11 @@ def _uv_config(root: Path) -> dict[str, Any]:
     differ when uv installs the same thing in each. uv warns about the
     pair itself, and convergence already lifts its warnings.
 
-    What this cannot reach is user-level configuration
-    (``~/.config/uv/uv.toml``), which uv *does* merge in underneath. That
-    is machine state rather than project state: hashing it would make one
-    commit answer differently on two hosts, reporting every output as
-    behind on a colleague's clone.
+    What this cannot reach is user- and system-level configuration, which
+    uv *does* merge in underneath. That is machine state rather than
+    project state: hashing it would make one commit answer differently on
+    two hosts, reporting every output as behind on a colleague's clone.
+    :func:`_machine_config` reports it instead.
     """
     config = root / "uv.toml"
     if not config.is_file():

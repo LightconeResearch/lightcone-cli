@@ -355,9 +355,9 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
     """Converge ``.lightcone/venv`` inside the image. The containerized twin
     of ``project.sync``.
 
-    The one container run that gets the network and a writable project
-    mount — converge once, then execute without writing to the
-    environment, the same discipline as direct mode. The host's uv cache
+    The one container run that gets a writable project mount — converge
+    once, then execute without writing to the environment, the same
+    discipline as direct mode. The host's uv cache
     is mounted at its identical path, so a complete environment
     materializes from cache hits in about a second; the cache location is
     ``uv cache dir``'s answer, never a guess, because that is uv's own
@@ -414,7 +414,9 @@ def converge(runtime: Runtime) -> list[str]:
     return sync(runtime.root, runtime)
 
 
-def policy_for(runtime: Runtime, read_paths: list[Path]) -> sandbox.Policy:
+def policy_for(
+    runtime: Runtime, read_paths: list[Path], *, output_dir: Path | None = None
+) -> sandbox.Policy:
     """Build the exec policy for a resolved runtime.
 
     The one place the ``env_dir``/``containerized`` pair is assembled —
@@ -426,6 +428,7 @@ def policy_for(runtime: Runtime, read_paths: list[Path]) -> sandbox.Policy:
     Args:
         runtime: The resolved runtime.
         read_paths: Declared inputs, as :func:`sandbox.exec_policy` takes.
+        output_dir: A recipe's own output directory; absent for a probe.
 
     Returns:
         The policy for this world.
@@ -435,6 +438,7 @@ def policy_for(runtime: Runtime, read_paths: list[Path]) -> sandbox.Policy:
         read_paths=read_paths,
         env_dir=runtime.env_dir,
         containerized=runtime.mode == "containerized",
+        output_dir=output_dir,
     )
 
 

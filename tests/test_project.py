@@ -674,6 +674,69 @@ def test_ambient_virtualenv_is_not_passed_to_tools(
     assert env["LC_TEST_CANARY"] == "kept", "the rest of the environment is untouched"
 
 
+def test_ambient_uv_install_settings_are_scrubbed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ambient install setting would steer what a sync installs without
+    moving env_version — the identity hole the scrub closes. Plumbing (the
+    cache, timeouts, index credentials) survives: it decides where bytes
+    come from and how fast, never what gets installed."""
+    import os
+
+    from lightcone.engine.project import child_env, uv_scrub_warning
+
+    for name in [k for k in os.environ if k.startswith("UV_")]:
+        monkeypatch.delenv(name)  # the suite itself may run under `uv run`
+    monkeypatch.setenv("UV_NO_BINARY", "1")
+    monkeypatch.setenv("UV_PYTHON", "3.10")
+    monkeypatch.setenv("UV_INDEX_URL", "https://elsewhere.invalid/simple")
+    monkeypatch.setenv("UV_CACHE_DIR", "/scratch/uv")
+    monkeypatch.setenv("UV_INDEX_INTERNAL_PASSWORD", "hunter2")
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", "/scratch/uv/python")
+    monkeypatch.setenv("UV_LINK_MODE", "copy")
+    monkeypatch.setenv("LC_TEST_CANARY", "kept")
+
+    env = child_env()
+    assert "UV_NO_BINARY" not in env
+    assert "UV_PYTHON" not in env
+    assert "UV_INDEX_URL" not in env
+    assert env["UV_CACHE_DIR"] == "/scratch/uv", "shared-cache plumbing survives"
+    assert env["UV_INDEX_INTERNAL_PASSWORD"] == "hunter2", "credentials survive"
+    assert env["UV_OFFLINE"] == "1", "air-gap mode survives"
+    assert env["UV_PYTHON_INSTALL_DIR"] == "/scratch/uv/python", (
+        "the interpreter store is plumbing, and it has no project-level spelling"
+    )
+    assert env["UV_LINK_MODE"] == "copy", "link-mode is not an audited setting either"
+    assert env["LC_TEST_CANARY"] == "kept"
+    assert "UV_INDEX_URL, UV_NO_BINARY, UV_PYTHON" in uv_scrub_warning(), (
+        "the warning names exactly what the scrub dropped"
+    )
+
+
+def test_converge_reports_the_uv_scrub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lc init` resolves and syncs, so a user whose ambient UV_INDEX_URL
+    was dropped must hear it here — not only on the verbs they have not
+    reached when resolution fails with uv's raw error."""
+    monkeypatch.setenv("UV_INDEX_URL", "https://mirror.invalid/simple")
+
+    report = converge(tmp_path / "proj")
+
+    assert any("UV_INDEX_URL" in w for w in report.warnings)
+
+
+def test_an_empty_scrubbed_variable_is_not_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty variable steers nothing, so warning about it is noise."""
+    from lightcone.engine.project import uv_scrub_warning
+
+    monkeypatch.setenv("UV_NO_BUILD", "")
+    assert "UV_NO_BUILD" not in uv_scrub_warning()
+
+
 def test_relays_uv_warnings_into_the_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -747,3 +810,19 @@ def test_surfaces_a_lock_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     )
     with pytest.raises(ProjectError, match="no solution found"):
         converge(tmp_path / "proj")
+
+
+def test_license_of_reads_every_spelling(tmp_path: Path) -> None:
+    """Publication intent, derived never configured — the crate is
+    maintained iff [project].license is declared, in any of its forms."""
+    from lightcone.engine.project import license_of
+
+    cases = {
+        'license = "MIT"': "MIT",
+        'license = { text = "BSD-3-Clause" }': "BSD-3-Clause",
+        'license = { file = "LICENSE" }': "LICENSE",
+        "": "",
+    }
+    for spelling, expected in cases.items():
+        (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "x"\n{spelling}\n')
+        assert license_of(tmp_path) == expected, spelling

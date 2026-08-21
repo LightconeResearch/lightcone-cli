@@ -196,3 +196,24 @@ def test_a_recipe_does_not_sync_where_a_probe_does(project: Path) -> None:
     concurrent worker writes the same `.venv`."""
     assert "--no-sync" in uv_prefix(project, sync=False)
     assert "--exact" not in uv_prefix(project, sync=False)
+
+
+def test_the_probe_reports_the_uv_scrub_in_its_notes(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The probe is what builds the child environment, so the scrub's
+    fact rides its outcome — the caller prints notes verbatim, and no
+    verb has to remember to ask."""
+    from lightcone.engine import run as engine_run
+    from lightcone.engine import sandbox
+    from lightcone.engine.sandbox.model import Attestation
+
+    monkeypatch.setenv("UV_NO_BINARY", "1")
+    outcome = sandbox.Outcome(
+        returncode=0, attestation=Attestation(mechanism="none", fs="open")
+    )
+    monkeypatch.setattr(sandbox, "run", lambda *a, **k: outcome)
+
+    outcome = engine_run.probe(project, ["true"])
+
+    assert any("UV_NO_BINARY" in note for note in outcome.notes)

@@ -107,8 +107,15 @@ def _writer(path: Path) -> LastWrite:
     return LastWrite("a" * 40, "irrelevant", "Ada Lovelace", "ada@example.org", "2026-08-19")
 
 
-def _render(root: Path, graph: Graph, writer: Writer = _writer) -> dict[str, Any]:
-    text = crate.render(root, graph, license="MIT", dsid=_DSID, writer=writer)
+def _render(
+    root: Path,
+    graph: Graph,
+    writer: Writer = _writer,
+    keys: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    text = crate.render(
+        root, graph, license="MIT", dsid=_DSID, writer=writer, keys=keys or {}
+    )
     loaded = json.loads(text)
     assert isinstance(loaded, dict)
     return loaded
@@ -126,8 +133,9 @@ def test_rendering_twice_at_the_same_state_is_byte_identical(project: Path) -> N
     _made(project, "baseline", "second", git_sha="aaa111")
     graph = _graph(project)
 
-    first = crate.render(project, graph, license="MIT", dsid=_DSID, writer=_writer)
-    second = crate.render(project, graph, license="MIT", dsid=_DSID, writer=_writer)
+    keys = {"results/baseline/first/out.txt": "SHA256E-s24--" + "c" * 64 + ".txt"}
+    first = crate.render(project, graph, license="MIT", dsid=_DSID, writer=_writer, keys=keys)
+    second = crate.render(project, graph, license="MIT", dsid=_DSID, writer=_writer, keys=keys)
 
     assert first == second
 
@@ -221,7 +229,6 @@ def test_an_action_chains_its_inputs_and_its_environment(project: Path) -> None:
     second = actions["run of `second` in universe `baseline`"]
     first_objects = {ref["@id"] for ref in first["object"]}
     assert {"uv.lock", ".python-version", "pyproject.toml", "data/catalog.csv"} <= first_objects
-    assert entities["data/catalog.csv"]["sha256"] == "cafe"
     assert "results/baseline/first/" in {ref["@id"] for ref in second["object"]}
     assert second["result"] == [{"@id": "results/baseline/second/"}]
     assert second["description"] == "make second"
@@ -312,16 +319,96 @@ def test_the_license_is_a_local_entity_never_a_minted_url(project: Path) -> None
     }
 
 
-def test_license_of_reads_every_spelling(tmp_path: Path) -> None:
-    cases = {
-        'license = "MIT"': "MIT",
-        'license = { text = "BSD-3-Clause" }': "BSD-3-Clause",
-        'license = { file = "LICENSE" }': "LICENSE",
-        "": "",
+# ---- per-file integrity ----------------------------------------------------
+
+
+def test_output_files_carry_checksums_from_their_annex_keys(project: Path) -> None:
+    """The keys are repository state, so a bytes-free clone renders the
+    same claims — and the hex in a SHA256E key is the raw sha256 an
+    archive can verify with `sha256sum` after a `git archive` deposit,
+    where the dataset's `version` is lc's framed digest and cannot be."""
+    _made(project, "baseline", "first", git_sha="aaa111")
+    digest = "d" * 64
+    keys = {"results/baseline/first/out.txt": f"SHA256E-s21--{digest}.txt"}
+    entities = _entities(_render(project, _graph(project), keys=keys))
+
+    part = entities["results/baseline/first/out.txt"]
+    assert part["sha256"] == digest
+    assert part["contentSize"] == "21"
+    parts = {ref["@id"] for ref in entities["results/baseline/first/"]["hasPart"]}
+    assert parts == {
+        "results/baseline/first/.lightcone-manifest.json",
+        "results/baseline/first/out.txt",
     }
-    for spelling, expected in cases.items():
-        (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "x"\n{spelling}\n')
-        assert crate.license_of(tmp_path) == expected, spelling
+
+
+def test_a_non_sha256_key_yields_size_and_no_digest(project: Path) -> None:
+    """`annex.backend` is the researcher's to set, and a wrong checksum
+    is worse than none — the publish-neither discipline."""
+    _made(project, "baseline", "first", git_sha="aaa111")
+    keys = {"results/baseline/first/out.txt": "MD5E-s21--" + "e" * 32 + ".txt"}
+    entities = _entities(_render(project, _graph(project), keys=keys))
+
+    part = entities["results/baseline/first/out.txt"]
+    assert part["contentSize"] == "21"
+    assert "sha256" not in part
+
+
+def test_pointer_shaped_bytes_never_become_a_checksum(project: Path) -> None:
+    """`annex_keys` answers empty for the whole repository whenever
+    git-annex cannot answer at all, and an unlocked pointer file reads
+    perfectly well — so the byte fallback re-checks the pointer shape
+    instead of publishing a well-formed digest of the pointer text."""
+    _made(project, "baseline", "first", git_sha="aaa111")
+    pointer = "/annex/objects/SHA256E-s300--" + "a" * 64 + ".csv\n"
+    (project / "data" / "catalog.csv").write_text(pointer)
+
+    entities = _entities(_render(project, _graph(project), keys={}))
+
+    catalog = entities["data/catalog.csv"]
+    assert "sha256" not in catalog
+    assert "contentSize" not in catalog
+
+
+def test_git_carried_files_are_hashed_by_their_bytes(project: Path) -> None:
+    """The lock and its companions are in git, so their working-tree
+    bytes are the content — repository state, and the render stays
+    pure."""
+    import hashlib
+
+    _made(project, "baseline", "first", git_sha="aaa111")
+    entities = _entities(_render(project, _graph(project)))
+
+    body = (project / "uv.lock").read_bytes()
+    assert entities["uv.lock"]["sha256"] == hashlib.sha256(body).hexdigest()
+    assert entities["uv.lock"]["contentSize"] == str(len(body))
+
+
+def test_an_out_of_tree_input_publishes_no_checksum(
+    project: Path, tmp_path: Path
+) -> None:
+    """Its recorded input_versions digest is lc's *framed* hash, not a
+    raw sha256 — publishing it under the workflow-run term would be a
+    checksum nothing can verify. The manifests keep the full story."""
+    catalog = tmp_path / "shared" / "catalog.csv"
+    catalog.parent.mkdir()
+    catalog.write_text("a,b\n")
+    task = Task(
+        "baseline",
+        "first",
+        project / "results/baseline/first",
+        "make first",
+        {"catalog": catalog},
+        {},
+        {},
+        "sha256:def",
+    )
+    _made(project, "baseline", "first", git_sha="aaa111", inputs={"catalog": "sha256:cafe"})
+    entities = _entities(_render(project, Graph({("baseline", "first"): task})))
+
+    external = entities[catalog.as_uri()]
+    assert "sha256" not in external
+    assert "contentSize" not in external
 
 
 def _as_list(value: Any) -> list[Any]:

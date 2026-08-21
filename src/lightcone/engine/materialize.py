@@ -317,6 +317,10 @@ class StatusReport:
     image: dict[str, str] | None = None
     #: One line naming the enforcement a run here would get.
     sandbox: str = ""
+    #: Where the publication view stands — maintained, and if so whether
+    #: it still reflects the outputs. Repository facts only, like the
+    #: rest of the header.
+    crate: str = ""
 
     @property
     def counts(self) -> dict[str, int]:
@@ -336,6 +340,7 @@ class StatusReport:
             "mode": self.mode,
             "image": self.image,
             "sandbox": self.sandbox,
+            "crate": self.crate,
             "counts": self.counts,
             "outputs": [output.as_dict() for output in self.outputs],
             "warnings": self.warnings,
@@ -367,7 +372,10 @@ def status(root: Path) -> StatusReport:
     if state != "direct":
         result.image = {"tag": tag, "state": state, "archive": archive}
     result.sandbox = _sandbox_line(result.mode)
+    stamps = []
     for key, verdict, manifest, foreign in _classified(root, [], report, refresh=False):
+        if manifest and manifest.finished_at:
+            stamps.append(manifest.finished_at)
         result.outputs.append(
             OutputStatus(
                 output=_name(key),
@@ -378,8 +386,44 @@ def status(root: Path) -> StatusReport:
                 foreign_write=foreign.sha if foreign else "",
             )
         )
+    result.crate = _crate_line(root, max(stamps, default=""))
     result.warnings = report.warnings
     return result
+
+
+def _crate_line(root: Path, newest: str) -> str:
+    """One line placing the publication view, from repository facts alone.
+
+    Lag is read off the document itself, not history: the render pins
+    ``datePublished`` to the newest manifest ``finished_at``, so a date
+    that no longer matches the manifests — in either direction, a rerun
+    adds an output the view predates and a dropped output regresses the
+    newest — means the view no longer describes the outputs. That is the
+    line's whole claim, and it is worded to it: a crate-affecting edit
+    that moves no manifest (the lock's bytes, the spec) is invisible
+    here, and fine — the next materialize converges those anyway, where
+    a rerun's lag has no other surface. No rocrate import (the crate is
+    the one materialize-only dependency on status's path) and no git:
+    the manifests were already read by the walk.
+    """
+    spdx = project.license_of(root)
+    path = root / project.CRATE_FILENAME
+    if not spdx:
+        if path.is_file():
+            return "no longer maintained — pyproject.toml declares no [project].license"
+        return "not maintained — declare [project].license to enable it"
+    if not path.is_file():
+        return "will be created by the next `lc materialize`"
+    try:
+        entities = json.loads(path.read_text()).get("@graph", [])
+        published = next(
+            (str(e.get("datePublished", "")) for e in entities if e.get("@id") == "./"), ""
+        )
+    except (OSError, ValueError, AttributeError):
+        return "unreadable — the next `lc materialize` rewrites it"
+    if newest and published != newest:
+        return "behind the outputs — `lc materialize` refreshes it"
+    return "up to date with the outputs"
 
 
 def _foreign_write(root: Path, key: Key) -> dataset.LastWrite | None:
@@ -403,7 +447,7 @@ def _sandbox_line(mode: str) -> str:
     """
     if mode == "containerized":
         if runtime := container.runtime_hint():
-            return f"{runtime} (fs: declared, network: denied)"
+            return f"{runtime} (fs: declared, network: allowed)"
         return "no container runtime — install podman (or docker)"
     from lightcone.engine import sandbox
 
@@ -449,6 +493,8 @@ def materialize(
     project.require_git_annex()
     dataset.require_committer(root)
     report = MaterializeReport()
+    if warning := project.uv_scrub_warning():
+        report.warnings.append(warning)
     # The dirty check comes before anything that writes: the image
     # converge below *commits*, and `dataset.save` stages scoped but
     # commits the whole index — on a dirty tree the user's staged edits
@@ -496,15 +542,19 @@ def materialize(
     # rerun does not come through here; its entry point converges too.)
     report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
 
-    # Read once, for every task: the driver commits each output as it lands,
-    # so HEAD moves during the run, and a per-task read would give later
-    # manifests a commit this run created — nondeterministically, depending
-    # on whether a recipe finished before or after the previous save.
-    head = dataset.head(root)
-    # One memo for the run, for the same reason as one HEAD read: a
-    # declared input shared by several outputs — or by one output across
-    # several universes — is the same bytes every time it is asked for.
-    versions = assets.Versions()
+    # The run's driver-resolved facts, each read once: HEAD because the
+    # driver commits as outputs land and a per-task read would stamp
+    # later manifests with a commit this run created; the uv probe
+    # because attestation is a fact about the run (and empty is an
+    # answer, not a failure); one content-hash memo because a declared
+    # input shared by several outputs is the same bytes every time.
+    context = worker.RunContext(
+        env_version=env_version,
+        head=dataset.head(root),
+        versions=assets.Versions(),
+        runtime=runtime,
+        uv_version=project.uv_version(root),
+    )
     # The history question is the driver's to answer — workers have no
     # git, by design — so each task is told up front whether its
     # directory was last written by something other than its own run
@@ -532,12 +582,9 @@ def materialize(
                     worker.materialize,
                     root,
                     task,
-                    env_version,
-                    head,
-                    versions,
+                    context,
                     refresh,
                     foreign[key],
-                    runtime,
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
                 )
@@ -551,6 +598,17 @@ def materialize(
         # survive.
         for task in outstanding.values():
             dataset.restore(root, [task.output_dir])
+    # The tree was clean at the start-of-run refusal and save/restore
+    # keeps `results/` clean, so anything dirty *now* was edited while
+    # the graph ran — and every manifest records the starting commit,
+    # which no longer describes that code. A warning, never a manifest
+    # field: the driver does not rewrite files the worker owns.
+    if edited := dataset.status(root):
+        names = ", ".join(sorted(path for _, path in edited))
+        report.warnings.append(
+            f"edited while the run was in flight: {names} — the manifests "
+            "record the starting commit, which no longer describes this code"
+        )
     _converge_crate(root, report, full, dsid)
     return report
 
@@ -751,12 +809,12 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
     # crate is the one materialize-only dependency on their shared path.
     from lightcone.engine import crate
 
-    spdx = crate.license_of(root)
-    path = root / crate.CRATE_FILENAME
+    spdx = project.license_of(root)
+    path = root / project.CRATE_FILENAME
     if not spdx:
         report.warnings.append(
             f"pyproject.toml no longer declares [project].license, so "
-            f"{crate.CRATE_FILENAME} is no longer maintained"
+            f"{project.CRATE_FILENAME} is no longer maintained"
             if path.exists()
             else "no [project].license in pyproject.toml, so no RO-Crate "
             "publication view is maintained — declare one to enable it"
@@ -776,6 +834,7 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             license=spdx,
             dsid=dsid,
             writer=functools.partial(dataset.last_writer, root),
+            keys=dataset.annex_keys(root),
         )
         if not (path.is_file() and path.read_text() == document):
             path.write_text(document)
@@ -938,6 +997,12 @@ def _graph(
         report.warnings.append(
             "dependency groups outside uv's default set are installable states "
             f"the environment's identity does not distinguish: {', '.join(scan.non_default_groups)}"
+        )
+    if scan.machine_config:
+        report.warnings.append(
+            "machine-level uv configuration steers install settings underneath "
+            "the project's own, and env_version cannot see it: "
+            + "; ".join(scan.machine_config)
         )
 
     env_version = identity.env_version(root)
