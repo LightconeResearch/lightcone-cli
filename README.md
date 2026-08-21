@@ -13,15 +13,24 @@ and provenance.
 
 ## Quick Start
 
+**lightcone-cli** only requires you to have `uv` installed on your environment, and will take care of everything else. See how to install uv here: [https://docs.astral.sh/uv/getting-started/installation](https://docs.astral.sh/uv/getting-started/installation). 
+
+Then to install **lightcone-cli**:
 ```bash
-uv tool install lightcone-cli   # or: pip install lightcone-cli
+uv tool install lightcone-cli
+```
+
+Once the CLI is installed, you can use it to create an ASTRA project and generate ouputs like so:
+
+```bash
 lc init my-analysis
 cd my-analysis
 # describe your analysis in astra.yaml, write your scripts,
-# declare what they import:
+# declare what they import through normal uv interactions:
 uv add numpy
-# then commit and build:
+# When you are done with your edits, commit:
 git add -A && git commit -m "First analysis"
+# Use the lightcone CLI to generate your outputs with full provenance tracking
 lc materialize
 ```
 
