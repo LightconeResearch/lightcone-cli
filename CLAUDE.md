@@ -72,12 +72,9 @@ pyproject.toml              # hatchling + hatch-vcs, ASTRA + Snakemake as deps
 
 The whole docs site is versioned with [mike](https://github.com/squidfunk/mike) — specifically squidfunk's fork, which Zensical's versioning provider depends on. Each release deploys a full copy of the site to a subdirectory of the `gh-pages` branch (`/0.0.9/`, `/latest/`, etc.). Mike is enabled via `[project.extra.version] provider = "mike"` in `zensical.toml`; the version dropdown in the header is rendered natively.
 
-Release flow: after release, run `just docs-deploy X.Y.Z` — which runs `mike deploy --push --update-aliases X.Y.Z latest`. 
-This builds the site at the current commit and pushes a new version snapshot + updates the `latest` alias on `gh-pages`.
+Release flow: `.github/workflows/docs-deploy.yml` runs on every published release — it runs `mike deploy --push --update-aliases X.Y.Z latest` (version taken from the tag) followed by `mike set-default --push latest`, so the bare site root always redirects to `/latest/`. For an intermediate redeploy of an existing version, trigger the workflow manually from the Actions tab. The `just docs-deploy` / `docs-set-default` / `docs-versions` / `docs-delete-version` recipes wrap the same mike commands for local use.
 
-First-time setup: after the first `docs-deploy`, run `just docs-set-default latest` once so the bare site root redirects to `/latest/`.
-
-Hosting: mike pushes to `gh-pages`. The hosting platform (Cloudflare Pages, GitHub Pages, etc.) must be configured to serve from `gh-pages`, not `main`. Without this, `mike deploy` runs successfully but the site doesn't pick up versioned URLs in production.
+Hosting: mike pushes to `gh-pages`. GitHub Pages (which serves docs.lightconeresearch.org) must be configured to "Deploy from a branch" / `gh-pages` in the repo's Pages settings, not via the Actions artifact deploy. Without this, `mike deploy` runs successfully but the site doesn't pick up versioned URLs in production.
 
 ## Development Commands
 

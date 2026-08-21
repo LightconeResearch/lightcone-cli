@@ -59,12 +59,6 @@ docs = [
     "mike @ git+https://github.com/squidfunk/mike.git ; python_version >= '3.10'",
 ]
 
-# Versioning is handled by mike (https://github.com/squidfunk/mike).
-# Each version of the site is deployed as a subdirectory under site_url
-# (e.g. /0.0.9/, /latest/). The picker is rendered natively in the header.
-[project.extra.version]
-provider = "mike"
-
 [project.scripts]
 lc = "lightcone.cli:main"
 
