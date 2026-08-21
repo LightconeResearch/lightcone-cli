@@ -20,6 +20,9 @@ from lightcone.engine import dataset, templates
 
 SPEC_FILENAME = "astra.yaml"
 
+#: The publication view `lc materialize` converges at the project root.
+CRATE_FILENAME = "ro-crate-metadata.json"
+
 
 class ProjectError(Exception):
     """A project cannot be read or converged."""
@@ -195,6 +198,8 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
     require_git_annex()
 
     c = _Converger(write=write)
+    if warning := uv_scrub_warning():
+        c.warn(warning)
 
     if write:
         directory.mkdir(parents=True, exist_ok=True)
@@ -515,6 +520,37 @@ def mode(directory: Path) -> Literal["direct", "containerized"]:
     return "direct" if image._table(directory) is None else "containerized"
 
 
+def license_of(directory: Path) -> str:
+    """Read the project's declared license out of ``pyproject.toml``.
+
+    Presence is what turns crate maintenance on: RO-Crate requires a
+    license, a run must not refuse over a missing key, and inventing one
+    would assert terms over someone's data — so declaring
+    ``[project].license`` is declaring the intent to publish. The same
+    derived-never-configured shape as :func:`mode`, and it lives here so
+    ``lc status`` can ask without importing the crate renderer's stack.
+
+    Args:
+        directory: The project root.
+
+    Returns:
+        The license as declared — an SPDX expression, a URL, free text,
+        or a file path for the table forms — or empty when undeclared.
+    """
+    import tomllib
+
+    try:
+        data = tomllib.loads((directory / "pyproject.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return ""
+    declared = data.get("project", {}).get("license")
+    if isinstance(declared, str):
+        return declared
+    if isinstance(declared, dict):
+        return str(declared.get("text") or declared.get("file") or "")
+    return ""
+
+
 def env_dir(directory: Path) -> Path:
     """Locate the project environment for this project's mode.
 
@@ -652,18 +688,126 @@ def _run(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+#: The ambient ``UV_*`` variables :func:`child_env` keeps. Plumbing only —
+#: where bytes come from and how fast, never *what* a sync installs: the
+#: cache location (shared-filesystem hosts point it at scratch), network
+#: timeouts and concurrency, TLS trust, air-gap mode, and index
+#: credentials. Anything with install semantics (``UV_NO_BINARY``,
+#: ``UV_PYTHON``, ``UV_INDEX_URL``, …) is dropped: the same settings are
+#: hashed into ``env_version`` when a project declares them, so an ambient
+#: spelling would steer a sync while every hash agrees nothing changed.
+_UV_KEPT = frozenset(
+    {
+        "UV_CACHE_DIR",
+        "UV_HTTP_TIMEOUT",
+        "UV_REQUEST_TIMEOUT",
+        "UV_CONCURRENT_BUILDS",
+        "UV_CONCURRENT_DOWNLOADS",
+        "UV_CONCURRENT_INSTALLS",
+        "UV_NATIVE_TLS",
+        "UV_INSECURE_HOST",
+        "UV_OFFLINE",
+        # How package content lands (hardlink/copy/symlink) — the same
+        # line the install-settings hash draws: `link-mode` is not an
+        # audited setting either.
+        "UV_LINK_MODE",
+        # The managed-interpreter store — the shared-filesystem story
+        # `UV_CACHE_DIR` is kept for, and *which* interpreter is pinned
+        # by `.python-version`, not by where its bytes live. There is no
+        # project-level spelling for this one, so scrubbing it would
+        # come with a remedy that does not exist.
+        "UV_PYTHON_INSTALL_DIR",
+        # Where the pinned interpreter downloads from, not which one.
+        "UV_PYTHON_INSTALL_MIRROR",
+        # Auth plumbing, the credentials family.
+        "UV_KEYRING_PROVIDER",
+        # uv's own recursion guard, set on every `uv run` child — lc
+        # itself frequently *is* one. Dropping it disables the guard and
+        # makes the scrub report uv's variable as the user's.
+        "UV_RUN_RECURSION_DEPTH",
+    }
+)
+
+
+def _uv_scrubbed(name: str) -> bool:
+    """Decide whether one ambient variable is dropped by the UV scrub."""
+    if not name.startswith("UV_"):
+        return False
+    # UV_INTERNAL__* is uv talking to its own children, never a setting.
+    if name in _UV_KEPT or name.startswith("UV_INTERNAL__"):
+        return False
+    # Index credentials (UV_INDEX_<NAME>_USERNAME / _PASSWORD) are how a
+    # private registry authenticates; the registry itself is the
+    # project's `[tool.uv.index]` to declare.
+    return not (
+        name.startswith("UV_INDEX_") and name.endswith(("_USERNAME", "_PASSWORD"))
+    )
+
+
 def child_env() -> dict[str, str]:
     """Build the environment external tools run in.
 
-    Ours, minus ``VIRTUAL_ENV``. Every uv invocation names its project
-    explicitly, so an activated environment elsewhere is never what we
-    mean — and uv warns once per invocation when it ignores one, which
-    would otherwise land in the report and in ``--json``.
+    Ours, minus ``VIRTUAL_ENV`` and minus every ``UV_*`` variable outside
+    the :data:`_UV_KEPT` plumbing allowlist. Every uv invocation names its
+    project explicitly, so an activated environment elsewhere is never
+    what we mean — and an ambient install setting would change what a
+    sync installs without moving ``env_version``, which is the identity
+    hole the scrub closes.
 
     Returns:
-        The current environment without ``VIRTUAL_ENV``.
+        The current environment without ``VIRTUAL_ENV`` or scrubbed ``UV_*``.
     """
-    return {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k != "VIRTUAL_ENV" and not _uv_scrubbed(k)
+    }
+
+
+def uv_scrub_warning() -> str:
+    """Compose the dropped-ambient-variables warning, once for every verb.
+
+    A user whose ``UV_PYTHON`` or ``UV_INDEX_URL`` stopped steering uv
+    deserves a pointer to why on *whichever* verb they hit first —
+    ``lc init`` resolving against the wrong index fails with uv's raw
+    error otherwise. One spelling here, and one predicate with
+    :func:`child_env`, so the verbs cannot drift from each other or the
+    report from the scrub. Empty variables steer nothing and are not
+    reported.
+
+    Returns:
+        The warning, or ``""`` when nothing non-empty was dropped.
+    """
+    if dropped := sorted(k for k, v in os.environ.items() if v and _uv_scrubbed(k)):
+        return (
+            f"ignored ambient {', '.join(dropped)} — an install setting is "
+            "the project's to declare (pyproject.toml), and an ambient one "
+            "would steer uv without moving env_version"
+        )
+    return ""
+
+
+def uv_version(directory: Path) -> str:
+    """Ask uv its version, for the manifest's attestation.
+
+    Read once per run by whoever owns the run — the driver, or the rerun
+    entry point — and handed down, the HEAD discipline. Empty on any
+    failure: attestation must never fail a run.
+
+    Args:
+        directory: Where to run the probe.
+
+    Returns:
+        The version token (``0.12.5``), or ``""``.
+    """
+    try:
+        proc = _run(["uv", "--version"], cwd=directory)
+    except OSError:
+        return ""
+    words = str(proc.stdout or "").split()
+    if proc.returncode != 0 or len(words) < 2 or words[0] != "uv":
+        return ""
+    return words[1]
 
 
 def _check_call(argv: list[str], *, cwd: Path) -> list[str]:

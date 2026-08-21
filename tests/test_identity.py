@@ -201,7 +201,9 @@ def test_the_environment_is_not_part_of_what_an_output_is(root: Path) -> None:
 
 
 def test_a_clean_lock_scans_clean(root: Path) -> None:
-    assert scan_lock(root) == LockScan(refusals=(), sdist_built=(), non_default_groups=())
+    assert scan_lock(root) == LockScan(
+        refusals=(), sdist_built=(), non_default_groups=(), machine_config=()
+    )
 
 
 def test_a_path_dependency_is_refused(root: Path) -> None:
@@ -285,3 +287,57 @@ def test_the_default_group_set_is_read_from_uv_toml_too(root: Path) -> None:
     )
     (root / "uv.toml").write_text('default-groups = ["dev", "plots"]\n')
     assert scan_lock(root).non_default_groups == ()
+
+
+# ---- machine-level uv configuration ----------------------------------------
+
+
+def test_machine_config_setting_an_audited_key_is_advisory(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uv merges user- and system-level config underneath the project's,
+    and list settings concatenate across levels — so a machine-level file
+    steers the sync while env_version sees nothing. Reported, never
+    hashed: machine state in the hash would make one commit answer
+    differently on two hosts."""
+    from lightcone.engine import identity
+
+    user = tmp_path / "user-uv.toml"
+    user.write_text("no-build = true\n")
+    monkeypatch.setattr(identity, "_machine_config_paths", lambda: (user,))
+
+    scan = scan_lock(root)
+
+    assert scan.machine_config == (f"{user} sets no-build",)
+
+
+def test_machine_config_without_audited_keys_stays_silent(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cache-dir, link-mode and friends decide where bytes come from, not
+    what gets installed — the same line the install-settings hash draws."""
+    from lightcone.engine import identity
+
+    user = tmp_path / "user-uv.toml"
+    user.write_text('cache-dir = "/scratch/uv"\nlink-mode = "copy"\n')
+    monkeypatch.setattr(identity, "_machine_config_paths", lambda: (user,))
+
+    assert scan_lock(root).machine_config == ()
+
+
+def test_absent_or_unreadable_machine_config_stays_silent(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file uv cannot parse fails the sync loudly on its own; the
+    advisory adds nothing by refusing first."""
+    from lightcone.engine import identity
+
+    broken = tmp_path / "broken-uv.toml"
+    broken.write_text("no-build = [unclosed\n")
+    monkeypatch.setattr(
+        identity,
+        "_machine_config_paths",
+        lambda: (tmp_path / "missing" / "uv.toml", broken),
+    )
+
+    assert scan_lock(root).machine_config == ()

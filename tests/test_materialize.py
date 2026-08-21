@@ -71,6 +71,16 @@ def _commits(root: Path) -> int:
     return len(dataset._git(["log", "--oneline"], cwd=root).splitlines())
 
 
+def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
+    """Point the run at a custom scheduler — the one monkeypatch point."""
+
+    @contextmanager
+    def fake() -> Iterator[_Inline]:
+        yield scheduler
+
+    monkeypatch.setattr(engine, "cluster_for_run", fake)
+
+
 # ---- a run, end to end -----------------------------------------------------
 
 
@@ -177,6 +187,21 @@ def test_refresh_remakes_what_is_behind_and_commits_it(root: Path, inline: None)
     manifest = assets.read(root / "results/baseline/first")
     assert manifest is not None
     assert manifest.env_version == identity.env_version(root)
+
+
+def test_the_manifest_records_the_uv_that_converged_the_environment(
+    root: Path, inline: None
+) -> None:
+    """Probed once by the driver and handed to every task — attestation
+    beside lc_version, never a rebuild signal."""
+    from lightcone.engine import project
+
+    engine.materialize(root, ["first"])
+
+    manifest = assets.read(root / "results/baseline/first")
+    assert manifest is not None
+    assert manifest.uv_version == project.uv_version(root)
+    assert manifest.uv_version.count(".") >= 1, "a real version token, not prose"
 
 
 def test_check_reports_behind_without_planning_it(root: Path, inline: None) -> None:
@@ -450,6 +475,90 @@ def test_a_lock_that_builds_from_source_is_a_warning_not_a_refusal(root: Path) -
     assert any("oldlib" in w for w in report.warnings)
 
 
+def test_machine_level_uv_config_is_reported(
+    root: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The config-file half of the same hole the ambient scrub closes:
+    env_version cannot see it, so the run says so."""
+    from lightcone.engine import identity
+
+    user = tmp_path / "user-uv.toml"
+    user.write_text("no-binary = true\n")
+    monkeypatch.setattr(identity, "_machine_config_paths", lambda: (user,))
+
+    report = engine.check(root, [])
+
+    assert any("env_version cannot see it" in w and str(user) in w for w in report.warnings)
+
+
+def test_ambient_uv_settings_are_scrubbed_and_reported(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scrub protects env_version's install-settings term; the warning
+    is what tells a user why their variable stopped steering the sync."""
+    monkeypatch.setenv("UV_NO_BINARY", "1")
+
+    report = engine.materialize(root, [])
+
+    assert report.ok
+    assert any("UV_NO_BINARY" in w for w in report.warnings)
+
+
+def test_an_edit_while_the_graph_runs_is_reported(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dirty check runs at start of run and manifests are written
+    per-output later, so an edit in between leaves manifests whose
+    git_sha no longer describes the code that ran. The run ends with one
+    status call and says so — the honest floor under the unwritten
+    `git_dirty` field."""
+
+    class Editing(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            (root / "notes.md").write_text("scribbled while the graph ran\n")
+            yield from handles
+
+    _cluster(monkeypatch, Editing())
+
+    report = engine.materialize(root, [])
+
+    assert report.ok
+    assert any("notes.md" in w and "in flight" in w for w in report.warnings)
+
+
+def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`dataset.save` stages scoped and commits scoped — a partial
+    commit — so work the user staged while the graph ran ends the run
+    exactly where they left it: staged, warned about, and in none of
+    lc's commits (the per-output saves and the trailing crate commit
+    alike)."""
+    _declare_license(root)
+
+    class Staging(_Inline):
+        def completed(self, handles: list[object]) -> Iterator[object]:
+            (root / "notes.py").write_text("draft = True\n")
+            dataset._git(["add", "--", "notes.py"], cwd=root)
+            yield from handles
+
+    _cluster(monkeypatch, Staging())
+
+    report = engine.materialize(root, [])
+
+    assert report.ok
+    assert any("notes.py" in w and "in flight" in w for w in report.warnings)
+    staged = dataset._git(["diff", "--cached", "--name-only"], cwd=root).split()
+    assert staged == ["notes.py"]
+    ever_committed = dataset._git(["log", "--name-only", "--format="], cwd=root).split()
+    assert "notes.py" not in ever_committed
+
+
+def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None:
+    report = engine.materialize(root, [])
+    assert not any("in flight" in w for w in report.warnings)
+
+
 # ---- leaving the tree as clean as it was found -----------------------------
 
 
@@ -522,11 +631,7 @@ def test_an_interrupted_run_restores_what_never_reported(
             yield handles[0]
             raise KeyboardInterrupt
 
-    @contextmanager
-    def fake() -> Iterator[_Interrupted]:
-        yield _Interrupted()
-
-    monkeypatch.setattr(engine, "cluster_for_run", fake)
+    _cluster(monkeypatch, _Interrupted())
 
     with pytest.raises(KeyboardInterrupt):
         engine.materialize(root, [])
@@ -1045,6 +1150,38 @@ def test_a_removed_license_stops_maintenance_but_keeps_the_file(
 
     assert (root / "ro-crate-metadata.json").is_file()
     assert any("no longer maintained" in w for w in report.warnings)
+
+
+def test_status_places_the_publication_view(root: Path, inline: None) -> None:
+    """The `crate:` header line, through its three plain states."""
+    assert engine.status(root).crate == "not maintained — declare [project].license to enable it"
+
+    _declare_license(root)
+    assert engine.status(root).crate == "will be created by the next `lc materialize`"
+
+    engine.materialize(root, [])
+    assert engine.status(root).crate == "up to date with the outputs"
+
+
+def test_status_sees_the_crate_lag_a_rerun_leaves(root: Path, inline: None) -> None:
+    """The recorded residue made visible: a rerun rewrites a manifest but
+    never regenerates the view. Status reads the mismatch off the
+    document's own datePublished against the manifests it already read —
+    no git, no rocrate import."""
+    from dataclasses import replace
+
+    _declare_license(root)
+    engine.materialize(root, [])
+    directory = root / "results/baseline/second"
+    manifest = assets.read(directory)
+    assert manifest is not None
+    assets.write(directory, replace(manifest, finished_at="2027-01-01T00:00:00.000+00:00"))
+    dataset.save(root, [directory], "a rerun-shaped manifest rewrite")
+
+    assert engine.status(root).crate.startswith("behind")
+
+    engine.materialize(root, [])
+    assert engine.status(root).crate == "up to date with the outputs"
 
 
 def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: None) -> None:

@@ -97,7 +97,7 @@ def test_an_in_tree_write_is_its_own_kind_of_denial(policy: Policy, project: Pat
     stderr = "PermissionError: [Errno 13] Permission denied: 'astra.yaml'\n"
     joined = "\n".join(denial.explain(stderr, policy, cwd=project))
     assert "cannot write" in joined
-    assert "output goes in results/" in joined
+    assert "its own output directory" in joined
     assert "inputs:" not in joined
 
 

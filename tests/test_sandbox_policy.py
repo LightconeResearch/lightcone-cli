@@ -46,18 +46,54 @@ def test_the_tree_is_read_only_apart_from_results(
     assert not built.grants(project / ".venv" / "bin" / "python", built.write)
 
 
-def test_results_is_writable(tmp_path: Path) -> None:
-    """Output goes here, and it is the same scope a recipe gets — which
-    is what makes a probe a probe of the real thing.
+def test_results_is_writable_for_a_probe(tmp_path: Path) -> None:
+    """A probe has no output id, so its write scope is `results/` whole.
 
     A writable directory nested inside a read-only tree is the shape all
     three mechanisms express natively: Landlock unions rights so a nested
     grant only widens, SBPL restates the write tier after the guard, and
-    podman mounts `results` `:rw` over a `:ro` project."""
+    podman mounts the scope `:rw` over a `:ro` project."""
     project = tmp_path / "proj"
     (project / "results").mkdir(parents=True)
     with scope(policy_module.exec_policy(project)) as built:
         assert built.grants(project / "results" / "out.csv", built.write)
+
+
+def test_a_recipe_is_narrowed_to_its_own_output_directory(tmp_path: Path) -> None:
+    """The cross-write closure: a concurrent task landing bytes in a
+    sibling's directory before the sibling hashes produces a manifest
+    that is self-consistent and wrong — no checksum can ever see it, so
+    prevention is the only fix. Same nested-writable shape, one level
+    deeper."""
+    project = tmp_path / "proj"
+    own = project / "results" / "baseline" / "first"
+    sibling = project / "results" / "baseline" / "second"
+    own.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    with scope(policy_module.exec_policy(project, output_dir=own)) as built:
+        assert built.grants(own / "out.csv", built.write)
+        assert not built.grants(sibling / "out.csv", built.write)
+        assert not built.grants(project / "results", built.write)
+        assert built.grants(sibling / "out.csv", built.read), (
+            "an upstream output is still a readable input"
+        )
+
+
+def test_the_containerized_recipe_mounts_only_its_own_output_directory(
+    tmp_path: Path,
+) -> None:
+    """The mount table derives from the write set, so the narrowing must
+    survive into the containerized shape untranslated."""
+    project = tmp_path / "proj"
+    own = project / "results" / "baseline" / "first"
+    own.mkdir(parents=True)
+    with scope(
+        policy_module.exec_policy(
+            project, containerized=True, env_dir=project / ".lightcone/venv", output_dir=own
+        )
+    ) as built:
+        assert own in built.write
+        assert project / "results" not in built.write
 
 
 def test_results_is_granted_only_if_it_exists(tmp_path: Path) -> None:

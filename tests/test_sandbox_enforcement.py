@@ -382,6 +382,30 @@ def test_results_can_be_written(backend: sandbox.Backend, project: Path) -> None
     assert (project / "results" / "out.csv").read_text() == "out"
 
 
+def test_a_recipe_cannot_write_a_sibling_output_directory(
+    backend: sandbox.Backend, project: Path
+) -> None:
+    """The cross-write closure, at the kernel: a recipe granted its own
+    output directory cannot land bytes in a sibling's — the corruption
+    that would otherwise enter the sibling's digest as though its recipe
+    wrote it. Both writes target user-owned paths, so only the boundary
+    can refuse the first; the second is the mutation check in-place."""
+    own = project / "results" / "baseline" / "first"
+    sibling = project / "results" / "baseline" / "second"
+    own.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    (sibling / "value.txt").write_text("theirs\n")
+    with sandbox.scope(sandbox.exec_policy(project, output_dir=own)) as policy:
+        crossed = shell(
+            backend, policy, f"printf forged > {sibling / 'value.txt'}", cwd=project
+        )
+        owned = shell(backend, policy, f"printf mine > {own / 'value.txt'}", cwd=project)
+    assert crossed.returncode != 0
+    assert (sibling / "value.txt").read_text() == "theirs\n", "the file changed anyway"
+    assert owned.returncode == 0, owned.stderr
+    assert (own / "value.txt").read_text() == "mine"
+
+
 def test_a_declared_input_is_read_only(
     backend: sandbox.Backend, project: Path, outside: Path
 ) -> None:

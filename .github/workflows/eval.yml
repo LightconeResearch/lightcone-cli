@@ -8,7 +8,9 @@ name: Eval
 on:
   workflow_dispatch:
   pull_request:
-    types: [labeled]
+    # `ready_for_review` beside the defaults, so flipping a draft to
+    # ready triggers the run the draft guard below skips.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # Only one eval per PR at a time — cancel in-progress runs
 concurrency:
@@ -21,7 +23,7 @@ permissions:
 
 jobs:
   eval:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-eval'
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     # Step-level timeout on the agent step (below) is what actually
     # bounds the run: a job-level timeout would cancel the always()

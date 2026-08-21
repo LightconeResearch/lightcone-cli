@@ -201,16 +201,37 @@ def require_fetched(path: Path) -> None:
     """
     if path.is_symlink() and not path.exists():
         unfetched = _ANNEX_OBJECTS in path.readlink().as_posix()
-    elif path.stat().st_size > _POINTER_MAX_BYTES:
-        unfetched = False
     else:
-        with path.open("rb") as f:
-            unfetched = f.read(len(_POINTER_PREFIX)) == _POINTER_PREFIX
+        unfetched = is_pointer(path)
     if unfetched:
         raise ContentNotFetchedError(
             f"{path}: the content is not in this clone — git-annex holds a "
             f"reference to it, not the data. Fetch it with `git annex get {path}`."
         )
+
+
+def is_pointer(path: Path) -> bool:
+    """Test whether a regular file holds an annex pointer, not content.
+
+    git-annex's own ``isPointerFile`` rule, spelled once: a file no
+    larger than 32 KiB whose bytes begin ``/annex/objects/``. The locked
+    shape — a symlink into the object store — is a separate question the
+    callers ask themselves, because what a symlink means differs by
+    caller.
+
+    Args:
+        path: An existing regular file.
+
+    Returns:
+        Whether it is a pointer.
+
+    Raises:
+        OSError: If the file cannot be read.
+    """
+    if path.stat().st_size > _POINTER_MAX_BYTES:
+        return False
+    with path.open("rb") as f:
+        return f.read(len(_POINTER_PREFIX)) == _POINTER_PREFIX
 
 
 def _feed(h: hashlib._Hash, path: Path) -> None:
@@ -266,6 +287,12 @@ class Manifest:
     #: existed, not back-compat machinery.
     started_at: str = ""
     finished_at: str = ""
+    #: The uv that resolved and installed the environment the recipe ran
+    #: in — the one tool between the lock and the installed artifacts.
+    #: Attestation, like ``lc_version``: outside both hashes, never a
+    #: rebuild signal, defaulted empty because that is the true value for
+    #: a manifest written before the field existed.
+    uv_version: str = ""
     #: The image the recipe ran in — ``{tag, id, archive, arch}`` — or
     #: ``None`` on the host. Defaulted, and that is not back-compat
     #: machinery: ``None`` is the *true* value for every manifest a

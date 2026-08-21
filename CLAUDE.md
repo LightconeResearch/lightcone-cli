@@ -202,8 +202,9 @@ Test, lint and type-check are the whole loop, and they are what
 `.github/workflows/{tests,lint}.yml` run. There is deliberately no task
 runner in between — the pre-rebuild `justfile` was 90 lines of wrappers
 around them plus recipes for the frozen docs and the dormant eval. The
-other workflows are `eval.yml` (the agentic eval, on dispatch or PR
-label), `pypi-publish.yaml`, and `docs-deploy.yml` for the frozen docs.
+other workflows are `eval.yml` (the agentic eval, on dispatch or any
+non-draft PR — flipping a draft to ready triggers it),
+`pypi-publish.yaml`, and `docs-deploy.yml` for the frozen docs.
 
 ## Key Invariants (layer 1)
 
@@ -691,18 +692,37 @@ two projects that install the same artifacts are one environment however
 they spell it. `scan_lock` reads `default-groups` through the same
 function, because it is asking uv's question too.
 
-What this deliberately cannot reach is **user-level configuration**
-(`~/.config/uv/uv.toml`), which uv merges in underneath the project's own
-(measured). That is machine state, not project state: hashing it would
+What this deliberately cannot reach is **machine-level configuration**
+(user `~/.config/uv/uv.toml` and system `/etc/uv/uv.toml`), which uv
+merges in underneath the project's own (measured). That is machine
+state, not project state: hashing it would
 make one commit answer differently on two hosts, so a colleague's clone
-would report every output as behind. The residue is real and unguarded —
-a user-level `no-build` changes what a sync installs and nothing records
-it. **There is no flag that closes it**: `--config-file` refuses a
+would report every output as behind. **There is no flag that closes
+it**: `--config-file` refuses a
 `pyproject.toml` outright, and both `--config-file <empty>` and
 `--no-config` drop the project's own `[tool.uv]` along with everything
 else (measured; `--no-config` also drops `[tool.uv.index]`, which is the
-GPU mechanism, so adopting it would break working projects). Tracked as
-issue #176 with the options and the measurements; don't re-derive them.
+GPU mechanism, so adopting it would break working projects). Since the
+hardening pass the hole is *annotated at run time* (issue #176's
+advisory option): `identity._machine_config` checks the two documented
+paths per platform — those levels can only ever be a `uv.toml`, so the
+probe is complete, and it tests which *keys* a file sets because list
+settings concatenate across levels — and a hit lands in `scan_lock`'s
+advisory tier beside `sdist_built`. Never hashed, still. The env-var
+spelling of the same hole (`UV_NO_BINARY` and friends) is *closed*, not
+annotated: `project.child_env` scrubs ambient `UV_*` outside a plumbing
+allowlist (`_UV_KEPT` — cache dir, link mode, the managed-interpreter
+store and its mirror, timeouts, TLS, air-gap, credentials, uv's own
+recursion guard), and every uv-acting verb names the non-empty
+variables dropped through `project.uv_scrub_warning` — one composer,
+one predicate with the scrub: convergence puts it in the report (so
+`lc init` says it), materialize in its warnings, and the probe in its
+outcome's notes, which is why the CLI never composes it (issue #179).
+`lc build` deliberately says nothing: the image's uv runs inside the
+container build, where the host environment does not reach. The suite
+blinds itself to the host's machine config via
+the autouse `machine_uv_config` fixture — `/etc/uv/uv.toml` has no
+environment variable to scrub.
 
 **The git commit is recorded, never hashed, and never a signal.** It goes
 in the manifest so the code that produced a result stays recoverable. It
@@ -1090,10 +1110,10 @@ design. `lc --help` advertising it would hand people a footgun, and a
 `uv tool install`. `lightcone/_sandbox_exec.py` is the same shape for the
 same reason. Keep it cheap to import — **no click, no rich** — it is on
 the path of every task and every rerun.
-`test_the_worker_module_imports_neither_click_nor_rich` pins the imports
-and `test_help_does_not_advertise_the_worker` the absence from `--help`;
-nothing pins the absence of a `[project.scripts]` entry, so treat that
-as a review item.
+`test_the_worker_module_imports_neither_click_nor_rich` pins the imports,
+`test_help_does_not_advertise_the_worker` the absence from `--help`, and
+`test_the_worker_and_the_shim_are_never_console_scripts` the absence of
+a `[project.scripts]` entry.
 
 **The record's format is datalad's, so it is tested through datalad.**
 `get_run_info` matches with a regex and returns `(None, None)` on any
@@ -1112,25 +1132,22 @@ one thing it does put on disk is the per-run private `$HOME`
 `rmtree` of that directory has one owner. (`wrap` stays pure; the
 impurity lives in policy construction, once.)
 
-**There is one policy, `exec_policy`, and a recipe gets exactly what a
-probe gets.** The tree is read-only apart from `results/`, for both. So
-layer 5's promise is not "in the direction that matters" — it is simply
-true: a command that works under `lc run` works as a recipe, with nothing
-in between to reason about.
-
-A recipe is deliberately **not** narrowed to its own output directory.
-That would be a second answer to "are these bytes what produced them",
-and the manifest's `data_version` is the first — content-addressed,
-checked by `lc verify`, and the only one that survives a rebuild on
-another machine. Two mechanisms for one guarantee is one more than can be
-kept honest, and the sandbox's is the one that cannot travel.
-
-The residue, recorded rather than argued away: a cross-write that lands
-*before* the victim task hashes leaves a manifest that is self-consistent
-and wrong, which no checksum can see. It needs concurrent tasks and a
-hardcoded sibling path, and the threat model here is accidental leakage
-rather than a hostile recipe — but `lc verify` will not catch that one, so
-do not describe it as covered.
+**There is one policy, `exec_policy`, and it differs between a recipe
+and a probe by one keyword.** The tree is read-only apart from the
+in-tree write scope: a recipe's is **its own output directory**
+(`output_dir=`, handed down from the worker's task), a probe's is
+`results/` whole, because a probe has no output id. This narrowing is
+the hardening pass reversing an earlier decision (see Recorded
+decisions): it exists as leak *prevention*, closing the cross-write
+residue — a concurrent task landing bytes in a sibling's directory
+before the sibling hashes produced a manifest that was self-consistent
+and wrong, which no checksum could ever see, so prevention was the only
+possible fix. The probe→recipe promise ("a command that works under
+`lc run` works as a recipe") now excludes exactly the commands that
+write outside their own output directory — which is the accident being
+prevented, not a loophole in the promise. Integrity-answering is still
+`data_version`'s job alone; the sandbox prevents the write, it does not
+attest the bytes.
 
 **`cluster_for_run()` is the seam, and it is two methods wide.**
 `submit(fn, *args, key=…)` and `completed(handles)`. That is all the
@@ -1148,8 +1165,13 @@ provides that, and for what workers do *not* need (git, git-annex).
   refusal makes it constant. The limitation that comes with that, stated:
   the check is at start of run while manifests are written per-output much
   later, so a user who edits `src/fit.py` while a long graph runs gets a
-  manifest whose `git_sha` no longer describes the code that ran, and
-  nothing records it.
+  manifest whose `git_sha` no longer describes the code that ran. Since
+  the hardening pass the run *says* so — one `dataset.status` call after
+  the consume loop, warning with the edited paths (the tree started
+  clean and save/restore keeps `results/` clean, so any dirt appeared
+  mid-run) — but still records nothing in the manifest: the driver does
+  not rewrite files the worker owns, and per-output attribution would
+  need a per-save probe nothing has asked for yet.
 - **The manifest carries what this layer can honestly fill.**
   `schema_version`, `output_id`, `universe_id`, `recipe`,
   `definition_version`, `env_version`, `data_version`, `decisions`,
@@ -1161,12 +1183,18 @@ provides that, and for what workers do *not* need (git, git-annex).
   `started_at` / `finished_at` (ISO 8601 UTC, **millisecond** precision
   because RO-Crate consumers parse `endTime` with at most three
   fractional digits; attestation like `lc_version`, defaulted `""`,
-  never read by `classify`). Spec §3's longer list —
-  `uv_version`, `platform`, `worker_runtime`, `python_build`,
+  never read by `classify`), and since the hardening pass `uv_version`
+  (probed once per run by the driver — `project.uv_version` — and
+  handed down, the HEAD discipline; the rerun entry point probes its
+  own; empty on failure, attestation must not fail a run). Spec §3's
+  remaining list —
+  `platform`, `worker_runtime`, `python_build`,
   `dpkg_snapshot_sha256`, `sdist_built`, `env_snapshot`, `gpu_driver` —
   is attestation nothing here reads; it lands with the verb that reads
   it (`worker_runtime` is additionally derivable from
-  `hermeticity.mechanism`, so it may never land at all).
+  `hermeticity.mechanism`, so it may never land at all — the hardening
+  pass considered `platform` too and took only `uv_version`, the one
+  field the engine-closure decision named as its concrete loss).
 - **`env_version` has four terms.** Layer 6 added the image term —
   the system layer's identity document, hashed as the literal `null`
   for a direct project so the formula stays one formula. (The spec's
@@ -1328,10 +1356,20 @@ follows POSIX — unlinking a directory needs write on its *parent* — so a
 recipe granted write on its output directory cannot remove that
 directory. Seatbelt's `(allow file-write* (subpath …))` covers the
 directory node, and permits it. Found by CI, which is the point of
-running one suite on both. Nothing depends on either answer (the worker
-resets the directory anyway, and a recipe that removes it fails to record
-its output), so the asymmetry is documented rather than papered over —
-but a test that asserts one mechanism's answer will go red on the other.
+running one suite on both. Since the hardening pass narrowed a recipe's
+write scope to its own output directory, the asymmetry sits exactly on
+the node a ported recipe likes to `rm -rf` as a prelude (measured on
+real Landlock: `rm -rf "$OUT" && mkdir "$OUT"` is EACCES on Linux and
+succeeds on macOS) — so such a recipe is green on a laptop and red on
+the Linux venue. Nothing in *lc* depends on either answer: the worker
+resets the directory before every execution, so the prelude is
+redundant and the fix is deleting it; likewise a temp-then-rename
+through a `results/` sibling now fails on both platforms — scratch
+belongs in `$TMPDIR` (the private HOME), which is what the write-denial
+remedy says. The asymmetry cannot be closed without granting write on
+the *parent*, which is precisely the sibling-write hole the narrowing
+exists to close; documented rather than papered over, and a test that
+asserts one mechanism's answer will go red on the other.
 
 **SBPL is last-match-wins; Landlock unions.** This asymmetry decides
 where a rule can live, and it cuts both ways. A later `(deny …)` can take
@@ -1369,9 +1407,10 @@ stays self-describing without one.
 **The engine never enters the image.** The container is the *recipe's*
 execution world: driver, git, annex, dask and classification all stay the
 host's `lc`, and exactly two things ever run in-image — the environment
-converge (`container.sync`, network on, project `:rw`, host uv cache
-mounted, into `.lightcone/venv`) and each recipe/probe exec
-(`--network none`). This deviates from spec v6.1's full-stack rule,
+converge (`container.sync`, project `:rw`, host uv cache mounted, into
+`.lightcone/venv`) and each recipe/probe exec (mount table only — the
+converge differs by its writable mounts, not by network: the network is
+uncontrolled on every mechanism). This deviates from spec v6.1's full-stack rule,
 recorded: v6.1's reason was the host-sync deadlock, which the
 in-container sync solves, and the spec's own Perlmutter row ("recipe
 wrap, step 3 only — never the dask worker") is this exact shape. What it
@@ -1465,7 +1504,8 @@ attested by the manifest's image id and the archive's bytes. Read from
 containerized `exec_policy` shape is the same policy minus the host: no
 OS read baseline, no stdlib root, no exec set — the image *is* those,
 and everything in it was declared — leaving exactly the paths that
-become mounts, project `:ro`, `results/` `:rw`, declared inputs `:ro`,
+become mounts, project `:ro`, the write scope `:rw` (a recipe's own
+output directory; a probe's `results/`), declared inputs `:ro`,
 the private HOME `:rw`, `--tmpfs /tmp`, over a **`--read-only` rootfs**:
 without that flag a write outside the declared set *succeeds* into the
 container's ephemeral layer and vanishes while the run attests
@@ -1479,9 +1519,9 @@ every bind read and `:z` would relabel the user's own files. No
 in-container Landlock, no seccomp probe, no shim-in-image: the engine
 container never gets the tree `:rw`, so mounts alone express the whole
 policy, and the attestation (`mechanism: podman|docker`,
-`fs: declared`, `network: denied`) is derived flag-for-flag from the
-argv — `--network none` is the codebase's one honest `denied`, loopback
-intact. One `OCIBackend`, data-parameterized: podman and docker differ
+`fs: declared`, `network: allowed`) is derived flag-for-flag from the
+argv — no flag touches the network, the same non-control every
+mechanism attests. One `OCIBackend`, data-parameterized: podman and docker differ
 in spellings (`--userns=keep-id`+`--pull=never` vs `--user uid:gid`),
 not shape.
 Runtime is **host capability** — detected podman → docker, the
@@ -1521,8 +1561,9 @@ guarantees.
 discipline, a frozen `container.Runtime` through `worker.materialize` —
 because resolving per task could answer differently mid-run. The rerun
 entry point resolves its own, as it does HEAD: it *is* the driver of its
-one-task run. `lc status` gained the three header lines (mode, image
-state, sandbox) — repository facts only, no runtime and no network
+one-task run. `lc status` gained the header lines (mode, image
+state, sandbox — and, since the hardening pass, crate) — repository
+facts only, no runtime and no network
 required, which is where the denial note and the runtime-missing
 refusal point.
 
@@ -1665,11 +1706,10 @@ analogue is a one-time archive→SIF conversion into gitignored
 `.lightcone/` cache keyed by the same runtime-independent config-blob
 id (the reason `docker-archive` stays the store format).
 `container.backend()` stays the single construction point; a future
-world-backend is one dataclass in `sandbox/` plus one branch there. A
-runtime that cannot deny network must attest `network: allowed` with no
-denial flag emitted — no consumer may assume containerized ⇒ denied,
-and `_sandbox_line`'s containerized prose is the one place that
-assumption lives today. `boundary.run`'s exit-125 note is a
+world-backend is one dataclass in `sandbox/` plus one branch there.
+Since the hardening pass every mechanism attests `network: allowed`
+with no denial flag emitted, so a store-less runtime has nothing to
+imitate there. `boundary.run`'s exit-125 note is a
 podman/docker-family fact, not a `contains_prefix` fact — it becomes
 mechanism-keyed when a non-OCI backend lands.
 
@@ -1680,8 +1720,7 @@ behavior inside salloc/sbatch steps; `nidXXXXXX` resolution from peer
 nodes (else `--interface hsn0`); `SLURM_CPUS_ON_NODE` on a CPU node
 (128 vs 256 hyperthreads); cold-Lustre `distributed` import vs the
 120 s worker wait; `podman-hpc migrate` accepting a bare image id and
-re-running cheaply; `--network none` on compute nodes (the
-`network: denied` attestation hangs on it); podman-hpc `--module`
+re-running cheaply; podman-hpc `--module`
 site-injected mounts vs the honesty of `fs: declared` (the one item
 that could add a flag); whether Landlock is in the SLES boot LSM list
 (either answer is handled — a host without it attests `fs: open` with
@@ -1701,7 +1740,22 @@ is `git archive` / `datalad export-archive` on a repository that is
 already a crate; nothing is copied and there is no bundle directory.
 The rerun entry point deliberately does not regenerate it (it is one
 task's executor, not the driver), so the crate lags until the next
-materialize — recorded residue.
+materialize — and since the hardening pass `lc status` says so: its
+`crate:` line compares the document's own `datePublished` against the
+newest manifest `finished_at` the status walk already read — a content
+check, no git and no rocrate import (the recorded constraint that the
+crate stays the one materialize-only dependency on status's path). The
+`datePublished` pin is therefore load-bearing twice: it keeps the clock
+out of the render *and* it is what makes the lag detectable. The line's
+claim is scoped to what the proxy can see and worded to it ("up to date
+**with the outputs**" / "behind **the outputs**"): a crate-affecting
+edit that moves no manifest — the lock's bytes in a `File` entity, a
+spec edit — is invisible here, and fine, because the next materialize
+converges those anyway; a rerun's lag is the case with no other
+surface, and the proxy is exact for it in both directions (a dropped
+output regresses the newest stamp just as a rerun advances it).
+`license_of` and `CRATE_FILENAME` moved to `project.py` so
+status can ask about publication intent without the renderer's stack.
 
 **Publication intent is derived, never configured.** A
 `[project].license` in `pyproject.toml` turns crate maintenance on —
@@ -1749,6 +1803,28 @@ invented. What does get real vocabulary comes from the workflow-run
 JSON-LD drops on expansion — the pre-rebuild exporter's silent failure.
 The committed archive is one entity, `["File", "ContainerImage"]`,
 identity (`sha256` = config-blob id) and payload together.
+
+**A published `sha256` is always a raw digest an outsider can verify** —
+since the hardening pass, never lc's framed hash. Every file in an
+output directory is a `File` under its dataset's `hasPart`, with
+`sha256` and `contentSize` parsed from its SHA256E annex key
+(`dataset.annex_keys`, one `git annex find --include=*` — the
+`--include=*` is load-bearing, bare `find` lists only *present* files
+and the crate must answer bytes-free; the key map is injected into
+`render` like the writer, so the builder stays git-free). A non-SHA-256
+backend key yields size and no digest, never a wrong one; git-carried
+files hash their own working-tree bytes. Out-of-tree declared inputs
+publish *no* digest: their recorded `input_versions` value is the framed
+hash, which shipped once under the `sha256` term as though `sha256sum`
+could check it — the manifests keep that story. The dataset's `version`
+stays lc's framed directory digest, deliberately distinct from the
+per-file claims. The move re-scoped what an in-tree input's `sha256`
+*means*, and the old conflict rule went with it deliberately: a `File`
+entity's checksum now describes the deposit — the bytes a `git archive`
+carries — never what any particular run consumed, so two manifests
+recording different digests for a shared input (a half-rebuilt project)
+no longer suppress it; which bytes a *run* consumed is its own
+manifest's `input_versions`, in the crate as that manifest `File`.
 
 **The validator floor is pinned as a set, not a count.**
 `tests/test_crate_smoke.py` materializes a real project and runs the
@@ -1846,13 +1922,16 @@ unlinks before writing; a new tampering test should too.
     own image). One venue cost to remember: the `assets.Versions` memo
     degrades to once **per worker process**, so a declared input shared
     by many tasks is re-hashed per process — efficiency, not correctness.
-  - *The engine's dependency closure left the record entirely, and is not
-    replaced.* The project lock used to pin what the engine resolved —
-    most concretely the git-annex build that wrote the bytes. Now
-    `lc_version` names the engine and nothing pins what it was made of.
-    Accepted rather than re-provided: the alternative is hashing an
+  - *The engine's dependency closure left the record entirely, and is
+    mostly not replaced.* The project lock used to pin what the engine
+    resolved — most concretely the git-annex build that wrote the bytes.
+    Now `lc_version` names the engine, the hardening pass added
+    `uv_version` beside it (the one closure member that decides which
+    artifacts a lock installs), and nothing pins the rest. Accepted
+    rather than re-provided: the alternative is hashing an
     environment lc does not own into artifacts it does, which is the
-    over-sensitivity the `behind` model exists to avoid.
+    over-sensitivity the `behind` model exists to avoid — both fields
+    are attestation, never identity.
   - *Layer 6 resolved its note the other way:* the image gets **no
     engine layer at all**. The engine stays on the host in containerized
     mode too — the container is the recipe's world, never the engine's —
@@ -1865,9 +1944,10 @@ unlinks before writing; a new tampering test should too.
   resolved from PyPI; and recipes no longer find `lc` or `git-annex` on
   the sandbox PATH — the project `.venv/bin` no longer carries them,
   which is the boundary telling the truth. The `UV_*` ambient scrub the
-  launcher would have done is still worth having and is tracked
-  separately; it protects `env_version`'s install-settings term, not the
-  delegation that is gone.
+  launcher would have done landed in the hardening pass, in
+  `project.child_env` — it protects `env_version`'s install-settings
+  term, not the delegation that is gone (see the layer-2 residue note
+  for the allowlist).
 - **Reads stay restricted, and the OS baseline is ours to maintain.**
   Codex restricts reads too now, but its Linux read baseline is a *mount
   table*, not a path list — there is nothing to adopt there. Keeping the
@@ -1948,6 +2028,44 @@ unlinks before writing; a new tampering test should too.
   cross-builds) is layer 7's, with the venue that makes it real. Old
   archives accumulate in annex history; reclaiming them is the user's
   `git annex unused`/`drop` — no GC verb.
+- **The hardening pass** (2026-08, post-layer-8) closed the residues that
+  did not need Perlmutter, and re-examined two it then deliberately left:
+  - *A recipe is narrowed to its own output directory* — reversing the
+    layer-5 "not narrowed" decision. The old rationale rejected the
+    sandbox as a second *integrity* mechanism, and that half stands
+    (`data_version` remains the only answer to "are these bytes what
+    produced them"); what the narrowing is instead is leak *prevention*,
+    closing the cross-write residue, whose corruption was undetectable by
+    construction. A probe keeps `results/` whole (no output id), the one
+    probe/recipe asymmetry.
+  - *The network is uncontrolled everywhere*: the OCI wrap dropped
+    `--network none`, its one restriction, so all three mechanisms attest
+    `network: allowed` symmetrically and no consumer can read a promise
+    into "containerized". `denied` stays in the `Attestation` type for a
+    mechanism that genuinely emits a denial flag.
+  - *The forged run-record subject stays a recorded residue*, re-examined
+    and left: the threat model is accidental damage and shortcuts, and a
+    copied `[DATALAD RUNCMD]` subject is already deliberate — a
+    body-verifying comparator raises the forgery cost without changing
+    who it stops, and nothing history-based is adversary-proof anyway.
+  - *The crate validator floor stays pinned at five*: three entries are
+    publisher/affiliation metadata lc genuinely does not know, and a
+    `[tool.lightcone.publication]` surface was considered and rejected —
+    revisit when a real deposit target demands it.
+  - *lc's commits are partial commits, and a frozen execution worktree
+    is deferred, not rejected.* `dataset.save` commits with the same
+    pathspec it stages, so each save is built from HEAD plus its own
+    paths alone — work the user staged while a graph ran stays staged
+    and is named by the end-of-run warning, never swept into an output
+    or crate commit. The stronger move — executing in a dedicated
+    `git worktree` at the starting commit, which would also freeze the
+    *code* a long run reads — was considered and deferred to the venue
+    era: the branch dance under a live checkout, result propagation
+    back into it, and a second environment/mid-run-gate story outweigh
+    a hazard the warning now names precisely, and the case that makes
+    it genuinely worth it (editing on a login node while an `sbatch`
+    materialize runs for hours) arrives with the submission-model
+    venue.
 
 ### Recorded deviations from the spec
 
@@ -1970,12 +2088,16 @@ unlinks before writing; a new tampering test should too.
   invokes the shim on lc's own interpreter, so writer and reader are the
   same lightcone-cli by construction, and a compatibility field would be
   backward-compat machinery with no consumer.
-- **Network is not controlled, on either platform**, by decision. §7's
+- **Network is not controlled, on any mechanism**, by decision. §7's
   matrix has Seatbelt record `denied`; the generated SBPL explicitly
-  allows network and both platforms attest `network: allowed`. Symmetric
-  and honest — nothing pretends to a control it does not apply. (codex
-  ships a seccomp denylist for this; adding one is a live option, not a
-  gap we are hiding.)
+  allows network, and since the hardening pass the OCI backend emits no
+  `--network` flag either (it briefly shipped `--network none`, dropped
+  for consistency: three mechanisms, one answer). Every mechanism
+  attests `network: allowed` — symmetric and honest, nothing pretends
+  to a control it does not apply. (codex ships a seccomp denylist for
+  this; adding one is a live option, not a gap we are hiding — and it,
+  or a runtime that genuinely denies, is what the `denied` literal in
+  `Attestation` is reserved for.)
 - **`lc run` has no rename guard and no sandbox flags.** §4's guard
   against `lc run <output_id>` existed only for muscle memory from the
   pre-rebuild CLI — backward compatibility we do not promise — and §7's
@@ -1985,7 +2107,8 @@ unlinks before writing; a new tampering test should too.
 - **The denial's remedies are only what works today** — `uv add` for a
   Python package, the system layer (`apt-install` + the containerize
   note, real since layer 6), the ASTRA input declaration for data, and
-  "output goes in `results/`" plus `tempfile.mkdtemp()` for a write
+  "a recipe writes only its own output directory; a probe writes
+  `results/`" plus `tempfile.mkdtemp()` for a write
   denial. Nothing in a denial message names a verb, flag, or declaration
   that does not exist.
 - **`Attestation` has no serializer of its own.** An earlier draft
@@ -1995,17 +2118,20 @@ unlinks before writing; a new tampering test should too.
   into the manifest's `hermeticity` field. `lc run` is still a probe with
   no output (§4), so there the attestation is returned and printed, never
   persisted.
-- **`results/` is writable; the rest of the tree is not**, where §4 gives
-  a probe no output and therefore no in-tree write scope at all. A probe
-  gets the same write scope a recipe does, so a probe that works means a
-  recipe will — and the environment a run starts with is the one it
-  finishes with.
+- **The in-tree write scope is writable; the rest of the tree is not**,
+  where §4 gives a probe no output and therefore no in-tree write scope
+  at all. A probe writes `results/` whole; a recipe, since the hardening
+  pass, writes only its own output directory (the cross-write closure —
+  see the layer-4 policy invariant and Recorded decisions) — and the
+  environment a run starts with is the one it finishes with.
   - **The shape was chosen because all three mechanisms express it
     natively.** A writable directory *nested inside* a read-only tree is
     the widening direction: Landlock unions rights over ancestors, SBPL
     restates the write tier after the guard, and podman mounts the
-    project `:ro` with `results` `:rw` over it — all verified by running
-    them. The reverse — a writable tree with `.venv` carved out — needs
+    project `:ro` with the write scope `:rw` over it — all verified by
+    running them, and the narrowing to one output directory is the same
+    shape one level deeper. The reverse — a writable tree with `.venv`
+    carved out — needs
     rights *subtraction*, which podman and SBPL can do and **Landlock
     cannot at all**. That asymmetry is the whole argument: the read-only
     shape is the only one direct mode and containerized mode can both
@@ -2059,7 +2185,7 @@ unlinks before writing; a new tampering test should too.
 | Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
 | Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
 | Change where a run executes | `src/lightcone/engine/venue.py` + `materialize.cluster_for_run` + `tests/test_venue.py` | One detection ladder, in `cluster_for_run` alone; venues are detected, never configured; test by faking the host (env vars + a stub srun), never the code |
-| Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
+| Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer` and the annex key map as `keys`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
 | Change how a foreign write is detected | `dataset.last_writer` + `materialize._foreign_write` + `tests/test_dataset.py` | History, never hashing; `datalad_run_subject` is the one spelling of the record's subject; a foreign write classifies `stale` in every verb |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
 | Add a sandbox mechanism | `src/lightcone/engine/sandbox/` | One module with a `Backend` (`wrap` pure, `attest` honest) + one line in `detect()`. Nothing above the seam changes |
