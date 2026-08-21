@@ -2,8 +2,7 @@
 
 To work on a lightcone project you need two things on your machine:
 [uv](https://docs.astral.sh/uv/) and git. Everything else — Python
-itself, git-annex, the `astra` spec tooling — is installed by uv or
-ships with `lc`.
+itself included — is installed by uv or ships with `lc`.
 
 !!! note "Supported platforms"
     Linux (glibc 2.34+, x86_64 or aarch64) and macOS (14+ on Apple
@@ -49,18 +48,9 @@ is `lc`.
     python -m pip install lightcone-cli
     ```
 
-The install also puts `git-annex` on your `PATH` — `lc` versions every
-result in the project's own git repository, and git-annex is what
-carries the data bytes. You never run it by hand, but git dispatches to
-it, so it has to be installed; the wheel takes care of that.
-
-`astra-tools` is a dependency, so the `astra` CLI (spec validation,
-universe management) arrives with it.
-
 Get a confirmation of the proper installation by running
 
     lc --version                # → lc, version ...
-    git annex version           # → git-annex version: ...
 
 > **Note** Some people may have already set a personal shell alias
 > `lc='ls --color'`. If that's you, installing lightcone-cli will shadow

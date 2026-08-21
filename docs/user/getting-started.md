@@ -44,7 +44,7 @@ line-fit-demo/
 
 Two things are worth registering now:
 
-- **The project is a git repository, and that's load-bearing.** Every
+- **The project is a git repository.** Every
   output `lc` makes is committed together with the code that produced
   it; large files ride in git-annex behind the scenes, but you only
   ever type ordinary `git add` and `git commit`.
