@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from conftest import probes, uv_calls
 
-from lightcone.engine import templates
+from lightcone.engine import dataset, templates
 from lightcone.engine.project import (
     SPEC_FILENAME,
     ConvergenceReport,
@@ -212,10 +212,11 @@ def test_a_clone_of_a_converged_project_is_converged(tmp_path: Path) -> None:
     tracks has to be something git can carry, or a fresh clone reports
     drift forever.
 
-    Two items are exempt, and both for the same reason — they are local
+    Three items are exempt, and all for the same reason — they are local
     state git does not clone. `.venv` is git-ignored and rebuilt from the
-    lock, and `git clone` of an annexed repository leaves the annex
-    uninitialized until someone runs `git annex init`."""
+    lock, `git clone` of an annexed repository leaves the annex
+    uninitialized until someone runs `git annex init`, and the annex
+    filter is a `.git/config` entry, which a clone starts fresh."""
     project = tmp_path / "proj"
     converge(project)
 
@@ -230,7 +231,7 @@ def test_a_clone_of_a_converged_project_is_converged(tmp_path: Path) -> None:
     (clone / ".git").mkdir()
 
     report = converge(clone, write=False)
-    assert report.created == ["git-annex", ".venv"], report.created
+    assert report.created == ["git-annex", "annex-filter", ".venv"], report.created
 
 
 def test_converge_repairs_a_missing_piece(tmp_path: Path) -> None:
@@ -503,6 +504,93 @@ def test_surfaces_a_git_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(project_mod, "_run", fake_run)
     with pytest.raises(ProjectError, match="cannot mkdir"):
         converge(tmp_path / "proj")
+
+
+# ---- the annex filter ------------------------------------------------------
+#
+# `git annex init` wires the filter to a bare `git-annex`, resolved from
+# the PATH of whichever git runs — and the researcher's shell may hold
+# none (the engine invoked through uvx puts nothing on it), where a plain
+# `git add` prints an error, exits 0, and stages raw bytes into git
+# history. `filter.annex.required=true` makes git refuse instead. What
+# that refusal actually looks like is measured in test_dataset.py,
+# against a real annex and a real shell.
+
+
+def _config_writes(tools: list[list[str]]) -> dict[str, str]:
+    """The ``git config <key> <value>`` writes, last value per key."""
+    return {
+        c[2]: c[3]
+        for c in tools
+        if c[:2] == ["git", "config"] and len(c) == 4 and not c[2].startswith("-")
+    }
+
+
+def _annexed_but_unconverged(directory: Path) -> None:
+    """A repository as `git annex init` alone leaves it: annexed, and
+    carrying none of the config lc adds on top."""
+    directory.mkdir(parents=True, exist_ok=True)
+    dataset.init_git(directory)
+    dataset.init_annex(directory)
+
+
+def test_convergence_requires_the_annex_filter(tmp_path: Path, tools: list[list[str]]) -> None:
+    """The one thing `git annex init` does not set, and the only thing
+    this convergence writes — no filter driver is rewritten and no hook
+    is touched, so what git-annex configured stays exactly as it wrote it."""
+    project = tmp_path / "proj"
+
+    report = converge(project)
+
+    assert "annex-filter" in report.created
+    written = _config_writes(tools)
+    assert written["filter.annex.required"] == "true"
+    assert [key for key in written if key.startswith("filter.annex.")] == [
+        "filter.annex.required"
+    ]
+
+
+def test_a_converged_project_reconverges_unchanged(tmp_path: Path) -> None:
+    """The flag is read back, so a second run reports it unchanged rather
+    than repairing it on every invocation forever."""
+    project = tmp_path / "proj"
+    converge(project)
+
+    report = converge(project)
+
+    assert "annex-filter" in report.unchanged
+    assert report.converged
+
+
+def test_an_adopted_annex_without_the_flag_is_repaired(
+    tmp_path: Path, tools: list[list[str]]
+) -> None:
+    """A repository annexed before lc ever saw it: the annex is already
+    there, so the flag is *repaired* onto it rather than created."""
+    project = tmp_path / "proj"
+    _annexed_but_unconverged(project)
+    tools.clear()
+
+    report = converge(project)
+
+    assert "annex-filter" in report.repaired
+    assert _config_writes(tools)["filter.annex.required"] == "true"
+
+
+def test_check_mode_reports_the_missing_flag_and_writes_nothing(
+    tmp_path: Path, tools: list[list[str]]
+) -> None:
+    """Check mode asks the same question and answers it without writing:
+    the drift is reported, and no `git config` write is issued."""
+    project = tmp_path / "proj"
+    _annexed_but_unconverged(project)
+    tools.clear()
+
+    report = converge(project, write=False)
+
+    assert "annex-filter" in report.repaired
+    assert not report.converged
+    assert _config_writes(tools) == {}
 
 
 # ---- refusals -------------------------------------------------------------

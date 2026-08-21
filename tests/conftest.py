@@ -103,6 +103,10 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     # rather than on disk because `.git` is a *file* in a linked
     # worktree, so there is nowhere inside it to leave a marker.
     annexed: set[Path] = set()
+    # What `git config` has been told, per repository — the annex filter
+    # converges through a config write and a config read, and a fake that
+    # forgot the write would report the same item repaired forever.
+    config: dict[tuple[Path, str], str] = {}
 
     def fake_run(argv: list[str], *, cwd: Path) -> MagicMock:
         calls.append(list(argv))
@@ -121,6 +125,15 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             annexed.add(_repo(cwd))
         elif argv[:2] == ["git", "config"] and argv[-1] == "annex.uuid":
             return MagicMock(returncode=0 if _repo(cwd) in annexed else 1)
+        elif argv[:3] == ["git", "config", "--local"] and "--get" in argv:
+            # The key is last; the flags in between are git's own reading
+            # conventions (`--type=bool`), which the store does not model
+            # because the engine only ever writes one value.
+            value = config.get((_repo(cwd), argv[-1]))
+            code = 0 if value is not None else 1
+            return MagicMock(returncode=code, stdout=(value or "") + "\n", stderr="")
+        elif argv[:2] == ["git", "config"] and len(argv) == 4 and not argv[2].startswith("-"):
+            config[(_repo(cwd), argv[2])] = argv[3]
         elif argv[:2] == ["git", "check-ignore"]:
             return _fake_check_ignore(cwd, argv[-1])
         return MagicMock(returncode=0, stdout="", stderr="")

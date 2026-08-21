@@ -25,7 +25,9 @@ manages, and never overwrites files you own:
 - **Repaired** — derived artifacts that have drifted: a `uv.lock` that
   no longer matches `pyproject.toml`, a `.venv` that no longer matches
   the lock, a managed `.gitignore` or `.gitattributes` entry that a
-  newer `lc` added. Repairs only ever append or rebuild derived state;
+  newer `lc` added, an annexed repository still missing the
+  `filter.annex.required` flag. Repairs only ever append or rebuild
+  derived state;
   hand-written lines are never reordered or removed.
 - **Blocked** — something convergence can see but must not fix by
   appending: a `.gitignore` rule that would silently swallow
@@ -79,6 +81,27 @@ Two things it deliberately does *not* create: a `src/` directory
 (where analysis code lives is your layout, and git doesn't track empty
 directories), and any dependency in `pyproject.toml` — the lock
 carries only what *your* analysis imports, added with `uv add`.
+
+Inside `.git`, convergence sets one configuration key — reported as the
+`annex-filter` item:
+
+- `filter.annex.required=true`, always. Without it, a `git add` whose
+  shell cannot find git-annex prints an error, **exits 0, and stages
+  the raw bytes into git history** — a 2 GB dataset in git proper, on
+  every clone, forever. With it, the same situation is a hard, loud
+  failure and nothing is staged. Once the project holds committed
+  annexed content that refusal covers every command that must run the
+  filter, `git status` and `git diff` included — a project you cannot
+  use until git-annex is back, rather than one that silently absorbed
+  your data.
+
+That is the only thing `lc init` adds to what `git annex init` wrote.
+How git finds git-annex is still ordinary `PATH` resolution, which is
+why `lc` should be installed with `uv tool install lightcone-cli` — it
+puts `git-annex` on your `PATH` alongside `lc`. If your `git add` ever
+refuses, see
+[`fatal: … clean filter 'annex' failed`](../user/troubleshooting.md#fatal-clean-filter-annex-failed)
+in the troubleshooting guide.
 
 ## Options
 

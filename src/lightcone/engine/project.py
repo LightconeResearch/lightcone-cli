@@ -407,10 +407,18 @@ def _converge_dataset(c: _Converger, directory: Path) -> None:
     """
     c.item(".git", _in_repository(directory), lambda: dataset.init_git(directory))
     # After the item above, so a fresh project has a repository to annex.
+    # `annexed` is read *before* the item applies: in write mode the init
+    # runs inline, and the filter item below must still know whether this
+    # run created the annex (created) or found one (repaired).
+    annexed = _can_ask_git(directory) and dataset.is_annexed(directory)
+    c.item("git-annex", annexed, lambda: dataset.init_annex(directory))
+    # The one thing `git annex init` does not set, and the reason it
+    # matters is in `dataset.set_annex_filter_required`.
     c.item(
-        "git-annex",
-        _can_ask_git(directory) and dataset.is_annexed(directory),
-        lambda: dataset.init_annex(directory),
+        "annex-filter",
+        annexed,
+        lambda: dataset.set_annex_filter_required(directory),
+        is_current=lambda: dataset.annex_filter_required(directory),
     )
     attributes = directory / ".gitattributes"
     # Read before the repair, not after: the check is on the text a repair

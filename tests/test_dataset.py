@@ -10,6 +10,8 @@ restating what the code already believes.
 from __future__ import annotations
 
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -498,6 +500,135 @@ def test_the_worker_and_the_shim_are_never_console_scripts() -> None:
         assert "_sandbox_exec" not in entry.value
         assert entry.value.startswith("lightcone.cli") or entry.value in theirs, entry
 
+
+# ---- the annex filter, against a real shell ---------------------------------
+
+
+def _researcher_shell(tmp_path: Path) -> dict[str, str] | None:
+    """The environment a researcher's own `git add` runs in when nothing
+    put git-annex on their PATH — the uvx case. The system directories
+    carry git and the usual utilities; whether they also carry a
+    git-annex is the host's business, and where they do there is nothing
+    for these tests to prove. Probed by listing the directories rather
+    than `shutil.which`, which the autouse `tools` fixture narrows for
+    exactly the three tools this asks about."""
+    dirs = [Path("/usr/bin"), Path("/bin")]
+    if not any((d / "git").is_file() for d in dirs):
+        return None
+    if any((d / "git-annex").exists() for d in dirs):
+        return None
+    # `HOME` takes the global config out of play; `GIT_CONFIG_NOSYSTEM`
+    # does the same for `/etc/gitconfig`, where a site-wide
+    # `filter.annex.required` would otherwise decide these outcomes.
+    return {
+        "PATH": ":".join(str(d) for d in dirs),
+        "HOME": str(tmp_path),
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+
+
+def _shell_git(repo: Path, env: dict[str, str], *argv: str) -> subprocess.CompletedProcess[str]:
+    """Run git exactly as that shell would — not through `project._run`,
+    whose environment is lc's own and always resolves the bundled annex."""
+    git = next(p for d in env["PATH"].split(":") if (p := Path(d) / "git").is_file())
+    return subprocess.run(
+        [str(git), *argv], cwd=repo, env=env, capture_output=True, text=True, check=False
+    )
+
+
+@pytest.fixture
+def no_annex_shell(tmp_path: Path) -> dict[str, str]:
+    env = _researcher_shell(tmp_path)
+    if env is None:
+        pytest.skip("the system PATH itself resolves git-annex (or lacks git)")
+    return env
+
+
+def test_required_true_makes_the_missing_filter_loud_not_silent(
+    repo: Path, no_annex_shell: dict[str, str]
+) -> None:
+    """The whole claim, measured: with the flag set, a shell that cannot
+    resolve git-annex gets git's own hard refusal — nothing staged, exit
+    nonzero — instead of raw bytes in git history."""
+    assert not dataset.annex_filter_required(repo)
+    dataset.set_annex_filter_required(repo)
+    assert dataset.annex_filter_required(repo)
+    (repo / "data" / "catalog.fits").write_bytes(b"\x00" * 4096)
+
+    added = _shell_git(repo, no_annex_shell, "add", "data/catalog.fits")
+
+    # The facts, not git's wording: Linux git reports the failed handshake
+    # and then `fatal: <path>: clean filter 'annex' failed`, while macOS
+    # git dies on the pkt-line read with `fatal: the remote end hung up
+    # unexpectedly`. Both refuse, which is the whole claim.
+    assert added.returncode != 0
+    assert "annex" in added.stderr
+    staged = _shell_git(repo, no_annex_shell, "diff", "--cached", "--name-only")
+    assert staged.stdout.strip() == ""
+
+
+def test_the_flag_is_read_from_the_repository_never_the_users_global_config(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The write is repository-local, so the read must be too. A user who
+    once set the flag in `~/.gitconfig` would otherwise have every project
+    report converged while its own `.git/config` carried nothing — and
+    since this is local state a clone never receives, the protection would
+    vanish the moment the repository moved to CI or another account."""
+    global_config = tmp_path / "gitconfig"
+    global_config.write_text('[filter "annex"]\n\trequired = true\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+
+    assert not dataset.annex_filter_required(repo)
+
+    dataset.set_annex_filter_required(repo)
+    assert dataset.annex_filter_required(repo)
+    assert "required = true" in (repo / ".git" / "config").read_text()
+
+
+@pytest.mark.parametrize("spelling", ["true", "1", "yes", "on"])
+def test_any_spelling_git_reads_as_true_is_not_reported_as_drift(
+    repo: Path, spelling: str
+) -> None:
+    """git's booleans are not one string. A repository someone configured
+    by hand as `required = 1` is fully protected — reading it as drift
+    would rewrite a repository that was already correct, and report every
+    `lc init --check` on it as unconverged."""
+    dataset._git(["config", "filter.annex.required", spelling], cwd=repo)
+
+    assert dataset.annex_filter_required(repo)
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS git aborts the filter handshake outright (exit 128, "
+    "'the remote end hung up unexpectedly'), so the silent-passthrough "
+    "hazard recorded here is the Linux behaviour",
+)
+def test_stock_plumbing_without_required_stages_raw_bytes_silently(
+    repo: Path, no_annex_shell: dict[str, str]
+) -> None:
+    """The hazard the flag exists for, recorded as measured: as
+    `git annex init` leaves a repository, a shell without git-annex
+    prints an error, *exits 0*, and stages the raw bytes into git
+    history — a 2 GB dataset in git proper, on every clone, forever.
+    If this ever starts failing, git changed the behavior and the
+    `required=true` net is worth re-examining.
+
+    Linux-only, and that asymmetry is the point rather than a gap: macOS
+    git happens to refuse the same situation on its own, so there the
+    flag changes nothing — but a platform accident is not a guarantee,
+    and the flag is what makes the refusal one on every host."""
+    (repo / "data" / "catalog.fits").write_bytes(b"\x00" * 4096)
+
+    added = _shell_git(repo, no_annex_shell, "add", "data/catalog.fits")
+
+    assert added.returncode == 0
+    # Not the shell's exact wording: bash says "command not found" where
+    # dash — /bin/sh on Debian and Ubuntu — says only "not found".
+    assert "not found" in added.stderr
+    staged = _shell_git(repo, no_annex_shell, "cat-file", "-p", ":data/catalog.fits")
+    assert not staged.stdout.startswith("/annex/objects/")
 
 
 

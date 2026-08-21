@@ -20,6 +20,8 @@ Source: `src/lightcone/engine/dataset.py` (+
 | `last_writer(root, dir)` | Who last touched an output's directory — the foreign-write question. Answers "cannot say" as empty, never an error. |
 | `require_committer(root)` | Refuses a repository with no git identity, before any recipe spends time. Asked as `git var`, the question a commit itself asks. |
 | `dataset_id(root)` | The DataLad dataset UUID, read via `git config -f`. |
+| `set_annex_filter_required(root)` | Set `filter.annex.required=true`, so a `git add` that cannot reach git-annex fails loudly instead of staging raw bytes. |
+| `annex_filter_required(root)` | Whether that flag is already set — `lc init --check`'s question. |
 
 ## What must stay true
 
@@ -49,6 +51,15 @@ Source: `src/lightcone/engine/dataset.py` (+
 - **Committing an archive or dot-named file needs `annex.dotfiles`** —
   git-annex routes dotfiles to git whatever `largefiles` says, and
   without the flag an image archive lands as a git blob, silently.
+- **`filter.annex.required=true` is the storage policy's safety net.**
+  Without it, a `git add` whose shell cannot resolve git-annex prints
+  an error, exits 0, and stages the raw bytes into git history —
+  measured, and pinned by
+  `test_stock_plumbing_without_required_stages_raw_bytes_silently`.
+  It is the *only* thing convergence adds to what `git annex init`
+  wrote: no filter driver is rewritten, and no hook is touched, so how
+  git dispatches git-annex stays git-annex's own business and stays
+  resolved from `PATH`.
 
 ## Tests
 
