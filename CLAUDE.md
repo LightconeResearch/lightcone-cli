@@ -202,8 +202,9 @@ Test, lint and type-check are the whole loop, and they are what
 `.github/workflows/{tests,lint}.yml` run. There is deliberately no task
 runner in between — the pre-rebuild `justfile` was 90 lines of wrappers
 around them plus recipes for the frozen docs and the dormant eval. The
-other workflows are `eval.yml` (the agentic eval, on dispatch or PR
-label), `pypi-publish.yaml`, and `docs-deploy.yml` for the frozen docs.
+other workflows are `eval.yml` (the agentic eval, on dispatch or any
+non-draft PR — flipping a draft to ready triggers it),
+`pypi-publish.yaml`, and `docs-deploy.yml` for the frozen docs.
 
 ## Key Invariants (layer 1)
 
