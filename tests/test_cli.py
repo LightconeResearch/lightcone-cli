@@ -431,6 +431,24 @@ def test_a_failure_exits_nonzero(
     assert "blocked baseline/report" in result.output
 
 
+def test_engine_prose_is_rendered_as_written(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A warning naming `[project].license` must reach the terminal with
+    its brackets — rich would otherwise read them as a style tag and
+    swallow the word, turning the remedy into "no .license"."""
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(
+        monkeypatch,
+        materialize=MaterializeReport(warnings=["no [project].license declared"]),
+    )
+
+    result = runner.invoke(main, ["materialize"])
+
+    assert "no [project].license declared" in result.output
+
+
 def test_the_json_report_is_machine_readable(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
