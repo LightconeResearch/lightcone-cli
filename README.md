@@ -20,7 +20,7 @@ Then to install **lightcone-cli**:
 uv tool install lightcone-cli
 ```
 
-Once the CLI is installed, you can use it to create an ASTRA project and generate ouputs like so:
+Once the CLI is installed, you can use it to create an ASTRA project and generate outputs like so:
 
 ```bash
 lc init my-analysis
