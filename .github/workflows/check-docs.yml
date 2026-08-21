@@ -34,14 +34,30 @@ jobs:
             Your task: check whether the project documentation is still accurate
             and complete given the code changes introduced by this PR.
 
+            The documentation is structured, and each kind of change has a home:
+            - A verb's flags, output, JSON shape, or exit codes → its page in docs/cli/
+              (one page per verb, plus the overview's exit-code contract).
+            - An engine module's responsibility, key symbols, or invariants → its page
+              in docs/api/ (hand-written module tours) and, for cross-cutting shifts,
+              docs/architecture.md.
+            - User-visible behavior (scaffold contents, states, refusal messages,
+              environment model, SLURM, publication) → docs/user/ (getting-started
+              quotes real console output; troubleshooting quotes real refusals) and
+              README.md's quick start.
+            - Test structure, dev workflow, or conventions → docs/contributing/.
+
             Steps to follow:
             1. Run: git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }}
                to get the list of changed files.
-            2. Read the changed source files (focus on .py, .ts, .js, .go, .rs files).
-            3. Read existing documentation files (README*, docs/**/*.md, CHANGELOG*, CONTRIBUTING*).
-            4. SKIP any files under skills/ or named SKILL.md — these are not user-facing docs.
-            5. Identify any documentation that is now inaccurate, incomplete, or missing
-               given the code changes.
+            2. Read the changed source files (focus on src/**/*.py and the workflows).
+            3. Read the documentation pages the map above points at for those changes.
+            4. SKIP CLAUDE.md and evals/ — agent instructions and the eval harness are
+               maintained separately, not user-facing docs.
+            5. Identify documentation that is now inaccurate, incomplete, or missing.
+               Two failure modes matter most here: a quoted console output or refusal
+               message that no longer matches what the CLI prints, and a documented
+               flag, verb, state, or file that no longer exists (the docs must never
+               describe more than the code delivers — no foreshadowing).
 
             Then:
             - Post a comment on PR #${{ github.event.pull_request.number }} summarising

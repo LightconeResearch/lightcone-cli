@@ -34,8 +34,10 @@ spec:
 > spec, the decisions win. It lives in the sibling checkout for now
 > (branch `redesign_prototype`), alongside its decision records
 > (rationale, substrate tradeoffs, hermeticity enforcement, the v6
-> review); it moves into this repo's `docs/design/` when the docs are
-> rewritten at the end of the rebuild.
+> review). It stays in the sibling checkout and is **dropped when the
+> rebuild completes** (decision, 2026-08): the design records are not
+> imported into this repo's docs — the rewritten `docs/` carries the
+> current design, and this file carries the decisions.
 
 The pre-rebuild codebase (Snakemake shim, authored Containerfiles,
 `container:` in `astra.yaml`, vendored dask executor plugin, WRROC export)
@@ -104,10 +106,15 @@ Each of these has been asked for in review at least once; none is optional.
 
 - **No dead code.** If nothing in the current layer calls it, it doesn't
   land yet. `lc --help` advertises only verbs that work.
-- **`docs/` is frozen at its pre-rebuild state, by decision.** It still
-  describes the old Snakemake architecture and the full command set.
-  Don't patch it layer by layer — it gets rewritten in one pass once the
-  rebuild is complete. Same for `README.md` and `zensical.toml`.
+- **`docs/` is live again** (rewritten 2026-08, PRs #185–#188; the
+  freeze is over). The site is two tracks — user guide + developer
+  corner — and a change now lands with its docs: a new or changed verb
+  updates its `docs/cli/` page, an engine change updates its
+  `docs/api/` module page, and user-visible behavior updates the user
+  guide. The docs' own rules match this file's: document only what
+  exists, quote refusals from real runs, and verify every command
+  block by executing it. `check-docs.yml` reviews each merged PR for
+  drift.
 - **Port with intent.** Prior implementations (this repo's git history,
   and the `redesign_prototype` branch of the sibling `lightcone-cli`
   checkout) are references, not sources of truth. Neither is the spec by
@@ -201,10 +208,12 @@ uv build                         # wheel + sdist (CI runs this only to publish)
 Test, lint and type-check are the whole loop, and they are what
 `.github/workflows/{tests,lint}.yml` run. There is deliberately no task
 runner in between — the pre-rebuild `justfile` was 90 lines of wrappers
-around them plus recipes for the frozen docs and the dormant eval. The
-other workflows are `eval.yml` (the agentic eval, on dispatch or any
-non-draft PR — flipping a draft to ready triggers it),
-`pypi-publish.yaml`, and `docs-deploy.yml` for the frozen docs.
+around them. The docs build with `uv sync --group docs && uv run
+zensical build`. The other workflows are `eval.yml` (the agentic eval,
+on dispatch or the `run-eval` PR label; re-trigger by re-adding the
+label), `check-docs.yml` (doc-drift review on merged PRs),
+`pypi-publish.yaml`, and `docs-deploy.yml` (deploys on release, so the
+site tracks the released CLI).
 
 ## Key Invariants (layer 1)
 
@@ -2172,7 +2181,7 @@ unlinks before writing; a new tampering test should too.
 
 | To... | Read | Key patterns |
 |---|---|---|
-| Add the next layer | the spec (§11 = the layer ordering) | Land code + tests + deps together; update the layer table above. Docs are deliberately deferred |
+| Add the next layer | the spec (§11 = the layer ordering) | Land code + tests + deps together; update the layer table above and the docs pages the layer touches |
 | Change what a scaffolded file contains | `src/lightcone/engine/templates/files/` | Edit the `.tmpl`; add new ones to `TEMPLATE_NAMES`, and a renderer only if the file needs a substituted value or a merge policy |
 | Add a value to the scaffold | `src/lightcone/engine/templates/__init__.py` | Derive it from the environment or our own metadata before introducing a constant |
 | Change what gets converged | `src/lightcone/engine/project.py` + `tests/test_project.py` | `_Converger.item` / `.file`; repairs only ever append |
