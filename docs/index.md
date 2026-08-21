@@ -6,7 +6,7 @@ It serves as the machinery that ties an analysis `astra.yaml` specification to a
 of materialized outputs.
 
 !!! warning "Alpha development"
-    lightcone-cli is in **early alpha**. The CLI, skills, and execution layer are all
+    lightcone-cli is in **early alpha**. The CLI and the execution layer are
     still moving — expect breaking changes between minor versions. Bug reports, design
     challenges, and use cases the tooling doesn't yet cover are exactly what we want to
     hear at this stage; please open an issue on the
@@ -43,7 +43,7 @@ of materialized outputs.
 
 -   __lightcone-cli__
 
-    The library that ships the `lc` CLI: the workflow execution layer and the provenance integrity layer. Depends on [**astra-tools**][astra-tools], the SDK for working with ASTRA analysis specifications.
+    The library that ships the `lc` CLI: project scaffolding, locked environments, sandboxed execution, and the provenance layer. Depends on [**astra-tools**][astra-tools], the SDK for working with ASTRA analysis specifications.
 
     [:fontawesome-brands-github: Repository][cli]{ .md-button }
 

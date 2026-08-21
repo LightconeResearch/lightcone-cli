@@ -9,8 +9,6 @@ description: |
   using maximum-likelihood (MAP) point estimation. This provides best-fit
   cosmological parameters as a building block for a larger analysis.
 
-container: Containerfile
-
 inputs:
   - id: union21
     type: data

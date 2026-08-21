@@ -124,8 +124,15 @@ def init(directory: Path, check_only: bool, as_json: bool) -> None:
 
 def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: bool) -> None:
     """Print a convergence report: the items, then the verdict.
+
+    Engine prose and paths are escaped — they are data, not markup, and a
+    literal ``[project]`` or a bracketed path must reach the terminal as
+    written.
     """
+    from rich.markup import escape
+
     mark, style = ("·", "yellow") if dry_run else ("✓", "green")
+    where = escape(str(directory))
 
     lines: list[str] = []
     for items, label, item_mark, item_style in (
@@ -133,21 +140,24 @@ def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: 
         (report.repaired, "would repair" if dry_run else "repaired", mark, style),
         (report.blocked, "blocked", "✗", "red"),
     ):
-        lines += [f"  [{item_style}]{item_mark}[/{item_style}] {label} {item}" for item in items]
-    lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
+        lines += [
+            f"  [{item_style}]{item_mark}[/{item_style}] {label} {escape(item)}"
+            for item in items
+        ]
+    lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
 
     if report.converged:
         # A dry run over a converged project finds nothing to do because
         # there is nothing to do — one line serves both moods.
-        verdict = f"[green]✓[/green] {directory} is already converged — nothing to do"
+        verdict = f"[green]✓[/green] {where} is already converged — nothing to do"
     elif report.blocked:
         # A write run that left an item blocked did not converge the
         # project either; only a dry run gets to be neutral about it.
-        verdict = f"[red]✗[/red] {directory} is not converged"
+        verdict = f"[red]✗[/red] {where} is not converged"
     elif dry_run:
-        verdict = f"[yellow]![/yellow] {directory} is not converged"
+        verdict = f"[yellow]![/yellow] {where} is not converged"
     else:
-        verdict = f"[green]✓[/green] Project converged at {directory}"
+        verdict = f"[green]✓[/green] Project converged at {where}"
 
     if lines:
         lines.append("")  # space the verdict off the list
@@ -347,6 +357,8 @@ def status(as_json: bool) -> None:
         click.echo(json.dumps(report.as_dict(), indent=2))
         return
 
+    from rich.markup import escape
+
     lines = [f"  mode:    {report.mode}"]
     if report.image is not None:
         tag, state = report.image["tag"], report.image["state"]
@@ -369,10 +381,10 @@ def status(as_json: bool) -> None:
     # for machine consumers of `--json`.
     lines += [
         f"  {marks[o.status]} {o.status:<8} {o.output:<{width}}  "
-        f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{o.why}[/dim]" if o.why else "")
+        f"{o.git_sha[:7] or '—':<7}" + (f"  [dim]{escape(o.why)}[/dim]" if o.why else "")
         for o in report.outputs
     ]
-    lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
+    lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
 
     counts = report.counts
     if not report.outputs:
@@ -392,9 +404,16 @@ def status(as_json: bool) -> None:
 
 def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run: bool) -> None:
     """Print what ran, or what would.
+
+    Engine prose and paths are escaped — they are data, not markup, and a
+    literal ``[project]`` or a bracketed path must reach the terminal as
+    written. Task names need no escape: ASTRA ids cannot hold a bracket.
     """
+    from rich.markup import escape
+
+    where = escape(str(root))
     lines = [
-        f"  [yellow]·[/yellow] would run {name} — {why}"
+        f"  [yellow]·[/yellow] would run {name} — {escape(why)}"
         for name, why in report.planned.items()
     ]
     lines += [f"  [green]✓[/green] made {name}" for name in report.made]
@@ -402,21 +421,22 @@ def _render_materialize_output(report: MaterializeReport, root: Path, *, dry_run
     # an output came from, and the only line here that tells you something
     # you could not have worked out from the exit code.
     lines += [
-        f"  [cyan]·[/cyan] behind {name} — {why}" for name, why in report.behind.items()
+        f"  [cyan]·[/cyan] behind {name} — {escape(why)}"
+        for name, why in report.behind.items()
     ]
     lines += [f"  [dim]·[/dim] up to date {name}" for name in report.current]
     lines += [f"  [red]✗[/red] failed {name}" for name in report.failed]
     lines += [f"  [red]✗[/red] blocked {name}" for name in report.blocked]
-    lines += [f"  [yellow]![/yellow] {warning}" for warning in report.warnings]
+    lines += [f"  [yellow]![/yellow] {escape(warning)}" for warning in report.warnings]
 
     if not report.ok:
-        verdict = f"[red]✗[/red] {root} did not finish"
+        verdict = f"[red]✗[/red] {where} did not finish"
     elif report.up_to_date:
-        verdict = f"[green]✓[/green] {root} is up to date — nothing to do"
+        verdict = f"[green]✓[/green] {where} is up to date — nothing to do"
     elif dry_run:
         verdict = f"[yellow]![/yellow] {len(report.planned)} output(s) would be made"
     else:
-        verdict = f"[green]✓[/green] Made {len(report.made)} output(s) in {root}"
+        verdict = f"[green]✓[/green] Made {len(report.made)} output(s) in {where}"
     # On the verdict line as well as in the listing: on a large analysis the
     # listing scrolls away, and this is the one state that reports something
     # rather than doing it.
