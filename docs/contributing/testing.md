@@ -1,85 +1,77 @@
 # Testing
 
-## Test layout
+The suite's shape follows the engine's: pure modules get pure tests,
+the subprocess seam gets a stub, and the questions only a kernel, a
+runtime, or a validator can answer get real ones — gated so they can't
+pass by not running.
 
-```text
-tests/
-├── conftest.py             # shared fixtures
-├── test_cli.py             # Click CliRunner integration tests
-├── test_container.py       # detection, image tag, build_image, wrap_recipe, RuntimeChoice
-├── test_dask_cluster.py    # cluster_for_run branches & resource keys
-├── test_dask_plugin.py     # snakemake_executor_plugin_dask
-├── test_eval_tasks.py      # eval task seed specs validate against astra
-├── test_manifest.py        # write_manifest, sha256_dir, code_version
-├── test_snakefile.py       # generator + final `snakemake -n` parse test
-├── test_status.py          # OutputStatus across ok/stale/missing/alias
-├── test_tree.py            # collect_tree_outputs, find_upstream_output, …
-├── test_validation.py      # validate_output across metric/table/figure types
-└── test_verify.py          # verify_outputs across all three failure kinds
-```
+## The one seam
 
-Tests mirror `src/` 1:1 — when you add a module, add a test file at the
-matching path.
+`tests/conftest.py`'s autouse `tools` fixture stubs
+`engine.project._run` — the single choke point every external command
+goes through — emulating each tool's observable effect (`uv lock`
+writes `uv.lock`, `git init` makes `.git`, …) and recording every
+argv. Under the stub the suite is hermetic: no network, no resolution,
+no subprocesses.
 
-## Common patterns
+The `real_tools` fixture opts back out, putting the real `_run` back.
+Everything built on it (the `analysis` fixture, the rerun tests) does
+spawn and may touch the network — that is the deliberate price of
+testing execution.
 
-### CLI tests (Click `CliRunner`)
+## Where a question belongs
 
-```python
-from click.testing import CliRunner
-from lightcone.cli.commands import main
+| Question | File | Character |
+|---|---|---|
+| Convergence semantics | `test_project.py` | stubbed |
+| Template content & repair | `test_templates.py` | pure |
+| Do bytes land in the annex? | `test_dataset.py` | **real tools** — every bug this seam had was invisible to a stub |
+| Identity sensitivity | `test_identity.py` | pure, both directions |
+| The graph, the gate | `test_plan.py` | pure — tests what lc *adds*, never what a spec means (that's astra-tools' suite) |
+| Classification | `test_assets.py` | pure |
+| One output, real recipe | `test_worker.py` | real boundary, real repo |
+| The run, the record | `test_materialize.py` | real repos; one real `LocalCluster`; real `datalad rerun` |
+| Venue detection & launch | `test_venue.py` | fakes the *host* (env vars, a stub srun), never the code |
+| Policy / wrap / denial | `test_sandbox_*.py` | pure, run on every OS |
+| The kernel's answer | `test_sandbox_enforcement.py` | gated |
+| Image identity | `test_image.py` | pure — structure and ordering, never byte goldens |
+| Runtime lifecycle | `test_container.py` | stubbed; refusals asserted on recorded argv |
+| The runtime's answer | `test_container_smoke.py` | gated |
+| The crate | `test_crate.py` | pure; the one byte claim is render-twice-identical |
+| The validator's answer | `test_crate_smoke.py` | gated |
+| CLI surface | `test_cli.py` | `CliRunner`; assert short unwrappable fragments |
 
-def test_init_creates_structure(tmp_path):
-    runner = CliRunner()
-    result = runner.invoke(main, ["init", str(tmp_path / "myproject"), "--no-git", "--no-venv"])
-    assert result.exit_code == 0
-    assert (tmp_path / "myproject" / "astra.yaml").exists()
-```
+## The enforcement suite
 
-### End-to-end against a tmp project
+`test_sandbox_enforcement.py` is the only file that can tell you the
+sandbox works, and four properties keep it honest:
 
-`test_status.py`, `test_verify.py`, and `test_snakefile.py` build a
-minimal ASTRA project under `tmp_path` (one `astra.yaml`, one
-`universes/baseline.yaml`, optional sub-analyses), then run the
-function under test. Helpers:
+1. **One suite, both mechanisms** — parameterized by `detect()` alone;
+   a leak only Linux catches is a leak, and macOS CI is the sole place
+   the generated SBPL ever executes.
+2. **The real policy** — always `exec_policy`, never one hand-built to
+   make the point. (`/usr` once sat in the exec set through a fully
+   green suite built the other way.)
+3. **Real leaks, tried literally** — undeclared tools executed,
+   undeclared libraries `dlopen`ed, undeclared data read.
+4. **It cannot pass by not running** — `LC_SANDBOX_TESTS_REQUIRED=1`
+   in CI turns the skip into a failure, and two tests cover the guard
+   itself.
 
-- `astra.helpers.load_yaml` / `resolve_analysis_tree` mirror what
-  production code does.
-- `lightcone.engine.snakefile.generate(project, universes=[...], runtime="none")`
-  for tests that need an actual Snakefile.
+**Mutation-check every denial test**: run the same command through
+`Unavailable()` and confirm it *succeeds*. A denial test that would
+pass unsandboxed is testing nothing, and the failure mode is silent.
+Two related traps: a write-denial must target a path the OS would let
+you write (a `/etc` write pins nothing), and enforcement fixtures must
+not live under `/tmp`, which is inside the write baseline — the
+`outside` fixture roots at `$HOME` for exactly this reason.
 
-### Snakefile parsing
+## Conventions
 
-`tests/test_snakefile.py` ends with a parse test that runs
-`snakemake -n -s <generated-Snakefile>` to confirm the generator
-produces a Snakefile the upstream tool actually accepts. Add a similar
-assertion when changing rule shape.
-
-### Slow tests
-
-```bash
-uv run pytest -m slow            # opt in to the slow tests
-```
-
-The `slow` marker is reserved for tests that start a real Dask cluster.
-Do not use it for things that are merely a bit chatty — prefer trimming
-test scope.
-
-## Eval harness (separate)
-
-The agentic eval is a plain GitHub Actions workflow —
-`.github/workflows/eval.yml` — with no Python harness behind it. On
-each PR it scaffolds a project with `lc init`, overlays the seed files
-from `evals/tasks/snae/` (`astra.yaml`, `data/`), runs Claude Code
-headlessly with `evals/prompt.md` (the astra skill is installed from
-the `LightconeResearch/agent-skills` plugin marketplace), and then
-checks the outcome with `astra validate` and `lc status --json` — the
-job fails unless every declared output is materialized. Run metrics
-(turns, tool calls, cost, wall time) are extracted from the transcript
-by `.github/scripts/trace_digest.py` and posted as a sticky PR comment
-and job summary. Two artifacts are uploaded: `agent-trace` (the raw
-stream-json transcript plus a human-readable markdown digest) and
-`eval-project` (the built project with its provenance manifests).
-
-To reproduce locally, run the same commands the workflow does with
-`claude`, `lc`, and `astra` on PATH.
+- Don't add a flag whose only user is a test — stub `project._run`
+  instead.
+- A forged-output test must break the annex hard link before writing
+  (`test_materialize._forge` shows how) — results are committed thin,
+  so an in-place write dirties every byte-identical sibling.
+- Record formats are tested through their consumer (datalad's parser,
+  the rocrate validator), never as golden files of our own JSON.
