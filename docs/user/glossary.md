@@ -9,9 +9,9 @@ plain language.
 The schema lightcone-cli is built around. ASTRA's job is to capture an
 analysis's inputs, outputs, and methodological decisions in a single
 file (`astra.yaml`); lightcone-cli's job is to execute that spec
-reproducibly. ASTRA ships separately as the `astra-tools` package and
-the `astra` CLI handles the spec itself (validation, paper management,
-evidence verification).
+reproducibly. ASTRA ships separately as the `astra-tools` package, and
+its `astra` CLI handles the spec itself (validation, universe
+management, evidence verification).
 
 ## astra.yaml
 
@@ -21,20 +21,17 @@ nested via `analyses:` references.
 
 ## Recipe
 
-A short shell or Python command that produces an output. Lives inside
-an output's `recipe:` block in `astra.yaml`. Outputs declare which
-sibling outputs they depend on, and the recipe references them through
-placeholders:
+A short shell command that produces an output. Lives inside an output's
+`recipe:` block in `astra.yaml`. Outputs declare what they depend on,
+and the recipe references those dependencies through placeholders:
 
 ```yaml
 outputs:
-  - id: r2
+  - id: fit
+    inputs: [points]
+    decisions: [outliers]
     recipe:
-      command: python src/fit.py --output {output}
-  - id: fit_plot
-    inputs: [r2]
-    recipe:
-      command: python src/plot.py --r2_dir {inputs.r2} --output {output}
+      command: python src/fit.py --points {inputs.points} --outliers {decisions.outliers} --output {output}
 ```
 
 ## Decision
@@ -48,128 +45,139 @@ their `options`, and their `rationale`.
 
 One specific selection of decision values. Universes live as YAML
 files in `universes/` (e.g. `universes/baseline.yaml`,
-`universes/permissive.yaml`). Each universe materializes its results
+`universes/robust.yaml`). Each universe materializes its results
 to its own directory: `results/<universe>/<output_id>/`.
-
-If your spec has no universes, `lc run` materializes against a
-universe called `"default"` with all decisions at their declared
-defaults.
 
 ## Sub-analysis
 
 A nested ASTRA analysis with its own inputs, outputs, and decisions,
-referenced from a parent's `analyses:` section. The full tree shares
-one set of universes; sub-analyses can reference parent decisions
-with `from:` references. Sub-analyses are useful when an analysis has
-genuinely different stages (training vs. inference, fit vs. evaluate);
-keep things in one analysis when they share the same product.
+referenced from a parent's `analyses:` section. A sub-analysis output's
+directory uses its qualified id —
+`results/<universe>/<analysis>.<output>/` — so one addressing scheme
+spans however deep the spec nests.
+
+## Materialize
+
+Making the outputs the spec declares: `lc materialize` runs each recipe
+in dependency order and commits every result as it lands. Idempotent —
+a second run remakes only what is `stale`, and a run with nothing to do
+says so and touches nothing.
 
 ## Manifest
 
 The per-output sidecar JSON file
-(`<output_dir>/.lightcone-manifest.json`) that records what produced
-the output and what's inside it. Fields include `code_version`,
-`data_version`, `container_image`, `recipe`, `decisions`,
-`input_versions`, `git_sha`, `host`, `lc_version`, and a few more.
-Manifests are written atomically by `lc run` and read by `lc status`
-and `lc verify`.
+(`<output_dir>/.lightcone-manifest.json`) recording what produced the
+output: the recipe, the decisions, `definition_version`,
+`env_version`, `data_version`, `input_versions`, the git commit the
+run started at, the engine version, what enforcement actually ran
+(`hermeticity`), and — for containerized runs — the image. Written by
+the run, read by `lc status` and `lc materialize --check`; kept in
+plain git so a clone can classify a whole project without fetching any
+data.
 
-## code_version
+## definition_version
 
-A SHA-256 over `(recipe + container_image + decisions)`. The
-fingerprint of "what does this rule do?" When it drifts, downstream
-outputs go `stale` in `lc status`.
+A hash of an output's recipe and decision values — the fingerprint of
+"what is this output?". When it drifts, the output is `stale` and the
+next run remakes it.
+
+## env_version
+
+A hash of the environment — the lock file's bytes, the pinned
+interpreter, the install settings, and the image declaration if any.
+Deliberately *not* part of an output's definition: when it drifts, the
+output is `behind`, reported and left alone.
 
 ## data_version
 
-A SHA-256 over the contents of an output directory (excluding the
-manifest itself). The fingerprint of "what bytes were produced?"
-`lc verify` recomputes this and compares to the recorded value to
-catch tampering.
+A content hash over the files in an output's directory (or of a
+declared input). This is what flows downstream: a dependent is remade
+when an input's `data_version` changed, and a rebuild that comes out
+byte-identical stops the cascade right there.
 
 ## input_versions
 
-Inside a manifest, a dict mapping each declared input id to its
-version: the upstream output's `data_version` when the input is
-another materialized output, or an `mtime-size`/`sha256`
-fingerprint when the input is an external file. This is the chain
-`lc verify` walks back through.
+Inside a manifest, a map from each declared input to the
+`data_version` it had when the output was made. Comparing it against
+the present is how a change to an input cascades.
 
-## Container
+## current / behind / stale
 
-A Docker / Podman / podman-hpc image used to execute a recipe in
-isolation. Declared at the analysis level (`container: Containerfile`)
-or per-recipe (`recipe: { container: python:3.12-slim }`). Recipe-level
-overrides win.
+The three states an output can be in:
 
-## Containerfile
+- `current` — exactly what the spec asks for, made from these inputs,
+  under this environment. Nothing to do.
+- `behind` — still what the spec asks for; only the environment moved
+  since it was made. Reported, left alone; `--refresh` remakes.
+- `stale` — contradicts the project: the spec defines it differently,
+  an input changed, or the output was edited by hand. Remade on the
+  next run.
 
-A Dockerfile by another name (the syntax is identical). lightcone-cli
-calls them Containerfiles to make clear they work with podman as well
-as docker.
+## Direct mode / containerized mode
 
-## Image tag
+How recipes execute, derived from the project rather than configured.
+Direct mode (the default): the project's `.venv`, under the OS sandbox.
+Containerized mode: declaring `[tool.lightcone.image]` in
+`pyproject.toml` switches the project over — recipes run inside a
+content-addressed image built from that declaration.
 
-The string the runtime uses to identify a built image. lightcone-cli
-generates content-addressed tags for Containerfile builds:
-`lc-<project>-<sha256[:12]>`. The hash covers the Containerfile and
-your dependency files, so tags only change when the inputs to the
-build change.
+## Image
+
+Containerized mode's execution world: a base (digest-pinned), optional
+apt packages, and the pinned interpreter. Built by `lc build` and saved
+**into the repository** as versioned content, so clones obtain the
+exact bytes through git-annex with no registry involved. Execution pins
+the image's content id, never a tag.
 
 ## Runtime
 
-The OCI tool that actually executes containers: `docker`, `podman`,
-or `podman-hpc`. Set in `~/.lightcone/config.yaml` under
-`container.runtime`. `auto` picks the first usable; `none` opts out
-(runs recipes directly on the host).
+The OCI tool that executes containers. Detected, never configured:
+`podman-hpc`, then `podman`, then `docker` (skipped if its daemon is
+down).
 
-## Snakemake
+## Sandbox
 
-The workflow engine `lc run` shells out to. You don't need to learn
-Snakemake to use lightcone-cli — the Snakefile at `.lightcone/Snakefile`
-is auto-generated from your `astra.yaml`. If you're curious, peek at
-it; just don't edit it (your changes will get overwritten on the
-next `lc run`).
+The isolation every recipe and every `lc run` command executes under —
+Landlock on Linux, Seatbelt on macOS, the container boundary in
+containerized mode. The project tree is read-only apart from the
+output directory being made; undeclared tools don't execute. Each
+manifest's `hermeticity` field records what was actually enforced, and
+a host with no mechanism says so rather than pretending.
 
-## Dask
+## git-annex
 
-The distributed scheduler `lc run` dispatches jobs through. On a
-laptop it's a `LocalCluster` sized to your machine; inside a SLURM
-allocation it's an in-process scheduler with one `dask worker` per
-node launched via `srun`.
+How the repository carries data: git holds history and small files,
+git-annex holds the bytes of `data/` and `results/` behind ordinary
+git commands. You never run git-annex yourself except to fetch bytes
+on a clone (`git annex get`), and `lc materialize` even does that for
+declared inputs it needs.
+
+## Run record
+
+The commit message a materialized output is saved under — a
+machine-readable record of the exact command that made it, in a format
+`datalad rerun` can replay: it reconstructs the engine, the project
+environment, and the sandbox, and remakes the output from its spec.
+Your `git log` is the build log.
+
+## RO-Crate
+
+The publication view. Declare a `license` under `[project]` in
+`pyproject.toml` and every materialize maintains
+`ro-crate-metadata.json` — a machine-readable description of the
+project, its outputs, and the runs that produced them, following the
+Provenance Run Crate profile. The repository is the crate; deposit is
+`git archive`.
 
 ## Prior insight
 
 A piece of evidence from the literature that informs a decision.
-Lives in the `prior_insights:` section of `astra.yaml`. Each insight
-has a `claim`, one or more `evidence` entries with verbatim quotes,
-and a list of decision options it supports. Quotes are
-machine-verified against the source PDF.
+Lives in the `prior_insights:` section of `astra.yaml`, with a `claim`
+and verifiable `evidence` (DOI plus exact quote).
 
 ## Finding
 
-A conclusion drawn *from* the analysis (as opposed to a prior
-insight, which comes *into* the analysis). Findings live in the
-`findings:` section, can cite specific outputs as evidence, and act
-as the bridge between materialized results and the eventual paper.
-
-## Status (`ok`, `stale`, `missing`, `alias`)
-
-The four labels `lc status` produces:
-
-- `ok` — manifest present, recomputed `code_version` matches.
-- `stale` — manifest present but `code_version` drifted.
-- `missing` — no manifest at the expected output directory.
-- `alias` — output declared without a recipe; just a reference to
-  another output.
-
-## Failure kinds (`tampered_data`, `broken_chain`, `missing_manifest`)
-
-The three labels `lc verify` produces when something's wrong:
-
-- `tampered_data` — bytes on disk no longer match recorded
-  `data_version`.
-- `broken_chain` — recorded `input_versions` references an upstream
-  whose `data_version` drifted.
-- `missing_manifest` — output directory exists but the manifest is
-  missing or unparseable.
+A conclusion drawn *from* the analysis (as opposed to a prior insight,
+which comes *into* it). Findings live in the `findings:` section and
+cite specific outputs as evidence — the bridge between materialized
+results and the eventual paper.

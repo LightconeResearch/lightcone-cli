@@ -1,92 +1,77 @@
 # Development Setup
 
-You'll need:
-
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- [just](https://github.com/casey/just) — `brew install just` or `cargo install just`
-- Git
-- One of: docker, podman, podman-hpc (optional — only needed for
-  container tests and for projects that declare `container:`)
+Everything runs through [uv](https://docs.astral.sh/uv/); there is no
+task runner and no other build tooling.
 
 ## Clone & install
 
 ```bash
 git clone https://github.com/LightconeResearch/lightcone-cli.git
 cd lightcone-cli
-just install        # uv sync --all-groups (dev + docs)
+uv sync --group dev
 ```
 
-`just` (alone, with no recipe) lists everything available — the
-recipes that follow are the ones you'll touch most.
+That resolves the engine and the dev tools (pytest, ruff, mypy,
+datalad, the rocrate validator) into `.venv`. `uv run lc --version`
+runs the checkout's `lc`.
 
-## Running the test suite
+You also need `git` on `PATH` (the one tool uv cannot install);
+git-annex arrives as a wheel with the sync.
+
+## The loop
 
 ```bash
-just test               # uv run pytest
-just test-cov           # with coverage report
+uv run pytest                        # the suite
+uv run ruff check src/ tests/        # lint (--fix to apply)
+uv run mypy src/                     # strict mode
 ```
 
-The opt-in `slow` marker covers tests that spin up real subsystems
-(local Dask cluster, etc.). They are excluded by default; run with
-`uv run pytest -m slow` to include them.
+These three are exactly what CI runs (`tests.yml`, `lint.yml`) — green
+locally means green there, modulo the gated suites below.
 
-## Linting & types
+Most of the suite is hermetic: an autouse fixture stubs the engine's
+one subprocess seam, so tests spawn nothing and touch no network. The
+exceptions opt in explicitly — see [Testing](testing.md).
+
+### The gated suites
+
+Three suites answer questions only a real mechanism can, and each
+skips where its mechanism is missing — with an environment variable CI
+sets to turn the skip into a hard failure:
+
+| Variable | Suite | Needs |
+|---|---|---|
+| `LC_SANDBOX_TESTS_REQUIRED=1` | `test_sandbox_enforcement.py` | Landlock (Linux) or Seatbelt (macOS) |
+| `LC_CONTAINER_TESTS_REQUIRED=1` | `test_container_smoke.py` | podman or docker |
+| `LC_CRATE_TESTS_REQUIRED=1` | `test_crate_smoke.py` | nothing beyond dev deps |
+
+## Building the docs
 
 ```bash
-just lint               # ruff + mypy
-just fix                # ruff --fix
-just fmt                # ruff format
+uv sync --group docs
+uv run zensical build        # renders into site/
+uv run zensical serve        # live preview
 ```
 
-Ruff rules: `E, F, I, N, W, UP`. Line length: 100. Target: Python 3.11.
-Mypy is strict, with `namespace_packages = true` and
-`explicit_package_bases = true` (we ship a PEP 420 namespace package).
-
-## Building the docs locally
-
-```bash
-just docs-serve         # syncs docs group + live preview at http://127.0.0.1:8000
-just docs-strict        # build with --strict
-just docs               # one-shot build into site/
-```
-
-The docs use [zensical](https://zensical.org). The nav lives in
-`zensical.toml`.
+The site deploys on release (`docs-deploy.yml`), so docs track the
+released CLI, not `main`.
 
 ## Building the wheel
 
 ```bash
-just build              # uv build
-just version            # current version (from git tags via hatch-vcs)
+uv build
 ```
 
-The wheel ships two packages:
+CI runs this only to publish. The version comes from hatch-vcs — the
+git tag for a release, tag-plus-commit for a dev build — which is also
+what lets a run record pin a dev engine by its source commit.
 
-```toml
-[tool.hatch.build.targets.wheel]
-packages = ["src/lightcone", "src/snakemake_executor_plugin_dask"]
-```
+## Pre-PR checklist
 
-## Repo layout
-
-```text
-src/lightcone/                       # main namespace (PEP 420; no __init__.py at the package root)
-src/snakemake_executor_plugin_dask/  # Snakemake → Dask executor plugin
-tests/                               # pytest tree, mirrors src/
-evals/                               # agentic eval: prompt.md + task seeds (tasks/snae/)
-docs/                                # docs site
-```
-
-## Pre-commit checklist
-
-Quick sequence before pushing a PR:
-
-```bash
-just lint               # ruff + mypy
-just test               # full pytest run
-just docs-strict        # docs still build cleanly
-```
-
-Each line maps to one CI check. CI runs them serially; running locally
-catches everything before the PR machinery starts.
+1. `uv run pytest` — including, if your change touches the sandbox,
+   containers, or the crate, the relevant gated suite on a host that
+   can run it.
+2. `uv run ruff check src/ tests/` and `uv run mypy src/`.
+3. New behavior lands with its tests, in the same PR.
+4. Read [Extending](extending.md) — it says where each kind of change
+   belongs, and the invariants it must keep.

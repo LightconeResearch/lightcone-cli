@@ -8,19 +8,35 @@ This project is driven by two CLIs — use them rather than improvising:
   `astra validate astra.yaml` checks it against the schema. If an `astra`
   skill or plugin is available in your environment, load it before reading
   or editing `astra.yaml` — it documents the full spec format.
-- `lc` (lightcone-cli) is the execution layer, a thin shim over Snakemake:
-    - `lc run <output_id> --universe baseline` materializes an output (and
-      anything upstream of it) by running the recipe commands declared in
-      `astra.yaml`. With no output ids it builds everything. It is
-      idempotent: re-running only rebuilds what is stale or missing.
-    - `lc status --universe baseline` reports each output as `ok`, `stale`,
-      or `missing`; `lc status --json` is the machine-readable form.
+- `lc` (lightcone-cli) is the execution layer:
+    - `lc materialize` makes every output the spec declares, running each
+      recipe in dependency order and committing each result to git as it
+      lands, together with a provenance manifest. It refuses to start on
+      a dirty tree: commit your own edits first, with plain `git add` and
+      `git commit` — the project's git-annex filter handles large files
+      transparently, so never run a git-annex command yourself.
+    - `lc materialize <output_id>` (or `<universe>/<output_id>`) narrows
+      a run to one output and whatever it depends on. Re-running is
+      idempotent: only what is stale gets remade — an output the spec now
+      defines differently, or one whose declared inputs changed.
+    - `lc status` reports each output as `current`, `stale`, or `behind`,
+      with the commit it was made at; `lc status --json` is the
+      machine-readable form. It always exits 0. The pass/fail gate is
+      `lc materialize --check`, which exits 1 while anything still needs
+      making.
+    - `lc run <command>` runs an ad-hoc command in the project
+      environment under the same isolation a recipe gets — useful for
+      probing why a recipe would fail. Argv style, like `docker run` or
+      `uv run`: `lc run python scripts/fit.py --output /tmp/x`, never a
+      single quoted shell string; for shell syntax use
+      `lc run bash -c '...'`.
     - Outputs land in `results/baseline/<output_id>/`, each with a
-      `.lightcone-manifest.json` provenance manifest written by the engine.
-      Files placed in `results/` by hand have no manifest and fail
-      verification — never write there yourself.
-    - When `lc run` fails, read the error and the Snakemake log it points
-      to, fix the script or spec, and re-run.
+      `.lightcone-manifest.json` manifest written and committed by the
+      engine. Never write into `results/` yourself: a hand-placed file
+      has no run record, and the engine detects the foreign write and
+      remakes the output.
+    - When a recipe fails, `lc materialize` reports which output failed
+      and why; fix the script or the spec, commit, and re-run.
 
 ## Recipe template grammar
 
@@ -49,37 +65,59 @@ is how the engine orders the build.
 
 ## Environment
 
-Recipes and your interactive shell run in two different environments —
-keep them straight:
+Recipes run in the project's own locked environment (`pyproject.toml` +
+`uv.lock` + `.venv`), sandboxed: the project tree is read-only apart from
+each recipe's own output directory under `results/`, and only declared
+tools are executable.
 
-- **Recipe commands run by `lc run`** may execute inside a container
-  built from the project's `Containerfile` + `requirements.txt`
-  (whenever `astra.yaml` declares a `container:` and a runtime is
-  available). Every package a recipe script imports must therefore be
-  listed in `requirements.txt` — add it there *before* running, and the
-  engine rebuilds the content-addressed image automatically. Host-side
-  installs never reach the container.
-- **Your own shell commands** run on the host in an activated uv-managed
-  virtual environment with numpy, scipy, and matplotlib pre-installed.
-  For ad-hoc host tools use `uv pip install <package>` — plain `pip` is
-  not available in this venv.
+- The project is managed by uv and starts with **no dependencies**.
+  Every package a recipe script imports must be declared before
+  materializing: run `uv add <package> [<package> ...]` in the project
+  root (e.g. `uv add numpy scipy`). That updates `pyproject.toml`,
+  re-locks `uv.lock`, and syncs `.venv` in one step — commit all of it
+  along with your scripts, like any other edit.
+- To remove a package use `uv remove <package>`; to pin a version,
+  `uv add 'numpy>=2'`. Do **not** use plain `pip` or `uv pip install` —
+  an install that bypasses the lock reaches nothing a recipe sees.
+- A sandbox denial names the path or tool that was denied and the
+  remedy — follow the remedy rather than working around the sandbox.
 
 ## Build loop
 
 `astra.yaml` is the single source of truth: inputs, outputs, recipes, and
-methodological decisions all live there — read it first. For each output
-that needs materializing:
+methodological decisions all live there — read it first. The seed spec is
+deliberately incomplete: recipe commands do not yet pass their inputs,
+decisions, or output directory, and outputs may be missing entries in
+their `inputs:` / `decisions:` contracts. Completing the spec is part of
+the task. For each output:
 
-1. Read the recipe's `command` to see what script and arguments it expects.
+1. Complete the recipe `command` so it references `{output}` and the
+   `{inputs.<id>}` / `{decisions.<id>}` the computation needs, and
+   declare everything it references in that output's `inputs:` /
+   `decisions:` lists.
 2. Write the script at the path the command names, parameterizing every
    decision via argparse — never hardcode option values.
-3. Run `lc run <output_id> --universe baseline` to materialize it through
-   the engine.
-4. Commit progress as you go.
+3. Commit your edits, then run `lc materialize` (or
+   `lc materialize <output_id>`) to build through the engine.
 
-Build iteratively from upstream outputs to downstream. `lc status
---universe baseline` shows you what's `ok`, `stale`, or `missing` — you're
-done when every output shows `ok` and `astra validate astra.yaml` passes.
+Build iteratively from upstream outputs to downstream. `lc status` shows
+where every output stands.
+
+## Publication
+
+Once every output is materialized, prepare the repository for
+publication:
+
+1. Declare a license in `pyproject.toml`, as an SPDX expression under
+   `[project]` — e.g. `license = "CC-BY-4.0"`. Declaring one is what
+   turns publication on: from then on `lc materialize` also maintains
+   `ro-crate-metadata.json` at the project root, an RO-Crate view of
+   the project and its provenance.
+2. Commit the edit, then run `lc materialize` once more — nothing is
+   remade, but the crate document is generated and committed.
+
+You're done when `astra validate astra.yaml` and
+`lc materialize --check` pass and `ro-crate-metadata.json` exists.
 
 Skip plan approval and interactive confirmations — this is an automated
 eval run.

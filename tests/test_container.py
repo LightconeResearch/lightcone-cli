@@ -1,750 +1,617 @@
-"""Tests for the container runtime layer.
+"""Tests for `lightcone.engine.container` — the image lifecycle, stubbed.
 
-Covers tag computation, build invocation, runtime detection/config, and
-the recipe wrap that the Snakefile generator embeds into ``shell()``.
+Every runtime command goes through `project._run`, so these tests hand it
+a fake that models each command's observable effect and records every
+argv — the same discipline as convergence's `tools` fixture. What a real
+runtime does with the argv is `test_container_smoke.py`'s question.
 """
+
 from __future__ import annotations
 
-import shlex
-from collections.abc import Iterator
+import io
+import json
+import shutil
+import tarfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-import yaml
 
-from lightcone.engine.container import (
-    RUNTIMES,
-    ContainerBuildError,
-    build_image,
-    compute_image_tag,
-    detect_runtime,
-    find_dependency_files,
-    get_container_status,
-    image_exists_locally,
-    image_exists_podman_hpc,
-    is_containerfile,
-    load_runtime,
-    pull_image,
-    resolve_image_for_run,
-    wrap_recipe,
-)
+from lightcone.engine import container, image, project
+from lightcone.engine.project import ProjectError
+
+_TABLE = '[tool.lightcone.image]\napt-install = ["bc"]\n'
+_CONFIG = b'{"architecture":"amd64","os":"linux"}'
 
 
 @pytest.fixture
-def project(tmp_path: Path) -> Path:
-    """Minimal project with a Containerfile."""
-    (tmp_path / "Containerfile").write_text("FROM python:3.12-slim\n")
-    return tmp_path
+def root(tmp_path: Path) -> Path:
+    project_dir = tmp_path / "analysis"
+    project_dir.mkdir()
+    (project_dir / "pyproject.toml").write_text(
+        '[project]\nname = "analysis"\nversion = "0.1.0"\n'
+        'requires-python = ">=3.11"\ndependencies = []\n' + _TABLE
+    )
+    (project_dir / ".python-version").write_text("3.12.11\n")
+    return project_dir
+
+
+def _write_archive(path: Path, config: bytes = _CONFIG) -> str:
+    """Write a minimal but structurally real docker-archive at *path*."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(path, "w") as tar:
+        for name, data in (
+            ("abc.json", config),
+            ("manifest.json", json.dumps([{"Config": "abc.json", "RepoTags": []}]).encode()),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    import hashlib
+
+    return hashlib.sha256(config).hexdigest()
 
 
 @pytest.fixture
-def project_with_deps(project: Path) -> Path:
-    (project / "requirements.txt").write_text("numpy\npandas\n")
-    (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
-    return project
+def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """A podman-having host: records argv, models each command's effect.
 
+    Every tool name resolves except ``podman-hpc`` — a site wrapper no
+    laptop has, and it would win detection everywhere. The host's
+    architecture is pinned to the test archives' ``amd64`` so the arch
+    gate answers the same on every CI machine.
+    """
+    calls: list[list[str]] = []
+    loaded: set[str] = set()
 
-# ---- find_dependency_files / compute_image_tag ----------------------------
-
-
-class TestFindDependencyFiles:
-    def test_finds_requirements_txt(self, project: Path) -> None:
-        (project / "requirements.txt").write_text("numpy\n")
-        found = find_dependency_files(project)
-        assert [f.name for f in found] == ["requirements.txt"]
-
-    def test_finds_pyproject_toml(self, project: Path) -> None:
-        (project / "pyproject.toml").write_text("[project]\n")
-        found = find_dependency_files(project)
-        assert [f.name for f in found] == ["pyproject.toml"]
-
-    def test_skips_missing_files(self, project: Path) -> None:
-        assert find_dependency_files(project) == []
-
-    def test_finds_multiple(self, project_with_deps: Path) -> None:
-        names = {f.name for f in find_dependency_files(project_with_deps)}
-        assert {"requirements.txt", "pyproject.toml"} <= names
-
-
-class TestComputeImageTag:
-    def test_deterministic(self, project: Path) -> None:
-        cf = project / "Containerfile"
-        assert compute_image_tag("test", cf, project) == compute_image_tag("test", cf, project)
-
-    def test_tag_format(self, project: Path) -> None:
-        tag = compute_image_tag("my-project", project / "Containerfile", project)
-        assert tag.startswith("lc-my-project-")
-        assert len(tag.removeprefix("lc-my-project-")) == 12
-
-    def test_changes_with_containerfile(self, project: Path) -> None:
-        cf = project / "Containerfile"
-        tag1 = compute_image_tag("test", cf, project)
-        cf.write_text("FROM ubuntu:22.04\n")
-        tag2 = compute_image_tag("test", cf, project)
-        assert tag1 != tag2
-
-    def test_changes_with_requirements(self, project: Path) -> None:
-        cf = project / "Containerfile"
-        tag1 = compute_image_tag("test", cf, project)
-        (project / "requirements.txt").write_text("numpy\n")
-        tag2 = compute_image_tag("test", cf, project)
-        assert tag1 != tag2
-
-    def test_sanitises_project_name(self, project: Path) -> None:
-        tag = compute_image_tag("My Project", project / "Containerfile", project)
-        assert tag.startswith("lc-my-project-")
-
-    def test_changes_with_uv_lock(self, project: Path) -> None:
-        cf = project / "Containerfile"
-        tag1 = compute_image_tag("test", cf, project)
-        (project / "uv.lock").write_text("# v1\n")
-        tag2 = compute_image_tag("test", cf, project)
-        assert tag1 != tag2
-
-    def test_changes_with_copied_file(self, project: Path) -> None:
-        cf = project / "Containerfile"
-        cf.write_text("FROM python:3.12-slim\nCOPY app.py /app/app.py\n")
-        (project / "app.py").write_text("print(1)\n")
-        tag1 = compute_image_tag("test", cf, project)
-        (project / "app.py").write_text("print(2)\n")
-        tag2 = compute_image_tag("test", cf, project)
-        assert tag1 != tag2
-
-    def test_directory_copy_source_is_rejected(self, project: Path) -> None:
-        """The image is an environment, not a code snapshot: directory
-        COPY sources (COPY src/, COPY . .) raise with guidance instead
-        of silently baking in a copy nothing executes."""
-        cf = project / "Containerfile"
-        cf.write_text("FROM python:3.12-slim\nCOPY src/ /app/src/\n")
-        (project / "src").mkdir()
-        (project / "src" / "a.py").write_text("a = 1\n")
-        with pytest.raises(ContainerBuildError, match="directory"):
-            compute_image_tag("test", cf, project)
-
-    def test_copy_dot_is_rejected(self, project: Path) -> None:
-        cf = project / "Containerfile"
-        cf.write_text("FROM python:3.12-slim\nCOPY . /app/\n")
-        with pytest.raises(ContainerBuildError, match="not supported"):
-            compute_image_tag("test", cf, project)
-
-    def test_skips_from_stage_copy(self, project: Path) -> None:
-        cf = project / "Containerfile"
-        cf.write_text(
-            "FROM python:3.12-slim AS builder\n"
-            "FROM python:3.12-slim\n"
-            "COPY --from=builder /tmp/x /app/x\n"
-        )
-        # No real source on host, but parsing must not raise or expand.
-        tag = compute_image_tag("test", cf, project)
-        assert tag.startswith("lc-test-")
-
-    def test_skips_url_add(self, project: Path) -> None:
-        cf = project / "Containerfile"
-        cf.write_text(
-            "FROM python:3.12-slim\nADD https://example.com/x.tgz /app/x.tgz\n"
-        )
-        tag = compute_image_tag("test", cf, project)
-        assert tag.startswith("lc-test-")
-
-    def test_glob_copy_invalidates_on_match_change(self, project: Path) -> None:
-        cf = project / "Containerfile"
-        cf.write_text("FROM python:3.12-slim\nCOPY *.py /app/\n")
-        (project / "main.py").write_text("x = 1\n")
-        tag1 = compute_image_tag("test", cf, project)
-        (project / "main.py").write_text("x = 2\n")
-        tag2 = compute_image_tag("test", cf, project)
-        assert tag1 != tag2
-
-    def test_swap_dep_file_names_not_collision(self, project: Path) -> None:
-        # Same total bytes, swapped between two dep files: must not collide
-        # (the old concat-without-delimiter scheme would have).
-        (project / "requirements.txt").write_text("numpy\n")
-        (project / "requirements-dev.txt").write_text("pandas\n")
-        tag1 = compute_image_tag("test", project / "Containerfile", project)
-        (project / "requirements.txt").write_text("pandas\n")
-        (project / "requirements-dev.txt").write_text("numpy\n")
-        tag2 = compute_image_tag("test", project / "Containerfile", project)
-        assert tag1 != tag2
-
-
-# ---- image_exists_locally / image_exists_podman_hpc -----------------------
-
-
-class TestImageExistsLocally:
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_docker_exists(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=0)
-        assert image_exists_locally("lc-foo", runtime="docker") is True
-        assert mock_run.call_args[0][0][0] == "docker"
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_podman_exists(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=0)
-        assert image_exists_locally("lc-foo", runtime="podman") is True
-        assert mock_run.call_args[0][0][0] == "podman"
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_not_exists(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=1)
-        assert image_exists_locally("lc-foo", runtime="docker") is False
-
-    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
-    def test_runtime_not_installed(self, mock_run: MagicMock) -> None:
-        assert image_exists_locally("lc-foo", runtime="docker") is False
-
-    @patch("lightcone.engine.container.image_exists_podman_hpc", return_value=True)
-    def test_podman_hpc_delegates(self, mock_phpc: MagicMock) -> None:
-        assert image_exists_locally("lc-foo", runtime="podman-hpc") is True
-        mock_phpc.assert_called_once_with("lc-foo")
-
-
-class TestImageExistsPodmanHpc:
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_exists(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=0)
-        assert image_exists_podman_hpc("img:v1") is True
-
-    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
-    def test_not_installed(self, mock_run: MagicMock) -> None:
-        assert image_exists_podman_hpc("img:v1") is False
-
-
-# ---- build_image ----------------------------------------------------------
-
-
-class TestBuildImage:
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_docker_success(self, mock_run: MagicMock, project: Path) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
-        result = build_image("lc-test", project / "Containerfile", project, runtime="docker")
-        assert result.tag == "lc-test"
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "docker"
-        assert cmd[1] == "build"
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_podman_success(self, mock_run: MagicMock, project: Path) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        result = build_image("lc-test", project / "Containerfile", project, runtime="podman")
-        assert result.tag == "lc-test"
-        assert mock_run.call_args[0][0][0] == "podman"
-
-    @patch("lightcone.engine.container._podman_hpc_migrate")
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_podman_hpc_migrates_after_build(
-        self, mock_run: MagicMock, mock_migrate: MagicMock, project: Path
-    ) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        build_image("lc-test", project / "Containerfile", project, runtime="podman-hpc")
-        mock_migrate.assert_called_once_with("lc-test")
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_failure_raises(self, mock_run: MagicMock, project: Path) -> None:
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
-        with pytest.raises(ContainerBuildError, match="docker build failed"):
-            build_image("lc-test", project / "Containerfile", project, runtime="docker")
-
-    @patch("lightcone.engine.container.subprocess.run", side_effect=FileNotFoundError)
-    def test_runtime_missing_raises(self, mock_run: MagicMock, project: Path) -> None:
-        with pytest.raises(ContainerBuildError, match="podman is not installed"):
-            build_image("lc-test", project / "Containerfile", project, runtime="podman")
-
-    def test_unsupported_runtime_raises(self, project: Path) -> None:
-        with pytest.raises(ContainerBuildError, match="Unsupported build runtime"):
-            build_image(
-                "lc-test", project / "Containerfile", project, runtime="apptainer"
-            )
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_build_args(self, mock_run: MagicMock, project: Path) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        build_image(
-            "lc-test",
-            project / "Containerfile",
-            project,
-            runtime="docker",
-            build_args={"PY_VERSION": "3.12"},
-        )
-        cmd = mock_run.call_args[0][0]
-        assert "--build-arg" in cmd
-        assert "PY_VERSION=3.12" in cmd
-
-    def test_build_stages_context_off_source_tree(self, project: Path) -> None:
-        """Build context must be a tempdir, not the source project.
-
-        On NERSC, projects living on DVS-mounted home/CFS hit
-        ``llistxattr EPROTO`` when buildah's copier walks COPY sources.
-        Staging into ``$TMPDIR`` (tmpfs) is what lets builds succeed there.
-        """
-        cf = project / "Containerfile"
-        cf.write_text("FROM python:3.12-slim\nCOPY app.py /app/app.py\n")
-        (project / "app.py").write_text("print('hi')\n")
-
-        captured: dict = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            ctx = Path(cmd[-1])
-            captured["ctx"] = ctx
-            captured["files"] = sorted(
-                p.relative_to(ctx).as_posix()
-                for p in ctx.rglob("*")
-                if p.is_file()
-            )
+    def run(argv: list[str], *, cwd: Path) -> MagicMock:
+        calls.append(list(argv))
+        if argv[0] in ("podman", "docker", "podman-hpc"):
+            if argv[1] == "image":  # the loaded probe, both spellings
+                return MagicMock(returncode=0 if argv[3] in loaded else 1)
+            if argv[1] == "load":
+                loaded.add(container.archive_identity(Path(argv[3]))[0])
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[1] == "save":
+                _write_archive(Path(argv[argv.index("-o") + 1]))
+                return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch(
-            "lightcone.engine.container.subprocess.run", side_effect=fake_run
-        ):
-            build_image("lc-test", cf, project, runtime="podman")
-
-        assert captured["ctx"].resolve() != project.resolve()
-        assert not captured["ctx"].exists()
-        assert "Containerfile" in captured["files"]
-        assert "app.py" in captured["files"]
-
-    def test_build_rejects_copy_dot(self, project: Path) -> None:
-        """A ``COPY . .`` Containerfile fails the build with guidance
-        before any runtime is invoked."""
-        cf = project / "Containerfile"
-        cf.write_text("FROM python:3.12-slim\nCOPY . /app/\n")
-        with pytest.raises(ContainerBuildError, match="environment"):
-            build_image("lc-test", cf, project, runtime="podman")
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_build_cleans_stage_on_failure(
-        self, mock_run: MagicMock, project: Path
-    ) -> None:
-        """Staged tempdir is removed even when the build fails."""
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
-        with pytest.raises(ContainerBuildError):
-            build_image("lc-test", project / "Containerfile", project, runtime="docker")
-        ctx = Path(mock_run.call_args[0][0][-1])
-        assert not ctx.exists()
-
-
-# ---- pull_image -----------------------------------------------------------
-
-
-class TestPullImage:
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_pull_success_docker(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        pull_image("python:3.12-slim", runtime="docker")
-        cmd = mock_run.call_args[0][0]
-        assert cmd == ["docker", "pull", "python:3.12-slim"]
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_pull_success_podman(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        pull_image("python:3.12-slim", runtime="podman")
-        assert mock_run.call_args[0][0][0] == "podman"
-
-    @patch("lightcone.engine.container._podman_hpc_migrate")
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_pull_podman_hpc_migrates(
-        self, mock_run: MagicMock, mock_migrate: MagicMock
-    ) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        pull_image("python:3.12-slim", runtime="podman-hpc")
-        mock_migrate.assert_called_once_with("python:3.12-slim")
-
-    @patch("lightcone.engine.container.subprocess.run")
-    def test_pull_failure_raises(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
-        with pytest.raises(ContainerBuildError, match="docker pull"):
-            pull_image("python:3.12-slim", runtime="docker")
-
-    def test_unsupported_runtime_raises(self) -> None:
-        with pytest.raises(ContainerBuildError, match="Unsupported runtime"):
-            pull_image("img", runtime="apptainer")
-
-
-# ---- detect_runtime / load_runtime ---------------------------------------
-
-
-class TestDetectRuntime:
-    @pytest.fixture(autouse=True)
-    def _generic_hostname(self) -> Iterator[None]:
-        # Pin hostname to one that doesn't match any site so the default
-        # RUNTIMES order applies. Site-aware behaviour is exercised in
-        # TestSiteAwareDetection below.
-        with patch(
-            "lightcone.engine.site_registry.socket.gethostname",
-            return_value="generic-laptop",
-        ):
-            yield
-
-    @patch("lightcone.engine.container.shutil.which")
-    def test_podman_hpc_preferred_when_present(self, mock_which: MagicMock) -> None:
-        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
-        assert detect_runtime() == "podman-hpc"
-
-    @patch("lightcone.engine.container.shutil.which")
-    def test_podman_preferred_over_docker(self, mock_which: MagicMock) -> None:
-        mock_which.side_effect = lambda name: (
-            None if name == "podman-hpc" else f"/usr/bin/{name}"
-        )
-        assert detect_runtime() == "podman"
-
-    @patch("lightcone.engine.container.shutil.which")
-    def test_docker_only(self, mock_which: MagicMock) -> None:
-        mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
-        with patch(
-            "lightcone.engine.container._docker_daemon_up", return_value=True
-        ):
-            assert detect_runtime() == "docker"
-
-    @patch("lightcone.engine.container.shutil.which")
-    def test_docker_skipped_when_daemon_down(self, mock_which: MagicMock) -> None:
-        mock_which.side_effect = lambda name: "/usr/bin/docker" if name == "docker" else None
-        with patch(
-            "lightcone.engine.container._docker_daemon_up", return_value=False
-        ):
-            assert detect_runtime() is None
-
-    @patch("lightcone.engine.container.shutil.which")
-    def test_docker_daemon_down_falls_through_to_podman(
-        self, mock_which: MagicMock
-    ) -> None:
-        mock_which.side_effect = lambda name: (
-            None if name == "podman-hpc" else f"/usr/bin/{name}"
-        )
-        with patch(
-            "lightcone.engine.container._docker_daemon_up", return_value=False
-        ):
-            assert detect_runtime() == "podman"
-
-    @patch("lightcone.engine.container.shutil.which", return_value=None)
-    def test_none_available(self, mock_which: MagicMock) -> None:
-        assert detect_runtime() is None
-
-    def test_no_apptainer(self) -> None:
-        # Apptainer/singularity must NOT be in the supported runtimes list —
-        # we own container invocation and only support OCI runtimes.
-        assert "apptainer" not in RUNTIMES
-        assert "singularity" not in RUNTIMES
-
-
-class TestSiteAwareDetection:
-    @patch("lightcone.engine.container.shutil.which")
-    @patch(
-        "lightcone.engine.site_registry.socket.gethostname",
-        return_value="login29.chn.perlmutter.nersc.gov",
-    )
-    def test_perlmutter_picks_podman_hpc(
-        self, _hostname: MagicMock, mock_which: MagicMock
-    ) -> None:
-        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
-        assert detect_runtime() == "podman-hpc"
-
-    @patch("lightcone.engine.container.shutil.which")
-    @patch(
-        "lightcone.engine.site_registry.socket.gethostname",
-        return_value="login29.chn.perlmutter.nersc.gov",
-    )
-    def test_falls_through_when_site_runtime_missing(
-        self, _hostname: MagicMock, mock_which: MagicMock
-    ) -> None:
-        # Site preference is a hint — explicit user config goes through
-        # load_runtime, which DOES error on missing binary.
-        mock_which.side_effect = lambda name: (
-            None if name == "podman-hpc" else f"/usr/bin/{name}"
-        )
-        assert detect_runtime() == "podman"
-
-    @patch("lightcone.engine.container.shutil.which")
-    @patch(
-        "lightcone.engine.site_registry.socket.gethostname",
-        return_value="generic-laptop",
-    )
-    def test_unknown_site_uses_default_order(
-        self, _hostname: MagicMock, mock_which: MagicMock
-    ) -> None:
-        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
-        assert detect_runtime() == RUNTIMES[0]
-
-
-class TestLoadRuntime:
-    def _write_config(self, tmp_path: Path, content: dict) -> None:
-        cfg_dir = tmp_path / ".lightcone"
-        cfg_dir.mkdir()
-        (cfg_dir / "config.yaml").write_text(yaml.safe_dump(content))
-
-    def test_no_config_uses_auto(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "lightcone.engine.container.detect_runtime", lambda: "docker"
-        )
-        choice = load_runtime()
-        assert choice.runtime == "docker"
-        assert choice.explicit is False
-
-    def test_auto_with_no_runtime_returns_none_implicitly(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """auto + nothing on PATH → none, but explicit=False so the
-        caller can warn that this is a silent fallback."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "lightcone.engine.container.detect_runtime", lambda: None
-        )
-        choice = load_runtime()
-        assert choice.runtime == "none"
-        assert choice.explicit is False
-
-    def test_explicit_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """User opted out of containers — explicit=True, no warnings owed."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        self._write_config(tmp_path, {"container": {"runtime": "none"}})
-        choice = load_runtime()
-        assert choice.runtime == "none"
-        assert choice.explicit is True
-
-    def test_explicit_runtime_present(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "lightcone.engine.container.shutil.which",
-            lambda name: f"/usr/bin/{name}" if name == "podman" else None,
-        )
-        self._write_config(tmp_path, {"container": {"runtime": "podman"}})
-        choice = load_runtime()
-        assert choice.runtime == "podman"
-        assert choice.explicit is True
-
-    def test_explicit_runtime_missing_on_path_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "lightcone.engine.container.shutil.which", lambda _: None
-        )
-        self._write_config(tmp_path, {"container": {"runtime": "podman"}})
-        with pytest.raises(ContainerBuildError, match="not on PATH"):
-            load_runtime()
-
-    def test_unknown_runtime_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        self._write_config(tmp_path, {"container": {"runtime": "apptainer"}})
-        with pytest.raises(ContainerBuildError, match="Unknown container.runtime"):
-            load_runtime()
-
-
-# ---- resolve_image_for_run -----------------------------------------------
-
-
-class TestResolveImageForRun:
-    def test_none_returns_none(self, project: Path) -> None:
-        assert resolve_image_for_run(
-            None, project_path=project, project_name="test"
-        ) is None
-
-    def test_registry_image_passes_through(self, project: Path) -> None:
-        assert resolve_image_for_run(
-            "python:3.12-slim", project_path=project, project_name="test"
-        ) == "python:3.12-slim"
-
-    def test_namespaced_registry_image_passes_through(self, project: Path) -> None:
-        assert resolve_image_for_run(
-            "ghcr.io/foo/bar:tag", project_path=project, project_name="test"
-        ) == "ghcr.io/foo/bar:tag"
-
-    def test_containerfile_resolves_to_tag(self, project: Path) -> None:
-        result = resolve_image_for_run(
-            "Containerfile", project_path=project, project_name="test"
-        )
-        assert result is not None
-        assert result.startswith("lc-test-")
-
-
-# ---- wrap_recipe ----------------------------------------------------------
-
-
-class TestWrapRecipe:
-    def test_no_image_passthrough(self) -> None:
-        assert wrap_recipe("echo hi", image=None, runtime="podman") == "echo hi"
-
-    def test_runtime_none_passthrough(self) -> None:
-        assert wrap_recipe(
-            "echo hi", image="python:3.12-slim", runtime="none"
-        ) == "echo hi"
-
-    def test_podman_wrap_basic(self) -> None:
-        wrapped = wrap_recipe(
-            "echo hi", image="python:3.12-slim", runtime="podman"
-        )
-        assert wrapped.startswith("podman run --rm --pull=never ")
-        assert "python:3.12-slim" in wrapped
-        # The recipe is shell-quoted to survive nested shells.
-        assert shlex.quote("echo hi") in wrapped
-
-    def test_docker_wrap(self) -> None:
-        wrapped = wrap_recipe("echo hi", image="img:v1", runtime="docker")
-        assert wrapped.startswith("docker run --rm --pull=never ")
-
-    def test_podman_hpc_wrap(self) -> None:
-        wrapped = wrap_recipe("echo hi", image="img:v1", runtime="podman-hpc")
-        assert wrapped.startswith("podman-hpc run --rm --pull=never ")
-
-    def test_pull_never_short_name_safe(self) -> None:
-        """``--pull=never`` is what makes locally-built short-name images
-        like ``lc-foo-abc123`` work under podman, which would otherwise
-        try to resolve the name against unqualified-search-registries."""
-        wrapped = wrap_recipe(
-            "echo", image="lc-foo-abc123", runtime="podman"
-        )
-        assert "--pull=never" in wrapped
-
-    def test_preserves_snakemake_placeholders(self) -> None:
-        """Snakemake's ``{output[0]}`` must survive the wrap so it can
-        substitute at exec time."""
-        wrapped = wrap_recipe(
-            "echo > {output[0]}/x", image="img:v1", runtime="podman"
-        )
-        assert "{output[0]}" in wrapped
-
-    def test_preserves_recipe_with_single_quotes(self) -> None:
-        """Recipes may contain single quotes (e.g. ``python -c 'print(1)'``).
-        The shlex.quote escape must survive nested shell parsing."""
-        recipe = """python -c 'print("hi")'"""
-        wrapped = wrap_recipe(recipe, image="img:v1", runtime="podman")
-        # Round-trip through shlex.split should yield the original recipe
-        # as the last argument (the bash -c argument).
-        tokens = shlex.split(wrapped)
-        assert tokens[-1] == recipe
-
-    def test_unsupported_runtime_raises(self) -> None:
-        with pytest.raises(ContainerBuildError, match="Unsupported run runtime"):
-            wrap_recipe("echo", image="img:v1", runtime="apptainer")
-
-    def test_bind_mounts_pwd(self) -> None:
-        """Recipes that write to relative paths need $PWD bind-mounted."""
-        wrapped = wrap_recipe("echo", image="img:v1", runtime="podman")
-        assert '-v "$PWD":"$PWD"' in wrapped
-        assert '-w "$PWD"' in wrapped
-
-
-# ---- get_container_status -------------------------------------------------
-
-
-class TestGetContainerStatus:
-    def test_none(self, project: Path) -> None:
-        s = get_container_status(None, project, "test", runtime="docker")
-        assert s.type == "none"
-
-    def test_prebuilt(self, project: Path) -> None:
-        s = get_container_status("python:3.12", project, "test", runtime="docker")
-        assert s.type == "prebuilt"
-        assert s.image == "python:3.12"
-
-    @patch("lightcone.engine.container.image_exists_locally", return_value=False)
-    def test_containerfile_not_built(
-        self, mock_exists: MagicMock, project: Path
-    ) -> None:
-        s = get_container_status("Containerfile", project, "test", runtime="docker")
-        assert s.type == "build"
-        assert s.exists is False
-        assert s.image is not None
-
-    @patch("lightcone.engine.container.image_exists_locally", return_value=True)
-    def test_containerfile_built(
-        self, mock_exists: MagicMock, project: Path
-    ) -> None:
-        s = get_container_status("Containerfile", project, "test", runtime="docker")
-        assert s.type == "build"
-        assert s.exists is True
-
-    def test_runtime_none_skips_existence_check(self, project: Path) -> None:
-        s = get_container_status("Containerfile", project, "test", runtime="none")
-        assert s.type == "build"
-        assert s.exists is None
-
-
-# ---- is_containerfile -----------------------------------------------------
-
-
-class TestIsContainerfile:
-    def test_existing_file(self, project: Path) -> None:
-        assert is_containerfile("Containerfile", project) is True
-
-    def test_missing_file(self, project: Path) -> None:
-        assert is_containerfile("python:3.12-slim", project) is False
-
-
-# ---- kubernetes runtime ---------------------------------------------------
-
-
-class TestKubernetesRuntime:
-    def test_wrap_recipe_is_passthrough(self) -> None:
-        """The worker pod already runs the image — wrapping would
-        containerize twice."""
-        from lightcone.engine.container import KUBERNETES
-
-        wrapped = wrap_recipe(
-            "python run.py", image="reg/lc-p:abc", runtime=KUBERNETES
-        )
-        assert wrapped == "python run.py"
-
-    def test_registry_ref_shares_identity_with_local_tag(
-        self, project: Path
-    ) -> None:
-        from lightcone.engine.container import registry_image_ref
-
-        tag = compute_image_tag("proj", project / "Containerfile", project)
-        ref = registry_image_ref(
-            "proj", project / "Containerfile", project, registry="reg.io/ns/repo"
-        )
-        digest = tag.rsplit("-", 1)[1]
-        assert ref == f"reg.io/ns/repo/lc-proj:{digest}"
-
-    def test_resolve_image_uses_registry_when_given(self, project: Path) -> None:
-        ref = resolve_image_for_run(
-            "Containerfile",
-            project_path=project,
-            project_name="proj",
-            registry="reg.io/ns/repo",
-        )
-        assert ref is not None and ref.startswith("reg.io/ns/repo/lc-proj:")
-
-    def test_resolve_prebuilt_ignores_registry(self, project: Path) -> None:
-        assert (
-            resolve_image_for_run(
-                "python:3.12-slim",
-                project_path=project,
-                project_name="proj",
-                registry="reg.io/ns/repo",
+        if argv[:2] == ["uv", "cache"]:
+            return MagicMock(returncode=0, stdout="/home/user/.cache/uv\n", stderr="")
+        if argv[:3] == ["git", "diff", "--cached"]:
+            return MagicMock(returncode=1)  # something staged: commits proceed
+        if argv[:2] == ["git", "check-attr"]:
+            return MagicMock(
+                returncode=0, stdout=f"{argv[-1]}: annex.largefiles: anything\n", stderr=""
             )
-            == "python:3.12-slim"
-        )
+        if argv[:3] == ["git", "annex", "get"]:
+            _write_archive(cwd / argv[-1])  # the fetch's observable effect
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
 
-    def test_detect_runtime_site_kubernetes_skips_path_probe(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A gateway deployment has no OCI binary to find — the site
-        preference short-circuits detection entirely."""
-        monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dg")
+    monkeypatch.setattr(project, "_run", run)
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, path=None: None if name == "podman-hpc" else f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(container.platform, "machine", lambda: "x86_64")
+    return calls
+
+
+@pytest.fixture
+def hpc(
+    fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> list[list[str]]:
+    """The same host with the site's podman-hpc wrapper installed too.
+
+    A wrap around `fake`'s stub rather than a replacement, so it changes
+    exactly one fact — anything else `fake` hides stays hidden here.
+    """
+    inner = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, path=None: "/usr/bin/podman-hpc"
+        if name == "podman-hpc"
+        else inner(name, path),
+    )
+    return fake
+
+
+def _argvs(calls: list[list[str]], *head: str) -> list[list[str]]:
+    return [c for c in calls if c[: len(head)] == list(head)]
+
+
+def _git_calls(calls: list[list[str]], sub: str) -> list[list[str]]:
+    """git calls carrying *sub* anywhere — `-c key=val` pairs may precede
+    the subcommand, so a prefix match misses them."""
+    return [c for c in calls if c[0] == "git" and sub in c]
+
+
+# ---- runtime detection ------------------------------------------------------
+
+
+def test_podman_is_preferred(root: Path, fake: list[list[str]]) -> None:
+    assert container.runtime_name(root) == "podman"
+
+
+def test_docker_without_its_daemon_is_a_refusal(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`docker` on PATH with the daemon down is the common broken state;
+    'cannot connect to the socket' mid-run is a worse message."""
+    monkeypatch.setattr(
+        shutil, "which", lambda name, path=None: f"/usr/bin/{name}" if name == "docker" else None
+    )
+    monkeypatch.setattr(
+        project, "_run", lambda argv, *, cwd: MagicMock(returncode=1, stdout="", stderr="")
+    )
+    with pytest.raises(ProjectError, match="daemon"):
+        container.runtime_name(root)
+
+
+def test_no_runtime_is_a_refusal_naming_both(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name, path=None: None)
+    with pytest.raises(ProjectError, match="podman"):
+        container.runtime_name(root)
+
+
+# ---- the three strictnesses -------------------------------------------------
+
+
+def test_a_direct_project_resolves_without_touching_a_runtime(
+    tmp_path: Path, fake: list[list[str]]
+) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
+
+    runtime = container.runtime_for_run(plain, build=False)
+
+    assert runtime.mode == "direct"
+    assert runtime.env_dir == plain / ".venv"
+    assert fake == []
+
+
+def test_a_missing_archive_refuses_unless_the_caller_may_build(
+    root: Path, fake: list[list[str]]
+) -> None:
+    """`lc run` never builds and the worker never writes git — and the
+    mutation check: the same state under a build-allowed caller succeeds."""
+    with pytest.raises(ProjectError, match="lc build"):
+        container.runtime_for_run(root, build=False)
+    assert _argvs(fake, "podman", "build") == []
+    assert _git_calls(fake, "commit") == []
+
+    runtime = container.runtime_for_run(root, build=True)
+
+    assert runtime.mode == "containerized"
+    assert runtime.image_tag == image.tag(root)
+    assert container.runtime_for_run(root, build=False).image_id == runtime.image_id
+
+
+def test_unfetched_archive_content_is_fetched_by_lc_itself(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nobody is ever asked to run a git-annex command by hand — the
+    storage invariant. lc gets its own artifact; the refusal is reserved
+    for a fetch with no reachable copy, which is the second half."""
+    archive = image.archive_path(root, image.tag(root))
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"/annex/objects/SHA256E-s323--abc\n")  # the pointer shape
+
+    runtime = container.runtime_for_run(root, build=False)
+
+    assert runtime.image_id
+    (got,) = [c for c in fake if c[:3] == ["git", "annex", "get"]]
+    assert got[-1] == f".datalad/environments/{image.tag(root)}/image"
+
+    archive.write_bytes(b"/annex/objects/SHA256E-s323--abc\n")  # unfetched again
+    inner = project._run
+
+    def failing(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:3] == ["git", "annex", "get"]:
+            return MagicMock(returncode=1, stdout="", stderr="no reachable copy")
+        return inner(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", failing)
+    with pytest.raises(ProjectError, match="fetching it failed"):
+        container.runtime_for_run(root, build=False)
+
+
+def test_a_present_archive_is_loaded_once_and_reused(
+    root: Path, fake: list[list[str]]
+) -> None:
+    expected = _write_archive(image.archive_path(root, image.tag(root)))
+
+    first = container.runtime_for_run(root, build=False)
+    second = container.runtime_for_run(root, build=False)
+
+    assert first.image_id == expected and second.image_id == expected
+    assert first.arch == "amd64"
+    assert first.archive == f".datalad/environments/{image.tag(root)}/image"
+    assert len(_argvs(fake, "podman", "load")) == 1  # the second run hit the store
+
+
+# ---- building ---------------------------------------------------------------
+
+
+def test_the_build_context_holds_only_the_containerfile(
+    root: Path, fake: list[list[str]]
+) -> None:
+    """No project file ever enters the context — what makes 'code edits
+    never trigger a build' structural rather than observed."""
+    container.runtime_for_run(root, build=True)
+
+    (build,) = _argvs(fake, "podman", "build")
+    context = Path(build[-1])
+    assert not context.is_relative_to(root)
+    containerfile = Path(build[build.index("-f") + 1])
+    assert containerfile.name == "Containerfile"
+    assert build[build.index("-t") + 1] == image.tag(root)
+
+
+def test_the_build_saves_and_commits_the_archive(root: Path, fake: list[list[str]]) -> None:
+    """The dataset is the image store: the archive and the datalad
+    containers config land in one scoped commit."""
+    runtime = container.runtime_for_run(root, build=True)
+
+    (save,) = _argvs(fake, "podman", "save")
+    # Saved beside its final name and renamed into place, so a save that
+    # dies midway leaves no partial archive for the dirty refusal to
+    # tell the user to commit.
+    archive = image.archive_path(root, runtime.image_tag)
+    assert save[save.index("-o") + 1] == str(archive.parent / "image.partial")
+    assert archive.is_file() and not (archive.parent / "image.partial").exists()
+    assert "--format" in save and save[save.index("--format") + 1] == "docker-archive"
+    configured = {c[-2] for c in _argvs(fake, "git", "config", "-f", ".datalad/config")}
+    assert f"datalad.containers.{runtime.image_tag}.image" in configured
+    assert f"datalad.containers.{runtime.image_tag}.cmdexec" in configured
+    (add,) = _git_calls(fake, "add")
+    assert f".datalad/environments/{runtime.image_tag}" in " ".join(add)
+    # The dot-path routing: without it the archive is a full blob in git.
+    assert "annex.dotfiles=true" in add
+    assert len(_git_calls(fake, "commit")) == 1
+
+
+def test_an_unrouted_archive_refuses_before_building(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The archive is committed, and `.gitattributes` is a user-authored
+    file lc only appends to — so an archive it does not route to the
+    annex would land in git as a several-hundred-MB blob, silently. The
+    probe fires before any build is paid for. Mutation check: the `fake`
+    fixture's routed answer is what every other build test passes with."""
+    original = project._run
+
+    def unrouted(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["git", "check-attr"]:
+            return MagicMock(
+                returncode=0, stdout=f"{argv[-1]}: annex.largefiles: unspecified\n", stderr=""
+            )
+        return original(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", unrouted)
+    with pytest.raises(ProjectError, match="annex.largefiles=anything"):
+        container.runtime_for_run(root, build=True)
+    assert _argvs(fake, "podman", "build") == []
+
+
+def test_a_bad_apt_name_is_parsed_out_of_the_build_log(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _failing_build("E: Unable to locate package texlive-latex-bass", monkeypatch)
+    with pytest.raises(ProjectError, match="texlive-latex-bass"):
+        container.runtime_for_run(root, build=True)
+
+
+def _failing_build(stderr: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route only the build through failure; everything else keeps the
+    `fake` fixture's modelled answers (the routing probe included)."""
+    from lightcone.engine import project as project_module
+
+    inner = project_module._run
+
+    def failing(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["podman", "build"]:
+            return MagicMock(returncode=1, stdout="", stderr=stderr)
+        return inner(argv, cwd=cwd)
+
+    monkeypatch.setattr(project_module, "_run", failing)
+
+
+@pytest.mark.parametrize(
+    ("code", "instruction", "expected"),
+    [
+        ("43", "RUN if ldd --version 2>&1 | grep -qi musl", "glibc"),
+        ("44", "RUN command -v bash >/dev/null", "bash"),
+        ("45", "RUN command -v apt-get >/dev/null", "apt"),
+    ],
+)
+def test_a_contract_violation_names_the_base_not_the_log(
+    root: Path,
+    fake: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+    instruction: str,
+    expected: str,
+) -> None:
+    _failing_build(
+        f'Error: building at STEP "{instruction}": while running runtime: '
+        f"exit status {code}",
+        monkeypatch,
+    )
+    with pytest.raises(ProjectError, match=expected):
+        container.runtime_for_run(root, build=True)
+
+
+def test_a_run_command_exiting_a_contract_code_is_not_misdiagnosed(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """curl exits 43 for its own reasons; blaming the base for it would
+    point the user away from their own failing command. The anchor is
+    the failing instruction, not the code alone."""
+    _failing_build(
+        'Error: building at STEP "RUN curl -fsSL https://example.org/tool.tar": '
+        "exit status 43",
+        monkeypatch,
+    )
+    with pytest.raises(ProjectError, match="curl") as raised:
+        container.runtime_for_run(root, build=True)
+    assert "musl" not in str(raised.value)
+
+
+def test_lc_build_refuses_a_dirty_tree(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The archive commit takes the whole index with it, and the tag
+    derives from pyproject.toml — the declaration commits first."""
+
+    def dirty(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["git", "status"]:
+            return MagicMock(returncode=0, stdout=" M pyproject.toml\n", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(project, "_run", dirty)
+    with pytest.raises(ProjectError, match="[Cc]ommit"):
+        container.build(root)
+
+
+def test_lc_build_is_idempotent(root: Path, fake: list[list[str]]) -> None:
+    _, first = container.build(root)
+    _, second = container.build(root)
+    assert (first, second) == ("built", "present")
+    assert len(_argvs(fake, "podman", "build")) == 1
+
+
+def test_lc_build_on_a_direct_project_says_so(tmp_path: Path, fake: list[list[str]]) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "pyproject.toml").write_text('[project]\nname = "p"\nversion = "0"\n')
+    with pytest.raises(ProjectError, match="direct mode"):
+        container.build(plain)
+
+
+# ---- the containerized converge ---------------------------------------------
+
+
+def test_sync_runs_uv_inside_the_image_with_the_host_cache(
+    root: Path, fake: list[list[str]]
+) -> None:
+    runtime = container.runtime_for_run(root, build=True)
+    fake.clear()
+
+    container.sync(root, runtime)
+
+    (sync,) = _argvs(fake, "podman", "run")
+    assert f"{root}:{root}:rw" in " ".join(sync)
+    assert "/home/user/.cache/uv:/home/user/.cache/uv:rw" in " ".join(sync)
+    assert f"UV_PROJECT_ENVIRONMENT={root / '.lightcone' / 'venv'}" in " ".join(sync)
+    assert "--userns=keep-id" in sync
+    assert runtime.image_id in sync
+    tail = sync[sync.index(runtime.image_id) + 1 :]
+    assert tail[:2] == ["uv", "sync"]
+    assert "--locked" in tail and "--exact" in tail and "--compile-bytecode" in tail
+
+
+# ---- the podman machine (macOS) ---------------------------------------------
+
+
+def _darwin(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    monkeypatch.setattr(container.sys, "platform", "darwin")
+    assert sys.platform  # the global module object is patched; reverted after
+
+
+def test_no_podman_machine_is_a_refusal_naming_the_setup(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _darwin(monkeypatch)
+    monkeypatch.setattr(
+        project, "_run", lambda argv, *, cwd: MagicMock(returncode=1, stdout="", stderr="")
+    )
+    with pytest.raises(ProjectError, match="podman machine init"):
+        container.runtime_name(root)
+
+
+def test_a_project_outside_the_machine_shares_is_a_refusal(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bind mount from outside the VM's shared directories arrives
+    *empty* — no error, just a project with nothing in it — so the
+    preflight names the exact `podman machine set`. The mutation check:
+    a share that covers the project passes."""
+    _darwin(monkeypatch)
+
+    def machine(shares: list[str]) -> None:
+        inspect = json.dumps(
+            [{"State": "running", "Mounts": [{"Source": s} for s in shares]}]
+        )
         monkeypatch.setattr(
-            "lightcone.engine.container.shutil.which",
-            lambda _: pytest.fail("no PATH probing on kubernetes sites"),
+            project,
+            "_run",
+            lambda argv, *, cwd: MagicMock(returncode=0, stdout=inspect, stderr=""),
         )
-        assert detect_runtime() == "kubernetes"
 
-    def test_load_runtime_explicit_kubernetes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        cfg_dir = tmp_path / ".lightcone"
-        cfg_dir.mkdir()
-        (cfg_dir / "config.yaml").write_text(
-            yaml.safe_dump({"container": {"runtime": "kubernetes"}})
-        )
-        choice = load_runtime()
-        assert choice.runtime == "kubernetes"
-        assert choice.explicit is True
+    machine(["/Users"])
+    with pytest.raises(ProjectError, match="podman machine set"):
+        container.runtime_name(root)
+
+    # A machine sharing nothing at all is the same refusal, not a pass.
+    machine([])
+    with pytest.raises(ProjectError, match="podman machine set"):
+        container.runtime_name(root)
+
+    machine([str(root.parent)])
+    assert container.runtime_name(root) == "podman"
+
+
+def test_a_stopped_machine_is_a_refusal_naming_start(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`podman machine inspect` succeeds on a stopped machine — without
+    the state check the preflight passes and the run dies later on a raw
+    connection error, far from the one-command fix."""
+    _darwin(monkeypatch)
+    inspect = json.dumps([{"State": "stopped", "Mounts": [{"Source": "/Users"}]}])
+    monkeypatch.setattr(
+        project,
+        "_run",
+        lambda argv, *, cwd: MagicMock(returncode=0, stdout=inspect, stderr=""),
+    )
+    with pytest.raises(ProjectError, match="podman machine start"):
+        container.runtime_name(root)
+
+
+# ---- state for status and the CLI -------------------------------------------
+
+
+def test_image_state_reports_repository_facts_only(root: Path, fake: list[list[str]]) -> None:
+    tag = image.tag(root)
+    relative = f".datalad/environments/{tag}/image"
+    assert container.image_state(root) == ("absent", tag, relative)
+
+    archive = image.archive_path(root, tag)
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"/annex/objects/SHA256E-s1--abc\n")
+    assert container.image_state(root)[0] == "unfetched"
+
+    _write_archive(archive)
+    assert container.image_state(root)[0] == "present"
+    assert not any(c[0] in ("podman", "docker") for c in fake)
+
+
+def test_archive_identity_matches_the_runtime_id_computation(tmp_path: Path) -> None:
+    """The same sha256-of-the-config-blob podman and docker report, and
+    the value the smoke test compares against a real `podman inspect`."""
+    config = b'{"architecture":"arm64"}'
+    expected = _write_archive(tmp_path / "image", config)
+    found, arch = container.archive_identity(tmp_path / "image")
+    assert found == expected
+    assert arch == "arm64"
+
+
+def test_a_garbled_archive_is_a_pointed_refusal(tmp_path: Path) -> None:
+    (tmp_path / "image").write_bytes(b"not a tar at all" * 4096)
+    with pytest.raises(ProjectError, match="lc build"):
+        container.archive_identity(tmp_path / "image")
+
+
+# ---- podman-hpc -------------------------------------------------------------
+
+
+def test_podman_hpc_is_preferred_where_present(root: Path, hpc: list[list[str]]) -> None:
+    """Where the site wrapper exists, the bare podman beside it is the one
+    whose store compute nodes cannot see."""
+    assert container.runtime_hint() == "podman-hpc"
+    assert container.runtime_name(root) == "podman-hpc"
+
+
+def test_podman_hpc_loads_then_migrates(root: Path, hpc: list[list[str]]) -> None:
+    expected = _write_archive(image.archive_path(root, image.tag(root)))
+
+    runtime = container.runtime_for_run(root, build=False)
+
+    assert runtime.runtime == "podman-hpc"
+    assert _argvs(hpc, "podman-hpc", "image") == [["podman-hpc", "image", "exists", expected]]
+    assert len(_argvs(hpc, "podman-hpc", "load")) == 1
+    assert _argvs(hpc, "podman-hpc", "migrate") == [["podman-hpc", "migrate", expected]]
+
+
+def test_migrate_runs_even_when_the_store_already_holds_the_image(
+    root: Path, hpc: list[list[str]]
+) -> None:
+    """The migrate lives outside the load branch: a store hit (or a fresh
+    build) must still put the squashed copy where compute nodes look."""
+    _write_archive(image.archive_path(root, image.tag(root)))
+
+    container.runtime_for_run(root, build=False)
+    container.runtime_for_run(root, build=False)
+
+    assert len(_argvs(hpc, "podman-hpc", "load")) == 1
+    assert len(_argvs(hpc, "podman-hpc", "migrate")) == 2
+
+
+def test_podman_hpc_builds_saves_and_migrates(root: Path, hpc: list[list[str]]) -> None:
+    """The wrapper is build-capable — NERSC login nodes are where the
+    matching-arch archive comes from — and a fresh build still migrates."""
+    runtime, verdict = container.build(root)
+
+    assert verdict == "built"
+    assert len(_argvs(hpc, "podman-hpc", "build")) == 1
+    (save,) = _argvs(hpc, "podman-hpc", "save")
+    assert save[2:4] == ["--format", "docker-archive"]
+    assert _argvs(hpc, "podman-hpc", "migrate") == [["podman-hpc", "migrate", runtime.image_id]]
+
+
+def test_podman_hpc_keeps_the_uid_and_forbids_pulling(root: Path, hpc: list[list[str]]) -> None:
+    _write_archive(image.archive_path(root, image.tag(root)))
+    runtime = container.runtime_for_run(root, build=False)
+
+    assert container.uid_flags("podman-hpc") == ["--userns=keep-id"]
+    backend = container.backend(runtime)
+    assert backend.capability.kind == "podman-hpc"
+    assert "--pull=never" in backend.user_flags  # type: ignore[attr-defined]
+    assert "--userns=keep-id" in backend.user_flags  # type: ignore[attr-defined]
+
+
+# ---- the architecture gate --------------------------------------------------
+
+
+def test_a_foreign_arch_archive_refuses_before_loading(
+    root: Path, fake: list[list[str]]
+) -> None:
+    """A wrong-arch load *succeeds* and then dies as `exec format error`
+    deep inside a recipe — so the refusal comes first, naming the fix."""
+    _write_archive(
+        image.archive_path(root, image.tag(root)), b'{"architecture":"arm64","os":"linux"}'
+    )
+
+    with pytest.raises(ProjectError, match="built for arm64 and this host is amd64"):
+        container.runtime_for_run(root, build=False)
+
+    assert _argvs(fake, "podman", "load") == []
+
+
+def test_the_matching_arch_loads(root: Path, fake: list[list[str]]) -> None:
+    _write_archive(image.archive_path(root, image.tag(root)))
+
+    assert container.runtime_for_run(root, build=False).arch == "amd64"
+    assert len(_argvs(fake, "podman", "load")) == 1
+
+
+def test_an_unknown_arch_is_not_refused(
+    root: Path, fake: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ignorance is not a mismatch — an archive that does not say, or a
+    host machine outside the map, passes rather than refusing blind."""
+    _write_archive(image.archive_path(root, image.tag(root)), b'{"os":"linux"}')
+    container.runtime_for_run(root, build=False)
+
+    monkeypatch.setattr(container.platform, "machine", lambda: "riscv64")
+    _write_archive(image.archive_path(root, image.tag(root)))
+    container.runtime_for_run(root, build=False)

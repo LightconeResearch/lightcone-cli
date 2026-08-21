@@ -1,0 +1,15 @@
+# lightcone-cli — what git-annex stores, and what git carries.
+#
+# `filter=annex` is what makes an ordinary `git add` route content to the
+# annex, so nobody has to run git-annex by hand. `annex.largefiles` then
+# decides what counts as content: the default is nothing, and only outputs
+# and declared inputs opt out. Last matching line wins.
+#
+# Manifests are exempted back out because they must be readable on a clone
+# that has fetched no annex content.
+* annex.largefiles=nothing
+* filter=annex
+results/** annex.largefiles=anything
+data/** annex.largefiles=anything
+**/.lightcone-manifest.json annex.largefiles=nothing
+.datalad/environments/*/image annex.largefiles=anything

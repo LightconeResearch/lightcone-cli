@@ -1,192 +1,75 @@
-# lightcone.engine.container
+# lightcone.engine.image & container
 
-The container layer. Two surfaces: build-time (`compute_image_tag`,
-`build_image`, `pull_image`) and run-time wrap (`wrap_recipe`,
-`make_image_tag_resolver`).
+The container hatch, split down the pure/impure line. `image.py` is
+what a containerized project *declares* and how that becomes an
+identity — pure, no subprocess anywhere. `container.py` is building,
+storing and entering images — impure, every command through
+`project._run`. The exec side (the mount table) lives with the other
+backends in `sandbox/oci.py`.
 
-Source: `src/lightcone/engine/container.py`.
+Sources: `src/lightcone/engine/image.py`,
+`src/lightcone/engine/container.py`, `src/lightcone/engine/sandbox/oci.py`.
 
-## Constants
+## Key symbols
 
-| Constant | Value |
-|----------|-------|
-| `RUNTIMES` | `("podman", "docker", "podman-hpc")` — detection priority order |
-| `DEPENDENCY_FILES` | `("requirements.txt", "requirements-dev.txt", "requirements-test.txt", "pyproject.toml", "setup.py", "setup.cfg", "poetry.lock", "Pipfile.lock")` |
+| Symbol | Role |
+|---|---|
+| `image.declaration(root)` | The `[tool.lightcone.image]` table, validated — a closed key set (`base`, `apt-install`, `run-commands`, `env`), because every key is hashed. |
+| `image.tag(root)` | `lc-env-<16 hex>` over the rendered Containerfile *and* the identity document. |
+| `image.archive_path(root, tag)` | `.datalad/environments/<tag>/image` — the `datalad containers-add` layout. |
+| `container.build(root)` | Build + save + commit, idempotent; returns `(Runtime, "built" \| "present")`. |
+| `container.runtime_for_run(root, *, build)` | One function, two strictnesses: `lc build`/materialize-preflight may build and commit; the probe and worker only ever find, fetch, and load. |
+| `container.backend(...)` | The single construction point for the exec backend — the only mode branch. |
+| `container.sync(...)` | The in-container environment converge: network on, project `:rw`, host uv cache mounted, into `.lightcone/venv`. |
+| `Runtime` | Facts only — root/mode/name/tag/id/arch — never mechanism. |
 
-Detection priority is podman before docker for two reasons: it's
-rootless (less surprising on shared machines), and the docker probe
-includes `docker info` so a stopped daemon doesn't silently win over a
-healthy podman.
+## What must stay true
 
-## Runtime detection
-
-### `detect_runtime() → str | None`
-
-Returns the first usable runtime in `RUNTIMES`. "Usable" means the
-binary is on PATH and (for docker) `docker info` succeeds. Returns
-`None` if nothing's available.
-
-### `load_runtime(*, project_path=None) → RuntimeChoice`
-
-Resolve the runtime to use. Reads `container.runtime` from
-`~/.lightcone/config.yaml`:
-
-- `auto` (default) → first available, else `"none"` with `explicit=False`.
-  On a site declaring `container_runtime: kubernetes` (a Dask Gateway
-  deployment), auto resolves to `kubernetes` with no PATH probing.
-- `docker | podman | podman-hpc` → explicit; binary must exist or
-  raises `ContainerBuildError`.
-- `kubernetes` → explicit; no binary involved (the worker pod is the
-  container).
-- `none` → explicit opt-out.
-- Anything else → `ContainerBuildError`.
-
-`project_path` is accepted for future per-project overrides but is not
-consulted today.
-
-### `RuntimeChoice` (dataclass)
-
-```python
-@dataclass(frozen=True)
-class RuntimeChoice:
-    runtime: str         # docker | podman | podman-hpc | none
-    explicit: bool       # True if pinned, False if `auto` produced this
-```
-
-`explicit=False` + `runtime="none"` means auto fell back silently. Callers
-should warn — that case mismatches the manifest's recorded
-`container_image` against what actually executed.
-
-## Image tag computation
-
-### `compute_image_tag(project_name, containerfile, project_path) → str`
-
-Returns `lc-<sanitized-name>-<sha256[:12]>`. The hash covers the
-Containerfile contents plus every dependency file from `DEPENDENCY_FILES`
-that exists at the project root.
-
-Sanitization: lowercase + spaces → hyphens.
-
-### `find_dependency_files(project_path) → list[Path]`
-
-Sorted list of dependency files actually present. Used by
-`compute_image_tag`.
-
-### `hash_file_contents(files) → str`
-
-Concatenated SHA-256 hex digest of the listed files. Internal helper.
-
-### `is_containerfile(spec, project_path) → bool`
-
-True if `spec` resolves to an existing file (i.e. it's a Containerfile,
-not a registry image).
-
-## Build
-
-### `build_image(tag, containerfile, context, *, runtime, build_args=None) → ContainerBuildResult`
-
-Run `<runtime> build -t <tag> -f <containerfile> [--build-arg …] <context>`.
-For `podman-hpc`, also runs `podman-hpc migrate <tag>` so compute nodes
-can read the image. Raises `ContainerBuildError` on any failure.
-
-### `pull_image(image, *, runtime) → None`
-
-Run `<runtime> pull <image>`, then (for podman-hpc) `migrate`. Used by
-`lc build` to pre-stage registry images so `lc run` can pass
-`--pull=never`.
-
-### `image_exists_locally(tag, *, runtime) → bool`
-
-Check the local image store. Routes to `image_exists_podman_hpc(tag)`
-for `podman-hpc`, otherwise runs `<runtime> image inspect <tag>`.
-
-### `_podman_hpc_migrate(tag)` (private)
-
-Wraps `podman-hpc migrate`. Raises `ContainerBuildError` on failure.
-
-## Run-time wrap
-
-### `wrap_recipe(recipe, *, image, runtime) → str`
-
-Wrap `recipe` so it executes inside `image` under `runtime`. Returns a
-shell-command string for Snakemake's `shell()`.
-
-No-op cases (`recipe` returned unchanged):
-
-- `image is None`
-- `runtime == "none"`
-- `runtime == "kubernetes"` — the Dask worker pod executing the recipe
-  was started from `image`; wrapping would containerize twice. The
-  image still flows into `code_version` and the manifest.
-
-Otherwise produces:
-
-```bash
-<runtime> run --rm --pull=never \
-  -v "$PWD":"$PWD" -w "$PWD" \
-  <image> bash -c '<shlex.quote(recipe)>'
-```
-
-`--pull=never` is critical: it sidesteps podman's
-`unqualified-search-registries` resolution, which fails for our
-content-addressed `lc-<name>-<hash>` tags. The cost: registry images
-have to be pre-pulled by `lc build`.
-
-The bind mount and `-w "$PWD"` ensure recipes that write to relative
-paths land in the project tree. Snakemake invokes us with `cwd=project`,
-so `$PWD` is the project root.
-
-Snakemake placeholders inside `recipe` (`{output[0]}`, `{input.X}`,
-`{wildcards.universe}`) are preserved — they substitute through Python's
-`str.format` at execution time, after wrapping.
-
-### `make_image_tag_resolver(project_path, project_name) → Callable`
-
-Returns a memoizing wrapper around `resolve_image_for_run`. Multiple
-outputs typically share a Containerfile; resolving re-hashes the file
-plus all dependency files (lockfiles can be megabytes), so caching by
-spec string for the lifetime of the caller's loop matters.
-
-### `resolve_image_for_run(spec, *, project_path, project_name, registry=None) → str | None`
-
-Translate an `astra.yaml` `container:` value into the image tag the
-runtime will execute:
-
-- `None` / empty → `None`
-- Containerfile path → `lc-<name>-<hash>` (the tag `lc build` would
-  produce), or `<registry>/lc-<name>:<hash>` when `registry` is given
-  (a deployment with a remote builder — same content-addressed
-  identity, spelled for a registry)
-- Anything else → returned as-is
-
-## Status
-
-### `get_container_status(spec, project_path, project_name, *, runtime) → ContainerStatus`
-
-Without building or pulling, return a `ContainerStatus` describing what
-would happen.
-
-### `ContainerStatus` (dataclass)
-
-```python
-@dataclass
-class ContainerStatus:
-    type: str                                # "none" | "prebuilt" | "build"
-    image: str | None = None                 # the tag (always set for "prebuilt"/"build")
-    exists: bool | None = None               # local-store presence (None for "none" runtime)
-    containerfile: str | None = None         # the spec, only set for "build"
-```
-
-## Exceptions
-
-### `ContainerBuildError`
-
-Raised by `build_image`, `pull_image`, `_podman_hpc_migrate`, and
-`load_runtime` (configuration errors). Message carries the failing
-runtime and stderr.
+- **The user never sees a Containerfile.** The render exists only in a
+  transient build context; the image's `LABEL` carries the identity
+  document so the archive stays self-describing. There is deliberately
+  no `pip-install` key — the Python environment is the lock's
+  business, never the image's.
+- **The engine never enters the image.** The container is the
+  *recipe's* world: driver, git, annex, and classification stay the
+  host's `lc`; exactly two things run in-image — the sync and each
+  exec. Network is uncontrolled on every mechanism, symmetrically, and
+  the attestation says so — no consumer may read a promise into
+  "containerized".
+- **No project file enters the build context** — that is what makes
+  "code edits never rebuild" structural rather than incidental.
+- **The dataset is the store; runtime stores are caches.** Execution
+  pins the archive's config-blob **id** (readable with no runtime),
+  never a tag; a dropped archive never substitutes — a rebuild is a
+  new archive under a new id.
+- **Builds and archive commits happen only on a clean tree, and only
+  after the graph resolves** — a refusal over a typo must not cost a
+  minutes-long build, and `dataset.save` commits the whole index.
+- **The mount table is the mechanism** (`sandbox/oci.py`): project
+  `:ro`, `results/` `:rw`, declared inputs `:ro`, private HOME,
+  `--tmpfs /tmp`, over a `--read-only` rootfs — without that flag a
+  stray write *succeeds* into the ephemeral layer and vanishes while
+  the attestation claims `fs: declared`. Mounts are resolved source,
+  **declared** destination — the one policy shape that keeps its paths
+  unresolved, because they are addresses the recipe uses.
+- **Runtime differences are spellings, never shapes.** One
+  `OCIBackend`, data-parameterized; the podman family is stated once
+  (`_PODMAN_FAMILY`) and asked positively, so a new runtime falls
+  outside it by default. podman-hpc adds exactly one step (`migrate`,
+  outside the load branch) and joins `_SHARED_STORE_RUNTIMES`.
+  Detection order podman-hpc → podman → docker; docker's daemon is
+  probed at detection.
+- **The architecture gate refuses before the load** — a wrong-arch
+  `load` succeeds and then dies as `exec format error` deep inside a
+  recipe. Ignorance passes; a recorded mismatch refuses, naming the
+  fix.
 
 ## Tests
 
-`tests/test_container.py` covers detection, image tag computation,
-build invocation, recipe wrapping, and the `RuntimeChoice` resolution
-matrix.
+`tests/test_image.py` (pure: structure and ordering, tag sensitivity
+both ways, the `env_version` frame), `tests/test_container.py`
+(lifecycle against the stubbed `_run` — every refusal on recorded
+argv), `tests/test_sandbox_oci.py` (the mount table, pure), and
+`tests/test_container_smoke.py` — the runtime's answer, gated by
+`LC_CONTAINER_TESTS_REQUIRED=1` in CI, building a real image and
+proving the record on a bytes-free clone with a real `datalad rerun`.

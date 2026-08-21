@@ -1,97 +1,61 @@
 # lc run
 
-Materialize outputs declared in `astra.yaml`. Generates a Snakefile
-and dispatches through Snakemake on a Dask cluster.
+Run an ad-hoc command in the project environment, under isolation.
+This is the probe verb: it executes exactly one command the way a
+recipe would be executed — same environment, same sandbox — so "does
+it work under `lc run`?" and "will it work as a recipe?" are the same
+question.
 
 ## Synopsis
 
 ```text
-lc run [OPTIONS] [OUTPUTS]...
+lc run COMMAND...
 ```
 
-`OUTPUTS` is zero or more output ids. With no arguments, materializes
-everything (Snakemake's `rule all`).
-
-## Options
-
-| Option | Default | Effect |
-|--------|---------|--------|
-| `--universe`, `-u NAME` | all universes in `universes/*.yaml` (or `["default"]` if none exist) | Restrict to one universe. |
-| `--jobs`, `-j N` | `os.cpu_count()` | Parallel jobs / Dask submission concurrency. Passed as both `--cores` and `--jobs` to Snakemake. |
-| `--rerun-triggers TRIGGERS` | `code,input,mtime,params` | Comma-separated rerun triggers (forwarded to Snakemake). |
-| `--force`, `-f` | off | `--force` when targets are named, `--forceall` otherwise. |
-| `--verbose`, `-v` | off | Show the underlying Snakemake / executor chatter and the spawned `snakemake` invocation. |
-
-## What happens, step by step
-
-1. Find the project (walk up looking for `astra.yaml`).
-2. Discover universes from `universes/*.yaml` (default to `["default"]`).
-3. Resolve the container runtime via
-   `lightcone.engine.container.load_runtime`. If `auto` falls back to
-   `none` while the spec declares containers, print a loud provenance
-   warning.
-4. Generate `.lightcone/Snakefile` and
-   `.lightcone/snakefile-config.json` for the selected universes.
-5. Translate any explicit `OUTPUTS` into Snakemake target paths
-   (`<output_dir>/.lightcone-manifest.json`) — this is what tells
-   Snakemake "build that specific output."
-6. Open a Dask cluster context (`local`, `srun`-backed inside
-   `SLURM_JOB_ID`, or external if `DASK_SCHEDULER_ADDRESS` is set).
-7. Spawn `snakemake -s … -d … --cores N --jobs N --executor dask
-   --rerun-triggers …` with `DASK_SCHEDULER_ADDRESS` in the environment.
-8. In the default (non-verbose) path, filter the executor's banner
-   chatter so the output reads as lightcone's, not Snakemake's. Real
-   error content always passes through.
-
-## Output qualification
-
-When the same `output_id` appears in multiple sub-analyses, you must
-qualify it as `<analysis_id>.<output_id>`:
+Everything after `run` is the command, verbatim — flags included.
+Argv, the `docker run` / `uv run` convention: a single quoted string
+would be exec'd as one filename, so probe shell syntax through
+`bash -c` instead. `lc run` takes no options of its own, so nothing
+else needs escaping:
 
 ```bash
-lc run inference                    # error if 'inference' is ambiguous
-lc run hod_fitting.inference        # disambiguated
+lc run python -c "import numpy; print(numpy.__version__)"
+lc run python src/fit.py --points data/points.csv --outliers keep --output /tmp/probe
 ```
 
-Each rule's body wraps the recipe in a `<runtime> run --rm --pull=never
--v "$PWD":"$PWD" -w "$PWD" <image> bash -c '<recipe>'` shell when a
-container is configured. After the recipe shell exits, the Snakefile
-calls `write_manifest()` host-side and the validation snippet emits
-warnings for empty / all-NaN / wrong-extension outputs.
+## What it does
+
+- **Converges the environment first.** The probe syncs `.venv` to the
+  lock before executing, so what you probe is what a recipe gets.
+- **Applies the recipe policy.** The project tree is read-only apart
+  from `results/`, declared inputs are readable, undeclared tools
+  don't execute. On a containerized project, the command runs inside
+  the committed image (which must already be built — the probe never
+  builds).
+- **Proxies the exit code.** `lc run` exits with the command's own
+  code — `128 + N` when a signal killed it — so scripts and pipelines
+  read it exactly as they would the bare command.
+- **Explains denials.** On a nonzero exit, a note on stderr says the
+  command ran sandboxed; when the failure looks like a denial, the
+  note names the path and the remedy (`uv add` for a missing package,
+  an ASTRA input declaration for data, `results/` or
+  `tempfile.mkdtemp()` for writes).
+
+A probe has no output and writes no manifest: nothing it does is
+recorded anywhere. Any uv project works — `lc run` doesn't require an
+`astra.yaml`, only `pyproject.toml`, `uv.lock` and `.venv` in the
+current directory.
+
+## What it is not
+
+There is no sandbox opt-out and no flag surface — a command that needs
+more than the policy grants is a command that would fail as a recipe,
+and the fix (declare the dependency) is the same in both places.
 
 ## Examples
 
 ```bash
-lc run                                         # all outputs, all universes
-lc run --universe baseline                     # one universe
-lc run accuracy                                # one output
-lc run accuracy precision --universe baseline  # several
-lc run --jobs 4 --verbose                      # parallel, with stack noise
-lc run --force --universe baseline             # rebuild everything
-lc run --rerun-triggers params,input           # tighter staleness
+lc run python -c "import scipy"        # is the package in the lock?
+lc run bash -c 'echo $HOME'            # see the private HOME a recipe gets
+lc run python src/fit.py --help        # exercise a script exactly as a recipe would
 ```
-
-## Inside SLURM
-
-```bash
-salloc -N 4 ...
-lc run --universe baseline -j 16
-```
-
-`lc run` detects `SLURM_JOB_ID`, binds the Dask scheduler to the
-driver's hostname, and launches one `dask worker` per node via `srun`.
-Workers advertise `cpus`, `memory`, and `gpus` resources. Per-rule
-resource hints (`cpus_per_task`, `mem_mb`, `gpus_per_task`) constrain
-which workers can pick up which jobs.
-
-## Provenance gotcha
-
-If `~/.lightcone/config.yaml` says `runtime: auto` and no runtime is
-on PATH, `lc run` falls back to running recipes on the host. Because
-each manifest still records the *declared* `container_image`, this is a
-provenance lie. `lc run` prints a yellow warning telling you to either
-install a runtime or set `container.runtime: none` explicitly.
-
-See [api/dask_cluster](../api/dask_cluster.md) for the cluster-shape
-decision and [Architecture](../architecture.md) for the full execution
-flow.

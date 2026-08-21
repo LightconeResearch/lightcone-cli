@@ -1,475 +1,689 @@
-"""Tests for the redesigned lightcone CLI."""
+"""Tests for the CLI surface — flags, rendering, exit codes.
+
+Convergence *semantics* are tested against the engine in
+`tests/test_project.py`; this file covers only what the CLI adds on top.
+"""
+
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
 
 from lightcone.cli.commands import main
 
-
-@pytest.fixture
-def runner() -> CliRunner:
-    return CliRunner()
+# ---- top level ------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Redirect ``~/.lightcone/`` to a temp dir so tests don't pollute the user's
-    real config. The global config is auto-created on first ``lc`` invocation."""
-    fake_home = tmp_path / "_home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: fake_home)
-    return fake_home
-
-
-# ---- top-level ------------------------------------------------------------
-
-
-def test_help_lists_core_commands(runner: CliRunner) -> None:
+def test_help_lists_the_implemented_verb(runner: CliRunner) -> None:
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("init", "run", "status", "verify", "build"):
-        assert cmd in result.output
+    assert "init" in result.output
 
 
-def test_help_does_not_advertise_removed_commands(runner: CliRunner) -> None:
+def test_help_advertises_exactly_the_verbs_that_work(runner: CliRunner) -> None:
+    """`lc --help` advertises only verbs that work — advertising others
+    before they do would be a lie."""
     result = runner.invoke(main, ["--help"])
-    assert "  dev " not in result.output
-    assert "  cluster " not in result.output
-    assert "  setup " not in result.output
+    for verb in ("init", "build", "materialize", "run", "status"):
+        assert f"  {verb}" in result.output
+    for verb in ("verify", "export"):
+        assert f"  {verb}" not in result.output
 
 
-def test_first_invocation_auto_creates_global_config(
-    runner: CliRunner, _isolated_home: Path, tmp_path: Path
-) -> None:
-    config = _isolated_home / ".lightcone" / "config.yaml"
-    assert not config.exists()
-    # Any real subcommand triggers the group callback; ``init`` runs cleanly
-    # without a pre-existing project.
-    project = tmp_path / "proj"
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv"]
-    )
-    assert result.exit_code == 0, result.output
-    assert config.exists()
-    assert "runtime: auto" in config.read_text()
-
-
-# ---- lc init --------------------------------------------------------------
-
-
-def test_init_creates_project(runner: CliRunner, tmp_path: Path) -> None:
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-    assert (project / "astra.yaml").exists()
-    assert (project / ".gitignore").exists()
-    assert (project / ".lightcone").is_dir()
-    assert (project / "results").is_dir()
-    assert (project / "universes").is_dir()
-    # The README is the durable hint that outputs materialize here via
-    # lc run — and the one file in results/ that stays tracked by git.
-    readme = (project / "results" / "README.md").read_text()
-    assert "lc run" in readme
-    gitignore = (project / ".gitignore").read_text()
-    assert "results/*" in gitignore
-    assert "!results/README.md" in gitignore
-
-
-def test_init_creates_report_template(runner: CliRunner, tmp_path: Path) -> None:
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-
-    myst_yml = (project / "myst.yml").read_text()
-    assert "mystra.mjs" in myst_yml
-    assert "index.md" in myst_yml
-
-    index_md = (project / "index.md").read_text()
-    assert index_md.startswith("# proj\n")
-    # References must track the astra init boilerplate element ids.
-    assert "{astra}`decisions.example_method`" in index_md
-    assert "{astra:value}`outputs.main_result`" in index_md
-
-    assert "_build/" in (project / ".gitignore").read_text()
-
-
-def test_init_adopts_existing_project(runner: CliRunner, tmp_path: Path) -> None:
-    """A directory that already holds an astra.yaml is converged, not rejected,
-    and user-owned files are never overwritten."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "astra.yaml").write_text("# user spec\n")
-    (project / ".gitignore").write_text("*.log\n")
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-    # User files untouched (gitignore gains the managed block, keeps content).
-    assert (project / "astra.yaml").read_text() == "# user spec\n"
-    gitignore = (project / ".gitignore").read_text()
-    assert gitignore.startswith("*.log\n")
-    assert "# lightcone-cli" in gitignore
-    # Missing lightcone pieces were created.
-    assert (project / "Containerfile").exists()
-    assert (project / ".lightcone" / "lightcone.yaml").exists()
-
-
-def test_init_is_idempotent(runner: CliRunner, tmp_path: Path) -> None:
-    """A second run reports everything unchanged and rewrites nothing."""
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-    before = {p: p.read_text() for p in project.rglob("*") if p.is_file()}
-
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
-    )
-    assert result.exit_code == 0, result.output
-    report = json.loads(result.output)
-    assert report["converged"] is True
-    assert report["created"] == []
-    assert report["repaired"] == []
-    assert {p: p.read_text() for p in project.rglob("*") if p.is_file()} == before
-
-    # Gitignore block must not be duplicated across runs.
-    assert (project / ".gitignore").read_text().count("# lightcone-cli") == 1
-
-
-def test_init_check_reports_drift_without_writing(
-    runner: CliRunner, tmp_path: Path
-) -> None:
-    project = tmp_path / "proj"
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--check", "--json"]
-    )
-    assert result.exit_code == 1
-    report = json.loads(result.output)
-    assert report["converged"] is False
-    assert "astra.yaml" in report["created"]
-    assert not project.exists()  # --check writes nothing, not even the dir
-
-
-def test_init_check_passes_on_converged_project(
-    runner: CliRunner, tmp_path: Path
-) -> None:
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--check"]
-    )
-    assert result.exit_code == 0, result.output
-
-
-def test_init_warns_on_directory_copy(runner: CliRunner, tmp_path: Path) -> None:
-    """A user Containerfile with a directory COPY is never rewritten, but
-    the drift is surfaced through the warnings channel."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    custom = "FROM python:3.12-slim\nRUN apt-get update\nCOPY src/ /app/src/\n"
-    (project / "Containerfile").write_text(custom)
-    (project / "src").mkdir()
-    (project / "src" / "a.py").write_text("a = 1\n")
-
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
-    )
-    assert result.exit_code == 0, result.output
-    report = json.loads(result.output)
-    assert (project / "Containerfile").read_text() == custom
-    assert any("COPY/ADD of a directory" in w for w in report["warnings"])
-
-
-def test_init_survives_malformed_lightcone_yaml(
-    runner: CliRunner, tmp_path: Path
-) -> None:
-    """'Safe to re-run at any time' includes a corrupted project config:
-    warn and leave it alone rather than crashing with a YAML traceback."""
-    project = tmp_path / "proj"
-    (project / ".lightcone").mkdir(parents=True)
-    (project / ".lightcone" / "lightcone.yaml").write_text("target: [unclosed\n")
-
-    result = runner.invoke(
-        main,
-        ["init", str(project), "--no-git", "--no-venv", "--scratch", "$SCRATCH", "--json"],
-    )
-    assert result.exit_code == 0, result.output
-    report = json.loads(result.output)
-    assert any("lightcone.yaml" in w for w in report["warnings"])
-    assert (project / ".lightcone" / "lightcone.yaml").read_text() == "target: [unclosed\n"
-
-    # A non-mapping file must not crash the --scratch merge either.
-    (project / ".lightcone" / "lightcone.yaml").write_text("local\n")
-    result = runner.invoke(
-        main,
-        ["init", str(project), "--no-git", "--no-venv", "--scratch", "$SCRATCH", "--json"],
-    )
-    assert result.exit_code == 0, result.output
-
-
-def test_init_points_spec_at_containerfile(runner: CliRunner, tmp_path: Path) -> None:
-    """The scaffolded spec must reference the project Containerfile — pins
-    the rewrite against drift in astra's boilerplate image name."""
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-    assert "container: Containerfile" in (project / "astra.yaml").read_text()
+def test_help_does_not_advertise_the_worker(runner: CliRunner) -> None:
+    """The unit a run record names is machinery, not a verb: it makes the
+    output unconditionally, commits nothing, and leaves the tree dirty by
+    design — the state `lc materialize` refuses to start from."""
+    assert "worker" not in runner.invoke(main, ["--help"]).output
 
 
 def test_engine_errors_render_cleanly(
-    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ContainerBuildError from any command surfaces as a one-line CLI error
-    (exit 1), not a traceback — the group boundary translates it."""
-    from lightcone.cli import commands
-    from lightcone.engine.container import ContainerBuildError
+    """A ProjectError from anywhere in the engine surfaces as a one-line
+    CLI error (exit 1), not a traceback — the group boundary translates
+    it."""
+    from lightcone.engine import project
 
-    def _boom(*args: object, **kwargs: object) -> Path:
-        raise ContainerBuildError("COPY of a directory is not supported")
+    monkeypatch.setattr(project.shutil, "which", lambda name, path=None: None)
 
-    monkeypatch.setattr(commands, "_project_root", _boom)
-    result = runner.invoke(main, ["status"])
+    result = runner.invoke(main, ["init", str(tmp_path / "proj")])
     assert result.exit_code == 1
-    assert "not supported" in result.output
+    assert "uv is required" in result.output
     assert "Traceback" not in result.output
 
 
-def test_cloudbuild_error_is_a_container_build_error() -> None:
-    """One boundary handler must cover both local and Cloud Build failures."""
-    from lightcone.engine.cloudbuild import CloudBuildError
-    from lightcone.engine.container import ContainerBuildError
-
-    assert issubclass(CloudBuildError, ContainerBuildError)
+# ---- lc init: flags reach the engine --------------------------------------
 
 
-def test_init_repairs_missing_piece(runner: CliRunner, tmp_path: Path) -> None:
+def test_init_creates_a_project(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git", "--no-venv"])
+    result = runner.invoke(main, ["init", str(project)])
     assert result.exit_code == 0, result.output
-    (project / "Containerfile").unlink()
-
-    result = runner.invoke(
-        main, ["init", str(project), "--no-git", "--no-venv", "--json"]
-    )
-    assert result.exit_code == 0, result.output
-    report = json.loads(result.output)
-    assert "Containerfile" in report["created"]
-    assert (project / "Containerfile").exists()
-    # The rest was left alone.
-    assert "astra.yaml" in report["unchanged"]
+    assert (project / "astra.yaml").exists()
+    assert (project / ".venv").exists()
+    assert (project / ".git").exists()
 
 
-def test_init_venv_uses_uv_when_available(
+def test_init_defaults_to_the_current_directory(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[list[str]] = []
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(main, ["init"])
+    assert result.exit_code == 0
+    assert (tmp_path / "astra.yaml").exists()
 
-    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
-        calls.append(list(cmd))
-        return MagicMock(returncode=0)
 
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(subprocess, "run", _fake_run)
+# ---- rendering ------------------------------------------------------------
 
+
+def test_init_reports_what_it_created(runner: CliRunner, tmp_path: Path) -> None:
+    result = runner.invoke(main, ["init", str(tmp_path / "proj")])
+    assert "created astra.yaml" in result.output
+    assert "Project converged at" in result.output
+
+
+def test_init_on_a_converged_project_says_so(runner: CliRunner, tmp_path: Path) -> None:
     project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
-    assert result.exit_code == 0, result.output
+    assert runner.invoke(main, ["init", str(project)]).exit_code == 0
 
-    assert ["uv", "venv", "--python", "3.12", ".venv"] in calls
-    assert [
-        "uv", "pip", "install", "--python", ".venv/bin/python", "-r", "requirements.txt",
-    ] in calls
-
-
-def test_init_venv_falls_back_to_python_when_uv_missing(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[list[str]] = []
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
-        calls.append(list(cmd))
-        return MagicMock(returncode=0)
-
-    monkeypatch.setattr(shutil, "which", lambda _: None)
-    monkeypatch.setattr(subprocess, "run", _fake_run)
-
-    project = tmp_path / "proj"
-    result = runner.invoke(main, ["init", str(project), "--no-git"])
-    assert result.exit_code == 0, result.output
-
-    assert ["python", "-m", "venv", ".venv"] in calls
-    assert [
-        ".venv/bin/python", "-m", "pip", "install", "-q", "-r", "requirements.txt",
-    ] in calls
+    result = runner.invoke(main, ["init", str(project)])
+    assert result.exit_code == 0
+    # "already converged" straddles rich's wrap point once the tmp path is
+    # long enough — assert on a fragment that cannot wrap.
+    assert "nothing to do" in result.output
 
 
-# ---- lc verify ------------------------------------------------------------
-
-
-def test_verify_clean_project_returns_zero(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An empty project (no materialized outputs yet) is a clean state, not
-    a verification failure."""
+def test_blocked_items_are_rendered(runner: CliRunner, tmp_path: Path) -> None:
+    """A blocked item is why a run can end unconverged, so it has to be
+    visible — its reason alone (carried as a warning) doesn't say which
+    item is missing."""
     project = tmp_path / "proj"
     project.mkdir()
-    (project / "astra.yaml").write_text(
-        "outputs:\n  - id: foo\n    recipe:\n      command: echo\n"
-    )
-    monkeypatch.chdir(project)
-    result = runner.invoke(main, ["verify"])
+    (project / "results").write_text("not a directory\n")
+
+    result = runner.invoke(main, ["init", str(project)])
+    assert result.exit_code == 0
+    assert "blocked results/" in result.output
+    # Rich wraps on the terminal width, so assert on an unwrappable fragment.
+    assert "✗" in result.output
+    # The reason travels as a warning, and the console renders those too.
+    assert "not a directory" in result.output
+
+
+# ---- --check / --json (the agent-facing surface) --------------------------
+
+
+def test_check_reports_drift_without_writing(runner: CliRunner, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--check"])
+    assert result.exit_code == 1
+    assert "would create" in result.output
+    assert not project.exists()
+
+
+def test_check_passes_on_a_converged_project(runner: CliRunner, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    assert runner.invoke(main, ["init", str(project)]).exit_code == 0
+
+    result = runner.invoke(main, ["init", str(project), "--check"])
+    assert result.exit_code == 0
+    # Rich wraps on the terminal width, so assert on an unwrappable fragment.
+    assert "nothing to do" in result.output
+
+
+def test_json_report_is_machine_readable(runner: CliRunner, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--json"])
     assert result.exit_code == 0
 
+    # Parsed straight off stdout: --json suppresses the banner.
+    payload = json.loads(result.output)
+    assert payload["converged"] is False
+    assert "astra.yaml" in payload["created"]
+    assert payload["warnings"] == []
 
-# ---- lc run command building ------------------------------------------------
+    payload = json.loads(runner.invoke(main, ["init", str(project), "--json"]).output)
+    assert payload["converged"] is True
+    assert payload["created"] == [] and payload["repaired"] == []
 
 
-def test_run_cmd_inserts_separator_before_targets() -> None:
-    """Regression test for issue #87.
+def test_check_json_writes_nothing_and_exits_nonzero(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """`--check --json` together are the agent form: a drift report with no
+    side effects and an exit code to branch on."""
+    project = tmp_path / "proj"
+    result = runner.invoke(main, ["init", str(project), "--check", "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.output)["converged"] is False
+    assert not project.exists()
 
-    snakemake's --rerun-triggers uses nargs=+ so it greedily consumes the
-    first positional target path as an extra trigger value, producing:
-        error: argument --rerun-triggers: invalid choice:
-        'results/baseline/map_fit/.lightcone-manifest.json'
-    A '--' separator between the trigger values and target paths terminates
-    argparse flag processing and prevents this.
-    """
-    from lightcone.cli.commands import _build_snakemake_cmd
 
-    targets = ["results/baseline/map_fit/.lightcone-manifest.json"]
-    cmd = _build_snakemake_cmd(
-        snakefile_path=Path("/proj/.lightcone/Snakefile"),
-        project=Path("/proj"),
-        n="4",
-        rerun_triggers="code,input,mtime,params",
-        targets=targets,
-        force=False,
-        has_outputs=True,
+# ---- lc run ---------------------------------------------------------------
+
+
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A minimal project, with the CLI's cwd pointed at its root."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "pyproject.toml").write_text('[project]\nname = "proj"\n')
+    (root / "uv.lock").write_text("version = 1\n")
+    (root / ".venv").mkdir()
+    monkeypatch.chdir(root)
+    return root
+
+
+@pytest.fixture
+def spawned(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Record what the CLI asks the engine to do, without running anything."""
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
+
+    calls: list[dict[str, object]] = []
+
+    def fake_probe(project, command, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append({"project": project, "command": list(command), **kwargs})
+        return Outcome(
+            returncode=0,
+            attestation=Attestation(mechanism="landlock", fs="declared", landlock_abi=4),
+        )
+
+    monkeypatch.setattr(engine_run, "probe", fake_probe)
+    return calls
+
+
+def test_run_is_advertised(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["--help"])
+    assert "run" in result.output
+
+
+def test_run_passes_the_command_through_untouched(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    """A probe's command has its own flags, and they belong to it — not
+    to us. `--help` after the command must reach the command."""
+    result = runner.invoke(main, ["run", "python", "-c", "print(1)", "--help"])
+    assert result.exit_code == 0
+    assert spawned[0]["command"] == ["python", "-c", "print(1)", "--help"]
+    assert spawned[0]["project"] == project.resolve()
+
+
+def test_the_childs_exit_code_is_the_cli_s(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe is a proxy for the command; swallowing its exit code would
+    make `lc run` useless in a script."""
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
+
+    monkeypatch.setattr(
+        engine_run,
+        "probe",
+        lambda *a, **k: Outcome(
+            returncode=42, attestation=Attestation(mechanism="none", fs="open")
+        ),
     )
-
-    assert "--" in cmd, "missing '--' separator; first target will be consumed as a trigger value"
-    sep_idx = cmd.index("--")
-    rt_idx = cmd.index("--rerun-triggers")
-    assert sep_idx > rt_idx, "'--' must appear after --rerun-triggers"
-    target_idx = cmd.index(targets[0])
-    assert target_idx > sep_idx, "target path must appear after '--'"
+    assert runner.invoke(main, ["run", "false"]).exit_code == 42
 
 
-def test_run_cmd_no_separator_when_no_targets() -> None:
-    """When no targets are supplied snakemake runs 'rule all'; '--' is unnecessary."""
-    from lightcone.cli.commands import _build_snakemake_cmd
+def test_a_signal_killed_command_reports_the_conventional_status(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Popen.returncode` is negative for a signal and `sys.exit(-9)`
+    truncates to 247. A script testing for 137 (SIGKILL) has to see 137."""
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
 
-    cmd = _build_snakemake_cmd(
-        snakefile_path=Path("/proj/.lightcone/Snakefile"),
-        project=Path("/proj"),
-        n="4",
-        rerun_triggers="code,input,mtime,params",
-        targets=[],
-        force=False,
-        has_outputs=False,
+    monkeypatch.setattr(
+        engine_run,
+        "probe",
+        lambda *a, **k: Outcome(
+            returncode=-9, attestation=Attestation(mechanism="landlock", fs="declared")
+        ),
     )
+    assert runner.invoke(main, ["run", "sleep"]).exit_code == 137
 
-    assert "--" not in cmd
 
+def test_notes_are_rendered(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine import run as engine_run
+    from lightcone.engine.sandbox import Outcome
+    from lightcone.engine.sandbox.model import Attestation
 
-def test_run_cmd_multiple_triggers_all_before_separator() -> None:
-    """All four trigger tokens must precede the '--' separator."""
-    from lightcone.cli.commands import _build_snakemake_cmd
-
-    targets = ["results/baseline/out/.lightcone-manifest.json"]
-    cmd = _build_snakemake_cmd(
-        snakefile_path=Path("/proj/.lightcone/Snakefile"),
-        project=Path("/proj"),
-        n="1",
-        rerun_triggers="code,input,mtime,params",
-        targets=targets,
-        force=False,
-        has_outputs=True,
+    monkeypatch.setattr(
+        engine_run,
+        "probe",
+        lambda *a, **k: Outcome(
+            returncode=1,
+            attestation=Attestation(mechanism="landlock", fs="declared"),
+            notes=("blocked by lc sandbox: cannot execute /usr/bin/latex —",),
+        ),
     )
-
-    sep_idx = cmd.index("--")
-    for trigger in ("code", "input", "mtime", "params"):
-        assert trigger in cmd, f"trigger '{trigger}' missing from cmd"
-        assert cmd.index(trigger) < sep_idx, f"trigger '{trigger}' must come before '--'"
+    result = runner.invoke(main, ["run", "latex"])
+    assert "blocked by lc sandbox" in result.output
 
 
-# ---- JupyterHub deployment paths ------------------------------------------
+def test_a_bare_run_is_refused_rather_than_opening_a_shell(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    """A probe is run by an agent far more often than by a person, and an
+    agent handed an interactive shell waits forever for input nobody is
+    going to type. Refusing is the only outcome that cannot hang."""
+    result = runner.invoke(main, ["run"])
+    assert result.exit_code != 0
+    assert spawned == []
 
 
-def test_run_cmd_uniform_across_backends() -> None:
-    """One invocation shape for every backend: --shared-fs-usage drops
-    software-deployment so spawned jobs run plain `python` from the
-    worker's own environment (the worker image on a gateway, the
-    driver's activated env locally / on SLURM) instead of embedding the
-    driver's sys.executable. No gateway-specific flags exist."""
-    from lightcone.cli.commands import _build_snakemake_cmd
-
-    cmd = _build_snakemake_cmd(
-        snakefile_path=Path("/p/.lightcone/Snakefile"),
-        project=Path("/p"),
-        n="4",
-        rerun_triggers="mtime",
-        targets=["results/u/foo/.lightcone-manifest.json"],
-        force=False,
-        has_outputs=True,
-    )
-    j = cmd.index("--shared-fs-usage")
-    values = cmd[j + 1 : cmd.index("--rerun-triggers")]
-    assert "software-deployment" not in values
-    assert "persistence" in values and "input-output" in values
-    assert "--latency-wait" not in cmd
-    # nargs=+ flags must never swallow the positional targets.
-    assert cmd.index("--") < cmd.index("results/u/foo/.lightcone-manifest.json")
-
-
-def test_init_scaffold_is_environment_agnostic(
+def test_outside_a_project_is_a_clean_error(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The scaffold is identical on and off a hub: the Containerfile
-    carries no environment-specific content (pod identity is deployment
-    config, not image content), and the image gets the execution stack
-    — including dask-gateway — via a dedicated lightcone-cli layer."""
-    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
-    hub_project = tmp_path / "hub"
-    result = runner.invoke(main, ["init", str(hub_project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-
-    monkeypatch.delenv("DASK_GATEWAY__ADDRESS")
-    local_project = tmp_path / "local"
-    result = runner.invoke(main, ["init", str(local_project), "--no-git", "--no-venv"])
-    assert result.exit_code == 0, result.output
-
-    containerfile = (hub_project / "Containerfile").read_text()
-    requirements = (hub_project / "requirements.txt").read_text()
-    assert containerfile == (local_project / "Containerfile").read_text()
-    assert requirements == (local_project / "requirements.txt").read_text()
-    assert "useradd" not in containerfile and "USER" not in containerfile
-    # The execution stack goes in the image, never the venv's
-    # requirements — `lc` lives outside the project venv.
-    assert "lightcone-cli" in containerfile
-    assert "lightcone-cli" not in requirements
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(main, ["run", "true"])
+    assert result.exit_code == 1
+    assert "not a Lightcone project" in result.output
 
 
-def test_lightcone_requirement_pins_running_version() -> None:
-    from importlib.metadata import version
+def test_a_subdirectory_of_a_project_is_not_the_project(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No walk-up: `lc run` uses the directory it is invoked from, or
+    errors."""
+    nested = project / "sub"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+    result = runner.invoke(main, ["run", "true"])
+    assert result.exit_code == 1
+    assert "not a Lightcone project" in result.output
 
-    from lightcone.cli.commands import _lightcone_requirement
 
-    req = _lightcone_requirement()
-    v = version("lightcone-cli")
-    if "dev" in v:
-        # Dev builds aren't published — unpinned fallback.
-        assert req == "lightcone-cli"
-    else:
-        assert req == f"lightcone-cli=={v}"
+def test_run_needs_no_spec_file(
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+) -> None:
+    """The environment is what a probe needs; `astra.yaml` is not
+    required to run a command in it."""
+    assert not (project / "astra.yaml").exists()
+    result = runner.invoke(main, ["run", "true"])
+    assert result.exit_code == 0
+    assert spawned[0]["project"] == project.resolve()
 
 
-def test_ensure_images_none_runtime_returns_empty(tmp_path: Path) -> None:
-    from lightcone.cli.commands import _ensure_images
+# ---- lc materialize -------------------------------------------------------
 
-    assert _ensure_images(tmp_path, runtime="none") == []
+
+def _stub(monkeypatch: pytest.MonkeyPatch, **outcomes: object) -> list[tuple[str, object]]:
+    """Record which engine entry point the flags reached, and with what."""
+    from lightcone.engine import materialize as engine
+
+    seen: list[tuple[str, object]] = []
+
+    def record(name: str) -> object:
+        def call(root: Path, targets: object, **kwargs: object) -> object:
+            seen.append((name, (list(targets), kwargs)))
+            return outcomes.get(name, engine.MaterializeReport())
+
+        return call
+
+    monkeypatch.setattr(engine, "check", record("check"))
+    monkeypatch.setattr(engine, "materialize", record("materialize"))
+    return seen
+
+
+def test_check_reaches_check_mode_and_nothing_else(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _stub(monkeypatch)
+
+    runner.invoke(main, ["materialize", "--check"])
+
+    assert [name for name, _ in seen] == ["check"]
+
+
+def test_targets_reach_the_engine(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _stub(monkeypatch)
+
+    runner.invoke(main, ["materialize", "baseline/fit", "report"])
+
+    assert seen == [("materialize", (["baseline/fit", "report"], {"refresh": False}))]
+
+
+def test_refresh_reaches_both_modes(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--check` has to answer the question the run would ask, or the gate
+    reports on a run nobody is going to make."""
+    seen = _stub(monkeypatch)
+
+    runner.invoke(main, ["materialize", "--refresh"])
+    runner.invoke(main, ["materialize", "--check", "--refresh"])
+
+    assert seen == [
+        ("materialize", ([], {"refresh": True})),
+        ("check", ([], {"refresh": True})),
+    ]
+
+
+def test_there_is_no_flag_to_stop_a_stale_output_being_remade(runner: CliRunner) -> None:
+    """`--refresh` widens what a run does; nothing narrows it. An artifact
+    that contradicts the analysis is remade, and deleting the directory is
+    the user's own file operation if they want it gone instead."""
+    output = runner.invoke(main, ["materialize", "--help"]).output
+    for flag in ("--force", "--keep-going", "--no-refresh", "--skip"):
+        assert flag not in output
+
+
+def test_there_is_no_knob_for_how_much_of_the_machine_to_use(runner: CliRunner) -> None:
+    """A run takes every core. How much of a machine, and which machine,
+    is one question and it belongs to a declared execution backend."""
+    assert "--jobs" not in runner.invoke(main, ["materialize", "--help"]).output
+
+
+def test_a_run_with_nothing_to_do_exits_zero(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub(monkeypatch)
+
+    result = runner.invoke(main, ["materialize"])
+
+    assert result.exit_code == 0
+    assert "nothing to do" in result.output
+
+
+def test_check_exits_nonzero_when_something_would_run(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent has to be able to ask "is this current?" and read the
+    answer off the exit status."""
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(monkeypatch, check=MaterializeReport(planned={"baseline/fit": "no manifest"}))
+
+    result = runner.invoke(main, ["materialize", "--check"])
+
+    assert result.exit_code == 1
+    assert "would run baseline/fit" in result.output
+
+
+def test_a_failure_exits_nonzero(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(
+        monkeypatch,
+        materialize=MaterializeReport(failed=["baseline/fit"], blocked=["baseline/report"]),
+    )
+
+    result = runner.invoke(main, ["materialize"])
+
+    assert result.exit_code == 1
+    assert "failed baseline/fit" in result.output
+    assert "blocked baseline/report" in result.output
+
+
+def test_engine_prose_is_rendered_as_written(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A warning naming `[project].license` must reach the terminal with
+    its brackets — rich would otherwise read them as a style tag and
+    swallow the word, turning the remedy into "no .license"."""
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(
+        monkeypatch,
+        materialize=MaterializeReport(warnings=["no [project].license declared"]),
+    )
+
+    result = runner.invoke(main, ["materialize"])
+
+    assert "no [project].license declared" in result.output
+
+
+def test_the_json_report_is_machine_readable(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(monkeypatch, materialize=MaterializeReport(made=["baseline/fit"]))
+
+    result = runner.invoke(main, ["materialize", "--json"])
+
+    assert json.loads(result.output) == {
+        "ok": True,
+        "up_to_date": False,
+        "made": ["baseline/fit"],
+        "current": [],
+        "behind": {},
+        "failed": [],
+        "blocked": [],
+        "planned": {},
+        "warnings": [],
+        "notes": [],
+    }
+
+
+def test_an_engine_refusal_is_a_clean_error(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dirty tree, a lock that cannot be audited — the user sees the
+    message, never a traceback."""
+    from lightcone.engine import materialize as engine
+    from lightcone.engine.project import ProjectError
+
+    def refuse(root: Path, targets: object, **kwargs: object) -> object:
+        raise ProjectError("uncommitted changes in the project")
+
+    monkeypatch.setattr(engine, "materialize", refuse)
+
+    result = runner.invoke(main, ["materialize"])
+
+    assert result.exit_code == 1
+    assert "uncommitted changes" in result.output
+    assert "Traceback" not in result.output
+
+
+# =============================================================================
+# lc status
+# =============================================================================
+
+
+def _status_stub(monkeypatch: pytest.MonkeyPatch, report: object) -> None:
+    from lightcone.engine import materialize as engine
+
+    monkeypatch.setattr(engine, "status", lambda root: report)
+
+
+def _report() -> object:
+    from lightcone.engine.materialize import OutputStatus, StatusReport
+
+    return StatusReport(
+        outputs=[
+            OutputStatus("baseline/first", "current", "", "3f2a1c8ffff", "sha256:one"),
+            OutputStatus(
+                "baseline/second",
+                "behind",
+                "made under an earlier environment",
+                "3f2a1c8ffff",
+                "sha256:two",
+            ),
+            OutputStatus("baseline/third", "stale", "the input `first` changed", "", ""),
+        ]
+    )
+
+
+def test_status_shows_each_output_its_state_and_its_commit(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _status_stub(monkeypatch, _report())
+
+    result = runner.invoke(main, ["status"])
+
+    assert result.exit_code == 0
+    for fragment in ("baseline/first", "current", "behind", "stale", "3f2a1c8"):
+        assert fragment in result.output
+
+
+def test_status_headers_answer_mode_image_and_sandbox(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The three facts nothing else surfaces — where the denial note and
+    the runtime-missing refusal both point."""
+    from lightcone.engine.materialize import StatusReport
+
+    report = _report()
+    assert isinstance(report, StatusReport)
+    report.mode = "containerized"
+    report.image = {
+        "tag": "lc-env-0123456789abcdef",
+        "state": "absent",
+        "archive": ".datalad/environments/lc-env-0123456789abcdef/image",
+    }
+    report.sandbox = "podman (fs: declared, network: allowed)"
+    report.crate = "up to date with the outputs"
+    _status_stub(monkeypatch, report)
+
+    output = runner.invoke(main, ["status"]).output
+
+    assert "mode:    containerized" in output
+    assert "lc-env-0123456789abcdef" in output
+    assert "needs build" in output and "lc build" in output
+    assert "podman" in output
+    assert "crate:   up to date with the outputs" in output
+
+
+def test_status_header_prose_is_not_markup(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The crate line names `[project].license`, and rich would read the
+    brackets as a style tag and swallow the one word that names the fix."""
+    from lightcone.engine.materialize import StatusReport
+
+    report = _report()
+    assert isinstance(report, StatusReport)
+    report.crate = "not maintained — declare [project].license to enable it"
+    _status_stub(monkeypatch, report)
+
+    output = runner.invoke(main, ["status"]).output
+
+    assert "declare [project].license to enable it" in output
+
+
+def test_build_on_a_direct_project_is_an_explanatory_no_op(
+    runner: CliRunner, project: Path
+) -> None:
+    """Not an error: `lc build` answers "what would building do here",
+    and for a direct project the answer names the escalation."""
+    result = runner.invoke(main, ["build"])
+
+    assert result.exit_code == 0
+    assert "direct mode" in result.output
+    assert "[tool.lightcone.image]" in result.output
+
+
+def test_status_renders_a_foreign_write_as_a_stale_output(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A foreign write arrives as a stale with its message in `why`, so
+    the one rendering path covers it — and it does not change the exit
+    code: status reports."""
+    from lightcone.engine.materialize import OutputStatus, StatusReport
+
+    message = (
+        'last changed by 8d31f00 ("tweak colors", Ada, 2026-08-19) rather '
+        "than its run record, so the manifest no longer describes these "
+        "bytes — the next run remakes it; inspect first with `git show 8d31f00`"
+    )
+    report = StatusReport(
+        outputs=[
+            OutputStatus(
+                "baseline/first",
+                "stale",
+                message,
+                "3f2a1c8ffff",
+                "sha256:one",
+                foreign_write="8d31f00" + "0" * 33,
+            ),
+        ]
+    )
+    _status_stub(monkeypatch, report)
+
+    result = runner.invoke(main, ["status"])
+
+    assert result.exit_code == 0
+    assert "stale" in result.output
+    assert "8d31f00" in result.output
+
+
+def test_status_exits_zero_even_with_stale_outputs(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It reports; it does not gate. `lc materialize --check` is the gate,
+    and two verbs answering the same question with different exit codes is
+    how a script comes to depend on the wrong one."""
+    _status_stub(monkeypatch, _report())
+
+    assert runner.invoke(main, ["status"]).exit_code == 0
+
+
+def test_status_json_is_machine_readable(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _status_stub(monkeypatch, _report())
+
+    result = runner.invoke(main, ["status", "--json"])
+
+    assert json.loads(result.output) == {
+        "mode": "direct",
+        "image": None,
+        "sandbox": "",
+        "crate": "",
+        "counts": {"current": 1, "behind": 1, "stale": 1},
+        "outputs": [
+            {
+                "output": "baseline/first",
+                "status": "current",
+                "why": "",
+                "git_sha": "3f2a1c8ffff",
+                "data_version": "sha256:one",
+                "foreign_write": "",
+            },
+            {
+                "output": "baseline/second",
+                "status": "behind",
+                "why": "made under an earlier environment",
+                "git_sha": "3f2a1c8ffff",
+                "data_version": "sha256:two",
+                "foreign_write": "",
+            },
+            {
+                "output": "baseline/third",
+                "status": "stale",
+                "why": "the input `first` changed",
+                "git_sha": "",
+                "data_version": "",
+                "foreign_write": "",
+            },
+        ],
+        "warnings": [],
+    }
+
+
+def test_status_has_exactly_one_flag(runner: CliRunner) -> None:
+    """Minimal by decision: it answers one question, and every way of
+    narrowing it is a way of getting a partial answer to that question."""
+    # The options block alone: the prose above it points at
+    # `lc materialize --check`, which is a different verb's flag.
+    options = runner.invoke(main, ["status", "--help"]).output.partition("Options:")[2]
+    assert "--json" in options
+    for flag in ("--check", "--refresh", "--verbose", "--all"):
+        assert flag not in options

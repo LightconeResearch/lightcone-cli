@@ -1,7 +1,7 @@
 [project]
 name = "lightcone-cli"
 dynamic = ["version"]
-description = "Lightcone command-line toolchain"
+description = "Lightcone Research's agentic execution layer"
 readme = "README.md"
 license = { text = "BSD-3-Clause" }
 requires-python = ">=3.11"
@@ -24,24 +24,12 @@ classifiers = [
 ]
 
 dependencies = [
-    # Pinned: astra-tools 0.2.14 made `astra init` idempotent, changing
-    # the callback signature this release's `lc init` delegates to.
-    "astra-tools==0.2.11",
+    "astra-tools==0.2.16",
     "click>=8.0",
-    "pyyaml>=6.0",
     "rich>=13.0",
-    "jinja2>=3.0",
-    "snakemake>=9.0",
-    "snakemake-interface-executor-plugins>=9.0",
-    "snakemake-interface-common>=1.14",
-    "dask>=2024.1",
-    "distributed>=2024.1",
-    # Dask Gateway client for JupyterHub/Kubernetes deployments. A
-    # normal dependency (not an extra) so `lc run` works out of the box
-    # on a hub and scaffolded project images inherit it via their
-    # lightcone-cli pin.
-    "dask-gateway>=2024.1",
-    "rocrate>=0.11",
+    "git-annex>=10.2026",
+    "distributed>=2026.7",
+    "rocrate>=0.15",
 ]
 
 [dependency-groups]
@@ -50,7 +38,8 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
-    "types-PyYAML",
+    "datalad",
+    "roc-validator>=0.11.3",
 ]
 docs = [
     "zensical>=0.0.33",
@@ -59,8 +48,22 @@ docs = [
     "mike @ git+https://github.com/squidfunk/mike.git ; python_version >= '3.10'",
 ]
 
+
+[project.urls]
+Repository = "https://github.com/LightconeResearch/lightcone-cli"
+
 [project.scripts]
 lc = "lightcone.cli:main"
+# The git-annex wheel's own entry points, re-declared verbatim: an
+# installer links only the requested package's executables, and a plain
+# `uv tool install lightcone-cli` must put git-annex on the shell's PATH
+# — `filter=annex` makes the researcher's own `git add` need it. The
+# suite pins these against the wheel's, so an upstream change fails
+# loudly here rather than silently at install time.
+git-annex = "git_annex:cli"
+git-annex-shell = "git_annex:cli"
+git-remote-annex = "git_annex:cli"
+git-remote-tor-annex = "git_annex:cli"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
@@ -70,16 +73,10 @@ build-backend = "hatchling.build"
 source = "vcs"
 
 [tool.hatch.build.targets.wheel]
-packages = [
-    "src/lightcone",
-    "src/snakemake_executor_plugin_dask",
-]
+packages = ["src/lightcone"]
 
 [tool.hatch.build.targets.sdist]
-include = [
-    "src/lightcone",
-    "src/snakemake_executor_plugin_dask",
-]
+include = ["src/lightcone"]
 
 [tool.ruff]
 target-version = "py311"
@@ -96,28 +93,19 @@ explicit_package_bases = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["dask.*", "distributed.*"]
+module = ["astra.*", "rocrate.*"]
 ignore_missing_imports = true
 follow_untyped_imports = true
 
+# rocrate ships no type information, and engine/crate.py is a client of
+# little else — one module-scoped relaxation beats an ignore on every call.
 [[tool.mypy.overrides]]
-# Untyped and without explicit re-exports; skip so `from dask_gateway
-# import Gateway` doesn't trip strict no_implicit_reexport.
-module = ["dask_gateway", "dask_gateway.*"]
-ignore_missing_imports = true
-follow_imports = "skip"
-
-[[tool.mypy.overrides]]
-module = ["rocrate.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["astra.*"]
-ignore_missing_imports = true
-follow_untyped_imports = true
+module = ["lightcone.engine.crate"]
+disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = [
-    "slow: tests that spin up real subsystems (dask cluster, etc.) — opt-in via -m slow",
-]
+# The container smoke tests leave ~200 MB image archives in each test's
+# tmp_path; keeping every passing run's directories exhausts a tmpfs.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1

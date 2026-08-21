@@ -3,11 +3,14 @@ name: Eval
 # Minimal agentic eval: scaffold a project from the eval seed on the
 # runner, let Claude Code (with the astra plugin) build it using the
 # branch's lc/astra, then check the results with astra validate and
-# lc status.
+# lc materialize --check.
 
 on:
-  pull_request:
   workflow_dispatch:
+  pull_request:
+    # `ready_for_review` beside the defaults, so flipping a draft to
+    # ready triggers the run the draft guard below skips.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # Only one eval per PR at a time — cancel in-progress runs
 concurrency:
@@ -28,20 +31,35 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so hatch-vcs sees the tags and stamps a truthful
+          # dev version into the installed engine (and every manifest's
+          # lc_version) instead of a 0.1.dev fallback
+          fetch-depth: 0
 
       - name: Set up uv
+        # No python-version input: it would export an ambient UV_PYTHON,
+        # which lc's install-settings scrub then rightly warns about on
+        # every single invocation the agent makes. The interpreter is
+        # pinned per tool install below instead.
         uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.12"
           enable-cache: true
-          activate-environment: true
 
-      - name: Install lightcone-cli (branch under test)
+      - name: Install lightcone-cli + astra (uv tools)
+        # The engine is the host's uv tool — install the branch under
+        # test the way a user installs a release: `uv tool install`,
+        # which links `lc` and (via the mirrored entry points) the
+        # git-annex executables into ~/.local/bin. The commit under test
+        # is the checkout itself, stamped into the version by hatch-vcs.
+        # astra's executable belongs to astra-tools, so it is its own
+        # tool install, pinned to the version the branch depends on. No
+        # venv is activated: the agent's shell sees the tools exactly as
+        # an end user's would.
         run: |
-          uv sync
-          # Scientific deps the task's analysis scripts will need — the
-          # agent can add more with `uv pip install`
-          uv pip install numpy scipy matplotlib
+          uv tool install --python 3.12 "$GITHUB_WORKSPACE"
+          uv tool install --python 3.12 "astra-tools==$(grep -oP 'astra-tools==\K[0-9][0-9.]*' pyproject.toml)"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install Claude Code + astra plugin
         run: |
@@ -70,6 +88,12 @@ jobs:
           rm -f universes/baseline.yaml
           astra universe generate -n baseline \
             -d 'Default configuration using standard practices'
+          # No scientific deps are pre-seeded — declaring what the
+          # recipes import (`uv add`) is part of what the eval measures
+          # lc materialize refuses a dirty tree — commit the seed so the
+          # agent starts from a clean one
+          git add -A
+          git commit -q -m 'Seed the eval task'
 
       - name: Run Claude Code
         id: agent
@@ -92,11 +116,14 @@ jobs:
         working-directory: ${{ env.PROJECT }}
         run: |
           astra validate astra.yaml
-          lc status --universe baseline
-          # Fail unless every materializable output is ok
-          lc status --json | jq -e \
-            '[.universes[].outputs[] | select(.status != "alias")]
-             | length > 0 and all(.status == "ok")'
+          lc status
+          # The gate: nothing failed, nothing left to make — and at least
+          # one output actually got materialized
+          lc materialize --check --json | jq -e \
+            '.up_to_date and ((.current | length) > 0)'
+          # The publication view: declaring a license and materializing
+          # once more is part of the task
+          test -f ro-crate-metadata.json
 
       - name: Build report
         if: always()
@@ -136,7 +163,7 @@ jobs:
             echo '<details><summary>lc status</summary>'
             echo ""
             echo '```'
-            (cd "$PROJECT" && lc status --universe baseline) || echo "unavailable"
+            (cd "$PROJECT" && lc status) || echo "unavailable"
             echo '```'
             echo ""
             echo '</details>'
@@ -199,11 +226,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: eval-project
-          # include-hidden-files keeps the .lightcone-manifest.json
-          # provenance files; the venv and snakemake scratch are excluded
+          # include-hidden-files keeps the manifests, the run records in
+          # .git, and the annexed results; the venv and lc's per-run
+          # machine state are excluded
           path: |
             ${{ env.PROJECT }}
             !${{ env.PROJECT }}/.venv/**
-            !${{ env.PROJECT }}/.snakemake/**
+            !${{ env.PROJECT }}/.lightcone/**
           include-hidden-files: true
           if-no-files-found: warn

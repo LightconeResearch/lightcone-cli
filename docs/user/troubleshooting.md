@@ -1,138 +1,156 @@
 # Troubleshooting
 
-Common issues and how to unstick them. Roughly ordered by how often
-they come up.
+Common situations and how to unstick them, roughly ordered by how often
+they come up. `lc`'s refusals try to carry their own remedy — this page
+adds the context around them.
 
-## "No global configuration found."
+## "uncommitted changes in …"
 
-`~/.lightcone/config.yaml` is normally created automatically on first
-use, but it may be missing if the home directory was unavailable or if
-the file was deleted manually. Re-create it by hand:
+```
+Error: uncommitted changes in /home/you/my-analysis — every
+materialization is committed with the code that produced it, so a run
+cannot start from a tree that does not say what that code is.
 
-```bash
-mkdir -p ~/.lightcone
-cat > ~/.lightcone/config.yaml <<'EOF'
-container:
-  runtime: auto
-EOF
+  commit these:   git add -A . && git commit -m "…"
+      M src/fit.py
 ```
 
-Or just run any `lc` command (e.g. `lc --version`) — the auto-creation
-runs before every command.
+Not an error in your project — just the order of operations: commit,
+then materialize. The refusal sorts the paths it found: work you own
+gets the `commit these` line, while leftover files under `results/`
+(from an interrupted run of an older `lc`, or a hand write) are listed
+as wreckage to discard instead — `results/` is `lc`'s to write, and
+committing hand-placed files there defeats the provenance the tool
+exists for.
 
-## "No astra.yaml found in current directory or any parent."
+## "… is not a Lightcone project"
 
-You're outside an ASTRA project. Either:
+You're outside a project. The current directory *is* the project — `lc`
+never walks up to find one, by design — so:
 
 ```bash
 cd path/to/your/project
 ```
 
-or, if you're starting fresh:
-
-```bash
-lc init my-analysis
-cd my-analysis
-```
-
-`lc init` is idempotent — re-running it inside an existing project is
-safe and just fills in anything missing (`lc init --check` tells you
-whether it would change anything).
+or, starting fresh, `lc init my-analysis && cd my-analysis`. If you're
+in a fresh clone, run `lc init` once — it rebuilds the `.venv` and the
+annex, the two pieces of local state git doesn't carry.
 
 ## "lc: command not found" or `lc` prints a directory listing
 
 Two possibilities:
 
-1. The package isn't installed for your current Python. Check
-   `pip show lightcone-cli` (or `uv pip show lightcone-cli`).
+1. The tool isn't on `PATH` — with `uv tool install`, that's
+   `~/.local/bin`; `uv tool update-shell` fixes the profile.
 2. Your shell has a personal alias `lc='ls --color'` shadowing the
    real command. Run `type lc` to see; `unalias lc` to remove.
 
-## `lc run` warning: "No container runtime found on PATH"
+## A recipe fails with "Permission denied" or "No module named …"
 
-You declared a container in `astra.yaml` but `auto` couldn't find any
-of `docker`, `podman`, or `podman-hpc`. Two options:
+Every sandboxed failure ends with this trailer:
 
-- **Install one.** Podman is the smallest install on Linux and macOS.
-- **Opt out explicitly.** Edit `~/.lightcone/config.yaml`:
-  ```yaml
-  container:
-    runtime: none
-  ```
-  This silences the warning, but then your manifests will record an
-  image that didn't actually run — fine for development, not fine for
-  archival.
-
-## `lc run` says "Workflow defines that rule … but no input"
-
-This is Snakemake speak. It usually means:
-
-- A recipe declares `inputs: [foo]` but no other output produces
-  `foo`. Either the input is external (in which case it shouldn't be
-  in the recipe's `inputs:` list — recipes only chain to *sibling*
-  outputs), or there's a typo.
-- Sub-analysis output ids that collide with root output ids — qualify
-  with `<analysis_id>.<output_id>`.
-
-The fix is in `astra.yaml`. `astra validate astra.yaml` will catch
-most typos.
-
-## `lc status` shows everything `stale` after I just ran
-
-Something in the spec changed in a way that affects `code_version`.
-That hash covers recipe text, container image identifier, and
-decisions. Common causes:
-
-- You edited a `Containerfile` or a dependency file (`requirements.txt`,
-  `pyproject.toml`). The image's content-addressed tag changed →
-  every recipe that uses it is now `stale`.
-- You edited a recipe `command:`. Just rerun.
-- You changed the default for a decision.
-
-Re-running `lc run` will bring everything back to `ok`.
-
-## `lc verify` fails with `tampered_data`
-
-The bytes in an output directory no longer hash to the recorded
-`data_version`. Most innocent cause: someone hand-edited a result
-file. Most concerning: results were forged.
-
-If it was you, regenerate with `lc run --force <output>`. If it
-wasn't you, audit your shared filesystem.
-
-## `lc verify` fails with `broken_chain`
-
-A downstream output was materialized against an upstream version that
-no longer exists. Usually caused by:
-
-- The upstream was rerun without rerunning the downstream.
-- The upstream's output directory was edited by hand (which would also
-  trigger `tampered_data` on the upstream itself).
-
-Fix: `lc run` the downstream output. The chain will re-anchor.
-
-## I want to start the spec over
-
-Move `astra.yaml` aside (don't delete it — it's useful context about
-what you tried), then write a fresh one:
-
-```bash
-mv astra.yaml astra.previous.yaml
-$EDITOR astra.yaml
+```
+this ran under the lc sandbox (landlock) — a permissions or missing-file
+error can mean the command reached for something outside the declared
+environment
 ```
 
-Re-running `lc init` afterwards is safe — it only fills in whatever is
-missing and leaves the rest of the layout (`universes/`, `.lightcone/`)
-as is.
+Recipes run in the project's locked environment, with the tree
+read-only apart from their own output directory. The common cases:
+
+- **`ModuleNotFoundError`** — the package isn't in the project's lock.
+  `uv add <package>`, commit, re-run. (Installing it on the host with
+  `pip` changes nothing a recipe sees — that's the point.)
+- **Reading a file outside the project** — declare it as an ASTRA
+  input; declared inputs are readable and their content becomes part
+  of the output's provenance.
+- **Writing outside the output directory** — a recipe's product
+  belongs in `{output}`; for true scratch files, use
+  `tempfile.mkdtemp()`, which lands in the writable temp area.
+
+To probe interactively, `lc run <command>` runs any command under
+exactly the isolation a recipe gets — if it works there, it works as a
+recipe.
+
+## Everything shows `behind` after a `uv add`
+
+Not a problem, and nothing was invalidated. `behind` means: the output
+is still exactly what the spec asks for, but the environment has moved
+since it was made. Environment changes deliberately don't trigger
+rebuilds — the manifest records which environment and commit produced
+each output, so nothing is lost by leaving it. When you do want them
+remade under the current environment:
+
+```bash
+lc materialize --refresh
+```
+
+See [Core Concepts](concepts.md) for the `stale` / `behind`
+distinction.
+
+## Everything shows `stale` after a spec edit
+
+`stale` means the spec now defines the output differently than it was
+made — you edited its recipe, a decision, or a declared input's
+content changed. That's the invalidation model working; the next
+`lc materialize` remakes exactly those outputs.
+
+One edit that deliberately does *not* invalidate: changing your
+analysis code (`src/…`). The recipe *string* is the identity, so if
+you want code changes to cascade, declare the source file as an ASTRA
+input of the outputs it shapes — that choice is yours to make per
+output.
+
+## "the content is not in this clone"
+
+```
+data/points.csv: the content is not in this clone — git-annex holds a
+reference to it, not the data. Fetch it with `git annex get data/points.csv`.
+```
+
+The clone has the *pointer* to an annexed file but not its bytes.
+`lc materialize` fetches the declared inputs it needs by itself; the
+read-only verbs (`lc status`, `--check`) never transfer data, so they
+report the fact instead. Fetch by hand only when you want the bytes
+for your own inspection.
+
+## "… and this is a NERSC login node"
+
+`lc materialize` executes recipes, and on centers `lc` recognizes it
+refuses to do that on a shared login node. The refusal prints the
+center's own `salloc` and `sbatch` spellings — copy one, run the same
+command inside the allocation. `lc status`, `lc materialize --check`,
+`lc build` and `lc run` work anywhere. See
+[Running on a Cluster](cluster.md).
+
+## git doesn't know who you are
+
+Every output is committed, so a machine that has never committed needs
+an identity before the first run — `lc materialize` checks up front,
+before any recipe spends time:
+
+```bash
+git config --global user.name "Ada Lovelace"
+git config --global user.email "ada@example.org"
+```
+
+## Containerized projects
+
+- **"image absent"** — the declared image hasn't been built and
+  committed yet: `lc build` (announced by materialize too, which
+  builds it as a preflight when missing).
+- **No runtime found** — install [Podman](https://podman.io/) or
+  [Docker](https://docs.docker.com/get-docker/); detection is
+  automatic and there is nothing to configure.
+- **Architecture mismatch** — the committed archive records the
+  architecture it was built for, and a host that can't execute it is
+  refused before the recipe would have died mid-run. Build on a
+  matching host (on NERSC, a login node), commit, push, and pull on
+  the other side.
 
 ## Filing a bug
 
 Open an issue at
 [github.com/LightconeResearch/lightcone-cli/issues](https://github.com/LightconeResearch/lightcone-cli/issues).
 Include the output of `lc --version`, the command you ran, and the
-error trace.
-
-## When all else fails
-
-Run `lc verify` — it's the fastest way to know whether your problem
-is provenance (real problem) or a transient build/run issue (rerun).
+full message — the refusals are designed to be pasted.
