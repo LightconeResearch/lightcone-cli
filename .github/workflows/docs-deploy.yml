@@ -3,9 +3,13 @@ name: Deploy Docs
 # Deploys a versioned snapshot of the docs to the gh-pages branch via
 # mike; GitHub Pages serves that branch as docs.lightconeresearch.org
 # (Settings → Pages must be set to "Deploy from a branch" / gh-pages).
-# Each version lives under its own subdirectory (/0.4.1/, /0.5.0/, …)
-# with the `latest` alias tracking the newest release, so old versions
-# stay accessible after a new one ships.
+# Each version lives under its own subdirectory (/0.4.1/, /0.5.0/, …).
+#
+# This is the v0.4 maintenance-branch variant: it deploys the version
+# subdirectory ONLY and never touches the `latest` alias or the site
+# default — `latest` belongs to the newest release series, which main's
+# copy of this workflow maintains. A 0.4.x release published after 0.5
+# must not pull `latest` back to the old series.
 #
 # The site tracks the *released* CLI, not main: deploys happen on the
 # same trigger as the PyPI publish, so the docs never document behavior
@@ -75,7 +79,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      # No alias, no set-default: a maintenance release never becomes
+      # the site's `latest`.
       - name: Deploy versioned docs to gh-pages
-        run: |
-          uv run mike deploy --push --update-aliases "${{ steps.version.outputs.version }}" latest
-          uv run mike set-default --push latest
+        run: uv run mike deploy --push "${{ steps.version.outputs.version }}"

@@ -69,11 +69,11 @@ docs-clean:
 
 # Deploy a versioned snapshot of the docs to gh-pages via mike, updating
 # the named alias (default: latest). Run after `just release`.
-docs-deploy version alias='latest': docs-install
-  uv run mike deploy --push --update-aliases {{version}} {{alias}}
-
-docs-set-default alias='latest':
-  uv run mike set-default --push {{alias}}
+# Maintenance-branch variant: deploys the version subdirectory only.
+# The `latest` alias and the site default belong to the newest release
+# series (main's workflow maintains them) — never move them from here.
+docs-deploy version: docs-install
+  uv run mike deploy --push {{version}}
 
 docs-versions:
   uv run mike list
