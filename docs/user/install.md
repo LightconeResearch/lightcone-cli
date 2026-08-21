@@ -194,6 +194,26 @@ have either, you can still use `lc` — set `runtime: none` in
 `~/.lightcone/config.yaml` and recipes will run on the host without
 isolation.
 
+## 6. (Optional) The MyST CLI
+
+`lc init` scaffolds a template report (`myst.yml` + `index.md`). To
+preview or build it you need [MyST](https://mystmd.org/), which ships as
+an npm package:
+
+```bash
+npm i -g mystmd
+myst --version
+```
+
+Then, from inside a project:
+
+```bash
+myst start          # live preview at http://localhost:3000
+```
+
+You only need this when you want to *read* the report — `lc run`,
+`lc status`, and `lc verify` don't touch it.
+
 ## Sanity check
 
     lc --help

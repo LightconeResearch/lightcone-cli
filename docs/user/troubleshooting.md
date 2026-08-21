@@ -62,6 +62,78 @@ of `docker`, `podman`, or `podman-hpc`. Two options:
   image that didn't actually run — fine for development, not fine for
   archival.
 
+## `lc run` on JupyterHub: "No Dask Gateway worker became ready within 600s"
+
+`lc run` creates a Gateway cluster and waits for its first worker before
+dispatching anything. If none appears, the run stops rather than hanging
+forever at zero workers. In practice this is almost always **an image
+the cluster can't pull**:
+
+- Run `lc build` on its own and read the error — a failed Cloud Build
+  shows up there much more clearly.
+- Check the cluster's state in the JupyterLab Dask panel; a worker pod
+  stuck in `ImagePullBackOff` confirms it.
+- Less often it's capacity: the node pool has no room (or quota) to
+  schedule a worker.
+- If your image is genuinely huge and the first cold pull is just slow,
+  raise the bound:
+  ```bash
+  export LIGHTCONE_GATEWAY_WORKER_TIMEOUT=1800
+  ```
+
+## "No image build backend on this host"
+
+You're on the `kubernetes` runtime (no local docker/podman) and the
+environment doesn't carry the Cloud Build contract — `LIGHTCONE_REGISTRY`
+and `LIGHTCONE_BUILD_BUCKET` (plus the optional
+`LIGHTCONE_BUILD_SERVICE_ACCOUNT`). On a lightcone JupyterHub these are
+injected into every user pod, so a missing one means the deployment is
+misconfigured; ask your hub admin. If you landed on the `kubernetes`
+runtime by accident, pin a real one in `~/.lightcone/config.yaml`
+(`container: {runtime: podman}`) or pass `lc build --runtime …`.
+
+## A Cloud Build image build fails
+
+`lc build` tails the failed build's log. Read it first — the common
+causes are ordinary Dockerfile problems (a package that doesn't exist
+for the base image, a `COPY` of a path that isn't in the project). Two
+that aren't:
+
+- **Permission errors from GCP.** The pod's identity needs
+  `cloudbuild.builds.editor`, `iam.serviceAccountUser` on the build
+  service account, object create/view on the build bucket, and
+  `artifactregistry.reader` for the freshness check. A deployment issue,
+  not a project one.
+- **Nothing happens and it says the image is cached.** That's success:
+  the content hash matched an image already in the registry, so there
+  was nothing to build. Force it with `lc build --force`.
+
+## `lc run` refuses: several container images on this deployment
+
+On a JupyterHub deployment the worker pod *is* the container, so one run
+executes in exactly one image. If `astra.yaml` declares more than one
+distinct `container:` (root, sub-analysis, or recipe level), `lc run`
+stops before starting and lists them.
+
+Consolidate on a single Containerfile that has everything, or a single
+shared prebuilt image. This restriction is specific to that backend —
+locally and on SLURM each rule is wrapped individually and any number of
+images is fine.
+
+## Every rule hangs on JupyterHub, with no error
+
+If `lc run` reports that workers "do not advertise the lightcone
+resource contract", stop there: Dask only schedules a task on a worker
+advertising *every* resource key the task requests (`cpus` for every
+rule, `memory` for any rule with `mem_mb`), so a worker missing them
+would sit idle forever.
+
+`lc` provisions those keys through the gateway's standard `environment`
+cluster option. Seeing this error means the deployment doesn't expose
+that option, or strips it. Ask the hub admin to expose the standard
+`image` / `worker_cores` / `worker_memory` / `environment` cluster
+options.
+
 ## `lc run` says "Workflow defines that rule … but no input"
 
 This is Snakemake speak. It usually means:
@@ -112,14 +184,19 @@ Fix: `lc run` the downstream output. The chain will re-anchor.
 
 ## Claude Code says it can't write a file
 
-The default permission tier (`recommended`) blocks edits to a few
-sensitive places: `~/.ssh`, `~/.aws`, `~/.gnupg`, `/scratch`,
-`/pscratch`, plus `sudo`, `git push`, `rm -rf`, …
+The default permission tier (`recommended`) **blocks** edits to a few
+sensitive places — `~/.ssh`, `~/.aws`, `~/.gnupg` — plus `sudo`,
+`git push`, `rm -rf`.
 
-If the file you're trying to edit isn't in those, check
-`.claude/settings.json`. If it is — your `recommended` tier is doing
-its job. Either move the work elsewhere or, knowing what you're doing,
-invoke `lc init … --permissions yolo` next time.
+It also **prompts** (rather than blocks) before writing under `/scratch`
+or `/pscratch`: on HPC your project often lives there, so the agent
+legitimately needs to write to it, but a stray edit would be expensive.
+Approve the prompt and it proceeds.
+
+If the file you're trying to edit isn't in either list, check
+`.claude/settings.json`. If it's in the deny list — your `recommended`
+tier is doing its job. Either move the work elsewhere or, knowing what
+you're doing, invoke `lc init … --permissions yolo` next time.
 
 ## I deleted `.claude/` by accident
 

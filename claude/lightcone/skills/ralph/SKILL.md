@@ -49,7 +49,7 @@ For deeper voice / section guidance and the discipline that keeps a constitution
    ---
    ```
 
-   That's what the launcher checks; it refuses to start otherwise.
+   That's what the launcher checks; it refuses to start otherwise. (`status: open` is accepted too; `active` is the convention.)
 
 3. **Refine** — Show the draft, get feedback, revise. Use `AskUserQuestion` for structured choices. Apply the qualitative ambiguity self-check from [`references/crafting.md`](references/crafting.md) — goal, constraints, success — before launching. Reach for the crafting rhythm and stances when the conversation has careful-thinking character; skip when it doesn't.
 

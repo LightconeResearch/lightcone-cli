@@ -18,7 +18,8 @@ No need to write code by hand, **you stay in charge of the scientific choices**,
   `/lc-from-code`, `/lc-from-paper`, and `/lc-feedback` — what each
   command does and when to reach for it.
 - [Running on a Cluster](cluster.md) — taking your analysis to a SLURM
-  HPC system, including Perlmutter-specific notes.
+  HPC system (with Perlmutter-specific notes) or to a lightcone
+  JupyterHub deployment on Kubernetes.
 - [Troubleshooting](troubleshooting.md) — common issues and how to
   unstick them.
 - [Glossary](glossary.md) — the terms that show up everywhere

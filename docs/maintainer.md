@@ -18,10 +18,9 @@ If you're looking for the user-facing docs, the
   signatures, common entry points, and module responsibilities.
 - [Skills](skills/index.md) — what each `/lc-*` Claude Code skill does,
   including the full `/lc-from-paper` reproduction bundle.
-- [HPC & SLURM](hpc/index.md) — how the Dask cluster manager adapts to local,
-  SLURM, and external schedulers.
 - [Contributing](contributing/setup.md) — clone, install, run the test suite,
-  lint, and build the docs locally.
+  lint, and build the docs locally; plus how to add a container runtime, a
+  Dask cluster shape, or a new site.
 
 ## Get started in three commands
 
@@ -44,5 +43,6 @@ we do not replicate any of that. The parts that are ours:
 
 - **Snakefile generator** — translates `astra.yaml` into `.lightcone/Snakefile`.
 - **Manifest layer** — writes and verifies `.lightcone-manifest.json` per output.
-- **Cluster manager** — picks local / SLURM / external Dask shape at runtime.
+- **Cluster manager** — picks the Dask shape at runtime: external scheduler,
+  Dask Gateway, SLURM, or local.
 - **Claude Code plugin** — skills, hooks, and agents bundled into the wheel.

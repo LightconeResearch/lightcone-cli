@@ -94,7 +94,8 @@ ORIENT drafts two files in the reproduction workdir; every iteration
 picks them up on launch.
 
 - **`constitution.md`** — the ralph loop's driving document, *task-bound*.
-  YAML frontmatter declares `status: active`. Goal (carrying the
+  YAML frontmatter declares `status: active` (the launcher accepts `open`
+  or `active`; `active` is the convention here). Goal (carrying the
   **fidelity intent** — the user's own "what do you want out of this
   stretch, given what you have to spend on it"), Scope (in/out),
   Quality bar, Evidence (paper DOI, arXiv ID, code repo URL), Open

@@ -58,9 +58,10 @@ Pandoc.
    > "Which paper source should I audit? Please give me a `.tex` path or
    > `work/reference/document.md`."
 
-   If only `work/reference/paper.pdf` exists, ask the user to run the PARSE
-   phase first so `work/reference/document.md` exists. Do not audit PDFs
-   directly.
+   If only `work/reference/paper.pdf` exists, ask the user to run
+   `/paper-extraction` first (in lc-from-paper projects this happens during
+   the ORIENT stage) so `work/reference/source/` or
+   `work/reference/document.md` exists. Do not audit PDFs directly.
 
 ## Section enumeration
 

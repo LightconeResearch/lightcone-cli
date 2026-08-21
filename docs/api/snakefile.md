@@ -21,10 +21,13 @@ Reads `astra.yaml`, resolves the analysis tree, and writes:
 
 Returns the two paths.
 
-`runtime` is one of `docker | podman | podman-hpc | none` and is used to
-wrap each recipe at generation time (see
-[engine.container.wrap_recipe](container.md#wrap_recipe)). Resolution is
-done once here, not per rule, so all rules use a consistent runtime.
+`runtime` is one of `docker | podman | podman-hpc | kubernetes | none`
+and is used to wrap each recipe at generation time (see
+[engine/container](container.md); on `kubernetes` the wrap is a
+passthrough — the worker pod is the container). It also selects the image
+spelling via `runtime_registry()`: local-store tags, or registry refs on
+a deployment. Resolution is done once here, not per rule, so all rules
+use a consistent runtime.
 
 ## `discover_universes(project_path) → list[str]`
 
@@ -45,16 +48,26 @@ rule <name>:
     params:
         cfg=lambda wc: CFG["<rule_key>"][wc.universe],
     run:
-        shell('printf "▶ <rule_key> [%s]\\n" "{wildcards.universe}" >&2')
-        shell(params.cfg["shell_command"])
-        write_manifest(
+        run_rule(
+            rule_key="<rule_key>",
+            universe=wildcards.universe,
             output_dir=Path(output.data),
             inputs={"<inp_id>": Path(input.<inp_id>), ...},
-            cfg=params.cfg,
+            cfg=dict(params.cfg),
         )
-        for _w in validate_output(Path(output.data), params.cfg.get("output_type"), params.cfg["output_id"]):
-            print(f"\033[33m⚠\033[0m {_w}", file=sys.stderr)
 ```
+
+The body is a thin call into [`engine.runner.run_rule`](runner.md),
+which runs the pre-rendered shell command, emits the sentinel-framed
+narrative lines, writes the manifest on success, and runs the validation
+hook. Keeping the logic in an importable module rather than inline in the
+generated file means it is testable and the generated Snakefile stays
+readable.
+
+The `inputs` dict literal is what bridges the two spellings of an input
+id: Snakemake's input directive needs an identifier (`sub__real`), while
+`write_manifest`'s `input_versions` — and `lc verify`'s chain walk — are
+keyed by the raw declared id (`sub.real`).
 
 ## `cfg` content
 

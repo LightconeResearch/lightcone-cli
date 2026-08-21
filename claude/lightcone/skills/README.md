@@ -1,6 +1,6 @@
 # lightcone-cli skills
 
-Each subdirectory is one Claude Code skill: `SKILL.md` plus optional `references/`, `assets/`, and `scripts/`. `lc init` copies these into a project's `.claude/skills/` so they are discoverable to Claude Code sessions.
+Each subdirectory is one Claude Code skill: `SKILL.md` plus optional `references/`, `scripts/`, and `templates/`. `lc init` copies these into a project's `.claude/skills/` so they are discoverable to Claude Code sessions.
 
 ## Project lifecycle skills
 

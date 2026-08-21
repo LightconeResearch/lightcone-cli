@@ -48,20 +48,20 @@ results.
 3. **Locate the paper reference substrate.** The user may have passed a
    path. Resolve it in this order:
 
-   1. If the argument is a directory containing `metadata.json`,
+   1. If the argument is a directory containing `index.json`,
       `document.md`, `figures/`, or `tables/`, use that directory as the
       paper reference root.
    2. If the argument is an arXiv source directory containing `.tex` files,
       use it as `source_root`, and use its parent `work/reference/` as the
       paper reference root when that parent exists.
    3. If no argument was supplied, prefer lc-from-paper's layout:
-      - `work/reference/source/` when arXiv TeX source exists. Use the TeX
-        files there for labels/captions and the parsed artifacts under
-        `work/reference/{figures,tables,metadata.json}` for renderable
-        reference files.
+      - `work/reference/source/` when arXiv TeX source exists. Use
+        `work/reference/index.json` for the figure/table inventory, the TeX
+        files for labels/captions, and the extracted artifacts under
+        `work/reference/{figures,tables}` for renderable reference files.
       - `work/reference/document.md` plus
-        `work/reference/{figures,tables,metadata.json}` when no TeX source
-        exists. This is the PDF + Docling fallback from lc-from-paper.
+        `work/reference/{figures,tables,index.json}` when no TeX source
+        exists. This is the PDF + Docling fallback from paper-extraction.
    4. Only after lc-from-paper paths fail, look for a legacy unzipped arXiv
       dir in cwd: a directory containing both a `*.tex` file and figure
       files (`*.pdf`, `*.png`, `*.eps`). Common names: `paper_source/`,
@@ -70,12 +70,14 @@ results.
    If no usable reference substrate is found, ask:
 
    > "Where is the paper reference directory? In a lc-from-paper project this
-   > should usually be `work/reference/`, containing `document.md`,
-   > `metadata.json`, and extracted `figures/` / `tables/`."
+   > should usually be `work/reference/`, containing `index.json`, extracted
+   > `figures/` / `tables/`, and either `source/` (arXiv TeX) or
+   > `document.md` (Docling fallback)."
 
-   If only `work/reference/paper.pdf` exists, ask the user to run the PARSE
-   phase first so Docling or the TeX parser populates `work/reference/`.
-   Do not compare directly against a whole PDF.
+   If only `work/reference/paper.pdf` exists, ask the user to run
+   `/paper-extraction` first (in lc-from-paper projects this happens during
+   the ORIENT stage) so `work/reference/index.json` and the extracted
+   artifacts are populated. Do not compare directly against a whole PDF.
 
 ## Phase 1 -- Understand the paper's main results
 
@@ -100,15 +102,20 @@ Read, in this order:
    come from the output ID and the result resolver in Phase 2.
 
 3. **The paper reference substrate**, in this order:
-   - Read `work/reference/metadata.json` when present. It is the primary
-     index for paper figures and tables; its paths are relative to
-     `work/reference/` and usually point into `figures/` or `tables/`.
+   - Read `work/reference/index.json` when present. It is the canonical
+     structural index for paper figures and tables, written by
+     paper-extraction on both paths; each figure/table entry carries `id`,
+     `label`, `caption`, and a `file` path relative to `work/reference/`
+     (usually pointing into `figures/` or `tables/`; multi-panel figures
+     also carry `files`). On the Docling path a `metadata.json`
+     intermediate may also exist; ignore it -- its content is already
+     folded into `index.json`.
    - If `work/reference/source/` exists, grep its TeX files for
      `\includegraphics`, `\label{fig:...}`, `\caption{...}`, and
-     `\begin{table}` to recover labels/captions that metadata may have
+     `\begin{table}` to recover labels/captions that the index may have
      missed.
    - If only `work/reference/document.md` exists, use the markdown plus
-     `metadata.json` as the source of captions, table text, and in-text
+     `index.json` as the source of captions, table text, and in-text
      numerical claims. This is the Docling/Pandoc fallback; preserve its
      line numbers and do not pretend it is TeX.
    - Grep the abstract, results, and discussion sections of the TeX or
@@ -155,23 +162,26 @@ For project-side result paths, resolve every output ID with this order:
 - Use an explicit `reproduced_file` from `comparison-report.yaml` or an
   explicit reproduced path/glob from `targets/targets.md`, if present and
   the file exists.
-- Search for flat files at `results/<universe>/<output_id>.<ext>` with the
-  first suitable type-specific extension: images (`.png`, `.jpg`, `.jpeg`,
+- Look inside the output directory `results/<universe>/<output_id>/` --
+  every `lc run` output is a directory containing the artifact file(s)
+  plus `.lightcone-manifest.json`. Glob within it for the first suitable
+  type-specific extension: images (`.png`, `.jpg`, `.jpeg`,
   `.pdf`, `.eps`), tables (`.csv`, `.parquet`, `.md`, `.txt`), values
-  (`.json`, `.yaml`, `.yml`, `.txt`, `.md`).
+  (`.json`, `.yaml`, `.yml`, `.txt`, `.md`) -- always ignoring
+  `.lightcone-manifest.json` and `.snakemake_timestamp`.
 - If still unmatched and no scoped ledger exists, fall back to filename-stem
-  similarity within `results/<universe>/`.
+  similarity across the artifact files inside `results/<universe>/*/`.
 - If no match is found, use `project_path: null` and render a red
   `NOT PRODUCED` panel. Do not include unrelated result files; the report is
   target-driven when target/report files exist, and paper-driven otherwise.
 
-For tables: use `work/reference/metadata.json` and `work/reference/tables/`
+For tables: use `work/reference/index.json` and `work/reference/tables/`
 when present. If TeX source exists, capture the raw LaTeX of the `tabular`
 block and any `\caption{...}`. If only `work/reference/document.md` exists,
 capture the Docling/Pandoc markdown table or the extracted table artifact
 under `work/reference/tables/`. The project side is whatever artifact
-carries the same content -- typically a CSV / parquet / markdown file at
-`results/<universe>/<output_id>.<ext>`. If `astra.yaml` declares no matching
+carries the same content -- typically a CSV / parquet / markdown file
+inside `results/<universe>/<output_id>/`. If `astra.yaml` declares no matching
 output, use `project_path: null`. **If the paper contains no tables at all,
 leave the manifest's `tables` list empty; the helper must omit the entire
 Tables section from the HTML in that case (no header, no "no tables"
@@ -182,8 +192,8 @@ project_value?, project_value_source?, paper_quote}`. Pull
 `paper_value` from the in-text claim or `astra.yaml`'s
 `findings.*.paper_value`. Pull `project_value` from
 `astra.yaml`'s `findings.*.replicated_value` if present, otherwise from
-a scoped `comparison-report.yaml` entry or a flat result summary file at
-`results/<universe>/<output_id>.<ext>` that you can read statically.
+a scoped `comparison-report.yaml` entry or a result summary file inside
+`results/<universe>/<output_id>/` that you can read statically.
 **Never compute or re-derive values yourself.** If no project value can
 be located statically, leave it null and flag in the HTML.
 
@@ -218,9 +228,11 @@ Use a small Python helper rather than embedding base64 inline through
 your tool calls -- multi-MB image base64 strings would balloon your
 context.
 
-Use the existing `.lightcone/` directory in the project root. Do not create
-directories in this skill. All three files this skill writes -- manifest,
-helper, and final HTML -- live there.
+Write into the `.lightcone/` directory in the project root. It exists in
+any `lc init`-ed project; if it is missing, tell the user the project is
+not initialized (`lc init`) instead of silently creating directories. All
+three files this skill writes -- manifest, helper, and final HTML -- live
+there.
 
 1. **Write the manifest** as JSON to
    `.lightcone/comparison_manifest.json`. Schema:
@@ -238,7 +250,7 @@ helper, and final HTML -- live there.
          "paper_caption": "...",
          "paper_path": "targets/main_result.pdf",
          "project_output_id": "primary_metric_plot",
-         "project_path": "results/baseline/primary_metric_plot.png"
+         "project_path": "results/baseline/primary_metric_plot/plot.png"
        }
      ],
      "tables": [
@@ -247,7 +259,7 @@ helper, and final HTML -- live there.
          "paper_caption": "...",
          "paper_latex": "\\begin{tabular}{...}\\end{tabular}",
          "project_output_id": "...",
-         "project_path": "results/baseline/summary_table.csv"
+         "project_path": "results/baseline/summary_table/summary.csv"
        }
      ],
      "values": [
@@ -259,7 +271,7 @@ helper, and final HTML -- live there.
          "paper_quote": "we find $\\mathrm{metric} = 12.5 \\pm 0.4$ <unit>",
          "project_value": "12.47",
          "project_uncertainty": "0.41",
-         "project_value_source": "results/baseline/metric.json"
+         "project_value_source": "results/baseline/primary_metric/metric.json"
        }
      ]
    }
@@ -519,8 +531,9 @@ solid-fill buttons), it is wrong.
   `scripts/` or `results/`. The only files this skill writes are
   `.lightcone/comparison_manifest.json`,
   `.lightcone/build_comparison.py`, and
-  `.lightcone/comparison.html`. Assume `.lightcone/` already exists; never
-  write into `results/`.
+  `.lightcone/comparison.html`. `.lightcone/` exists in any `lc init`-ed
+  project; if it is missing, stop and tell the user to run `lc init`
+  rather than creating it. Never write into `results/`.
 - You MUST NOT fabricate values. If a paper number is not stated in the
   paper source, `targets/targets.md`, `comparison-report.yaml`, or
   `astra.yaml`, leave it null. If a project number is not recorded in a

@@ -31,10 +31,14 @@ to run `lc run` first and stops.
    `comparison-report.yaml` names another universe or the user
    supplied one. Checks `ls results/<universe>/`.
 3. **Locate the paper reference substrate.** In order: a path passed as
-   an argument, then `work/reference/` from lc-from-paper's layout
-   (`source/` for arXiv TeX, `document.md` for the Docling fallback,
-   plus extracted `figures/` and `tables/`). Legacy locations are
-   tried only after lc-from-paper paths fail.
+   an argument, then `work/reference/` from lc-from-paper's layout —
+   `index.json` (the canonical structural index of figures and tables,
+   written by `/paper-extraction` on both paths), plus `source/` for
+   arXiv TeX or `document.md` for the Docling fallback, plus the
+   extracted `figures/` and `tables/`. Legacy locations are tried only
+   after lc-from-paper paths fail. A stray `metadata.json` from the
+   Docling path is ignored — its content is already folded into
+   `index.json`.
 
 ## Scope resolution
 
@@ -50,12 +54,26 @@ The skill picks its target set in priority order:
    builds a best-effort report from `astra.yaml`'s `description` and
    `findings:` plus `work/reference/`.
 
+## Resolving the reproduced side
+
+Every `lc run` output is a **directory** —
+`results/<universe>/<output_id>/` containing the artifact file(s) plus
+`.lightcone-manifest.json`. The skill globs *inside* that directory for
+the first suitable type-specific extension (images, tables, values),
+always ignoring `.lightcone-manifest.json` and `.snakemake_timestamp`.
+An explicit `reproduced_file` from the scope file wins; filename-stem
+similarity across `results/<universe>/*/` is the last resort, and an
+unmatched target renders as a red `NOT PRODUCED` panel rather than being
+guessed at.
+
 ## Output
 
 A single `.lightcone/comparison.html` with paper artifacts on the left
 and reproduced artifacts on the right. Helper scripts and intermediate
 manifests also live under `.lightcone/` so they don't pollute the
-baseline results.
+baseline results. The skill never creates `.lightcone/` — it exists in
+any `lc init`-ed project, and its absence means the project isn't
+initialized.
 
 The HTML embeds figure images as base64 — paste it into email, drop
 it on a shared drive, or send it through Slack without breaking links.
@@ -71,8 +89,9 @@ it on a shared drive, or send it through Slack without breaking links.
 - **Read-only over build artifacts.** Never run the pipeline; if
   outputs are missing, stop and ask the user to build first.
 - **Don't compare directly against a whole PDF.** When only
-  `work/reference/paper.pdf` exists, ask the user to run paper
-  extraction first.
+  `work/reference/paper.pdf` exists, ask the user to run
+  `/paper-extraction` first (in lc-from-paper projects this happens
+  during ORIENT).
 - **Preserve scope ordering.** `comparison-report.yaml` wins over
   `targets/targets.md` wins over the default flow.
 

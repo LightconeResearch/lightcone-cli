@@ -5,7 +5,7 @@ four branches, no service to manage.
 
 Source: `src/lightcone/engine/dask_cluster.py`.
 
-## `cluster_for_run(*, verbose=False, worker_image=None, max_workers=None) → Iterator[dict[str, str]]`
+## `cluster_for_run(*, verbose=False, local_directory=None, worker_image=None, max_workers=None) → Iterator[dict[str, str]]`
 
 Yields the env overlay the child snakemake needs to reach the cluster
 (the executor plugin lives in a different process, so connection info
@@ -45,6 +45,29 @@ modes: zero workers within the timeout (unpullable image,
 unschedulable pool), and workers that don't advertise the
 `cpus`/`memory` resource contract (a deployment that doesn't expose
 the `environment` option).
+
+`local_directory` is where dask workers stage spilled task data; `lc run`
+resolves it under [`engine.scratch`](scratch.md) so on NERSC the spill
+lands on Lustre rather than DVS-mounted home/CFS. Ignored by the Gateway
+branch, whose workers are pods.
+
+## `gateway_branch_active() → bool`
+
+Would `cluster_for_run` take the Gateway branch right now? A pure
+function of the environment, in the same priority order as the branches
+(`DASK_SCHEDULER_ADDRESS` wins, then `DASK_GATEWAY__ADDRESS`). Exposed so
+`lc run` can shape its invocation — notably the one-image-per-run check —
+*before* entering the cluster context.
+
+## Environment contracts
+
+| Env var | Direction | Meaning |
+|---------|-----------|---------|
+| `DASK_SCHEDULER_ADDRESS` | in / out | An existing scheduler to attach to; also the overlay yielded by the three address-based branches. |
+| `DASK_GATEWAY__ADDRESS` | in | Selects the Gateway branch (injected by the deployment, along with the rest of `DASK_GATEWAY__*` that configures `Gateway()`). |
+| `LIGHTCONE_GATEWAY_CLUSTER` | out | `GATEWAY_CLUSTER_ENV` — the created cluster's name, for the executor plugin to rejoin by. Internal parent→child rendezvous, not a user knob. |
+| `LIGHTCONE_GATEWAY_WORKER_TIMEOUT` | in | `GATEWAY_WORKER_TIMEOUT_ENV` — seconds to wait for the first worker (default 600; a first-time image pull is minutes). |
+| `LIGHTCONE_WORKER_IMAGE` | out | Provisioned into scheduler/worker pods; recorded by the manifest layer as execution ground truth. |
 
 ## Resource keys
 
@@ -99,6 +122,6 @@ and keeps everything in one process tree.
 
 ## Tests
 
-`tests/test_dask_cluster.py` covers the three branches and the
+`tests/test_dask_cluster.py` covers the four branches and the
 resource-advertising contract. The SLURM branch is tested with mocked
 `subprocess.Popen` plus a stubbed `Client.wait_for_workers`.

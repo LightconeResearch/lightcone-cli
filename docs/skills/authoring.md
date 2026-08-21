@@ -92,7 +92,21 @@ from lightcone.eval.cli import run_cmd
 
 ## Installing changes into an existing project
 
-`lc init` copies the plugin once and refuses to run a second time on
-the same directory. See [Updating an existing project](../cli/update.md)
-for the Python heredoc that resyncs all the plugin subdirs (`skills`,
-`agents`, `scripts`, `guides`, `templates`) into an existing project.
+`lc init` copies the plugin once and refuses to run a second time on the
+same directory (it aborts when `astra.yaml` already exists). To resync
+all the plugin subdirs (`skills`, `agents`, `scripts`, `guides`,
+`templates`) plus `.claude/settings.json` into an existing project, call
+the installer directly:
+
+```bash
+python - <<'PY'
+from pathlib import Path
+from lightcone.cli.commands import _install_claude_plugin
+from lightcone.cli.plugin import get_plugin_source_dir
+
+_install_claude_plugin(Path("."), get_plugin_source_dir(), "recommended")
+PY
+```
+
+Existing subdirectories are removed before copying, so this is a
+replace — not a merge. Local edits under `.claude/skills/` are lost.

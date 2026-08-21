@@ -39,7 +39,7 @@ Read relevant files, understand existing patterns. This informs the **constituti
 
 ### 2. Draft
 
-Create the constitution as a markdown file with `status: active` in YAML frontmatter (that's what the launcher checks). Some workflows expect a specific path so a runner picks it up — e.g. `/lc-from-paper` writes `constitution.md` at the reproduction workdir root. Otherwise put it wherever the work lives. The section block in the SKILL's "What goes in a constitution" is your starting shape; fill what fits, drop what doesn't.
+Create the constitution as a markdown file with `status: active` in YAML frontmatter (that's what the launcher checks; it accepts `open` or `active`, with `active` as the convention). Some workflows expect a specific path so a runner picks it up — e.g. `/lc-from-paper` writes `constitution.md` at the reproduction workdir root. Otherwise put it wherever the work lives. The section block in the SKILL's "What goes in a constitution" is your starting shape; fill what fits, drop what doesn't.
 
 Use the crafting process from [`crafting.md`](crafting.md):
 

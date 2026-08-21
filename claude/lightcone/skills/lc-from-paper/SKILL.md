@@ -64,7 +64,7 @@ ORIENT runs as one phase in **seven stages**:
 
 These get drafted into **two files** plus the substrate, all in the reproduction workdir:
 
-- **`constitution.md`** — the ralph loop's driving document. Goal, Fidelity intent, Scope, Quality bar, Evidence (paper DOI, arXiv ID, code repo URL), Open dimensions. Starts with YAML frontmatter `status: active` so the ralph launcher accepts it. Authored using the `/ralph` skill's authoring discipline (the constitution-authoring mode of `/ralph` — see its references on voice and sections).
+- **`constitution.md`** — the ralph loop's driving document. Goal, Fidelity intent, Scope, Quality bar, Evidence (paper DOI, arXiv ID, code repo URL), Open dimensions. Starts with YAML frontmatter `status: active` (the launcher accepts `open` or `active`; `active` is the convention here). Authored using the `/ralph` skill's authoring discipline (the constitution-authoring mode of `/ralph` — see its references on voice and sections).
 - **`CLAUDE.md`** — the auto-loading walk-up. Paper identity at the top, Rules (universal across reproductions; leave the template's defaults), Disagreements log (starts empty), Open opportunities (starts empty), Pointers (to `constitution.md`, `work/reference/`, etc.).
 - **`work/reference/`** — paper substrate from `/paper-extraction` + code substrate from `/lc-from-code` scan-only (when a code repo exists).
 

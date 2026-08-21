@@ -31,9 +31,9 @@ create`.
    - Default to `lightcone-cli` if ambiguous.
 4. **Collect environment** silently:
    ```bash
-   python3 -c "import astra; print(astra.__version__)" 2>/dev/null || echo "n/a"
-   python3 -c "import lightcone.cli; print(lightcone.cli.__version__)" 2>/dev/null || echo "n/a"
-   python3 --version 2>&1
+   astra --version 2>/dev/null || echo "n/a"
+   lc --version 2>/dev/null || echo "n/a"
+   python --version 2>&1
    uname -s -r
    ```
 5. **Confirm** via `AskUserQuestion`: show target repo, title, body.

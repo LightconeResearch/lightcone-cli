@@ -75,6 +75,20 @@ Required keys in `cfg`:
 - `code_version`
 - `git_sha`, `lc_version`
 
+Additive fields the function fills in itself, from the environment rather
+than from `cfg`:
+
+- `host`, `finished_at`, `slurm_job_id` (`SLURM_JOB_ID`).
+- `worker_image` — `LIGHTCONE_WORKER_IMAGE`, provisioned by `lc run` into
+  every scheduler/worker pod on a Dask Gateway deployment with the image
+  the cluster was actually started from. `container_image` is what the
+  spec *declared*; this is the pod-reported ground truth of what
+  executed. `None` on every other backend.
+- `git_remote` — the origin URL at materialization time, surfaced by
+  `lc export wrroc` as a `CodeRepository`.
+
+Older manifests without these fields still parse.
+
 `inputs` is a `dict[str, Path]` mapping declared input id → filesystem
 path. For each input, the function reads the upstream manifest if
 present and records its `data_version`; otherwise falls back to
@@ -94,10 +108,12 @@ the rule.
   "code_version":  "sha256:…",
   "data_version":  "sha256:…",
   "container_image": "lc-myproject-abc123",
+  "worker_image": null,          // pod image on a Dask Gateway run; null elsewhere
   "recipe": "python scripts/eval.py",
   "decisions": { "scaling": "standard", "use_pca": "no" },
   "input_versions": { "features": "sha256:…", "labels": "mtime-size:…-…" },
   "git_sha": "...",
+  "git_remote": "https://github.com/org/myproject.git",
   "lc_version": "0.4.0",
   "host": "saul01",
   "slurm_job_id": "1234567",

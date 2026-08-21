@@ -1,7 +1,7 @@
 ---
 name: lc-new
 description: Use this skill whenever the user starts a new ASTRA analysis from a research question — scoping the question, structuring inputs and outputs, identifying decisions through literature, and landing astra.yaml + project CLAUDE.md. Triggers on verbs (`new`, `start`, `scope`) combined with nouns (`analysis`, `project`, `question`, `research`) — e.g. "new analysis", "start project", "scope research question" — even if the user doesn't say "project" explicitly. Don't use this for working inside an existing ASTRA project; this is for fresh scoping only.
-allowed-tools: Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md), Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md), Glob, Grep, Bash(astra:*), Bash(lc:*), WebSearch, WebFetch, AskUserQuestion, Agent
+allowed-tools: Read, Write(astra.yaml), Write(universes/*), Write(CLAUDE.md), Edit(astra.yaml), Edit(universes/*), Edit(CLAUDE.md), Edit(index.md), Glob, Grep, Bash(astra:*), Bash(lc:*), WebSearch, WebFetch, AskUserQuestion, Agent
 ---
 
 # /lc-new
@@ -70,7 +70,7 @@ Spawn all in a single message (parallel). Show progress as results come in:
   ○ Wu & He 2018 (reading...)
 ```
 
-Write extracted prior insights to astra.yaml immediately. Synthesize them by topic for the user.
+Write extracted prior insights to astra.yaml immediately. The extractor's `decision_links:` block is not an ASTRA field — translate it into `insights: [...]` lists on the corresponding decision options when merging (Option.insights in `/astra`); never copy `decision_links` into astra.yaml. Synthesize the insights by topic for the user.
 
 ### Decision Identification
 
@@ -121,7 +121,11 @@ Replace the TODO `description:` in `astra.yaml` with a short one-or-two-paragrap
 
 ### Populate CLAUDE.md
 
-Read the existing `CLAUDE.md` (created by `lc init`). Fill the `## Project Notes` section per the inline guidance there — context from the conversation that's not in `astra.yaml` and would be lost after `/clear`. The spec is the source of truth for structure, decisions, and evidence.
+Read the existing `CLAUDE.md` (created by `lc init` — an orientation intro, an `lc run`/`lc status`/`lc verify` quick reference, and a `## Report` section). Append a `## Project Notes` section capturing the scoping outcome — context from the conversation that's not in `astra.yaml` and would be lost after `/clear` — and update the intro's "has not been scoped yet" framing now that the spec is real. The spec is the source of truth for structure, decisions, and evidence.
+
+### Populate Report
+
+`lc init` scaffolds `index.md` with references to the boilerplate `astra.yaml` elements — `decisions.example_method` (an inline `{astra}` mention and a `:::{astra} decisions.example_method\n:::` block) and `outputs.main_result` (an `{astra:value}` mention). Those IDs no longer exist once the boilerplate is replaced, which breaks the MyST build. Swap them for one representative top-level decision ID and one representative top-level output ID from the finalized spec. Only fix the reference IDs — leave the surrounding TODO narrative (Introduction/Methods/Results prose) for the user to fill in.
 
 ### Review with User
 
@@ -154,7 +158,7 @@ Then tell the user the spec is ready and they can begin implementation. Recommen
 
 You MUST NOT write Python, R, or other implementation code.
 
-You MUST ONLY create/modify: `astra.yaml`, `universes/*.yaml`, `CLAUDE.md` (Finalize only).
+You MUST ONLY create/modify: `astra.yaml`, `universes/*.yaml`, `CLAUDE.md` (Finalize only), `index.md` (Finalize only, reference IDs only).
 
 You MUST NOT fabricate quotes -- all evidence must pass `astra validate --verify-evidence`.
 

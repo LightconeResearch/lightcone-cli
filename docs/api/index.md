@@ -7,17 +7,21 @@ is a thin Click wrapper around these modules.
 
 | Module | Role |
 |--------|------|
-| [`lightcone.cli.commands`](cli.md) | Click CLI: `init`, `run`, `build`, `status`, `verify`, `setup`. |
+| [`lightcone.cli.commands`](cli.md) | Click CLI: `init`, `run`, `status`, `verify`, `build`, `export`, plus `eval` when the extra is installed. |
 | [`lightcone.engine.manifest`](manifest.md) | Per-output `.lightcone-manifest.json` write/read; `code_version`, `sha256_dir`. The integrity layer. |
 | [`lightcone.engine.snakefile`](snakefile.md) | Generate `.lightcone/Snakefile` and `snakefile-config.json` from `astra.yaml`. |
-| [`lightcone.engine.container`](container.md) | Runtime detection, content-addressed image tags, `wrap_recipe`. |
-| [`lightcone.engine.dask_cluster`](dask_cluster.md) | Cluster lifecycle for `lc run` (local / SLURM / external). |
+| [`lightcone.engine.runner`](runner.md) | `run_rule` — the body of every generated rule; the `SENTINEL` output protocol. |
+| [`lightcone.engine.container`](container.md) | Runtime detection, content-addressed image identity, `wrap_recipe`. |
+| [`lightcone.engine.cloudbuild`](cloudbuild.md) | GCP Cloud Build backend — remote image builds where no OCI runtime exists. |
+| [`lightcone.engine.dask_cluster`](dask_cluster.md) | Cluster lifecycle for `lc run` (external scheduler / Dask Gateway / SLURM / local). |
+| [`lightcone.engine.scratch`](scratch.md) | Resolve the scratch root; per-run dirs, the run lock, the `.snakemake` symlink. |
 | [`lightcone.engine.status`](status.md) | Manifest-driven status walker. |
 | [`lightcone.engine.verify`](verify.md) | Recompute hashes; walk the input chain. |
 | [`lightcone.engine.tree`](tree.md) | Sub-analysis tree helpers — outputs, decisions, `from:` resolution. |
 | [`lightcone.engine.validation`](validation.md) | Post-recipe sanity checks (empty dir, all-NaN columns, …). |
+| [`lightcone.engine.wrroc`](wrroc.md) | Workflow Run RO-Crate exporter behind `lc export wrroc`. |
+| [`lightcone.engine.site_registry`](site_registry.md) | Known-site defaults; `detect_current_site()` drives scratch and runtime selection. |
 | [`snakemake_executor_plugin_dask`](dask_executor.md) | Snakemake executor plugin → `dask.distributed`. |
-| `lightcone.engine.site_registry` | Vestigial — no active code path imports it. See [api/site_registry](site_registry.md). |
 
 ## Common entry points
 
@@ -55,7 +59,7 @@ from lightcone.engine.container import (
     build_image,
 )
 
-runtime = detect_runtime()                                   # 'podman' / 'docker' / 'podman-hpc' / None
+runtime = detect_runtime()                                   # 'podman-hpc' / 'podman' / 'docker' / 'kubernetes' / None
 tag = compute_image_tag("my-project", Path("Containerfile"), Path("."))
 build_image(tag, Path("Containerfile"), Path("."), runtime=runtime)
 ```

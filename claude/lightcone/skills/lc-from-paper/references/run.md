@@ -29,11 +29,11 @@ Check status:
 lc status --universe baseline
 ```
 
-Status states are `ok` (materialized), `pending` (has recipe, not run), `no_recipe` (declared, no recipe — bug). Every output declared in `astra.yaml` must reach `ok`.
+Status states are `ok` (materialized, current), `missing` (not yet materialized), `stale` (materialized, but the spec has drifted since — recipe, container, or decisions changed; needs a re-run), `alias` (a re-export of another output; resolves through its source). Every output declared in `astra.yaml` must reach `ok`.
 
 If outputs fail:
 
-1. **Read the script's error.** `results/<universe>/<output>/.log` (or wherever the runner emits stderr) usually has the message.
+1. **Read the script's error.** `lc run` re-emits each recipe's stdout / stderr on its own terminal output, and on failure prints a summary pointing at the saved snakemake stderr log. There is no per-output log file on disk — the run's terminal output is the record.
 2. **Diagnose.** Common failures: missing data dependency (a referenced URL changed; the data archive moved), missing Python package (`requirements.txt` was incomplete), spec / script mismatch (the recipe's `inputs:` does not match what the script reads).
 3. **Fix.** Edit the script or `requirements.txt` or the spec, whichever applies.
 4. **Re-run.** `lc run --universe baseline` resumes from where things failed; it does not re-execute already-materialized outputs.
@@ -52,6 +52,6 @@ If outputs fail:
 
 ## Notes
 
-- The runner backend (Docker / local / SLURM) comes from the project's target configuration — `~/.lightcone/config.yaml` and `.lightcone/lightcone.yaml`. RUN does not need to choose; the runner picks based on config.
-- For long-running computations, the script's stdout / stderr stream into the result directory's log file. The iteration should use the Monitor tool on the log file to stream events (each stdout line surfaces as a notification), not poll `lc status` repeatedly. For one-shot waits, Bash with `run_in_background` notifies on completion.
+- The runner backend (Docker / local / SLURM) comes from the project's target configuration — `~/.lightcone/config.yaml` and `.lightcone/lightcone.yaml`. RUN does not need to choose; the runner picks based on config. One caveat: on a JupyterHub / Dask-Gateway deployment, `lc run` requires every output in a run to resolve to a single container image — specs declaring several distinct containers are rejected there; consolidate on one Containerfile.
+- For long-running computations, run `lc run` under Bash with `run_in_background` — recipe stdout / stderr surfaces on the `lc run` process's own output as rules finish (there is no per-output log file to monitor), and the background run notifies on completion instead of the iteration polling `lc status` repeatedly.
 - **Commit the materialized results' state when RUN settles.** The actual `results/` artifacts are gitignored heavy data, but the run-level outcome (which outputs reached `ok`, any failures logged) is worth a commit so the next iteration can read `git log` to know RUN landed.

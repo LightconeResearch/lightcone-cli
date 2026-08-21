@@ -48,7 +48,7 @@ Not entry points. Other skills invoke them — or Claude does, when a deeper ref
 | Skill | Command | Purpose |
 |-------|---------|---------|
 | `astra` | `/astra` | Reference for the `astra.yaml` spec: structure, decisions, options, prior insights, findings, evidence, sub-analyses, composition mechanics. |
-| `lc-cli` | `/lc-cli` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, publishing via WRROC. |
+| `lc-cli` | `/lc-cli` | Reference for `lc` workflow: commands, the Spec-Code Invariant, status interpretation, failure diagnosis, multiverse runs, scratch overrides for HPC, JupyterHub/Dask Gateway deployments, publishing via WRROC. |
 
 These intentionally stay out of the top-level README. Researchers use the project-lifecycle skills directly; the reference skills are infrastructure.
 
@@ -67,31 +67,38 @@ argument-hint: "[DESCRIPTION]"
 ---
 ```
 
-The frontmatter tells Claude Code which tools the skill may invoke
-and what the slash command's argument hint looks like. The body is the
-prompt itself: phase definitions, rules, references to guide files,
-anti-patterns. Skills bundle their own helper scripts under `scripts/`
-and longer prompt fragments under `assets/` when relevant.
+`name` and `description` are required; `allowed-tools` (which tools the
+skill may invoke) and `argument-hint` are optional and only some skills
+declare them. The body is the prompt itself: phase definitions, rules,
+references to guide files, anti-patterns. Skills bundle their own helper
+scripts under `scripts/`, longer prompt fragments under `references/`,
+and starter files under `templates/` when relevant.
 
 ## Plugin layout
 
 ```text
 claude/lightcone/
 ├── skills/
-│   ├── lc-new/{SKILL.md, references/*.md}
+│   ├── README.md                       # bundle map + co-location rationale
+│   ├── lc-new/SKILL.md
 │   ├── lc-from-code/SKILL.md
 │   ├── lc-from-paper/{SKILL.md, references/*.md, templates/{constitution.md, CLAUDE.md}}
 │   ├── lc-feedback/SKILL.md
 │   ├── ralph/{SKILL.md, references/*.md, scripts/ralph}
-│   ├── paper-extraction/{SKILL.md, scripts/*.py}
-│   ├── figure-comparison/{SKILL.md, scripts/*.py}
+│   ├── paper-extraction/{SKILL.md, references/*.md, scripts/extract-paper-substrate.py}
+│   ├── figure-comparison/SKILL.md
 │   ├── check-sentence-by-sentence/SKILL.md
 │   ├── astra/SKILL.md                  # reference: astra.yaml spec
 │   └── lc-cli/SKILL.md                 # reference: lc workflow
 ├── agents/lc-extractor.md             # literature subagent for /lc-new
-├── templates/CLAUDE.md                # the project CLAUDE.md template
+├── templates/CLAUDE.md                # copied to the project's .claude/templates/
 └── scripts/*.sh                       # session lifecycle hooks (incl. session-start primer)
 ```
+
+`lc init` copies `skills/`, `agents/`, `scripts/`, `guides/`, and
+`templates/` into the project's `.claude/`. The project's **root**
+`CLAUDE.md` is not one of them — it is written from the `_PROJECT_CLAUDE_MD`
+string in `src/lightcone/cli/commands.py`.
 
 The plugin is force-included into the wheel via
 `pyproject.toml::tool.hatch.build.targets.wheel.force-include`, so

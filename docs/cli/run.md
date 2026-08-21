@@ -30,18 +30,42 @@ everything (Snakemake's `rule all`).
    `lightcone.engine.container.load_runtime`. If `auto` falls back to
    `none` while the spec declares containers, print a loud provenance
    warning.
-4. Generate `.lightcone/Snakefile` and
+4. **Pre-flight the images.** Every distinct `container:` in the spec is
+   built (Containerfile) or pulled (registry ref) before the DAG starts,
+   so the first run after a Containerfile edit doesn't die mid-DAG on a
+   missing image. This is the same pass `lc build` runs — already-present
+   images are skipped.
+5. Generate `.lightcone/Snakefile` and
    `.lightcone/snakefile-config.json` for the selected universes.
-5. Translate any explicit `OUTPUTS` into Snakemake target paths
+6. Translate any explicit `OUTPUTS` into Snakemake target paths
    (`<output_dir>/.lightcone-manifest.json`) — this is what tells
    Snakemake "build that specific output."
-6. Open a Dask cluster context (`local`, `srun`-backed inside
-   `SLURM_JOB_ID`, or external if `DASK_SCHEDULER_ADDRESS` is set).
-7. Spawn `snakemake -s … -d … --cores N --jobs N --executor dask
-   --rerun-triggers …` with `DASK_SCHEDULER_ADDRESS` in the environment.
-8. In the default (non-verbose) path, filter the executor's banner
+7. Open a Dask cluster context. Four branches, checked in this order:
+
+    | Condition | Cluster |
+    |---|---|
+    | `DASK_SCHEDULER_ADDRESS` set | Attach to that scheduler; never torn down. |
+    | `DASK_GATEWAY__ADDRESS` set | Create a **run-scoped Dask Gateway cluster** with the project's image, adaptive from 1 to `--jobs` workers, culled on exit. |
+    | `SLURM_JOB_ID` set | In-process scheduler + one `dask worker` per allocated node via `srun`. |
+    | none of the above | `LocalCluster` sized to the machine. |
+
+8. Spawn `snakemake -s … -d … --cores N --jobs N --executor dask
+   --shared-fs-usage persistence input-output sources storage-local-copies
+   source-cache --rerun-triggers …`, with the cluster's connection info
+   in the environment (`DASK_SCHEDULER_ADDRESS`, or the cluster name for
+   the Gateway branch, which is rejoined through the authenticated
+   Gateway API rather than dialled by address).
+9. In the default (non-verbose) path, filter the executor's banner
    chatter so the output reads as lightcone's, not Snakemake's. Real
-   error content always passes through.
+   error content always passes through; on failure the last of
+   snakemake's stderr is written to `snakemake-stderr-<pid>.log` under
+   the scratch root.
+
+`--shared-fs-usage` deliberately omits `software-deployment`. With it,
+spawned job commands would embed the *driver's* `sys.executable` — a
+path that doesn't exist inside a Dask Gateway worker image. Without it,
+workers invoke plain `python` from their own environment, which is
+correct on every backend.
 
 ## Output qualification
 
@@ -53,11 +77,23 @@ lc run inference                    # error if 'inference' is ambiguous
 lc run hod_fitting.inference        # disambiguated
 ```
 
-Each rule's body wraps the recipe in a `<runtime> run --rm --pull=never
--v "$PWD":"$PWD" -w "$PWD" <image> bash -c '<recipe>'` shell when a
-container is configured. After the recipe shell exits, the Snakefile
-calls `write_manifest()` host-side and the validation snippet emits
-warnings for empty / all-NaN / wrong-extension outputs.
+## How recipes get containerized
+
+On `docker`, `podman`, and `podman-hpc`, each rule's body wraps the
+recipe in a `<runtime> run --rm --pull=never -v "$PWD":"$PWD" -w "$PWD"
+<image> bash -c '<recipe>'` shell.
+
+On the `kubernetes` runtime this wrapping is a **passthrough**: the Dask
+worker pod executing the recipe was already started *from* the project's
+image, so wrapping would containerize twice. The image still flows into
+`code_version` and into the manifest — and the pod reports back the
+image it actually ran as the manifest's `worker_image` field. With
+`runtime: none`, or a recipe with no `container:`, the recipe also runs
+unwrapped.
+
+After the recipe shell exits, the Snakefile calls `write_manifest()`
+host-side and the validation snippet emits warnings for empty /
+all-NaN / wrong-extension outputs.
 
 ## Examples
 
@@ -83,6 +119,38 @@ driver's hostname, and launches one `dask worker` per node via `srun`.
 Workers advertise `cpus`, `memory`, and `gpus` resources. Per-rule
 resource hints (`cpus_per_task`, `mem_mb`, `gpus_per_task`) constrain
 which workers can pick up which jobs.
+
+## Inside a JupyterHub deployment
+
+On a lightcone JupyterHub (Kubernetes + Dask Gateway), `lc run` needs no
+arguments beyond the usual — the deployment injects
+`DASK_GATEWAY__ADDRESS`, `LIGHTCONE_REGISTRY`, and
+`LIGHTCONE_BUILD_BUCKET` into your session and `lc` picks them up:
+
+```bash
+lc run --universe baseline -j 8
+```
+
+- The pre-flight image pass builds through **GCP Cloud Build** (there is
+  no local OCI runtime in your session) and pushes
+  `<registry>/lc-<project>:<hash>`. Unchanged files never rebuild —
+  freshness is a single registry check.
+- A run-scoped Gateway cluster is created **with that image**, adaptive
+  from 1 to `--jobs` workers, and culled when the run finishes. A
+  Gateway cluster's image is fixed at creation, so create-per-run is
+  what makes image updates seamless.
+- `lc run` waits for the first worker before dispatching, bounded by
+  `LIGHTCONE_GATEWAY_WORKER_TIMEOUT` (seconds, default `600`) — an
+  unpullable image would otherwise hang at zero workers forever. It
+  then asserts that workers advertise the `cpus`+`memory` resource
+  contract, since Dask would silently never schedule a rule otherwise.
+
+!!! warning "One image per run on this backend"
+    The worker pod *is* the container, so the whole run executes in a
+    single image. If `astra.yaml` resolves to more than one distinct
+    container image, `lc run` refuses to start and asks you to
+    consolidate on a single Containerfile (or one shared prebuilt
+    image). Every other backend wraps per rule and is unaffected.
 
 ## Provenance gotcha
 

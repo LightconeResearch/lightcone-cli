@@ -59,7 +59,7 @@ For reference, here are the decision criteria for classifying candidates:
 
 When the codebase is large enough that one Explore pass risks missing depth (a multi-project monorepo, a workflow folder plus a notebooks tree plus a `src/` package), spawn Explores in parallel against the named subtrees — one Explore per coherent region. Aggregate their inventories into the final scan output.
 
-Write the scan results to `CLAUDE.md` under `## Project Notes` (fresh migration) or to the path the invocation prompt specifies (scan-only — typically `work/reference/code-index.md`) as a script inventory, then in fresh migration mode draft or add to `astra.yaml` from the scan results following the spec structure documented in `/astra`. In scan-only mode, stop after the inventory file lands; do not touch `astra.yaml`. Use the decision criteria from `/astra` (Decisions section) to filter candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
+Write the scan results to `CLAUDE.md` (fresh migration — append a `## Project Notes` section; the file `lc init` generates has an orientation intro, an `lc` CLI quick reference, and a `## Report` section, but no notes section) or to the path the invocation prompt specifies (scan-only — typically `work/reference/code-index.md`) as a script inventory, then in fresh migration mode draft or add to `astra.yaml` from the scan results following the spec structure documented in `/astra`. In scan-only mode, stop after the inventory file lands; do not touch `astra.yaml`. Use the decision criteria from `/astra` (Decisions section) to filter candidate decisions down to only true analytical choices — most hardcoded values are implementation details, not decisions. Use current hardcoded values as defaults.
 
 In augment mode, preserve the existing paper-derived or user-derived `inputs`, `outputs`, `decisions`, `findings`, and `description` unless the code scan shows a real conflict. Attach code evidence to the nearest existing home first. Create new ASTRA structure only when the code reveals a real analysis object that has no suitable home in the current spec.
 
@@ -103,6 +103,8 @@ Parameterize the code from ASTRA decisions so the baseline run reproduces the ex
 - No container setup but a `requirements.txt`: write a minimal `Containerfile` (`FROM python:3.12-slim`, copy and `pip install -r requirements.txt`, then `COPY . .`) and point `container:` at it.
 - Nothing to go on: set `container: python:3.12-slim` as a starting point — the user can swap to a real `Containerfile` later.
 
+Prefer a single shared image unless recipes genuinely need different stacks: on a JupyterHub/Dask-Gateway deployment, `lc run` rejects specs that resolve to more than one container image per run.
+
 Whatever approach you use:
 
 - **Don't refactor, restructure, or improve the code.** Just add the parameter plumbing.
@@ -120,7 +122,7 @@ If it fails, read the error, fix it, and retry. Iterate until `lc status` shows 
 
 If the scan found existing results elsewhere in the project, compare them against the new outputs in `results/baseline/<output_id>/` to verify the migration preserved behavior.
 
-Then validate the spec and the provenance chain: `astra validate astra.yaml` and `lc verify`. Present summary to user.
+Then validate the spec and the provenance chain: `astra validate astra.yaml` and `lc verify`. Present summary to user. If the project was scaffolded by `lc init`, also flag that the MyST report (`index.md`) still references the boilerplate ids (`example_method`, `main_result`) and needs updating to the reshaped spec's element paths.
 
 ## Rules
 
