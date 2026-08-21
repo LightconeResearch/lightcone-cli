@@ -710,10 +710,16 @@ settings concatenate across levels — and a hit lands in `scan_lock`'s
 advisory tier beside `sdist_built`. Never hashed, still. The env-var
 spelling of the same hole (`UV_NO_BINARY` and friends) is *closed*, not
 annotated: `project.child_env` scrubs ambient `UV_*` outside a plumbing
-allowlist (`_UV_KEPT` — cache dir, timeouts, TLS, air-gap, index
-credentials, uv's own recursion guard), and the run verbs warn with the
-names of any non-empty variable dropped, from the same predicate
-(issue #179). The suite blinds itself to the host's machine config via
+allowlist (`_UV_KEPT` — cache dir, link mode, the managed-interpreter
+store and its mirror, timeouts, TLS, air-gap, credentials, uv's own
+recursion guard), and every uv-acting verb names the non-empty
+variables dropped through `project.uv_scrub_warning` — one composer,
+one predicate with the scrub: convergence puts it in the report (so
+`lc init` says it), materialize in its warnings, and the probe in its
+outcome's notes, which is why the CLI never composes it (issue #179).
+`lc build` deliberately says nothing: the image's uv runs inside the
+container build, where the host environment does not reach. The suite
+blinds itself to the host's machine config via
 the autouse `machine_uv_config` fixture — `/etc/uv/uv.toml` has no
 environment variable to scrub.
 

@@ -178,7 +178,7 @@ class LockScan:
     #: Machine-level uv config files setting audited install settings.
     #: Advisory: they steer the sync underneath the project's own
     #: settings, and ``env_version`` deliberately cannot see them.
-    machine_config: tuple[str, ...] = ()
+    machine_config: tuple[str, ...]
 
 
 def scan_lock(root: Path) -> LockScan:

@@ -67,22 +67,23 @@ def _runtime(root: Path) -> container.Runtime:
     return container.runtime_for_run(root, build=False)
 
 
+def _context(root: Path, env_version: str | None = None) -> worker.RunContext:
+    """The driver-resolved facts a real run would hand down."""
+    return worker.RunContext(
+        env_version=env_version if env_version is not None else identity.env_version(root),
+        head=_HEAD,
+        versions=assets.Versions(),
+        runtime=_runtime(root),
+        uv_version="0.0.0-test",
+    )
+
+
 def _make(
     root: Path, output_id: str, *upstream: TaskResult, refresh: bool = False
 ) -> TaskResult:
     """Run one task the way Dask would, handed its upstream results."""
-    task = _task(root, output_id)
     return worker.materialize(
-        root,
-        task,
-        identity.env_version(root),
-        _HEAD,
-        assets.Versions(),
-        refresh,
-        None,
-        _runtime(root),
-        "0.0.0-test",
-        *upstream,
+        root, _task(root, output_id), _context(root), refresh, None, *upstream
     )
 
 
@@ -253,10 +254,7 @@ def test_a_stale_file_does_not_survive_a_rebuild(root: Path) -> None:
     output = root / "results/baseline/first"
     (output / "leftover.txt").write_text("from a previous run\n")
 
-    worker.execute(
-        root, _task(root, "first"), identity.env_version(root), {}, head=_HEAD,
-        runtime=_runtime(root),
-    )
+    worker.execute(root, _task(root, "first"), {}, _context(root))
 
     assert not (output / "leftover.txt").exists()
     assert (output / "value.txt").exists()
@@ -315,8 +313,7 @@ def test_an_environment_that_moved_under_the_run_is_refused(root: Path) -> None:
     """A manifest may not claim an environment that had already been edited
     by the time the recipe ran."""
     result = worker.execute(
-        root, _task(root, "first"), "sha256:from-another-run", {}, head=_HEAD,
-        runtime=_runtime(root),
+        root, _task(root, "first"), {}, _context(root, env_version="sha256:from-another-run")
     )
 
     assert result.status == "failed"

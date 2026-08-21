@@ -15,11 +15,18 @@ one it finishes with.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from lightcone.engine import container, sandbox
-from lightcone.engine.project import SPEC_FILENAME, child_env, require_uv, uv_prefix
+from lightcone.engine.project import (
+    SPEC_FILENAME,
+    child_env,
+    require_uv,
+    uv_prefix,
+    uv_scrub_warning,
+)
 
 
 def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
@@ -53,7 +60,7 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
 
     built = container.policy_for(runtime, input_paths(project, spec))
     with sandbox.scope(built) as policy:
-        return sandbox.run(
+        outcome = sandbox.run(
             container.backend(runtime),
             policy,
             list(command),
@@ -68,6 +75,11 @@ def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
             # the middle of the probe's own output.
             env=child_env(),
         )
+    # The probe is what called `child_env`, so the probe's outcome is
+    # where the scrub's fact belongs — the caller prints notes verbatim.
+    if warning := uv_scrub_warning():
+        outcome = replace(outcome, notes=(warning, *outcome.notes))
+    return outcome
 
 
 def read_spec(project: Path) -> dict[str, Any]:

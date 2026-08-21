@@ -26,6 +26,7 @@ workflow's ``HowToStep`` s.
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import re
@@ -133,6 +134,10 @@ class _Builder:
         self.license = license
         self.writer = writer
         self.keys = dict(keys)
+        #: Sorted once: each output selects its files by bisecting this,
+        #: not by rescanning the whole map — the map holds every annexed
+        #: file in the repository, data/ included.
+        self.sorted_keys = sorted(self.keys)
         self.crate = ROCrate()
         self.crate.metadata.extra_contexts.append(_WORKFLOW_RUN_CONTEXT)
         #: Every materialized task, sorted: the one iteration order.
@@ -334,10 +339,7 @@ class _Builder:
             return {}
         path = self.root / name
         try:
-            if path.is_symlink() or (
-                path.stat().st_size <= assets._POINTER_MAX_BYTES
-                and path.read_bytes().startswith(assets._POINTER_PREFIX)
-            ):
+            if path.is_symlink() or assets.is_pointer(path):
                 return {}
             data = path.read_bytes()
         except OSError:
@@ -364,7 +366,9 @@ class _Builder:
         # after a `git archive` deposit, where `version` above is lc's
         # own framed directory digest and deliberately is not that.
         parts = [manifest_file]
-        parts += [self._file(name) for name in sorted(self.keys) if name.startswith(dataset_id)]
+        lo = bisect.bisect_left(self.sorted_keys, dataset_id)
+        hi = bisect.bisect_left(self.sorted_keys, dataset_id + "\uffff")
+        parts += [self._file(name) for name in self.sorted_keys[lo:hi]]
         entity["hasPart"] = [{"@id": part.id} for part in parts]
 
     # ----- the runs -----

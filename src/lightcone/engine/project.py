@@ -764,31 +764,21 @@ def child_env() -> dict[str, str]:
     }
 
 
-def scrubbed_uv_vars() -> list[str]:
-    """Name the ambient non-empty ``UV_*`` variables the scrub drops.
-
-    One predicate with :func:`child_env`, so the report can never
-    disagree with the scrub.
-
-    Returns:
-        Sorted variable names, set and non-empty in this process.
-    """
-    return sorted(k for k, v in os.environ.items() if v and _uv_scrubbed(k))
-
-
 def uv_scrub_warning() -> str:
     """Compose the dropped-ambient-variables warning, once for every verb.
 
     A user whose ``UV_PYTHON`` or ``UV_INDEX_URL`` stopped steering uv
     deserves a pointer to why on *whichever* verb they hit first —
     ``lc init`` resolving against the wrong index fails with uv's raw
-    error otherwise. One spelling here, so the verbs cannot drift from
-    each other or from the scrub.
+    error otherwise. One spelling here, and one predicate with
+    :func:`child_env`, so the verbs cannot drift from each other or the
+    report from the scrub. Empty variables steer nothing and are not
+    reported.
 
     Returns:
         The warning, or ``""`` when nothing non-empty was dropped.
     """
-    if dropped := scrubbed_uv_vars():
+    if dropped := sorted(k for k, v in os.environ.items() if v and _uv_scrubbed(k)):
         return (
             f"ignored ambient {', '.join(dropped)} — an install setting is "
             "the project's to declare (pyproject.toml), and an ambient one "

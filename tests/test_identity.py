@@ -201,7 +201,9 @@ def test_the_environment_is_not_part_of_what_an_output_is(root: Path) -> None:
 
 
 def test_a_clean_lock_scans_clean(root: Path) -> None:
-    assert scan_lock(root) == LockScan(refusals=(), sdist_built=(), non_default_groups=())
+    assert scan_lock(root) == LockScan(
+        refusals=(), sdist_built=(), non_default_groups=(), machine_config=()
+    )
 
 
 def test_a_path_dependency_is_refused(root: Path) -> None:

@@ -71,6 +71,16 @@ def _commits(root: Path) -> int:
     return len(dataset._git(["log", "--oneline"], cwd=root).splitlines())
 
 
+def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
+    """Point the run at a custom scheduler — the one monkeypatch point."""
+
+    @contextmanager
+    def fake() -> Iterator[_Inline]:
+        yield scheduler
+
+    monkeypatch.setattr(engine, "cluster_for_run", fake)
+
+
 # ---- a run, end to end -----------------------------------------------------
 
 
@@ -508,11 +518,7 @@ def test_an_edit_while_the_graph_runs_is_reported(
             (root / "notes.md").write_text("scribbled while the graph ran\n")
             yield from handles
 
-    @contextmanager
-    def fake() -> Iterator[_Inline]:
-        yield Editing()
-
-    monkeypatch.setattr(engine, "cluster_for_run", fake)
+    _cluster(monkeypatch, Editing())
 
     report = engine.materialize(root, [])
 
@@ -536,11 +542,7 @@ def test_a_mid_run_stage_is_not_swept_into_lcs_commits(
             dataset._git(["add", "--", "notes.py"], cwd=root)
             yield from handles
 
-    @contextmanager
-    def fake() -> Iterator[_Inline]:
-        yield Staging()
-
-    monkeypatch.setattr(engine, "cluster_for_run", fake)
+    _cluster(monkeypatch, Staging())
 
     report = engine.materialize(root, [])
 
@@ -629,11 +631,7 @@ def test_an_interrupted_run_restores_what_never_reported(
             yield handles[0]
             raise KeyboardInterrupt
 
-    @contextmanager
-    def fake() -> Iterator[_Interrupted]:
-        yield _Interrupted()
-
-    monkeypatch.setattr(engine, "cluster_for_run", fake)
+    _cluster(monkeypatch, _Interrupted())
 
     with pytest.raises(KeyboardInterrupt):
         engine.materialize(root, [])

@@ -542,18 +542,19 @@ def materialize(
     # rerun does not come through here; its entry point converges too.)
     report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
 
-    # Read once, for every task: the driver commits each output as it lands,
-    # so HEAD moves during the run, and a per-task read would give later
-    # manifests a commit this run created — nondeterministically, depending
-    # on whether a recipe finished before or after the previous save.
-    head = dataset.head(root)
-    # Probed once and handed down, like HEAD: attestation for every
-    # manifest this run writes, and empty is an answer, not a failure.
-    uv = project.uv_version(root)
-    # One memo for the run, for the same reason as one HEAD read: a
-    # declared input shared by several outputs — or by one output across
-    # several universes — is the same bytes every time it is asked for.
-    versions = assets.Versions()
+    # The run's driver-resolved facts, each read once: HEAD because the
+    # driver commits as outputs land and a per-task read would stamp
+    # later manifests with a commit this run created; the uv probe
+    # because attestation is a fact about the run (and empty is an
+    # answer, not a failure); one content-hash memo because a declared
+    # input shared by several outputs is the same bytes every time.
+    context = worker.RunContext(
+        env_version=env_version,
+        head=dataset.head(root),
+        versions=assets.Versions(),
+        runtime=runtime,
+        uv_version=project.uv_version(root),
+    )
     # The history question is the driver's to answer — workers have no
     # git, by design — so each task is told up front whether its
     # directory was last written by something other than its own run
@@ -581,13 +582,9 @@ def materialize(
                     worker.materialize,
                     root,
                     task,
-                    env_version,
-                    head,
-                    versions,
+                    context,
                     refresh,
                     foreign[key],
-                    runtime,
-                    uv,
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
                 )

@@ -683,7 +683,7 @@ def test_ambient_uv_install_settings_are_scrubbed(
     come from and how fast, never what gets installed."""
     import os
 
-    from lightcone.engine.project import child_env, scrubbed_uv_vars
+    from lightcone.engine.project import child_env, uv_scrub_warning
 
     for name in [k for k in os.environ if k.startswith("UV_")]:
         monkeypatch.delenv(name)  # the suite itself may run under `uv run`
@@ -709,8 +709,8 @@ def test_ambient_uv_install_settings_are_scrubbed(
     )
     assert env["UV_LINK_MODE"] == "copy", "link-mode is not an audited setting either"
     assert env["LC_TEST_CANARY"] == "kept"
-    assert scrubbed_uv_vars() == ["UV_INDEX_URL", "UV_NO_BINARY", "UV_PYTHON"], (
-        "the report names exactly what the scrub dropped"
+    assert "UV_INDEX_URL, UV_NO_BINARY, UV_PYTHON" in uv_scrub_warning(), (
+        "the warning names exactly what the scrub dropped"
     )
 
 
@@ -731,10 +731,10 @@ def test_an_empty_scrubbed_variable_is_not_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An empty variable steers nothing, so warning about it is noise."""
-    from lightcone.engine.project import scrubbed_uv_vars
+    from lightcone.engine.project import uv_scrub_warning
 
     monkeypatch.setenv("UV_NO_BUILD", "")
-    assert "UV_NO_BUILD" not in scrubbed_uv_vars()
+    assert "UV_NO_BUILD" not in uv_scrub_warning()
 
 
 def test_relays_uv_warnings_into_the_report(

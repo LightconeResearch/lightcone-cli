@@ -85,6 +85,32 @@ class TaskResult:
         return self.status in ("ok", "current", "behind")
 
 
+@dataclass(frozen=True)
+class RunContext:
+    """The driver-resolved facts of one run, handed to every task.
+
+    Each field is read or resolved exactly once, by whoever owns the run
+    — the driver, or the rerun entry point — because a per-task read
+    could answer differently mid-run: HEAD moves as the driver commits,
+    a runtime resolved twice could disagree, and a provenance field that
+    depends on task timing is worse than either answer. Frozen and
+    picklable, so it crosses to workers by value; one object, so the
+    next attestation field is one line here rather than an edit to five
+    signatures.
+    """
+
+    #: The run's environment identity, checked either side of each recipe.
+    env_version: str
+    #: The run's ``(commit sha, origin URL)``.
+    head: Head
+    #: The run's content-hash memo for declared inputs.
+    versions: assets.Versions
+    #: The execution world — the host mechanism, or the project image.
+    runtime: container.Runtime
+    #: The uv that converges environments this run. Attestation only.
+    uv_version: str
+
+
 # =============================================================================
 # The Dask unit: decide, then execute
 # =============================================================================
@@ -93,13 +119,9 @@ class TaskResult:
 def materialize(
     root: Path,
     task: Task,
-    env_version: str,
-    head: Head,
-    versions: assets.Versions,
+    context: RunContext,
     refresh: bool,
     foreign: dataset.LastWrite | None,
-    runtime: container.Runtime,
-    uv_version: str,
     *upstream: TaskResult,
 ) -> TaskResult:
     """Make *task* if it needs making. What Dask submits, once per task.
@@ -112,21 +134,12 @@ def materialize(
     Args:
         root: The project root.
         task: The output to make.
-        env_version: The run's environment identity, checked either side
-            of the recipe.
-        head: The run's ``(commit sha, origin URL)``, read once by the
-            driver because it commits as outputs land and HEAD moves.
-        versions: The run's content-hash memo for declared inputs.
+        context: The run's driver-resolved facts.
         refresh: Whether to remake an output that is merely behind.
         foreign: The commit that last wrote the output's directory in
             place of its own run record, or ``None`` — answered by the
             driver, because history is git's and workers have no git;
             handed to the one classification rule, where it is `stale`.
-        runtime: The execution world, resolved once by the driver — the
-            same discipline as *head*, because resolving per task could
-            answer differently mid-run.
-        uv_version: The uv the run converges environments with, probed
-            once by the driver. Attestation only.
         *upstream: The results of this task's dependencies, arriving as
             the futures it was given — which is what makes Dask the
             scheduler rather than a loop here.
@@ -135,9 +148,7 @@ def materialize(
         What happened. Never raises.
     """
     try:
-        return _materialize(
-            root, task, env_version, head, versions, refresh, foreign, runtime, uv_version, upstream
-        )
+        return _materialize(root, task, context, refresh, foreign, upstream)
     except Exception as e:  # the contract is that this function returns
         return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
 
@@ -145,13 +156,9 @@ def materialize(
 def _materialize(
     root: Path,
     task: Task,
-    env_version: str,
-    head: Head,
-    versions: assets.Versions,
+    context: RunContext,
     refresh: bool,
     foreign: dataset.LastWrite | None,
-    runtime: container.Runtime,
-    uv_version: str,
     upstream: tuple[TaskResult, ...],
 ) -> TaskResult:
     reported = {u.key: u for u in upstream if u.usable}
@@ -161,21 +168,19 @@ def _materialize(
 
     live = {key: u.data_version for key, u in reported.items()}
     inputs = {
-        name: live[key] if (key := task.produced_by.get(name)) else versions.of(path)
+        name: live[key] if (key := task.produced_by.get(name)) else context.versions.of(path)
         for name, path in task.inputs.items()
     }
     manifest = assets.read(task.output_dir)
     verdict = assets.classify(
         definition_version=task.definition_version,
-        env_version=env_version,
+        env_version=context.env_version,
         manifest=manifest,
         inputs=inputs,
         foreign=foreign,
     )
     if verdict.calls_for_a_remake(refresh=refresh):
-        return execute(
-            root, task, env_version, inputs, head=head, runtime=runtime, uv_version=uv_version
-        )
+        return execute(root, task, inputs, context)
 
     # Left alone, so the bytes on disk stand. Their *recorded* digest,
     # never a recomputed one: on a clone that has fetched no annex content
@@ -195,38 +200,29 @@ def _materialize(
 def execute(
     root: Path,
     task: Task,
-    env_version: str,
     input_versions: Mapping[str, str],
-    *,
-    head: Head,
-    runtime: container.Runtime,
-    uv_version: str = "",
+    context: RunContext,
 ) -> TaskResult:
     """Run *task*'s recipe and record what it produced.
 
     The output directory is reset first: the recipe owns it, and a file
     left from a previous run would otherwise enter the content hash and be
-    committed as part of an output that never produced it.
+    committed as part of an output that never produced it. The context's
+    ``env_version`` is checked either side of the recipe, so a mid-run
+    lock edit cannot be recorded as if it had been in force.
 
     Args:
         root: The project root.
         task: The output to make.
-        env_version: The run's environment identity, checked either side
-            of the recipe so a mid-run lock edit cannot be recorded as if
-            it had been in force.
         input_versions: Each declared input's content identity, recorded
             in the manifest as the chain.
-        head: The run's ``(commit sha, origin URL)``.
-        runtime: The execution world the recipe enters — the host under
-            the platform's mechanism, or the project image behind its
-            mount table.
-        uv_version: The uv that converged the environment. Attestation.
+        context: The run's driver-resolved facts.
 
     Returns:
         ``ok`` with the output's ``data_version``, or ``failed``. Commits
         nothing and never touches git beyond reading HEAD.
     """
-    if moved := _gate(root, env_version):
+    if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved)
 
     # The whole directory, not a list of expected files: a recipe declares
@@ -240,11 +236,11 @@ def execute(
     task.output_dir.mkdir(parents=True)
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
-    policy = container.policy_for(runtime, read_paths, output_dir=task.output_dir)
+    policy = container.policy_for(context.runtime, read_paths, output_dir=task.output_dir)
     started_at = _now()
     with sandbox.scope(policy):
         outcome = sandbox.run(
-            container.backend(runtime),
+            container.backend(context.runtime),
             policy,
             [_SHELL, "-c", task.recipe],
             cwd=root,
@@ -260,14 +256,14 @@ def execute(
             reason=f"the recipe exited {outcome.returncode}",
             notes=outcome.notes,
         )
-    if moved := _gate(root, env_version):
+    if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved, notes=outcome.notes)
 
     # Guarded separately from the boundary catch above it, because these
     # two failures deserve different words: "your recipe failed" and "your
     # recipe worked and we could not record it" are different problems.
     try:
-        sha, remote = head
+        sha, remote = context.head
         data_version = assets.data_version(task.output_dir)
         assets.write(
             task.output_dir,
@@ -276,18 +272,18 @@ def execute(
                 universe_id=task.universe_id,
                 recipe=task.recipe,
                 definition_version=task.definition_version,
-                env_version=env_version,
+                env_version=context.env_version,
                 data_version=data_version,
                 decisions=dict(task.decisions),
                 input_versions=dict(input_versions),
                 git_sha=sha,
                 git_remote=remote,
                 lc_version=lc_version(),
-                uv_version=uv_version,
+                uv_version=context.uv_version,
                 hermeticity=asdict(outcome.attestation),
                 started_at=started_at,
                 finished_at=finished_at,
-                image=runtime.manifest_image(),
+                image=context.runtime.manifest_image(),
             ),
         )
     except (OSError, ProjectError) as e:
@@ -398,11 +394,14 @@ def main(argv: list[str]) -> int:
         result = execute(
             root,
             task,
-            identity.env_version(root),
             _from_disk(task),
-            head=dataset.head(root),
-            runtime=runtime,
-            uv_version=project.uv_version(root),
+            RunContext(
+                env_version=identity.env_version(root),
+                head=dataset.head(root),
+                versions=assets.Versions(),
+                runtime=runtime,
+                uv_version=project.uv_version(root),
+            ),
         )
     except ProjectError as e:
         print(f"error: {e}", file=sys.stderr)

@@ -231,12 +231,8 @@ def last_writer(directory: Path, path: Path) -> LastWrite:
         git cannot answer at all.
     """
     argv = ["log", "-1", "--format=%H%x00%s%x00%an%x00%ae%x00%as", "--", _rel(directory, path)]
-    try:
-        proc = project._run(["git", *argv], cwd=directory)
-    except OSError:
-        return LastWrite()
-    out = str(proc.stdout or "").strip("\n")
-    if proc.returncode != 0 or not out:
+    out = _ask(argv, cwd=directory)
+    if not (out := (out or "").strip("\n")):
         return LastWrite()
     return LastWrite(*out.split("\0"))
 
@@ -258,15 +254,9 @@ def annex_keys(directory: Path) -> dict[str, str]:
     Returns:
         ``{relative path: key}`` for every annexed file.
     """
-    argv = ["annex", "find", "--include=*", "--format=${file}\\t${key}\\n"]
-    try:
-        proc = project._run(["git", *argv], cwd=directory)
-    except OSError:
-        return {}
-    if proc.returncode != 0:
-        return {}
+    out = _ask(["annex", "find", "--include=*", "--format=${file}\\t${key}\\n"], cwd=directory)
     keys: dict[str, str] = {}
-    for line in str(proc.stdout or "").splitlines():
+    for line in (out or "").splitlines():
         # From the *last* tab: git-annex emits ${file} unescaped, so a
         # tab in a filename would otherwise split inside the path and
         # hand back a truncated file with a corrupted key. Keys never
@@ -358,6 +348,25 @@ def restore(directory: Path, paths: Iterable[Path]) -> None:
 # =============================================================================
 # Running git
 # =============================================================================
+
+
+def _ask(argv: list[str], *, cwd: Path) -> str | None:
+    """Run git where "cannot say" must be an answer, never an error.
+
+    The read-only-verbs discipline, as one seam: an unborn HEAD, a
+    stripped ``.git``, a host without git — states a project can really
+    be in — come back as ``None``, and the caller renders its own empty.
+
+    Returns:
+        git's stdout, or ``None`` when git cannot answer.
+    """
+    try:
+        proc = project._run(["git", *argv], cwd=cwd)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return str(proc.stdout or "")
 
 
 def _git(argv: list[str], *, cwd: Path) -> str:

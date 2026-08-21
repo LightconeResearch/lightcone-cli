@@ -123,6 +123,12 @@ def _argvs(calls: list[list[str]], *head: str) -> list[list[str]]:
     return [c for c in calls if c[: len(head)] == list(head)]
 
 
+def _git_calls(calls: list[list[str]], sub: str) -> list[list[str]]:
+    """git calls carrying *sub* anywhere — `-c key=val` pairs may precede
+    the subcommand, so a prefix match misses them."""
+    return [c for c in calls if c[0] == "git" and sub in c]
+
+
 # ---- runtime detection ------------------------------------------------------
 
 
@@ -178,7 +184,7 @@ def test_a_missing_archive_refuses_unless_the_caller_may_build(
     with pytest.raises(ProjectError, match="lc build"):
         container.runtime_for_run(root, build=False)
     assert _argvs(fake, "podman", "build") == []
-    assert [c for c in fake if c[0] == "git" and "commit" in c] == []
+    assert _git_calls(fake, "commit") == []
 
     runtime = container.runtime_for_run(root, build=True)
 
@@ -264,11 +270,11 @@ def test_the_build_saves_and_commits_the_archive(root: Path, fake: list[list[str
     configured = {c[-2] for c in _argvs(fake, "git", "config", "-f", ".datalad/config")}
     assert f"datalad.containers.{runtime.image_tag}.image" in configured
     assert f"datalad.containers.{runtime.image_tag}.cmdexec" in configured
-    (add,) = [c for c in fake if c[0] == "git" and "add" in c]
+    (add,) = _git_calls(fake, "add")
     assert f".datalad/environments/{runtime.image_tag}" in " ".join(add)
     # The dot-path routing: without it the archive is a full blob in git.
     assert "annex.dotfiles=true" in add
-    assert len([c for c in fake if c[0] == "git" and "commit" in c]) == 1
+    assert len(_git_calls(fake, "commit")) == 1
 
 
 def test_an_unrouted_archive_refuses_before_building(

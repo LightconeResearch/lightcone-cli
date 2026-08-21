@@ -165,12 +165,9 @@ def run(command: tuple[str, ...]) -> None:
     """Run COMMAND in the project environment, under isolation.
     """
     from lightcone.engine import run as engine_run
-    from lightcone.engine.project import current_project, uv_scrub_warning
+    from lightcone.engine.project import current_project
 
-    directory = current_project()
-    if warning := uv_scrub_warning():
-        click.echo(warning, err=True)
-    outcome = engine_run.probe(directory, command)
+    outcome = engine_run.probe(current_project(), command)
     if outcome.notes:
         click.echo("\n".join(["", *outcome.notes]), err=True)
     # `Popen.returncode` is negative for a signal, and `sys.exit(-9)`
@@ -203,11 +200,9 @@ def build(as_json: bool) -> None:
     alone.
     """
     from lightcone.engine import container as engine_container
-    from lightcone.engine.project import current_project, uv_scrub_warning
+    from lightcone.engine.project import current_project
 
     root = current_project()
-    if (warning := uv_scrub_warning()) and not as_json:
-        click.echo(warning, err=True)
     state, tag, _ = engine_container.image_state(root)
     if state == "direct":
         if as_json:
