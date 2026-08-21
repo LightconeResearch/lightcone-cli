@@ -54,7 +54,8 @@ uv run zensical serve        # live preview
 ```
 
 The site deploys on release (`docs-deploy.yml`), so docs track the
-released CLI, not `main`.
+released CLI, not `main`. A pre-release deploys nothing — the site keeps
+serving the last full release.
 
 ## Building the wheel
 
