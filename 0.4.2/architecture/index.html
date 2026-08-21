@@ -1,0 +1,3099 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Agentic execution layer for ASTRA research pipelines">
+      
+      
+        <meta name="author" content="Lightcone Research Team">
+      
+      
+      
+        <link rel="prev" href="../maintainer/">
+      
+      
+        <link rel="next" href="../cli/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/favicon.svg">
+      <meta name="generator" content="zensical-0.0.56">
+    
+    
+      
+        <title>Architecture - lightcone-cli</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.20815dad.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.dfe2e883.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-label="Navigation"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#architecture" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="lightcone-cli" class="md-header__button md-logo" aria-label="lightcone-cli" data-md-component="logo">
+      
+  <img src="../assets/logo.svg" alt="lightcone-cli">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            lightcone-cli
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Architecture
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="none" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="none" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/LightconeResearch/lightcone-cli" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    LightconeResearch/lightcone-cli
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="./.." class="md-tabs__link">
+        
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+      
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../user/" class="md-tabs__link">
+          
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+      
+    
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../maintainer/" class="md-tabs__link">
+          
+  
+  Developer Corner
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="https://astra-spec.org/latest/" class="md-tabs__link">
+        
+  
+  ASTRA docs
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="lightcone-cli" class="md-nav__button md-logo" aria-label="lightcone-cli" data-md-component="logo">
+      
+  <img src="../assets/logo.svg" alt="lightcone-cli">
+
+    </a>
+    lightcone-cli
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/LightconeResearch/lightcone-cli" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    LightconeResearch/lightcone-cli
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  User Guide
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  User Guide
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Welcome
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user/install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Install
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user/getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Getting Started
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user/agent-workflow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  The Agent Workflow
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user/cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Running on a Cluster
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Troubleshooting
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user/glossary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Glossary
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Developer Corner
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Developer Corner
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../maintainer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Welcome
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Architecture
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Architecture
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#three-subsystems" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Three subsystems
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-snakefile-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        1. Snakefile generation
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Snakefile generation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-goes-in-cfg" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What goes in <code>cfg</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-pre-wrap-not-snakemakes-container" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Why pre-wrap, not Snakemake's <code>container:</code>?
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#staleness-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Staleness detection
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-the-manifest-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        2. The manifest layer
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. The manifest layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fields
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#data_version-exclusions" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>data_version</code> exclusions
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#input_versions-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>input_versions</code> semantics
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-lc-verify-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What <code>lc verify</code> checks
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-lc-status-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What <code>lc status</code> checks
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-cluster-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        3. Cluster management
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Cluster management">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-snakemake-executor" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The Snakemake executor
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scratch-run-locking" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Scratch &amp; run locking
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#container-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Container layer
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sub-analysis-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Sub-analysis tree
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#claude-code-plugin" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Claude Code plugin
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Claude Code plugin">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#permission-tiers" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Permission tiers
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hooks" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Hooks
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#repository-at-a-glance" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Repository at a glance
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution flow
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Configuration files
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3" id="__nav_3_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  CLI Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  CLI Reference
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Overview
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/init/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc init
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/run/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc run
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/build/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc build
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc status
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/verify/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc verify
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/export/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc export
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/eval/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc eval
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Python API
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Python API
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Overview
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  cli/commands
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/manifest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/manifest
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/snakefile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/snakefile
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/runner/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/runner
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/container/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/container
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/cloudbuild/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/cloudbuild
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/scratch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/scratch
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/site_registry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/site_registry
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/status
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/verify/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/verify
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/tree/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/tree
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/validation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/wrroc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/wrroc
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/dask_cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  engine/dask_cluster
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/dask_executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  snakemake_executor_plugin_dask
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_5" id="__nav_3_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Skills
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Skills
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Overview
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/lc-new/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc-new
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/lc-from-code/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc-from-code
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/lc-from-paper/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc-from-paper
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/lc-feedback/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  lc-feedback
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/ralph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  ralph
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/paper-extraction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  paper-extraction
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/figure-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  figure-comparison
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/check-sentence-by-sentence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  check-sentence-by-sentence
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/authoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Authoring Skills
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_6" id="__nav_3_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Contributing
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Contributing
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Development Setup
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Testing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Adding an Execution Backend
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/hpc-sites/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Adding a Site
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://astra-spec.org/latest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  ASTRA docs
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#three-subsystems" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Three subsystems
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-snakefile-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        1. Snakefile generation
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Snakefile generation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-goes-in-cfg" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What goes in <code>cfg</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-pre-wrap-not-snakemakes-container" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Why pre-wrap, not Snakemake's <code>container:</code>?
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#staleness-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Staleness detection
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-the-manifest-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        2. The manifest layer
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. The manifest layer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fields
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#data_version-exclusions" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>data_version</code> exclusions
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#input_versions-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>input_versions</code> semantics
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-lc-verify-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What <code>lc verify</code> checks
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-lc-status-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What <code>lc status</code> checks
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-cluster-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        3. Cluster management
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Cluster management">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-snakemake-executor" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The Snakemake executor
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scratch-run-locking" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Scratch &amp; run locking
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#container-layer" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Container layer
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sub-analysis-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Sub-analysis tree
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#claude-code-plugin" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Claude Code plugin
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Claude Code plugin">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#permission-tiers" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Permission tiers
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hooks" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Hooks
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#repository-at-a-glance" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Repository at a glance
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution flow
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Configuration files
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+  
+  
+
+
+<h1 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h1>
+<p>The whole story in one sentence: <strong>lightcone-cli is a thin shim over
+Snakemake that owns provenance.</strong> This page expands that sentence.</p>
+<h2 id="three-subsystems">Three subsystems<a class="headerlink" href="#three-subsystems" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Snakefile generation</strong> — translate <code>astra.yaml</code> into a
+   <code>.lightcone/Snakefile</code> and a sidecar <code>snakefile-config.json</code> keyed by
+   <code>(rule, universe)</code>. Snakemake handles the rest of execution.</li>
+<li><strong>Manifest layer</strong> — a per-output sidecar JSON written <em>by us</em> on the
+   host immediately after each rule's recipe shell exits. The integrity
+   contract lives here.</li>
+<li><strong>Cluster management</strong> — <code>lc run</code> always dispatches through a Dask
+   scheduler whose lifetime equals the run's lifetime. The cluster
+   manager picks the right shape (external scheduler / Dask Gateway /
+   SLURM / local) on the fly.</li>
+</ol>
+<p>The Claude Code plugin (skills + hooks + agents) is the agentic surface
+layered on top.</p>
+<hr />
+<h2 id="1-snakefile-generation">1. Snakefile generation<a class="headerlink" href="#1-snakefile-generation" title="Permanent link">&para;</a></h2>
+<p>Generator: <a href="../api/snakefile/"><code>lightcone.engine.snakefile.generate</code></a>.</p>
+<p>For each output in the resolved analysis tree (root + sub-analyses,
+expanded by <code>astra.helpers.resolve_analysis_tree</code>), the generator emits
+one Snakemake rule per output. The rule body is a <code>run:</code> block:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">rule</span> <span class="o">&lt;</span><span class="n">name</span><span class="o">&gt;</span><span class="p">:</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="nb">input</span><span class="p">:</span>  <span class="o">...</span>                     <span class="c1"># from upstream outputs (sibling rules)</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">output</span><span class="p">:</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>        <span class="n">data</span><span class="o">=</span><span class="n">directory</span><span class="p">(</span><span class="s2">"results/</span><span class="si">{universe}</span><span class="s2">/&lt;output_id&gt;"</span><span class="p">),</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>        <span class="n">manifest</span><span class="o">=</span><span class="s2">"results/</span><span class="si">{universe}</span><span class="s2">/&lt;output_id&gt;/.lightcone-manifest.json"</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">params</span><span class="p">:</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="n">cfg</span><span class="o">=</span><span class="k">lambda</span> <span class="n">wc</span><span class="p">:</span> <span class="n">CFG</span><span class="p">[</span><span class="s2">"&lt;rule_key&gt;"</span><span class="p">][</span><span class="n">wc</span><span class="o">.</span><span class="n">universe</span><span class="p">],</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">run</span><span class="p">:</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">run_rule</span><span class="p">(</span>                                   <span class="c1"># engine.runner</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>            <span class="n">rule_key</span><span class="o">=</span><span class="s2">"&lt;rule_key&gt;"</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>            <span class="n">universe</span><span class="o">=</span><span class="n">wildcards</span><span class="o">.</span><span class="n">universe</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>            <span class="n">output_dir</span><span class="o">=</span><span class="n">Path</span><span class="p">(</span><span class="n">output</span><span class="o">.</span><span class="n">data</span><span class="p">),</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>            <span class="n">inputs</span><span class="o">=</span><span class="p">{</span><span class="o">...</span><span class="p">},</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>            <span class="n">cfg</span><span class="o">=</span><span class="nb">dict</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">cfg</span><span class="p">),</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        <span class="p">)</span>
+</span></code></pre></div>
+<p><code>run_rule</code> runs the pre-rendered (already container-wrapped) shell
+command, emits the sentinel-framed narrative lines <code>lc run</code> forwards,
+writes the manifest on success, and runs the validation hook.</p>
+<h3 id="what-goes-in-cfg">What goes in <code>cfg</code><a class="headerlink" href="#what-goes-in-cfg" title="Permanent link">&para;</a></h3>
+<p><code>snakefile-config.json</code> is keyed by <code>&lt;rule_key&gt; → &lt;universe&gt; → cfg</code> where
+the inner dict carries:</p>
+<ul>
+<li><code>shell_command</code> — the recipe pre-wrapped at generation time. When
+  containers are configured, this looks like
+  <code>&lt;runtime&gt; run --rm --pull=never -v "$PWD":"$PWD" -w "$PWD" &lt;image&gt; bash -c '&lt;recipe&gt;'</code>.
+  Snakemake's own <code>container:</code> directive and <code>--sdm apptainer</code> are
+  intentionally <em>not</em> used — we own the runtime end-to-end.</li>
+<li><code>code_version</code> — <code>sha256(recipe + container_image + decisions)</code>.
+  Embedded as a <code>: lc_code_version=…;</code> no-op prefix on the shell command
+  so it lands in any shell trace.</li>
+<li><code>recipe</code>, <code>container_image</code>, <code>decisions</code>, <code>output_id</code>, <code>output_type</code>,
+  <code>universe_id</code>, <code>git_sha</code>, <code>lc_version</code>, resolved input paths.</li>
+</ul>
+<h3 id="why-pre-wrap-not-snakemakes-container">Why pre-wrap, not Snakemake's <code>container:</code>?<a class="headerlink" href="#why-pre-wrap-not-snakemakes-container" title="Permanent link">&para;</a></h3>
+<p>Two reasons. First, <code>--sdm apptainer</code> adds an extra container layer that
+defeats podman-hpc's migrate workflow. Second, registry image resolution
+on podman fails for our content-addressed <code>lc-&lt;name&gt;-&lt;hash&gt;</code> tags
+because they trip <code>unqualified-search-registries</code> in <code>registries.conf</code>.
+We pass <code>--pull=never</code> to skip the lookup entirely; that requires
+images to be present locally, which is what <code>lc build</code> does.</p>
+<h3 id="staleness-detection">Staleness detection<a class="headerlink" href="#staleness-detection" title="Permanent link">&para;</a></h3>
+<p>The generator does <em>not</em> override Snakemake's rerun logic — it just
+makes sure drift is visible to it. We default to
+<code>--rerun-triggers code,input,mtime,params</code>. The <code>params</code> trigger is the
+one that fires today: <code>cfg</code> is per-universe and contains
+<code>code_version</code>, so any change to recipe / container image / decisions
+flows through.</p>
+<hr />
+<h2 id="2-the-manifest-layer">2. The manifest layer<a class="headerlink" href="#2-the-manifest-layer" title="Permanent link">&para;</a></h2>
+<p>Module: <a href="../api/manifest/"><code>lightcone.engine.manifest</code></a>. Filename:
+<code>.lightcone-manifest.json</code> (constant; <code>SCHEMA_VERSION = 1</code>).</p>
+<p>Every successful rule writes a manifest to its output directory. The
+write is atomic (<code>os.replace</code> rename); a missing or unparseable manifest
+re-runs the rule on the next <code>lc run</code>.</p>
+<h3 id="fields">Fields<a class="headerlink" href="#fields" title="Permanent link">&para;</a></h3>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"schema_version"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">"output_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">"universe_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"baseline"</span><span class="p">,</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">"code_version"</span><span class="p">:</span><span class="w">  </span><span class="s2">"sha256:…"</span><span class="p">,</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">"data_version"</span><span class="p">:</span><span class="w">  </span><span class="s2">"sha256:…"</span><span class="p">,</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">"container_image"</span><span class="p">:</span><span class="w"> </span><span class="s2">"lc-myproject-abc123"</span><span class="w"> </span><span class="p">,</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">"worker_image"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="nt">"recipe"</span><span class="p">:</span><span class="w"> </span><span class="s2">"python scripts/compute.py"</span><span class="p">,</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="nt">"decisions"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="err">...</span><span class="p">},</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="nt">"input_versions"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"&lt;inp_id&gt;"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sha256:…"</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span><span class="nt">"git_sha"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">  </span><span class="nt">"git_remote"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="nt">"lc_version"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">  </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">  </span><span class="nt">"slurm_job_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">  </span><span class="nt">"finished_at"</span><span class="p">:</span><span class="w"> </span><span class="mf">1700000000.0</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="p">}</span>
+</span></code></pre></div>
+<p><code>container_image</code> is what the spec <em>declared</em>. <code>worker_image</code> is the
+image the Dask Gateway pod that actually ran the recipe was started from
+(<code>LIGHTCONE_WORKER_IMAGE</code>, provisioned by <code>lc run</code>) — <code>null</code> on every
+other backend. Both fields are additive; older manifests still parse.</p>
+<h3 id="data_version-exclusions"><code>data_version</code> exclusions<a class="headerlink" href="#data_version-exclusions" title="Permanent link">&para;</a></h3>
+<p><code>sha256_dir()</code> skips two filenames: <code>.lightcone-manifest.json</code> (chicken
+and egg) and <code>.snakemake_timestamp</code> (Snakemake touches the directory
+<em>after</em> the rule body completes — including it would make every hash
+unreproducible).</p>
+<h3 id="input_versions-semantics"><code>input_versions</code> semantics<a class="headerlink" href="#input_versions-semantics" title="Permanent link">&para;</a></h3>
+<p>For each declared recipe input:
+- If the input is a sibling output (has its own manifest) →
+  <code>data_version</code> from that manifest.
+- Otherwise treated as external →
+  <code>mtime-size:&lt;ns&gt;-&lt;bytes&gt;</code> for files, <code>sha256_dir(...)</code> for
+  directories, <code>"missing"</code> for absent paths.</p>
+<h3 id="what-lc-verify-checks">What <code>lc verify</code> checks<a class="headerlink" href="#what-lc-verify-checks" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><code>tampered_data</code></strong> — <code>sha256_dir()</code> of the on-disk output no longer
+  matches the recorded <code>data_version</code>.</li>
+<li><strong><code>broken_chain</code></strong> — a recorded <code>input_versions[id]</code> no longer matches
+  the upstream output's current <code>data_version</code>.</li>
+<li><strong><code>missing_manifest</code></strong> — the output directory exists but has no
+  manifest, or the manifest fails to parse.</li>
+</ul>
+<h3 id="what-lc-status-checks">What <code>lc status</code> checks<a class="headerlink" href="#what-lc-status-checks" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><code>ok</code></strong> — manifest present, recomputed <code>code_version</code> matches.</li>
+<li><strong><code>stale</code></strong> — manifest present but <code>code_version</code> drifted (recipe,
+  image, or decisions changed).</li>
+<li><strong><code>missing</code></strong> — no manifest.</li>
+<li><strong><code>alias</code></strong> — output declared without a recipe; materialized only as a
+  side effect of an upstream.</li>
+</ul>
+<p><code>status</code> reads only manifests. No Snakemake import, no <code>.snakemake/</code>
+directory required, works on a fresh clone or frozen archive.</p>
+<hr />
+<h2 id="3-cluster-management">3. Cluster management<a class="headerlink" href="#3-cluster-management" title="Permanent link">&para;</a></h2>
+<p>Module: <a href="../api/dask_cluster/"><code>lightcone.engine.dask_cluster</code></a>.</p>
+<p><code>cluster_for_run()</code> is the only entry point. It is a context manager that
+yields the <strong>env overlay</strong> the child snakemake needs to reach the cluster
+(the executor plugin lives in a different process), valid for the
+duration of the run, across four branches:</p>
+<ol>
+<li><code>DASK_SCHEDULER_ADDRESS</code> already set → yield as-is. We don't own the
+   cluster, we don't tear it down.</li>
+<li><code>DASK_GATEWAY__ADDRESS</code> set (a JupyterHub / Dask Gateway deployment)
+   → <strong>create</strong> a run-scoped Gateway cluster running the project's
+   image, scale it adaptively up to the job bound, and shut it down on
+   exit. Create-per-run is what makes image updates seamless: a Gateway
+   cluster's image is fixed at creation. Gateway schedulers speak a
+   <code>gateway://</code> comm scheme a bare <code>Client</code> can't dial, so this branch
+   yields the <em>cluster name</em> (<code>LIGHTCONE_GATEWAY_CLUSTER</code>) and the
+   executor rejoins through the authenticated Gateway API.</li>
+<li><code>SLURM_JOB_ID</code> set → start an in-process scheduler bound to the
+   driver hostname (<code>SLURMD_NODENAME</code> or <code>gethostname()</code>), then <code>srun</code>
+   one <code>dask worker</code> per node across the allocation. Workers advertise
+   the node's resources via Dask abstract resources (<code>cpus</code>, <code>memory</code>,
+   <code>gpus</code>). The Snakemake executor plugin maps per-rule
+   <code>cpus_per_task</code> / <code>mem_mb</code> / <code>gpus_per_task</code> to per-task constraints.</li>
+<li>None of the above → <code>LocalCluster()</code> sized to the local machine.</li>
+</ol>
+<p>Outside the Gateway branch the scheduler is always in-process so its
+lifetime equals the run's lifetime: no service to manage, no orphaned
+schedulers. The Gateway branch enforces the same contract server-side —
+created per run, culled on exit, with the deployment's idle timeout as
+the backstop.</p>
+<p>Because the Gateway branch realizes containers as <em>pod images</em> rather
+than by wrapping recipes, one run can honour only one image: <code>lc run</code>
+rejects a spec resolving to more than one distinct container image there
+(<code>gateway_branch_active()</code> is the pre-flight predicate).</p>
+<h3 id="the-snakemake-executor">The Snakemake executor<a class="headerlink" href="#the-snakemake-executor" title="Permanent link">&para;</a></h3>
+<p>Module: <a href="../api/dask_executor/"><code>snakemake_executor_plugin_dask</code></a>.</p>
+<p>Snakemake calls <code>run_job(job)</code>, we translate it to:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">client</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">_run_shell</span><span class="p">,</span> <span class="n">cmd</span><span class="p">,</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">resources</span><span class="o">=</span><span class="n">_build_resources</span><span class="p">(</span><span class="n">job</span><span class="p">),</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">pure</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">key</span><span class="o">=</span><span class="sa">f</span><span class="s2">"snakejob-</span><span class="si">{</span><span class="n">job</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">-</span><span class="si">{</span><span class="n">job</span><span class="o">.</span><span class="n">jobid</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>The worker shells out to the (already container-wrapped) command. There
+is no per-rule "executor logic" to write — recipes are wrapped at
+generation time, so the worker just runs them.</p>
+<hr />
+<h2 id="scratch-run-locking">Scratch &amp; run locking<a class="headerlink" href="#scratch-run-locking" title="Permanent link">&para;</a></h2>
+<p>Module: <a href="../api/scratch/"><code>lightcone.engine.scratch</code></a>.</p>
+<p>Before anything else, <code>lc run</code> resolves a <strong>scratch root</strong> — where
+Snakemake metadata, Dask spill, and the run lock live — in this order:
+<code>LIGHTCONE_SCRATCH</code>, then <code>scratch_root</code> in
+<code>.lightcone/lightcone.yaml</code>, then the detected site's declared
+<code>scratch_root</code> (a shell expression like <code>$SCRATCH</code>), then the tempdir.</p>
+<p><code>&lt;project&gt;/.snakemake</code> is then repointed there by symlink. This matters
+on NERSC, where <code>$HOME</code> and CFS are DVS-mounted and silently swallow
+<code>flock</code>, and on a JupyterHub deployment, where a pod's <code>/tmp</code> is
+pod-local while every worker pod mounts the same NFS <code>$HOME</code>.</p>
+<p>A non-blocking <code>flock</code> on <code>&lt;scratch&gt;/.lightcone/locks/&lt;project-hash&gt;.run-lock</code>
+is held for the whole run: a second <code>lc run</code> on the same project fails
+cleanly instead of interleaving Snakemake state updates, and acquiring
+it clears any workflow lock a previously crashed run left behind.</p>
+<hr />
+<h2 id="container-layer">Container layer<a class="headerlink" href="#container-layer" title="Permanent link">&para;</a></h2>
+<p>Module: <a href="../api/container/"><code>lightcone.engine.container</code></a>.</p>
+<p>Two surfaces:</p>
+<ul>
+<li><strong>Build</strong> — <code>image_identity()</code> + <code>build_image()</code>. The 12-char sha256
+  digest covers the Containerfile, every dependency file
+  (<code>requirements.txt</code>, <code>pyproject.toml</code>, <code>poetry.lock</code>, <code>uv.lock</code>,
+  <code>environment.yml</code>, …), <strong>and the contents of every <code>COPY</code>/<code>ADD</code> source
+  the Containerfile references</strong> — files hashed directly, directories
+  walked recursively (skipping <code>.git</code>, <code>.venv</code>, <code>results/</code>, caches, …).
+  A <code>COPY .</code> therefore hashes the whole build context. Rebuilds happen
+  only when the digest changes.</li>
+<li><strong>Run-time wrap</strong> — <code>wrap_recipe()</code> produces the command string that
+  the Snakefile generator embeds into each rule.</li>
+</ul>
+<p>One identity, two spellings: <code>lc-&lt;project&gt;-&lt;digest&gt;</code> in a local image
+store (<code>compute_image_tag()</code>), <code>&lt;registry&gt;/lc-&lt;project&gt;:&lt;digest&gt;</code> in a
+registry (<code>registry_image_ref()</code>). <code>runtime_registry()</code> decides which
+one a runtime uses, so the Snakefile generator and the status walker can
+never disagree about an image identity.</p>
+<p>Runtime resolution: <code>~/.lightcone/config.yaml</code> carries
+<code>container.runtime</code>
+(<code>auto | docker | podman | podman-hpc | kubernetes | none</code>). <code>auto</code> picks
+the first usable in <code>(podman-hpc, podman, docker)</code>, skipping docker if
+its daemon is unreachable, with the detected site's declared
+<code>container_runtime</code> moved to the front. <code>none</code> is an explicit opt-out —
+recipes run on the host. When <code>auto</code> falls back to <code>none</code> silently,
+<code>lc run</code> warns that the manifest's <code>container_image</code> field will
+misrepresent what actually executed.</p>
+<p><code>kubernetes</code> is the odd one out and never comes from PATH detection: it
+is selected by the <code>jupyterhub</code> site (or pinned explicitly), the worker
+pod <em>is</em> the container so <code>wrap_recipe()</code> is a passthrough, images
+resolve to registry refs, and builds go through
+<a href="../api/cloudbuild/"><code>engine.cloudbuild</code></a> — GCP Cloud Build, authenticated
+by the pod's Workload Identity — instead of a local OCI CLI.</p>
+<p>For <code>podman-hpc</code>, the build path also runs <code>podman-hpc migrate &lt;tag&gt;</code>
+so compute nodes can read the image without a registry.</p>
+<hr />
+<h2 id="sub-analysis-tree">Sub-analysis tree<a class="headerlink" href="#sub-analysis-tree" title="Permanent link">&para;</a></h2>
+<p><code>astra.yaml</code> can declare nested <code>analyses:</code> pointing to sub-directories
+each with their own <code>astra.yaml</code>. The full tree is resolved by
+<code>astra.helpers.resolve_analysis_tree()</code> before any operation.</p>
+<p>Output paths follow the analysis layout:</p>
+<ul>
+<li>Root + inline sub-analyses: <code>results/&lt;universe&gt;/&lt;output_id&gt;/</code></li>
+<li>Path-rooted sub-analyses: <code>&lt;sub_path&gt;/results/&lt;universe&gt;/&lt;output_id&gt;/</code></li>
+</ul>
+<p><code>from:</code> references on inputs and decisions are resolved by helpers in
+<a href="../api/tree/"><code>engine.tree</code></a>. When an output id is ambiguous (the same
+name appears in multiple sub-analyses), <code>lc run</code> errors and asks for
+the qualified <code>&lt;analysis_id&gt;.&lt;output_id&gt;</code> form.</p>
+<hr />
+<h2 id="claude-code-plugin">Claude Code plugin<a class="headerlink" href="#claude-code-plugin" title="Permanent link">&para;</a></h2>
+<p>The plugin lives at <code>claude/lightcone/</code>. It is force-included into the
+installed wheel via <code>pyproject.toml</code> so <code>lc init</code> can find it whether
+you're running from source or from PyPI:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[tool.hatch.build.targets.wheel.force-include]</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="s2">"claude/lightcone"</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"lightcone/cli/claude/lightcone"</span>
+</span></code></pre></div>
+<p><code>lightcone.cli.plugin.get_plugin_source_dir()</code> does the lookup: bundled
+location first, dev location (relative to the repo root) second.</p>
+<h3 id="permission-tiers">Permission tiers<a class="headerlink" href="#permission-tiers" title="Permanent link">&para;</a></h3>
+<p><code>lc init --permissions {yolo,recommended,minimal}</code> writes a
+<code>.claude/settings.json</code> from the matching tier in
+<code>PERMISSION_TIERS</code>. <code>recommended</code> (the default) allows the agent to
+edit, write, and shell out, but blocks edits to dotfiles, scratch
+paths, and <code>git push</code>.</p>
+<h3 id="hooks">Hooks<a class="headerlink" href="#hooks" title="Permanent link">&para;</a></h3>
+<p>The plugin registers Claude Code hooks for venv activation,
+auto-validation on save, and integrity-aware "did you forget <code>lc run</code>?"
+warnings.</p>
+<hr />
+<h2 id="repository-at-a-glance">Repository at a glance<a class="headerlink" href="#repository-at-a-glance" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>src/lightcone/                  # PEP 420 namespace package — NO __init__.py
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>├── cli/                        # Click surface
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>│   ├── __init__.py             # exposes main()
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>│   ├── commands.py             # init, run, status, verify, build, export
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>│   └── plugin.py               # plugin source-dir discovery
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>├── engine/                     # execution substrate
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>│   ├── manifest.py             # write_manifest, sha256_dir, code_version
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>│   ├── snakefile.py            # generate .lightcone/Snakefile from astra.yaml
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>│   ├── container.py            # image identity, local build + recipe wrap
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>│   ├── cloudbuild.py           # GCP Cloud Build backend (no local OCI runtime)
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>│   ├── dask_cluster.py         # cluster lifecycle (external/Gateway/SLURM/local)
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>│   ├── scratch.py              # scratch root, per-run dirs, run lock
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>│   ├── status.py               # manifest-driven status walker (no Snakemake)
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>│   ├── verify.py               # recompute hashes, walk the chain
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>│   ├── tree.py                 # sub-analysis tree helpers
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>│   ├── validation.py           # post-recipe output sanity checks
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>│   ├── wrroc.py                # Workflow Run RO-Crate exporter
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>│   └── site_registry.py        # known-site defaults; drives scratch + runtime
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>└── eval/                       # evaluation harness for the agent loop
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>    ├── cli.py harness.py sandbox.py graders.py build.py report.py models.py
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>src/snakemake_executor_plugin_dask/   # Snakemake executor → dask.distributed
+</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>
+</span><span id="__span-4-24"><a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a>claude/lightcone/               # Claude Code plugin (force-included into the wheel)
+</span><span id="__span-4-25"><a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a>├── skills/                     # lc-new, lc-from-code, lc-from-paper,
+</span><span id="__span-4-26"><a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>│                                # lc-feedback, ralph (+ bundle siblings);
+</span><span id="__span-4-27"><a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a>│                                # reference skills: astra, lc-cli
+</span><span id="__span-4-28"><a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>├── agents/                     # lc-extractor (literature subagent)
+</span><span id="__span-4-29"><a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>├── templates/                  # project CLAUDE.md template
+</span><span id="__span-4-30"><a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>└── scripts/                    # session hooks (bash): venv, validate-on-save, session-start primer
+</span><span id="__span-4-31"><a id="__codelineno-4-31" name="__codelineno-4-31" href="#__codelineno-4-31"></a>
+</span><span id="__span-4-32"><a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a>tests/                          # pytest, mirrors src/
+</span><span id="__span-4-33"><a id="__codelineno-4-33" name="__codelineno-4-33" href="#__codelineno-4-33"></a>pyproject.toml                  # hatchling + hatch-vcs; ASTRA + Snakemake as deps
+</span></code></pre></div>
+<p>The <code>lightcone.*</code> namespace is a PEP 420 implicit namespace package.
+<strong>Do not add <code>src/lightcone/__init__.py</code></strong> — that would turn it into a
+regular package and break coexistence with future sibling distributions
+(<code>lightcone-ui</code>, etc.). Any new <code>lightcone-*</code> package must live under
+<code>src/lightcone/&lt;name&gt;/</code> and ship only its own subpackage.</p>
+<hr />
+<h2 id="execution-flow">Execution flow<a class="headerlink" href="#execution-flow" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>astra.yaml ── snakefile.generate() ──► .lightcone/Snakefile + .lightcone/snakefile-config.json
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>                                              │
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>                                       snakemake -s … -d … --executor dask
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>                                              │
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>                       ┌──────────────────────┼──────────────────────┐
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>                       │                      │                      │
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>                  DAG resolution         per-rule run:           dask scheduler
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>                  (Snakemake)            shell(recipe)           (LocalCluster /
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>                                         + write_manifest()       SLURM-srun /
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>                                                                  Dask Gateway /
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>                                                                  external)
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>                       │
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>                       └─► results/&lt;u&gt;/&lt;o&gt;/data
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>                           results/&lt;u&gt;/&lt;o&gt;/.lightcone-manifest.json
+</span></code></pre></div>
+<p>The Gateway branch differs in where the container comes from: the worker
+pod is started <em>from</em> the project image, so the recipe is not wrapped —
+<code>lc run</code> builds the image (Cloud Build), creates the cluster with it, and
+the pod executes the recipe natively.</p>
+<p>What Snakemake owns (we don't write it): DAG construction, topological
+execution, parallelism, dry-run, locking, retry, log capture,
+per-rule resources, <code>--rerun-triggers</code> for staleness detection.</p>
+<p>What we own: a Snakefile generator, the manifest layer (write/read/verify),
+a status walker, a verify routine, the Dask cluster manager, the
+container-runtime layer, and a Snakemake executor plugin that submits
+each rule to a Dask scheduler.</p>
+<hr />
+<h2 id="configuration-files">Configuration files<a class="headerlink" href="#configuration-files" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Scope</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>astra.yaml</code></td>
+<td>Project</td>
+<td>The spec. Inputs, outputs, recipes, decisions, sub-analyses.</td>
+</tr>
+<tr>
+<td><code>.lightcone/Snakefile</code></td>
+<td>Project (generated)</td>
+<td>Auto-generated by <code>lc run</code>. Don't edit.</td>
+</tr>
+<tr>
+<td><code>.lightcone/snakefile-config.json</code></td>
+<td>Project (generated)</td>
+<td>Per-<code>(rule, universe)</code> config.</td>
+</tr>
+<tr>
+<td><code>.lightcone/lightcone.yaml</code></td>
+<td>Project</td>
+<td>Written by <code>lc init</code> (<code>target: local</code>, plus <code>scratch_root</code> when <code>--scratch</code> is passed). <code>scratch_root</code> is read by <a href="../api/scratch/"><code>engine.scratch</code></a> on every <code>lc run</code>; <code>target</code> is inert.</td>
+</tr>
+<tr>
+<td><code>~/.lightcone/config.yaml</code></td>
+<td>User</td>
+<td><code>container.runtime</code>. Auto-created with <code>auto</code> on the first <code>lc</code> invocation.</td>
+</tr>
+<tr>
+<td><code>.claude/settings.json</code></td>
+<td>Project</td>
+<td>Claude Code permissions.</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>dagster.yaml</code> and <code>~/.lightcone/targets/*.yaml</code> files referenced in
+older docs are no longer used — historical residue.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      &copy; 2026 Lightcone Research
+    </div>
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["navigation.tabs","navigation.sections","navigation.top","search.highlight","content.code.copy"],"search":"../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":{"provider":"mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.e886cdf1.min.js"></script>
+      
+    
+  </body>
+</html>
