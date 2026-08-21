@@ -111,30 +111,22 @@ class TestComputeImageTag:
         tag2 = compute_image_tag("test", cf, project)
         assert tag1 != tag2
 
-    def test_changes_with_copied_directory(self, project: Path) -> None:
+    def test_directory_copy_source_is_rejected(self, project: Path) -> None:
+        """The image is an environment, not a code snapshot: directory
+        COPY sources (COPY src/, COPY . .) raise with guidance instead
+        of silently baking in a copy nothing executes."""
         cf = project / "Containerfile"
         cf.write_text("FROM python:3.12-slim\nCOPY src/ /app/src/\n")
         (project / "src").mkdir()
         (project / "src" / "a.py").write_text("a = 1\n")
-        tag1 = compute_image_tag("test", cf, project)
-        (project / "src" / "b.py").write_text("b = 2\n")
-        tag2 = compute_image_tag("test", cf, project)
-        assert tag1 != tag2
+        with pytest.raises(ContainerBuildError, match="directory"):
+            compute_image_tag("test", cf, project)
 
-    def test_copy_dir_ignores_results(self, project: Path) -> None:
+    def test_copy_dot_is_rejected(self, project: Path) -> None:
         cf = project / "Containerfile"
         cf.write_text("FROM python:3.12-slim\nCOPY . /app/\n")
-        (project / "src").mkdir()
-        (project / "src" / "a.py").write_text("a = 1\n")
-        tag1 = compute_image_tag("test", cf, project)
-        # Touching results/ or .lightcone/ must not invalidate the tag —
-        # they aren't in the build context for any sane Containerfile.
-        (project / "results").mkdir()
-        (project / "results" / "out.txt").write_text("data\n")
-        (project / ".lightcone").mkdir()
-        (project / ".lightcone" / "Snakefile").write_text("rule x:\n")
-        tag2 = compute_image_tag("test", cf, project)
-        assert tag1 == tag2
+        with pytest.raises(ContainerBuildError, match="not supported"):
+            compute_image_tag("test", cf, project)
 
     def test_skips_from_stage_copy(self, project: Path) -> None:
         cf = project / "Containerfile"
@@ -312,37 +304,13 @@ class TestBuildImage:
         assert "Containerfile" in captured["files"]
         assert "app.py" in captured["files"]
 
-    def test_build_stages_copy_dot_with_excludes(self, project: Path) -> None:
-        """``COPY .`` mirrors the project but skips excluded subtrees."""
+    def test_build_rejects_copy_dot(self, project: Path) -> None:
+        """A ``COPY . .`` Containerfile fails the build with guidance
+        before any runtime is invoked."""
         cf = project / "Containerfile"
         cf.write_text("FROM python:3.12-slim\nCOPY . /app/\n")
-        (project / "src").mkdir()
-        (project / "src" / "main.py").write_text("x = 1\n")
-        (project / ".git").mkdir()
-        (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-        (project / "results").mkdir()
-        (project / "results" / "out.txt").write_text("data\n")
-
-        captured: dict = {}
-
-        def fake_run(cmd, **kwargs):
-            ctx = Path(cmd[-1])
-            captured["files"] = sorted(
-                p.relative_to(ctx).as_posix()
-                for p in ctx.rglob("*")
-                if p.is_file()
-            )
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch(
-            "lightcone.engine.container.subprocess.run", side_effect=fake_run
-        ):
+        with pytest.raises(ContainerBuildError, match="environment"):
             build_image("lc-test", cf, project, runtime="podman")
-
-        assert "src/main.py" in captured["files"]
-        assert "Containerfile" in captured["files"]
-        assert not any(f.startswith(".git/") for f in captured["files"])
-        assert not any(f.startswith("results/") for f in captured["files"])
 
     @patch("lightcone.engine.container.subprocess.run")
     def test_build_cleans_stage_on_failure(
@@ -708,3 +676,75 @@ class TestIsContainerfile:
 
     def test_missing_file(self, project: Path) -> None:
         assert is_containerfile("python:3.12-slim", project) is False
+
+
+# ---- kubernetes runtime ---------------------------------------------------
+
+
+class TestKubernetesRuntime:
+    def test_wrap_recipe_is_passthrough(self) -> None:
+        """The worker pod already runs the image — wrapping would
+        containerize twice."""
+        from lightcone.engine.container import KUBERNETES
+
+        wrapped = wrap_recipe(
+            "python run.py", image="reg/lc-p:abc", runtime=KUBERNETES
+        )
+        assert wrapped == "python run.py"
+
+    def test_registry_ref_shares_identity_with_local_tag(
+        self, project: Path
+    ) -> None:
+        from lightcone.engine.container import registry_image_ref
+
+        tag = compute_image_tag("proj", project / "Containerfile", project)
+        ref = registry_image_ref(
+            "proj", project / "Containerfile", project, registry="reg.io/ns/repo"
+        )
+        digest = tag.rsplit("-", 1)[1]
+        assert ref == f"reg.io/ns/repo/lc-proj:{digest}"
+
+    def test_resolve_image_uses_registry_when_given(self, project: Path) -> None:
+        ref = resolve_image_for_run(
+            "Containerfile",
+            project_path=project,
+            project_name="proj",
+            registry="reg.io/ns/repo",
+        )
+        assert ref is not None and ref.startswith("reg.io/ns/repo/lc-proj:")
+
+    def test_resolve_prebuilt_ignores_registry(self, project: Path) -> None:
+        assert (
+            resolve_image_for_run(
+                "python:3.12-slim",
+                project_path=project,
+                project_name="proj",
+                registry="reg.io/ns/repo",
+            )
+            == "python:3.12-slim"
+        )
+
+    def test_detect_runtime_site_kubernetes_skips_path_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A gateway deployment has no OCI binary to find — the site
+        preference short-circuits detection entirely."""
+        monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dg")
+        monkeypatch.setattr(
+            "lightcone.engine.container.shutil.which",
+            lambda _: pytest.fail("no PATH probing on kubernetes sites"),
+        )
+        assert detect_runtime() == "kubernetes"
+
+    def test_load_runtime_explicit_kubernetes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        cfg_dir = tmp_path / ".lightcone"
+        cfg_dir.mkdir()
+        (cfg_dir / "config.yaml").write_text(
+            yaml.safe_dump({"container": {"runtime": "kubernetes"}})
+        )
+        choice = load_runtime()
+        assert choice.runtime == "kubernetes"
+        assert choice.explicit is True

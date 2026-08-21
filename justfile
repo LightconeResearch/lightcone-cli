@@ -98,14 +98,6 @@ clean:
 
 # ── Evals ──────────────────────────────────────────────────────────────────────
 
-# Sync the eval optional dependency
-evals-install:
-    uv sync --extra eval
-
-# Run all skill evals
-evals: evals-install
-    uv run lc eval run
-
-# Run evals for a specific skill
-evals-skill skill: evals-install
-    uv run lc eval run --skill {{ skill }}
+# The eval is a plain GitHub Actions workflow: .github/workflows/eval.yml
+# scaffolds a project from evals/tasks/, runs Claude Code with
+# evals/prompt.md, and checks the results with lc status + astra validate.

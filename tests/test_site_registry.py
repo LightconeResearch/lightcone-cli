@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -95,3 +96,60 @@ class TestDetectCurrentSite:
         # returning an empty HostSite rather than None.
         fake_hostname("generic-laptop")
         assert detect_current_site().get("scratch_root", "/tmp") == "/tmp"
+
+
+# ---- env-marker detection (JupyterHub deployments) ------------------------
+
+
+def test_detect_site_from_env_matches_jupyterhub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine.site_registry import detect_site_from_env
+
+    monkeypatch.delenv("DASK_GATEWAY__ADDRESS", raising=False)
+    assert detect_site_from_env() is None
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    assert detect_site_from_env() == "jupyterhub"
+
+
+def test_env_markers_win_over_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pod's hostname is noise; the injected env is the signal."""
+    from lightcone.engine.site_registry import detect_current_site
+
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    monkeypatch.setattr(
+        "lightcone.engine.site_registry.socket.gethostname",
+        lambda: "login29.chn.perlmutter.nersc.gov",
+    )
+    site = detect_current_site()
+    assert site.key == "jupyterhub"
+    assert site.get("container_runtime") == "kubernetes"
+    assert site.get("scratch_root") == "$HOME"
+
+
+def test_no_markers_falls_back_to_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine.site_registry import detect_current_site
+
+    monkeypatch.delenv("DASK_GATEWAY__ADDRESS", raising=False)
+    monkeypatch.setattr(
+        "lightcone.engine.site_registry.socket.gethostname",
+        lambda: "login29.chn.perlmutter.nersc.gov",
+    )
+    assert detect_current_site().key == "perlmutter"
+
+
+def test_hub_scratch_resolves_to_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No separate scratch space on the hub — home IS the shared volume."""
+    import os
+
+    from lightcone.engine.scratch import resolve_scratch_root
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.delenv("LIGHTCONE_SCRATCH", raising=False)
+    monkeypatch.setenv("DASK_GATEWAY__ADDRESS", "http://proxy/services/dask-gateway")
+    assert resolve_scratch_root(project) == Path(os.environ["HOME"])

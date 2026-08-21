@@ -1,5 +1,10 @@
 name: Eval
 
+# Minimal agentic eval: scaffold a project from the eval seed on the
+# runner, let Claude Code (with the astra plugin) build it using the
+# branch's lc/astra, then check the results with astra validate and
+# lc status.
+
 on:
   pull_request:
   workflow_dispatch:
@@ -15,16 +20,14 @@ permissions:
 
 jobs:
   eval:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    # Step-level timeout on the agent step (below) is what actually
+    # bounds the run: a job-level timeout would cancel the always()
+    # report/comment/artifact steps along with it.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Configure git credentials for private ASTRA repo
-        run: git config --local url."https://x-access-token:${{ secrets.ASP_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
@@ -33,30 +36,122 @@ jobs:
           enable-cache: true
           activate-environment: true
 
-      - name: Install dependencies
-        run: uv sync --group eval
+      - name: Install lightcone-cli (branch under test)
+        run: |
+          uv sync
+          # Scientific deps the task's analysis scripts will need — the
+          # agent can add more with `uv pip install`
+          uv pip install numpy scipy matplotlib
 
-      - name: Run eval
-        id: eval
+      - name: Install Claude Code + astra plugin
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          # Skip first-run onboarding in headless mode
+          echo '{"hasCompletedOnboarding": true}' > "$HOME/.claude.json"
+          claude plugin marketplace add LightconeResearch/agent-skills
+          claude plugin install astra@lightcone-research
+
+      - name: Set up eval project
+        run: |
+          # Global git identity so any repo the agent commits in works
+          # (ephemeral runner — nothing to pollute)
+          git config --global user.name Eval
+          git config --global user.email eval@lightcone
+          project="$RUNNER_TEMP/eval-project"
+          echo "PROJECT=$project" >> "$GITHUB_ENV"
+          lc init "$project"
+          # Overlay the task seed (astra.yaml, data/) on the scaffold
+          cp -r evals/tasks/snae/. "$project"/
+          cd "$project"
+          # Regenerate baseline.yaml from the task astra.yaml's defaults —
+          # the scaffolded one matches the boilerplate spec, not the task's
+          rm -f universes/baseline.yaml
+          astra universe generate -n baseline \
+            -d 'Default configuration using standard practices'
+
+      - name: Run Claude Code
+        id: agent
+        timeout-minutes: 15
+        working-directory: ${{ env.PROJECT }}
         env:
-          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        shell: bash
         run: |
           set -o pipefail
-          lc eval run evals/build.yaml --num-trials 1 --concurrency 1 2>&1 | tee eval-output.txt
+          # Transcript goes outside the project so the agent's git
+          # status stays clean; uploaded via the agent-trace artifact
+          claude -p "$(cat "$GITHUB_WORKSPACE/evals/prompt.md")" \
+            --output-format stream-json --verbose \
+            --dangerously-skip-permissions \
+            --max-turns 200 \
+            | tee "$RUNNER_TEMP/claude-transcript.jsonl"
 
-          # Find the results JSON and extract key metrics
-          results_json=$(find eval-results -name results.json -type f | head -1)
-          python3 .github/scripts/parse_eval_results.py "$results_json"
+      - name: Check results
+        id: check
+        working-directory: ${{ env.PROJECT }}
+        run: |
+          astra validate astra.yaml
+          lc status --universe baseline
+          # Fail unless every materializable output is ok
+          lc status --json | jq -e \
+            '[.universes[].outputs[] | select(.status != "alias")]
+             | length > 0 and all(.status == "ok")'
 
-      - name: Upload results artifact
-        id: upload
+      - name: Build report
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: eval-results
-          path: eval-results/
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          transcript="$RUNNER_TEMP/claude-transcript.jsonl"
+          if [ -s "$transcript" ]; then
+            python3 .github/scripts/trace_digest.py \
+              "$transcript" "$RUNNER_TEMP/agent-trace.md" > "$RUNNER_TEMP/metrics.env"
+            source "$RUNNER_TEMP/metrics.env"
+            # Claude's read of where the agent struggled — best-effort,
+            # the report still posts if this fails or times out
+            timeout 180 claude -p "$(cat evals/trace-analysis-prompt.md)" \
+              < "$RUNNER_TEMP/agent-trace.md" \
+              > "$RUNNER_TEMP/pain-points.md" \
+              || echo "_Trace analysis unavailable._" > "$RUNNER_TEMP/pain-points.md"
+          fi
+
+          icon="✅"
+          [ "${{ steps.check.outcome }}" = "success" ] || icon="❌"
+          {
+            echo "## $icon Eval"
+            echo ""
+            echo "<!-- lightcone-eval-report -->"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Outputs check | ${{ steps.check.outcome }} |"
+            echo "| Agent run | ${{ steps.agent.outcome }} |"
+            echo "| Turns | ${turns:-?} |"
+            echo "| Tool calls | ${tool_calls:-?} |"
+            echo "| Cost | \$${cost:-?} |"
+            echo "| Agent wall time | ${duration:-?} |"
+            echo "| Model | ${model:-?} |"
+            echo ""
+            echo '<details><summary>lc status</summary>'
+            echo ""
+            echo '```'
+            (cd "$PROJECT" && lc status --universe baseline) || echo "unavailable"
+            echo '```'
+            echo ""
+            echo '</details>'
+            echo ""
+            if [ -s "$RUNNER_TEMP/pain-points.md" ]; then
+              echo '<details><summary>Confusion &amp; pain points (Claude analysis)</summary>'
+              echo ""
+              cat "$RUNNER_TEMP/pain-points.md"
+              echo ""
+              echo '</details>'
+              echo ""
+            fi
+            echo "Full trace: \`agent-trace\` artifact on [this run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+          } > "$RUNNER_TEMP/comment.md"
+          cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Comment on PR
         if: always() && github.event_name == 'pull_request'
@@ -64,58 +159,14 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const score = '${{ steps.eval.outputs.score }}' || 'N/A';
-            const cost = '${{ steps.eval.outputs.cost }}' || 'N/A';
-            const turns = '${{ steps.eval.outputs.turns }}' || 'N/A';
-            const duration = '${{ steps.eval.outputs.duration }}' || 'N/A';
-            const buildComplete = '${{ steps.eval.outputs.build_complete }}';
-            const lightconeVersion = '${{ steps.eval.outputs.lightcone_version }}' || 'unknown';
-            const lightconeCommit = '${{ steps.eval.outputs.lightcone_commit }}' || 'unknown';
-            const outcome = '${{ steps.eval.outcome }}';
-            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-            const artifactId = '${{ steps.upload.outputs.artifact-id }}';
-            const artifactUrl = artifactId ? `${runUrl}/artifacts/${artifactId}` : '';
-
-            let graders = '';
-            try { graders = fs.readFileSync('grader-details.txt', 'utf8'); } catch {}
-
-            const icon = outcome === 'success' ? '✅' : '❌';
-            const body = [
-              `## ${icon} Eval Results`,
-              '',
-              `| Metric | Value |`,
-              `|--------|-------|`,
-              `| Score | **${score}** |`,
-              `| Build complete | ${buildComplete === 'True' ? '✅' : '❌'} |`,
-              `| Cost | $${cost} |`,
-              `| Turns | ${turns} |`,
-              `| Duration | ${duration}s |`,
-              `| lightcone-cli | \`${lightconeVersion}\` (\`${lightconeCommit}\`) |`,
-              artifactUrl ? `| Results | [Download](${artifactUrl}) |` : '',
-              '',
-              '### Graders',
-              graders || '_No grader results_',
-              '',
-              `<details><summary>Full output</summary>`,
-              '',
-              '```',
-              fs.readFileSync('eval-output.txt', 'utf8').slice(-3000),
-              '```',
-              '</details>',
-            ].join('\n');
-
-            // Find and update existing comment, or create new one
+            const body = fs.readFileSync(`${process.env.RUNNER_TEMP}/comment.md`, 'utf8');
+            const marker = '<!-- lightcone-eval-report -->';
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
             });
-            const marker = '## ✅ Eval Results';
-            const marker2 = '## ❌ Eval Results';
-            const existing = comments.find(c =>
-              c.body.startsWith(marker) || c.body.startsWith(marker2)
-            );
-
+            const existing = comments.find(c => c.body.includes(marker));
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -131,3 +182,28 @@ jobs:
                 body,
               });
             }
+
+      - name: Upload agent trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-trace
+          path: |
+            ${{ runner.temp }}/claude-transcript.jsonl
+            ${{ runner.temp }}/agent-trace.md
+            ${{ runner.temp }}/pain-points.md
+          if-no-files-found: warn
+
+      - name: Upload eval project
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-project
+          # include-hidden-files keeps the .lightcone-manifest.json
+          # provenance files; the venv and snakemake scratch are excluded
+          path: |
+            ${{ env.PROJECT }}
+            !${{ env.PROJECT }}/.venv/**
+            !${{ env.PROJECT }}/.snakemake/**
+          include-hidden-files: true
+          if-no-files-found: warn

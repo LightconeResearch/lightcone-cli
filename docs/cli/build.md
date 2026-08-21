@@ -5,7 +5,7 @@ images so `lc run` can use `--pull=never`).
 
 ## Synopsis
 
-```
+```text
 lc build [OPTIONS]
 ```
 
@@ -14,7 +14,7 @@ lc build [OPTIONS]
 | Option | Default | Effect |
 |--------|---------|--------|
 | `--force` | off | Rebuild / re-pull even if the tag already exists locally. |
-| `--runtime {docker,podman,podman-hpc}` | resolved from `~/.lightcone/config.yaml` | Override the runtime for this build. |
+| `--runtime {docker,podman,podman-hpc,kubernetes}` | resolved from `~/.lightcone/config.yaml` | Override the runtime for this build. |
 
 ## What it does
 
@@ -29,13 +29,23 @@ sub-analysis, or recipe-level):
   `--pull=never` to the runtime, sidestepping `unqualified-search-registries`
   resolution issues with content-addressed tags.
 
+On the `kubernetes` runtime (a lightcone JupyterHub deployment, where
+no local OCI runtime exists) the same command builds through the
+deployment's **GCP Cloud Build** service instead: the staged build
+context is uploaded to the deployment's build bucket and the resulting
+image is pushed as `$LIGHTCONE_REGISTRY/lc-<project>:<sha256[:12]>` —
+the same content-addressed identity, so an unchanged environment is a
+single registry check and no build at all. Pre-built registry images
+are left alone (worker pods pull them directly). Auth is the pod's
+Workload Identity; nothing to configure.
+
 If the runtime is `none` (either by config or because `auto` couldn't
 find one), `lc build` prints a friendly note and exits 0. There is
 nothing to build.
 
 ## Tag computation
 
-```
+```text
 lc-<sanitized-project-name>-<sha256[:12]>
 ```
 
