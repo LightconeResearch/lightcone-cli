@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -556,8 +557,12 @@ def test_required_true_makes_the_missing_filter_loud_not_silent(
 
     added = _shell_git(repo, no_annex_shell, "add", "data/catalog.fits")
 
+    # The facts, not git's wording: Linux git reports the failed handshake
+    # and then `fatal: <path>: clean filter 'annex' failed`, while macOS
+    # git dies on the pkt-line read with `fatal: the remote end hung up
+    # unexpectedly`. Both refuse, which is the whole claim.
     assert added.returncode != 0
-    assert "clean filter 'annex' failed" in added.stderr
+    assert "annex" in added.stderr
     staged = _shell_git(repo, no_annex_shell, "diff", "--cached", "--name-only")
     assert staged.stdout.strip() == ""
 
@@ -594,6 +599,12 @@ def test_any_spelling_git_reads_as_true_is_not_reported_as_drift(
     assert dataset.annex_filter_required(repo)
 
 
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS git aborts the filter handshake outright (exit 128, "
+    "'the remote end hung up unexpectedly'), so the silent-passthrough "
+    "hazard recorded here is the Linux behaviour",
+)
 def test_stock_plumbing_without_required_stages_raw_bytes_silently(
     repo: Path, no_annex_shell: dict[str, str]
 ) -> None:
@@ -602,7 +613,12 @@ def test_stock_plumbing_without_required_stages_raw_bytes_silently(
     prints an error, *exits 0*, and stages the raw bytes into git
     history — a 2 GB dataset in git proper, on every clone, forever.
     If this ever starts failing, git changed the behavior and the
-    `required=true` net is worth re-examining."""
+    `required=true` net is worth re-examining.
+
+    Linux-only, and that asymmetry is the point rather than a gap: macOS
+    git happens to refuse the same situation on its own, so there the
+    flag changes nothing — but a platform accident is not a guarantee,
+    and the flag is what makes the refusal one on every host."""
     (repo / "data" / "catalog.fits").write_bytes(b"\x00" * 4096)
 
     added = _shell_git(repo, no_annex_shell, "add", "data/catalog.fits")

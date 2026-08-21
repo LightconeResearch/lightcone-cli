@@ -563,6 +563,17 @@ dispatches git-annex stays `PATH` resolution, which is git-annex's own
 design and git-lfs's too (it writes `filter.lfs.required = true` beside
 `PATH`-relative drivers and has never baked a path).
 
+**The hazard is Linux's, the guarantee is ours.** The exits-0-and-stages-raw-bytes
+behaviour is what Linux git does; macOS git aborts the same handshake
+outright (exit 128, `fatal: the remote end hung up unexpectedly`) and
+would have been safe without the flag — found by CI, which is why the
+suite runs on both. So `test_stock_plumbing_without_required_stages_raw_bytes_silently`
+is Linux-only by `skipif`, and the loud-refusal test asserts the facts
+(nonzero exit, nothing staged) rather than either platform's wording.
+Do not read macOS's accident as a reason to scope the flag: an
+implementation detail that can change on the next git release is not a
+guarantee, and Linux is where the venues are.
+
 The rule the neighbours agree on is **route through a filter ⇒ set
 `required`**, and both halves were measured. git-lfs routes and sets
 it. `datalad create` does *neither*: no `required`, and no
