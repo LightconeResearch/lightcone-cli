@@ -561,6 +561,23 @@ def test_status_headers_answer_mode_image_and_sandbox(
     assert "crate:   up to date with the outputs" in output
 
 
+def test_status_header_prose_is_not_markup(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The crate line names `[project].license`, and rich would read the
+    brackets as a style tag and swallow the one word that names the fix."""
+    from lightcone.engine.materialize import StatusReport
+
+    report = _report()
+    assert isinstance(report, StatusReport)
+    report.crate = "not maintained — declare [project].license to enable it"
+    _status_stub(monkeypatch, report)
+
+    output = runner.invoke(main, ["status"]).output
+
+    assert "declare [project].license to enable it" in output
+
+
 def test_build_on_a_direct_project_is_an_explanatory_no_op(
     runner: CliRunner, project: Path
 ) -> None:
