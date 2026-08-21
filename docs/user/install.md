@@ -7,9 +7,7 @@ ships with `lc`.
 
 !!! note "Supported platforms"
     Linux (glibc 2.34+, x86_64 or aarch64) and macOS (14+ on Apple
-    silicon, 15+ on Intel). git-annex ships as a binary wheel inside
-    the install, and its platforms are the floor: below it, the install
-    fails cleanly rather than half-working. On Windows, use WSL.
+    silicon, 15+ on Intel). On Windows, use WSL.
 
 ## 1. uv and git
 
