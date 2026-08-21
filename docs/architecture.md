@@ -104,6 +104,14 @@ git carries pointers and history, the annex carries bytes, and
 default; `data/` and `results/` opt out). A researcher only ever types
 ordinary `git add` / `git commit`.
 
+That ordinary `git add` dispatches git-annex from the *researcher's*
+`PATH`, and a shell that cannot resolve it silently stages raw bytes
+into git history — so `lc init` also owns the **annex plumbing**:
+`filter.annex.required=true` always (the same situation becomes git's
+own hard failure, remedied by `lc init`), and the filter plus hooks
+pinned to the engine's bundled git-annex by absolute path exactly
+where the shell's `PATH` resolves none.
+
 Each output is committed with a **run record** — a `[DATALAD RUNCMD]`
 commit message whose `cmd` reconstructs the engine
 (`uv run --no-project --with lightcone-cli==<v>`) and re-executes the

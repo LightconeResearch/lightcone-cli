@@ -20,6 +20,9 @@ Source: `src/lightcone/engine/dataset.py` (+
 | `last_writer(root, dir)` | Who last touched an output's directory — the foreign-write question. Answers "cannot say" as empty, never an error. |
 | `require_committer(root)` | Refuses a repository with no git identity, before any recipe spends time. Asked as `git var`, the question a commit itself asks. |
 | `dataset_id(root)` | The DataLad dataset UUID, read via `git config -f`. |
+| `converge_annex_plumbing(root, pin)` | Write the plumbing the researcher's own `git add` dispatches git-annex through: `required=true` always, filter drivers + four hooks in stock (`PATH`-resolved) or pinned (absolute-path) form. |
+| `annex_plumbing_current(root, *, stock_ok)` | The no-write drift probe for the same, `lc init --check`'s question. |
+| `pinned_annex(root)` / `annex_runs(path)` | The recorded pin, and whether it still runs — the repair rule's two reads. |
 
 ## What must stay true
 
@@ -49,6 +52,14 @@ Source: `src/lightcone/engine/dataset.py` (+
 - **Committing an archive or dot-named file needs `annex.dotfiles`** —
   git-annex routes dotfiles to git whatever `largefiles` says, and
   without the flag an image archive lands as a git blob, silently.
+- **`filter.annex.required=true` is the storage policy's safety net.**
+  Without it, a `git add` whose shell cannot resolve git-annex prints
+  an error, exits 0, and stages the raw bytes into git history —
+  measured, and pinned by
+  `test_stock_plumbing_without_required_stages_raw_bytes_silently`.
+  The stock filter/hook spellings are mirrored from what
+  `git annex init` itself writes, never invented, and a hook without
+  git-annex's own marker comment is the user's — never rewritten.
 
 ## Tests
 

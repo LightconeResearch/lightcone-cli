@@ -10,6 +10,7 @@ restating what the code already believes.
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -499,6 +500,147 @@ def test_the_worker_and_the_shim_are_never_console_scripts() -> None:
         assert entry.value.startswith("lightcone.cli") or entry.value in theirs, entry
 
 
+# ---- the annex plumbing, against a real shell -------------------------------
+
+
+def _researcher_shell(tmp_path: Path) -> dict[str, str] | None:
+    """The environment a researcher's own `git add` runs in when nothing
+    put git-annex on their PATH — the uvx case. The system directories
+    carry git and the usual utilities; whether they also carry a
+    git-annex is the host's business, and where they do there is nothing
+    for these tests to prove. Probed by listing the directories rather
+    than `shutil.which`, which the autouse `tools` fixture narrows for
+    exactly the three tools this asks about."""
+    dirs = [Path("/usr/bin"), Path("/bin")]
+    if not any((d / "git").is_file() for d in dirs):
+        return None
+    if any((d / "git-annex").exists() for d in dirs):
+        return None
+    return {"PATH": ":".join(str(d) for d in dirs), "HOME": str(tmp_path)}
+
+
+def _shell_git(repo: Path, env: dict[str, str], *argv: str) -> subprocess.CompletedProcess[str]:
+    """Run git exactly as that shell would — not through `project._run`,
+    whose environment is lc's own and always resolves the bundled annex."""
+    git = next(p for d in env["PATH"].split(":") if (p := Path(d) / "git").is_file())
+    return subprocess.run(
+        [str(git), *argv], cwd=repo, env=env, capture_output=True, text=True, check=False
+    )
+
+
+@pytest.fixture
+def no_annex_shell(tmp_path: Path) -> dict[str, str]:
+    env = _researcher_shell(tmp_path)
+    if env is None:
+        pytest.skip("the system PATH itself resolves git-annex (or lacks git)")
+    return env
+
+
+def test_pinned_plumbing_annexes_content_with_no_git_annex_on_path(
+    repo: Path, no_annex_shell: dict[str, str]
+) -> None:
+    """The pin's whole claim, measured: with the filter and hooks pinned
+    to the engine's git-annex by absolute path, the ordinary `git add`
+    the docs promise stages an annex pointer — on a shell that could not
+    resolve git-annex at all."""
+    annex = project.bundled_annex()
+    assert annex is not None, "the test environment carries the git-annex wheel"
+    dataset.converge_annex_plumbing(repo, annex)
+    (repo / "data" / "catalog.fits").write_bytes(b"\x00" * 4096)
+
+    added = _shell_git(repo, no_annex_shell, "add", "data/catalog.fits")
+    assert added.returncode == 0, added.stderr
+    staged = _shell_git(repo, no_annex_shell, "cat-file", "-p", ":data/catalog.fits")
+    assert staged.stdout.startswith("/annex/objects/"), "a pointer, not the bytes"
+
+    # The commit exercises the pinned pre-commit hook the same way.
+    committed = _shell_git(repo, no_annex_shell, "commit", "-m", "input data")
+    assert committed.returncode == 0, committed.stderr
+    assert _annexed(repo, repo / "data" / "catalog.fits")
+
+
+def test_required_true_makes_the_missing_filter_loud_not_silent(
+    repo: Path, no_annex_shell: dict[str, str]
+) -> None:
+    """The safety net on its own: stock plumbing plus `required=true`,
+    and a shell without git-annex gets git's own hard refusal — nothing
+    staged, exit nonzero — instead of raw bytes in git history. `lc init`
+    is the remedy; it pins the plumbing on exactly such a host."""
+    dataset._git(["config", "filter.annex.required", "true"], cwd=repo)
+    (repo / "data" / "catalog.fits").write_bytes(b"\x00" * 4096)
+
+    added = _shell_git(repo, no_annex_shell, "add", "data/catalog.fits")
+
+    assert added.returncode != 0
+    assert "clean filter 'annex' failed" in added.stderr
+    staged = _shell_git(repo, no_annex_shell, "diff", "--cached", "--name-only")
+    assert staged.stdout.strip() == ""
+
+
+def test_stock_plumbing_without_required_stages_raw_bytes_silently(
+    repo: Path, no_annex_shell: dict[str, str]
+) -> None:
+    """The hazard the plumbing convergence exists for, recorded as
+    measured: as `git annex init` leaves a repository, a shell without
+    git-annex prints an error, *exits 0*, and stages the raw bytes into
+    git history — a 2 GB dataset in git proper, on every clone, forever.
+    If this ever starts failing, git changed the behavior and the
+    `required=true` net is worth re-examining."""
+    (repo / "data" / "catalog.fits").write_bytes(b"\x00" * 4096)
+
+    added = _shell_git(repo, no_annex_shell, "add", "data/catalog.fits")
+
+    assert added.returncode == 0
+    assert "git-annex: command not found" in added.stderr
+    staged = _shell_git(repo, no_annex_shell, "cat-file", "-p", ":data/catalog.fits")
+    assert not staged.stdout.startswith("/annex/objects/")
+
+
+def test_stock_spellings_mirror_what_git_annex_itself_writes(repo: Path) -> None:
+    """Mirrored, never invented: with only the `required` flag added to
+    what `git annex init` wrote, the plumbing is already current — so an
+    upstream change to the stock filter or hook spelling fails here,
+    rather than reporting every existing project repaired forever."""
+    dataset._git(["config", "filter.annex.required", "true"], cwd=repo)
+    assert dataset.annex_plumbing_current(repo, stock_ok=True)
+    # And stock is not current where the shell cannot resolve it.
+    assert not dataset.annex_plumbing_current(repo, stock_ok=False)
+
+
+def test_the_pin_is_recorded_and_its_health_probed(repo: Path, tmp_path: Path) -> None:
+    """The repair rule works from the recorded path: readable back out of
+    the filter config, current while it runs, drift the moment it dies."""
+    annex = tmp_path / "engine" / "git-annex"
+    annex.parent.mkdir()
+    annex.write_text("#!/bin/sh\nexit 0\n")
+    annex.chmod(0o755)
+
+    dataset.converge_annex_plumbing(repo, annex)
+
+    assert dataset.pinned_annex(repo) == annex
+    assert dataset.annex_plumbing_current(repo, stock_ok=False)
+    annex.unlink()
+    assert not dataset.annex_plumbing_current(repo, stock_ok=True)
+
+
+def test_repair_to_stock_rewrites_a_pinned_repository(repo: Path, tmp_path: Path) -> None:
+    """The way back: a broken pin on a host whose PATH resolves git-annex
+    is returned to the stock form, byte-for-byte what `git annex init`
+    writes plus the required flag — and git-annex still recognises the
+    hooks as its own."""
+    annex = tmp_path / "engine" / "git-annex"
+    annex.parent.mkdir()
+    annex.write_text("#!/bin/sh\nexit 0\n")
+    annex.chmod(0o755)
+    dataset.converge_annex_plumbing(repo, annex)
+
+    dataset.converge_annex_plumbing(repo, None)
+
+    assert dataset.pinned_annex(repo) is None
+    assert dataset.annex_plumbing_current(repo, stock_ok=True)
+    hook = (repo / ".git" / "hooks" / "pre-commit").read_text()
+    assert "git annex pre-commit ." in hook
+    assert str(annex) not in hook
 
 
 # ---- who last wrote a path -------------------------------------------------

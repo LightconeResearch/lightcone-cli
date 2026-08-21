@@ -17,6 +17,7 @@ Source: `src/lightcone/engine/project.py` (+
 | `declared_project()` | The weaker question — what the repository carries, without `.venv`. One caller: the worker entry point, which builds the venv a moment later. |
 | `mode(root)` | `"direct"` or `"containerized"` — presence of `[tool.lightcone.image]`, nothing else. |
 | `uv_prefix(root, *, sync)` | The one spelling of the project uv hop. Callers differ only in `sync`: a probe converges the environment, a recipe must not. |
+| `bundled_annex()` / `ambient_annex()` | The two git-annex questions: the engine's own copy (beside `sys.executable`) and the one the researcher's *shell* would resolve (`PATH` minus the engine's bin). The annex-plumbing item decides between stock and pinned form from the second, and pins to the first. |
 | `project_name(dir)` | PEP 503-ish name from the directory name. |
 | `_run` / `_check_call` | Every external tool invocation, and the suite's one monkeypatch point. |
 | `ProjectError` | The engine's one exception; the CLI translates it once. |
@@ -38,9 +39,16 @@ Source: `src/lightcone/engine/project.py` (+
   `.gitattributes` are converged entry-wise, order judged against the
   template).
 - **Only what git can carry is converged.** No `src/`, no empty
-  directories — a clone must need nothing but `.venv` and
-  `git annex init`, and
-  `test_a_clone_of_a_converged_project_is_converged` pins it.
+  directories — a clone must need nothing but `.venv`, `git annex
+  init` and the annex plumbing (all three local state git does not
+  clone), and `test_a_clone_of_a_converged_project_is_converged` pins
+  it.
+- **The annex plumbing repairs only broken states.**
+  `filter.annex.required=true` always; the filter and hooks pinned to
+  the engine's git-annex only where the researcher's shell resolves
+  none; a working pin never rewritten (both forms work — rewriting
+  flip-flops between installs), a dead one rewritten toward stock when
+  the shell has git-annex, else toward this engine's copy.
 - **There is no discovery.** The invoked directory is the project or
   it is a clean error; every uv call carries an explicit `--project`.
 - **Templates are files** (`templates/files/*.tmpl`, `string.Template`

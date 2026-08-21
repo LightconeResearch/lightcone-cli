@@ -114,6 +114,36 @@ read-only verbs (`lc status`, `--check`) never transfer data, so they
 report the fact instead. Fetch by hand only when you want the bytes
 for your own inspection.
 
+## "fatal: … clean filter 'annex' failed"
+
+```
+git-annex filter-process: line 1: git-annex: command not found
+error: could not read greeting from subprocess 'git-annex filter-process'
+error: initialization for subprocess 'git-annex filter-process' failed
+fatal: data/catalog.fits: clean filter 'annex' failed
+```
+
+Your `git add` could not reach git-annex — either your shell's `PATH`
+lost it, or the project's plumbing is pinned to an `lc` install that no
+longer exists (a pruned `uv` cache, a moved install). The remedy is
+one command, from the project root:
+
+```bash
+lc init
+```
+
+It reports the plumbing `repaired` and re-points it at a git-annex
+that actually runs — the one that ships with `lc` itself when your
+`PATH` has none.
+
+This failure is deliberately loud. `lc init` sets
+`filter.annex.required=true` in every project precisely because
+without it git handles the same situation by printing the error,
+**exiting 0, and staging your data's raw bytes into git history** —
+committing a multi-gigabyte dataset into git proper, silently, where
+every clone carries it forever. A refused `git add` costs you one
+`lc init`; the silent version costs you the repository.
+
 ## "… and this is a NERSC login node"
 
 `lc materialize` executes recipes, and on centers `lc` recognizes it

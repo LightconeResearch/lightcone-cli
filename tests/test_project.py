@@ -212,10 +212,12 @@ def test_a_clone_of_a_converged_project_is_converged(tmp_path: Path) -> None:
     tracks has to be something git can carry, or a fresh clone reports
     drift forever.
 
-    Two items are exempt, and both for the same reason — they are local
+    Three items are exempt, and all for the same reason — they are local
     state git does not clone. `.venv` is git-ignored and rebuilt from the
-    lock, and `git clone` of an annexed repository leaves the annex
-    uninitialized until someone runs `git annex init`."""
+    lock, `git clone` of an annexed repository leaves the annex
+    uninitialized until someone runs `git annex init`, and the annex
+    plumbing lives in `.git` (config and hooks), which a clone starts
+    fresh."""
     project = tmp_path / "proj"
     converge(project)
 
@@ -230,7 +232,7 @@ def test_a_clone_of_a_converged_project_is_converged(tmp_path: Path) -> None:
     (clone / ".git").mkdir()
 
     report = converge(clone, write=False)
-    assert report.created == ["git-annex", ".venv"], report.created
+    assert report.created == ["git-annex", "annex-plumbing", ".venv"], report.created
 
 
 def test_converge_repairs_a_missing_piece(tmp_path: Path) -> None:
@@ -503,6 +505,243 @@ def test_surfaces_a_git_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(project_mod, "_run", fake_run)
     with pytest.raises(ProjectError, match="cannot mkdir"):
         converge(tmp_path / "proj")
+
+
+# ---- the annex plumbing ----------------------------------------------------
+#
+# `git annex init` wires the filter and hooks to a bare `git-annex`,
+# resolved from the PATH of whichever git runs — and the researcher's
+# shell may hold none (the engine invoked through uvx puts nothing on
+# it), where a plain `git add` exits 0 and stages raw bytes into git
+# history. Convergence owns the plumbing: `required=true` always, and a
+# pin to the engine's own executable exactly where PATH would not serve.
+
+
+def _engine_annex(tmp_path: Path, name: str = "engine") -> Path:
+    """A stand-in for the bundled git-annex: a real executable file, so
+    the repair rule's exists-and-runs probe has something to answer about."""
+    bindir = tmp_path / name
+    bindir.mkdir(exist_ok=True)
+    annex = bindir / "git-annex"
+    annex.write_text("#!/bin/sh\nexit 0\n")
+    annex.chmod(0o755)
+    return annex
+
+
+def _annex_resolution(
+    monkeypatch: pytest.MonkeyPatch, *, ambient: Path | None, bundled: Path | None
+) -> None:
+    """Pin what the two PATH questions answer, host-independently."""
+    from lightcone.engine import project as project_mod
+
+    monkeypatch.setattr(project_mod, "ambient_annex", lambda: ambient)
+    monkeypatch.setattr(project_mod, "bundled_annex", lambda: bundled)
+
+
+def _config_writes(tools: list[list[str]]) -> dict[str, str]:
+    """The ``git config <key> <value>`` writes, last value per key."""
+    return {
+        c[2]: c[3]
+        for c in tools
+        if c[:2] == ["git", "config"] and len(c) == 4 and not c[2].startswith("-")
+    }
+
+
+def test_ambient_annex_never_answers_with_the_engines_own_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe asks what the *researcher's* shell resolves, and lc's own
+    environment always fronts the engine's bin (uv run, uvx) — so that
+    directory must be blind-spotted even when it is all PATH holds. In a
+    venv `sys.executable` is a symlink: resolving it as a file first made
+    the engine's directory stop matching itself, and the probe reported
+    the bundled copy as the shell's."""
+    import sys
+
+    from lightcone.engine import project as project_mod
+
+    monkeypatch.setenv("PATH", str(Path(sys.executable).parent))
+    assert project_mod.ambient_annex() is None
+
+
+def test_bundled_annex_is_the_engines_sibling() -> None:
+    """The suite runs where the git-annex wheel is installed, so the
+    engine's own copy resolves beside its interpreter — the path every
+    pin is made of."""
+    from lightcone.engine import project as project_mod
+
+    assert project_mod.bundled_annex() == project_mod._engine_bin() / "git-annex"
+
+
+def test_a_shell_without_git_annex_gets_the_plumbing_pinned(
+    tmp_path: Path, tools: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The uvx case: nothing lands on the researcher's PATH, so their own
+    `git add` must reach the engine's git-annex by absolute path — filter
+    drivers and all four hooks, the post-receive guard included."""
+    annex = _engine_annex(tmp_path)
+    _annex_resolution(monkeypatch, ambient=None, bundled=annex)
+    project = tmp_path / "proj"
+
+    report = converge(project)
+
+    assert "annex-plumbing" in report.created
+    written = _config_writes(tools)
+    assert written["filter.annex.required"] == "true"
+    assert written["filter.annex.process"] == f"{annex} filter-process"
+    assert written["filter.annex.smudge"] == f"{annex} smudge -- %f"
+    assert written["filter.annex.clean"] == f"{annex} smudge --clean -- %f"
+    hooks = project / ".git" / "hooks"
+    assert f"{annex} pre-commit ." in (hooks / "pre-commit").read_text()
+    assert f"{annex} smudge --update" in (hooks / "post-checkout").read_text()
+    assert f"{annex} smudge --update" in (hooks / "post-merge").read_text()
+    receive = (hooks / "post-receive").read_text()
+    assert f"if {annex} post-receive --help" in receive
+    assert "git annex" not in receive
+    for name in ("pre-commit", "post-checkout", "post-merge", "post-receive"):
+        text = (hooks / name).read_text()
+        assert text.startswith("#!/bin/sh\n")
+        assert "automatically configured by git-annex, pinned by lightcone-cli" in text
+
+
+def test_a_shell_with_git_annex_keeps_stock_plumbing_plus_the_required_net(
+    tmp_path: Path, tools: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where the researcher's PATH already resolves git-annex, the stock
+    form works and outlives any engine path — only `required=true` is
+    added, so a PATH that later loses git-annex fails loudly instead of
+    staging raw bytes."""
+    _annex_resolution(
+        monkeypatch, ambient=Path("/usr/bin/git-annex"), bundled=_engine_annex(tmp_path)
+    )
+    project = tmp_path / "proj"
+
+    report = converge(project)
+
+    assert "annex-plumbing" in report.created
+    written = _config_writes(tools)
+    assert written["filter.annex.required"] == "true"
+    assert written["filter.annex.process"] == "git-annex filter-process"
+    hook = (project / ".git" / "hooks" / "pre-commit").read_text()
+    assert "git annex pre-commit ." in hook
+
+
+@pytest.mark.parametrize("ambient", [None, Path("/usr/bin/git-annex")])
+def test_converged_plumbing_reconverges_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ambient: Path | None
+) -> None:
+    project = tmp_path / "proj"
+    _annex_resolution(monkeypatch, ambient=ambient, bundled=_engine_annex(tmp_path))
+    converge(project)
+
+    report = converge(project)
+
+    assert report.converged
+    assert "annex-plumbing" in report.unchanged
+
+
+def test_a_dead_pin_is_repaired_to_the_current_engine(
+    tmp_path: Path, tools: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A uv cache prune or a moved engine breaks the recorded path;
+    `required=true` makes that loud, and the next convergence points the
+    plumbing at the engine that is actually here."""
+    project = tmp_path / "proj"
+    old = _engine_annex(tmp_path, "old-engine")
+    _annex_resolution(monkeypatch, ambient=None, bundled=old)
+    converge(project)
+    old.unlink()
+    new = _engine_annex(tmp_path, "new-engine")
+    _annex_resolution(monkeypatch, ambient=None, bundled=new)
+
+    report = converge(project)
+
+    assert "annex-plumbing" in report.repaired
+    assert _config_writes(tools)["filter.annex.process"] == f"{new} filter-process"
+    assert f"{new} pre-commit ." in (project / ".git" / "hooks" / "pre-commit").read_text()
+
+
+def test_a_dead_pin_returns_to_stock_when_the_shell_has_git_annex(
+    tmp_path: Path, tools: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repair goes toward the durable answer: a PATH-resolved git-annex
+    outlives any engine install, so a broken pin on a host that has one
+    is put back the way `git annex init` writes it."""
+    project = tmp_path / "proj"
+    old = _engine_annex(tmp_path, "old-engine")
+    _annex_resolution(monkeypatch, ambient=None, bundled=old)
+    converge(project)
+    old.unlink()
+    _annex_resolution(
+        monkeypatch, ambient=Path("/usr/bin/git-annex"), bundled=_engine_annex(tmp_path)
+    )
+
+    report = converge(project)
+
+    assert "annex-plumbing" in report.repaired
+    assert _config_writes(tools)["filter.annex.process"] == "git-annex filter-process"
+    assert "git annex pre-commit ." in (project / ".git" / "hooks" / "pre-commit").read_text()
+
+
+def test_a_working_pin_survives_git_annex_appearing_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both forms work, so rewriting would only flip-flop between a tool
+    install and a uvx cache — a healthy state is never rewritten."""
+    project = tmp_path / "proj"
+    pinned = _engine_annex(tmp_path)
+    _annex_resolution(monkeypatch, ambient=None, bundled=pinned)
+    converge(project)
+    _annex_resolution(
+        monkeypatch, ambient=Path("/usr/bin/git-annex"), bundled=_engine_annex(tmp_path, "other")
+    )
+
+    report = converge(project)
+
+    assert report.converged
+    assert "annex-plumbing" in report.unchanged
+    assert f"{pinned} pre-commit ." in (project / ".git" / "hooks" / "pre-commit").read_text()
+
+
+def test_check_mode_reports_plumbing_drift_and_writes_nothing(
+    tmp_path: Path, tools: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The PATH that satisfied stock plumbing at init can stop resolving
+    git-annex later; `--check` must say so — and, as everywhere, without
+    fixing it."""
+    project = tmp_path / "proj"
+    _annex_resolution(
+        monkeypatch, ambient=Path("/usr/bin/git-annex"), bundled=_engine_annex(tmp_path)
+    )
+    converge(project)
+    _annex_resolution(monkeypatch, ambient=None, bundled=_engine_annex(tmp_path))
+    hooks_before = (project / ".git" / "hooks" / "pre-commit").read_bytes()
+    tools.clear()
+
+    report = converge(project, write=False)
+
+    assert "annex-plumbing" in report.repaired
+    assert not report.converged
+    assert _config_writes(tools) == {}
+    assert (project / ".git" / "hooks" / "pre-commit").read_bytes() == hooks_before
+
+
+def test_a_users_own_hook_is_never_touched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The marker `git annex init` leaves is the ownership test — a hook
+    without it is the user's, skipped by the write and by the drift
+    check alike, exactly as git-annex itself treats it."""
+    project = tmp_path / "proj"
+    _annex_resolution(monkeypatch, ambient=None, bundled=_engine_annex(tmp_path))
+    converge(project)
+    theirs = "#!/bin/sh\nblack --check .\n"
+    (project / ".git" / "hooks" / "pre-commit").write_text(theirs)
+
+    report = converge(project)
+
+    assert report.converged
+    assert (project / ".git" / "hooks" / "pre-commit").read_text() == theirs
 
 
 # ---- refusals -------------------------------------------------------------

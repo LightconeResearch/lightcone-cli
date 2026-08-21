@@ -327,7 +327,7 @@ user owns:
 | `.python-version` | The exact patch of the interpreter `lc` is running on |
 | `uv.lock`, `.venv` | **Derived** — converged by correctness, not existence: `uv lock --check` / `uv sync --locked --exact --check` decide, then `uv lock` / `uv sync --locked --exact --compile-bytecode` repair |
 | `.gitignore` | One managed block of patterns; convergence ensures each is present |
-| `.git` + the annex | `git init` then `git annex init` — results are versioned in the project's own repository |
+| `.git` + the annex | `git init` then `git annex init` — results are versioned in the project's own repository — then the **annex plumbing** (`filter.annex.required=true` always; filter + hooks pinned to the bundled git-annex only where the shell's `PATH` resolves none — see the storage invariants) |
 | `.gitattributes` | The storage policy: what git-annex holds and what git carries. Line-managed, like `.gitignore` |
 | `.datalad/config` | A `datalad.dataset.id` UUID, generated once. Read back only by `dataset.dataset_id`, through `git config -f`, for the run record's `dsid` |
 | `data/` + `README.md` | Where declared inputs live; annexed, and committed before anything computes on them |
@@ -342,8 +342,8 @@ user owns:
   Universes are discovered by `glob("*.yaml")`, which is empty-not-error on
   a missing directory. `tests/test_project.py::test_a_clone_of_a_converged_project_is_converged`
   pins this: a clone must need nothing but `.venv` and `git annex init`.
-  Those two are the exemptions, and for one reason — they are local state
-  git does not clone.
+  Those (with the annex plumbing) are the exemptions, and for one
+  reason — they are local state git does not clone.
 - **Convergence, not scaffolding.** Each item is created if missing,
   offered to a conservative `repair(text) -> str | None` hook otherwise,
   and left alone when the hook returns `None`. `--check` computes the
@@ -544,6 +544,37 @@ user's, so a system git-annex fronting the install's wins the dispatch —
 for lc's subprocesses exactly as for their own git, and no different
 from which `git` itself runs. Nothing records the annex version anyway
 (see the Recorded decision on the engine's dependency closure).
+
+**"By construction" covers every install channel — except the
+researcher's own shell**, which is the one place `filter=annex` sends
+git looking for git-annex (the filter config and the four hooks
+`git annex init` writes, all `PATH`-resolved). Under `uvx` nothing
+lands on the user's `PATH`, and a `git add` whose clean filter cannot
+start prints an error, **exits 0, and stages the raw bytes into git
+history** (measured, and pinned by
+`test_stock_plumbing_without_required_stages_raw_bytes_silently`). So
+dataset convergence owns the **annex plumbing** as an item
+(`annex-plumbing`, 2026-08): `filter.annex.required=true` always —
+git's own hard failure instead of silent corruption, with `lc init` as
+the remedy — and the filter drivers plus hooks pinned to the absolute
+path of the engine's bundled git-annex (`project.bundled_annex`, the
+sibling of `sys.executable`) **only where the shell's own `PATH`
+resolves no git-annex** (`project.ambient_annex`, probed with the
+engine's bin stripped out). Where `PATH` serves, stock plumbing stays:
+it already works and outlives any prunable engine path. Repair is
+asymmetric by decision: a pin that runs is never rewritten, even when
+it is not this engine's copy or ambient git-annex has appeared (both
+work; rewriting flip-flops between a tool install and a uvx cache) —
+only a broken state is rewritten, toward stock when the shell resolves
+git-annex, else toward this engine's copy. Hooks keep git-annex's own
+marker comment ("automatically configured by git-annex"), which is
+also the ownership test — a hook without it is the user's and is never
+touched. The stock spellings are mirrored, never invented:
+`test_stock_spellings_mirror_what_git_annex_itself_writes` pins them
+against a real `git annex init`. `require_git_annex` stays a `PATH`
+check, deliberately — it gates lc's *own* `git annex` subprocesses,
+which still dispatch from lc's environment, where every install
+channel fronts the bundled copy.
 
 **A project can sit inside a larger repository, so `dataset.status` is
 scoped and relativised.** `lc init subdir/` adopts an enclosing work

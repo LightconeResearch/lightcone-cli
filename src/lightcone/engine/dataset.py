@@ -18,6 +18,8 @@ asks anyone to run a git-annex command by hand.
 
 from __future__ import annotations
 
+import os
+import shlex
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +102,201 @@ def ignore_rule(directory: Path, path: str) -> str | None:
         return None
     # `<source>:<line>:<pattern>\t<pathname>`, one line per pathspec.
     return proc.stdout.splitlines()[0].split("\t")[0]
+
+
+# =============================================================================
+# The annex plumbing: how the researcher's own git reaches git-annex
+# =============================================================================
+#
+# `git annex init` wires the repository to a bare `git-annex`, resolved
+# from whatever PATH the *researcher's* git runs under — the filter
+# drivers in `.git/config` and four hooks. When their shell has no
+# git-annex (lc itself always does — it bundles one), a plain `git add`
+# prints an error, exits 0, and stages the raw bytes into git history:
+# a 2 GB dataset lands in git proper, silently, on every clone forever.
+# `filter.annex.required=true` turns that into git's own hard failure,
+# and — only where PATH would not resolve git-annex — the plumbing is
+# pinned to an absolute path instead, so the ordinary `git add` the docs
+# promise keeps working. Measured: with the filter pinned, `git add` of
+# annexed content stages a pointer with no git-annex on PATH at all.
+
+
+#: The marker `git annex init` leaves in every hook it writes — and the
+#: ownership test: git-annex itself rewrites only hooks that carry it,
+#: and so does lc. A hook without it is the user's, never touched.
+_HOOK_MARKER = "automatically configured by git-annex"
+
+#: What each hook runs — git-annex's own hook bodies, mirrored, with the
+#: annex spelling left open: ``git annex`` in stock form, an absolute
+#: path when pinned.
+_HOOKS = {
+    "pre-commit": "{annex} pre-commit .",
+    "post-checkout": "{annex} smudge --update",
+    "post-merge": "{annex} smudge --update",
+    "post-receive": (
+        "if {annex} post-receive --help >/dev/null 2>&1; then {annex} post-receive; fi"
+    ),
+}
+
+#: The filter drivers `git annex init` configures, same convention
+#: (stock spells these ``git-annex``, without the space). The
+#: smudge/clean pair stays beside ``process``: git falls back to it when
+#: the process filter cannot start, and a fallback that resolves
+#: git-annex differently from the filter it stands in for would route
+#: the same add two ways.
+_FILTERS = {
+    "filter.annex.process": "{annex} filter-process",
+    "filter.annex.smudge": "{annex} smudge -- %f",
+    "filter.annex.clean": "{annex} smudge --clean -- %f",
+}
+
+
+def pinned_annex(directory: Path) -> Path | None:
+    """Read which absolute git-annex the filter is pinned to, if any.
+
+    The record convergence's repair rule works from: the first word of
+    ``filter.annex.process``. Stock plumbing spells it bare
+    (``git-annex filter-process``), which is not a pin.
+
+    Args:
+        directory: A directory inside the repository.
+
+    Returns:
+        The pinned executable, or ``None`` for stock or absent plumbing.
+    """
+    try:
+        words = shlex.split(_config(directory, "filter.annex.process"))
+    except ValueError:
+        return None
+    if words and Path(words[0]).is_absolute():
+        return Path(words[0])
+    return None
+
+
+def annex_runs(path: Path) -> bool:
+    """Whether *path* is still an executable — the repair-rule probe.
+
+    A pinned engine can be moved or its uv cache pruned; a pin that no
+    longer runs is what turns ``required=true``'s loud failure back into
+    a working ``git add`` on the next ``lc init``.
+
+    Args:
+        path: The recorded git-annex executable.
+
+    Returns:
+        True if the file exists and is executable.
+    """
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def converge_annex_plumbing(directory: Path, pin: Path | None) -> None:
+    """Write the plumbing that lets the researcher's own git find git-annex.
+
+    ``filter.annex.required=true`` always: without it a ``git add`` whose
+    filter cannot start exits 0 and stages raw bytes into git history —
+    silent corruption; with it, git refuses loudly and ``lc init`` is the
+    remedy. The filter drivers and the four hooks are written in stock
+    form (PATH-resolved, as ``git annex init`` writes them) or pinned to
+    one absolute executable — the caller decides which, because only it
+    knows what the researcher's shell resolves. Hooks keep git-annex's
+    own shebang and marker comment, so git-annex still recognises them
+    as machinery; a hook without the marker is the user's and is left
+    alone.
+
+    Args:
+        directory: A directory inside the repository.
+        pin: The absolute git-annex to pin everything to, or ``None``
+            for the stock, PATH-resolved form.
+    """
+    _git(["config", "filter.annex.required", "true"], cwd=directory)
+    config, hook = _annex_spellings(pin)
+    for key, command in _FILTERS.items():
+        _git(["config", key, command.format(annex=config)], cwd=directory)
+    # A hooks directory that is not there holds nothing git would run, so
+    # there is nothing to converge in it — `git init` always creates one.
+    hooks = _hooks_dir(directory)
+    if not hooks.is_dir():
+        return
+    marker = _HOOK_MARKER + (", pinned by lightcone-cli" if pin else "")
+    for name, command in _HOOKS.items():
+        path = hooks / name
+        if path.exists() and _HOOK_MARKER not in path.read_text():
+            continue
+        path.write_text(f"#!/bin/sh\n# {marker}\n{command.format(annex=hook)}\n")
+        path.chmod(0o755)
+
+
+def annex_plumbing_current(directory: Path, *, stock_ok: bool) -> bool:
+    """Whether the plumbing needs no write on this host.
+
+    Current means: ``required=true`` is set, and the filter drivers and
+    every hook lc owns resolve git-annex the same one way — a stock,
+    PATH-resolved spelling where the shell can honour it, or a pin that
+    still runs. A pin that works stays current even when PATH could now
+    serve (both work, and rewriting would flip-flop between a tool
+    install and a uvx cache); only a broken state reports otherwise.
+
+    Args:
+        directory: A directory inside the repository.
+        stock_ok: Whether PATH-resolved plumbing works for the
+            researcher's shell — the caller's :func:`~lightcone.engine.
+            project.ambient_annex` question.
+
+    Returns:
+        True if a convergence would write nothing.
+    """
+    if _config(directory, "filter.annex.required") != "true":
+        return False
+    pin = pinned_annex(directory)
+    if pin is None and not stock_ok:
+        return False
+    if pin is not None and not annex_runs(pin):
+        return False
+    config, hook = _annex_spellings(pin)
+    if any(_config(directory, k) != c.format(annex=config) for k, c in _FILTERS.items()):
+        return False
+    hooks = _hooks_dir(directory)
+    if not hooks.is_dir():
+        return True  # nothing git would run — the write path's judgment too
+    for name, command in _HOOKS.items():
+        path = hooks / name
+        text = path.read_text() if path.exists() else ""
+        if text and _HOOK_MARKER not in text:
+            continue  # the user's hook — theirs in the write path too
+        if command.format(annex=hook) not in text:
+            return False
+    return True
+
+
+def _annex_spellings(pin: Path | None) -> tuple[str, str]:
+    """How the config and the hooks spell git-annex, stock or pinned.
+
+    Stock differs between the two sites — the filters call the
+    executable (``git-annex``), the hooks go through git's dispatch
+    (``git annex``) — while a pin is one absolute path at both.
+    """
+    if pin is None:
+        return "git-annex", "git annex"
+    quoted = shlex.quote(pin.as_posix())
+    return quoted, quoted
+
+
+def _config(directory: Path, key: str) -> str:
+    """Read one repository config value, empty when unset."""
+    found = project._run(["git", "config", "--get", key], cwd=directory)
+    return str(found.stdout or "").strip() if found.returncode == 0 else ""
+
+
+def _hooks_dir(directory: Path) -> Path:
+    """Where this repository's hooks live.
+
+    Asked of git rather than spelled ``.git/hooks``: in a linked
+    worktree ``.git`` is a file, hooks live in the common directory, and
+    ``core.hooksPath`` can move them anywhere — all questions
+    ``--git-path`` already answers.
+    """
+    hooks = _git(["rev-parse", "--git-path", "hooks"], cwd=directory).strip()
+    return (directory / hooks).resolve()
 
 
 # =============================================================================
