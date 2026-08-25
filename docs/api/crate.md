@@ -43,7 +43,7 @@ Source: `src/lightcone/engine/crate.py` (converged by
   so there is one annex key to look up and one `sha256` to publish —
   the same number its manifest records as `data_version`, and the one
   `sha256sum` prints.
-- **Every analysis home's spec and universes are in the crate**, not
+- **Every analysis root's spec and universes are in the crate**, not
   just the root's: a sub-analysis declared with `path:` keeps its own,
   and publishing its outputs without them would describe half an
   analysis.

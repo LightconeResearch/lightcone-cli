@@ -869,7 +869,7 @@ in the file, far from the line at fault. It caught three of lc's own
 test fixtures the first time it ran.
 
 **One output is one file, and the spec names it.** An output is
-`<home>/results/<universe>/<inline scope…>/<local_id>.<format>` — never a
+`<analysis root>/results/<universe>/<inline scope…>/<local_id>.<format>` — never
 directory a recipe fills — and the path in a rendered recipe *is* the path
 on disk: no staging, no scratch, no relocation. `format` comes from ASTRA
 (`Output.format`, astra-spec 0.0.14), so lc composes the filename rather
@@ -879,13 +879,14 @@ executable outputs omit it, naming every one: it is only *recommended*
 until ASTRA 0.1.0, but lc has nowhere to write an output without it.
 
 **Results live beside the spec that declares them.** Every analysis node
-has a *home* — the directory holding its `astra.yaml` — and a universe,
+has an *analysis root* — the directory holding its `astra.yaml` — and a
+universe,
 both derived by `plan._placements` walking the spec and the universe file
-together: the root's home is the project root; an inline sub-analysis
-shares its parent's home and disambiguates with a scope directory; an
-external one (`path:`) is a self-similar analysis with its own home and,
+together: the root analysis's is the project root; an inline sub-analysis
+shares its parent's and disambiguates with a scope directory; an
+external one (`path:`) is a self-similar analysis with its own root and,
 where the parent universe names one, **its own universe id**. Two
-refusals ride on that walk — a home escaping the project root (its
+refusals ride on that walk — an analysis root escaping the project (its
 results could not be versioned) and a `universe: X` naming a file that is
 not there (astra logs a warning and settles from the parent's decisions
 instead, so lc would file an artifact under a universe it never loaded).
@@ -2226,7 +2227,7 @@ written to" — a path the schema never defined. What changed, and why:
 - **The filename contract between producer and consumer is gone.**
   `{inputs.X}` renders to the upstream's *file*, so nothing has to know
   what is inside a directory it was handed.
-- **A results tree per analysis home**, so `results/` stopped being
+- **A results tree per analysis root**, so `results/` stopped being
   root-anchored. `.gitattributes` broadened to `**/results/**` — with the
   accepted collateral that a user's own `notebooks/results/` now annexes,
   cheaper than generating spec-dependent attribute lines repair could
@@ -2254,10 +2255,10 @@ written to" — a path the schema never defined. What changed, and why:
   they are invisible to every walk. `git rm -r results/` and
   re-materialize.
 - **Known residue**: a declared input's `source:` is still resolved
-  relative to the *project root*, not the declaring analysis's home, so a
+  against the *project* root, not the analysis root that declares it, so a
   sub-analysis cannot name a file beside its own `astra.yaml` the way it
-  names its results. Pre-existing; whether `source:` should be
-  home-relative is astra's question before it is lc's.
+  names its results. Pre-existing; which of the two a `source:` means is
+  astra's question before it is lc's (issue #201).
 
 ### Recorded deviations from the spec
 

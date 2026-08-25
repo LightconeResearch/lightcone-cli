@@ -13,11 +13,11 @@ recipe grammar — so scoping, ``from:`` references and sub-analysis
 nesting are read here rather than re-derived.
 
 Where an output lands follows the spec's own shape: every analysis node
-has a *home* — the directory holding its ``astra.yaml`` — and its outputs
-materialize to ``<home>/results/<universe>/<inline scope…>/<id>.<format>``.
+has an *analysis root* — the directory holding its ``astra.yaml`` — and its
+materialize to ``<analysis root>/results/<universe>/<inline scope…>/<id>.<format>``.
 An external sub-analysis (``path:``) is a self-similar analysis with its
-own home and, where it names one, its own universe; an inline one shares
-its parent's home and disambiguates with a scope directory. Graph keys stay
+own analysis root and, where it names one, its own universe; an inline one
+shares its parent's and disambiguates with a scope directory. Graph keys stay
 the qualified id, so only the path nests, never the addressing.
 
 Nothing here schedules anything. Ordering is Dask's job at execution time
@@ -51,7 +51,7 @@ class Task:
     local_id: str
     #: The directory holding the astra.yaml that declares this output —
     #: the project root, or a sub-analysis's own directory.
-    home: Path
+    analysis_root: Path
     #: The single file this output is.
     output_path: Path
     #: The recipe with its placeholders substituted — a shell command.
@@ -292,11 +292,11 @@ def _validate(spec_path: Path, universes: list[Path]) -> None:
 class _Placement:
     """Where one analysis node's outputs land."""
 
-    #: The directory holding that node's ``astra.yaml``.
-    home: Path
+    #: The directory holding that node's own ``astra.yaml``.
+    analysis_root: Path
     #: The universe its results are filed under.
     universe_id: str
-    #: The inline sub-analyses descended through since ``home``.
+    #: The inline sub-analyses descended through since ``analysis_root``.
     scope: tuple[str, ...]
 
 
@@ -312,7 +312,7 @@ def _placements(
     universe says which of a sub-analysis's own universes was picked.
 
     Args:
-        root: The project root — the root analysis's home.
+        root: The project root — the root analysis's own analysis root.
         spec: The analysis, external sub-analyses already resolved.
         universe: The universe file's contents.
         universe_id: The universe file's id.
@@ -321,7 +321,7 @@ def _placements(
         Qualified scope → where its outputs land.
 
     Raises:
-        ProjectError: If a sub-analysis's home escapes the project, or it
+        ProjectError: If a sub-analysis's analysis root escapes the project, or it
             selects a universe that is not there.
     """
     found: dict[tuple[str, ...], _Placement] = {}
@@ -341,24 +341,28 @@ def _placements(
             picked = (chosen.get("analyses") or {}).get(str(sub_id)) or {}
             declared = sub.get("path")
             if declared:
-                home = Path(os.path.normpath(place.home / str(declared)))
-                if not home.resolve().is_relative_to(inside):
+                analysis_root = Path(os.path.normpath(place.analysis_root / str(declared)))
+                if not analysis_root.resolve().is_relative_to(inside):
                     raise ProjectError(
                         f"sub-analysis `{'.'.join(here)}` has path `{declared}`, which is "
                         f"outside the project — its results could not be versioned here."
                     )
                 selected = picked.get("universe")
                 if selected:
-                    named = home / "universes" / f"{selected}.yaml"
+                    named = analysis_root / "universes" / f"{selected}.yaml"
                     if not named.is_file():
                         raise ProjectError(
                             f"universe `{universe_id}` selects `{selected}` for "
                             f"sub-analysis `{'.'.join(here)}`, but {declared_path(root, named)} "
                             f"does not exist."
                         )
-                nested = _Placement(home, str(selected) if selected else place.universe_id, ())
+                nested = _Placement(
+                    analysis_root, str(selected) if selected else place.universe_id, ()
+                )
             else:
-                nested = _Placement(place.home, place.universe_id, (*place.scope, str(sub_id)))
+                nested = _Placement(
+                    place.analysis_root, place.universe_id, (*place.scope, str(sub_id))
+                )
             walk(sub, picked, here, nested)
 
     walk(spec, universe, (), _Placement(root, universe_id, ()))
@@ -384,7 +388,7 @@ def _tasks(
     where = _placements(root, dict(spec), dict(universe), universe_id)
     # The whole resolved output, not just its id: an upstream input has to
     # resolve to the *file* another task writes, which needs that output's
-    # home, universe, scope and format. A set of ids cannot say any of it.
+    # analysis root, universe, scope and format. A set of ids cannot say it.
     executable = {out.id: out for out in resolved if out.command}
 
     if absent := sorted(out.id for out in executable.values() if not out.format):
@@ -397,7 +401,7 @@ def _tasks(
     def file_of(out: object) -> Path:
         place = where[out.scope]  # type: ignore[attr-defined]
         return assets.output_path(
-            place.home,
+            place.analysis_root,
             place.universe_id,
             place.scope,
             str(out.definition["id"]),  # type: ignore[attr-defined]
@@ -442,7 +446,7 @@ def _tasks(
                 universe_id=universe_id,
                 output_id=out.id,
                 local_id=str(out.definition["id"]),
-                home=where[out.scope].home,
+                analysis_root=where[out.scope].analysis_root,
                 output_path=output_path,
                 recipe=recipe,
                 inputs=paths,

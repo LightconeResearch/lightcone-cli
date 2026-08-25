@@ -1,14 +1,14 @@
 """What a materialized output *is*: where it lives, what it records, and
 whether it is still current.
 
-An asset is a single file — ``<home>/results/<universe>/<scope…>/<id>.<format>``
+An asset is a single file — ``<analysis root>/results/<universe>/<scope…>/<id>.<format>``
 — with a manifest sidecar beside it, ``.<id>.manifest.json``. The format
 comes from the spec, so the path is derived rather than chosen by the
 recipe, and one output can only ever be one file. The manifest is the only
 part lc writes itself, and it is kept out of the annex so it stays readable
 on a clone that has fetched no content at all.
 
-*home* is the directory holding the analysis's own ``astra.yaml`` — the
+The *analysis root* is the directory holding that analysis's own ``astra.yaml`` — the
 project root, or a sub-analysis's own directory — so results sit beside the
 spec that declares them.
 
@@ -54,20 +54,20 @@ class ContentNotFetchedError(ProjectError):
 
 
 def output_path(
-    home: Path, universe_id: str, scope: Sequence[str], local_id: str, fmt: str
+    analysis_root: Path, universe_id: str, scope: Sequence[str], local_id: str, fmt: str
 ) -> Path:
     """Locate the file one output is materialized to.
 
-    ``<home>/results/<universe_id>/<scope…>/<local_id>.<fmt>``. *home* is
+    ``<analysis root>/results/<universe_id>/<scope…>/<local_id>.<fmt>``. The *analysis root* is
     the directory holding the declaring analysis's ``astra.yaml``, so a
     sub-analysis keeps its results beside its own spec, and *scope* is the
-    inline sub-analyses descended through since that home.
+    inline sub-analyses descended through since that analysis root.
 
     Path-addressed: this is the path a rendered recipe writes to, with no
     staging, scratch or relocation in between.
 
     Args:
-        home: The declaring analysis's directory.
+        analysis_root: The declaring analysis's directory.
         universe_id: The universe the output is made under.
         scope: Inline sub-analysis ids, outermost first.
         local_id: The output's own id, unqualified.
@@ -93,7 +93,7 @@ def output_path(
             f"output `{local_id}` declares the format {fmt!r}, which cannot name a "
             f"file extension, so the output has nowhere to be written."
         )
-    return home.joinpath("results", universe_id, *scope, f"{local_id}.{fmt}")
+    return analysis_root.joinpath("results", universe_id, *scope, f"{local_id}.{fmt}")
 
 
 def manifest_path(output: Path) -> Path:

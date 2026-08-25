@@ -289,16 +289,19 @@ class _Builder:
     def _environment_files(self) -> None:
         """The lock and its companions — what every run consumed.
 
-        Every analysis *home*, not just the root's: a sub-analysis keeps
+        Every analysis root, not just the project's: a sub-analysis keeps
         its spec, its universes and its results together, so publishing
         its outputs without the files that define them would leave the
         crate describing half an analysis.
         """
-        homes = {self.root, *(task.home for task in self.graph.tasks.values())}
+        analysis_roots = {self.root, *(task.analysis_root for task in self.graph.tasks.values())}
         declaring = sorted(
             path.relative_to(self.root).as_posix()
-            for home in homes
-            for path in (*(home / "universes").glob("*.yaml"), home / SPEC_FILENAME)
+            for analysis_root in analysis_roots
+            for path in (
+                *(analysis_root / "universes").glob("*.yaml"),
+                analysis_root / SPEC_FILENAME,
+            )
             if path.is_file()
         )
         for name in (*_ENVIRONMENT, *declaring):
