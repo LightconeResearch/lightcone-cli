@@ -26,7 +26,6 @@ workflow's ``HowToStep`` s.
 
 from __future__ import annotations
 
-import bisect
 import hashlib
 import json
 import re
@@ -80,7 +79,7 @@ def render(
     *,
     license: str,
     dsid: str,
-    writer: Callable[[Path], LastWrite],
+    writer: Callable[..., LastWrite],
     keys: Mapping[str, str],
 ) -> str:
     """Build the crate document for the project as it stands.
@@ -124,7 +123,7 @@ class _Builder:
         graph: Graph,
         license: str,
         dsid: str,
-        writer: Callable[[Path], LastWrite],
+        writer: Callable[..., LastWrite],
         keys: Mapping[str, str],
     ) -> None:
         from astra.helpers import load_yaml
@@ -134,10 +133,6 @@ class _Builder:
         self.license = license
         self.writer = writer
         self.keys = dict(keys)
-        #: Sorted once: each output selects its files by bisecting this,
-        #: not by rescanning the whole map — the map holds every annexed
-        #: file in the repository, data/ included.
-        self.sorted_keys = sorted(self.keys)
         self.crate = ROCrate()
         self.crate.metadata.extra_contexts.append(_WORKFLOW_RUN_CONTEXT)
         #: Every materialized task, sorted: the one iteration order.
@@ -145,7 +140,7 @@ class _Builder:
             (
                 (key, manifest)
                 for key, task in graph.tasks.items()
-                if (manifest := assets.read(task.output_dir)) is not None
+                if (manifest := assets.read(task.manifest_path)) is not None
             ),
             key=lambda pair: pair[0],
         )
@@ -292,12 +287,21 @@ class _Builder:
     # ----- the data entities -----
 
     def _environment_files(self) -> None:
-        """The lock and its companions — what every run consumed."""
-        universes = sorted(
+        """The lock and its companions — what every run consumed.
+
+        Every analysis *home*, not just the root's: a sub-analysis keeps
+        its spec, its universes and its results together, so publishing
+        its outputs without the files that define them would leave the
+        crate describing half an analysis.
+        """
+        homes = {self.root, *(task.home for task in self.graph.tasks.values())}
+        declaring = sorted(
             path.relative_to(self.root).as_posix()
-            for path in (self.root / "universes").glob("*.yaml")
+            for home in homes
+            for path in (*(home / "universes").glob("*.yaml"), home / SPEC_FILENAME)
+            if path.is_file()
         )
-        for name in (*_ENVIRONMENT, *universes):
+        for name in (*_ENVIRONMENT, *declaring):
             if (self.root / name).is_file():
                 self._file(name)
         if (self.root / "README.md").is_file():
@@ -347,35 +351,34 @@ class _Builder:
         return {"contentSize": str(len(data)), "sha256": hashlib.sha256(data).hexdigest()}
 
     def _dataset_id(self, key: Key) -> str:
-        """One output directory's crate id — :func:`plan.declared_path`'s
-        answer, never a second spelling of the results layout."""
-        return plan.declared_path(self.root, self.graph.tasks[key].output_dir) + "/"
+        """One output's crate id — :func:`plan.declared_path`'s answer,
+        never a second spelling of the results layout. No trailing slash:
+        an output is one file, so the entity is a ``File``."""
+        return plan.declared_path(self.root, self.graph.tasks[key].output_path)
 
     def _dataset(self, key: Key, manifest: assets.Manifest) -> None:
         universe_id, output_id = key
-        dataset_id = self._dataset_id(key)
-        entity = self.crate.add_dataset(self.graph.tasks[key].output_dir, dataset_id)
+        task = self.graph.tasks[key]
+        # A `File`, not a `Dataset` with parts: an output is one file, so
+        # there is one annex key to look up by name and one checksum to
+        # publish. `data_version` is that same digest — the manifest and
+        # the crate no longer carry two numbers for the same bytes.
+        entity = self._file(self._dataset_id(key))
         entity["name"] = f"{output_id} (universe {universe_id})"
         entity["description"] = f"output `{output_id}` materialized under `{universe_id}`"
         entity["version"] = manifest.data_version
-        manifest_file = self._file(f"{dataset_id}{assets.MANIFEST_FILENAME}")
-        manifest_file["about"] = {"@id": dataset_id}
+        if media := _FORMATS.get(f".{task.output_path.name.partition('.')[2]}", ""):
+            entity["encodingFormat"] = media
+        manifest_file = self._file(plan.declared_path(self.root, task.manifest_path))
+        manifest_file["about"] = {"@id": entity.id}
         entity["subjectOf"] = {"@id": manifest_file.id}
-        # Every file the directory holds, each with the checksum its
-        # annex key already carries — the claim `sha256sum` can check
-        # after a `git archive` deposit, where `version` above is lc's
-        # own framed directory digest and deliberately is not that.
-        parts = [manifest_file]
-        lo = bisect.bisect_left(self.sorted_keys, dataset_id)
-        hi = bisect.bisect_left(self.sorted_keys, dataset_id + "\uffff")
-        parts += [self._file(name) for name in self.sorted_keys[lo:hi]]
-        entity["hasPart"] = [{"@id": part.id} for part in parts]
 
     # ----- the runs -----
 
     def _action(self, key: Key, manifest: assets.Manifest) -> str:
         universe_id, output_id = key
-        write = self.writer(self.graph.tasks[key].output_dir)
+        task = self.graph.tasks[key]
+        write = self.writer(task.output_path, task.manifest_path)
         self.agents[key] = self._person(write.author, write.email) if write else ""
         properties: dict[str, Any] = {
             "@type": "CreateAction",

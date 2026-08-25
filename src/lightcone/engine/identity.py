@@ -109,15 +109,23 @@ def env_version(root: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
-def definition_version(*, recipe: str, decisions: Mapping[str, str]) -> str:
+def definition_version(*, recipe: str, decisions: Mapping[str, str], fmt: str) -> str:
     """Compute what the spec says one output is.
 
-    ``sha256(recipe ‖ canonical decisions)``, length-framed. The
+    ``sha256(recipe ‖ canonical decisions ‖ format)``, length-framed. The
     environment is deliberately absent: see this module's docstring.
+
+    The format is framed in its own right rather than left to arrive
+    through the rendered recipe's ``{output}`` path, because a recipe need
+    not use that placeholder at all. One that does not would keep its
+    digest across a re-declared serialization while the manifest — whose
+    sidecar is named from the id alone, so it does not move either — went
+    on describing an output at a path that no longer exists.
 
     Args:
         recipe: The rendered recipe command.
         decisions: The decisions this output declares, as id → option.
+        fmt: The declared serialization.
 
     Returns:
         The digest, as ``sha256:<hex>``.
@@ -125,6 +133,7 @@ def definition_version(*, recipe: str, decisions: Mapping[str, str]) -> str:
     h = hashlib.sha256()
     _frame(h, "recipe", recipe.encode())
     _frame(h, "decisions", _canonical(dict(decisions)).encode())
+    _frame(h, "format", fmt.encode())
     return f"sha256:{h.hexdigest()}"
 
 

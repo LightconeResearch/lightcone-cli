@@ -22,7 +22,7 @@ from lightcone.engine.plan import Graph, Key, Task
 
 _DSID = "4b7b5c1e-0000-4000-8000-000000000000"
 
-Writer = Callable[[Path], LastWrite]
+Writer = Callable[..., LastWrite]
 
 
 @pytest.fixture
@@ -50,11 +50,11 @@ def _made(
     inputs: dict[str, str] | None = None,
     finished_at: str = "2026-08-19T10:05:00.000+00:00",
 ) -> Path:
-    directory = root / "results" / universe_id / output_id
-    directory.mkdir(parents=True)
-    (directory / "out.txt").write_text(f"{universe_id}/{output_id}\n")
+    output = root / "results" / universe_id / f"{output_id}.txt"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(f"{universe_id}/{output_id}\n")
     assets.write(
-        directory,
+        assets.manifest_path(output),
         assets.Manifest(
             output_id=output_id,
             universe_id=universe_id,
@@ -73,17 +73,19 @@ def _made(
             image=image,
         ),
     )
-    return directory
+    return output
 
 
 def _graph(root: Path, universes: tuple[str, ...] = ("baseline",)) -> Graph:
     tasks: dict[Key, Task] = {}
     for universe_id in universes:
-        first_dir = root / "results" / universe_id / "first"
+        first = root / "results" / universe_id / "first.txt"
         tasks[(universe_id, "first")] = Task(
             universe_id,
             "first",
-            first_dir,
+            "first",
+            root,
+            first,
             "make first",
             {"catalog": root / "data" / "catalog.csv"},
             {},
@@ -93,9 +95,11 @@ def _graph(root: Path, universes: tuple[str, ...] = ("baseline",)) -> Graph:
         tasks[(universe_id, "second")] = Task(
             universe_id,
             "second",
-            root / "results" / universe_id / "second",
+            "second",
+            root,
+            root / "results" / universe_id / "second.txt",
             "make second",
-            {"first": first_dir},
+            {"first": first},
             {"first": (universe_id, "first")},
             {"method": "alpha"},
             "sha256:def",
@@ -103,7 +107,7 @@ def _graph(root: Path, universes: tuple[str, ...] = ("baseline",)) -> Graph:
     return Graph(tasks)
 
 
-def _writer(path: Path) -> LastWrite:
+def _writer(*paths: Path) -> LastWrite:
     return LastWrite("a" * 40, "irrelevant", "Ada Lovelace", "ada@example.org", "2026-08-19")
 
 
@@ -133,7 +137,7 @@ def test_rendering_twice_at_the_same_state_is_byte_identical(project: Path) -> N
     _made(project, "baseline", "second", git_sha="aaa111")
     graph = _graph(project)
 
-    keys = {"results/baseline/first/out.txt": "SHA256E-s24--" + "c" * 64 + ".txt"}
+    keys = {"results/baseline/first.txt": "SHA256E-s24--" + "c" * 64 + ".txt"}
     first = crate.render(project, graph, license="MIT", dsid=_DSID, writer=_writer, keys=keys)
     second = crate.render(project, graph, license="MIT", dsid=_DSID, writer=_writer, keys=keys)
 
@@ -229,20 +233,20 @@ def test_an_action_chains_its_inputs_and_its_environment(project: Path) -> None:
     second = actions["run of `second` in universe `baseline`"]
     first_objects = {ref["@id"] for ref in first["object"]}
     assert {"uv.lock", ".python-version", "pyproject.toml", "data/catalog.csv"} <= first_objects
-    assert "results/baseline/first/" in {ref["@id"] for ref in second["object"]}
-    assert second["result"] == [{"@id": "results/baseline/second/"}]
+    assert "results/baseline/first.txt" in {ref["@id"] for ref in second["object"]}
+    assert second["result"] == [{"@id": "results/baseline/second.txt"}]
     assert second["description"] == "make second"
-    assert entities["results/baseline/second/"]["version"] == "sha256:baseline-second"
+    assert entities["results/baseline/second.txt"]["version"] == "sha256:baseline-second"
 
 
 def test_the_manifest_is_in_the_crate_and_about_its_dataset(project: Path) -> None:
     _made(project, "baseline", "first", git_sha="aaa111")
     entities = _entities(_render(project, _graph(project)))
 
-    manifest = entities["results/baseline/first/.lightcone-manifest.json"]
-    assert manifest["about"] == {"@id": "results/baseline/first/"}
-    assert entities["results/baseline/first/"]["subjectOf"] == {
-        "@id": "results/baseline/first/.lightcone-manifest.json"
+    manifest = entities["results/baseline/.first.manifest.json"]
+    assert manifest["about"] == {"@id": "results/baseline/first.txt"}
+    assert entities["results/baseline/first.txt"]["subjectOf"] == {
+        "@id": "results/baseline/.first.manifest.json"
     }
 
 
@@ -322,34 +326,40 @@ def test_the_license_is_a_local_entity_never_a_minted_url(project: Path) -> None
 # ---- per-file integrity ----------------------------------------------------
 
 
-def test_output_files_carry_checksums_from_their_annex_keys(project: Path) -> None:
+def test_an_output_carries_the_checksum_from_its_annex_key(project: Path) -> None:
     """The keys are repository state, so a bytes-free clone renders the
     same claims — and the hex in a SHA256E key is the raw sha256 an
-    archive can verify with `sha256sum` after a `git archive` deposit,
-    where the dataset's `version` is lc's framed digest and cannot be."""
+    archive can verify with `sha256sum` after a `git archive` deposit."""
     _made(project, "baseline", "first", git_sha="aaa111")
     digest = "d" * 64
-    keys = {"results/baseline/first/out.txt": f"SHA256E-s21--{digest}.txt"}
+    keys = {"results/baseline/first.txt": f"SHA256E-s21--{digest}.txt"}
     entities = _entities(_render(project, _graph(project), keys=keys))
 
-    part = entities["results/baseline/first/out.txt"]
-    assert part["sha256"] == digest
-    assert part["contentSize"] == "21"
-    parts = {ref["@id"] for ref in entities["results/baseline/first/"]["hasPart"]}
-    assert parts == {
-        "results/baseline/first/.lightcone-manifest.json",
-        "results/baseline/first/out.txt",
-    }
+    output = entities["results/baseline/first.txt"]
+    assert output["@type"] == "File"
+    assert output["sha256"] == digest
+    assert output["contentSize"] == "21"
+
+
+def test_an_output_is_one_file_not_a_dataset_of_parts(project: Path) -> None:
+    """One output is one file, so there is nothing to enumerate — and the
+    manifest hangs off it as `subjectOf` rather than as a part of it."""
+    _made(project, "baseline", "first", git_sha="aaa111")
+    entities = _entities(_render(project, _graph(project)))
+
+    output = entities["results/baseline/first.txt"]
+    assert "hasPart" not in output
+    assert output["subjectOf"] == {"@id": "results/baseline/.first.manifest.json"}
 
 
 def test_a_non_sha256_key_yields_size_and_no_digest(project: Path) -> None:
     """`annex.backend` is the researcher's to set, and a wrong checksum
     is worse than none — the publish-neither discipline."""
     _made(project, "baseline", "first", git_sha="aaa111")
-    keys = {"results/baseline/first/out.txt": "MD5E-s21--" + "e" * 32 + ".txt"}
+    keys = {"results/baseline/first.txt": "MD5E-s21--" + "e" * 32 + ".txt"}
     entities = _entities(_render(project, _graph(project), keys=keys))
 
-    part = entities["results/baseline/first/out.txt"]
+    part = entities["results/baseline/first.txt"]
     assert part["contentSize"] == "21"
     assert "sha256" not in part
 
@@ -396,7 +406,9 @@ def test_an_out_of_tree_input_publishes_no_checksum(
     task = Task(
         "baseline",
         "first",
-        project / "results/baseline/first",
+        "first",
+        project,
+        project / "results/baseline/first.txt",
         "make first",
         {"catalog": catalog},
         {},

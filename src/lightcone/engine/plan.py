@@ -10,9 +10,15 @@ What the spec *means* is ASTRA's to say. ``astra.resolve`` settles each
 universe's decisions, resolves every output's inputs to what supplies
 them, drops the outputs whose ``when:`` does not hold, and renders the
 recipe grammar — so scoping, ``from:`` references and sub-analysis
-nesting are read here rather than re-derived. A qualified output id
-(``classification.accuracy``) is used verbatim as the directory name, so
-one addressing scheme spans however deep the spec nests.
+nesting are read here rather than re-derived.
+
+Where an output lands follows the spec's own shape: every analysis node
+has a *home* — the directory holding its ``astra.yaml`` — and its outputs
+materialize to ``<home>/results/<universe>/<inline scope…>/<id>.<format>``.
+An external sub-analysis (``path:``) is a self-similar analysis with its
+own home and, where it names one, its own universe; an inline one shares
+its parent's home and disambiguates with a scope directory. Graph keys stay
+the qualified id, so only the path nests, never the addressing.
 
 Nothing here schedules anything. Ordering is Dask's job at execution time
 and a topological walk's job in ``--check``; this module only says which
@@ -21,9 +27,11 @@ task depends on which.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
+from typing import Any
 
 from lightcone.engine import assets, identity
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
@@ -37,17 +45,29 @@ class Task:
     """One output, in one universe: everything needed to make it."""
 
     universe_id: str
+    #: The qualified id — ``classification.accuracy`` inside a sub-analysis.
     output_id: str
-    output_dir: Path
+    #: The id as declared, unqualified: what the file is named after.
+    local_id: str
+    #: The directory holding the astra.yaml that declares this output —
+    #: the project root, or a sub-analysis's own directory.
+    home: Path
+    #: The single file this output is.
+    output_path: Path
     #: The recipe with its placeholders substituted — a shell command.
     recipe: str
     #: Declared input name → the path it resolves to. Upstream outputs are
-    #: their directories; everything else is whatever ``source`` named.
+    #: their files; everything else is whatever ``source`` named.
     inputs: dict[str, Path]
     #: The subset of ``inputs`` another task produces, and which one.
     produced_by: dict[str, Key]
     decisions: dict[str, str]
     definition_version: str
+
+    @property
+    def manifest_path(self) -> Path:
+        """This output's manifest sidecar."""
+        return assets.manifest_path(self.output_path)
 
     @property
     def key(self) -> Key:
@@ -187,6 +207,20 @@ def build(root: Path) -> Graph:
         declared_in[universe_id] = path
         for task in _tasks(root, universe_id, spec, universe):
             tasks[task.key] = task
+
+    # Two tasks composing one path would have the second silently overwrite
+    # the first. The way in is real: an external sub-analysis is filed under
+    # its own universe, so two parent universes that both select it resolve
+    # to the same file while feeding it different inputs.
+    written_by: dict[Path, Key] = {}
+    for key, task in tasks.items():
+        if (earlier := written_by.get(task.output_path)) is not None:
+            raise ProjectError(
+                f"`{earlier[0]}/{earlier[1]}` and `{key[0]}/{key[1]}` both materialize to "
+                f"{declared_path(root, task.output_path)}. Give the sub-analysis its own "
+                f"universe per parent universe, or the second would overwrite the first."
+            )
+        written_by[task.output_path] = key
     return Graph(tasks=tasks)
 
 
@@ -254,6 +288,83 @@ def _validate(spec_path: Path, universes: list[Path]) -> None:
         )
 
 
+@dataclass(frozen=True)
+class _Placement:
+    """Where one analysis node's outputs land."""
+
+    #: The directory holding that node's ``astra.yaml``.
+    home: Path
+    #: The universe its results are filed under.
+    universe_id: str
+    #: The inline sub-analyses descended through since ``home``.
+    scope: tuple[str, ...]
+
+
+def _placements(
+    root: Path,
+    spec: dict[str, Any],
+    universe: dict[str, Any],
+    universe_id: str,
+) -> dict[tuple[str, ...], _Placement]:
+    """Locate every analysis node in the tree.
+
+    Walks the spec and the universe file together, because only the
+    universe says which of a sub-analysis's own universes was picked.
+
+    Args:
+        root: The project root — the root analysis's home.
+        spec: The analysis, external sub-analyses already resolved.
+        universe: The universe file's contents.
+        universe_id: The universe file's id.
+
+    Returns:
+        Qualified scope → where its outputs land.
+
+    Raises:
+        ProjectError: If a sub-analysis's home escapes the project, or it
+            selects a universe that is not there.
+    """
+    found: dict[tuple[str, ...], _Placement] = {}
+    inside = root.resolve()
+
+    def walk(
+        node: dict[str, Any],
+        chosen: dict[str, Any],
+        scope: tuple[str, ...],
+        place: _Placement,
+    ) -> None:
+        found[scope] = place
+        for sub_id, sub in (node.get("analyses") or {}).items():
+            if not isinstance(sub, dict):
+                continue
+            here = (*scope, str(sub_id))
+            picked = (chosen.get("analyses") or {}).get(str(sub_id)) or {}
+            declared = sub.get("path")
+            if declared:
+                home = Path(os.path.normpath(place.home / str(declared)))
+                if not home.resolve().is_relative_to(inside):
+                    raise ProjectError(
+                        f"sub-analysis `{'.'.join(here)}` has path `{declared}`, which is "
+                        f"outside the project — its results could not be versioned here."
+                    )
+                selected = picked.get("universe")
+                if selected:
+                    named = home / "universes" / f"{selected}.yaml"
+                    if not named.is_file():
+                        raise ProjectError(
+                            f"universe `{universe_id}` selects `{selected}` for "
+                            f"sub-analysis `{'.'.join(here)}`, but {declared_path(root, named)} "
+                            f"does not exist."
+                        )
+                nested = _Placement(home, str(selected) if selected else place.universe_id, ())
+            else:
+                nested = _Placement(place.home, place.universe_id, (*place.scope, str(sub_id)))
+            walk(sub, picked, here, nested)
+
+    walk(spec, universe, (), _Placement(root, universe_id, ()))
+    return found
+
+
 def _tasks(
     root: Path,
     universe_id: str,
@@ -270,22 +381,41 @@ def _tasks(
     from astra.resolve import render_command, resolve_outputs
 
     resolved = resolve_outputs(spec, universe, root)
-    executable = {out.id for out in resolved if out.command}
+    where = _placements(root, dict(spec), dict(universe), universe_id)
+    # The whole resolved output, not just its id: an upstream input has to
+    # resolve to the *file* another task writes, which needs that output's
+    # home, universe, scope and format. A set of ids cannot say any of it.
+    executable = {out.id: out for out in resolved if out.command}
+
+    if absent := sorted(out.id for out in executable.values() if not out.format):
+        raise ProjectError(
+            f"{len(absent)} output(s) declare no `format:`: {', '.join(absent)}. "
+            "lc names each output's file from it, so there is nowhere to write them — "
+            "add the artifact's file extension, e.g. `format: png`."
+        )
+
+    def file_of(out: object) -> Path:
+        place = where[out.scope]  # type: ignore[attr-defined]
+        return assets.output_path(
+            place.home,
+            place.universe_id,
+            place.scope,
+            str(out.definition["id"]),  # type: ignore[attr-defined]
+            str(out.format),  # type: ignore[attr-defined]
+        )
 
     tasks = []
     for out in resolved:
         if not out.command:
             continue
-        output_dir = assets.output_dir(root, universe_id, out.id)
+        output_path = file_of(out)
         values: dict[str, str] = {}
         paths: dict[str, Path] = {}
         produced_by: dict[str, Key] = {}
         for declared in out.inputs:
             if declared.produced_by in executable:
                 produced_by[declared.id] = (universe_id, declared.produced_by)
-                paths[declared.id] = assets.output_dir(
-                    root, universe_id, declared.produced_by
-                )
+                paths[declared.id] = file_of(executable[declared.produced_by])
             elif declared.source:
                 # An absolute `source:` wins over the join — pathlib's own
                 # rule, and the one anyone writing one expects.
@@ -302,7 +432,7 @@ def _tasks(
                 out.command,
                 inputs=values,
                 decisions=out.decisions,
-                output=declared_path(root, output_dir),
+                output=declared_path(root, output_path),
             )
         except ValueError as e:
             raise ProjectError(f"output `{out.id}`: {e}") from e
@@ -311,13 +441,15 @@ def _tasks(
             Task(
                 universe_id=universe_id,
                 output_id=out.id,
-                output_dir=output_dir,
+                local_id=str(out.definition["id"]),
+                home=where[out.scope].home,
+                output_path=output_path,
                 recipe=recipe,
                 inputs=paths,
                 produced_by=produced_by,
                 decisions=out.decisions,
                 definition_version=identity.definition_version(
-                    recipe=recipe, decisions=out.decisions
+                    recipe=recipe, decisions=out.decisions, fmt=str(out.format)
                 ),
             )
         )

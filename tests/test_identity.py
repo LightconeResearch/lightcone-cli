@@ -171,19 +171,34 @@ def test_fields_cannot_shift_into_one_another(root: Path) -> None:
 # ---- definition_version ----------------------------------------------------
 
 
-def test_definition_version_follows_both_its_terms() -> None:
+def test_definition_version_follows_all_three_terms() -> None:
     recipe, decisions = "python fit.py {output}", {"method": "mcmc"}
-    original = definition_version(recipe=recipe, decisions=decisions)
+    original = definition_version(recipe=recipe, decisions=decisions, fmt="csv")
 
-    assert definition_version(recipe=recipe + " -v", decisions=decisions) != original
-    assert definition_version(recipe=recipe, decisions={"method": "nested"}) != original
+    assert definition_version(recipe=recipe + " -v", decisions=decisions, fmt="csv") != original
+    assert (
+        definition_version(recipe=recipe, decisions={"method": "nested"}, fmt="csv") != original
+    )
+    assert definition_version(recipe=recipe, decisions=decisions, fmt="parquet") != original
+
+
+def test_the_format_moves_it_even_when_the_recipe_never_names_the_output() -> None:
+    """A recipe need not use `{output}` at all, so the format cannot be
+    left to arrive through the rendered path. One that did would keep its
+    digest across a re-declared serialization — and the sidecar, named from
+    the id alone, does not move either, so the manifest would go on
+    describing an output at a path that no longer exists."""
+    fixed = "python fit.py --out results/baseline/fit.csv"
+    assert definition_version(recipe=fixed, decisions={}, fmt="csv") != definition_version(
+        recipe=fixed, decisions={}, fmt="parquet"
+    )
 
 
 def test_decision_order_does_not_matter() -> None:
     """Decisions are a mapping, not a sequence — two spellings of the same
     choices define the same output."""
-    a = definition_version(recipe="r", decisions={"x": "1", "y": "2"})
-    b = definition_version(recipe="r", decisions={"y": "2", "x": "1"})
+    a = definition_version(recipe="r", decisions={"x": "1", "y": "2"}, fmt="csv")
+    b = definition_version(recipe="r", decisions={"y": "2", "x": "1"}, fmt="csv")
     assert a == b
 
 
@@ -191,10 +206,10 @@ def test_the_environment_is_not_part_of_what_an_output_is(root: Path) -> None:
     """The load-bearing separation. `env_version` is recorded beside an
     output and compared to say it is *behind*; folding it in here would
     make one added dependency remake a project's every result."""
-    before = definition_version(recipe="r", decisions={})
+    before = definition_version(recipe="r", decisions={}, fmt="csv")
     (root / ".python-version").write_text("3.12.9\n")
     assert env_version(root)  # the environment did move
-    assert definition_version(recipe="r", decisions={}) == before
+    assert definition_version(recipe="r", decisions={}, fmt="csv") == before
 
 
 # ---- the lock scan ---------------------------------------------------------

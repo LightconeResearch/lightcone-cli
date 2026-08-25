@@ -30,6 +30,7 @@ inputs:
 outputs:
   - id: fit
     type: metric
+    format: json
     inputs: [catalog]
     decisions: [method]
     recipe:
@@ -37,6 +38,7 @@ outputs:
 
   - id: report
     type: report
+    format: md
     inputs: [fit]
     recipe:
       command: python src/report.py {inputs.fit} {output}
@@ -113,10 +115,11 @@ def test_an_output_that_ignores_a_decision_is_not_moved_by_it(tmp_path: Path) ->
     assert a.tasks[key].definition_version == b.tasks[key].definition_version
 
 
-def test_an_output_addresses_its_own_directory(tmp_path: Path) -> None:
+def test_an_output_addresses_its_own_file(tmp_path: Path) -> None:
     task = _build(_project(tmp_path)).tasks[("baseline", "fit")]
-    assert task.output_dir == tmp_path / "results" / "baseline" / "fit"
-    assert "results/baseline/fit" in task.recipe
+    assert task.output_path == tmp_path / "results" / "baseline" / "fit.json"
+    assert task.manifest_path == tmp_path / "results" / "baseline" / ".fit.manifest.json"
+    assert "results/baseline/fit.json" in task.recipe
 
 
 def test_a_declared_input_resolves_to_its_source(tmp_path: Path) -> None:
@@ -274,6 +277,7 @@ outputs:
 
   - id: summary
     type: report
+    format: md
     inputs: [mass_function]
     recipe:
       command: python summarize.py {inputs.mass_function} {output}
@@ -295,6 +299,7 @@ inputs:
 outputs:
   - id: mass_function
     type: metric
+    format: npz
     inputs: [catalog]
     decisions: [binning]
     recipe:
@@ -311,6 +316,7 @@ decisions:
 
 
 def _tree(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
     (root / "astra.yaml").write_text(textwrap.dedent(_PARENT))
     (root / "universes").mkdir()
     # The sub-analysis's universe is named explicitly: ASTRA has no
@@ -325,13 +331,72 @@ def _tree(root: Path) -> Path:
     return root
 
 
-def test_a_sub_analysis_output_is_addressed_flat_and_qualified(tmp_path: Path) -> None:
-    """One addressing scheme and one place to look, whatever shape the
-    spec has."""
+def test_a_sub_analysis_is_addressed_by_its_qualified_id(tmp_path: Path) -> None:
+    """One addressing scheme whatever shape the spec has: only the path
+    nests, never the key."""
     graph = _build(_tree(tmp_path))
     assert sorted(graph.tasks) == [("baseline", "hod.mass_function"), ("baseline", "summary")]
-    task = graph.tasks[("baseline", "hod.mass_function")]
-    assert task.output_dir == tmp_path / "results" / "baseline" / "hod.mass_function"
+
+
+def test_an_external_sub_analysis_keeps_results_beside_its_own_spec(tmp_path: Path) -> None:
+    """A sub-analysis with a `path:` is a self-similar analysis — its own
+    astra.yaml, its own universes, and so its own results tree."""
+    root = _tree(tmp_path)
+    task = _build(root).tasks[("baseline", "hod.mass_function")]
+    assert task.output_path == root / "analyses/hod/results/baseline/mass_function.npz"
+    assert task.manifest_path == (
+        root / "analyses/hod/results/baseline/.mass_function.manifest.json"
+    )
+
+
+def test_a_consumer_is_handed_the_upstream_file_not_its_directory(tmp_path: Path) -> None:
+    """The filename contract the spec now carries: a downstream recipe is
+    given the actual file, so nothing has to know what is inside a
+    directory it was handed."""
+    root = _tree(tmp_path)
+    recipe = _build(root).tasks[("baseline", "summary")].recipe
+    assert "analyses/hod/results/baseline/mass_function.npz" in recipe
+
+
+def test_a_re_export_resolves_to_what_actually_makes_the_bytes(tmp_path: Path) -> None:
+    """`summary` names the parent's re-export, which carries no recipe of
+    its own — so its input has to be the sub-analysis's file."""
+    root = _tree(tmp_path)
+    task = _build(root).tasks[("baseline", "summary")]
+    assert task.produced_by == {"mass_function": ("baseline", "hod.mass_function")}
+    assert task.inputs["mass_function"] == (
+        root / "analyses/hod/results/baseline/mass_function.npz"
+    )
+
+
+def test_a_sub_analysis_reaching_outside_the_project_is_refused(tmp_path: Path) -> None:
+    """Its results would land outside the repository, where nothing could
+    version or fetch them. The sub-analysis is real and resolves — only
+    where it sits is wrong."""
+    root = _tree(tmp_path / "project")
+    (root / "astra.yaml").write_text(
+        textwrap.dedent(_PARENT).replace("path: ./analyses/hod", "path: ../hod")
+    )
+    outside = tmp_path / "hod"
+    (outside / "universes").mkdir(parents=True)
+    (outside / "astra.yaml").write_text(textwrap.dedent(_SUB))
+    (outside / "universes" / "baseline.yaml").write_text(
+        "id: baseline\ndecisions:\n  binning: log\n"
+    )
+    with pytest.raises(ProjectError, match="outside the project"):
+        _build(root)
+
+
+def test_a_sub_analysis_universe_that_is_not_there_is_refused(tmp_path: Path) -> None:
+    """astra logs a warning and settles the sub-analysis from the parent's
+    decisions instead, so without this lc would file an artifact under a
+    universe it never loaded."""
+    root = _tree(tmp_path)
+    (root / "universes" / "baseline.yaml").write_text(
+        "id: baseline\ndecisions: {}\nanalyses:\n  hod:\n    universe: absent\n"
+    )
+    with pytest.raises(ProjectError, match="absent"):
+        _build(root)
 
 
 
@@ -346,6 +411,31 @@ def test_a_sub_analysis_output_is_addressed_flat_and_qualified(tmp_path: Path) -
 
 
 
+
+
+def test_an_output_without_a_format_is_refused_by_name(tmp_path: Path) -> None:
+    """lc names the file from it, so there is nowhere to write the output.
+    Every offender at once: a spec is fixed in one pass, not one run per
+    missing key."""
+    root = _project(tmp_path)
+    (root / "astra.yaml").write_text(
+        textwrap.dedent(_SPEC).replace("    format: json\n", "").replace("    format: md\n", "")
+    )
+    with pytest.raises(ProjectError, match="format") as raised:
+        _build(root)
+    assert "fit" in str(raised.value) and "report" in str(raised.value)
+
+
+def test_two_tasks_that_would_write_one_file_are_refused(tmp_path: Path) -> None:
+    """An external sub-analysis is filed under its own universe, so two
+    parent universes selecting the same one resolve to the same path while
+    feeding it different inputs. The second would overwrite the first."""
+    root = _tree(tmp_path / "project")
+    (root / "universes" / "robust.yaml").write_text(
+        "id: robust\ndecisions: {}\nanalyses:\n  hod:\n    universe: baseline\n"
+    )
+    with pytest.raises(ProjectError, match="both materialize to"):
+        _build(root)
 
 
 # ---- rendering a recipe ----------------------------------------------------

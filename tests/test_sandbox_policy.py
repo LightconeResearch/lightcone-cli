@@ -59,37 +59,40 @@ def test_results_is_writable_for_a_probe(tmp_path: Path) -> None:
         assert built.grants(project / "results" / "out.csv", built.write)
 
 
-def test_a_recipe_is_narrowed_to_its_own_output_directory(tmp_path: Path) -> None:
-    """The cross-write closure: a concurrent task landing bytes in a
-    sibling's directory before the sibling hashes produces a manifest
-    that is self-consistent and wrong — no checksum can ever see it, so
-    prevention is the only fix. Same nested-writable shape, one level
-    deeper."""
+def test_a_recipe_is_narrowed_to_the_directory_its_output_lands_in(tmp_path: Path) -> None:
+    """An output is one file, and a mechanism can only grant *creating* it
+    through the directory that will hold it — so the scope is that
+    directory, and outputs declared side by side are mutually writable.
+    Recorded rather than papered over: `data_version` is what answers
+    whether an output's bytes are its own. What the scope does still
+    exclude is every other universe and every other analysis."""
     project = tmp_path / "proj"
-    own = project / "results" / "baseline" / "first"
-    sibling = project / "results" / "baseline" / "second"
-    own.mkdir(parents=True)
-    sibling.mkdir(parents=True)
-    with scope(policy_module.exec_policy(project, output_dir=own)) as built:
-        assert built.grants(own / "out.csv", built.write)
-        assert not built.grants(sibling / "out.csv", built.write)
+    own = project / "results" / "baseline"
+    elsewhere = project / "results" / "robust"
+    sub = project / "hod" / "results" / "fast"
+    for path in (own, elsewhere, sub):
+        path.mkdir(parents=True)
+    with scope(policy_module.exec_policy(project, write_dir=own)) as built:
+        assert built.grants(own / "first.txt", built.write)
+        assert not built.grants(elsewhere / "first.txt", built.write)
+        assert not built.grants(sub / "mass_function.npz", built.write)
         assert not built.grants(project / "results", built.write)
-        assert built.grants(sibling / "out.csv", built.read), (
+        assert built.grants(elsewhere / "first.txt", built.read), (
             "an upstream output is still a readable input"
         )
 
 
-def test_the_containerized_recipe_mounts_only_its_own_output_directory(
+def test_the_containerized_recipe_mounts_only_that_directory(
     tmp_path: Path,
 ) -> None:
-    """The mount table derives from the write set, so the narrowing must
+    """The mount table derives from the write set, so the scope must
     survive into the containerized shape untranslated."""
     project = tmp_path / "proj"
-    own = project / "results" / "baseline" / "first"
+    own = project / "results" / "baseline"
     own.mkdir(parents=True)
     with scope(
         policy_module.exec_policy(
-            project, containerized=True, env_dir=project / ".lightcone/venv", output_dir=own
+            project, containerized=True, env_dir=project / ".lightcone/venv", write_dir=own
         )
     ) as built:
         assert own in built.write

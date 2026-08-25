@@ -42,8 +42,9 @@ inputs:
 outputs:
   - id: sums
     type: metric
+    format: txt
     recipe:
-      command: echo "2+2" | bc > {output}/sum.txt
+      command: echo "2+2" | bc > {output}
 """
 
 
@@ -218,10 +219,10 @@ def test_materialize_end_to_end_in_the_image(runtime: str, cproject: Path) -> No
 
     assert report.ok, report.warnings
     assert report.made == ["baseline/sums"]
-    assert (cproject / "results/baseline/sums/sum.txt").read_text() == "4\n"
+    assert (cproject / "results/baseline/sums.txt").read_text() == "4\n"
     assert not dataset.status(cproject)
 
-    manifest = assets.read(cproject / "results/baseline/sums")
+    manifest = assets.read(cproject / "results/baseline/.sums.manifest.json")
     assert manifest is not None
     assert manifest.hermeticity["mechanism"] == runtime
     assert manifest.hermeticity["network"] == "allowed"
@@ -259,7 +260,7 @@ def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
     report = engine.materialize(cproject, [])
     assert report.ok, report.warnings
-    original = assets.read(cproject / "results/baseline/sums")
+    original = assets.read(cproject / "results/baseline/.sums.manifest.json")
     assert original is not None
 
     clone = tmp_path / "clone"
@@ -280,7 +281,7 @@ def test_a_rerun_on_a_clone_fetches_the_archive_and_reproduces(
     )
 
     assert proc.returncode == 0, proc.stderr
-    rerun = assets.read(clone / "results/baseline/sums")
+    rerun = assets.read(clone / "results/baseline/.sums.manifest.json")
     assert rerun is not None
     assert rerun.data_version == original.data_version
     assert not dataset.status(clone)

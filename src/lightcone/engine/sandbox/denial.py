@@ -184,11 +184,11 @@ def _render_write(path: Path) -> list[str]:
     return _message(
         f"cannot write {path}",
         [
-            "  a recipe writes only its own output directory ({output} in the",
-            "  recipe); a probe writes results/. The rest of the tree is",
-            "  read-only, so the environment a run starts with is the one it",
-            "  ends with. For anything that is not output, write somewhere",
-            "  scratch:",
+            "  a recipe writes its output ({output} in the recipe) and the",
+            "  directory that holds it; a probe writes results/. The rest of",
+            "  the tree is read-only, so the environment a run starts with is",
+            "  the one it ends with. For anything that is not output, write",
+            "  somewhere scratch:",
             "      import tempfile; tempfile.mkdtemp()      # or $TMPDIR",
         ],
     )

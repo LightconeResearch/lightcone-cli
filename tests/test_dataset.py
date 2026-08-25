@@ -71,29 +71,44 @@ def test_save_puts_result_bytes_in_the_annex_and_the_manifest_in_git(repo: Path)
     """The whole storage policy, exercised end to end. The manifest has to
     stay a plain git blob: `lc` reads it on clones that have fetched no
     annex content at all."""
-    output = repo / "results" / "baseline" / "best_fit"
-    output.mkdir(parents=True)
-    (output / "fit.csv").write_text("a,b\n1,2\n")
-    (output / ".lightcone-manifest.json").write_text('{"data_version": "abc"}\n')
+    results = repo / "results" / "baseline"
+    results.mkdir(parents=True)
+    (results / "best_fit.csv").write_text("a,b\n1,2\n")
+    (results / ".best_fit.manifest.json").write_text('{"data_version": "abc"}\n')
 
-    assert dataset.save(repo, [output], "materialize best_fit")
+    assert dataset.save(repo, [results], "materialize best_fit")
 
-    assert _annexed(repo, output / "fit.csv")
-    assert not _annexed(repo, output / ".lightcone-manifest.json")
+    assert _annexed(repo, results / "best_fit.csv")
+    assert not _annexed(repo, results / ".best_fit.manifest.json")
     assert not dataset.status(repo)
+
+
+def test_a_sub_analysis_results_tree_is_routed_the_same_way(repo: Path) -> None:
+    """An analysis keeps its results beside its own astra.yaml, so the
+    routing rule cannot be anchored at the project root — a sub-analysis's
+    payload would land in git as a plain blob, invisibly."""
+    results = repo / "hod" / "results" / "fast"
+    results.mkdir(parents=True)
+    (results / "mass_function.npz").write_bytes(b"binned\n" * 64)
+    (results / ".mass_function.manifest.json").write_text("{}\n")
+
+    assert dataset.save(repo, [results], "materialize the sub-analysis")
+
+    assert _annexed(repo, results / "mass_function.npz")
+    assert not _annexed(repo, results / ".mass_function.manifest.json")
 
 
 def test_a_plain_git_add_annexes_content_by_itself(repo: Path) -> None:
     """`filter=annex` is what makes git's own add route content, which is
     what lets lc — and everyone else — never run a git-annex command."""
-    output = repo / "results" / "baseline" / "best_fit"
-    output.mkdir(parents=True)
-    (output / "fit.csv").write_text("a,b\n1,2\n")
+    results = repo / "results" / "baseline"
+    results.mkdir(parents=True)
+    (results / "best_fit.csv").write_text("a,b\n1,2\n")
 
     dataset._git(["add", "-A", "--", "results"], cwd=repo)
     dataset._git(["commit", "-q", "-m", "plain git"], cwd=repo)
 
-    assert _annexed(repo, output / "fit.csv")
+    assert _annexed(repo, results / "best_fit.csv")
 
 
 def test_dot_paths_follow_the_storage_policy_not_annex_defaults(repo: Path) -> None:
@@ -109,16 +124,16 @@ def test_dot_paths_follow_the_storage_policy_not_annex_defaults(repo: Path) -> N
     archive = repo / ".datalad" / "environments" / "lc-env-abc" / "image"
     archive.parent.mkdir(parents=True)
     archive.write_bytes(b"pretend image bytes\n" * 64)
-    output = repo / "results" / "baseline" / "fit"
+    output = repo / "results" / "baseline"
     output.mkdir(parents=True)
     (output / ".cache.h5").write_bytes(b"intermediate\n" * 64)
-    (output / ".lightcone-manifest.json").write_text("{}\n")
+    (output / ".fit.manifest.json").write_text("{}\n")
 
     dataset.save(repo, [archive.parent, output], "routed")
 
     assert _annexed(repo, archive)
     assert _annexed(repo, output / ".cache.h5")
-    assert not _annexed(repo, output / ".lightcone-manifest.json")
+    assert not _annexed(repo, output / ".fit.manifest.json")
 
     plain = repo / ".datalad" / "environments" / "lc-env-def" / "image"
     plain.parent.mkdir(parents=True)

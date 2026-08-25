@@ -382,28 +382,30 @@ def test_results_can_be_written(backend: sandbox.Backend, project: Path) -> None
     assert (project / "results" / "out.csv").read_text() == "out"
 
 
-def test_a_recipe_cannot_write_a_sibling_output_directory(
+def test_a_recipe_cannot_write_another_analysis_results_tree(
     backend: sandbox.Backend, project: Path
 ) -> None:
-    """The cross-write closure, at the kernel: a recipe granted its own
-    output directory cannot land bytes in a sibling's — the corruption
-    that would otherwise enter the sibling's digest as though its recipe
-    wrote it. Both writes target user-owned paths, so only the boundary
-    can refuse the first; the second is the mutation check in-place."""
-    own = project / "results" / "baseline" / "first"
-    sibling = project / "results" / "baseline" / "second"
+    """The scope is the directory the output lands in, so outputs declared
+    beside each other are mutually writable — `data_version` is what
+    answers for an output's bytes, not the boundary. What the kernel does
+    still refuse is every *other* results tree: another universe, and
+    another analysis's own. Both writes target user-owned paths, so only
+    the boundary can refuse the first; the second is the mutation check
+    in-place."""
+    own = project / "results" / "baseline"
+    other = project / "hod" / "results" / "fast"
     own.mkdir(parents=True)
-    sibling.mkdir(parents=True)
-    (sibling / "value.txt").write_text("theirs\n")
-    with sandbox.scope(sandbox.exec_policy(project, output_dir=own)) as policy:
+    other.mkdir(parents=True)
+    (other / "mass_function.npz").write_text("theirs\n")
+    with sandbox.scope(sandbox.exec_policy(project, write_dir=own)) as policy:
         crossed = shell(
-            backend, policy, f"printf forged > {sibling / 'value.txt'}", cwd=project
+            backend, policy, f"printf forged > {other / 'mass_function.npz'}", cwd=project
         )
-        owned = shell(backend, policy, f"printf mine > {own / 'value.txt'}", cwd=project)
+        owned = shell(backend, policy, f"printf mine > {own / 'first.txt'}", cwd=project)
     assert crossed.returncode != 0
-    assert (sibling / "value.txt").read_text() == "theirs\n", "the file changed anyway"
+    assert (other / "mass_function.npz").read_text() == "theirs\n", "the file changed anyway"
     assert owned.returncode == 0, owned.stderr
-    assert (own / "value.txt").read_text() == "mine"
+    assert (own / "first.txt").read_text() == "mine"
 
 
 def test_a_declared_input_is_read_only(

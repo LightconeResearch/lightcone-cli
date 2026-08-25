@@ -39,7 +39,7 @@ import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from lightcone.engine import assets, container, dataset, identity, plan, project, venue, worker
@@ -178,11 +178,11 @@ def _classified(
     classified = []
     for key in graph.order():
         task = graph.tasks[key]
-        manifest = assets.read(task.output_dir)
+        manifest = assets.read(task.manifest_path)
         # History is git's to answer, so it enters the one classification
         # rule as a value — computed here, where git lives, exactly as
         # the worker's driver computes it for a run.
-        foreign = None if manifest is None else _foreign_write(root, key)
+        foreign = None if manifest is None else _foreign_write(root, task)
         verdict = assets.classify(
             definition_version=task.definition_version,
             env_version=env_version,
@@ -234,7 +234,9 @@ def _predicted(
             # no annex content the files are dangling symlinks, and hashing
             # them would report a different output and cascade a rebuild
             # over a project that is perfectly up to date.
-            manifest = None if upstream in would_run else assets.read(path)
+            manifest = (
+                None if upstream in would_run else assets.read(assets.manifest_path(path))
+            )
             predicted[name] = manifest.data_version if manifest else None
         elif not path.exists():
             predicted[name] = None
@@ -426,13 +428,19 @@ def _crate_line(root: Path, newest: str) -> str:
     return "up to date with the outputs"
 
 
-def _foreign_write(root: Path, key: Key) -> dataset.LastWrite | None:
-    """Find the commit that last touched *key*'s directory, unless it is
+def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
+    """Find the commit that last touched *task*'s manifest, unless it is
     the output's own run record — then ``None``, the clean answer. The
     fact only: the verdict's prose is `classify`'s, like every other
-    why."""
-    write = dataset.last_writer(root, assets.output_dir(root, *key))
-    if not write or write.subject == datalad_run_subject(key):
+    why.
+
+    Both paths: a forged *result* is the case the check exists for, and a
+    doctored *manifest* is the other half — while the manifest is also
+    what carries the history across a re-declared format, where the
+    payload's own path is new and would read as clean.
+    """
+    write = dataset.last_writer(root, task.output_path, task.manifest_path)
+    if not write or write.subject == datalad_run_subject(task.key):
         return None
     return write
 
@@ -513,6 +521,7 @@ def materialize(
         # only maintainer.
         _converge_crate(root, report, full, dsid)
         return report
+    _require_manifests_in_git(root, graph)
     _fetch_inputs(root, graph, report)
     # Before the runtime resolves, because the refusal must not cost an
     # image build: a containerized graph can span an allocation only if
@@ -564,9 +573,7 @@ def materialize(
     # answer is dead — the output is remade regardless — and each ask is
     # a git process.
     foreign = {
-        key: _foreign_write(root, key)
-        if (task.output_dir / assets.MANIFEST_FILENAME).is_file()
-        else None
+        key: _foreign_write(root, task) if task.manifest_path.is_file() else None
         for key, task in graph.tasks.items()
     }
     outstanding: dict[Key, Task] = dict(graph.tasks)
@@ -597,7 +604,7 @@ def materialize(
         # never to the whole tree, so edits made while the graph ran
         # survive.
         for task in outstanding.values():
-            dataset.restore(root, [task.output_dir])
+            dataset.restore(root, _owned(root, task))
     # The tree was clean at the start-of-run refusal and save/restore
     # keeps `results/` clean, so anything dirty *now* was edited while
     # the graph ran — and every manifest records the starting commit,
@@ -630,7 +637,7 @@ def _consume(
         report.notes.extend([f"{name}:", *lines])
 
     if result.status == "ok":
-        dataset.save(root, [task.output_dir], run_record(root, task, dsid, runtime))
+        dataset.save(root, _owned(root, task), run_record(root, task, dsid, runtime))
         report.made.append(name)
         return
 
@@ -642,7 +649,7 @@ def _consume(
         report.behind[name] = result.reason
         return
 
-    dataset.restore(root, [task.output_dir])
+    dataset.restore(root, _owned(root, task))
     getattr(report, result.status).append(name)
     report.warnings.append(f"{name}: {result.reason}")
 
@@ -820,12 +827,18 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             "publication view is maintained — declare one to enable it"
         )
         return
-    for directory in sorted((root / "results").glob("*/*/")):
-        key = (directory.parent.name, directory.name)
-        if key not in full.tasks and assets.read(directory) is not None:
+    # A set difference, never a reconstruction: an external sub-analysis is
+    # filed under its own universe while its graph key carries the parent's,
+    # so no rule turns one of these paths back into a key. Enumerated from
+    # git rather than from the homes the graph knows, so a sub-analysis just
+    # deleted from the spec is still named — the edit that orphans a tree is
+    # the same edit that would drop it from any graph-derived root set.
+    expected = {task.manifest_path for task in full.tasks.values()}
+    for manifest in sorted(dataset.tracked_manifests(root)):
+        if manifest not in expected and assets.read(manifest) is not None:
             report.warnings.append(
-                f"{plan.declared_path(root, directory)} has a manifest but the "
-                "spec no longer declares it, so it is not in the publication view"
+                f"{plan.declared_path(root, manifest)} is a manifest the spec no "
+                "longer declares, so its output is not in the publication view"
             )
     try:
         document = crate.render(
@@ -897,7 +910,10 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         "dsid": dsid,
         "exit": 0,
         "inputs": sorted(plan.declared_path(root, path) for path in task.inputs.values()),
-        "outputs": [plan.declared_path(root, task.output_dir)],
+        "outputs": [
+            plan.declared_path(root, task.output_path),
+            plan.declared_path(root, task.manifest_path),
+        ],
         "pwd": ".",
     }
     if runtime.mode == "containerized":
@@ -1029,6 +1045,58 @@ def _graph(
     return graph, env_version, full
 
 
+def _require_manifests_in_git(root: Path, graph: Graph) -> None:
+    """Refuse before the graph runs if a manifest would reach the annex.
+
+    ``dataset.save`` opts dot-named paths *out* of git-annex's stock
+    routing, so the sidecar's leading dot decides nothing on its own and
+    ``.gitattributes`` decides everything. Get that wrong and the run is
+    green here and broken everywhere else: a clone with no content fetched
+    reads a pointer file where the manifest should be, every output
+    classifies as never materialized, and nothing said so.
+
+    One process for the whole graph — ``check-attr`` takes many paths —
+    and before anything executes, because the repo refuses before it
+    spends.
+
+    Args:
+        root: The project root.
+        graph: The run's tasks.
+
+    Raises:
+        ProjectError: If any manifest would be routed to the annex.
+    """
+    if not (paths := sorted({task.manifest_path for task in graph.tasks.values()})):
+        return
+    routed = dataset.largefiles(root, paths)
+    if annexed := sorted(path for path, answer in routed.items() if answer != "nothing"):
+        raise ProjectError(
+            f"{plan.declared_path(root, Path(annexed[0]))} would be stored in the annex, "
+            "but a manifest has to stay a plain git blob — it is what a clone reads "
+            "before fetching any content. Check .gitattributes still carries "
+            "`**/results/**/.*.manifest.json annex.largefiles=nothing`, last."
+        )
+
+
+def _owned(root: Path, task: Task) -> list[str]:
+    """Every path one output owns, as git pathspecs.
+
+    Globs rather than the two literal paths, and each earns its magic. The
+    payload's covers whatever format the *previous* run wrote, so a
+    re-declared serialization stages the old file's deletion instead of
+    leaving it behind untracked. The manifest's trailing ``*`` covers the
+    ``.tmp`` a failed write leaves, which nothing else would sweep.
+
+    Never the parent directory: siblings share it, and under Dask they are
+    in flight — ``git clean`` on it would delete a running task's bytes.
+    """
+    parent = plan.declared_path(root, task.output_path.parent)
+    return [
+        f":(glob){parent}/{task.local_id}.*",
+        f":(glob){parent}/.{task.local_id}{assets.MANIFEST_SUFFIX}*",
+    ]
+
+
 def _name(key: Key) -> str:
     return f"{key[0]}/{key[1]}"
 
@@ -1037,12 +1105,18 @@ def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
     """The refusal, split by what the right remedy actually is.
 
     Two path classes, because they call for opposite actions: work the
-    researcher owns has to be committed, and anything under ``results/``
+    researcher owns has to be committed, and anything under a ``results/``
     is lc's to write, so a change there is wreckage to discard rather than
     a contribution to keep.
+
+    The test is path-shaped rather than a lookup against the graph: this
+    refusal runs before the spec is read, deliberately, so that staged work
+    is protected before anything expensive happens. The cost is that a
+    directory called ``results`` anywhere in the tree reads as lc's — so
+    the remedy names the offending paths rather than sweeping a directory.
     """
-    theirs = [c for c in changes if not c[1].startswith("results/")]
-    ours = [c for c in changes if c[1].startswith("results/")]
+    ours = [c for c in changes if "results" in PurePosixPath(c[1]).parts]
+    theirs = [c for c in changes if c not in ours]
 
     lines = [
         f"uncommitted changes in {root} — every materialization is committed "
@@ -1059,7 +1133,9 @@ def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
         lines += [
             "",
             "  discard these (lc writes results/):",
-            "      git restore --staged --worktree results/ && git clean -fd results/",
+            "      git restore --staged --worktree -- "
+            + " ".join(sorted({path for _, path in ours})),
+            "      git clean -fd -- " + " ".join(sorted({path for _, path in ours})),
             *(f"      {code.strip() or '??'} {path}" for code, path in ours),
         ]
     return "\n".join(lines)
