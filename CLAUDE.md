@@ -714,8 +714,14 @@ must not discard edits made elsewhere while the graph was running.
 ## Key Invariants (layer 2)
 
 **Two hashes, and they answer different questions** (`identity.py`).
-`definition_version = sha256(recipe ‖ canonical decisions)` is what the
-spec says an output *is*. `env_version = sha256(uv.lock bytes ‖
+`definition_version = sha256(recipe ‖ canonical decisions ‖ format)` is
+what the spec says an output *is*. The format is framed in its own right
+rather than left to arrive through the rendered `{output}` path: a recipe
+need not use that placeholder at all (`evals/tasks/snae` does not), and
+one that does not would keep its digest across a re-declared
+serialization — while the sidecar, named from the id alone, does not move
+either, so the manifest would go on describing an output at a path that
+no longer exists. `env_version = sha256(uv.lock bytes ‖
 .python-version bytes ‖ canonical install-settings JSON)` is what it ran
 under.
 
@@ -862,13 +868,37 @@ missing decision or an unresolvable input — blaming the run for a fault
 in the file, far from the line at fault. It caught three of lc's own
 test fixtures the first time it ran.
 
-**The layout is flat and path-addressed.** `results/<universe>/<output_id>/`,
-`data/` for declared inputs, and the path in a rendered recipe *is* the
-path on disk — no staging, no scratch, no relocation. The `output_id` is
-ASTRA's **qualified** id, so a sub-analysis output lands at
-`results/<universe>/<analysis>.<output>/` and one addressing scheme spans
-however deep the spec nests. Nesting is not capped: the dot separator is
-unambiguous because ASTRA ids match `^[a-z][a-z0-9_]*$`.
+**One output is one file, and the spec names it.** An output is
+`<home>/results/<universe>/<inline scope…>/<local_id>.<format>` — never a
+directory a recipe fills — and the path in a rendered recipe *is* the path
+on disk: no staging, no scratch, no relocation. `format` comes from ASTRA
+(`Output.format`, astra-spec 0.0.14), so lc composes the filename rather
+than a recipe choosing it, and the whole contents of every `results/` tree
+are a pure function of the spec. `plan.build` **refuses** a spec whose
+executable outputs omit it, naming every one: it is only *recommended*
+until ASTRA 0.1.0, but lc has nowhere to write an output without it.
+
+**Results live beside the spec that declares them.** Every analysis node
+has a *home* — the directory holding its `astra.yaml` — and a universe,
+both derived by `plan._placements` walking the spec and the universe file
+together: the root's home is the project root; an inline sub-analysis
+shares its parent's home and disambiguates with a scope directory; an
+external one (`path:`) is a self-similar analysis with its own home and,
+where the parent universe names one, **its own universe id**. Two
+refusals ride on that walk — a home escaping the project root (its
+results could not be versioned) and a `universe: X` naming a file that is
+not there (astra logs a warning and settles from the parent's decisions
+instead, so lc would file an artifact under a universe it never loaded).
+
+Only the *path* nests. Graph keys stay `(universe_id, qualified_id)` and
+CLI targets stay dotted, because `Graph.resolve` splits on
+`rpartition("/")` and a slash-form target would mis-split the universe.
+
+**No task may share a path with another.** An external sub-analysis is
+filed under its own universe, so two parent universes selecting the same
+one resolve to the same file while feeding it different inputs — the
+second would overwrite the first, silently. `build` refuses, naming both,
+the same shape as the duplicate-universe-id refusal.
 
 **One rule names a path, and both the recipe and the run record use it**
 (`plan.declared_path`). Project-relative inside the tree, absolute
@@ -887,26 +917,43 @@ the layer makes, and saying so is the whole obligation — the same
 treatment `sdist_built` gets.
 
 **Two universes cannot share an id.** The id names a directory under
-`results/`, and the graph is keyed on `(universe_id, output_id)` — so the
+a `results/`, and the graph is keyed on `(universe_id, output_id)` — so the
 second file simply replaced the first and one universe's outputs went
 missing with nothing said. The way in is the natural one: copy
 `baseline.yaml`, edit the decisions, forget the id inside. `build`
 refuses, naming both files.
 
-**Because the path is composed, `output_dir` refuses an id that is not one
-path component.** An empty universe or output id collapses
-`results/<u>/<o>` onto a *parent* — `results/` itself, for two — and the
-worker empties that directory before running a recipe in it, so the
-consequence of an unchecked id is deleting every other universe's
-outputs. A `/`, `\`, `.` or `..` is refused for the same reason. This is
-the guard that lets the reset stay a whole-directory operation.
+**Because the path is composed, `assets.output_path` refuses any part
+that is not one path component** — an empty or `..`-bearing universe id,
+scope segment or output id would place a file outside the tree every
+guard above it checked — and a `format` that could not be an extension
+(empty, a separator, or leading-dot, which would make the output look
+like its own sidecar).
 
-**The reset takes the whole directory, and cannot take a named list.** A
-recipe declares an output *id*, never filenames, so there is no set of
-"expected files" to remove — and a previous run that crashed can have left
-anything in there, which would otherwise survive into this run's
-`data_version` as though the recipe had written it. What bounds the blast
-radius is the guard above, not a narrower delete.
+**The reset takes what the output's id names, never the directory.**
+Outputs share a directory now and Dask writes them concurrently, so a
+whole-directory delete would take a neighbour's bytes. It unlinks the
+sidecar and globs `<local_id>.*`: an id cannot contain a dot, so the glob
+cannot reach a sibling, a longer id, another output's sidecar or a scope
+directory of the same name — and it *does* reach a payload left by a run
+that declared another `format`, which is what stops one orphaning.
+
+**A payload that is not a regular file fails the task.** `data_version`
+branches on `is_file()` and hashes a directory happily, so `mkdir
+{output}` — what every recipe written for the old layout does — would
+otherwise commit a well-formed digest of something that is not the
+output, plus a crate `File` with no `sha256`. One check covers absent,
+directory and wrong-name, and it is what makes exit 0 stop being
+evidence that anything was written.
+
+**The manifest is a sidecar, `.<local_id>.manifest.json`, named from the
+id alone and never the format.** So it keeps its path — and therefore its
+history — across a re-declared serialization, which is what lets
+`_foreign_write` still answer for an output whose payload path is new.
+Decomposition is safe by partitioning on the **first** dot (ids carry
+none; formats may, `tar.gz`), never `Path.stem`. The old
+`_HASH_EXCLUDE` is gone with the directory that made it necessary: the
+manifest cannot be inside the thing it describes any more.
 
 **Dask owns the ordering.** Every task is submitted with its upstream
 futures as arguments, so the dependency order, the parallelism, and the
@@ -1069,6 +1116,19 @@ raised anywhere inside astra's validation or resolution was reported as a
 bad target — a rerun misdiagnosing itself, at the one place nobody is
 watching.
 
+**Known violation, unfixed: a malformed `astra.yaml` tracebacks out of
+`lc status` and `lc materialize --check`** as a raw
+`yaml.scanner.ScannerError`. `plan._validate` is the gate that turns a
+bad spec into ASTRA's own errors, but it only catches what *validation*
+reports — a spec that does not parse raises inside
+`validate_analysis_schema` → `astra.helpers.load_yaml` before there is
+anything to validate. (`lc materialize` usually masks it by refusing a
+dirty tree first, which is not a fix.) The shape of the fix is a
+`yaml.YAMLError` catch in `_validate` naming the file and the line, the
+same way the validator's own errors are rendered. Pre-existing and
+independent of the one-output-one-file change; written down here because
+it contradicts the invariant directly above it.
+
 **`git_sha` in a manifest is the commit the run *started* at**, not the
 commit the run went on to create. It is the code that produced the output.
 A test that reads `dataset.head()` after materializing and expects a match
@@ -1208,20 +1268,21 @@ impurity lives in policy construction, once.)
 
 **There is one policy, `exec_policy`, and it differs between a recipe
 and a probe by one keyword.** The tree is read-only apart from the
-in-tree write scope: a recipe's is **its own output directory**
-(`output_dir=`, handed down from the worker's task), a probe's is
-`results/` whole, because a probe has no output id. This narrowing is
-the hardening pass reversing an earlier decision (see Recorded
-decisions): it exists as leak *prevention*, closing the cross-write
-residue — a concurrent task landing bytes in a sibling's directory
-before the sibling hashes produced a manifest that was self-consistent
-and wrong, which no checksum could ever see, so prevention was the only
-possible fix. The probe→recipe promise ("a command that works under
-`lc run` works as a recipe") now excludes exactly the commands that
-write outside their own output directory — which is the accident being
-prevented, not a loophole in the promise. Integrity-answering is still
-`data_version`'s job alone; the sandbox prevents the write, it does not
-attest the bytes.
+in-tree write scope: a recipe's is **the directory its output lands in**
+(`write_dir=`, handed down from the worker's task), a probe's is the
+project's own `results/` whole, because a probe has no analysis node.
+
+That is a *directory* and not the output file, by mechanism rather than
+by choice: `policy._declared`/`_existing` drop paths that do not exist,
+so a file scope would leave a recipe with no in-tree write at all, and
+the Landlock shim masks a non-directory grant to `_FILE_ONLY_BITS`,
+stripping `MAKE_REG` — a file grant could not create the file. So the
+one-output-one-file change reverses the hardening pass's narrowing:
+outputs declared side by side are mutually writable again. Recorded, not
+papered over — what answers whether an output's bytes are its own is
+`data_version`, never the sandbox. What the scope still excludes is
+every *other* results tree: another universe, and another analysis's
+own.
 
 **`cluster_for_run()` is the seam, and it is two methods wide.**
 `submit(fn, *args, key=…)` and `completed(handles)`. That is all the
@@ -1878,7 +1939,13 @@ JSON-LD drops on expansion — the pre-rebuild exporter's silent failure.
 The committed archive is one entity, `["File", "ContainerImage"]`,
 identity (`sha256` = config-blob id) and payload together.
 
-**A published `sha256` is always a raw digest an outsider can verify** —
+**A published `sha256` is always a raw digest an outsider can verify**, and
+since the one-output-one-file change the manifest agrees with it: an
+output is a file, `data_version` drops the `file:` frame, and the
+manifest's digest, the crate's `sha256` and `sha256sum` are one number.
+Only directory-valued declared inputs stay framed (`dir:`), which is
+enough to keep the two from colliding and is the one entry in a manifest
+no standard tool can check. Historically —
 since the hardening pass, never lc's framed hash. Every file in an
 output directory is a `File` under its dataset's `hasPart`, with
 `sha256` and `contentSize` parsed from its SHA256E annex key
@@ -2140,6 +2207,57 @@ unlinks before writing; a new tampering test should too.
     it genuinely worth it (editing on a login node while an `sbatch`
     materialize runs for hours) arrives with the submission-model
     venue.
+
+### Recorded decision: one output, one file (post-hardening)
+
+`Output.format` landed in astra-spec 0.0.14 / astra-tools 0.2.17, and lc
+took it as the missing half of a long-standing asymmetry: `Input.source`
+always declared a path with an extension, while an output declared
+nothing and `{output}` was documented as "the path the artifact will be
+written to" — a path the schema never defined. What changed, and why:
+
+- **An output is one file, not a directory.** The multiplicity was born
+  the moment a recipe was handed a directory and picked a name inside it.
+  There is no directory now, so the natural idiom (`savefig(args.out)`)
+  produces exactly one file at exactly the declared path. The cost,
+  stated: a figure plus its data, a zarr store, a checkpoint directory
+  must become separate outputs or a container format (`.h5`, `.zip`,
+  `.tar.gz`). No flag re-opens it.
+- **The filename contract between producer and consumer is gone.**
+  `{inputs.X}` renders to the upstream's *file*, so nothing has to know
+  what is inside a directory it was handed.
+- **A results tree per analysis home**, so `results/` stopped being
+  root-anchored. `.gitattributes` broadened to `**/results/**` — with the
+  accepted collateral that a user's own `notebooks/results/` now annexes,
+  cheaper than generating spec-dependent attribute lines repair could
+  never remove.
+- **`results/**` is kept in the template even though `**/results/**`
+  subsumes it.** A managed line dropped from the template gets rank
+  `None` and is *skipped* by `gitattributes_disorder` — which would blind
+  the guard to the exact trap it exists for (a user file carrying the
+  `results/` opt-out without the `*` defaults). Measured both ways.
+- **A `check-attr` preflight refuses a run whose manifests would annex.**
+  `dataset.save` passes `annex.dotfiles=true`, so the sidecar's leading
+  dot decides nothing and `.gitattributes` decides everything. Annexed,
+  the run is green locally and every clone reports the whole project as
+  never materialized, silently. Probed once for the whole graph, before
+  anything executes.
+- **The orphan walk is a set difference, never a reconstruction.** An
+  external sub-analysis is filed under its own universe while its graph
+  key carries the parent's, so no rule turns such a path back into a key.
+  Expected sidecars come from `Task.manifest_path`; present ones from
+  `git ls-files`, which still finds the tree of a sub-analysis just
+  deleted from the spec — the edit that orphans it is the same edit that
+  would drop it from any graph-derived root set.
+- **No migration, by decision.** Nothing looks for `.lightcone-manifest.json`
+  and nothing detects directory-shaped outputs from a previous engine;
+  they are invisible to every walk. `git rm -r results/` and
+  re-materialize.
+- **Known residue**: a declared input's `source:` is still resolved
+  relative to the *project root*, not the declaring analysis's home, so a
+  sub-analysis cannot name a file beside its own `astra.yaml` the way it
+  names its results. Pre-existing; whether `source:` should be
+  home-relative is astra's question before it is lc's.
 
 ### Recorded deviations from the spec
 

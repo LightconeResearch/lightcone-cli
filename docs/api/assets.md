@@ -16,8 +16,9 @@ Source: `src/lightcone/engine/assets.py`.
 | `Verdict.calls_for_a_remake(refresh=)` | The one place a state becomes an action: `stale` always, `behind` only when asked. |
 | `data_version(path)` | Content hash of a directory or file — computed in the worker, before anything is annexed. |
 | `Versions` | Per-run memo so a shared declared input hashes once, not once per dependent. |
-| `read(dir)` / `write(...)` | The manifest, `.lightcone-manifest.json`. |
-| `output_dir(root, u, o)` | The path, guarded: an id that is not one path component is refused — this guard is what lets the worker's reset stay a whole-directory delete. |
+| `read(sidecar)` / `write(...)` | The manifest, `.<output_id>.manifest.json`. Both take the sidecar's own path, so a caller holding an output path has to say `manifest_path` out loud. |
+| `output_path(home, u, scope, id, fmt)` | The output's file, guarded: any part that is not a single path component is refused, and so is a format that could not be an extension. |
+| `manifest_path(output)` | The sidecar beside it, named from the id alone — so it keeps its path, and its history, across a re-declared format. |
 | `ContentNotFetchedError` | An annexed file whose content is not in this clone, in either shape it takes. |
 
 ## What must stay true

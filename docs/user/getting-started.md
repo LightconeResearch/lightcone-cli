@@ -102,6 +102,7 @@ inputs:
 outputs:
   - id: fit
     type: metric
+    format: json
     description: "Slope and intercept of the least-squares line"
     inputs: [points]
     decisions: [outliers]
@@ -110,6 +111,7 @@ outputs:
 
   - id: fit_plot
     type: figure
+    format: png
     description: "The points and the fitted line"
     inputs: [points, fit]
     recipe:
@@ -136,9 +138,12 @@ A few things to notice:
   changes.
 - Recipes reference those dependencies through placeholders —
   `{inputs.points}`, `{decisions.outliers}`, `{output}` — which are
-  expanded at execution time. `{output}` is the output's own results
-  directory, `results/<universe>/<output_id>/`; the engine creates it
-  before the recipe runs.
+  expanded at execution time. `{output}` is the output's own file,
+  `results/<universe>/<output_id>.<format>`; the engine creates the
+  directory before the recipe runs, and the recipe writes that one path.
+- Each output declares a `format` — the extension its artifact is
+  written with. It is what names the file, so a consumer knows what an
+  output *is* from the spec alone, and one output is always one file.
 - The decision's options aren't hardcoded anywhere in code; the scripts
   will take them as command-line arguments.
 
@@ -153,7 +158,7 @@ decisions:
 ```
 
 Each universe is one complete selection of decision values; its results
-materialize to `results/<universe>/<output_id>/`.
+materialize to `results/<universe>/<output_id>.<format>`.
 
 Check the spec is well-formed:
 
@@ -197,7 +202,7 @@ out = Path(args.output)
 )
 ```
 
-Then `src/plot.py` — reads the upstream output's directory, makes the
+Then `src/plot.py` — reads the upstream output's file, makes the
 figure:
 
 ```python
@@ -266,7 +271,8 @@ uncommitted edits (it wouldn't be able to say what code ran). Then:
 ```
 
 (We'll come back to that license line in step 7.) Each output landed in
-`results/baseline/<output_id>/` next to a `.lightcone-manifest.json` —
+`results/baseline/<output_id>.<format>` next to a
+`.<output_id>.manifest.json` —
 a manifest recording the recipe, the decisions, the input hashes, the
 environment, and the commit — and was committed with a run record that
 `datalad rerun` can replay. Look at `git log`: the build wrote history,
@@ -359,7 +365,8 @@ repository you already have.
 - The scripts take decision values as plain command-line arguments, so
   nothing methodological is hardcoded.
 - `lc materialize` ran each recipe in the project's locked environment,
-  sandboxed — free to write its own output directory and nothing else —
+  sandboxed — free to write the directory its output lands in, and
+  nothing else —
   and committed every output with a manifest and a re-runnable run
   record.
 - `lc status` and `lc materialize --check` read those manifests — they
