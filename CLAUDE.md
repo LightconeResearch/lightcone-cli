@@ -478,8 +478,8 @@ Without it `filter=annex` routes *everything* into the annex, analysis
 code included. `tests/test_dataset.py::test_analysis_code_stays_in_git_and_stays_writable`
 pins it against a real annex.
 
-**Manifests stay in git, deliberately.** `**/.lightcone-manifest.json` is
-exempted back out of the annex so it is readable on a clone that has
+**Manifests stay in git, deliberately.** `**/results/**/.*.manifest.json`
+is exempted back out of the annex so it is readable on a clone that has
 fetched no annex content at all — which is what lets `lc materialize
 --check` classify a whole project on a laptop that holds none of the
 bytes.

@@ -31,10 +31,10 @@ This project is driven by two CLIs — use them rather than improvising:
       single quoted shell string; for shell syntax use
       `lc run bash -c '...'`.
     - Outputs land in `results/baseline/<output_id>.<format>`, each with a
-      `.lightcone-manifest.json` manifest written and committed by the
-      engine. Never write into `results/` yourself: a hand-placed file
-      has no run record, and the engine detects the foreign write and
-      remakes the output.
+      `.<output_id>.manifest.json` manifest beside it, written and
+      committed by the engine. Never write into `results/` yourself: a
+      hand-placed file has no run record, and the engine detects the
+      foreign write and remakes the output.
     - When a recipe fails, `lc materialize` reports which output failed
       and why; fix the script or the spec, commit, and re-run.
 
