@@ -196,8 +196,7 @@ if args.outliers == "clip":
     x, y = x[mask], y[mask]
 slope, intercept = np.polyfit(x, y, 1)
 
-out = Path(args.output)
-(out / "fit.json").write_text(
+Path(args.output).write_text(
     json.dumps({"slope": slope, "intercept": intercept, "n_used": len(x)}, indent=2)
 )
 ```
@@ -223,7 +222,7 @@ parser.add_argument("--output", required=True)
 args = parser.parse_args()
 
 x, y = np.loadtxt(args.points, delimiter=",", skiprows=1, unpack=True)
-fit = json.loads((Path(args.fit) / "fit.json").read_text())
+fit = json.loads(Path(args.fit).read_text())
 
 fig, ax = plt.subplots()
 ax.scatter(x, y, s=12)
@@ -232,7 +231,7 @@ ax.plot(xs, fit["slope"] * xs + fit["intercept"], color="C1")
 ax.set_xlabel("x")
 ax.set_ylabel("y")
 ax.set_title(f"slope = {fit['slope']:.3f}")
-fig.savefig(Path(args.output) / "fit_plot.png", dpi=150)
+fig.savefig(args.output, dpi=150)
 ```
 
 Both scripts import from the project's locked environment, so declare
@@ -287,6 +286,7 @@ lc status
 ```
   mode:    direct
   sandbox: landlock (fs: declared, network: allowed)
+  crate:   not maintained — declare [project].license to enable it
 
   · current  baseline/fit       a3f1f11
   · current  baseline/fit_plot  a3f1f11

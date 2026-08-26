@@ -521,7 +521,6 @@ def materialize(
         # only maintainer.
         _converge_crate(root, report, full, dsid)
         return report
-    _require_manifests_in_git(root, graph)
     _fetch_inputs(root, graph, report)
     # Before the runtime resolves, because the refusal must not cost an
     # image build: a containerized graph can span an allocation only if
@@ -827,12 +826,10 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             "publication view is maintained — declare one to enable it"
         )
         return
-    # A set difference, never a reconstruction: an external sub-analysis is
-    # filed under its own universe while its graph key carries the parent's,
-    # so no rule turns one of these paths back into a key. Enumerated from
-    # git rather than from the homes the graph knows, so a sub-analysis just
-    # deleted from the spec is still named — the edit that orphans a tree is
-    # the same edit that would drop it from any graph-derived root set.
+    # A set difference rather than a walk driven by the spec: what is on
+    # disk is exactly what the *previous* spec declared, so the edit that
+    # orphans a manifest is the same edit that drops it from the graph.
+    # Enumerated from git, which answers for the tree as committed.
     expected = {task.manifest_path for task in full.tasks.values()}
     for manifest in sorted(dataset.tracked_manifests(root)):
         if manifest not in expected and assets.read(manifest) is not None:
@@ -1043,39 +1040,6 @@ def _graph(
             + ", ".join(sorted(outside))
         )
     return graph, env_version, full
-
-
-def _require_manifests_in_git(root: Path, graph: Graph) -> None:
-    """Refuse before the graph runs if a manifest would reach the annex.
-
-    ``dataset.save`` opts dot-named paths *out* of git-annex's stock
-    routing, so the sidecar's leading dot decides nothing on its own and
-    ``.gitattributes`` decides everything. Get that wrong and the run is
-    green here and broken everywhere else: a clone with no content fetched
-    reads a pointer file where the manifest should be, every output
-    classifies as never materialized, and nothing said so.
-
-    One process for the whole graph — ``check-attr`` takes many paths —
-    and before anything executes, because the repo refuses before it
-    spends.
-
-    Args:
-        root: The project root.
-        graph: The run's tasks.
-
-    Raises:
-        ProjectError: If any manifest would be routed to the annex.
-    """
-    if not (paths := sorted({task.manifest_path for task in graph.tasks.values()})):
-        return
-    routed = dataset.largefiles(root, paths)
-    if annexed := sorted(path for path, answer in routed.items() if answer != "nothing"):
-        raise ProjectError(
-            f"{plan.declared_path(root, Path(annexed[0]))} would be stored in the annex, "
-            "but a manifest has to stay a plain git blob — it is what a clone reads "
-            "before fetching any content. Check .gitattributes still carries "
-            "`results/**/.*.manifest.json annex.largefiles=nothing`, last."
-        )
 
 
 def _owned(root: Path, task: Task) -> list[str]:

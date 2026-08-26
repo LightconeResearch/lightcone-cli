@@ -18,7 +18,7 @@ asks anyone to run a git-annex command by hand.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -331,39 +331,14 @@ def annex_keys(directory: Path) -> dict[str, str]:
     return keys
 
 
-def largefiles(directory: Path, paths: Sequence[Path]) -> dict[str, str]:
-    """Ask ``.gitattributes`` where each of *paths* would be stored.
-
-    ``check-attr`` answers about the *rules*, so it works on paths that do
-    not exist yet — which is what lets a run ask before it writes.
-
-    Args:
-        directory: The repository root.
-        paths: What to ask about.
-
-    Returns:
-        Repository-relative path → the ``annex.largefiles`` value, which
-        is ``"unspecified"`` where no line matches.
-    """
-    if not paths:
-        return {}
-    relative = [_rel(directory, p) for p in paths]
-    out = _git(["check-attr", "-z", "annex.largefiles", "--", *relative], cwd=directory)
-    fields = out.split("\0")
-    return {
-        fields[i]: fields[i + 2] for i in range(0, len(fields) - 2, 3) if fields[i + 1]
-    }
-
-
 def tracked_manifests(directory: Path) -> list[Path]:
     """Every manifest sidecar git is tracking, anywhere in the tree.
 
     From the index rather than a directory walk: it is exact, it costs one
-    process, it never descends into ``.git`` or ``.venv``, and it still
-    finds the manifests under a sub-analysis that has just been deleted
-    from the spec — which is the case a walk driven by the current spec
-    would miss, in the very edit that orphans them. Untracked strays are
-    the dirty check's business, not this one's.
+    process, and it never descends into ``.git`` or ``.venv``. Scoped to
+    ``results/``, which is the only place lc writes one — elsewhere the
+    name is the user's to use. Untracked strays are the dirty check's
+    business, not this one's.
 
     Args:
         directory: The repository root.
@@ -375,7 +350,9 @@ def tracked_manifests(directory: Path) -> list[Path]:
     # through `project`, so the name has to be fetched after both exist.
     from lightcone.engine.assets import MANIFEST_SUFFIX
 
-    listed = _git(["ls-files", "-z", "--", f":(glob)**/*{MANIFEST_SUFFIX}"], cwd=directory)
+    listed = _git(
+        ["ls-files", "-z", "--", f":(glob)results/**/*{MANIFEST_SUFFIX}"], cwd=directory
+    )
     return [directory / name for name in listed.split("\0") if name]
 
 
@@ -442,13 +419,16 @@ def restore(directory: Path, paths: Iterable[Path | str]) -> None:
     """Put *paths* back the way the last commit had them.
 
     ``clean`` first for what a run wrote, then ``checkout`` for what it
-    deleted or truncated — and only when ``HEAD`` has something matching,
-    since a first materialization has nothing to go back to and
-    ``checkout`` errors on a pathspec it cannot match.
+    deleted or truncated — through ``_git_ok``, because a first
+    materialization has nothing to go back to and ``checkout`` exits
+    nonzero on a pathspec it cannot match.
 
-    ``ls-files --with-tree`` asks that question, not ``cat-file -e``:
-    a pathspec may be a glob, and ``cat-file`` takes a single path while
-    ``ls-tree`` refuses glob magic outright.
+    No guard in front of it: a pathspec may be a glob, and nothing cheap
+    answers "is this in HEAD" for one. ``cat-file -e`` takes a single
+    path, ``ls-tree`` refuses glob magic, and ``ls-files --with-tree``
+    also lists what is staged but *unborn* — so it says yes exactly where
+    ``checkout`` then says no, which is the state an interrupted save
+    leaves behind.
 
     Args:
         directory: The repository root.
@@ -459,8 +439,7 @@ def restore(directory: Path, paths: Iterable[Path | str]) -> None:
     for path in paths:
         rel = _rel(directory, path)
         _git(["clean", "-qfdx", "--", rel], cwd=directory)
-        if _git(["ls-files", "--with-tree=HEAD", "--", rel], cwd=directory).strip():
-            _git(["checkout", "-q", "HEAD", "--", rel], cwd=directory)
+        _git_ok(["checkout", "-q", "HEAD", "--", rel], cwd=directory)
 
 
 # =============================================================================

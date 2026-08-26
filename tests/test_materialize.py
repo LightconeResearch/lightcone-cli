@@ -997,29 +997,6 @@ def test_the_report_is_json_ready(root: Path, inline: None) -> None:
 # ---- the foreign-write fact ------------------------------------------------
 
 
-def test_a_manifest_the_attributes_would_annex_refuses_before_the_graph_runs(
-    root: Path, inline: None
-) -> None:
-    """The silent failure this guard exists for: `save` opts dot-paths out
-    of git-annex's stock routing, so the leading dot decides nothing and
-    `.gitattributes` decides everything. Annexed, a clone with no content
-    reads a pointer where the manifest should be and reports every output
-    as never materialized — with nothing said. Refused up front, before
-    any recipe has spent anything."""
-    attributes = root / ".gitattributes"
-    attributes.write_text(
-        attributes.read_text().replace(
-            "results/**/.*.manifest.json annex.largefiles=nothing", ""
-        )
-    )
-    dataset.save(root, [attributes], "route manifests into the annex")
-
-    with pytest.raises(ProjectError, match="plain git blob"):
-        engine.materialize(root, [])
-
-    assert not (root / "results" / "baseline").exists(), "it refused before running anything"
-
-
 def _forge(path: Path, text: str) -> None:
     """Overwrite a committed result the way a hand edit would — unlinking
     first, because results are committed thin: an in-place truncate would

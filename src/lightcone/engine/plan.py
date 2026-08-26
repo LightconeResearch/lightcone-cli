@@ -12,13 +12,9 @@ them, drops the outputs whose ``when:`` does not hold, and renders the
 recipe grammar — so scoping, ``from:`` references and sub-analysis
 nesting are read here rather than re-derived.
 
-Where an output lands follows the spec's own shape: every analysis node
-has an *analysis root* — the directory holding its ``astra.yaml`` — and its
-materialize to ``<analysis root>/results/<universe>/<inline scope…>/<id>.<format>``.
-An external sub-analysis (``path:``) is a self-similar analysis with its
-own analysis root and, where it names one, its own universe; an inline one
-shares its parent's and disambiguates with a scope directory. Graph keys stay
-the qualified id, so only the path nests, never the addressing.
+Where an output lands is composed, never chosen: an output is the single
+file ``results/<universe>/<id>.<format>``, and the format comes from the
+spec — so the whole contents of ``results/`` are a pure function of it.
 
 Nothing here schedules anything. Ordering is Dask's job at execution time
 and a topological walk's job in ``--check``; this module only says which

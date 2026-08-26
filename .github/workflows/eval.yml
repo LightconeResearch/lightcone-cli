@@ -80,15 +80,8 @@ jobs:
           project="$RUNNER_TEMP/eval-project"
           echo "PROJECT=$project" >> "$GITHUB_ENV"
           lc init "$project"
-          # `lc init` writes the spec version the installed astra-spec
-          # provides; the task seed is a committed fixture pinned by hand,
-          # so it drifts on every astra-spec release and `astra validate`
-          # then warns on every call — training the agent under test to
-          # read past version warnings. Keep the scaffold's answer.
-          spec_version="$(grep -m1 '^version:' "$project/astra.yaml")"
           # Overlay the task seed (astra.yaml, data/) on the scaffold
           cp -r evals/tasks/snae/. "$project"/
-          sed -i "0,/^version:/s|^version:.*|$spec_version|" "$project/astra.yaml"
           cd "$project"
           # Regenerate baseline.yaml from the task astra.yaml's defaults —
           # the scaffolded one matches the boilerplate spec, not the task's

@@ -358,8 +358,6 @@ class _Builder:
         entity["name"] = f"{output_id} (universe {universe_id})"
         entity["description"] = f"output `{output_id}` materialized under `{universe_id}`"
         entity["version"] = manifest.data_version
-        if media := _FORMATS.get(f".{task.output_path.name.partition('.')[2]}", ""):
-            entity["encodingFormat"] = media
         manifest_file = self._file(plan.declared_path(self.root, task.manifest_path))
         manifest_file["about"] = {"@id": entity.id}
         entity["subjectOf"] = {"@id": manifest_file.id}

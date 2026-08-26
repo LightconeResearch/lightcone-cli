@@ -1,16 +1,12 @@
 """What a materialized output *is*: where it lives, what it records, and
 whether it is still current.
 
-An asset is a single file — ``<analysis root>/results/<universe>/<scope…>/<id>.<format>``
-— with a manifest sidecar beside it, ``.<id>.manifest.json``. The format
-comes from the spec, so the path is derived rather than chosen by the
-recipe, and one output can only ever be one file. The manifest is the only
-part lc writes itself, and it is kept out of the annex so it stays readable
-on a clone that has fetched no content at all.
-
-The *analysis root* is the directory holding that analysis's own ``astra.yaml`` — the
-project root, or a sub-analysis's own directory — so results sit beside the
-spec that declares them.
+An asset is a single file — ``results/<universe>/<output_id>.<format>`` —
+with a manifest sidecar beside it, ``.<output_id>.manifest.json``. The
+format comes from the spec, so the path is derived rather than chosen by
+the recipe, and one output can only ever be one file. The manifest is the
+only part lc writes itself, and it is kept out of the annex so it stays
+readable on a clone that has fetched no content at all.
 
 The rule that classifies an output — ``current``, ``behind`` or
 ``stale`` — lives here too, next to the manifest it reads and the hashes
@@ -373,7 +369,11 @@ def read(manifest: Path) -> Manifest | None:
     try:
         data = json.loads(path.read_text())
         return Manifest(**{k: v for k, v in data.items() if k in _FIELDS})
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, AttributeError, UnicodeDecodeError, ValueError):
+        # Anything that is not a manifest object reads as "no manifest":
+        # a top-level array, bytes that are not text, a mapping whose
+        # fields do not fit. The staleness rule takes that as "make it
+        # again", which is the safe direction for all of them.
         return None
 
 

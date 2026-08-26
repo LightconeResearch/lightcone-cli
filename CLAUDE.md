@@ -478,7 +478,7 @@ Without it `filter=annex` routes *everything* into the annex, analysis
 code included. `tests/test_dataset.py::test_analysis_code_stays_in_git_and_stays_writable`
 pins it against a real annex.
 
-**Manifests stay in git, deliberately.** `**/results/**/.*.manifest.json`
+**Manifests stay in git, deliberately.** `results/**/.*.manifest.json`
 is exempted back out of the annex so it is readable on a clone that has
 fetched no annex content at all — which is what lets `lc materialize
 --check` classify a whole project on a laptop that holds none of the
@@ -2207,12 +2207,17 @@ written to" — a path the schema never defined. What changed, and why:
 - **The filename contract between producer and consumer is gone.**
   `{inputs.X}` renders to the upstream's *file*, so nothing has to know
   what is inside a directory it was handed.
-- **A `check-attr` preflight refuses a run whose manifests would annex.**
+- **`.gitattributes` is convergence's to get right, not a run's.**
   `dataset.save` passes `annex.dotfiles=true`, so the sidecar's leading
-  dot decides nothing and `.gitattributes` decides everything. Annexed,
-  the run is green locally and every clone reports the whole project as
-  never materialized, silently. Probed once for the whole graph, before
-  anything executes.
+  dot decides nothing and the attributes decide everything — annexed, a
+  run is green locally while every clone reports the project as never
+  materialized. A `check-attr` preflight in `materialize` was written and
+  removed: `lc init` owns that file, its repair appends the exemption and
+  its disorder guard blocks a file it cannot fix, and a second answer in
+  the run path is one more place for the two to disagree. The residue,
+  stated: a project scaffolded before the exemption existed annexes its
+  manifests until someone converges it — which this change already
+  requires, since every output needs a `format:` added by hand.
 - **The orphan walk is a set difference, never a reconstruction.**
   Expected sidecars come from `Task.manifest_path`; present ones from
   `git ls-files`, which still finds a manifest whose output the spec has
