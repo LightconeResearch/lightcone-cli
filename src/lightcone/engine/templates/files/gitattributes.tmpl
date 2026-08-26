@@ -5,12 +5,6 @@
 # decides what counts as content: the default is nothing, and only outputs
 # and declared inputs opt out. Last matching line wins.
 #
-# An analysis keeps its results beside its own astra.yaml, so a results
-# tree sits under a sub-analysis directory as readily as at the root.
-# `results/**` is kept alongside the broader rule: a managed line dropped
-# from this template stops being ranked, and the ordering check that keeps
-# the defaults above the opt-outs would go blind to it.
-#
 # Manifests are exempted back out because they must be readable on a clone
 # that has fetched no annex content.
 * annex.largefiles=nothing
@@ -18,5 +12,4 @@
 results/** annex.largefiles=anything
 data/** annex.largefiles=anything
 .datalad/environments/*/image annex.largefiles=anything
-**/results/** annex.largefiles=anything
-**/results/**/.*.manifest.json annex.largefiles=nothing
+results/**/.*.manifest.json annex.largefiles=nothing

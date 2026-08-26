@@ -83,21 +83,6 @@ def test_save_puts_result_bytes_in_the_annex_and_the_manifest_in_git(repo: Path)
     assert not dataset.status(repo)
 
 
-def test_a_sub_analysis_results_tree_is_routed_the_same_way(repo: Path) -> None:
-    """An analysis keeps its results beside its own astra.yaml, so the
-    routing rule cannot be anchored at the project root — a sub-analysis's
-    payload would land in git as a plain blob, invisibly."""
-    results = repo / "hod" / "results" / "fast"
-    results.mkdir(parents=True)
-    (results / "mass_function.npz").write_bytes(b"binned\n" * 64)
-    (results / ".mass_function.manifest.json").write_text("{}\n")
-
-    assert dataset.save(repo, [results], "materialize the sub-analysis")
-
-    assert _annexed(repo, results / "mass_function.npz")
-    assert not _annexed(repo, results / ".mass_function.manifest.json")
-
-
 def test_a_plain_git_add_annexes_content_by_itself(repo: Path) -> None:
     """`filter=annex` is what makes git's own add route content, which is
     what lets lc — and everyone else — never run a git-annex command."""

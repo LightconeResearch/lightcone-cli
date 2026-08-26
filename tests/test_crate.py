@@ -83,8 +83,6 @@ def _graph(root: Path, universes: tuple[str, ...] = ("baseline",)) -> Graph:
         tasks[(universe_id, "first")] = Task(
             universe_id,
             "first",
-            "first",
-            root,
             first,
             "make first",
             {"catalog": root / "data" / "catalog.csv"},
@@ -95,8 +93,6 @@ def _graph(root: Path, universes: tuple[str, ...] = ("baseline",)) -> Graph:
         tasks[(universe_id, "second")] = Task(
             universe_id,
             "second",
-            "second",
-            root,
             root / "results" / universe_id / "second.txt",
             "make second",
             {"first": first},
@@ -406,8 +402,6 @@ def test_an_out_of_tree_input_publishes_no_checksum(
     task = Task(
         "baseline",
         "first",
-        "first",
-        project,
         project / "results/baseline/first.txt",
         "make first",
         {"catalog": catalog},

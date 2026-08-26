@@ -123,8 +123,7 @@ def test_gitattributes_routes_content_to_the_annex_and_everything_else_to_git() 
     assert entries[0] == "* annex.largefiles=nothing"
     assert "results/** annex.largefiles=anything" in entries
     assert "data/** annex.largefiles=anything" in entries
-    assert "**/results/** annex.largefiles=anything" in entries
-    assert "**/results/**/.*.manifest.json annex.largefiles=nothing" in entries
+    assert "results/**/.*.manifest.json annex.largefiles=nothing" in entries
 
 
 def test_gitattributes_exceptions_come_after_the_default() -> None:
@@ -161,20 +160,6 @@ def test_an_opt_out_the_defaults_would_land_below_is_named() -> None:
     plain blob — while convergence reports the file repaired."""
     misplaced = templates.gitattributes_disorder("results/** annex.largefiles=anything\n")
     assert misplaced == "* annex.largefiles=nothing"
-
-
-def test_an_analysis_keeps_its_results_beside_its_own_spec() -> None:
-    """A sub-analysis is a self-similar analysis in its own directory, so a
-    results tree is not root-anchored. The narrow `results/**` is kept
-    beside the broad rule deliberately: a managed line dropped from the
-    template stops being ranked, which would blind the ordering check to
-    the very file `test_an_opt_out_the_defaults_would_land_below_is_named`
-    exists to catch."""
-    entries = templates.entries("gitattributes.tmpl")
-    assert "results/** annex.largefiles=anything" in entries
-    assert entries.index("**/results/** annex.largefiles=anything") < entries.index(
-        "**/results/**/.*.manifest.json annex.largefiles=nothing"
-    )
 
 
 def test_a_gitattributes_written_by_an_earlier_template_still_converges() -> None:

@@ -228,13 +228,13 @@ def execute(
     # they are being written concurrently. What this output owns is its
     # manifest and any file named after its id — the glob rather than the
     # one declared path, so a spec that re-declares the output in another
-    # format leaves no stale payload behind. `<local_id>.` needs a literal
+    # format leaves no stale payload behind. `<output_id>.` needs a literal
     # dot straight after the whole id, and an id cannot contain one, so it
     # cannot reach a sibling, a longer id, another output's sidecar, or a
     # scope directory of the same name.
     task.output_path.parent.mkdir(parents=True, exist_ok=True)
     task.manifest_path.unlink(missing_ok=True)
-    for stale in task.output_path.parent.glob(f"{task.local_id}.*"):
+    for stale in task.output_path.parent.glob(f"{task.output_id}.*"):
         if stale.is_file() or stale.is_symlink():
             stale.unlink()
 

@@ -51,14 +51,9 @@ to its own directory: `results/<universe>/<output_id>.<format>`.
 ## Sub-analysis
 
 A nested ASTRA analysis with its own inputs, outputs, and decisions,
-referenced from a parent's `analyses:` section. Results follow the
-spec's shape: one declared inline lands under a scope directory,
-`results/<universe>/<analysis>/<output>.<format>`, while one declared
-with `path:` is a self-similar analysis — its own `astra.yaml`, its own
-`universes/`, and so its own results tree beside them,
-`<path>/results/<its universe>/<output>.<format>`. Addressing does not
-nest with the path: an output is always named by its qualified id,
-`<analysis>.<output>`.
+referenced from a parent's `analyses:` section. `lc` materializes a flat
+analysis: an output id it cannot name a file from is refused, so a
+nested spec is not buildable today.
 
 ## Materialize
 

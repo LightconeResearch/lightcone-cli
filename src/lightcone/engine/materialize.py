@@ -39,7 +39,7 @@ import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Protocol
 
 from lightcone.engine import assets, container, dataset, identity, plan, project, venue, worker
@@ -1074,7 +1074,7 @@ def _require_manifests_in_git(root: Path, graph: Graph) -> None:
             f"{plan.declared_path(root, Path(annexed[0]))} would be stored in the annex, "
             "but a manifest has to stay a plain git blob — it is what a clone reads "
             "before fetching any content. Check .gitattributes still carries "
-            "`**/results/**/.*.manifest.json annex.largefiles=nothing`, last."
+            "`results/**/.*.manifest.json annex.largefiles=nothing`, last."
         )
 
 
@@ -1092,8 +1092,8 @@ def _owned(root: Path, task: Task) -> list[str]:
     """
     parent = plan.declared_path(root, task.output_path.parent)
     return [
-        f":(glob){parent}/{task.local_id}.*",
-        f":(glob){parent}/.{task.local_id}{assets.MANIFEST_SUFFIX}*",
+        f":(glob){parent}/{task.output_id}.*",
+        f":(glob){parent}/.{task.output_id}{assets.MANIFEST_SUFFIX}*",
     ]
 
 
@@ -1105,18 +1105,12 @@ def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
     """The refusal, split by what the right remedy actually is.
 
     Two path classes, because they call for opposite actions: work the
-    researcher owns has to be committed, and anything under a ``results/``
+    researcher owns has to be committed, and anything under ``results/``
     is lc's to write, so a change there is wreckage to discard rather than
     a contribution to keep.
-
-    The test is path-shaped rather than a lookup against the graph: this
-    refusal runs before the spec is read, deliberately, so that staged work
-    is protected before anything expensive happens. The cost is that a
-    directory called ``results`` anywhere in the tree reads as lc's — so
-    the remedy names the offending paths rather than sweeping a directory.
     """
-    ours = [c for c in changes if "results" in PurePosixPath(c[1]).parts]
-    theirs = [c for c in changes if c not in ours]
+    theirs = [c for c in changes if not c[1].startswith("results/")]
+    ours = [c for c in changes if c[1].startswith("results/")]
 
     lines = [
         f"uncommitted changes in {root} — every materialization is committed "
@@ -1133,9 +1127,7 @@ def _dirty(root: Path, changes: Sequence[tuple[str, str]]) -> str:
         lines += [
             "",
             "  discard these (lc writes results/):",
-            "      git restore --staged --worktree -- "
-            + " ".join(sorted({path for _, path in ours})),
-            "      git clean -fd -- " + " ".join(sorted({path for _, path in ours})),
+            "      git restore --staged --worktree results/ && git clean -fd results/",
             *(f"      {code.strip() or '??'} {path}" for code, path in ours),
         ]
     return "\n".join(lines)

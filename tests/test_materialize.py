@@ -1009,7 +1009,7 @@ def test_a_manifest_the_attributes_would_annex_refuses_before_the_graph_runs(
     attributes = root / ".gitattributes"
     attributes.write_text(
         attributes.read_text().replace(
-            "**/results/**/.*.manifest.json annex.largefiles=nothing", ""
+            "results/**/.*.manifest.json annex.largefiles=nothing", ""
         )
     )
     dataset.save(root, [attributes], "route manifests into the annex")

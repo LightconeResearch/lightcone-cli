@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -53,59 +53,58 @@ class ContentNotFetchedError(ProjectError):
     """An annexed file whose content is not in this clone."""
 
 
-def output_path(
-    analysis_root: Path, universe_id: str, scope: Sequence[str], local_id: str, fmt: str
-) -> Path:
+def output_path(root: Path, universe_id: str, output_id: str, fmt: str) -> Path:
     """Locate the file one output is materialized to.
 
-    ``<analysis root>/results/<universe_id>/<scope…>/<local_id>.<fmt>``. The *analysis root* is
-    the directory holding the declaring analysis's ``astra.yaml``, so a
-    sub-analysis keeps its results beside its own spec, and *scope* is the
-    inline sub-analyses descended through since that analysis root.
-
-    Path-addressed: this is the path a rendered recipe writes to, with no
-    staging, scratch or relocation in between.
+    ``<root>/results/<universe_id>/<output_id>.<fmt>``. Path-addressed:
+    this is the path a rendered recipe writes to, with no staging, scratch
+    or relocation in between.
 
     Args:
-        analysis_root: The declaring analysis's directory.
+        root: The project root.
         universe_id: The universe the output is made under.
-        scope: Inline sub-analysis ids, outermost first.
-        local_id: The output's own id, unqualified.
+        output_id: The output's id.
         fmt: The declared serialization, without a leading dot.
 
     Returns:
         The output's path.
 
     Raises:
-        ProjectError: If any part cannot name a single path component. The
-            path is *composed*, so a part carrying a separator or ``..``
-            would place an output outside the tree the caller checked.
+        ProjectError: If either id cannot name a single path component, or
+            the format could not be an extension. The path is *composed*,
+            so an unchecked part would place a file outside the tree the
+            caller checked — and an id carrying a dot would make
+            :func:`manifest_path` recover the wrong name.
     """
-    named = [("universe", universe_id), *(("analysis", s) for s in scope), ("output", local_id)]
-    for label, value in named:
+    for label, value in (("universe", universe_id), ("output", output_id)):
         if not value or "/" in value or "\\" in value or value in {".", ".."}:
             raise ProjectError(
                 f"{label} id {value!r} is not a single path component, so it "
                 f"cannot name a directory under results/."
             )
+    if "." in output_id:
+        raise ProjectError(
+            f"output id {output_id!r} contains a dot, so the manifest beside it "
+            f"could not be told from the output's own name."
+        )
     if not fmt or "/" in fmt or "\\" in fmt or fmt.startswith("."):
         raise ProjectError(
-            f"output `{local_id}` declares the format {fmt!r}, which cannot name a "
+            f"output `{output_id}` declares the format {fmt!r}, which cannot name a "
             f"file extension, so the output has nowhere to be written."
         )
-    return analysis_root.joinpath("results", universe_id, *scope, f"{local_id}.{fmt}")
+    return root / "results" / universe_id / f"{output_id}.{fmt}"
 
 
 def manifest_path(output: Path) -> Path:
     """The manifest sidecar beside *output*.
 
-    ``.<local_id>.manifest.json``, named from the output's id alone and
+    ``.<output_id>.manifest.json``, named from the output's id alone and
     never its format — so the manifest keeps its path, and therefore its
     history, when a spec re-declares the output in another serialization.
 
-    An id cannot contain a dot (``^[a-z][a-z0-9_]*$``) while a format can
-    (``tar.gz``), so the id is recovered by partitioning on the **first**
-    dot. ``Path.stem`` would answer ``x.tar`` for ``x.tar.gz``.
+    An id carries no dot (:func:`output_path` refuses one) while a format
+    may (``tar.gz``), so the id is recovered by partitioning on the
+    **first** dot. ``Path.stem`` would answer ``x.tar`` for ``x.tar.gz``.
 
     Args:
         output: The output's own path.

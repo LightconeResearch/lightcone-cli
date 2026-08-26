@@ -869,37 +869,14 @@ in the file, far from the line at fault. It caught three of lc's own
 test fixtures the first time it ran.
 
 **One output is one file, and the spec names it.** An output is
-`<analysis root>/results/<universe>/<inline scope…>/<local_id>.<format>` — never
-directory a recipe fills — and the path in a rendered recipe *is* the path
-on disk: no staging, no scratch, no relocation. `format` comes from ASTRA
+`results/<universe>/<output_id>.<format>` — never a directory a recipe
+fills — and the path in a rendered recipe *is* the path on disk: no
+staging, no scratch, no relocation. `format` comes from ASTRA
 (`Output.format`, astra-spec 0.0.14), so lc composes the filename rather
-than a recipe choosing it, and the whole contents of every `results/` tree
-are a pure function of the spec. `plan.build` **refuses** a spec whose
+than a recipe choosing it, and the whole contents of `results/` are a
+pure function of the spec. `plan.build` **refuses** a spec whose
 executable outputs omit it, naming every one: it is only *recommended*
 until ASTRA 0.1.0, but lc has nowhere to write an output without it.
-
-**Results live beside the spec that declares them.** Every analysis node
-has an *analysis root* — the directory holding its `astra.yaml` — and a
-universe,
-both derived by `plan._placements` walking the spec and the universe file
-together: the root analysis's is the project root; an inline sub-analysis
-shares its parent's and disambiguates with a scope directory; an
-external one (`path:`) is a self-similar analysis with its own root and,
-where the parent universe names one, **its own universe id**. Two
-refusals ride on that walk — an analysis root escaping the project (its
-results could not be versioned) and a `universe: X` naming a file that is
-not there (astra logs a warning and settles from the parent's decisions
-instead, so lc would file an artifact under a universe it never loaded).
-
-Only the *path* nests. Graph keys stay `(universe_id, qualified_id)` and
-CLI targets stay dotted, because `Graph.resolve` splits on
-`rpartition("/")` and a slash-form target would mis-split the universe.
-
-**No task may share a path with another.** An external sub-analysis is
-filed under its own universe, so two parent universes selecting the same
-one resolve to the same file while feeding it different inputs — the
-second would overwrite the first, silently. `build` refuses, naming both,
-the same shape as the duplicate-universe-id refusal.
 
 **One rule names a path, and both the recipe and the run record use it**
 (`plan.declared_path`). Project-relative inside the tree, absolute
@@ -925,16 +902,19 @@ missing with nothing said. The way in is the natural one: copy
 refuses, naming both files.
 
 **Because the path is composed, `assets.output_path` refuses any part
-that is not one path component** — an empty or `..`-bearing universe id,
-scope segment or output id would place a file outside the tree every
-guard above it checked — and a `format` that could not be an extension
-(empty, a separator, or leading-dot, which would make the output look
-like its own sidecar).
+that is not one path component** — an empty or `..`-bearing universe or
+output id would place a file outside the tree every guard above it
+checked — and a `format` that could not be an extension (empty, a
+separator, or leading-dot, which would make the output look like its own
+sidecar). It also refuses an output id carrying a **dot**: the sidecar is
+recovered by partitioning the filename on the first one, so a dotted id
+would name a manifest for something else. ASTRA's own id grammar carries
+no dot, so this only ever fires on an id lc did not compose.
 
 **The reset takes what the output's id names, never the directory.**
 Outputs share a directory now and Dask writes them concurrently, so a
 whole-directory delete would take a neighbour's bytes. It unlinks the
-sidecar and globs `<local_id>.*`: an id cannot contain a dot, so the glob
+sidecar and globs `<output_id>.*`: an id cannot contain a dot, so the glob
 cannot reach a sibling, a longer id, another output's sidecar or a scope
 directory of the same name — and it *does* reach a payload left by a run
 that declared another `format`, which is what stops one orphaning.
@@ -947,7 +927,7 @@ output, plus a crate `File` with no `sha256`. One check covers absent,
 directory and wrong-name, and it is what makes exit 0 stop being
 evidence that anything was written.
 
-**The manifest is a sidecar, `.<local_id>.manifest.json`, named from the
+**The manifest is a sidecar, `.<output_id>.manifest.json`, named from the
 id alone and never the format.** So it keeps its path — and therefore its
 history — across a re-declared serialization, which is what lets
 `_foreign_write` still answer for an output whose payload path is new.
@@ -2227,38 +2207,26 @@ written to" — a path the schema never defined. What changed, and why:
 - **The filename contract between producer and consumer is gone.**
   `{inputs.X}` renders to the upstream's *file*, so nothing has to know
   what is inside a directory it was handed.
-- **A results tree per analysis root**, so `results/` stopped being
-  root-anchored. `.gitattributes` broadened to `**/results/**` — with the
-  accepted collateral that a user's own `notebooks/results/` now annexes,
-  cheaper than generating spec-dependent attribute lines repair could
-  never remove.
-- **`results/**` is kept in the template even though `**/results/**`
-  subsumes it.** A managed line dropped from the template gets rank
-  `None` and is *skipped* by `gitattributes_disorder` — which would blind
-  the guard to the exact trap it exists for (a user file carrying the
-  `results/` opt-out without the `*` defaults). Measured both ways.
 - **A `check-attr` preflight refuses a run whose manifests would annex.**
   `dataset.save` passes `annex.dotfiles=true`, so the sidecar's leading
   dot decides nothing and `.gitattributes` decides everything. Annexed,
   the run is green locally and every clone reports the whole project as
   never materialized, silently. Probed once for the whole graph, before
   anything executes.
-- **The orphan walk is a set difference, never a reconstruction.** An
-  external sub-analysis is filed under its own universe while its graph
-  key carries the parent's, so no rule turns such a path back into a key.
+- **The orphan walk is a set difference, never a reconstruction.**
   Expected sidecars come from `Task.manifest_path`; present ones from
-  `git ls-files`, which still finds the tree of a sub-analysis just
-  deleted from the spec — the edit that orphans it is the same edit that
-  would drop it from any graph-derived root set.
+  `git ls-files`, which still finds a manifest whose output the spec has
+  just dropped — the edit that orphans it is the same edit that would
+  drop it from anything derived from the graph.
 - **No migration, by decision.** Nothing looks for `.lightcone-manifest.json`
   and nothing detects directory-shaped outputs from a previous engine;
   they are invisible to every walk. `git rm -r results/` and
   re-materialize.
-- **Known residue**: a declared input's `source:` is still resolved
-  against the *project* root, not the analysis root that declares it, so a
-  sub-analysis cannot name a file beside its own `astra.yaml` the way it
-  names its results. Pre-existing; which of the two a `source:` means is
-  astra's question before it is lc's (issue #201).
+- **A nested spec is not buildable.** lc materializes a flat analysis:
+  ASTRA qualifies an output declared in a sub-analysis as `<a>.<b>`, and
+  `output_path` refuses a dotted id because the sidecar could not be told
+  from the payload. Supporting nesting means deciding where a nested
+  output's file goes, which is its own change (issues #201, #202).
 
 ### Recorded deviations from the spec
 

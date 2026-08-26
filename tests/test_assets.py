@@ -53,7 +53,7 @@ def _manifest(**overrides: object) -> Manifest:
 def test_an_asset_is_addressed_by_its_path(tmp_path: Path) -> None:
     """The path in a rendered recipe is the path on disk — no staging, no
     scratch, no relocation."""
-    assert output_path(tmp_path, "baseline", (), "best_fit", "csv") == (
+    assert output_path(tmp_path, "baseline", "best_fit", "csv") == (
         tmp_path / "results/baseline/best_fit.csv"
     )
 
@@ -121,11 +121,9 @@ def test_output_path_refuses_a_part_that_is_not_one_path_component(
     """The path is composed, so a part carrying a separator would put an
     output outside the tree every guard above it checked."""
     with pytest.raises(ProjectError):
-        assets.output_path(tmp_path, bad, (), "best_fit", "csv")
+        assets.output_path(tmp_path, bad, "best_fit", "csv")
     with pytest.raises(ProjectError):
-        assets.output_path(tmp_path, "baseline", (), bad, "csv")
-    with pytest.raises(ProjectError):
-        assets.output_path(tmp_path, "baseline", (bad,), "best_fit", "csv")
+        assets.output_path(tmp_path, "baseline", bad, "csv")
 
 
 @pytest.mark.parametrize("bad", ["", "/", "a/b", ".hidden"])
@@ -135,23 +133,23 @@ def test_output_path_refuses_a_format_that_cannot_be_an_extension(
     """A leading dot would make the output look like its own sidecar; a
     separator would move it entirely."""
     with pytest.raises(ProjectError):
-        assets.output_path(tmp_path, "baseline", (), "best_fit", bad)
+        assets.output_path(tmp_path, "baseline", "best_fit", bad)
 
 
-def test_an_inline_sub_analysis_nests_below_its_universe(tmp_path: Path) -> None:
-    """Scope becomes directories, so one addressing scheme spans however
-    deep the spec nests without the filename carrying the structure."""
-    assert assets.output_path(tmp_path, "baseline", ("hod", "mass"), "fit", "npz") == (
-        tmp_path / "results" / "baseline" / "hod" / "mass" / "fit.npz"
-    )
+def test_output_path_refuses_an_id_carrying_a_dot(tmp_path: Path) -> None:
+    """The sidecar is the id with a leading dot and `.manifest.json` after
+    it, recovered by partitioning on the first dot — so an id carrying one
+    of its own would name a manifest for something else."""
+    with pytest.raises(ProjectError, match="dot"):
+        assets.output_path(tmp_path, "baseline", "fit.plot", "png")
 
 
 def test_the_manifest_is_named_from_the_id_never_the_format(tmp_path: Path) -> None:
     """A format may contain dots, and `Path.stem` would answer `x.tar` for
     `x.tar.gz`. Naming the sidecar from the id alone also keeps its path —
     and so its history — across a re-declared serialization."""
-    packed = assets.output_path(tmp_path, "baseline", (), "chain", "tar.gz")
-    plain = assets.output_path(tmp_path, "baseline", (), "chain", "npz")
+    packed = assets.output_path(tmp_path, "baseline", "chain", "tar.gz")
+    plain = assets.output_path(tmp_path, "baseline", "chain", "npz")
     assert assets.manifest_path(packed).name == ".chain.manifest.json"
     assert assets.manifest_path(packed) == assets.manifest_path(plain)
 

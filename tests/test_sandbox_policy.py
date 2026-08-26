@@ -65,17 +65,15 @@ def test_a_recipe_is_narrowed_to_the_directory_its_output_lands_in(tmp_path: Pat
     directory, and outputs declared side by side are mutually writable.
     Recorded rather than papered over: `data_version` is what answers
     whether an output's bytes are its own. What the scope does still
-    exclude is every other universe and every other analysis."""
+    exclude is every other universe."""
     project = tmp_path / "proj"
     own = project / "results" / "baseline"
     elsewhere = project / "results" / "robust"
-    sub = project / "hod" / "results" / "fast"
-    for path in (own, elsewhere, sub):
+    for path in (own, elsewhere):
         path.mkdir(parents=True)
     with scope(policy_module.exec_policy(project, write_dir=own)) as built:
         assert built.grants(own / "first.txt", built.write)
         assert not built.grants(elsewhere / "first.txt", built.write)
-        assert not built.grants(sub / "mass_function.npz", built.write)
         assert not built.grants(project / "results", built.write)
         assert built.grants(elsewhere / "first.txt", built.read), (
             "an upstream output is still a readable input"

@@ -287,24 +287,12 @@ class _Builder:
     # ----- the data entities -----
 
     def _environment_files(self) -> None:
-        """The lock and its companions — what every run consumed.
-
-        Every analysis root, not just the project's: a sub-analysis keeps
-        its spec, its universes and its results together, so publishing
-        its outputs without the files that define them would leave the
-        crate describing half an analysis.
-        """
-        analysis_roots = {self.root, *(task.analysis_root for task in self.graph.tasks.values())}
-        declaring = sorted(
+        """The lock and its companions — what every run consumed."""
+        universes = sorted(
             path.relative_to(self.root).as_posix()
-            for analysis_root in analysis_roots
-            for path in (
-                *(analysis_root / "universes").glob("*.yaml"),
-                analysis_root / SPEC_FILENAME,
-            )
-            if path.is_file()
+            for path in (self.root / "universes").glob("*.yaml")
         )
-        for name in (*_ENVIRONMENT, *declaring):
+        for name in (*_ENVIRONMENT, *universes):
             if (self.root / name).is_file():
                 self._file(name)
         if (self.root / "README.md").is_file():
