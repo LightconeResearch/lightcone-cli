@@ -37,14 +37,16 @@ inputs:
 outputs:
   - id: first
     type: metric
+    format: txt
     recipe:
-      command: echo one > {output}/value.txt
+      command: echo one > {output}
 
   - id: second
     type: report
+    format: txt
     inputs: [first]
     recipe:
-      command: cat {inputs.first}/value.txt > {output}/copy.txt
+      command: cat {inputs.first} > {output}
 """
 
 
@@ -96,10 +98,10 @@ def _age(root: Path, output_id: str) -> None:
     the recipe actually runs under has to stay the real one, or the mid-run
     gate refuses the execution before any of this is exercised.
     """
-    directory = root / "results/baseline" / output_id
-    manifest = assets.read(directory)
+    sidecar = root / "results/baseline" / f".{output_id}.manifest.json"
+    manifest = assets.read(sidecar)
     assert manifest is not None
-    assets.write(directory, replace(manifest, env_version="sha256:an-earlier-environment"))
+    assets.write(sidecar, replace(manifest, env_version="sha256:an-earlier-environment"))
 
 
 # ---- executing a recipe ----------------------------------------------------
@@ -109,8 +111,8 @@ def test_a_recipe_runs_and_its_output_is_recorded(root: Path) -> None:
     result = _make(root, "first")
 
     assert result.status == "ok"
-    assert (root / "results/baseline/first/value.txt").read_text() == "one\n"
-    assert result.data_version == assets.data_version(root / "results/baseline/first")
+    assert (root / "results/baseline/first.txt").read_text() == "one\n"
+    assert result.data_version == assets.data_version(root / "results/baseline/first.txt")
 
 
 def test_the_manifest_is_complete_before_anything_is_saved(root: Path) -> None:
@@ -119,9 +121,9 @@ def test_the_manifest_is_complete_before_anything_is_saved(root: Path) -> None:
     in that commit."""
     _make(root, "first")
 
-    manifest = assets.read(root / "results/baseline/first")
+    manifest = assets.read(root / "results/baseline/.first.manifest.json")
     assert manifest is not None
-    assert manifest.data_version == assets.data_version(root / "results/baseline/first")
+    assert manifest.data_version == assets.data_version(root / "results/baseline/first.txt")
     assert manifest.definition_version == _task(root, "first").definition_version
     assert manifest.env_version == identity.env_version(root)
     assert manifest.git_sha == _HEAD[0] and manifest.git_remote == _HEAD[1]
@@ -141,7 +143,7 @@ def test_the_recipe_runs_under_the_boundary(root: Path) -> None:
 
     _make(root, "first")
 
-    manifest = assets.read(root / "results/baseline/first")
+    manifest = assets.read(root / "results/baseline/.first.manifest.json")
     assert manifest is not None
     assert manifest.hermeticity["mechanism"] == sandbox.detect().capability.kind
 
@@ -161,10 +163,10 @@ def test_a_skip_returns_the_recorded_digest_rather_than_rehashing(root: Path) ->
     """On a clone that has fetched no annex content the files are dangling
     symlinks, so a recompute would quietly report a different output."""
     _make(root, "first")
-    output = root / "results/baseline/first"
-    manifest = assets.read(output)
+    output = root / "results/baseline/first.txt"
+    manifest = assets.read(assets.manifest_path(output))
     assert manifest is not None
-    (output / "value.txt").unlink()
+    output.unlink()
 
     assert _make(root, "first").data_version == manifest.data_version
 
@@ -174,7 +176,7 @@ def test_a_moved_environment_leaves_the_output_alone(root: Path) -> None:
     define exactly this output, so it is reported and kept — remaking it
     would spend the compute that a rewritten `uv.lock` never justified."""
     made = _make(root, "first")
-    (root / "results/baseline/first/value.txt").write_text("untouched\n")
+    (root / "results/baseline/first.txt").write_text("untouched\n")
     _age(root, "first")
 
     again = _make(root, "first")
@@ -182,20 +184,20 @@ def test_a_moved_environment_leaves_the_output_alone(root: Path) -> None:
     assert again.status == "behind"
     assert "earlier environment" in again.reason
     assert again.data_version == made.data_version
-    assert (root / "results/baseline/first/value.txt").read_text() == "untouched\n"
+    assert (root / "results/baseline/first.txt").read_text() == "untouched\n"
 
 
 def test_refresh_remakes_what_is_only_behind(root: Path) -> None:
     """And the recipe really runs: the file the previous assertion left in
     place is overwritten, so this cannot pass by skipping too."""
     _make(root, "first")
-    (root / "results/baseline/first/value.txt").write_text("untouched\n")
+    (root / "results/baseline/first.txt").write_text("untouched\n")
     _age(root, "first")
 
     again = _make(root, "first", refresh=True)
 
     assert again.status == "ok"
-    assert (root / "results/baseline/first/value.txt").read_text() == "one\n"
+    assert (root / "results/baseline/first.txt").read_text() == "one\n"
 
 
 def test_refresh_does_not_remake_what_is_current(root: Path) -> None:
@@ -217,7 +219,7 @@ def test_a_behind_upstream_still_feeds_its_dependents(root: Path) -> None:
     second = _make(root, "second", behind)
 
     assert second.status == "ok"
-    manifest = assets.read(root / "results/baseline/second")
+    manifest = assets.read(root / "results/baseline/.second.manifest.json")
     assert manifest is not None
     assert manifest.input_versions == {"first": first.data_version}
 
@@ -231,7 +233,7 @@ def test_a_task_whose_upstream_did_not_finish_is_blocked(root: Path) -> None:
 
     assert result.status == "blocked"
     assert "baseline/first" in result.reason
-    assert not (root / "results/baseline/second").exists()
+    assert not (root / "results/baseline/second.txt").exists()
 
 
 def test_a_downstream_task_takes_its_upstreams_answer(root: Path) -> None:
@@ -239,7 +241,7 @@ def test_a_downstream_task_takes_its_upstreams_answer(root: Path) -> None:
     second = _make(root, "second", first)
 
     assert second.status == "ok"
-    manifest = assets.read(root / "results/baseline/second")
+    manifest = assets.read(root / "results/baseline/.second.manifest.json")
     assert manifest is not None
     assert manifest.input_versions == {"first": first.data_version}
 
@@ -247,42 +249,70 @@ def test_a_downstream_task_takes_its_upstreams_answer(root: Path) -> None:
 # ---- the output directory the recipe owns ----------------------------------
 
 
-def test_a_stale_file_does_not_survive_a_rebuild(root: Path) -> None:
-    """It would otherwise land in the content hash and be committed as part
-    of an output that never produced it."""
+def test_a_payload_from_an_earlier_format_does_not_survive_a_rebuild(root: Path) -> None:
+    """The reset takes every file named after the output, not just the one
+    the spec declares today — so re-declaring the serialization leaves no
+    orphan behind for the publication view to trip over."""
     _make(root, "first")
-    output = root / "results/baseline/first"
-    (output / "leftover.txt").write_text("from a previous run\n")
+    earlier = root / "results/baseline/first.json"
+    earlier.write_text("from a run that declared another format\n")
 
     worker.execute(root, _task(root, "first"), {}, _context(root))
 
-    assert not (output / "leftover.txt").exists()
-    assert (output / "value.txt").exists()
+    assert not earlier.exists()
+    assert (root / "results/baseline/first.txt").exists()
+
+
+def test_a_sibling_output_is_left_alone_by_the_reset(root: Path) -> None:
+    """Outputs share a directory now, and under Dask they are written
+    concurrently — so the reset may only ever touch what its own id
+    names."""
+    _make(root, "first")
+    sibling = root / "results/baseline/second.txt"
+    sibling.parent.mkdir(parents=True, exist_ok=True)
+    sibling.write_text("a neighbour's bytes\n")
+
+    worker.execute(root, _task(root, "first"), {}, _context(root))
+
+    assert sibling.read_text() == "a neighbour's bytes\n"
 
 
 def test_a_failing_recipe_records_no_manifest(root: Path) -> None:
-    spec = _SPEC.replace("echo one > {output}/value.txt", "echo one > {output}/value.txt && false")
+    spec = _SPEC.replace("echo one > {output}", "echo one > {output} && false")
     (root / "astra.yaml").write_text(spec)
 
     result = _make(root, "first")
 
     assert result.status == "failed"
     assert "exited 1" in result.reason
-    assert assets.read(root / "results/baseline/first") is None
+    assert assets.read(root / "results/baseline/.first.manifest.json") is None
 
 
-def test_a_recipe_that_removes_its_output_directory_fails_on_any_host(root: Path) -> None:
-    """The two mechanisms disagree about whether the removal is even
-    allowed — Landlock follows POSIX and refuses it, because unlinking the
-    directory needs write on `results/`, which is not granted; Seatbelt's
-    subpath grant covers the directory node itself and permits it. The
-    *contract* is the same either way, so that is what this asserts: a
-    `failed` result, never a raise into the driver."""
+def test_a_recipe_that_writes_nothing_fails(root: Path) -> None:
+    """Exit 0 is not evidence of an output. Without this the run would
+    commit a manifest for a file that is not there."""
     (root / "astra.yaml").write_text(
-        _SPEC.replace("echo one > {output}/value.txt", "rm -rf {output}")
+        _SPEC.replace("echo one > {output}", "echo nowhere > /dev/null")
     )
 
-    assert _make(root, "first").status == "failed"
+    result = _make(root, "first")
+
+    assert result.status == "failed"
+    assert "left nothing" in result.reason
+    assert assets.read(root / "results/baseline/.first.manifest.json") is None
+
+
+def test_a_recipe_that_writes_a_directory_fails(root: Path) -> None:
+    """`data_version` hashes a directory perfectly happily, so `mkdir` on
+    the output — which is what every recipe written for the old layout
+    does — would otherwise commit a well-formed digest of something that
+    is not the output at all."""
+    (root / "astra.yaml").write_text(_SPEC.replace("echo one > {output}", "mkdir -p {output}"))
+
+    result = _make(root, "first")
+
+    assert result.status == "failed"
+    assert "a directory" in result.reason
 
 
 def test_an_output_that_cannot_be_recorded_fails_rather_than_raises(
@@ -293,12 +323,10 @@ def test_an_output_that_cannot_be_recorded_fails_rather_than_raises(
     where reporting one failure and letting the rest finish is the whole
     point of owning the loop. Exercised without a mechanism, because that
     is the host where a recipe really can delete what it was given."""
-    from lightcone.engine import sandbox
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise OSError("no space left on device")
 
-    monkeypatch.setattr(sandbox, "detect", Unavailable)
-    (root / "astra.yaml").write_text(
-        _SPEC.replace("echo one > {output}/value.txt", "rm -rf {output}")
-    )
+    monkeypatch.setattr(assets, "write", refuse)
 
     result = _make(root, "first")
 
@@ -318,24 +346,26 @@ def test_an_environment_that_moved_under_the_run_is_refused(root: Path) -> None:
 
     assert result.status == "failed"
     assert "environment changed" in result.reason
-    assert assets.read(root / "results/baseline/first") is None
+    assert assets.read(root / "results/baseline/.first.manifest.json") is None
 
 
 # ---- what a recipe may touch -----------------------------------------------
 
 
 def test_a_recipe_cannot_write_outside_the_results_tree(root: Path) -> None:
-    """One policy for probes and recipes, so `results/` is the whole of a
-    recipe's in-tree write scope. Sibling outputs are *not* carved out —
-    the manifest's content hash is what says whether an output's bytes are
-    its own, and a second mechanism for one guarantee is one more than can
-    be kept honest."""
+    """The tree is read-only apart from the directory the output lands in.
+    Sibling outputs inside that directory are *not* carved out — an output
+    is one file, and a mechanism can only grant creating it through the
+    directory that will hold it; the manifest's content hash is what says
+    whether an output's bytes are its own."""
     from lightcone.engine import sandbox
 
     if sandbox.detect().capability.kind == "none":
         pytest.skip("no sandbox mechanism on this host")
     (root / "astra.yaml").write_text(
-        _SPEC.replace("echo one > {output}/value.txt", "echo tampered > src/injected.py")
+        _SPEC.replace(
+            "echo one > {output}", "echo tampered > src/injected.py && echo one > {output}"
+        )
     )
 
     assert _make(root, "first").status == "failed"
@@ -352,7 +382,9 @@ def test_that_write_would_have_succeeded_unsandboxed(
     monkeypatch.setattr(sandbox, "detect", Unavailable)
     (root / "src").mkdir(exist_ok=True)
     (root / "astra.yaml").write_text(
-        _SPEC.replace("echo one > {output}/value.txt", "echo tampered > src/injected.py")
+        _SPEC.replace(
+            "echo one > {output}", "echo tampered > src/injected.py && echo one > {output}"
+        )
     )
 
     assert _make(root, "first").status == "ok"
@@ -378,9 +410,10 @@ def test_a_recipe_can_read_an_annexed_input(analysis: Callable[..., Path]) -> No
     outputs:
       - id: fit
         type: metric
+        format: txt
         inputs: [catalog]
         recipe:
-          command: cat {inputs.catalog} > {output}/seen.txt
+          command: cat {inputs.catalog} > {output}
     """
     root = analysis(spec, files={"data/catalog.txt": "measured\n"})
     dataset.save(root, [root / "data"], "the catalog")
@@ -388,7 +421,7 @@ def test_a_recipe_can_read_an_annexed_input(analysis: Callable[..., Path]) -> No
     result = _make(root, "fit")
 
     assert result.status == "ok", result.reason
-    assert (root / "results/baseline/fit/seen.txt").read_text() == "measured\n"
+    assert (root / "results/baseline/fit.txt").read_text() == "measured\n"
 
 
 # ---- the entry point the run record names ----------------------------------
@@ -420,7 +453,7 @@ def test_the_module_runs_one_task_and_commits_nothing(root: Path) -> None:
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert (root / "results/baseline/first/value.txt").read_text() == "one\n"
+    assert (root / "results/baseline/first.txt").read_text() == "one\n"
     assert dataset.status(root)
 
 
@@ -431,10 +464,10 @@ def test_the_module_reruns_unconditionally(
     a staleness check would answer a question nobody asked."""
     monkeypatch.chdir(root)
     _make(root, "first")
-    (root / "results/baseline/first/value.txt").unlink()
+    (root / "results/baseline/first.txt").unlink()
 
     assert worker.main(["baseline/first"]) == 0
-    assert (root / "results/baseline/first/value.txt").exists()
+    assert (root / "results/baseline/first.txt").exists()
 
 
 def test_the_module_converges_the_environment(
@@ -452,7 +485,7 @@ def test_the_module_converges_the_environment(
 
     assert worker.main(["baseline/first"]) == 0
     assert (root / ".venv").exists()
-    assert (root / "results/baseline/first/value.txt").read_text() == "one\n"
+    assert (root / "results/baseline/first.txt").read_text() == "one\n"
 
 
 def test_the_module_refuses_an_argument_it_cannot_use(root: Path) -> None:
@@ -494,8 +527,8 @@ def test_a_declared_input_that_is_not_there_names_itself(
     """`data_version` reports an absent path with the OS's own exception,
     which would unwind as a traceback at whoever is reading a rerun."""
     spec = _SPEC.replace(
-        "    recipe:\n      command: echo one > {output}/value.txt",
-        "    inputs: [catalog]\n    recipe:\n      command: echo one > {output}/value.txt",
+        "    recipe:\n      command: echo one > {output}",
+        "    inputs: [catalog]\n    recipe:\n      command: echo one > {output}",
         1,
     )
     root = analysis(spec)

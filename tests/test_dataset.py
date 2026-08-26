@@ -71,29 +71,29 @@ def test_save_puts_result_bytes_in_the_annex_and_the_manifest_in_git(repo: Path)
     """The whole storage policy, exercised end to end. The manifest has to
     stay a plain git blob: `lc` reads it on clones that have fetched no
     annex content at all."""
-    output = repo / "results" / "baseline" / "best_fit"
-    output.mkdir(parents=True)
-    (output / "fit.csv").write_text("a,b\n1,2\n")
-    (output / ".lightcone-manifest.json").write_text('{"data_version": "abc"}\n')
+    results = repo / "results" / "baseline"
+    results.mkdir(parents=True)
+    (results / "best_fit.csv").write_text("a,b\n1,2\n")
+    (results / ".best_fit.manifest.json").write_text('{"data_version": "abc"}\n')
 
-    assert dataset.save(repo, [output], "materialize best_fit")
+    assert dataset.save(repo, [results], "materialize best_fit")
 
-    assert _annexed(repo, output / "fit.csv")
-    assert not _annexed(repo, output / ".lightcone-manifest.json")
+    assert _annexed(repo, results / "best_fit.csv")
+    assert not _annexed(repo, results / ".best_fit.manifest.json")
     assert not dataset.status(repo)
 
 
 def test_a_plain_git_add_annexes_content_by_itself(repo: Path) -> None:
     """`filter=annex` is what makes git's own add route content, which is
     what lets lc — and everyone else — never run a git-annex command."""
-    output = repo / "results" / "baseline" / "best_fit"
-    output.mkdir(parents=True)
-    (output / "fit.csv").write_text("a,b\n1,2\n")
+    results = repo / "results" / "baseline"
+    results.mkdir(parents=True)
+    (results / "best_fit.csv").write_text("a,b\n1,2\n")
 
     dataset._git(["add", "-A", "--", "results"], cwd=repo)
     dataset._git(["commit", "-q", "-m", "plain git"], cwd=repo)
 
-    assert _annexed(repo, output / "fit.csv")
+    assert _annexed(repo, results / "best_fit.csv")
 
 
 def test_dot_paths_follow_the_storage_policy_not_annex_defaults(repo: Path) -> None:
@@ -109,16 +109,16 @@ def test_dot_paths_follow_the_storage_policy_not_annex_defaults(repo: Path) -> N
     archive = repo / ".datalad" / "environments" / "lc-env-abc" / "image"
     archive.parent.mkdir(parents=True)
     archive.write_bytes(b"pretend image bytes\n" * 64)
-    output = repo / "results" / "baseline" / "fit"
+    output = repo / "results" / "baseline"
     output.mkdir(parents=True)
     (output / ".cache.h5").write_bytes(b"intermediate\n" * 64)
-    (output / ".lightcone-manifest.json").write_text("{}\n")
+    (output / ".fit.manifest.json").write_text("{}\n")
 
     dataset.save(repo, [archive.parent, output], "routed")
 
     assert _annexed(repo, archive)
     assert _annexed(repo, output / ".cache.h5")
-    assert not _annexed(repo, output / ".lightcone-manifest.json")
+    assert not _annexed(repo, output / ".fit.manifest.json")
 
     plain = repo / ".datalad" / "environments" / "lc-env-def" / "image"
     plain.parent.mkdir(parents=True)
@@ -289,6 +289,21 @@ def test_save_stages_what_a_rebuild_deleted(repo: Path) -> None:
 # ---- leaving the tree as clean as it was found -----------------------------
 
 
+def test_tracked_manifests_are_only_the_ones_under_results(repo: Path) -> None:
+    """`results/` is the only place lc writes one; elsewhere the name is
+    the user's to use, and handing such a file to `assets.read` would ask
+    it to parse something that was never a manifest."""
+    ours = repo / "results" / "baseline" / ".fit.manifest.json"
+    ours.parent.mkdir(parents=True)
+    ours.write_text("{}\n")
+    theirs = repo / "data" / ".vendor.manifest.json"
+    theirs.parent.mkdir(parents=True, exist_ok=True)
+    theirs.write_text("[1, 2, 3]\n")
+    dataset.save(repo, [repo / "results", repo / "data"], "both")
+
+    assert dataset.tracked_manifests(repo) == [ours]
+
+
 def test_restore_undoes_a_half_written_rebuild(repo: Path) -> None:
     """The invariant that makes the dirty-tree refusal survivable: a recipe
     that truncates a committed output and then fails must not leave the
@@ -320,6 +335,35 @@ def test_restore_of_a_never_committed_output_is_not_an_error(repo: Path) -> None
 
     assert not dataset.status(repo)
     assert not (output / "fit.csv").exists()
+
+
+def test_restore_of_a_staged_but_unborn_output_does_not_raise(repo: Path) -> None:
+    """The state an interrupted `save` leaves: staged, never committed.
+    `ls-files --with-tree=HEAD` calls such a path known while
+    `checkout HEAD --` then exits nonzero on it — so a guard built on the
+    former makes the restore in materialize's `finally` raise over
+    whatever interrupted the run. Unstaging is not restore's job (git's
+    own `clean` leaves an index entry alone); not raising is."""
+    output = repo / "results" / "baseline" / "best_fit.csv"
+    output.parent.mkdir(parents=True)
+    output.write_text("staged, never committed\n")
+    dataset._git(["add", "--", "results"], cwd=repo)
+
+    dataset.restore(repo, [":(glob)results/baseline/best_fit.*"])
+
+
+def test_restore_takes_a_glob_pathspec(repo: Path) -> None:
+    """An output owns whatever its id names, so the pathspec is a glob —
+    which is what rules out `cat-file -e` and `ls-tree` as guards."""
+    output = repo / "results" / "baseline" / "best_fit.csv"
+    output.parent.mkdir(parents=True)
+    output.write_text("committed\n")
+    dataset.save(repo, [output], "the first version")
+    output.unlink()
+
+    dataset.restore(repo, [":(glob)results/baseline/best_fit.*"])
+
+    assert output.read_text() == "committed\n"
 
 
 def test_restore_is_scoped_to_the_paths_it_is_given(repo: Path) -> None:

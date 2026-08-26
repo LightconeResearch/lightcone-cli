@@ -30,11 +30,11 @@ This project is driven by two CLIs — use them rather than improvising:
       `uv run`: `lc run python scripts/fit.py --output /tmp/x`, never a
       single quoted shell string; for shell syntax use
       `lc run bash -c '...'`.
-    - Outputs land in `results/baseline/<output_id>/`, each with a
-      `.lightcone-manifest.json` manifest written and committed by the
-      engine. Never write into `results/` yourself: a hand-placed file
-      has no run record, and the engine detects the foreign write and
-      remakes the output.
+    - Outputs land in `results/baseline/<output_id>.<format>`, each with a
+      `.<output_id>.manifest.json` manifest beside it, written and
+      committed by the engine. Never write into `results/` yourself: a
+      hand-placed file has no run record, and the engine detects the
+      foreign write and remakes the output.
     - When a recipe fails, `lc materialize` reports which output failed
       and why; fix the script or the spec, commit, and re-run.
 
@@ -43,13 +43,14 @@ This project is driven by two CLIs — use them rather than improvising:
 A recipe's `command` is a template. The engine substitutes these
 placeholders before invoking it:
 
-- `{output}` — the directory the output is materialized into
-  (`results/<universe>/<output_id>/`). The engine creates it; your script
-  must write its artifact file(s) inside it.
+- `{output}` — the file the output is materialized to,
+  `results/<universe>/<output_id>.<format>`, where `format` is the one the
+  output declares. Your script must write exactly that path, and nothing
+  else: an output is one file. The engine creates the directory; a recipe
+  that writes a directory there, or writes some other name, fails.
 - `{inputs.<id>}` — the named input's resolved path: an analysis-level
   `Input`'s `source` (e.g. a file under `data/`), or, for an upstream
-  output, that output's results directory (your script reads the file(s)
-  inside it).
+  output, that output's own file — so your script opens it directly.
 - `{inputs}` — space-separated paths of all declared inputs, in
   declaration order.
 - `{decisions.<id>}` — the active option ID for the named decision in the
@@ -67,8 +68,8 @@ is how the engine orders the build.
 
 Recipes run in the project's own locked environment (`pyproject.toml` +
 `uv.lock` + `.venv`), sandboxed: the project tree is read-only apart from
-each recipe's own output directory under `results/`, and only declared
-tools are executable.
+the directory each recipe's output lands in, and only declared tools are
+executable.
 
 - The project is managed by uv and starts with **no dependencies**.
   Every package a recipe script imports must be declared before
@@ -86,18 +87,21 @@ tools are executable.
 
 `astra.yaml` is the single source of truth: inputs, outputs, recipes, and
 methodological decisions all live there — read it first. The seed spec is
-deliberately incomplete: recipe commands do not yet pass their inputs,
-decisions, or output directory, and outputs may be missing entries in
-their `inputs:` / `decisions:` contracts. Completing the spec is part of
+deliberately incomplete: outputs declare no `format:`, recipe commands do
+not yet pass their inputs, decisions, or output path, and outputs may be
+missing entries in their `inputs:` / `decisions:` contracts. Completing the spec is part of
 the task. For each output:
 
-1. Complete the recipe `command` so it references `{output}` and the
+1. Declare the output's `format:` — the file extension its artifact is
+   written with, without the leading dot (`png`, `csv`, `json`, …). lc
+   names the file from it and refuses a spec that omits it.
+2. Complete the recipe `command` so it references `{output}` and the
    `{inputs.<id>}` / `{decisions.<id>}` the computation needs, and
    declare everything it references in that output's `inputs:` /
    `decisions:` lists.
-2. Write the script at the path the command names, parameterizing every
+3. Write the script at the path the command names, parameterizing every
    decision via argparse — never hardcode option values.
-3. Commit your edits, then run `lc materialize` (or
+4. Commit your edits, then run `lc materialize` (or
    `lc materialize <output_id>`) to build through the engine.
 
 Build iteratively from upstream outputs to downstream. `lc status` shows

@@ -40,15 +40,17 @@ inputs:
 outputs:
   - id: first
     type: metric
+    format: txt
     decisions: [method]
     recipe:
-      command: echo {decisions.method} > {output}/value.txt
+      command: echo {decisions.method} > {output}
 
   - id: second
     type: report
+    format: txt
     inputs: [first]
     recipe:
-      command: cat {inputs.first}/value.txt > {output}/copy.txt
+      command: cat {inputs.first} > {output}
 
 decisions:
   method:
@@ -91,7 +93,7 @@ def test_every_output_is_made_and_committed(root: Path, inline: None) -> None:
 
     assert report.made == ["baseline/first", "baseline/second"]
     assert report.ok and not report.up_to_date
-    assert (root / "results/baseline/second/copy.txt").read_text() == "alpha\n"
+    assert (root / "results/baseline/second.txt").read_text() == "alpha\n"
     assert _commits(root) == before + 2
     assert not dataset.status(root)
 
@@ -105,8 +107,8 @@ def test_an_output_and_its_manifest_land_in_one_commit(root: Path, inline: None)
         ["show", "--name-only", "--format=", "HEAD"], cwd=root
     ).split()
     assert sorted(committed) == [
-        "results/baseline/first/.lightcone-manifest.json",
-        "results/baseline/first/value.txt",
+        "results/baseline/.first.manifest.json",
+        "results/baseline/first.txt",
     ]
 
 
@@ -118,8 +120,8 @@ def test_the_bytes_go_to_the_annex_and_the_manifest_to_git(root: Path, inline: N
     def blob(rel: str) -> str:
         return dataset._git(["cat-file", "-p", f"HEAD:{rel}"], cwd=root)
 
-    assert blob("results/baseline/first/value.txt").startswith("/annex/objects/")
-    assert blob("results/baseline/first/.lightcone-manifest.json").startswith("{")
+    assert blob("results/baseline/first.txt").startswith("/annex/objects/")
+    assert blob("results/baseline/.first.manifest.json").startswith("{")
 
 
 def test_a_second_run_does_nothing_and_commits_nothing(root: Path, inline: None) -> None:
@@ -159,7 +161,7 @@ def test_a_moved_environment_is_reported_and_nothing_is_remade(
     so it is reported and left where it is."""
     engine.materialize(root, [])
     after_first = _commits(root)
-    first = (root / "results/baseline/first/value.txt").read_text()
+    first = (root / "results/baseline/first.txt").read_text()
     _move_the_environment(root)
 
     report = engine.materialize(root, [])
@@ -169,7 +171,7 @@ def test_a_moved_environment_is_reported_and_nothing_is_remade(
     assert "earlier environment" in report.behind["baseline/first"]
     assert report.up_to_date, "behind is not out of date"
     assert _commits(root) == after_first + 1, "only the environment edit"
-    assert (root / "results/baseline/first/value.txt").read_text() == first
+    assert (root / "results/baseline/first.txt").read_text() == first
 
 
 def test_refresh_remakes_what_is_behind_and_commits_it(root: Path, inline: None) -> None:
@@ -184,7 +186,7 @@ def test_refresh_remakes_what_is_behind_and_commits_it(root: Path, inline: None)
     assert set(report.made) == {"baseline/first", "baseline/second"}
     assert report.behind == {}
     assert _commits(root) == before + 2
-    manifest = assets.read(root / "results/baseline/first")
+    manifest = assets.read(root / "results/baseline/.first.manifest.json")
     assert manifest is not None
     assert manifest.env_version == identity.env_version(root)
 
@@ -198,7 +200,7 @@ def test_the_manifest_records_the_uv_that_converged_the_environment(
 
     engine.materialize(root, ["first"])
 
-    manifest = assets.read(root / "results/baseline/first")
+    manifest = assets.read(root / "results/baseline/.first.manifest.json")
     assert manifest is not None
     assert manifest.uv_version == project.uv_version(root)
     assert manifest.uv_version.count(".") >= 1, "a real version token, not prose"
@@ -293,7 +295,7 @@ def test_status_does_not_mind_a_dirty_tree(root: Path, inline: None) -> None:
     """It reads. Refusing here would make the one verb that tells you what
     state you are in unavailable exactly when you need it."""
     engine.materialize(root, [])
-    (root / "results/baseline/first/value.txt").write_text("edited by hand\n")
+    (root / "results/baseline/first.txt").write_text("edited by hand\n")
 
     assert engine.status(root).counts["current"] == 2
 
@@ -314,7 +316,7 @@ def test_a_changed_decision_remakes_the_output_and_its_dependents(
     report = engine.materialize(root, [])
 
     assert report.made == ["baseline/first", "baseline/second"]
-    assert (root / "results/baseline/second/copy.txt").read_text() == "beta\n"
+    assert (root / "results/baseline/second.txt").read_text() == "beta\n"
 
 
 def test_the_previous_bytes_are_still_there_at_the_previous_commit(
@@ -327,11 +329,11 @@ def test_the_previous_bytes_are_still_there_at_the_previous_commit(
     (root / "universes" / "baseline.yaml").write_text("id: baseline\ndecisions:\n  method: beta\n")
     dataset.save(root, [root], "switch method")
     engine.materialize(root, ["first"])
-    assert (root / "results/baseline/first/value.txt").read_text() == "beta\n"
+    assert (root / "results/baseline/first.txt").read_text() == "beta\n"
 
-    dataset._git(["checkout", original, "--", "results/baseline/first"], cwd=root)
+    dataset._git(["checkout", original, "--", "results/baseline/first.txt"], cwd=root)
 
-    assert (root / "results/baseline/first/value.txt").read_text() == "alpha\n"
+    assert (root / "results/baseline/first.txt").read_text() == "alpha\n"
 
 
 # ---- check mode ------------------------------------------------------------
@@ -350,7 +352,7 @@ def test_check_writes_nothing_and_commits_nothing(root: Path) -> None:
 
     engine.check(root, [])
 
-    assert not (root / "results/baseline/first").exists()
+    assert not (root / "results/baseline/first.txt").exists()
     assert _commits(root) == before
 
 
@@ -388,14 +390,14 @@ def test_a_dirty_tree_refuses_and_says_what_to_do_about_each_path(
     committed, and anything under `results/` is lc's to write."""
     engine.materialize(root, ["first"])
     (root / "notes.md").write_text("in progress\n")
-    (root / "results/baseline/first/stray.txt").write_text("by hand\n")
+    (root / "results/baseline/stray.txt").write_text("by hand\n")
 
     with pytest.raises(ProjectError) as raised:
         engine.materialize(root, [])
 
     message = str(raised.value)
     assert "commit these" in message and "notes.md" in message
-    assert "discard these" in message and "results/baseline/first/stray.txt" in message
+    assert "discard these" in message and "results/baseline/stray.txt" in message
 
 
 def _consuming(source: str) -> str:
@@ -568,7 +570,7 @@ def test_a_failing_recipe_commits_nothing_and_leaves_the_tree_clean(
     """The invariant that makes the dirty-tree refusal survivable: the next
     run must not tell the user to commit truncated, manifest-less
     garbage."""
-    spec = _SPEC.replace("echo {decisions.method} > {output}/value.txt", "exit 1")
+    spec = _SPEC.replace("echo {decisions.method} > {output}", "exit 1")
     root = analysis(spec, universes={"baseline": _UNIVERSE})
     before = _commits(root)
 
@@ -587,7 +589,7 @@ def test_a_run_in_which_everything_failed_is_not_up_to_date(
     """`made` stays empty when every recipe fails, so `up_to_date` alone
     read "nothing to do" over a list of failures — and it is the second key
     of the JSON report, which is what an agent branches on."""
-    spec = _SPEC.replace("echo {decisions.method} > {output}/value.txt", "exit 1")
+    spec = _SPEC.replace("echo {decisions.method} > {output}", "exit 1")
     root = analysis(spec, universes={"baseline": _UNIVERSE})
 
     report = engine.materialize(root, [])
@@ -604,7 +606,7 @@ def test_a_rebuild_that_fails_puts_the_previous_output_back(
 ) -> None:
     engine.materialize(root, ["first"])
     (root / "astra.yaml").write_text(
-        _SPEC.replace("echo {decisions.method} > {output}/value.txt", "exit 1")
+        _SPEC.replace("echo {decisions.method} > {output}", "exit 1")
     )
     dataset.save(root, [root], "break the recipe")
     at_break = _commits(root)
@@ -612,7 +614,7 @@ def test_a_rebuild_that_fails_puts_the_previous_output_back(
     report = engine.materialize(root, ["first"])
 
     assert report.failed == ["baseline/first"]
-    assert (root / "results/baseline/first/value.txt").read_text() == "alpha\n"
+    assert (root / "results/baseline/first.txt").read_text() == "alpha\n"
     assert _commits(root) == at_break
     assert not dataset.status(root)
 
@@ -666,8 +668,11 @@ def test_the_run_record_is_what_datalad_reads(
         "uv run --no-project --with 'lightcone-cli==1.2.3' -- "
         "python -m lightcone.engine.worker baseline/second"
     )
-    assert info["inputs"] == ["results/baseline/first"]
-    assert info["outputs"] == ["results/baseline/second"]
+    assert info["inputs"] == ["results/baseline/first.txt"]
+    assert info["outputs"] == [
+        "results/baseline/second.txt",
+        "results/baseline/.second.manifest.json",
+    ]
     assert info["dsid"] == "4b7b5c1e-0000-4000-8000-000000000000"
     assert info["chain"] == [] and info["pwd"] == "."
 
@@ -708,9 +713,10 @@ def test_the_record_names_the_declared_input_not_the_annex_object(
     outputs:
       - id: fit
         type: metric
+        format: txt
         inputs: [catalog]
         recipe:
-          command: cat {inputs.catalog} > {output}/seen.txt
+          command: cat {inputs.catalog} > {output}
     """
     root = analysis(spec, files={"data/catalog.txt": "measured\n"})
     dataset.save(root, [root / "data"], "the catalog")
@@ -732,7 +738,9 @@ def test_every_manifest_of_one_run_names_the_same_commit(root: Path, inline: Non
     engine.materialize(root, [])
 
     shas = {
-        assets.read(root / "results/baseline" / name).git_sha  # type: ignore[union-attr]
+        assets.read(  # type: ignore[union-attr]
+            root / "results/baseline" / f".{name}.manifest.json"
+        ).git_sha
         for name in ("first", "second")
     }
     assert len(shas) == 1
@@ -746,7 +754,7 @@ def test_check_agrees_with_a_run_on_a_clone_with_no_annex_content(
     than the pointer file sitting in its place."""
     engine.materialize(root, [])
     clone = _clone(root, tmp_path)
-    pointer = (clone / "results/baseline/first/value.txt").read_text()
+    pointer = (clone / "results/baseline/first.txt").read_text()
     assert pointer.startswith("/annex/objects/")  # content really is absent
 
     assert engine.check(clone, []).planned == {}
@@ -781,9 +789,10 @@ inputs:
 outputs:
   - id: copy
     type: metric
+    format: txt
     inputs: [catalog]
     recipe:
-      command: cat {inputs.catalog} > {output}/copy.txt
+      command: cat {inputs.catalog} > {output}
 """
 
 
@@ -881,7 +890,7 @@ def test_the_recorded_command_reproduces_the_output(
     # working tree — the code actually under test.
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
     engine.materialize(root, ["first"])
-    original = assets.read(root / "results/baseline/first")
+    original = assets.read(root / "results/baseline/.first.manifest.json")
     assert original is not None
 
     proc = subprocess.run(
@@ -893,10 +902,10 @@ def test_the_recorded_command_reproduces_the_output(
     )
 
     assert proc.returncode == 0, proc.stderr
-    rerun = assets.read(root / "results/baseline/first")
+    rerun = assets.read(root / "results/baseline/.first.manifest.json")
     assert rerun is not None
     assert rerun.data_version == original.data_version
-    assert rerun.data_version == assets.data_version(root / "results/baseline/first")
+    assert rerun.data_version == assets.data_version(root / "results/baseline/first.txt")
     assert not dataset.status(root)
 
 
@@ -916,7 +925,7 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
     version, dist = engine_dist
     monkeypatch.setattr(engine, "_engine_requirement", lambda: f"lightcone-cli=={version}")
     engine.materialize(root, ["first"])
-    original = assets.read(root / "results/baseline/first")
+    original = assets.read(root / "results/baseline/.first.manifest.json")
     assert original is not None
 
     clone = _clone(root, tmp_path)
@@ -931,7 +940,7 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
     )
 
     assert proc.returncode == 0, proc.stderr
-    rerun = assets.read(clone / "results/baseline/first")
+    rerun = assets.read(clone / "results/baseline/.first.manifest.json")
     assert rerun is not None
     assert rerun.data_version == original.data_version
     assert (clone / ".venv").exists()
@@ -1010,14 +1019,14 @@ def test_a_foreign_write_is_stale_and_names_its_commit(root: Path, inline: None)
     so a directory last written by anything but its own run record is a
     *contradiction*, and contradiction is what `stale` means."""
     engine.materialize(root, [])
-    forged = root / "results" / "baseline" / "first" / "value.txt"
+    forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
-    dataset.save(root, [forged.parent], "tweak colors")
+    dataset.save(root, [forged], "tweak colors")
 
     outputs = {o.output: o for o in engine.status(root).outputs}
 
     assert outputs["baseline/first"].status == "stale"
-    forged_sha = dataset.last_writer(root, root / "results/baseline/first").sha
+    forged_sha = dataset.last_writer(root, root / "results/baseline/first.txt").sha
     assert outputs["baseline/first"].foreign_write == forged_sha
     assert "tweak colors" in outputs["baseline/first"].why
     assert "git show" in outputs["baseline/first"].why
@@ -1030,9 +1039,9 @@ def test_check_plans_the_remake_of_a_foreign_written_output(
     """Status and `--check` answer from one walk, so they cannot disagree
     about a foreign write — and the gate exits nonzero over it."""
     engine.materialize(root, [])
-    forged = root / "results" / "baseline" / "first" / "value.txt"
+    forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
-    dataset.save(root, [forged.parent], "tweak colors")
+    dataset.save(root, [forged], "tweak colors")
 
     report = engine.check(root, [])
 
@@ -1047,9 +1056,9 @@ def test_the_foreign_write_fact_survives_a_bytes_free_clone(
     the fact needs no annex content — where a rehash would have nothing to
     hash."""
     engine.materialize(root, [])
-    forged = root / "results" / "baseline" / "first" / "value.txt"
+    forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
-    dataset.save(root, [forged.parent], "tweak colors")
+    dataset.save(root, [forged], "tweak colors")
     clone = _clone(root, tmp_path)
 
     outputs = {o.output: o for o in engine.status(clone).outputs}
@@ -1065,9 +1074,9 @@ def test_the_next_run_remakes_a_foreign_written_output(root: Path, inline: None)
     refusal's path split — so a committed hand edit is remade, and the
     rebuild's own run record becomes the last writer again."""
     engine.materialize(root, [])
-    forged = root / "results" / "baseline" / "first" / "value.txt"
+    forged = root / "results" / "baseline" / "first.txt"
     _forge(forged, "curated by hand\n")
-    dataset.save(root, [forged.parent], "tweak colors")
+    dataset.save(root, [forged], "tweak colors")
 
     report = engine.materialize(root, [])
 
@@ -1110,7 +1119,7 @@ def test_a_licensed_materialize_converges_the_crate_and_commits_it(
     graph = json.loads(crate_path.read_text())["@graph"]
     types = {e["@id"]: e["@type"] for e in graph}
     assert "OrganizeAction" in types.values()
-    assert types["results/baseline/first/"] == "Dataset"
+    assert types["results/baseline/first.txt"] == "File"
 
 
 def test_an_idempotent_rerun_commits_nothing(root: Path, inline: None) -> None:
@@ -1172,11 +1181,11 @@ def test_status_sees_the_crate_lag_a_rerun_leaves(root: Path, inline: None) -> N
 
     _declare_license(root)
     engine.materialize(root, [])
-    directory = root / "results/baseline/second"
-    manifest = assets.read(directory)
+    sidecar = root / "results/baseline/.second.manifest.json"
+    manifest = assets.read(sidecar)
     assert manifest is not None
-    assets.write(directory, replace(manifest, finished_at="2027-01-01T00:00:00.000+00:00"))
-    dataset.save(root, [directory], "a rerun-shaped manifest rewrite")
+    assets.write(sidecar, replace(manifest, finished_at="2027-01-01T00:00:00.000+00:00"))
+    dataset.save(root, [sidecar], "a rerun-shaped manifest rewrite")
 
     assert engine.status(root).crate.startswith("behind")
 
@@ -1195,6 +1204,6 @@ def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: No
 
     report = engine.materialize(root, [])
 
-    assert any("results/baseline/second" in w for w in report.warnings)
+    assert any(".second.manifest.json" in w for w in report.warnings)
     document = (root / "ro-crate-metadata.json").read_text()
-    assert "results/baseline/second/" not in document
+    assert "results/baseline/second.txt" not in document

@@ -415,7 +415,7 @@ def converge(runtime: Runtime) -> list[str]:
 
 
 def policy_for(
-    runtime: Runtime, read_paths: list[Path], *, output_dir: Path | None = None
+    runtime: Runtime, read_paths: list[Path], *, write_dir: Path | None = None
 ) -> sandbox.Policy:
     """Build the exec policy for a resolved runtime.
 
@@ -428,7 +428,7 @@ def policy_for(
     Args:
         runtime: The resolved runtime.
         read_paths: Declared inputs, as :func:`sandbox.exec_policy` takes.
-        output_dir: A recipe's own output directory; absent for a probe.
+        write_dir: The directory a recipe's output lands in; absent for a probe.
 
     Returns:
         The policy for this world.
@@ -438,7 +438,7 @@ def policy_for(
         read_paths=read_paths,
         env_dir=runtime.env_dir,
         containerized=runtime.mode == "containerized",
-        output_dir=output_dir,
+        write_dir=write_dir,
     )
 
 

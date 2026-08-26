@@ -181,18 +181,18 @@ def exec_policy(
     read_paths: Sequence[Path] = (),
     env_dir: Path | None = None,
     containerized: bool = False,
-    output_dir: Path | None = None,
+    write_dir: Path | None = None,
 ) -> Policy:
     """Build what a sandboxed command may touch.
 
-    The tree is read-only apart from the write scope: a recipe writes its
-    own output directory and nothing else in the tree, so a concurrent
-    task cannot land bytes in a sibling's directory before that sibling
-    hashes — the one corruption ``data_version`` could never see, because
-    the manifest it produces is self-consistent and wrong. A probe has no
-    output, so ``lc run`` gets ``results/`` whole; the probe→recipe
-    promise therefore excludes exactly the commands that write outside
-    their own output directory, which is the accident being prevented.
+    The tree is read-only apart from the write scope: the directory an
+    output's file lands in, and nothing else. An output is one file now,
+    and a mechanism can only grant *creating* it through the directory
+    that will hold it — so outputs declared side by side are mutually
+    writable again, which the narrower per-output directory used to
+    prevent. Recorded rather than papered over: what answers whether an
+    output's bytes are its own is ``data_version``, never the sandbox. A
+    probe has no analysis node, so ``lc run`` gets ``results/`` whole.
 
     The containerized shape is the same policy with the host stripped
     out: the *image* is the OS baseline and the exec set — everything
@@ -207,8 +207,10 @@ def exec_policy(
             ``.venv``.
         containerized: Build the mount-shaped policy instead of the host
             one.
-        output_dir: The one in-tree directory a recipe may write; absent
-            for a probe, which gets ``results/`` whole.
+        write_dir: The one in-tree directory a recipe may write — the
+            directory holding its output file, shared with the siblings
+            declared beside it. Absent for a probe, which has no analysis
+            node and gets the project's own ``results/`` whole.
 
     Returns:
         The policy. The in-tree write scope is granted only if it exists —
@@ -231,7 +233,7 @@ def exec_policy(
     for sub in _HOME_LAYOUT.values():
         (tmp_home / sub).mkdir(parents=True, exist_ok=True)
 
-    in_tree_write = output_dir if output_dir is not None else project / "results"
+    in_tree_write = write_dir if write_dir is not None else project / "results"
     if containerized:
         # Declared spellings, not realpaths — the one shape that keeps
         # its paths unresolved. These become mount *destinations*, and a

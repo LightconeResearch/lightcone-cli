@@ -123,7 +123,7 @@ def test_gitattributes_routes_content_to_the_annex_and_everything_else_to_git() 
     assert entries[0] == "* annex.largefiles=nothing"
     assert "results/** annex.largefiles=anything" in entries
     assert "data/** annex.largefiles=anything" in entries
-    assert "**/.lightcone-manifest.json annex.largefiles=nothing" in entries
+    assert "results/**/.*.manifest.json annex.largefiles=nothing" in entries
 
 
 def test_gitattributes_exceptions_come_after_the_default() -> None:
@@ -162,6 +162,21 @@ def test_an_opt_out_the_defaults_would_land_below_is_named() -> None:
     assert misplaced == "* annex.largefiles=nothing"
 
 
+def test_a_gitattributes_written_by_an_earlier_template_still_converges() -> None:
+    """Repair only appends, at end of file, carrying each line's template
+    rank — so a managed line added anywhere but last strands every file
+    written before it, permanently, since append-only repair cannot
+    reorder. This is such a file, and it must converge."""
+    earlier = (
+        "* annex.largefiles=nothing\n"
+        "* filter=annex\n"
+        "results/** annex.largefiles=anything\n"
+        "data/** annex.largefiles=anything\n"
+        ".datalad/environments/*/image annex.largefiles=anything\n"
+    )
+    assert templates.gitattributes_disorder(earlier) == ""
+
+
 def test_a_hand_written_file_already_in_the_right_order_needs_nothing() -> None:
     """Judged on meaning, not on who wrote it — and only lines setting the
     *same* attribute can be out of order with each other, so the
@@ -197,7 +212,7 @@ def test_index_md_renders_the_title_and_keeps_myst_roles() -> None:
 def test_results_readme_explains_the_output_layout() -> None:
     """`results/` starts empty and git carries no empty directories, so the
     README is the only thing a clone shows for it."""
-    assert "results/<universe>/<output_id>/" in templates.read("results-README.md.tmpl")
+    assert "results/<universe>/<output_id>.<format>" in templates.read("results-README.md.tmpl")
 
 
 def test_data_readme_explains_where_declared_inputs_go() -> None:

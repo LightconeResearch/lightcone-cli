@@ -87,7 +87,7 @@ callers: the worker (live input digests) and the read-only walk
 change"). That single value is the entire difference between run and
 check, which is what keeps `--check` honest. `behind` does not
 propagate; `stale` wins when both apply; and a foreign write (an
-output's directory last touched by a commit that is not its own run
+output whose file or manifest was last touched by a commit that is not its own run
 record) classifies stale through the same rule, as one more input
 value.
 

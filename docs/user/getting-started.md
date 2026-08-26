@@ -102,6 +102,7 @@ inputs:
 outputs:
   - id: fit
     type: metric
+    format: json
     description: "Slope and intercept of the least-squares line"
     inputs: [points]
     decisions: [outliers]
@@ -110,6 +111,7 @@ outputs:
 
   - id: fit_plot
     type: figure
+    format: png
     description: "The points and the fitted line"
     inputs: [points, fit]
     recipe:
@@ -136,9 +138,12 @@ A few things to notice:
   changes.
 - Recipes reference those dependencies through placeholders —
   `{inputs.points}`, `{decisions.outliers}`, `{output}` — which are
-  expanded at execution time. `{output}` is the output's own results
-  directory, `results/<universe>/<output_id>/`; the engine creates it
-  before the recipe runs.
+  expanded at execution time. `{output}` is the output's own file,
+  `results/<universe>/<output_id>.<format>`; the engine creates the
+  directory before the recipe runs, and the recipe writes that one path.
+- Each output declares a `format` — the extension its artifact is
+  written with. It is what names the file, so a consumer knows what an
+  output *is* from the spec alone, and one output is always one file.
 - The decision's options aren't hardcoded anywhere in code; the scripts
   will take them as command-line arguments.
 
@@ -153,7 +158,7 @@ decisions:
 ```
 
 Each universe is one complete selection of decision values; its results
-materialize to `results/<universe>/<output_id>/`.
+materialize to `results/<universe>/<output_id>.<format>`.
 
 Check the spec is well-formed:
 
@@ -191,13 +196,12 @@ if args.outliers == "clip":
     x, y = x[mask], y[mask]
 slope, intercept = np.polyfit(x, y, 1)
 
-out = Path(args.output)
-(out / "fit.json").write_text(
+Path(args.output).write_text(
     json.dumps({"slope": slope, "intercept": intercept, "n_used": len(x)}, indent=2)
 )
 ```
 
-Then `src/plot.py` — reads the upstream output's directory, makes the
+Then `src/plot.py` — reads the upstream output's file, makes the
 figure:
 
 ```python
@@ -218,7 +222,7 @@ parser.add_argument("--output", required=True)
 args = parser.parse_args()
 
 x, y = np.loadtxt(args.points, delimiter=",", skiprows=1, unpack=True)
-fit = json.loads((Path(args.fit) / "fit.json").read_text())
+fit = json.loads(Path(args.fit).read_text())
 
 fig, ax = plt.subplots()
 ax.scatter(x, y, s=12)
@@ -227,7 +231,7 @@ ax.plot(xs, fit["slope"] * xs + fit["intercept"], color="C1")
 ax.set_xlabel("x")
 ax.set_ylabel("y")
 ax.set_title(f"slope = {fit['slope']:.3f}")
-fig.savefig(Path(args.output) / "fit_plot.png", dpi=150)
+fig.savefig(args.output, dpi=150)
 ```
 
 Both scripts import from the project's locked environment, so declare
@@ -266,7 +270,8 @@ uncommitted edits (it wouldn't be able to say what code ran). Then:
 ```
 
 (We'll come back to that license line in step 7.) Each output landed in
-`results/baseline/<output_id>/` next to a `.lightcone-manifest.json` —
+`results/baseline/<output_id>.<format>` next to a
+`.<output_id>.manifest.json` —
 a manifest recording the recipe, the decisions, the input hashes, the
 environment, and the commit — and was committed with a run record that
 `datalad rerun` can replay. Look at `git log`: the build wrote history,
@@ -281,6 +286,7 @@ lc status
 ```
   mode:    direct
   sandbox: landlock (fs: declared, network: allowed)
+  crate:   not maintained — declare [project].license to enable it
 
   · current  baseline/fit       a3f1f11
   · current  baseline/fit_plot  a3f1f11
@@ -359,7 +365,8 @@ repository you already have.
 - The scripts take decision values as plain command-line arguments, so
   nothing methodological is hardcoded.
 - `lc materialize` ran each recipe in the project's locked environment,
-  sandboxed — free to write its own output directory and nothing else —
+  sandboxed — free to write the directory its output lands in, and
+  nothing else —
   and committed every output with a manifest and a re-runnable run
   record.
 - `lc status` and `lc materialize --check` read those manifests — they

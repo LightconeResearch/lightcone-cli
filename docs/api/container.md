@@ -46,7 +46,8 @@ Sources: `src/lightcone/engine/image.py`,
   after the graph resolves** — a refusal over a typo must not cost a
   minutes-long build, and `dataset.save` commits the whole index.
 - **The mount table is the mechanism** (`sandbox/oci.py`): project
-  `:ro`, `results/` `:rw`, declared inputs `:ro`, private HOME,
+  `:ro`, the write scope `:rw` — the directory a recipe's output lands
+  in, or `results/` for a probe — declared inputs `:ro`, private HOME,
   `--tmpfs /tmp`, over a `--read-only` rootfs — without that flag a
   stray write *succeeds* into the ephemeral layer and vanishes while
   the attestation claims `fs: declared`. Mounts are resolved source,

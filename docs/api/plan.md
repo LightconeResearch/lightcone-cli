@@ -32,7 +32,7 @@ Source: `src/lightcone/engine/plan.py`.
   resolution answers what a *valid* spec means and does not re-check
   that it is one.
 - **The layout is flat and path-addressed.**
-  `results/<universe>/<qualified_output_id>/`, and the path in a
+  `results/<universe>/<id>.<format>`, and the path in a
   rendered recipe *is* the path on disk — no staging, no relocation.
 - **`declared_path` is lexical, never `resolve()`d.** A declared input
   under `data/` is an annex symlink; resolving it writes

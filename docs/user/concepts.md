@@ -35,7 +35,7 @@ Recipes import from the locked environment and nothing else — a stray
 ## An output has an identity, and three facts about it
 
 Every materialized output records, in its
-`.lightcone-manifest.json`:
+`.<output_id>.manifest.json`:
 
 1. **What it is** — a hash of its recipe and the decision values that
    shaped it (its *definition*).
@@ -108,7 +108,7 @@ How recipes execute is never configured — it is read off the project:
 - **Direct mode** (the default): recipes run on your machine, in the
   project's `.venv`, under an OS sandbox — Landlock on Linux, Seatbelt
   on macOS. The project tree is read-only except each recipe's own
-  output directory; undeclared tools don't execute.
+  directory its output lands in; undeclared tools don't execute.
 - **Containerized mode**: declaring a `[tool.lightcone.image]` table in
   `pyproject.toml` *is* the switch. Recipes then run inside a
   content-addressed image built from that declaration — and the image

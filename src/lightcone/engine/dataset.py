@@ -259,8 +259,8 @@ def dataset_id(directory: Path) -> str:
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
-def last_writer(directory: Path, path: Path) -> LastWrite:
-    """Find the commit that last touched *path*.
+def last_writer(directory: Path, *paths: Path | str) -> LastWrite:
+    """Find the commit that last touched any of *paths*.
 
     Run from the project root with a relative pathspec, so it answers
     about the project's own subdirectory even inside an enclosing
@@ -273,15 +273,28 @@ def last_writer(directory: Path, path: Path) -> LastWrite:
     ``.git``, or a host without git — states such projects are actually
     in.
 
+    Several paths, because an output is a file *and* a manifest and a
+    hand edit to either contradicts the record: the payload alone would
+    miss a doctored manifest, and the manifest alone would miss the forged
+    result that is the whole reason to ask. The manifest also carries the
+    history across a re-declared format, where the payload's path is new.
+
     Args:
         directory: The project root.
-        path: The path to ask about, absolute or repository-relative.
+        paths: What to ask about, absolute, repository-relative, or a git
+            pathspec.
 
     Returns:
-        The commit, falsy-empty when none has touched the path — or when
-        git cannot answer at all.
+        The commit, falsy-empty when none has touched them — or when git
+        cannot answer at all.
     """
-    argv = ["log", "-1", "--format=%H%x00%s%x00%an%x00%ae%x00%as", "--", _rel(directory, path)]
+    argv = [
+        "log",
+        "-1",
+        "--format=%H%x00%s%x00%an%x00%ae%x00%as",
+        "--",
+        *(_rel(directory, p) for p in paths),
+    ]
     out = _ask(argv, cwd=directory)
     if not (out := (out or "").strip("\n")):
         return LastWrite()
@@ -318,7 +331,32 @@ def annex_keys(directory: Path) -> dict[str, str]:
     return keys
 
 
-def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
+def tracked_manifests(directory: Path) -> list[Path]:
+    """Every manifest sidecar git is tracking, anywhere in the tree.
+
+    From the index rather than a directory walk: it is exact, it costs one
+    process, and it never descends into ``.git`` or ``.venv``. Scoped to
+    ``results/``, which is the only place lc writes one — elsewhere the
+    name is the user's to use. Untracked strays are the dirty check's
+    business, not this one's.
+
+    Args:
+        directory: The repository root.
+
+    Returns:
+        Absolute paths, unordered.
+    """
+    # Imported here, not at module scope: `assets` reaches this module
+    # through `project`, so the name has to be fetched after both exist.
+    from lightcone.engine.assets import MANIFEST_SUFFIX
+
+    listed = _git(
+        ["ls-files", "-z", "--", f":(glob)results/**/*{MANIFEST_SUFFIX}"], cwd=directory
+    )
+    return [directory / name for name in listed.split("\0") if name]
+
+
+def save(directory: Path, paths: Iterable[Path | str], message: str) -> bool:
     """Commit *paths*.
 
     A plain ``git add``: ``.gitattributes`` sets ``filter=annex``, so git's
@@ -357,7 +395,7 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
 
     Args:
         directory: The repository root.
-        paths: What to stage, absolute or repository-relative.
+        paths: What to stage — a path, or a git pathspec.
         message: The commit message.
 
     Returns:
@@ -377,23 +415,31 @@ def save(directory: Path, paths: Iterable[Path], message: str) -> bool:
     return True
 
 
-def restore(directory: Path, paths: Iterable[Path]) -> None:
+def restore(directory: Path, paths: Iterable[Path | str]) -> None:
     """Put *paths* back the way the last commit had them.
 
     ``clean`` first for what a run wrote, then ``checkout`` for what it
-    deleted or truncated — and only when the path is in ``HEAD``, since a
-    first materialization has nothing to go back to.
+    deleted or truncated — through ``_git_ok``, because a first
+    materialization has nothing to go back to and ``checkout`` exits
+    nonzero on a pathspec it cannot match.
+
+    No guard in front of it: a pathspec may be a glob, and nothing cheap
+    answers "is this in HEAD" for one. ``cat-file -e`` takes a single
+    path, ``ls-tree`` refuses glob magic, and ``ls-files --with-tree``
+    also lists what is staged but *unborn* — so it says yes exactly where
+    ``checkout`` then says no, which is the state an interrupted save
+    leaves behind.
 
     Args:
         directory: The repository root.
-        paths: What to restore. Scoped to these and never the whole tree:
-            a failed run must not discard edits made while it ran.
+        paths: What to restore, as paths or git pathspecs. Scoped to these
+            and never the whole tree: a failed run must not discard edits
+            made while it ran.
     """
     for path in paths:
         rel = _rel(directory, path)
         _git(["clean", "-qfdx", "--", rel], cwd=directory)
-        if _git_ok(["cat-file", "-e", f"HEAD:{rel}"], cwd=directory):
-            _git(["checkout", "-q", "HEAD", "--", rel], cwd=directory)
+        _git_ok(["checkout", "-q", "HEAD", "--", rel], cwd=directory)
 
 
 # =============================================================================
@@ -433,13 +479,18 @@ def _git_ok(argv: list[str], *, cwd: Path) -> bool:
     return bool(project._run(["git", *argv], cwd=cwd).returncode == 0)
 
 
-def _rel(directory: Path, path: Path) -> str:
+def _rel(directory: Path, path: Path | str) -> str:
     """*path* as a repository-relative POSIX pathspec.
 
     git pathspecs are ``/``-separated whatever the platform, and an
     absolute path would silently mean something else inside a repository
     reached through a symlink.
+
+    A ``str`` passes through untouched: it is already a pathspec, and one
+    carrying magic (``:(glob)…``) is not a path to be normalised.
     """
+    if isinstance(path, str):
+        return path
     resolved = Path(path)
     if resolved.is_absolute():
         resolved = resolved.relative_to(directory.resolve())

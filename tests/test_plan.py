@@ -30,6 +30,7 @@ inputs:
 outputs:
   - id: fit
     type: metric
+    format: json
     inputs: [catalog]
     decisions: [method]
     recipe:
@@ -37,6 +38,7 @@ outputs:
 
   - id: report
     type: report
+    format: md
     inputs: [fit]
     recipe:
       command: python src/report.py {inputs.fit} {output}
@@ -113,10 +115,11 @@ def test_an_output_that_ignores_a_decision_is_not_moved_by_it(tmp_path: Path) ->
     assert a.tasks[key].definition_version == b.tasks[key].definition_version
 
 
-def test_an_output_addresses_its_own_directory(tmp_path: Path) -> None:
+def test_an_output_addresses_its_own_file(tmp_path: Path) -> None:
     task = _build(_project(tmp_path)).tasks[("baseline", "fit")]
-    assert task.output_dir == tmp_path / "results" / "baseline" / "fit"
-    assert "results/baseline/fit" in task.recipe
+    assert task.output_path == tmp_path / "results" / "baseline" / "fit.json"
+    assert task.manifest_path == tmp_path / "results" / "baseline" / ".fit.manifest.json"
+    assert "results/baseline/fit.json" in task.recipe
 
 
 def test_a_declared_input_resolves_to_its_source(tmp_path: Path) -> None:
@@ -257,95 +260,17 @@ def test_no_universe_is_a_clean_error(tmp_path: Path) -> None:
         _build(tmp_path)
 
 
-# ---- sub-analyses ----------------------------------------------------------
-
-_PARENT = """
-version: "0.0.13"
-name: parent
-
-inputs:
-  - id: catalog
-    type: data
-    source: data/catalog.fits
-
-outputs:
-  - id: mass_function
-    from: hod.mass_function
-
-  - id: summary
-    type: report
-    inputs: [mass_function]
-    recipe:
-      command: python summarize.py {inputs.mass_function} {output}
-
-analyses:
-  hod:
-    path: ./analyses/hod
-"""
-
-_SUB = """
-version: "0.0.13"
-name: hod
-
-inputs:
-  - id: catalog
-    type: data
-    from: ../catalog
-
-outputs:
-  - id: mass_function
-    type: metric
-    inputs: [catalog]
-    decisions: [binning]
-    recipe:
-      command: python hod.py {inputs.catalog} --bins {decisions.binning} {output}
-
-decisions:
-  binning:
-    label: Binning
-    default: log
-    options:
-      log: {label: log}
-      linear: {label: linear}
-"""
-
-
-def _tree(root: Path) -> Path:
-    (root / "astra.yaml").write_text(textwrap.dedent(_PARENT))
-    (root / "universes").mkdir()
-    # The sub-analysis's universe is named explicitly: ASTRA has no
-    # implicit "same id" fallback, and lc no longer invents one.
-    (root / "universes" / "baseline.yaml").write_text(
-        "id: baseline\ndecisions: {}\nanalyses:\n  hod:\n    universe: baseline\n"
+def test_an_output_without_a_format_is_refused_by_name(tmp_path: Path) -> None:
+    """lc names the file from it, so there is nowhere to write the output.
+    Every offender at once: a spec is fixed in one pass, not one run per
+    missing key."""
+    root = _project(tmp_path)
+    (root / "astra.yaml").write_text(
+        textwrap.dedent(_SPEC).replace("    format: json\n", "").replace("    format: md\n", "")
     )
-    sub = root / "analyses" / "hod"
-    (sub / "universes").mkdir(parents=True)
-    (sub / "astra.yaml").write_text(textwrap.dedent(_SUB))
-    (sub / "universes" / "baseline.yaml").write_text("id: baseline\ndecisions:\n  binning: log\n")
-    return root
-
-
-def test_a_sub_analysis_output_is_addressed_flat_and_qualified(tmp_path: Path) -> None:
-    """One addressing scheme and one place to look, whatever shape the
-    spec has."""
-    graph = _build(_tree(tmp_path))
-    assert sorted(graph.tasks) == [("baseline", "hod.mass_function"), ("baseline", "summary")]
-    task = graph.tasks[("baseline", "hod.mass_function")]
-    assert task.output_dir == tmp_path / "results" / "baseline" / "hod.mass_function"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    with pytest.raises(ProjectError, match="format") as raised:
+        _build(root)
+    assert "fit" in str(raised.value) and "report" in str(raised.value)
 
 
 # ---- rendering a recipe ----------------------------------------------------

@@ -58,15 +58,17 @@ inputs:
 outputs:
   - id: first
     type: metric
+    format: txt
     decisions: [method]
     recipe:
-      command: echo {decisions.method} > {output}/value.txt
+      command: echo {decisions.method} > {output}
 
   - id: second
     type: report
+    format: txt
     inputs: [first]
     recipe:
-      command: cat {inputs.first}/value.txt > {output}/copy.txt
+      command: cat {inputs.first} > {output}
 
 decisions:
   method:

@@ -1,8 +1,10 @@
 """What a materialized output *is*: where it lives, what it records, and
 whether it is still current.
 
-An asset is a directory — ``results/<universe>/<output_id>/`` — holding
-whatever the recipe wrote, plus a manifest beside it. The manifest is the
+An asset is a single file — ``results/<universe>/<output_id>.<format>`` —
+with a manifest sidecar beside it, ``.<output_id>.manifest.json``. The
+format comes from the spec, so the path is derived rather than chosen by
+the recipe, and one output can only ever be one file. The manifest is the
 only part lc writes itself, and it is kept out of the annex so it stays
 readable on a clone that has fetched no content at all.
 
@@ -30,12 +32,8 @@ if TYPE_CHECKING:
     # A type only: history is git's, and this module runs no git.
     from lightcone.engine.dataset import LastWrite
 
-MANIFEST_FILENAME = ".lightcone-manifest.json"
+MANIFEST_SUFFIX = ".manifest.json"
 SCHEMA_VERSION = 1
-
-#: Excluded from the content hash: the manifest is written *after* the
-#: hash it contains, so hashing it would be circular.
-_HASH_EXCLUDE = frozenset({MANIFEST_FILENAME})
 
 #: The marker every annexed path carries, in both of the shapes an annexed
 #: file takes on disk — the pointer file's first bytes, and the locked
@@ -51,25 +49,28 @@ class ContentNotFetchedError(ProjectError):
     """An annexed file whose content is not in this clone."""
 
 
-def output_dir(root: Path, universe_id: str, output_id: str) -> Path:
-    """Locate a ``(universe, output)`` pair's directory.
+def output_path(root: Path, universe_id: str, output_id: str, fmt: str) -> Path:
+    """Locate the file one output is materialized to.
 
-    Path-addressed: the path in a rendered recipe is this path, with no
-    staging, scratch or relocation in between.
+    ``<root>/results/<universe_id>/<output_id>.<fmt>``. Path-addressed:
+    this is the path a rendered recipe writes to, with no staging, scratch
+    or relocation in between.
 
     Args:
         root: The project root.
-        universe_id: The universe the output was made under.
-        output_id: The output's id, qualified for a sub-analysis.
+        universe_id: The universe the output is made under.
+        output_id: The output's id.
+        fmt: The declared serialization, without a leading dot.
 
     Returns:
-        ``<root>/results/<universe_id>/<output_id>``.
+        The output's path.
 
     Raises:
-        ProjectError: If either id is not a single path component. The
-            path is *composed* from them, so an empty one collapses it
-            onto a parent — ``results/`` itself, for two — and a worker
-            empties this directory before running a recipe in it.
+        ProjectError: If either id cannot name a single path component, or
+            the format could not be an extension. The path is *composed*,
+            so an unchecked part would place a file outside the tree the
+            caller checked — and an id carrying a dot would make
+            :func:`manifest_path` recover the wrong name.
     """
     for label, value in (("universe", universe_id), ("output", output_id)):
         if not value or "/" in value or "\\" in value or value in {".", ".."}:
@@ -77,7 +78,37 @@ def output_dir(root: Path, universe_id: str, output_id: str) -> Path:
                 f"{label} id {value!r} is not a single path component, so it "
                 f"cannot name a directory under results/."
             )
-    return root / "results" / universe_id / output_id
+    if "." in output_id:
+        raise ProjectError(
+            f"output id {output_id!r} contains a dot, so the manifest beside it "
+            f"could not be told from the output's own name."
+        )
+    if not fmt or "/" in fmt or "\\" in fmt or fmt.startswith("."):
+        raise ProjectError(
+            f"output `{output_id}` declares the format {fmt!r}, which cannot name a "
+            f"file extension, so the output has nowhere to be written."
+        )
+    return root / "results" / universe_id / f"{output_id}.{fmt}"
+
+
+def manifest_path(output: Path) -> Path:
+    """The manifest sidecar beside *output*.
+
+    ``.<output_id>.manifest.json``, named from the output's id alone and
+    never its format — so the manifest keeps its path, and therefore its
+    history, when a spec re-declares the output in another serialization.
+
+    An id carries no dot (:func:`output_path` refuses one) while a format
+    may (``tar.gz``), so the id is recovered by partitioning on the
+    **first** dot. ``Path.stem`` would answer ``x.tar`` for ``x.tar.gz``.
+
+    Args:
+        output: The output's own path.
+
+    Returns:
+        The sidecar's path.
+    """
+    return output.parent / f".{output.name.partition('.')[0]}{MANIFEST_SUFFIX}"
 
 
 # =============================================================================
@@ -90,16 +121,18 @@ def data_version(path: Path) -> str:
 
     A directory hashes each file in sorted relative-path order with the
     relative path fed in beside the bytes, so a rename moves the digest. A
-    file hashes its own bytes. The two are framed apart, so a directory
-    holding one file cannot collide with that file alone.
+    file hashes its own bytes, unframed — so the digest is a plain sha256
+    an outsider reproduces with ``sha256sum``, and the manifest agrees with
+    what the crate publishes for the same file. Only the directory side is
+    framed, which is enough to keep a directory holding one file from
+    colliding with that file alone.
 
     Never mtime or size: a content hash is what lets a byte-identical
     rebuild stop cascading, and what stops a file restored with an old
     timestamp passing as unchanged.
 
     Args:
-        path: A file or directory. The manifest is excluded from a
-            directory's digest, since it carries the result.
+        path: A file or directory.
 
     Returns:
         The digest, as ``sha256:<hex>``.
@@ -117,7 +150,6 @@ def data_version(path: Path) -> str:
     h = hashlib.sha256()
     if path.is_file():
         require_fetched(path)
-        h.update(b"file:")
         _feed(h, path)
         return f"sha256:{h.hexdigest()}"
 
@@ -131,7 +163,7 @@ def data_version(path: Path) -> str:
     files = [
         p
         for p in path.rglob("*")
-        if p.name not in _HASH_EXCLUDE and (p.is_file() or (p.is_symlink() and not p.exists()))
+        if p.is_file() or (p.is_symlink() and not p.exists())
     ]
     for p in sorted(files, key=lambda x: x.relative_to(path).as_posix()):
         require_fetched(p)
@@ -312,11 +344,16 @@ class Manifest:
         return {"schema_version": data.pop("schema_version"), **data}
 
 
-def read(directory: Path) -> Manifest | None:
-    """Read the manifest in *directory*.
+def read(manifest: Path) -> Manifest | None:
+    """Read the manifest at *manifest*.
+
+    Takes the sidecar's own path rather than the output's, so every caller
+    holding an output path has to say :func:`manifest_path` out loud. Both
+    are ``Path``, and a missing file answers ``None`` rather than raising,
+    so a caller that passed the wrong one would be wrong in silence.
 
     Args:
-        directory: An output directory.
+        manifest: The sidecar's path.
 
     Returns:
         The manifest, or ``None`` when it is absent or unparseable — which
@@ -326,31 +363,36 @@ def read(directory: Path) -> Manifest | None:
         OSError: Deliberately not caught. A permission problem is a real
             fault and must not look like an output needing a rebuild.
     """
-    path = directory / MANIFEST_FILENAME
+    path = manifest
     if not path.is_file():
         return None
     try:
         data = json.loads(path.read_text())
         return Manifest(**{k: v for k, v in data.items() if k in _FIELDS})
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, AttributeError, UnicodeDecodeError, ValueError):
+        # Anything that is not a manifest object reads as "no manifest":
+        # a top-level array, bytes that are not text, a mapping whose
+        # fields do not fit. The staleness rule takes that as "make it
+        # again", which is the safe direction for all of them.
         return None
 
 
-def write(directory: Path, manifest: Manifest) -> Path:
-    """Write *manifest* into *directory*, atomically.
+def write(path: Path, manifest: Manifest) -> Path:
+    """Write *manifest* to *path*, atomically.
 
     The rename is the commit point: a reader sees the previous manifest or
-    this one, never half of either.
+    this one, never half of either. The temporary lands beside real outputs
+    now, so it is named off the sidecar — unique per output, and swept by
+    the same pathspec.
 
     Args:
-        directory: The output directory to write into.
+        path: The sidecar's path.
         manifest: The record to write.
 
     Returns:
         The path written.
     """
-    path = directory / MANIFEST_FILENAME
-    temporary = directory / f"{MANIFEST_FILENAME}.tmp"
+    temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(manifest.as_dict(), indent=2, sort_keys=False) + "\n")
     temporary.replace(path)
     return path

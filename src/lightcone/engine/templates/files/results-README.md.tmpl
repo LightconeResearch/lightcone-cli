@@ -1,5 +1,9 @@
 # results/
 
-Materialized outputs land here, one directory per universe and output:
+Materialized outputs land here, one file per universe and output, named
+from the output's id and the `format:` its spec declares:
 
-    results/<universe>/<output_id>/
+    results/<universe>/<output_id>.<format>
+
+Beside each one is a `.<output_id>.manifest.json` recording how it was
+made.

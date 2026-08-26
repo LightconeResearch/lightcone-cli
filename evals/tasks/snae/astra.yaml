@@ -1,7 +1,7 @@
 # ASTRA Analysis Specification
 # Documentation: https://github.com/LightconeResearch/ASTRA
 
-version: "0.0.13"
+version: "0.0.14"
 name: "snae"
 description: |
   Fit the Union2.1 Type Ia supernova distance modulus vs redshift data

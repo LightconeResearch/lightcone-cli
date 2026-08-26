@@ -28,7 +28,6 @@ owning the loop.
 from __future__ import annotations
 
 import functools
-import shutil
 import sys
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -171,7 +170,7 @@ def _materialize(
         name: live[key] if (key := task.produced_by.get(name)) else context.versions.of(path)
         for name, path in task.inputs.items()
     }
-    manifest = assets.read(task.output_dir)
+    manifest = assets.read(task.manifest_path)
     verdict = assets.classify(
         definition_version=task.definition_version,
         env_version=context.env_version,
@@ -225,18 +224,24 @@ def execute(
     if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved)
 
-    # The whole directory, not a list of expected files: a recipe declares
-    # an output id rather than filenames, and a previous run that crashed
-    # can have left anything in here — which would otherwise survive into
-    # this run's `data_version` as though the recipe had written it. The
-    # path is `results/<universe>/<output>` and `output_dir` refuses an id
-    # that could widen it.
-    if task.output_dir.exists():
-        shutil.rmtree(task.output_dir)
-    task.output_dir.mkdir(parents=True)
+    # Never the parent directory: siblings share it now, and under Dask
+    # they are being written concurrently. What this output owns is its
+    # manifest and any file named after its id — the glob rather than the
+    # one declared path, so a spec that re-declares the output in another
+    # format leaves no stale payload behind. `<output_id>.` needs a literal
+    # dot straight after the whole id, and an id cannot contain one, so it
+    # cannot reach a sibling, a longer id, another output's sidecar, or a
+    # scope directory of the same name.
+    task.output_path.parent.mkdir(parents=True, exist_ok=True)
+    task.manifest_path.unlink(missing_ok=True)
+    for stale in task.output_path.parent.glob(f"{task.output_id}.*"):
+        if stale.is_file() or stale.is_symlink():
+            stale.unlink()
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
-    policy = container.policy_for(context.runtime, read_paths, output_dir=task.output_dir)
+    policy = container.policy_for(
+        context.runtime, read_paths, write_dir=task.output_path.parent
+    )
     started_at = _now()
     with sandbox.scope(policy):
         outcome = sandbox.run(
@@ -262,11 +267,27 @@ def execute(
     # Guarded separately from the boundary catch above it, because these
     # two failures deserve different words: "your recipe failed" and "your
     # recipe worked and we could not record it" are different problems.
+    if not task.output_path.is_file():
+        # `data_version` would answer for a directory — the `dir:` branch
+        # hashes it happily — so a recipe that ran `mkdir` on its output,
+        # or wrote some other name, would commit a well-formed digest of
+        # something that is not the output at all.
+        found = "a directory" if task.output_path.is_dir() else "nothing"
+        return TaskResult(
+            task.key,
+            "failed",
+            reason=(
+                f"the recipe exited 0 but left {found} at "
+                f"{plan.declared_path(root, task.output_path)}"
+            ),
+            notes=outcome.notes,
+        )
+
     try:
         sha, remote = context.head
-        data_version = assets.data_version(task.output_dir)
+        data_version = assets.data_version(task.output_path)
         assets.write(
-            task.output_dir,
+            task.manifest_path,
             assets.Manifest(
                 output_id=task.output_id,
                 universe_id=task.universe_id,
@@ -425,10 +446,10 @@ def _from_disk(task: Task) -> dict[str, str]:
     versions: dict[str, str] = {}
     for name, path in task.inputs.items():
         if task.produced_by.get(name) is not None:
-            if (manifest := assets.read(path)) is None:
+            if (manifest := assets.read(assets.manifest_path(path))) is None:
                 raise ProjectError(
                     f"the input `{name}` has never been materialized — there is no "
-                    f"manifest in {path}. Run `lc materialize` instead."
+                    f"manifest beside {path}. Run `lc materialize` instead."
                 )
             versions[name] = manifest.data_version
         else:

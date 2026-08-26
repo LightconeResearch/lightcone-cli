@@ -178,11 +178,11 @@ def _classified(
     classified = []
     for key in graph.order():
         task = graph.tasks[key]
-        manifest = assets.read(task.output_dir)
+        manifest = assets.read(task.manifest_path)
         # History is git's to answer, so it enters the one classification
         # rule as a value — computed here, where git lives, exactly as
         # the worker's driver computes it for a run.
-        foreign = None if manifest is None else _foreign_write(root, key)
+        foreign = None if manifest is None else _foreign_write(root, task)
         verdict = assets.classify(
             definition_version=task.definition_version,
             env_version=env_version,
@@ -234,7 +234,9 @@ def _predicted(
             # no annex content the files are dangling symlinks, and hashing
             # them would report a different output and cascade a rebuild
             # over a project that is perfectly up to date.
-            manifest = None if upstream in would_run else assets.read(path)
+            manifest = (
+                None if upstream in would_run else assets.read(assets.manifest_path(path))
+            )
             predicted[name] = manifest.data_version if manifest else None
         elif not path.exists():
             predicted[name] = None
@@ -426,13 +428,19 @@ def _crate_line(root: Path, newest: str) -> str:
     return "up to date with the outputs"
 
 
-def _foreign_write(root: Path, key: Key) -> dataset.LastWrite | None:
-    """Find the commit that last touched *key*'s directory, unless it is
+def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
+    """Find the commit that last touched *task*'s manifest, unless it is
     the output's own run record — then ``None``, the clean answer. The
     fact only: the verdict's prose is `classify`'s, like every other
-    why."""
-    write = dataset.last_writer(root, assets.output_dir(root, *key))
-    if not write or write.subject == datalad_run_subject(key):
+    why.
+
+    Both paths: a forged *result* is the case the check exists for, and a
+    doctored *manifest* is the other half — while the manifest is also
+    what carries the history across a re-declared format, where the
+    payload's own path is new and would read as clean.
+    """
+    write = dataset.last_writer(root, task.output_path, task.manifest_path)
+    if not write or write.subject == datalad_run_subject(task.key):
         return None
     return write
 
@@ -564,9 +572,7 @@ def materialize(
     # answer is dead — the output is remade regardless — and each ask is
     # a git process.
     foreign = {
-        key: _foreign_write(root, key)
-        if (task.output_dir / assets.MANIFEST_FILENAME).is_file()
-        else None
+        key: _foreign_write(root, task) if task.manifest_path.is_file() else None
         for key, task in graph.tasks.items()
     }
     outstanding: dict[Key, Task] = dict(graph.tasks)
@@ -597,7 +603,7 @@ def materialize(
         # never to the whole tree, so edits made while the graph ran
         # survive.
         for task in outstanding.values():
-            dataset.restore(root, [task.output_dir])
+            dataset.restore(root, _owned(root, task))
     # The tree was clean at the start-of-run refusal and save/restore
     # keeps `results/` clean, so anything dirty *now* was edited while
     # the graph ran — and every manifest records the starting commit,
@@ -630,7 +636,7 @@ def _consume(
         report.notes.extend([f"{name}:", *lines])
 
     if result.status == "ok":
-        dataset.save(root, [task.output_dir], run_record(root, task, dsid, runtime))
+        dataset.save(root, _owned(root, task), run_record(root, task, dsid, runtime))
         report.made.append(name)
         return
 
@@ -642,7 +648,7 @@ def _consume(
         report.behind[name] = result.reason
         return
 
-    dataset.restore(root, [task.output_dir])
+    dataset.restore(root, _owned(root, task))
     getattr(report, result.status).append(name)
     report.warnings.append(f"{name}: {result.reason}")
 
@@ -820,12 +826,16 @@ def _converge_crate(root: Path, report: MaterializeReport, full: Graph, dsid: st
             "publication view is maintained — declare one to enable it"
         )
         return
-    for directory in sorted((root / "results").glob("*/*/")):
-        key = (directory.parent.name, directory.name)
-        if key not in full.tasks and assets.read(directory) is not None:
+    # A set difference rather than a walk driven by the spec: what is on
+    # disk is exactly what the *previous* spec declared, so the edit that
+    # orphans a manifest is the same edit that drops it from the graph.
+    # Enumerated from git, which answers for the tree as committed.
+    expected = {task.manifest_path for task in full.tasks.values()}
+    for manifest in sorted(dataset.tracked_manifests(root)):
+        if manifest not in expected and assets.read(manifest) is not None:
             report.warnings.append(
-                f"{plan.declared_path(root, directory)} has a manifest but the "
-                "spec no longer declares it, so it is not in the publication view"
+                f"{plan.declared_path(root, manifest)} is a manifest the spec no "
+                "longer declares, so its output is not in the publication view"
             )
     try:
         document = crate.render(
@@ -897,7 +907,10 @@ def run_record(root: Path, task: Task, dsid: str, runtime: container.Runtime) ->
         "dsid": dsid,
         "exit": 0,
         "inputs": sorted(plan.declared_path(root, path) for path in task.inputs.values()),
-        "outputs": [plan.declared_path(root, task.output_dir)],
+        "outputs": [
+            plan.declared_path(root, task.output_path),
+            plan.declared_path(root, task.manifest_path),
+        ],
         "pwd": ".",
     }
     if runtime.mode == "containerized":
@@ -1027,6 +1040,25 @@ def _graph(
             + ", ".join(sorted(outside))
         )
     return graph, env_version, full
+
+
+def _owned(root: Path, task: Task) -> list[str]:
+    """Every path one output owns, as git pathspecs.
+
+    Globs rather than the two literal paths, and each earns its magic. The
+    payload's covers whatever format the *previous* run wrote, so a
+    re-declared serialization stages the old file's deletion instead of
+    leaving it behind untracked. The manifest's trailing ``*`` covers the
+    ``.tmp`` a failed write leaves, which nothing else would sweep.
+
+    Never the parent directory: siblings share it, and under Dask they are
+    in flight — ``git clean`` on it would delete a running task's bytes.
+    """
+    parent = plan.declared_path(root, task.output_path.parent)
+    return [
+        f":(glob){parent}/{task.output_id}.*",
+        f":(glob){parent}/.{task.output_id}{assets.MANIFEST_SUFFIX}*",
+    ]
 
 
 def _name(key: Key) -> str:

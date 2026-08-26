@@ -56,7 +56,7 @@ environment
 ```
 
 Recipes run in the project's locked environment, with the tree
-read-only apart from their own output directory. The common cases:
+read-only apart from the directory their output lands in. The common cases:
 
 - **`ModuleNotFoundError`** — the package isn't in the project's lock.
   `uv add <package>`, commit, re-run. (Installing it on the host with
@@ -64,7 +64,7 @@ read-only apart from their own output directory. The common cases:
 - **Reading a file outside the project** — declare it as an ASTRA
   input; declared inputs are readable and their content becomes part
   of the output's provenance.
-- **Writing outside the output directory** — a recipe's product
+- **Writing outside that directory** — a recipe's product
   belongs in `{output}`; for true scratch files, use
   `tempfile.mkdtemp()`, which lands in the writable temp area.
 

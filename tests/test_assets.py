@@ -17,13 +17,14 @@ environment that no longer exists.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
 from lightcone.engine import assets, dataset
-from lightcone.engine.assets import Manifest, classify, data_version, output_dir
+from lightcone.engine.assets import Manifest, classify, data_version, output_path
 from lightcone.engine.project import ProjectError
 
 
@@ -52,7 +53,9 @@ def _manifest(**overrides: object) -> Manifest:
 def test_an_asset_is_addressed_by_its_path(tmp_path: Path) -> None:
     """The path in a rendered recipe is the path on disk — no staging, no
     scratch, no relocation."""
-    assert output_dir(tmp_path, "baseline", "best_fit") == tmp_path / "results/baseline/best_fit"
+    assert output_path(tmp_path, "baseline", "best_fit", "csv") == (
+        tmp_path / "results/baseline/best_fit.csv"
+    )
 
 
 # ---- content identity ------------------------------------------------------
@@ -91,17 +94,20 @@ def test_touching_a_file_does_not_move_it(tmp_path: Path) -> None:
 
 
 def test_the_manifest_is_not_part_of_its_own_hash(tmp_path: Path) -> None:
-    """It carries the hash, so hashing it would be circular — and the
-    driver commits both together, so the two must agree."""
-    (tmp_path / "fit.csv").write_text("x,y\n")
-    before = data_version(tmp_path)
-    assets.write(tmp_path, _manifest())
-    assert data_version(tmp_path) == before
+    """It carries the hash, so hashing it would be circular. Structural
+    now rather than an exclusion: the manifest is a sidecar beside the
+    output, so hashing one file cannot reach it."""
+    output = tmp_path / "fit.csv"
+    output.write_text("x,y\n")
+    before = data_version(output)
+    assets.write(assets.manifest_path(output), _manifest())
+    assert data_version(output) == before
 
 
 def test_a_file_and_a_directory_holding_it_are_different(tmp_path: Path) -> None:
-    """Framed apart deliberately: a declared input can be either, and the
-    two must never collide."""
+    """A declared input can be either, and the two must never collide.
+    Only the directory side is framed now — enough to keep them apart,
+    while a file's digest stays a plain sha256 of its own bytes."""
     (tmp_path / "one").mkdir()
     (tmp_path / "one" / "fit.csv").write_text("x,y\n")
     (tmp_path / "fit.csv").write_text("x,y\n")
@@ -109,23 +115,52 @@ def test_a_file_and_a_directory_holding_it_are_different(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize("bad", ["", "/", "..", ".", "a/b", "results/../.."])
-def test_output_dir_refuses_an_id_that_is_not_one_path_component(
+def test_output_path_refuses_a_part_that_is_not_one_path_component(
     tmp_path: Path, bad: str
 ) -> None:
-    """The path is composed from the two ids, and a worker empties it
-    before running a recipe — so an id that collapses it onto a parent
-    would take every other universe's outputs with it."""
+    """The path is composed, so a part carrying a separator would put an
+    output outside the tree every guard above it checked."""
     with pytest.raises(ProjectError):
-        assets.output_dir(tmp_path, bad, "best_fit")
+        assets.output_path(tmp_path, bad, "best_fit", "csv")
     with pytest.raises(ProjectError):
-        assets.output_dir(tmp_path, "baseline", bad)
+        assets.output_path(tmp_path, "baseline", bad, "csv")
 
 
-def test_output_dir_is_two_components_below_results(tmp_path: Path) -> None:
-    """The shape everything else in the layer addresses by."""
-    assert assets.output_dir(tmp_path, "baseline", "best_fit") == (
-        tmp_path / "results" / "baseline" / "best_fit"
-    )
+@pytest.mark.parametrize("bad", ["", "/", "a/b", ".hidden"])
+def test_output_path_refuses_a_format_that_cannot_be_an_extension(
+    tmp_path: Path, bad: str
+) -> None:
+    """A leading dot would make the output look like its own sidecar; a
+    separator would move it entirely."""
+    with pytest.raises(ProjectError):
+        assets.output_path(tmp_path, "baseline", "best_fit", bad)
+
+
+def test_output_path_refuses_an_id_carrying_a_dot(tmp_path: Path) -> None:
+    """The sidecar is the id with a leading dot and `.manifest.json` after
+    it, recovered by partitioning on the first dot — so an id carrying one
+    of its own would name a manifest for something else."""
+    with pytest.raises(ProjectError, match="dot"):
+        assets.output_path(tmp_path, "baseline", "fit.plot", "png")
+
+
+def test_the_manifest_is_named_from_the_id_never_the_format(tmp_path: Path) -> None:
+    """A format may contain dots, and `Path.stem` would answer `x.tar` for
+    `x.tar.gz`. Naming the sidecar from the id alone also keeps its path —
+    and so its history — across a re-declared serialization."""
+    packed = assets.output_path(tmp_path, "baseline", "chain", "tar.gz")
+    plain = assets.output_path(tmp_path, "baseline", "chain", "npz")
+    assert assets.manifest_path(packed).name == ".chain.manifest.json"
+    assert assets.manifest_path(packed) == assets.manifest_path(plain)
+
+
+def test_a_file_hashes_its_own_bytes_and_nothing_else(tmp_path: Path) -> None:
+    """Unframed, so the digest is one an outsider reproduces with
+    `sha256sum` — and the same number the crate publishes for that file."""
+    output = tmp_path / "fit.csv"
+    body = b"x,y\n"
+    output.write_bytes(body)
+    assert data_version(output) == f"sha256:{hashlib.sha256(body).hexdigest()}"
 
 
 def test_an_unfetched_annexed_file_is_refused_not_hashed(tmp_path: Path) -> None:
@@ -237,35 +272,39 @@ def test_the_memo_does_not_confuse_two_inputs(tmp_path: Path) -> None:
 
 def test_a_manifest_round_trips(tmp_path: Path) -> None:
     written = _manifest()
-    assets.write(tmp_path, written)
-    assert assets.read(tmp_path) == written
+    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
+    assets.write(sidecar, written)
+    assert assets.read(sidecar) == written
 
 
 def test_the_manifest_is_readable_json_with_the_schema_first(tmp_path: Path) -> None:
     """It stays out of the annex precisely so a clone with no content
     fetched can read it — including with a plain `grep`."""
-    assets.write(tmp_path, _manifest())
-    text = (tmp_path / assets.MANIFEST_FILENAME).read_text()
+    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
+    assets.write(sidecar, _manifest())
+    text = sidecar.read_text()
     assert next(iter(json.loads(text))) == "schema_version"
     assert "best_fit" in text
 
 
 def test_no_manifest_reads_as_none(tmp_path: Path) -> None:
-    assert assets.read(tmp_path) is None
+    assert assets.read(assets.manifest_path(tmp_path / "best_fit.csv")) is None
 
 
 def test_an_unparseable_manifest_reads_as_none(tmp_path: Path) -> None:
     """The safe direction: an unreadable record means make it again, not
     trust it."""
-    (tmp_path / assets.MANIFEST_FILENAME).write_text("{not json")
-    assert assets.read(tmp_path) is None
+    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
+    sidecar.write_text("{not json")
+    assert assets.read(sidecar) is None
 
 
 def test_writing_a_manifest_replaces_the_previous_one_whole(tmp_path: Path) -> None:
-    assets.write(tmp_path, _manifest())
-    assets.write(tmp_path, _manifest(data_version="sha256:second"))
+    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
+    assets.write(sidecar, _manifest())
+    assets.write(sidecar, _manifest(data_version="sha256:second"))
 
-    manifest = assets.read(tmp_path)
+    manifest = assets.read(sidecar)
     assert manifest is not None and manifest.data_version == "sha256:second"
     assert not list(tmp_path.glob("*.tmp"))
 

@@ -46,15 +46,14 @@ their `options`, and their `rationale`.
 One specific selection of decision values. Universes live as YAML
 files in `universes/` (e.g. `universes/baseline.yaml`,
 `universes/robust.yaml`). Each universe materializes its results
-to its own directory: `results/<universe>/<output_id>/`.
+to its own directory: `results/<universe>/<output_id>.<format>`.
 
 ## Sub-analysis
 
 A nested ASTRA analysis with its own inputs, outputs, and decisions,
-referenced from a parent's `analyses:` section. A sub-analysis output's
-directory uses its qualified id —
-`results/<universe>/<analysis>.<output>/` — so one addressing scheme
-spans however deep the spec nests.
+referenced from a parent's `analyses:` section. `lc` materializes a flat
+analysis: an output id it cannot name a file from is refused, so a
+nested spec is not buildable today.
 
 ## Materialize
 
@@ -65,8 +64,8 @@ says so and touches nothing.
 
 ## Manifest
 
-The per-output sidecar JSON file
-(`<output_dir>/.lightcone-manifest.json`) recording what produced the
+The per-output sidecar JSON file, `.<output_id>.manifest.json` beside
+the output itself, recording what produced the
 output: the recipe, the decisions, `definition_version`,
 `env_version`, `data_version`, `input_versions`, the git commit the
 run started at, the engine version, what enforcement actually ran
@@ -90,10 +89,13 @@ output is `behind`, reported and left alone.
 
 ## data_version
 
-A content hash over the files in an output's directory (or of a
-declared input). This is what flows downstream: a dependent is remade
-when an input's `data_version` changed, and a rebuild that comes out
-byte-identical stops the cascade right there.
+A content hash of an output's bytes (or of a declared input). For a
+file it is a plain sha256 — the number `sha256sum` prints, and the one
+the RO-Crate publishes; a directory-valued declared input is hashed
+tree-wise and framed, so the two can never collide. This is what flows
+downstream: a dependent is remade when an input's `data_version`
+changed, and a rebuild that comes out byte-identical stops the cascade
+right there.
 
 ## input_versions
 
@@ -140,7 +142,8 @@ down).
 The isolation every recipe and every `lc run` command executes under —
 Landlock on Linux, Seatbelt on macOS, the container boundary in
 containerized mode. The project tree is read-only apart from the
-output directory being made; undeclared tools don't execute. Each
+directory the output being made lands in; undeclared tools don't
+execute. Each
 manifest's `hermeticity` field records what was actually enforced, and
 a host with no mechanism says so rather than pretending.
 

@@ -10,9 +10,11 @@ What the spec *means* is ASTRA's to say. ``astra.resolve`` settles each
 universe's decisions, resolves every output's inputs to what supplies
 them, drops the outputs whose ``when:`` does not hold, and renders the
 recipe grammar — so scoping, ``from:`` references and sub-analysis
-nesting are read here rather than re-derived. A qualified output id
-(``classification.accuracy``) is used verbatim as the directory name, so
-one addressing scheme spans however deep the spec nests.
+nesting are read here rather than re-derived.
+
+Where an output lands is composed, never chosen: an output is the single
+file ``results/<universe>/<id>.<format>``, and the format comes from the
+spec — so the whole contents of ``results/`` are a pure function of it.
 
 Nothing here schedules anything. Ordering is Dask's job at execution time
 and a topological walk's job in ``--check``; this module only says which
@@ -38,16 +40,22 @@ class Task:
 
     universe_id: str
     output_id: str
-    output_dir: Path
+    #: The single file this output is.
+    output_path: Path
     #: The recipe with its placeholders substituted — a shell command.
     recipe: str
     #: Declared input name → the path it resolves to. Upstream outputs are
-    #: their directories; everything else is whatever ``source`` named.
+    #: their files; everything else is whatever ``source`` named.
     inputs: dict[str, Path]
     #: The subset of ``inputs`` another task produces, and which one.
     produced_by: dict[str, Key]
     decisions: dict[str, str]
     definition_version: str
+
+    @property
+    def manifest_path(self) -> Path:
+        """This output's manifest sidecar."""
+        return assets.manifest_path(self.output_path)
 
     @property
     def key(self) -> Key:
@@ -187,6 +195,7 @@ def build(root: Path) -> Graph:
         declared_in[universe_id] = path
         for task in _tasks(root, universe_id, spec, universe):
             tasks[task.key] = task
+
     return Graph(tasks=tasks)
 
 
@@ -270,22 +279,38 @@ def _tasks(
     from astra.resolve import render_command, resolve_outputs
 
     resolved = resolve_outputs(spec, universe, root)
-    executable = {out.id for out in resolved if out.command}
+    # The whole resolved output, not just its id: an upstream input has to
+    # resolve to the *file* another task writes, which needs that output's
+    # format. A set of ids cannot say it.
+    executable = {out.id: out for out in resolved if out.command}
+
+    if absent := sorted(out.id for out in executable.values() if not out.format):
+        raise ProjectError(
+            f"{len(absent)} output(s) declare no `format:`: {', '.join(absent)}. "
+            "lc names each output's file from it, so there is nowhere to write them — "
+            "add the artifact's file extension, e.g. `format: png`."
+        )
+
+    def file_of(out: object) -> Path:
+        return assets.output_path(
+            root,
+            universe_id,
+            str(out.id),  # type: ignore[attr-defined]
+            str(out.format),  # type: ignore[attr-defined]
+        )
 
     tasks = []
     for out in resolved:
         if not out.command:
             continue
-        output_dir = assets.output_dir(root, universe_id, out.id)
+        output_path = file_of(out)
         values: dict[str, str] = {}
         paths: dict[str, Path] = {}
         produced_by: dict[str, Key] = {}
         for declared in out.inputs:
             if declared.produced_by in executable:
                 produced_by[declared.id] = (universe_id, declared.produced_by)
-                paths[declared.id] = assets.output_dir(
-                    root, universe_id, declared.produced_by
-                )
+                paths[declared.id] = file_of(executable[declared.produced_by])
             elif declared.source:
                 # An absolute `source:` wins over the join — pathlib's own
                 # rule, and the one anyone writing one expects.
@@ -302,7 +327,7 @@ def _tasks(
                 out.command,
                 inputs=values,
                 decisions=out.decisions,
-                output=declared_path(root, output_dir),
+                output=declared_path(root, output_path),
             )
         except ValueError as e:
             raise ProjectError(f"output `{out.id}`: {e}") from e
@@ -311,13 +336,13 @@ def _tasks(
             Task(
                 universe_id=universe_id,
                 output_id=out.id,
-                output_dir=output_dir,
+                output_path=output_path,
                 recipe=recipe,
                 inputs=paths,
                 produced_by=produced_by,
                 decisions=out.decisions,
                 definition_version=identity.definition_version(
-                    recipe=recipe, decisions=out.decisions
+                    recipe=recipe, decisions=out.decisions, fmt=str(out.format)
                 ),
             )
         )

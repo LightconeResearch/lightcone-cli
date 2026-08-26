@@ -33,15 +33,17 @@ inputs:
 outputs:
   - id: first
     type: metric
+    format: txt
     decisions: [method]
     recipe:
-      command: echo {decisions.method} > {output}/value.txt
+      command: echo {decisions.method} > {output}
 
   - id: second
     type: report
+    format: txt
     inputs: [first]
     recipe:
-      command: cat {inputs.first}/value.txt > {output}/copy.txt
+      command: cat {inputs.first} > {output}
 
 decisions:
   method:
@@ -229,7 +231,7 @@ def test_a_run_spans_the_allocation(
     report = engine.materialize(root, [])
 
     assert report.made == ["baseline/first", "baseline/second"]
-    assert (root / "results/baseline/second/copy.txt").read_text() == "alpha\n"
+    assert (root / "results/baseline/second.txt").read_text() == "alpha\n"
     assert not dataset.status(root)
 
 

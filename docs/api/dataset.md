@@ -17,7 +17,7 @@ Source: `src/lightcone/engine/dataset.py` (+
 | `restore(root, paths)` | `git clean` always; `git checkout HEAD --` only when HEAD has the path. Never `-- .`. |
 | `status(root)` | The dirty question, scoped to the project (`-- .`, prefix-stripped) so a project inside a larger repository works. |
 | `head(root)` | The commit a run started at — read once per run, by the driver. |
-| `last_writer(root, dir)` | Who last touched an output's directory — the foreign-write question. Answers "cannot say" as empty, never an error. |
+| `last_writer(root, *paths)` | Who last touched an output or its manifest — the foreign-write question. Answers "cannot say" as empty, never an error. |
 | `require_committer(root)` | Refuses a repository with no git identity, before any recipe spends time. Asked as `git var`, the question a commit itself asks. |
 | `dataset_id(root)` | The DataLad dataset UUID, read via `git config -f`. |
 | `set_annex_filter_required(root)` | Set `filter.annex.required=true`, so a `git add` that cannot reach git-annex fails loudly instead of staging raw bytes. |

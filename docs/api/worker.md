@@ -20,7 +20,7 @@ Source: `src/lightcone/engine/worker.py`.
 
 | Symbol | Role |
 |---|---|
-| `materialize(task, versions, ...)` | The unit: classify → reset the directory → sandbox → recipe → hash → manifest. Returns a `TaskResult`, always. |
+| `materialize(task, versions, ...)` | The unit: classify → reset → sandbox → recipe → check the payload → hash → manifest. Returns a `TaskResult`, always. |
 | `TaskResult` | `ok` / `current` / `behind` / `failed` / `blocked`, the output's `data_version`, and the attestation. `.usable` is what dependents check. |
 | `main(argv)` | The rerun entry point: guards, converges the project environment from the commit's own lock, resolves its own HEAD and runtime, executes. |
 | `lc_version()` | The engine version every manifest records. |
@@ -37,10 +37,16 @@ Source: `src/lightcone/engine/worker.py`.
   `git annex find` records `sha256([])` for everything, silently, with
   green tests — and couples the digest to the annex backend, which is
   deliberately not pinned.
-- **The reset takes the whole directory** — a crashed previous run can
-  have left anything there, and there is no "expected file list" to
-  delete by. The `output_dir` guard bounds the blast radius, not a
-  narrower delete.
+- **The reset takes what the output's id names, never the directory** —
+  outputs share a directory and Dask writes them concurrently, so a
+  whole-directory delete would take a neighbour's bytes with it. The
+  glob is `<output_id>.*` plus the sidecar: an id cannot contain a dot,
+  so it cannot reach a sibling, and it *does* reach a payload left by a
+  run that declared another `format`.
+- **A payload that is not a regular file fails the task.** `data_version`
+  hashes a directory perfectly happily, so `mkdir {output}` would
+  otherwise commit a well-formed digest of something that is not the
+  output — and exit 0 is not evidence that anything was written.
 - **No git in here.** The driver commits; a worker that asked git
   would race the index lock and could read a HEAD this same run moved.
 - **`main`'s "no output `<x>`" message covers the task lookup only.**
