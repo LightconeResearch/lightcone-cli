@@ -579,6 +579,151 @@ def test_podman_hpc_keeps_the_uid_and_forbids_pulling(root: Path, hpc: list[list
     assert "--userns=keep-id" in backend.user_flags  # type: ignore[attr-defined]
 
 
+# ---- apptainer --------------------------------------------------------------
+
+
+@pytest.fixture
+def apptainer(fake: list[list[str]], monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """A daemonless host: apptainer is the only runtime on PATH.
+
+    A wrap around `fake`'s stub, like `hpc`, so it changes exactly one
+    fact. The conversion's observable effect is the SIF file, which is
+    what `_loaded` asks about on the next call.
+    """
+    which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, path=None: None
+        if name in ("podman", "podman-hpc", "docker")
+        else which(name, path),
+    )
+    inner = project._run
+
+    def run(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["apptainer", "build"]:
+            Path(argv[2]).write_bytes(b"SIF")
+            fake.append(list(argv))
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return inner(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", run)
+    return fake
+
+
+def test_apptainer_is_detected_last(
+    root: Path, apptainer: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host with podman or docker should use one — they can build, and
+    apptainer cannot. So apptainer is what is left when nothing else is
+    there, never a preference over a store runtime."""
+    assert container.runtime_hint() == "apptainer"
+    assert container.runtime_name(root) == "apptainer"
+
+    monkeypatch.setattr(shutil, "which", lambda name, path=None: f"/usr/bin/{name}")
+    assert container.runtime_hint() == "podman-hpc"
+
+
+def test_apptainer_converts_the_archive_once_keyed_by_the_image_id(
+    root: Path, apptainer: list[list[str]]
+) -> None:
+    """There is no image store to load into, so the archive becomes a
+    file — under the project's gitignored `.lightcone/`, named by the
+    same runtime-independent id every other runtime pins."""
+    expected = _write_archive(image.archive_path(root, image.tag(root)))
+
+    runtime = container.runtime_for_run(root, build=False)
+
+    assert runtime.runtime == "apptainer"
+    sif = container.sif_path(root, expected)
+    assert sif == root / ".lightcone" / "images" / f"{expected}.sif"
+    assert sif.is_file()
+    archive = image.archive_path(root, image.tag(root))
+    assert _argvs(apptainer, "apptainer", "build") == [
+        ["apptainer", "build", str(sif.with_suffix(".partial")), f"docker-archive:{archive}"]
+    ]
+    assert _argvs(apptainer, "apptainer", "load") == []
+
+    # The cache is the store's analogue: a second resolution converts nothing.
+    container.runtime_for_run(root, build=False)
+    assert len(_argvs(apptainer, "apptainer", "build")) == 1
+
+
+def test_a_failed_conversion_leaves_no_cached_sif(
+    root: Path, apptainer: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated SIF would be accepted as the cached image by every
+    later run — so the build lands beside its name and is renamed in."""
+    image_id = _write_archive(image.archive_path(root, image.tag(root)))
+    inner = project._run
+
+    def run(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["apptainer", "build"]:
+            Path(argv[2]).write_bytes(b"half a SI")  # the partial that must not survive
+            return MagicMock(returncode=1, stdout="", stderr="out of space")
+        return inner(argv, cwd=cwd)
+
+    monkeypatch.setattr(project, "_run", run)
+    with pytest.raises(ProjectError):
+        container.runtime_for_run(root, build=False)
+
+    sif = container.sif_path(root, image_id)
+    assert not sif.exists()
+    assert not sif.with_suffix(".partial").exists()
+
+
+def test_apptainer_cannot_build_and_says_where_to(
+    root: Path, apptainer: list[list[str]]
+) -> None:
+    """The archive travels in the annex, so the remedy is a build
+    elsewhere and a pull here — never a build on this host."""
+    with pytest.raises(ProjectError, match="cannot build one"):
+        container.build(root)
+
+    assert _argvs(apptainer, "apptainer", "build") == []
+
+
+def test_apptainer_with_a_committed_archive_builds_nothing(
+    root: Path, apptainer: list[list[str]]
+) -> None:
+    """`lc build` is idempotent, and on a daemonless host the idempotent
+    answer is the honest one — the image is already there."""
+    _write_archive(image.archive_path(root, image.tag(root)))
+
+    _, verdict = container.build(root)
+
+    assert verdict == "present"
+
+
+def test_the_apptainer_backend_is_constructed_from_the_sif(
+    root: Path, apptainer: list[list[str]]
+) -> None:
+    image_id = _write_archive(image.archive_path(root, image.tag(root)))
+    runtime = container.runtime_for_run(root, build=False)
+
+    backend = container.backend(runtime)
+
+    assert backend.capability.kind == "apptainer"
+    assert backend.sif == container.sif_path(root, image_id)  # type: ignore[attr-defined]
+
+
+def test_the_apptainer_sync_enters_the_sif_with_the_project_writable(
+    root: Path, apptainer: list[list[str]]
+) -> None:
+    """The one container run that writes to the project — the same uv
+    sync as every other world, spelled as `exec` against the file."""
+    image_id = _write_archive(image.archive_path(root, image.tag(root)))
+    runtime = container.runtime_for_run(root, build=False)
+
+    container.sync(root, runtime)
+
+    (argv,) = _argvs(apptainer, "apptainer", "exec")
+    assert f"{root}:{root}:rw" in argv
+    assert str(container.sif_path(root, image_id)) in argv
+    assert argv[argv.index(str(container.sif_path(root, image_id))) + 1] == "uv"
+    assert f"UV_PROJECT_ENVIRONMENT={runtime.env_dir}" in argv
+
+
 # ---- the architecture gate --------------------------------------------------
 
 

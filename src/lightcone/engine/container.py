@@ -10,9 +10,11 @@ name-pinned apt notwithstanding. A dropped archive never substitutes: a
 rebuild is a new archive under a new id, never the old reference.
 
 Runtime is host capability, not project state — podman-hpc where a site
-provides it, podman preferred, docker accepted — and every one of them
-consumes the same ``docker-archive``, which is what lets the repository
-stay the one store.
+provides it, podman preferred, docker accepted, apptainer where a
+daemonless site offers nothing else — and every one of them consumes the
+same ``docker-archive``, which is what lets the repository stay the one
+store. Where the runtime has no store, the local cache is a file: the
+archive converts once into a SIF under ``.lightcone/``.
 
 Every command goes through :func:`~lightcone.engine.project._run`, the
 seam the whole engine shares, so the suite never spawns a runtime.
@@ -42,11 +44,17 @@ from lightcone.engine.project import ProjectError, _check_call
 #: inheriting podman behavior through a `!= "docker"` back door.
 _PODMAN_FAMILY = ("podman", "podman-hpc")
 
+#: The runtimes that can build an image. Asked positively, so a runtime
+#: that only *runs* falls outside by default: apptainer converts a
+#: committed archive into a SIF but has no way to make one.
+_BUILD_CAPABLE = ("podman", "podman-hpc", "docker")
+
 #: The runtimes whose image store every node of an allocation can see —
-#: podman-hpc's migrate squashes the image to the shared filesystem.
-#: podman's and docker's overlay stores are node-local, which is what
-#: the multi-node materialize refusal stands on.
-_SHARED_STORE_RUNTIMES = ("podman-hpc",)
+#: podman-hpc's migrate squashes the image to the shared filesystem, and
+#: apptainer's SIF is a file in the project tree, which is on whatever
+#: filesystem the project is. podman's and docker's overlay stores are
+#: node-local, which is what the multi-node materialize refusal stands on.
+_SHARED_STORE_RUNTIMES = ("podman-hpc", "apptainer")
 
 
 @dataclass(frozen=True)
@@ -64,7 +72,8 @@ class Runtime:
     #: Where the project environment lives: ``.venv``, or the in-image
     #: ``.lightcone/venv``.
     env_dir: Path
-    #: ``podman``, ``podman-hpc`` or ``docker``; empty in direct mode.
+    #: ``podman``, ``podman-hpc``, ``docker`` or ``apptainer``; empty in
+    #: direct mode.
     runtime: str = ""
     image_tag: str = ""
     #: The image id (bare hex of its config blob) — execution pins on
@@ -99,7 +108,8 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
 
     The three image checks are repository questions first and runtime
     questions second: archive committed, content fetched (through the
-    annex, by lc itself), loaded into the local store. Only the first
+    annex, by lc itself), present in the local cache — the runtime's
+    store, or a converted SIF where the runtime has none. Only the first
     check's miss differs by caller — *build* is true for ``lc build`` and
     the materialize preflight, which may build and commit on a tree their
     own dirty check just proved clean; everything else (the probe, the
@@ -135,7 +145,10 @@ def runtime_for_run(root: Path, *, build: bool) -> Runtime:
     image_id, arch = archive_identity(archive)
     _require_arch(root, archive, arch)  # before the load — see its docstring
     if not _loaded(root, name, image_id):
-        _check_call([name, "load", "-i", str(archive)], cwd=root)
+        if name == "apptainer":
+            _convert(root, archive, image_id)
+        else:
+            _check_call([name, "load", "-i", str(archive)], cwd=root)
     if name == "podman-hpc":
         # Compute nodes run only migrated images — the squashed copy on
         # the shared filesystem — never the login node's overlay store.
@@ -205,14 +218,17 @@ def runtime_name(root: Path) -> str:
     without a reachable daemon is probed rather than trusted, because
     `docker` on PATH with the daemon down is the common broken state and
     "cannot connect to the socket" mid-run is a worse message than this
-    one. podman-hpc is presence-only: no daemon to probe, and no machine
-    (it is a Linux-site tool).
+    one. Then apptainer, last because it cannot build: a host with any of
+    the others should use one, and apptainer is what is left where a site
+    allows no daemon and no store. podman-hpc and apptainer are
+    presence-only: no daemon to probe, and no machine (both are
+    Linux-site tools).
 
     Args:
         root: The project root, for the probe's working directory.
 
     Returns:
-        ``"podman-hpc"``, ``"podman"`` or ``"docker"``.
+        ``"podman-hpc"``, ``"podman"``, ``"docker"`` or ``"apptainer"``.
 
     Raises:
         ProjectError: If none is usable.
@@ -241,8 +257,11 @@ def backend(runtime: Runtime) -> sandbox.Backend:
 
     The only *mode* branch above the sandbox seam, mirroring
     ``sandbox.detect()``'s only *platform* branch: containerized mode is
-    entered through the OCI backend, whose mount table is the
-    enforcement; direct mode probes the host as it always has.
+    entered through a world backend, whose mount table is the
+    enforcement; direct mode probes the host as it always has. Which
+    world backend is the layer's one *runtime* branch, and it lives here
+    because this is the single construction point — the runtimes with a
+    store share the OCI spellings, apptainer has its own.
 
     Args:
         runtime: A resolved runtime.
@@ -252,6 +271,12 @@ def backend(runtime: Runtime) -> sandbox.Backend:
     """
     if runtime.mode == "direct":
         return sandbox.detect()
+    if runtime.runtime == "apptainer":
+        from lightcone.engine.sandbox.apptainer import ApptainerBackend
+
+        return ApptainerBackend(
+            sif=sif_path(runtime.root, runtime.image_id), root=runtime.root
+        )
     from lightcone.engine.sandbox.oci import OCIBackend, OCIRuntime
 
     # `--pull=never` beside the uid flags rather than inside them: it is
@@ -314,9 +339,10 @@ def runtime_hint() -> str:
     is skipped because a header must not cost a subprocess.
 
     Returns:
-        ``"podman-hpc"``, ``"podman"``, ``"docker"``, or ``""``.
+        ``"podman-hpc"``, ``"podman"``, ``"docker"``, ``"apptainer"``, or
+        ``""``.
     """
-    for name in ("podman-hpc", "podman", "docker"):
+    for name in ("podman-hpc", "podman", "docker", "apptainer"):
         if shutil.which(name):
             return name
     return ""
@@ -377,6 +403,24 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
     if asked.returncode != 0:
         raise ProjectError(f"`uv cache dir` failed:\n{asked.stderr.strip()}")
     cache = asked.stdout.strip()
+    # The sync uv runs is the same on both sides; only the way into the
+    # world differs — the store runtimes' `run`, or apptainer's `exec`
+    # against the converted SIF.
+    inner = ["uv", *project._SYNC_ARGS, "--project", str(root)]
+    if runtime.runtime == "apptainer":
+        return _check_call(
+            [
+                "apptainer", "exec", "--containall", "--cleanenv",
+                "--bind", f"{root}:{root}:rw",
+                "--bind", f"{cache}:{cache}:rw",
+                "--env", f"UV_CACHE_DIR={cache}",
+                "--env", f"UV_PROJECT_ENVIRONMENT={runtime.env_dir}",
+                "--pwd", str(root),
+                str(sif_path(root, runtime.image_id)),
+                *inner,
+            ],  # fmt: skip
+            cwd=root,
+        )
     argv = [
         runtime.runtime, "run", "--rm", "--entrypoint", "",
         # Same reason as the exec boundary's flag: SELinux hosts refuse
@@ -389,8 +433,7 @@ def sync(root: Path, runtime: Runtime) -> list[str]:
         "--env", f"UV_PROJECT_ENVIRONMENT={runtime.env_dir}",
         "-w", str(root),
         runtime.image_id,
-        # The same sync `project.sync` runs, spelled once for both modes.
-        "uv", *project._SYNC_ARGS, "--project", str(root),
+        *inner,
     ]  # fmt: skip
     return _check_call(argv, cwd=root)
 
@@ -548,6 +591,13 @@ def _build(root: Path, runtime: str, tag: str, archive: Path) -> None:
     plus ``.datalad/config`` (the ``datalad containers-run`` interop
     keys), and the caller has already proven the tree clean.
     """
+    if runtime not in _BUILD_CAPABLE:
+        raise ProjectError(
+            f"`{runtime}` can run images but cannot build one, and `{tag}` has not "
+            "been built yet. Run `lc build` on a host with podman or docker, commit "
+            "and push — the archive travels in the annex, and `git pull` here brings "
+            "it with the project."
+        )
     relative = archive.relative_to(root).as_posix()
     # The archive is committed, so its routing must be checked *before*
     # the bytes exist: with `.gitattributes` not sending it to the annex
@@ -638,14 +688,59 @@ def _build_failure(tag: str, stderr: str) -> str:
 
 
 # =============================================================================
-# The local store, and the podman machine
+# The local cache, and the podman machine
 # =============================================================================
 
 
+def sif_path(root: Path, image_id: str) -> Path:
+    """Where apptainer's converted copy of an archive lives.
+
+    Under the project's gitignored ``.lightcone/``, on whatever
+    filesystem the project is — which is what lets every node of an
+    allocation see it — and named by the archive's runtime-independent
+    config-blob id, so it can only ever be the image execution pins.
+
+    Args:
+        root: The project root.
+        image_id: The archive's image id, from :func:`archive_identity`.
+
+    Returns:
+        ``<root>/.lightcone/images/<id>.sif``.
+    """
+    return root / ".lightcone" / "images" / f"{image_id}.sif"
+
+
 def _loaded(root: Path, runtime: str, image_id: str) -> bool:
-    """Whether the runtime's local store already holds *image_id*."""
+    """Whether the local cache already holds *image_id*.
+
+    A store for the runtimes that have one; for apptainer, the converted
+    file — the same question, asked of the filesystem.
+    """
+    if runtime == "apptainer":
+        return sif_path(root, image_id).is_file()
     probe = ["image", "exists" if runtime in _PODMAN_FAMILY else "inspect", image_id]
     return project._run([runtime, *probe], cwd=root).returncode == 0
+
+
+def _convert(root: Path, archive: Path, image_id: str) -> None:
+    """Turn the committed archive into a SIF, once.
+
+    apptainer's analogue of the load: it has no image store, so the
+    archive becomes a file beside the project instead of an entry
+    somewhere the run then names. Built beside its final name and renamed
+    into place, for the same reason the archive save is — a conversion
+    that dies midway must not leave a truncated SIF that every later run
+    then accepts as the cached image.
+    """
+    sif = sif_path(root, image_id)
+    sif.parent.mkdir(parents=True, exist_ok=True)
+    partial = sif.with_suffix(".partial")
+    try:
+        _check_call(["apptainer", "build", str(partial), f"docker-archive:{archive}"], cwd=root)
+    except ProjectError:
+        partial.unlink(missing_ok=True)
+        raise
+    partial.replace(sif)
 
 
 def _machine_preflight(root: Path) -> None:

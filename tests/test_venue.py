@@ -323,10 +323,11 @@ def test_an_unresolvable_node_name_is_a_refusal_not_a_traceback(
 def test_a_multi_node_allocation_refuses_a_node_local_image_store(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """podman's and docker's stores are node-local; only podman-hpc's
-    migrate makes an image visible to the allocation's other nodes.
-    Mutation check: the same state under podman-hpc reaches runtime
-    resolution — the gate itself is what stands between them."""
+    """podman's and docker's stores are node-local; podman-hpc's migrate
+    and apptainer's in-project SIF both put the image somewhere every
+    node can read. Mutation check: the same state under either of those
+    reaches runtime resolution — the gate itself is what stands between
+    them."""
     from lightcone.engine import container
 
     text = (root / "pyproject.toml").read_text()
@@ -338,14 +339,14 @@ def test_a_multi_node_allocation_refuses_a_node_local_image_store(
     with pytest.raises(ProjectError, match="node-local"):
         engine.materialize(root, [])
 
-    monkeypatch.setattr(container, "runtime_hint", lambda: "podman-hpc")
-
     def reached(r: Path, *, build: bool) -> None:
         raise ProjectError("reached runtime resolution")
 
     monkeypatch.setattr(container, "runtime_for_run", reached)
-    with pytest.raises(ProjectError, match="reached runtime resolution"):
-        engine.materialize(root, [])
+    for name in ("podman-hpc", "apptainer"):
+        monkeypatch.setattr(container, "runtime_hint", lambda name=name: name)
+        with pytest.raises(ProjectError, match="reached runtime resolution"):
+            engine.materialize(root, [])
 
 
 def test_the_rerun_entry_point_is_guarded_like_materialize(

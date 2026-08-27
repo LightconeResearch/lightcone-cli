@@ -539,7 +539,7 @@ def materialize(
             f"this allocation spans {nodes} nodes and `{name}`'s image store is "
             "node-local, so recipes scheduled on the other nodes would not find "
             "the image. Use a single-node allocation, or a system whose runtime "
-            "shares images across nodes (NERSC's podman-hpc)."
+            "shares images across nodes (NERSC's podman-hpc, or apptainer)."
         )
     # Materialize is one of the two verbs allowed to build the image (the
     # other is `lc build`); the probe and the rerun entry point only find
