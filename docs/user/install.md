@@ -81,8 +81,10 @@ own locked environment.
 - HPC login node: see [Running on a Cluster](cluster.md).
 
 There is nothing to configure: `lc` detects whichever runtime is
-available (`podman-hpc`, then `podman`, then `docker` — skipping docker
-if its daemon isn't running).
+available (`podman-hpc`, then `podman`, then `docker`, then
+`apptainer` — skipping docker if its daemon isn't running). apptainer
+comes last because it can only *run* an image, never build one: where it
+is all a host has, `lc build` refuses and names the fix.
 
 ## Sanity check
 

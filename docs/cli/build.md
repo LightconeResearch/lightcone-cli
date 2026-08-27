@@ -54,7 +54,10 @@ login node).
 - A clean tree — the image commit must not sweep your staged edits in,
   and the tag derives from the committed declaration.
 - A build-capable runtime: `podman-hpc`, `podman`, or `docker`
-  (detected in that order; nothing to configure).
+  (detected in that order; nothing to configure). `apptainer` runs
+  images but cannot build one — where it is a host's only runtime,
+  `lc build` refuses and points you at a host that can; the archive
+  then travels to this one through the annex.
 
 `lc materialize` also builds as a preflight when the committed
 declaration has no image yet, announcing it first — `lc build` exists

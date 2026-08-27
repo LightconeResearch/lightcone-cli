@@ -55,7 +55,7 @@ speculatively.
 | 4 | **Fabric** — `lc materialize`, worker sequence, mid-run relock gate | ✅ **done** |
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
-| 7 | **Venues** — SLURM in-allocation execution, login guard, podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
+| 7 | **Venues** — SLURM in-allocation execution, login guard, podman-hpc, apptainer | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
 | 8 | **Publication view** — the RO-Crate converged by materialize, foreign writes stale by history; **no `lc verify`, no `lc export`, by decision** | ✅ **done** |
 
 `lc status` landed with the invalidation model rather than at layer 8:
@@ -1814,20 +1814,51 @@ refused too (emulation is unattested ten-times-slower execution), and
 full multi-arch (arch-suffixed archive paths, `--platform` cross-builds)
 remains open, with the venue that makes it real.
 
-**Design headroom for a daemonless runtime (apptainer/singularity),
-deferred but load-bearing**: `Runtime` stays facts (root/mode/name/
-tag/id/arch), never mechanism — the committed→fetched→loaded ladder
-stays name-branched inside `runtime_for_run`, and a store-less runtime's
-analogue is a one-time archive→SIF conversion into gitignored
-`.lightcone/` cache keyed by the same runtime-independent config-blob
-id (the reason `docker-archive` stays the store format).
-`container.backend()` stays the single construction point; a future
-world-backend is one dataclass in `sandbox/` plus one branch there.
-Since the hardening pass every mechanism attests `network: allowed`
-with no denial flag emitted, so a store-less runtime has nothing to
-imitate there. `boundary.run`'s exit-125 note is a
-podman/docker-family fact, not a `contains_prefix` fact — it becomes
-mechanism-keyed when a non-OCI backend lands.
+**The daemonless runtime landed as designed** (2026-08, layer 7): the
+headroom note this paragraph replaces was the plan, and it held.
+`Runtime` stayed facts (root/mode/name/tag/id/arch), never mechanism;
+the committed→fetched→cached ladder stayed name-branched inside
+`runtime_for_run`, with the store-less analogue of the load a one-time
+`apptainer build … docker-archive:` into `.lightcone/images/<id>.sif`
+— gitignored, keyed by the same runtime-independent config-blob id (the
+reason `docker-archive` stays the store format), renamed into place so
+a dead conversion cannot leave a truncated SIF the next run accepts,
+and `_loaded` asking the filesystem instead of a runtime.
+`container.backend()` stayed the single construction point and grew the
+layer's one *runtime* branch; `ApptainerBackend` is one dataclass in
+`sandbox/`. Network needed nothing imitated, as predicted.
+`boundary.run`'s exit-code note is now mechanism-keyed
+(`_RUNTIME_FAILURE`: 125 for the podman family and docker, 255 for
+apptainer) rather than `contains_prefix`-keyed, so neither code is
+misread under the other mechanism.
+
+Three facts the design note could not have known, all verified against
+apptainer 1.5.3 unprivileged: **apptainer refuses to set `HOME` through
+`--env`** (it warns and keeps the host's), so the policy's `tmp_home`
+lands as `--home` and is left out of the env overlay — the one policy
+value that is a flag on one mechanism and an environment variable on
+every other. **`--containall` is the whole isolation** (private
+`/tmp`, `/var/tmp` and `$HOME`, undeclared host paths hidden), and a
+SIF is read-only by construction, so there is no `--read-only`, no
+`--security-opt`, no uid flag and no `--pull` analogue to spell; a
+nested `--bind …:rw` inside a `:ro` bind resolves the way the OCI mount
+table does. **The SIF is a file in the project tree**, hence on the
+project's own filesystem, so apptainer joins `_SHARED_STORE_RUNTIMES`
+and multi-node materialize works — the refusal stays correct for the
+runtimes whose store is genuinely node-local.
+
+It is **run-only**, the first such runtime, which is what made the
+capability predicate real rather than dead code: `_BUILD_CAPABLE`
+(podman, podman-hpc, docker), asked positively, refusing inside
+`_build` — the honest place, because an apptainer host whose archive is
+already committed builds nothing and truthfully answers `present`.
+Detection order becomes podman-hpc → podman → docker → **apptainer**,
+last because a host with any of the others should use one. The
+no-runtime refusal still names only podman/docker: apptainer is
+site-installed, never a user remedy. `singularity` is deliberately
+*not* an alias — a second spelling through detection, the build branch
+and the wrap, for a rename apptainer's own compatibility symlink
+already covers; it lands if a real site needs it.
 
 **Pending the one-time Perlmutter spike** (run `tests/
 test_container_smoke.py` on a login node, then one materialize through
@@ -2127,13 +2158,14 @@ unlinks before writing; a new tampering test should too.
   decide whether the key is dropped upstream, refused, or migrated.
 - **Multi-runtime, podman recommended** (2026-08, layer 6 — superseding
   an earlier "podman only" plan decision). podman and docker ship
-  tested; the backend seam and the `docker-archive` format are chosen so
-  apptainer/singularity become thin layer-7 backends over the same
-  archive (they exec `docker-archive:` content directly, and HPC hosts
-  that cannot build obtain images through the annex). Build-capable
-  (podman|docker) and run-capable (all four, eventually) are therefore
-  separate questions in `container.py`. docker's daemon is probed at
-  detection — a CLI with the daemon down is the common broken state.
+  tested; the backend seam and the `docker-archive` format were chosen
+  so apptainer became a thin layer-7 backend over the same archive
+  (converting it to a SIF, and HPC hosts that cannot build obtain the
+  archive through the annex). Build-capable (`_BUILD_CAPABLE`) and
+  run-capable are therefore separate questions in `container.py` —
+  apptainer is the run-only one that made the split load-bearing.
+  docker's daemon is probed at detection — a CLI with the daemon down
+  is the common broken state.
 - **Bare-recipe run records: considered and rejected** (2026-08).
   datalad expands container templates at *record* time and `rerun`
   executes the literal string — datalad-container has no rerun hook — so
