@@ -562,7 +562,7 @@ class _Builder:
                 "tag": str(image.get("tag") or ""),
                 "encodingFormat": "application/x-tar",
                 # The archive is `docker-archive` format wherever it runs —
-                # podman, docker and podman-hpc all consume it as one.
+                # every runtime consumes it as one, apptainer by converting.
                 "additionalType": {"@id": "https://w3id.org/ro/terms/workflow-run#DockerImage"},
             }
             if str(image.get("id") or "").startswith("sha256:"):

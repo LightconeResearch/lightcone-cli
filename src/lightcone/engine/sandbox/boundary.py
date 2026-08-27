@@ -33,6 +33,13 @@ _STDERR_TAIL_BYTES = 64 * 1024
 #: and a Landlock domain can only be tightened.
 SANDBOX_ENV = "LC_SANDBOX"
 
+#: What each container runtime exits with when *it* failed rather than
+#: the command — the podman family and docker reserve 125, apptainer
+#: reports its own fatals as 255. Both codes are ones a command could
+#: also exit with, and both runtimes chose them anyway; the note says
+#: "see above", where the runtime's own message is.
+_RUNTIME_FAILURE = {"podman": 125, "podman-hpc": 125, "docker": 125, "apptainer": 255}
+
 
 @dataclass(frozen=True)
 class Unavailable:
@@ -203,13 +210,15 @@ def run(
             "lc could not set up the sandbox (see above) — this is an lc "
             "problem, not your command's"
         )
-    elif returncode == 125 and backend.contains_prefix:
-        # The runtimes reserve 125 for their own failures (a bad flag, a
-        # vanished mount source): the command never ran, so the denial
-        # heuristics have nothing to say about it.
+    elif returncode == _RUNTIME_FAILURE.get(attestation.mechanism):
+        # A runtime failing before it starts the command (a bad flag, a
+        # vanished mount source) is that runtime's own exit code, not the
+        # command's, so the denial heuristics have nothing to say about
+        # it. Keyed by mechanism rather than by `contains_prefix`: the
+        # code is a fact about the runtime, and the two families disagree.
         notes.append(
             f"the container runtime failed before the command ran (see "
-            f"above, `{attestation.mechanism}` exit 125) — this is a "
+            f"above, `{attestation.mechanism}` exit {returncode}) — this is a "
             "runtime problem, not your command's"
         )
     elif returncode != 0 and attestation.mechanism != "none":

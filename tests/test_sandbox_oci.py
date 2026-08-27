@@ -311,3 +311,15 @@ def test_exit_125_names_the_runtime_not_the_command(
     outcome = boundary.run(_backend(root), policy, ["true"], cwd=root, env={})
     assert any("runtime failed before the command ran" in note for note in outcome.notes)
     assert not any("ran under the lc sandbox" in note for note in outcome.notes)
+
+
+def test_exit_255_is_not_the_podman_familys(
+    root: Path, policy: Policy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """255 is apptainer's reserved code, and the note is keyed on the
+    mechanism — a recipe exiting 255 under podman is the command's
+    failure and gets the denial trailer."""
+    monkeypatch.setattr(subprocess, "Popen", _Recorder(returncode=255))
+    outcome = boundary.run(_backend(root), policy, ["true"], cwd=root, env={})
+    assert not any("runtime failed before" in note for note in outcome.notes)
+    assert any("ran under the lc sandbox" in note for note in outcome.notes)
