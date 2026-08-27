@@ -5,10 +5,12 @@ what a containerized project *declares* and how that becomes an
 identity — pure, no subprocess anywhere. `container.py` is building,
 storing and entering images — impure, every command through
 `project._run`. The exec side (the mount table) lives with the other
-backends in `sandbox/oci.py`.
+backends in `sandbox/oci.py` and `sandbox/apptainer.py`.
 
 Sources: `src/lightcone/engine/image.py`,
-`src/lightcone/engine/container.py`, `src/lightcone/engine/sandbox/oci.py`.
+`src/lightcone/engine/container.py`,
+`src/lightcone/engine/sandbox/oci.py`,
+`src/lightcone/engine/sandbox/apptainer.py`.
 
 ## Key symbols
 
@@ -19,7 +21,8 @@ Sources: `src/lightcone/engine/image.py`,
 | `image.archive_path(root, tag)` | `.datalad/environments/<tag>/image` — the `datalad containers-add` layout. |
 | `container.build(root)` | Build + save + commit, idempotent; returns `(Runtime, "built" \| "present")`. |
 | `container.runtime_for_run(root, *, build)` | One function, two strictnesses: `lc build`/materialize-preflight may build and commit; the probe and worker only ever find, fetch, and load. |
-| `container.backend(...)` | The single construction point for the exec backend — the only mode branch. |
+| `container.backend(...)` | The single construction point for the exec backend — the only mode branch, and the layer's only runtime branch. |
+| `container.sif_path(root, image_id)` | `.lightcone/images/<id>.sif` — apptainer's cache, keyed by the runtime-independent image id. |
 | `container.sync(...)` | The in-container environment converge: network on, project `:rw`, host uv cache mounted, into `.lightcone/venv`. |
 | `Runtime` | Facts only — root/mode/name/tag/id/arch — never mechanism. |
 
@@ -54,12 +57,26 @@ Sources: `src/lightcone/engine/image.py`,
   **declared** destination — the one policy shape that keeps its paths
   unresolved, because they are addresses the recipe uses.
 - **Runtime differences are spellings, never shapes.** One
-  `OCIBackend`, data-parameterized; the podman family is stated once
-  (`_PODMAN_FAMILY`) and asked positively, so a new runtime falls
-  outside it by default. podman-hpc adds exactly one step (`migrate`,
-  outside the load branch) and joins `_SHARED_STORE_RUNTIMES`.
-  Detection order podman-hpc → podman → docker; docker's daemon is
-  probed at detection.
+  `OCIBackend` for the runtimes with a store, data-parameterized; the
+  podman family is stated once (`_PODMAN_FAMILY`) and asked positively,
+  so a new runtime falls outside it by default. podman-hpc adds exactly
+  one step (`migrate`, outside the load branch) and joins
+  `_SHARED_STORE_RUNTIMES`. Detection order podman-hpc → podman →
+  docker → apptainer; docker's daemon is probed at detection.
+- **A store-less runtime caches a file, not an entry.** apptainer has
+  no image store, so the load's analogue is a one-time
+  `apptainer build … docker-archive:` into `.lightcone/images/<id>.sif`
+  — gitignored, in the project tree (which is why it joins
+  `_SHARED_STORE_RUNTIMES`), keyed by the same runtime-independent
+  config-blob id, and renamed into place so a dead conversion cannot
+  leave a truncated SIF the next run accepts. `_loaded` asks the
+  filesystem instead of the runtime; everything above is unchanged.
+- **Build-capable and run-capable are separate questions.**
+  `_BUILD_CAPABLE` is asked positively, and a build under a runtime
+  outside it refuses naming the remedy — build where podman or docker
+  is, commit, push; the archive travels in the annex. Nothing else in
+  the ladder changes: an apptainer host with the archive already
+  committed builds nothing and says `present`.
 - **The architecture gate refuses before the load** — a wrong-arch
   `load` succeeds and then dies as `exec format error` deep inside a
   recipe. Ignorance passes; a recorded mismatch refuses, naming the
@@ -70,7 +87,8 @@ Sources: `src/lightcone/engine/image.py`,
 `tests/test_image.py` (pure: structure and ordering, tag sensitivity
 both ways, the `env_version` frame), `tests/test_container.py`
 (lifecycle against the stubbed `_run` — every refusal on recorded
-argv), `tests/test_sandbox_oci.py` (the mount table, pure), and
+argv), `tests/test_sandbox_oci.py` and `tests/test_sandbox_apptainer.py`
+(the mount and bind tables, pure), and
 `tests/test_container_smoke.py` — the runtime's answer, gated by
 `LC_CONTAINER_TESTS_REQUIRED=1` in CI, building a real image and
 proving the record on a bytes-free clone with a real `datalad rerun`.

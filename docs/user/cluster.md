@@ -86,7 +86,7 @@ where "where does this project stand?" gets asked.
 ## Containers on HPC
 
 A containerized project (one with `[tool.lightcone.image]` in its
-`pyproject.toml`) works the same way, with three site realities to
+`pyproject.toml`) works the same way, with four site realities to
 know:
 
 - **`podman-hpc` is detected first.** Sites install it precisely
@@ -94,6 +94,14 @@ know:
   where both exist, `lc` prefers the wrapper and runs its extra
   `migrate` step automatically, so the image is readable from every
   node.
+- **`apptainer` is the daemonless fallback.** Where a site offers no
+  podman and no docker, `lc` uses apptainer: it converts the committed
+  archive once into a SIF under the project's `.lightcone/` (gitignored,
+  and on the project's own filesystem, so every node can read it) and
+  execs recipes against that file. It cannot build an image, so on such
+  a site `lc build` runs on a host that has podman or docker and matches
+  the compute nodes' architecture; commit and push there, `git pull`
+  here, and the archive arrives through the annex.
 - **Build on a login node, once.** `lc build` builds the image and
   commits it into the repository as versioned content — compute nodes
   never build and need no registry access; an unfetched image arrives
@@ -104,7 +112,8 @@ know:
 - **Multi-node runs require a shared image store.** With plain podman
   or docker the image exists only on the driver's node, so `lc`
   refuses a multi-node containerized run unless the runtime is
-  `podman-hpc`. Single-node allocations work with any runtime.
+  `podman-hpc` or `apptainer`. Single-node allocations work with any
+  runtime.
 
 ## Data on parallel filesystems
 

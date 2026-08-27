@@ -50,7 +50,8 @@ Source: `src/lightcone/engine/venue.py` (consumed by
   the command line). `check`, `status` and `lc run` never call it: a
   login node is exactly where "where does this stand" gets asked.
 - **A containerized multi-node run requires a shared image store** —
-  `_SHARED_STORE_RUNTIMES` (podman-hpc), asked positively, checked in
+  `_SHARED_STORE_RUNTIMES` (podman-hpc's migrated copy, apptainer's
+  in-project SIF), asked positively, checked in
   `materialize()` before the runtime resolves so the refusal costs no
   build.
 

@@ -7,7 +7,8 @@ one, runs it, and reports what was actually enforced. `run.py` (the
 `lc run` engine) and the worker are the two consumers.
 
 Source: `src/lightcone/engine/sandbox/` — `model.py`, `policy.py`,
-`boundary.py`, `landlock.py`, `seatbelt.py`, `oci.py`, `denial.py` —
+`boundary.py`, `landlock.py`, `seatbelt.py`, `oci.py`, `apptainer.py`,
+`denial.py` —
 plus `lightcone/_sandbox_exec.py`, the Landlock shim.
 
 ## Key symbols
@@ -52,6 +53,15 @@ plus `lightcone/_sandbox_exec.py`, the Landlock shim.
   things that break, found one production failure at a time. Put our
   rules in the generator, keep `diff` against upstream as the re-sync
   tool.
+- **A runtime's own failure is keyed by mechanism, not by shape.** The
+  podman family and docker reserve 125 for "the runtime failed before
+  the command ran"; apptainer reports its fatals as 255. `boundary`
+  reads that from `_RUNTIME_FAILURE`, so neither code is misread under
+  the other mechanism, where it is just a command that exited.
+- **A policy value may land as a flag.** apptainer refuses to set
+  `HOME` through `--env`, so its backend passes the policy's `tmp_home`
+  as `--home` and omits it from the overlay — the mechanism's job to
+  reconcile, never the policy's to know about.
 - **A denial is never invisible**: `explain()` may find nothing, so
   the trailer fires on every nonzero exit, unconditionally. Remedies
   name only what exists today.
@@ -61,8 +71,8 @@ plus `lightcone/_sandbox_exec.py`, the Landlock shim.
 The suite splits along the seam:
 `test_sandbox_policy/wrap/denial.py` (pure, every OS),
 `test_sandbox_shim.py` (the shim as a real subprocess),
-`test_sandbox_oci.py` (the mount table, pure), and
-`test_sandbox_enforcement.py` — **the kernel's answer**, one suite for
+`test_sandbox_oci.py` and `test_sandbox_apptainer.py` (the mount and
+bind tables, pure), and `test_sandbox_enforcement.py` — **the kernel's answer**, one suite for
 both mechanisms, run against the *real* `exec_policy`, with
 `LC_SANDBOX_TESTS_REQUIRED=1` turning "no mechanism, skip" into a hard
 failure in CI. Every denial test is mutation-checked through
