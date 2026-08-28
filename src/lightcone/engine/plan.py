@@ -23,6 +23,7 @@ task depends on which.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
@@ -32,6 +33,47 @@ from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
 #: A task's identity within a run: which universe, which output.
 Key = tuple[str, str]
+
+#: What makes a path segment stand for a family of names rather than one:
+#: ASTRA's ``{placeholder}`` and the shell's glob metacharacters.
+_NON_LITERAL = re.compile(r"[{}*?\[\]]")
+
+
+def readable_source(path: Path) -> Path | None:
+    """The part of a declared source that is really on disk, or ``None``.
+
+    ASTRA's ``source:`` is descriptive, not prescriptive. It may spell a
+    whole family of files — ``v{version}/cat_{blind}.fits``, or a glob —
+    and leave the recipe to say which member it wants. Such a source
+    never exists as written, so granting only what exists leaves the
+    recipe's real file outside the sandbox, and the recipe then fails on
+    a file the researcher can see perfectly well from their own shell:
+    the least actionable failure this layer can produce.
+
+    Only *non-literal* segments are dropped, so what comes back is
+    exactly the literal prefix the source itself spells — never a
+    directory it did not name, and nothing at all once a literal segment
+    turns out to be absent. A source that is no kind of path (a URI, a
+    dotted module name) has no literal prefix on disk and answers
+    ``None``, which is how it stays somebody else's input kind.
+
+    Args:
+        path: One declared source, as spelled.
+
+    Returns:
+        The path itself if it exists; the deepest existing ancestor, if
+        only non-literal segments were dropped to reach it; else ``None``.
+    """
+    if path.exists():
+        return path
+    parts = path.parts
+    for cut in range(len(parts) - 1, 0, -1):
+        if not _NON_LITERAL.search(parts[cut]):
+            return None
+        ancestor = Path(*parts[:cut])
+        if ancestor.exists():
+            return ancestor
+    return None
 
 
 @dataclass(frozen=True)
