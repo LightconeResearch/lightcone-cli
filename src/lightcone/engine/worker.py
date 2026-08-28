@@ -167,7 +167,11 @@ def _materialize(
 
     live = {key: u.data_version for key, u in reported.items()}
     inputs = {
-        name: live[key] if (key := task.produced_by.get(name)) else context.versions.of(path)
+        name: live[key]
+        if (key := task.produced_by.get(name))
+        else plan.spelling_version(path)
+        if plan.names_a_family(path)
+        else context.versions.of(path)
         for name, path in task.inputs.items()
     }
     manifest = assets.read(task.manifest_path)
@@ -461,6 +465,8 @@ def _from_disk(task: Task) -> dict[str, str]:
                     f"manifest beside {path}. Run `lc materialize` instead."
                 )
             versions[name] = manifest.data_version
+        elif plan.names_a_family(path):
+            versions[name] = plan.spelling_version(path)
         else:
             try:
                 versions[name] = assets.data_version(path)

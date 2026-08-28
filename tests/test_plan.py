@@ -282,3 +282,49 @@ def test_an_output_without_a_format_is_refused_by_name(tmp_path: Path) -> None:
 
 
 
+
+
+# ---- a source that spells a family of files --------------------------------
+
+
+def test_a_templated_source_grants_the_literal_prefix_it_spells(tmp_path: Path) -> None:
+    """ASTRA's `source` is descriptive: it may name a whole family and let
+    the recipe pick a member. Granting nothing would leave that member
+    outside the sandbox, and the recipe fails on a file the researcher can
+    see from their own shell."""
+    (tmp_path / "v1.4.x").mkdir()
+    source = tmp_path / "v1.4.x" / "v{version}" / "cat_{version}.fits"
+
+    assert plan.readable_source(source) == tmp_path / "v1.4.x"
+
+
+def test_the_climb_stops_at_the_first_literal_segment(tmp_path: Path) -> None:
+    """A source may only grant directories it spells out itself, so an
+    absent literal segment ends the climb rather than widening it."""
+    assert plan.readable_source(tmp_path / "gone" / "v{version}" / "cat.fits") is None
+    assert plan.readable_source(tmp_path / "also_gone.fits") is None
+
+
+def test_a_source_that_is_there_is_granted_as_itself(tmp_path: Path) -> None:
+    (tmp_path / "catalog.fits").write_text("x\n")
+    assert plan.readable_source(tmp_path / "catalog.fits") == tmp_path / "catalog.fits"
+
+
+def test_a_family_is_identified_by_its_spelling(tmp_path: Path) -> None:
+    """It has no content to hash, and the directory it is drawn from is
+    the wrong answer rather than an expensive one — routinely hundreds of
+    gigabytes a recipe never opens. The marker keeps that visible and
+    cannot collide with a content digest."""
+    source = tmp_path / "v{version}" / "cat.fits"
+
+    assert plan.names_a_family(source)
+    assert plan.spelling_version(source).startswith("spelling:sha256:")
+    assert plan.spelling_version(source) != plan.spelling_version(tmp_path / "x{y}")
+
+
+def test_a_file_that_is_there_is_never_a_family(tmp_path: Path) -> None:
+    """The braces in a real filename are somebody's naming choice, not a
+    placeholder — what settles it is that the path is on disk."""
+    odd = tmp_path / "cat_{raw}.fits"
+    odd.write_text("x\n")
+    assert not plan.names_a_family(odd)
