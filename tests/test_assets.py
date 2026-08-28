@@ -136,12 +136,32 @@ def test_output_path_refuses_a_format_that_cannot_be_an_extension(
         assets.output_path(tmp_path, "baseline", "best_fit", bad)
 
 
-def test_output_path_refuses_an_id_carrying_a_dot(tmp_path: Path) -> None:
-    """The sidecar is the id with a leading dot and `.manifest.json` after
-    it, recovered by partitioning on the first dot — so an id carrying one
-    of its own would name a manifest for something else."""
-    with pytest.raises(ProjectError, match="dot"):
-        assets.output_path(tmp_path, "baseline", "fit.plot", "png")
+def test_a_qualified_id_spells_its_scope_as_directories(tmp_path: Path) -> None:
+    """An output declared inside a sub-analysis carries ASTRA's qualified
+    id. The results tree mirrors the analysis tree, and the file is named
+    from the local id alone — so the sidecar, recovered by partitioning the
+    name on its first dot, still names this output and not a sibling."""
+    path = assets.output_path(tmp_path, "baseline", "null_tests.pte_data", "json")
+    assert path == tmp_path / "results/baseline/null_tests/pte_data.json"
+    assert assets.manifest_path(path).name == ".pte_data.manifest.json"
+
+
+def test_two_scopes_declaring_one_local_id_do_not_collide(tmp_path: Path) -> None:
+    """The same local id under two sub-analyses is legal in ASTRA — only
+    the qualified id is unique — so the scope directory is what keeps their
+    files, and their sidecars, apart."""
+    here = assets.output_path(tmp_path, "baseline", "cosebis.ptes", "npz")
+    there = assets.output_path(tmp_path, "baseline", "pure_eb.ptes", "npz")
+    assert here != there
+    assert assets.manifest_path(here) != assets.manifest_path(there)
+
+
+def test_output_path_refuses_a_dot_separated_part_that_is_empty(tmp_path: Path) -> None:
+    """A qualified id is split on dots, so an empty segment would collapse
+    a scope directory out of the path it composes."""
+    for bad in ("fit..plot", ".fit", "fit."):
+        with pytest.raises(ProjectError):
+            assets.output_path(tmp_path, "baseline", bad, "png")
 
 
 def test_the_manifest_is_named_from_the_id_never_the_format(tmp_path: Path) -> None:
