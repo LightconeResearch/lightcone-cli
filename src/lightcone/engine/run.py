@@ -19,7 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from lightcone.engine import container, sandbox
+from lightcone.engine import container, plan, sandbox
 from lightcone.engine.project import (
     SPEC_FILENAME,
     child_env,
@@ -111,15 +111,22 @@ def input_paths(project: Path, spec: dict[str, Any]) -> list[Path]:
     """Collect the declared inputs that are filesystem paths.
 
     ASTRA's ``source`` is free-form — a URI, a dotted name, a path — so
-    the test for "is this a path" is whether it resolves to something that
-    exists. Anything else is somebody else's input kind.
+    the test for "is this a path" is :func:`plan.readable_source`, which
+    also answers a source spelling a family of files rather than one.
+    Anything it declines is somebody else's input kind.
+
+    The declared spelling, never the realpath: these become mount
+    *destinations*, and a recipe addresses the path the analysis declared.
+    Resolving here would mount a symlinked ``/data/catalog.h5`` at its
+    target and leave the container with no ``/data`` at all — the backend
+    resolves the source side itself.
 
     Args:
         project: The project root, for resolving relative sources.
         spec: The spec to read inputs from.
 
     Returns:
-        The resolved paths that exist.
+        The declared paths that are on disk, deduplicated, in order.
     """
     from astra.helpers import get_inputs
     from astra.resolve import iter_analysis_nodes
@@ -134,7 +141,7 @@ def input_paths(project: Path, spec: dict[str, Any]) -> list[Path]:
             if not isinstance(source, str) or not source:
                 continue
             candidate = Path(source)
-            resolved = candidate if candidate.is_absolute() else project / candidate
-            if resolved.exists():
-                found.append(resolved.resolve())
+            declared = candidate if candidate.is_absolute() else project / candidate
+            if (readable := plan.readable_source(declared)) is not None:
+                found.append(readable)
     return list(dict.fromkeys(found))

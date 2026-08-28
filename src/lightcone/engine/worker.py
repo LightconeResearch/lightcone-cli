@@ -240,7 +240,14 @@ def execute(
         if stale.is_file() or stale.is_symlink():
             stale.unlink()
 
-    read_paths = [p for p in task.inputs.values() if p.exists()]
+    # `readable_source`, not `exists()`: a declared source may spell a
+    # family of files rather than one, and the recipe still has to reach
+    # the member it picks.
+    read_paths = [
+        readable
+        for path in task.inputs.values()
+        if (readable := plan.readable_source(path)) is not None
+    ]
     policy = container.policy_for(
         context.runtime, read_paths, write_dir=task.output_path.parent
     )

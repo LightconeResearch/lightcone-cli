@@ -137,7 +137,41 @@ def test_a_missing_spec_reads_as_an_empty_one(project: Path) -> None:
 
 def test_declared_file_inputs_become_read_paths(project: Path) -> None:
     spec = engine_run.read_spec(project)
-    assert engine_run.input_paths(project, spec) == [(project / "data" / "local.csv").resolve()]
+    assert engine_run.input_paths(project, spec) == [project / "data" / "local.csv"]
+
+
+def test_a_read_path_keeps_the_spelling_that_was_declared(project: Path) -> None:
+    """These become mount destinations and the recipe addresses the
+    declared path, so a source reached through a symlink must not arrive
+    as its target — the container would have the target and no sign of the
+    path the analysis actually names."""
+    real = project / "elsewhere"
+    real.mkdir()
+    (real / "catalog.csv").write_text("x\n")
+    (project / "data" / "linked.csv").symlink_to(real / "catalog.csv")
+    spec = {"inputs": [{"id": "linked", "source": "data/linked.csv"}]}
+
+    assert engine_run.input_paths(project, spec) == [project / "data" / "linked.csv"]
+
+
+def test_a_templated_source_grants_the_literal_prefix_it_spells(project: Path) -> None:
+    """ASTRA's `source` is descriptive: it may spell a family of files and
+    leave the recipe to pick one. Granting nothing because the spelling
+    does not exist would deny the recipe a file that is plainly there."""
+    (project / "data" / "v1.4.x").mkdir()
+    spec = {
+        "inputs": [{"id": "cats", "source": "data/v1.4.x/v{version}/cat_{blind}.fits"}]
+    }
+
+    assert engine_run.input_paths(project, spec) == [project / "data" / "v1.4.x"]
+
+
+def test_a_source_whose_literal_prefix_is_absent_grants_nothing(project: Path) -> None:
+    """The climb stops at the first literal segment: a source may only
+    grant directories it spells out itself."""
+    spec = {"inputs": [{"id": "cats", "source": "data/gone/v{version}/cat.fits"}]}
+
+    assert engine_run.input_paths(project, spec) == []
 
 
 def test_an_input_declared_inside_a_sub_analysis_is_a_read_path_too(project: Path) -> None:
@@ -149,8 +183,8 @@ def test_an_input_declared_inside_a_sub_analysis_is_a_read_path_too(project: Pat
         "analyses": {"stage": {"inputs": [{"id": "sub", "source": "data/stage.csv"}]}},
     }
     assert engine_run.input_paths(project, spec) == [
-        (project / "data" / "local.csv").resolve(),
-        (project / "data" / "stage.csv").resolve(),
+        project / "data" / "local.csv",
+        project / "data" / "stage.csv",
     ]
 
 
