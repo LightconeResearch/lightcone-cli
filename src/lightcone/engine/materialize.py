@@ -1039,6 +1039,20 @@ def _graph(
             "not stored in it, so a commit cannot restore them: "
             + ", ".join(sorted(outside))
         )
+    # One step weaker again: a source spelling a family of files has no
+    # single content to record, so nothing about it can cascade.
+    families = {
+        plan.declared_path(root, path)
+        for task in graph.tasks.values()
+        for name, path in task.inputs.items()
+        if name not in task.produced_by and plan.names_a_family(path)
+    }
+    if families:
+        report.warnings.append(
+            "declared inputs spelling a family of files are recorded by that "
+            "spelling and not by content, so an output does not go stale when the "
+            "file its recipe picks changes: " + ", ".join(sorted(families))
+        )
     return graph, env_version, full
 
 

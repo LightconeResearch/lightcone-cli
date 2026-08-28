@@ -23,6 +23,7 @@ task depends on which.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
@@ -37,6 +38,36 @@ Key = tuple[str, str]
 #: What makes a path segment stand for a family of names rather than one:
 #: ASTRA's ``{placeholder}`` and the shell's glob metacharacters.
 _NON_LITERAL = re.compile(r"[{}*?\[\]]")
+
+
+def names_a_family(path: Path) -> bool:
+    """Whether a declared source spells a family of files, not one file."""
+    return not path.exists() and bool(_NON_LITERAL.search(str(path)))
+
+
+def spelling_version(path: Path) -> str:
+    """The content identity of a source that names a family of files.
+
+    A family has no content to hash — and the directory it is drawn from
+    is the wrong answer, not merely an expensive one: it is routinely
+    hundreds of gigabytes of catalogs a recipe never opens, and its
+    digest would move whenever any of them did. So the identity is the
+    *spelling*, marked as what it is.
+
+    The cost is stated rather than hidden: an output whose input is one
+    of these does not go stale when the file its recipe picks changes.
+    ``materialize`` warns for every such input, beside the warning for
+    inputs that live outside the project — the same weaker promise, one
+    step weaker again.
+
+    Args:
+        path: The declared source, as spelled.
+
+    Returns:
+        ``spelling:sha256:<hex>``, which no content digest can collide
+        with.
+    """
+    return f"spelling:sha256:{hashlib.sha256(str(path).encode()).hexdigest()}"
 
 
 def readable_source(path: Path) -> Path | None:
