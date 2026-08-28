@@ -513,20 +513,18 @@ def test_git_dispatches_annex_from_the_ambient_path(repo: Path) -> None:
     assert "git-annex version:" in dataset._git(["annex", "version"], cwd=repo)
 
 
-def test_the_annex_executables_are_ours_to_install() -> None:
-    """An installer links only the requested package's executables, and the
-    researcher's own `git add` needs git-annex on the *shell's* PATH — so
-    lightcone-cli re-declares the git-annex wheel's entry points verbatim.
-    Mirrored, not invented: asserted against the wheel's own metadata, so
-    an executable upstream adds, drops, or renames fails this test instead
-    of failing `uv tool install lightcone-cli` for every user."""
+def test_lc_declares_only_its_own_entry_point() -> None:
+    """git-annex is a system tool now, installed separately from lc (see
+    `require_git_annex` in `engine/project.py` and the `bundled-annex`
+    extra in `pyproject.toml`) — so lightcone-cli no longer re-declares its
+    entry points. Re-declaring them unconditionally would ship broken
+    `git-annex` / `git-annex-shell` / ... shims (importing a module that
+    isn't installed) on every host that skips the extra, and could collide
+    on PATH with a real git-annex install in the same bin directory."""
     from importlib.metadata import distribution
 
-    ours = {e.name: e.value for e in distribution("lightcone-cli").entry_points}
-    theirs = {e.name: e.value for e in distribution("git-annex").entry_points}
-    assert theirs  # the wheel stopped declaring entry points ⇒ redesign
-    for name, value in theirs.items():
-        assert ours.get(name) == value, f"{name} is not re-declared as {value}"
+    entries = {e.name: e.value for e in distribution("lightcone-cli").entry_points}
+    assert entries == {"lc": "lightcone.cli:main"}
 
 
 def test_the_worker_and_the_shim_are_never_console_scripts() -> None:
@@ -534,15 +532,13 @@ def test_the_worker_and_the_shim_are_never_console_scripts() -> None:
     commits nothing, and leaves the tree dirty by design; the shim is the
     sandbox's own plumbing. A `[project.scripts]` entry would put either
     on `$PATH` through `uv tool install` — a footgun `lc --help` already
-    refuses to advertise. Every entry point is either the CLI or a
-    mirrored git-annex executable, and nothing else."""
+    refuses to advertise."""
     from importlib.metadata import distribution
 
-    theirs = {e.value for e in distribution("git-annex").entry_points}
     for entry in distribution("lightcone-cli").entry_points:
         assert "lightcone.engine" not in entry.value
         assert "_sandbox_exec" not in entry.value
-        assert entry.value.startswith("lightcone.cli") or entry.value in theirs, entry
+        assert entry.value.startswith("lightcone.cli"), entry
 
 
 # ---- the annex filter, against a real shell ---------------------------------

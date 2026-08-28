@@ -137,17 +137,22 @@ on your `PATH`. That is the intended shape of the failure: a repository
 you cannot use is recoverable in one command, and one that quietly
 absorbed a multi-gigabyte file is not.
 
-`git-annex` ships with `lc`, so a tool install puts both on your `PATH`:
+`git-annex` is a system tool `lc` expects on `PATH`, not something a
+plain `uv tool install lightcone-cli` puts there. Install it from your
+distro package (e.g. `apt install git-annex`, `dnf install git-annex`),
+from conda-forge (`conda install -c conda-forge git-annex`), or bundled
+with `lc` on platforms with a compatible wheel:
 
 ```bash
-uv tool install lightcone-cli
+uv tool install 'lightcone-cli[bundled-annex]'
 git-annex version
 ```
 
-If `lc` runs but `git-annex` does not, uv's tool directory is not on
-your `PATH` — run `uv tool update-shell` and open a new shell. Running
-`lc` through `uvx` puts nothing on your `PATH` at all, so a plain
-`git add` cannot work that way.
+`lc materialize` and `lc init` check this for you up front (`git-annex
+is required … and is not on PATH`) rather than letting it surface here
+as a filter failure. If you see this error anyway, something ran
+outside those checks — confirm `git-annex version` succeeds and reports
+at least the floor lc requires.
 
 This failure is deliberately loud. `lc init` sets
 `filter.annex.required=true` in every project precisely because

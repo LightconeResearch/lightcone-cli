@@ -27,9 +27,18 @@ dependencies = [
     "astra-tools==0.2.17",
     "click>=8.0",
     "rich>=13.0",
-    "git-annex>=10.2026",
     "distributed>=2026.7",
     "rocrate>=0.15",
+]
+
+[project.optional-dependencies]
+# git-annex is a system tool, not a Python library — see require_git_annex()
+# in engine/project.py for why it isn't a plain dependency. This extra is
+# for hosts where a bundled build is genuinely the easiest path (its
+# manylinux wheels need glibc>=2.34; a distro package or conda-forge build
+# is usually the better fit on an older host).
+bundled-annex = [
+    "git-annex>=10.2026",
 ]
 
 [dependency-groups]
@@ -54,16 +63,14 @@ Repository = "https://github.com/LightconeResearch/lightcone-cli"
 
 [project.scripts]
 lc = "lightcone.cli:main"
-# The git-annex wheel's own entry points, re-declared verbatim: an
-# installer links only the requested package's executables, and a plain
-# `uv tool install lightcone-cli` must put git-annex on the shell's PATH
-# — `filter=annex` makes the researcher's own `git add` need it. The
-# suite pins these against the wheel's, so an upstream change fails
-# loudly here rather than silently at install time.
-git-annex = "git_annex:cli"
-git-annex-shell = "git_annex:cli"
-git-remote-annex = "git_annex:cli"
-git-remote-tor-annex = "git_annex:cli"
+# git-annex is no longer bundled by default (see require_git_annex() in
+# engine/project.py) — its own wheel declares `git-annex` / `git-annex-shell`
+# / `git-remote-annex` / `git-remote-tor-annex` console-scripts already, so
+# `uv tool install 'lightcone-cli[bundled-annex]'` gets them from there. Not
+# re-declaring them here avoids shipping broken shims (importing a module
+# that isn't installed) on hosts that skip the extra and use a distro
+# package or conda-forge build instead — which would also collide on PATH
+# with a real git-annex install in the same bin directory.
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

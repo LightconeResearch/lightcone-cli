@@ -66,6 +66,8 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
     def run(argv: list[str], *, cwd: Path) -> MagicMock:
         calls.append(list(argv))
+        if argv[:2] == ["git-annex", "version"]:
+            return MagicMock(returncode=0, stdout="git-annex version: 10.20990101\n", stderr="")
         if argv[0] in ("podman", "docker", "podman-hpc"):
             if argv[1] == "image":  # the loaded probe, both spellings
                 return MagicMock(returncode=0 if argv[3] in loaded else 1)
@@ -371,6 +373,8 @@ def test_lc_build_refuses_a_dirty_tree(
     derives from pyproject.toml — the declaration commits first."""
 
     def dirty(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["git-annex", "version"]:
+            return MagicMock(returncode=0, stdout="git-annex version: 10.20990101\n", stderr="")
         if argv[:2] == ["git", "status"]:
             return MagicMock(returncode=0, stdout=" M pyproject.toml\n", stderr="")
         return MagicMock(returncode=0, stdout="", stderr="")

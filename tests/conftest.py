@@ -135,6 +135,8 @@ def tools(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             config[(_repo(cwd), argv[2])] = argv[3]
         elif argv[:2] == ["git", "check-ignore"]:
             return _fake_check_ignore(cwd, argv[-1])
+        elif argv[:2] == ["git-annex", "version"]:
+            return MagicMock(returncode=0, stdout="git-annex version: 10.20990101\n", stderr="")
         return MagicMock(returncode=0, stdout="", stderr="")
 
     from lightcone.engine import project

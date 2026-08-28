@@ -6,6 +6,7 @@ from __future__ import annotations
 import shutil
 import uuid
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from conftest import probes, uv_calls
@@ -495,6 +496,8 @@ def test_surfaces_a_git_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     from lightcone.engine import project as project_mod
 
     def fake_run(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["git-annex", "version"]:
+            return MagicMock(returncode=0, stdout="git-annex version: 10.20990101\n", stderr="")
         if argv[0] == "git":
             return MagicMock(returncode=128, stdout="", stderr="fatal: cannot mkdir")
         if argv[:2] == ["uv", "lock"]:
@@ -619,6 +622,59 @@ def test_requires_git_annex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         converge(tmp_path / "proj")
 
 
+def test_requires_a_new_enough_git_annex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git-annex on PATH but older than lc's floor is the same refusal as
+    absent — a stale system package should not fail differently from a
+    missing one."""
+    _annex_version(monkeypatch, "git-annex version: 9.20231231\n")
+    with pytest.raises(ProjectError, match="git-annex on PATH is too old"):
+        converge(tmp_path / "proj")
+
+
+def test_an_unparseable_git_annex_version_is_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`git-annex version` output lc cannot parse is treated the same as
+    too old, not silently accepted."""
+    _annex_version(monkeypatch, "not a version string\n")
+    with pytest.raises(ProjectError, match="git-annex on PATH is too old"):
+        converge(tmp_path / "proj")
+
+
+def test_a_new_enough_git_annex_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tools: list[list[str]]
+) -> None:
+    """The floor is satisfied by both the wheel's old placeholder scheme and
+    a real dated release — this is the version the fixture already fakes,
+    named explicitly so the assertion states the contract rather than
+    riding on the default."""
+    _annex_version(monkeypatch, "git-annex version: 10.20250721\n")
+    converge(tmp_path / "proj")
+
+
+def _annex_version(monkeypatch: pytest.MonkeyPatch, stdout: str) -> None:
+    """Make `git-annex version` resolve (via the faked `_run` seam) to a
+    specific announced version, leaving every other tool call to whatever
+    fixture is already active."""
+    from lightcone.engine import project as project_mod
+
+    monkeypatch.setattr(
+        project_mod.shutil,
+        "which",
+        lambda name, path=None: "/usr/bin/git-annex" if name == "git-annex" else f"/usr/bin/{name}",
+    )
+    real_run = project_mod._run
+
+    def fake_run(argv: list[str], *, cwd: Path) -> object:
+        if argv[:2] == ["git-annex", "version"]:
+            return MagicMock(returncode=0, stdout=stdout, stderr="")
+        return real_run(argv, cwd=cwd)
+
+    monkeypatch.setattr(project_mod, "_run", fake_run)
+
+
 def _absent(monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
     """Make exactly one tool unfindable, leaving the others resolvable."""
     from lightcone.engine import project as project_mod
@@ -688,8 +744,11 @@ def test_check_mode_only_probes(tmp_path: Path, tools: list[list[str]]) -> None:
 def test_check_mode_on_a_fresh_project_runs_nothing(
     tmp_path: Path, tools: list[list[str]]
 ) -> None:
+    """"Nothing" except the git-annex version preflight — a read-only probe
+    that runs ahead of check mode too, the same as it does ahead of a real
+    convergence, since a too-old git-annex is a refusal either way."""
     converge(tmp_path / "proj", write=False)
-    assert tools == []
+    assert tools == [["git-annex", "version"]]
 
 
 def test_a_stale_lock_is_repaired_not_ignored(
@@ -843,6 +902,8 @@ def test_relays_uv_warnings_into_the_report(
     )
 
     def fake_run(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["git-annex", "version"]:
+            return MagicMock(returncode=0, stdout="git-annex version: 10.20990101\n", stderr="")
         if argv[:2] == ["uv", "lock"]:
             (cwd / "uv.lock").write_text("version = 1\n")
         return MagicMock(returncode=0, stdout="", stderr=stderr)
@@ -891,11 +952,12 @@ def test_surfaces_a_lock_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     from lightcone.engine import project as project_mod
 
-    monkeypatch.setattr(
-        project_mod,
-        "_run",
-        lambda argv, *, cwd: MagicMock(returncode=1, stdout="", stderr="no solution found"),
-    )
+    def fake_run(argv: list[str], *, cwd: Path) -> MagicMock:
+        if argv[:2] == ["git-annex", "version"]:
+            return MagicMock(returncode=0, stdout="git-annex version: 10.20990101\n", stderr="")
+        return MagicMock(returncode=1, stdout="", stderr="no solution found")
+
+    monkeypatch.setattr(project_mod, "_run", fake_run)
     with pytest.raises(ProjectError, match="no solution found"):
         converge(tmp_path / "proj")
 

@@ -291,25 +291,70 @@ def require_git() -> None:
         )
 
 
+# git-annex versions as ``MAJOR.YYYYMMDD[.postN]`` (occasionally
+# ``YYYYMMDDbN`` for a beta) — this was the floor the ``git-annex`` PyPI
+# wheel declared (`git-annex>=10.2026`) before it moved to the
+# `bundled-annex` extra. It's a weak floor by construction: any dated
+# release from git-annex's actual release history (all ``10.20250XXX`` and
+# later) already clears the literal "2026" — the pin was never meant to
+# gate on a specific day, just to keep pre-10 git-annex out.
+_GIT_ANNEX_MIN_VERSION = (10, 2026)
+
+
 def require_git_annex() -> None:
-    """Refuse early when git-annex is not reachable as git reaches it.
+    """Refuse early when git-annex is missing or too old.
 
     Probed by the name git itself searches for: ``git annex`` is git
-    finding a ``git-annex`` executable on ``PATH``, not a builtin. Every
-    install channel puts one there by construction — lightcone-cli
-    declares the git-annex wheel's entry points as its own, so installers
-    link them beside ``lc`` — which makes this a refusal for broken
-    installs only.
+    finding a ``git-annex`` executable on ``PATH``, not a builtin.
+    git-annex is a system tool now (see ``bundled-annex`` in
+    ``pyproject.toml``), not something lc's own install guarantees onto
+    PATH, so this checks both presence and the version floor lc needs.
 
     Raises:
-        ProjectError: If ``git-annex`` is not on ``PATH``.
+        ProjectError: If ``git-annex`` is not on ``PATH``, its version
+            can't be read, or it is older than lc requires.
     """
     if shutil.which("git-annex") is None:
         raise ProjectError(
             "git-annex is required (it stores the bytes results are made of) "
-            "and is not on PATH. It installs with lc itself: "
-            "`uv tool install --force lightcone-cli` repairs the install."
+            "and is not on PATH. Install it from your distro package "
+            "(e.g. `apt install git-annex`, `dnf install git-annex`), "
+            "from conda-forge (`conda install -c conda-forge git-annex`), "
+            "or bundled with lc itself: "
+            "`uv tool install 'lightcone-cli[bundled-annex]'`."
         )
+
+    version = _git_annex_version()
+    if version is None or version < _GIT_ANNEX_MIN_VERSION:
+        found = ".".join(str(p) for p in version) if version else "unreadable"
+        floor = ".".join(str(p) for p in _GIT_ANNEX_MIN_VERSION)
+        raise ProjectError(
+            f"git-annex on PATH is too old for lc (found {found}, need "
+            f">={floor}). Upgrade it from your distro package, from "
+            "conda-forge (`conda install -c conda-forge git-annex`), or "
+            "with the bundled build: "
+            "`uv tool install 'lightcone-cli[bundled-annex]'`."
+        )
+
+
+def _git_annex_version() -> tuple[int, int] | None:
+    """Parse ``git-annex version``'s ``MAJOR.YYYYMMDD[...]`` into ``(10, 20250721)``.
+
+    Runs through :func:`_run`, the same seam every other external-tool call
+    in this module goes through — so the test suite's fake keeps this
+    hermetic like the rest of convergence, rather than shelling out on its
+    own.
+
+    Returns:
+        ``(major, datestamp)``, or ``None`` if the output can't be parsed.
+    """
+    result = _run(["git-annex", "version"], cwd=Path.cwd())
+    if result.returncode != 0:
+        return None
+    match = re.search(r"git-annex version:\s*(\d+)\.(\d+)", result.stdout)
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)))
 
 
 def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
