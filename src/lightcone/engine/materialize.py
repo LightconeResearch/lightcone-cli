@@ -1053,11 +1053,15 @@ def _owned(root: Path, task: Task) -> list[str]:
 
     Never the parent directory: siblings share it, and under Dask they are
     in flight — ``git clean`` on it would delete a running task's bytes.
+
+    Both are named from the file's own stem, never the qualified id: a
+    scoped output's id carries its scope, which is already spelled by the
+    parent directory these pathspecs are rooted at.
     """
     parent = plan.declared_path(root, task.output_path.parent)
     return [
-        f":(glob){parent}/{task.output_id}.*",
-        f":(glob){parent}/.{task.output_id}{assets.MANIFEST_SUFFIX}*",
+        f":(glob){parent}/{task.output_stem}.*",
+        f":(glob){parent}/.{task.output_stem}{assets.MANIFEST_SUFFIX}*",
     ]
 
 
