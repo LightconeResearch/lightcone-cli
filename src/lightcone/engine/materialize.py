@@ -238,6 +238,11 @@ def _predicted(
                 None if upstream in would_run else assets.read(assets.manifest_path(path))
             )
             predicted[name] = manifest.data_version if manifest else None
+        elif plan.names_a_family(path):
+            # Its spelling is its identity, and the worker records exactly
+            # this — predicting "I cannot tell" here would report every
+            # such output stale the moment after it was made.
+            predicted[name] = plan.spelling_version(path)
         elif not path.exists():
             predicted[name] = None
         else:
