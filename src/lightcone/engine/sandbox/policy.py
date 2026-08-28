@@ -234,6 +234,15 @@ def exec_policy(
         (tmp_home / sub).mkdir(parents=True, exist_ok=True)
 
     in_tree_write = write_dir if write_dir is not None else project / "results"
+    # Both names of a linked input, because a recipe may address either.
+    # An output that is a symlink into a shared archive is how a 15 GB
+    # catalog gets declared without being copied, and what reads it next
+    # may go through a catalog config rather than through the graph —
+    # arriving at the path the link points at, which the analysis
+    # declared just as surely as the artifact path. Granting the target
+    # *as well as* the spelling: granting it instead is what the
+    # containerized branch below explains it must never do.
+    read_paths = [*read_paths, *_link_targets(read_paths)]
     if containerized:
         # Declared spellings, not realpaths — the one shape that keeps
         # its paths unresolved. These become mount *destinations*, and a
@@ -446,6 +455,37 @@ def _loader_patterns() -> dict[str, set[str]]:
         directory, _, name = pattern.rpartition("/")
         grouped.setdefault(os.path.realpath(directory), set()).add(name)
     return grouped
+
+
+#: How far a chain of symlinks is followed before it is called a loop.
+_LINK_HOPS = 8
+
+
+def _link_targets(paths: Iterable[Path]) -> list[Path]:
+    """The name each symlink among *paths* points at, hop by hop.
+
+    ``readlink``, never ``resolve``: the target is granted so a recipe can
+    address it, and what a recipe addresses is the spelling the link
+    carries. ``resolve`` would answer the realpath — on this cluster
+    ``/n17data/…`` resolves through an automounter to ``/automnt/n17data/…``,
+    so granting that leaves the recipe's own ``/n17data`` path as absent as
+    before. The backend resolves the mount *source* itself.
+
+    A chain is followed hop by hop, since any name along it is one a
+    recipe may hold. A dangling link contributes nothing: there is no
+    access to grant, and ``_declared`` would drop it anyway.
+    """
+    found: list[Path] = []
+    for path in paths:
+        here = Path(path)
+        for _ in range(_LINK_HOPS):
+            if not here.is_symlink():
+                break
+            target = Path(os.readlink(here))
+            here = target if target.is_absolute() else here.parent / target
+            if here.exists():
+                found.append(here)
+    return found
 
 
 def _declared(paths: Iterable[Path]) -> tuple[Path, ...]:
