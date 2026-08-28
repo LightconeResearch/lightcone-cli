@@ -561,6 +561,23 @@ def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None
     assert not any("in flight" in w for w in report.warnings)
 
 
+def test_an_output_made_from_a_family_of_files_is_not_stale_at_once(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """A family of files is identified by its spelling, so check mode has
+    to predict the same thing the worker recorded. Answering "I cannot
+    tell" from the path not existing reported such an output stale the
+    moment after it was made, and no run could ever converge."""
+    spec = _SPEC.replace("source: data/catalog.fits", "source: data/v{version}/cat.fits")
+    spec = spec.replace(
+        "    format: txt\n    decisions: [method]", "    format: txt\n    inputs: [catalog]\n    decisions: [method]"
+    )
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+
+    assert engine.materialize(root, []).ok
+    assert engine.check(root, []).up_to_date
+
+
 # ---- leaving the tree as clean as it was found -----------------------------
 
 
