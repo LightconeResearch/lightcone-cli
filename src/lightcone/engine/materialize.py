@@ -738,9 +738,14 @@ def cluster_for_run() -> Iterator[Scheduler]:
         return
     from distributed import Client, LocalCluster
 
+    from .venue import _int_env
+
     with LocalCluster(  # type: ignore[no-untyped-call]
         n_workers=1,
-        threads_per_worker=os.cpu_count() or 1,
+        threads_per_worker=_int_env(
+            "LC_TASK_CONCURRENCY",
+            _int_env("SLURM_CPUS_ON_NODE", os.cpu_count() or 1),
+        ),
         processes=False,
         dashboard_address=None,
     ) as cluster:
