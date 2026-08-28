@@ -15,8 +15,11 @@ That resolves the engine and the dev tools (pytest, ruff, mypy,
 datalad, the rocrate validator) into `.venv`. `uv run lc --version`
 runs the checkout's `lc`.
 
-You also need `git` on `PATH` (the one tool uv cannot install);
-git-annex arrives as a wheel with the sync.
+You also need `git` and `git-annex` on `PATH`. Both are system tools uv
+does not manage: install `git-annex` from your distro package (e.g. `apt
+install git-annex`, `dnf install git-annex`), from conda-forge (`conda
+install -c conda-forge git-annex`), or via `uv sync --group dev --extra
+bundled-annex` if your platform has a compatible wheel.
 
 ## The loop
 
