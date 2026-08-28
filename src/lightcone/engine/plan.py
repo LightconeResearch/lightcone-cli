@@ -58,6 +58,18 @@ class Task:
         return assets.manifest_path(self.output_path)
 
     @property
+    def output_stem(self) -> str:
+        """The output file's own name, without its format.
+
+        A qualified id spells its scope as directories, so the file is
+        named from the local id alone (:func:`assets.output_path`).
+        Anything that matches this output's files *by name* — a glob, a git
+        pathspec — has to say that name and never the qualified id, which
+        would match nothing for a scoped output.
+        """
+        return self.output_path.name.partition(".")[0]
+
+    @property
     def key(self) -> Key:
         """This task's identity within a run."""
         return (self.universe_id, self.output_id)

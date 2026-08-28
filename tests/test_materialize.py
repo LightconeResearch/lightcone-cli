@@ -564,6 +564,35 @@ def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None
 # ---- leaving the tree as clean as it was found -----------------------------
 
 
+def test_a_scoped_output_stages_the_files_it_actually_wrote(tmp_path: Path) -> None:
+    """The pathspecs are what `git add` is given after a recipe runs, so
+    they have to name the file on disk. A sub-analysis output carries
+    ASTRA's qualified id, `<scope>.<local>`, while its file is
+    `results/<universe>/<scope>/<local>.<fmt>` — spelling the qualified id
+    into the name matched nothing, and the output went uncommitted."""
+    from lightcone.engine.plan import Task
+
+    task = Task(
+        universe_id="baseline",
+        output_id="catalog.survey_properties",
+        output_path=assets.output_path(
+            tmp_path, "baseline", "catalog.survey_properties", "json"
+        ),
+        recipe="true",
+        inputs={},
+        produced_by={},
+        decisions={},
+        definition_version="v",
+    )
+
+    assert task.output_stem == "survey_properties"
+    assert engine._owned(tmp_path, task) == [
+        ":(glob)results/baseline/catalog/survey_properties.*",
+        ":(glob)results/baseline/catalog/.survey_properties.manifest.json*",
+    ]
+
+
+
 def test_a_failing_recipe_commits_nothing_and_leaves_the_tree_clean(
     analysis: Callable[..., Path], inline: None
 ) -> None:
