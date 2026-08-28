@@ -97,6 +97,77 @@ def test_the_containerized_recipe_mounts_only_that_directory(
         assert project / "results" not in built.write
 
 
+def test_a_linked_input_is_granted_under_both_of_its_names(tmp_path: Path) -> None:
+    """A 15 GB catalog is declared as a symlink into a shared archive
+    rather than copied, and what reads it next may arrive at the target
+    path — through a catalog config rather than through the graph. Only
+    the spelling was granted, so the recipe failed on a file the analysis
+    had certainly declared."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    archive = tmp_path / "archive" / "catalog.fits"
+    archive.parent.mkdir()
+    archive.write_text("x\n")
+    link = project / "results" / "catalog.fits"
+    link.parent.mkdir()
+    link.symlink_to(archive)
+
+    with scope(
+        policy_module.exec_policy(
+            project,
+            read_paths=[link],
+            containerized=True,
+            env_dir=project / ".lightcone/venv",
+        )
+    ) as built:
+        assert link in built.read, "the declared spelling stays a mount destination"
+        assert archive in built.read, "and the name the link points at is granted too"
+
+
+def test_a_link_is_followed_by_its_spelling_not_its_realpath(tmp_path: Path) -> None:
+    """`readlink`, never `resolve`. On a cluster with an automounter the
+    realpath of `/n17data/x` is `/automnt/n17data/x`, so granting the
+    realpath leaves the recipe's own path as absent as before. Every name
+    along the chain is granted, since a recipe may hold any of them."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    final = tmp_path / "real.fits"
+    final.write_text("x\n")
+    middle = tmp_path / "alias.fits"
+    middle.symlink_to(final)
+    link = project / "catalog.fits"
+    link.symlink_to(middle)
+
+    with scope(
+        policy_module.exec_policy(
+            project,
+            read_paths=[link],
+            containerized=True,
+            env_dir=project / ".lightcone/venv",
+        )
+    ) as built:
+        assert middle in built.read, "the intermediate name a recipe may hold"
+        assert final in built.read
+
+
+def test_a_dangling_link_grants_nothing_extra(tmp_path: Path) -> None:
+    """There is no access to grant, and a policy describes what is there."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    link = project / "gone.fits"
+    link.symlink_to(tmp_path / "never")
+
+    with scope(
+        policy_module.exec_policy(
+            project,
+            read_paths=[link],
+            containerized=True,
+            env_dir=project / ".lightcone/venv",
+        )
+    ) as built:
+        assert not any(str(p).endswith("never") for p in built.read)
+
+
 def test_results_is_granted_only_if_it_exists(tmp_path: Path) -> None:
     """Convergence makes it. A policy that made directories would be a
     side effect nobody asked a probe for."""
