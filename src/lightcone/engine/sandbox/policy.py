@@ -327,6 +327,24 @@ def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) 
             [str(env_dir / "bin"), _IMAGE_PATH if containerized else _UTILITY_PATH]
         ),
         **{k: str(tmp_home / v) for k, v in _HOME_LAYOUT.items()},
+        # One task is one slot: the scheduler already runs one task per
+        # core, so a library sizing its pool from the node (OpenBLAS,
+        # OpenMP, numba) oversubscribes it by that factor — on a shared
+        # allocation badly enough to exhaust the step's thread limit and
+        # take neighbouring tasks down with it. Pinned here rather than
+        # inherited, because the boundary deliberately strips ambient
+        # environment; a recipe that wants real parallelism sizes its own
+        # pool explicitly.
+        **{
+            k: "1"
+            for k in (
+                "OMP_NUM_THREADS",
+                "OPENBLAS_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "NUMBA_NUM_THREADS",
+                "VECLIB_MAXIMUM_THREADS",
+            )
+        },
     }
     if containerized:
         overlay["UV_PROJECT_ENVIRONMENT"] = str(env_dir)
