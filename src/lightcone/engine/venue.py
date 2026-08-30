@@ -246,6 +246,11 @@ def _srun_argv(scheduler: str, nodes: int, cpus: int, scratch: str) -> list[str]
         # for the resources that step already holds.
         "--overlap",
         f"--ntasks={nodes}",
+        # Both are needed: without an explicit node count slurm may pack
+        # several worker tasks onto one node (ignoring --ntasks-per-node
+        # with a warning) whenever cpus-per-task times tasks fits on
+        # fewer nodes, leaving the rest of the allocation idle.
+        f"--nodes={nodes}",
         "--ntasks-per-node=1",
         # Without it the step is entitled to one core and the worker's
         # threads are bound to it.
