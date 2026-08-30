@@ -32,6 +32,7 @@ from collections.abc import Iterable, Sequence
 from fnmatch import fnmatch
 from pathlib import Path
 
+from lightcone.engine.cpus import task_cpus
 from lightcone.engine.sandbox.model import Policy
 
 #: The utility tier of the exec allowlist. A maintained policy
@@ -255,7 +256,7 @@ def exec_policy(
             write=_declared([tmp_home, in_tree_write]),
             execute=(),
             tmp_home=tmp_home,
-            env=home_overlay(tmp_home, env_dir, containerized=True),
+            env=home_overlay(tmp_home, env_dir, containerized=True, write_dir=in_tree_write),
         )
 
     python = _venv_python(env_dir)
@@ -270,7 +271,7 @@ def exec_policy(
         write=write,
         execute=_existing(_exec_set(env_dir, python)),
         tmp_home=tmp_home,
-        env=home_overlay(tmp_home, env_dir),
+        env=home_overlay(tmp_home, env_dir, write_dir=in_tree_write),
     )
 
 
@@ -290,7 +291,13 @@ def _write_roots(project: Path) -> list[Path]:
     return [root for root in roots if not resolved.is_relative_to(root)]
 
 
-def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) -> dict[str, str]:
+def home_overlay(
+    tmp_home: Path,
+    env_dir: Path,
+    *,
+    containerized: bool = False,
+    write_dir: Path | None = None,
+) -> dict[str, str]:
     """Point ``HOME`` and friends at a fresh private directory.
 
     The real ``$HOME`` is neither readable nor writable inside the
@@ -311,6 +318,11 @@ def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) 
             rather than the host allowlist search path, and pin uv to the
             in-image environment — the ``uv run`` hop executes inside the
             container, and this is how it finds ``.lightcone/venv``.
+        write_dir: The output directory this command writes into, matched
+            against ``LC_TASK_CPUS_MAP`` to size the thread pins per task
+            (:func:`~lightcone.engine.cpus.task_cpus`). Absent for a probe
+            and for any caller with no output in hand, which then gets the
+            global fallback.
 
     Returns:
         The environment overlay the boundary applies inside the wrap.
@@ -337,8 +349,12 @@ def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) 
         # ``LC_TASK_THREADS`` in the driver's environment sets the pin —
         # the knob for memory-bound recipes, where fewer concurrent tasks
         # each deserve the spare cores (default 1: one task, one slot).
+        # ``LC_TASK_CPUS_MAP`` says the same thing per output path, and
+        # the driver reserves the matching number of the worker's `CPU`
+        # slots for that task — so the pin and the reservation are one
+        # number, read from one place.
         **{
-            k: os.environ.get("LC_TASK_THREADS", "1")
+            k: str(task_cpus(write_dir.as_posix() if write_dir is not None else None))
             for k in (
                 "OMP_NUM_THREADS",
                 "OPENBLAS_NUM_THREADS",
