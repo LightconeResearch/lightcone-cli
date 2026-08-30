@@ -333,10 +333,12 @@ def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) 
         # allocation badly enough to exhaust the step's thread limit and
         # take neighbouring tasks down with it. Pinned here rather than
         # inherited, because the boundary deliberately strips ambient
-        # environment; a recipe that wants real parallelism sizes its own
-        # pool explicitly.
+        # environment. The overlay is composed driver-side, so
+        # ``LC_TASK_THREADS`` in the driver's environment sets the pin —
+        # the knob for memory-bound recipes, where fewer concurrent tasks
+        # each deserve the spare cores (default 1: one task, one slot).
         **{
-            k: "1"
+            k: os.environ.get("LC_TASK_THREADS", "1")
             for k in (
                 "OMP_NUM_THREADS",
                 "OPENBLAS_NUM_THREADS",
