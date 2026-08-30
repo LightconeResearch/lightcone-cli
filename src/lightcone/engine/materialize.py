@@ -42,7 +42,17 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from lightcone.engine import assets, container, dataset, identity, plan, project, venue, worker
+from lightcone.engine import (
+    assets,
+    container,
+    cpus,
+    dataset,
+    identity,
+    plan,
+    project,
+    venue,
+    worker,
+)
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
 
@@ -598,6 +608,12 @@ def materialize(
                     foreign[key],
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
+                    # Driver-side, from the same map the sandbox reads to
+                    # pin the task's thread count — one number, so what a
+                    # recipe is allowed to use is what the venue set aside
+                    # for it. The output's directory is what matches,
+                    # because that is what the sandbox has in hand.
+                    cpus=cpus.task_cpus(task.output_path.parent.as_posix()),
                 )
             for result in scheduler.completed(list(pending.values())):
                 _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
@@ -668,13 +684,16 @@ class Scheduler(Protocol):
     land behind :func:`cluster_for_run` without the driver noticing.
     """
 
-    def submit(self, fn: Any, *args: Any, key: str) -> Any:
+    def submit(self, fn: Any, *args: Any, key: str, cpus: int = 1) -> Any:
         """Schedule a call.
 
         Args:
             fn: The function to run.
             *args: Its arguments, upstream handles included.
             key: A display name for the task.
+            cpus: Cores this call should hold while it runs. A venue that
+                cannot ration cores ignores it and runs the graph as it
+                always has.
 
         Returns:
             A handle to pass to dependents.
@@ -698,10 +717,22 @@ class _Dask:
     """A Dask client, narrowed to what the driver asks of it."""
 
     client: Any
+    #: Cores one worker advertises, or 0 where none does. Only the
+    #: allocation's workers publish a ``CPU`` resource; asking a
+    #: LocalCluster worker for one it never advertised is not a wait, it
+    #: is a task that never runs — so the local branch declines to ration.
+    node_cpus: int = 0
 
-    def submit(self, fn: Any, *args: Any, key: str) -> Any:
-        """Schedule a call on the Dask client. See :class:`Scheduler`."""
-        return self.client.submit(fn, *args, key=key)
+    def submit(self, fn: Any, *args: Any, key: str, cpus: int = 1) -> Any:
+        """Schedule a call on the Dask client. See :class:`Scheduler`.
+
+        The request is capped at one worker's width: a task asking for
+        more cores than any node has would sit in the scheduler forever.
+        """
+        if not self.node_cpus:
+            return self.client.submit(fn, *args, key=key)
+        reserve = min(cpus, self.node_cpus)
+        return self.client.submit(fn, *args, key=key, resources={"CPU": reserve})
 
     def completed(self, handles: list[Any]) -> Iterator[worker.TaskResult]:
         """Yield results as Dask completes them. See :class:`Scheduler`."""
@@ -734,7 +765,7 @@ def cluster_for_run() -> Iterator[Scheduler]:
     """
     if venue.allocation_nodes():
         with venue.slurm_client() as client:
-            yield _Dask(client)
+            yield _Dask(client, node_cpus=venue.node_cpus())
         return
     from distributed import Client, LocalCluster
 

@@ -171,7 +171,7 @@ class _Inline:
     are the upstream results themselves, exactly what the worker expects.
     """
 
-    def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
+    def submit(self, fn: Callable[..., object], *args: object, key: str, cpus: int = 1) -> object:
         return fn(*args)
 
     def completed(self, handles: list[object]) -> Iterator[object]:

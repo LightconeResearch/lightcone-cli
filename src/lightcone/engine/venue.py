@@ -136,6 +136,20 @@ def allocation_nodes() -> int:
     return _int_env("SLURM_JOB_NUM_NODES", _int_env("SLURM_NNODES", 1))
 
 
+def node_cpus() -> int:
+    """The cores one worker gets — the allocation's per-node width.
+
+    The same number the worker advertises as its ``CPU`` resource, so the
+    driver can cap a task's request against it: a request larger than any
+    worker can satisfy is not a slow task, it is a task Dask will never
+    schedule.
+
+    Returns:
+        SLURM's per-node core count, or this machine's, or 1.
+    """
+    return _int_env("SLURM_CPUS_ON_NODE", os.cpu_count() or 1)
+
+
 def _int_env(name: str, default: int) -> int:
     """Read a SLURM count, refusing garbage rather than tracebacking.
 
@@ -183,7 +197,7 @@ def slurm_client() -> Iterator[Any]:
             "this machine alone."
         )
     nodes = allocation_nodes()
-    cpus = _int_env("SLURM_CPUS_ON_NODE", os.cpu_count() or 1)
+    cpus = node_cpus()
     host = os.environ.get("SLURMD_NODENAME") or socket.gethostname()
 
     try:
@@ -265,6 +279,15 @@ def _srun_argv(scheduler: str, nodes: int, cpus: int, scratch: str) -> list[str]
         scheduler,
         "--nthreads",
         str(cpus),
+        # The node's cores, restated as a resource the scheduler can
+        # divide. Slots (`--nthreads`) stay at one per core so they are
+        # never the binding constraint; what rations a node is this, and a
+        # task that asked for sixteen cores holds sixteen of them for its
+        # duration while cheap tasks fill whatever is left. A task that
+        # asks for nothing reserves nothing — exactly the behaviour that
+        # predates the knob (see :mod:`~lightcone.engine.cpus`).
+        "--resources",
+        f"CPU={cpus}",
         "--nworkers",
         "1",
         "--no-dashboard",
