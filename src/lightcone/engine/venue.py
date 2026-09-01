@@ -226,10 +226,11 @@ def slurm_client() -> Iterator[Any]:
         env = dict(os.environ)
         env.setdefault("DASK_LOGGING__DISTRIBUTED", "warning")
         # The driver often runs inside its own `srun -c N` step, which
-        # exports SLURM_CPUS_PER_TASK; a nested srun reads that as an
+        # exports SLURM_CPUS_PER_TASK (and SLURM_TRES_PER_TASK=cpu=N); a nested srun reads that as an
         # implicit -c and silently ignores --whole, capping every worker
         # at the driver step's width.
         env.pop("SLURM_CPUS_PER_TASK", None)
+        env.pop("SLURM_TRES_PER_TASK", None)
         # Literal `/tmp`, not the driver's resolved tempdir: a site
         # prolog can scope TMPDIR to the node or job step that set
         # it, and a driver-side path baked into every worker's argv
