@@ -24,6 +24,7 @@ watchdog.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -245,8 +246,8 @@ def _srun_argv(scheduler: str, nodes: int, cpus: int, scratch: str) -> list[str]
     Args:
         scheduler: The driver-side scheduler's address.
         nodes: Allocated node count — one worker task per node.
-        cpus: Threads per worker; tasks block in ``subprocess.wait()``
-            with the GIL released, so threads carry a whole node.
+        cpus: The driver node's core count — only a fallback for a task
+            whose SLURM_CPUS_ON_NODE is unset.
         scratch: Node-local directory for the worker's own state — never
             the project tree, and explicit so ambient Dask configuration
             cannot point it there.
@@ -254,6 +255,7 @@ def _srun_argv(scheduler: str, nodes: int, cpus: int, scratch: str) -> list[str]
     Returns:
         The argv, ready for Popen.
     """
+    slot_cpus = max(1, _int_env("LC_TASK_SLOT_CPUS", 4))
     return [
         "srun",
         # Inside salloc's interactive step a plain srun can wait forever
@@ -266,28 +268,33 @@ def _srun_argv(scheduler: str, nodes: int, cpus: int, scratch: str) -> list[str]
         # fewer nodes, leaving the rest of the allocation idle.
         f"--nodes={nodes}",
         "--ntasks-per-node=1",
-        # Without it the step is entitled to one core and the worker's
-        # threads are bound to it.
-        f"--cpus-per-task={cpus}",
-        # The driver's own interpreter — the tool environment on the
-        # shared filesystem — so driver and workers are the identical
-        # installation. `-m` cannot resolve to some other install the
-        # way a PATH-found `dask` can.
-        sys.executable,
-        "-m",
-        "distributed.cli.dask_worker",
-        scheduler,
-        "--nthreads",
-        str(cpus),
-        # The node's cores, restated as a resource the scheduler can
-        # divide. Slots (`--nthreads`) stay at one per core so they are
-        # never the binding constraint; what rations a node is this, and a
-        # task that asked for sixteen cores holds sixteen of them for its
-        # duration while cheap tasks fill whatever is left. A task that
-        # asks for nothing reserves nothing — exactly the behaviour that
-        # predates the knob (see :mod:`~lightcone.engine.cpus`).
-        "--resources",
-        f"CPU={cpus}",
+        # The whole of each node's allocation, not a uniform
+        # --cpus-per-task: allocations are heterogeneous (24- and 48-core
+        # nodes side by side) and a uniform count caps every node at the
+        # smallest. Under --whole, SLURM_CPUS_ON_NODE on each task is that
+        # node's own width, which the shell below turns into the worker's
+        # slot count and CPU resource.
+        "--whole",
+        "bash",
+        "-c",
+        # `--nthreads` is the slot count dask's idle/saturated heuristic
+        # reads. It must be *task slots*, not cores: with one thread per
+        # core a node holding one 24-core task and 100 queued behind it
+        # still counts as idle, work stealing never fires, and the rest
+        # of the allocation sits empty. Slots = cores / smallest task
+        # request; what actually rations a node is the CPU resource.
+        f"exec {shlex.quote(sys.executable)} -m distributed.cli.dask_worker "
+        f"{shlex.quote(scheduler)} "
+        f'--nthreads $(( ${{SLURM_CPUS_ON_NODE:-{cpus}}} / {slot_cpus} > 0 '
+        f'? ${{SLURM_CPUS_ON_NODE:-{cpus}}} / {slot_cpus} : 1 )) '
+        f'--resources CPU=${{SLURM_CPUS_ON_NODE:-{cpus}}} '
+        + " ".join(shlex.quote(a) for a in _worker_tail(scratch)),
+    ]
+
+
+def _worker_tail(scratch: str) -> list[str]:
+    """The dask_worker flags that do not depend on the node."""
+    return [
         "--nworkers",
         "1",
         "--no-dashboard",
