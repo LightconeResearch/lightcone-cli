@@ -173,9 +173,18 @@ class _Builder:
             self._control(key, self._action(key, manifest))
         self._runs(workflow)
         self._root()
-        text: str = json.dumps(
-            self.crate.metadata.generate(), indent=1, sort_keys=True, ensure_ascii=False
-        )
+        document = self.crate.metadata.generate()
+        # Compacted JSON-LD: a property with one value is that value, not
+        # a one-element array. Applied here rather than at each builder
+        # because the arrays come from three places — rocrate's
+        # `append_to`, and two literal lists — and which of them hold one
+        # element depends on the project (one output, one author). The
+        # same rule rocrate itself applies to `@context`.
+        for entity in document["@graph"]:
+            for name, value in entity.items():
+                if isinstance(value, list) and len(value) == 1:
+                    entity[name] = value[0]
+        text: str = json.dumps(document, indent=1, sort_keys=True, ensure_ascii=False)
         return text + "\n"
 
     # ----- the workflow and its structure -----

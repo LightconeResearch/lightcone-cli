@@ -39,7 +39,7 @@ dev = [
     "ruff",
     "mypy",
     "datalad",
-    "roc-validator>=0.11.3",
+    "roc-validator>=0.11.4",
 ]
 docs = [
     "zensical>=0.0.33",
