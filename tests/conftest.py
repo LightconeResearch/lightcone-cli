@@ -23,7 +23,7 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture(autouse=True)
-def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def venue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Strip the host's venue out of the suite's environment.
 
     On a known center's login node every materialize test would otherwise
@@ -32,7 +32,9 @@ def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
     own table, so a center added there is scrubbed here for free; the
     venue tests set these back deliberately.
     """
-    from lightcone.engine import venue
+    from lightcone.engine import clusters, venue
+
+    monkeypatch.setattr(clusters, "registry_root", lambda: tmp_path / "clusters")
 
     for name in (
         *(site.marker for site in venue._SITES),
@@ -41,6 +43,8 @@ def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "SLURM_JOB_NUM_NODES",
         "SLURM_NNODES",
         "SLURM_CPUS_ON_NODE",
+        "JUPYTER_IMAGE_SPEC",
+        "JUPYTER_IMAGE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -183,7 +187,7 @@ def inline(monkeypatch: pytest.MonkeyPatch) -> None:
     from lightcone.engine import materialize
 
     @contextmanager
-    def fake() -> Iterator[_Inline]:
+    def fake(root: Path, attached: object) -> Iterator[_Inline]:
         yield _Inline()
 
     monkeypatch.setattr(materialize, "cluster_for_run", fake)

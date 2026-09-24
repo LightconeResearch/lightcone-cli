@@ -111,6 +111,7 @@ def test_a_login_node_refuses_with_both_commands(monkeypatch: pytest.MonkeyPatch
     assert "salloc" in message
     assert "sbatch" in message
     assert "--wrap 'lc materialize'" in message
+    assert "Lightcone sidebar › Compute" in message
 
 
 def test_the_guard_fires_before_anything_else(
@@ -321,7 +322,7 @@ def test_an_unresolvable_node_name_is_a_refusal_not_a_traceback(
 
 
 def test_a_multi_node_allocation_refuses_a_node_local_image_store(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+    root: Path, monkeypatch: pytest.MonkeyPatch, inline: None
 ) -> None:
     """podman's and docker's stores are node-local; only podman-hpc's
     migrate makes an image visible to the allocation's other nodes.
@@ -359,3 +360,4 @@ def test_the_rerun_entry_point_is_guarded_like_materialize(
     assert worker.main(["baseline/first"]) == 2
     err = capsys.readouterr().err
     assert "login node" in err and "salloc" in err
+    assert "Compute" not in err  # this standalone recipe does not attach

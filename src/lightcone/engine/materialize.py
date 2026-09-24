@@ -36,13 +36,24 @@ import functools
 import json
 import os
 import re
-from collections.abc import Iterator, Sequence
+import uuid
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from lightcone.engine import assets, container, dataset, identity, plan, project, venue, worker
+from lightcone.engine import (
+    assets,
+    clusters,
+    container,
+    dataset,
+    identity,
+    plan,
+    project,
+    venue,
+    worker,
+)
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
 
@@ -74,6 +85,8 @@ class MaterializeReport:
     #: width breaks the one thing a denial message is for. The caller
     #: prints these unwrapped, exactly as ``lc run`` does.
     notes: list[str] = field(default_factory=list)
+    #: Execution target; check mode never selects or connects to a venue.
+    venue: dict[str, str | int] | None = None
 
     @property
     def ok(self) -> bool:
@@ -472,7 +485,11 @@ def _sandbox_line(mode: str) -> str:
 
 
 def materialize(
-    root: Path, targets: Sequence[str], *, refresh: bool = False
+    root: Path,
+    targets: Sequence[str],
+    *,
+    refresh: bool = False,
+    on_venue: Callable[[dict[str, str | int]], None] | None = None,
 ) -> MaterializeReport:
     """Make everything *targets* names, committing each output as it lands.
 
@@ -482,6 +499,8 @@ def materialize(
             output asks for what it is made of.
         refresh: Also remake outputs that are merely behind — still what
             the spec asks for, but made under an earlier environment.
+        on_venue: Announce the selected execution target before preparing
+            or running work. The same selection is recorded in the report.
 
     Returns:
         What was made, what was current or behind, what failed or was
@@ -495,12 +514,29 @@ def materialize(
     # First, because its remedy is the one with queue latency: the user
     # can submit the allocation and fix anything the later refusals name
     # while waiting for it.
-    venue.require_compute_node()
+    attached = venue.attached_cluster(root)
+    if attached is None or attached.backend == "local":
+        venue.require_compute_node()
+    nodes = venue.allocation_nodes()
+    selected: dict[str, str | int]
+    if attached is not None:
+        selected = {
+            "kind": "cluster",
+            "backend": attached.backend,
+            "id": attached.id,
+            "label": attached.label,
+        }
+    elif nodes:
+        selected = {"kind": "allocation", "nodes": nodes}
+    else:
+        selected = {"kind": "local"}
+    if on_venue is not None:
+        on_venue(selected)
     project.require_uv()
     project.require_git()
     project.require_git_annex()
     dataset.require_committer(root)
-    report = MaterializeReport()
+    report = MaterializeReport(venue=selected)
     if warning := project.uv_scrub_warning():
         report.warnings.append(warning)
     # The dirty check comes before anything that writes: the image
@@ -523,61 +559,52 @@ def materialize(
         return report
     _fetch_inputs(root, graph, report)
     # Before the runtime resolves, because the refusal must not cost an
-    # image build: a containerized graph can span an allocation only if
+    # image build: a containerized graph can span several hosts only if
     # every node can see the image — the hint suffices, since which
     # stores span nodes is `container._SHARED_STORE_RUNTIMES`'s fact and
     # a wholly missing runtime gets `runtime_for_run`'s own refusal. Off
     # the driver's node a task would otherwise fail to find an image
     # `--pull=never` forbids it to fetch.
-    if (
-        (nodes := venue.allocation_nodes()) > 1
-        and project.mode(root) == "containerized"
-        and (name := container.runtime_hint())
-        and name not in container._SHARED_STORE_RUNTIMES
-    ):
-        raise ProjectError(
-            f"this allocation spans {nodes} nodes and `{name}`'s image store is "
-            "node-local, so recipes scheduled on the other nodes would not find "
-            "the image. Use a single-node allocation, or a system whose runtime "
-            "shares images across nodes (NERSC's podman-hpc)."
-        )
-    # Materialize is one of the two verbs allowed to build the image (the
-    # other is `lc build`); the probe and the rerun entry point only find
-    # one. Resolved once, then handed to every task — the HEAD discipline.
-    runtime = container.runtime_for_run(root, build=True)
-    # Converge the environment: workers pass `--no-sync`, so this is the
-    # only place on a run's path where it is made to match the lock. (A
-    # rerun does not come through here; its entry point converges too.)
-    report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
-
-    # The run's driver-resolved facts, each read once: HEAD because the
-    # driver commits as outputs land and a per-task read would stamp
-    # later manifests with a commit this run created; the uv probe
-    # because attestation is a fact about the run (and empty is an
-    # answer, not a failure); one content-hash memo because a declared
-    # input shared by several outputs is the same bytes every time.
-    context = worker.RunContext(
-        env_version=env_version,
-        head=dataset.head(root),
-        versions=assets.Versions(),
-        runtime=runtime,
-        uv_version=project.uv_version(root),
-    )
-    # The history question is the driver's to answer — workers have no
-    # git, by design — so each task is told up front whether its
-    # directory was last written by something other than its own run
-    # record. A foreign write contradicts the manifest, and a worker that
-    # trusted the recorded digest would skip the output forever. Guarded
-    # on the manifest's presence, as `_classified` is: without one the
-    # answer is dead — the output is remade regardless — and each ask is
-    # a git process.
-    foreign = {
-        key: _foreign_write(root, task) if task.manifest_path.is_file() else None
-        for key, task in graph.tasks.items()
-    }
-    outstanding: dict[Key, Task] = dict(graph.tasks)
+    _require_shared_image_store(root, nodes)
+    outstanding: dict[Key, Task] = {}
     try:
-        with cluster_for_run() as scheduler:
+        with cluster_for_run(root, attached) as scheduler:
+            # Materialize is one of the two verbs allowed to build the image (the
+            # other is `lc build`); the probe and the rerun entry point only find
+            # one. Resolved once, then handed to every task — the HEAD discipline.
+            runtime = container.runtime_for_run(root, build=True)
+            # Converge the environment: workers pass `--no-sync`, so this is the
+            # only place on a run's path where it is made to match the lock. (A
+            # rerun does not come through here; its entry point converges too.)
+            report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
+
+            # The run's driver-resolved facts, each read once: HEAD because the
+            # driver commits as outputs land and a per-task read would stamp
+            # later manifests with a commit this run created; the uv probe
+            # because attestation is a fact about the run (and empty is an
+            # answer, not a failure); one content-hash memo because a declared
+            # input shared by several outputs is the same bytes every time.
+            context = worker.RunContext(
+                env_version=env_version,
+                head=dataset.head(root),
+                versions=assets.Versions(),
+                runtime=runtime,
+                uv_version=project.uv_version(root),
+            )
+            # The history question is the driver's to answer — workers have no
+            # git, by design — so each task is told up front whether its
+            # directory was last written by something other than its own run
+            # record. A foreign write contradicts the manifest, and a worker that
+            # trusted the recorded digest would skip the output forever. Guarded
+            # on the manifest's presence, as `_classified` is: without one the
+            # answer is dead — the output is remade regardless — and each ask is
+            # a git process.
+            foreign = {
+                key: _foreign_write(root, task) if task.manifest_path.is_file() else None
+                for key, task in graph.tasks.items()
+            }
+            outstanding = dict(graph.tasks)
+            prefix = f"lc/{project.project_name(root)}/{uuid.uuid4().hex}"
             pending: dict[Key, Any] = {}
             # Submitted in dependency order so a task's upstream futures
             # exist to be passed to it. Dask still derives the *execution*
@@ -592,18 +619,29 @@ def materialize(
                     refresh,
                     foreign[key],
                     *[pending[dep] for dep in task.depends_on],
-                    key=_name(key),
+                    key=f"{prefix}/{_name(key)}",
                 )
             for result in scheduler.completed(list(pending.values())):
                 _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
                 outstanding.pop(result.key, None)
+    except BaseException as error:
+        if attached is not None and outstanding:
+            # Disconnecting does not interrupt a recipe already running
+            # in a shared worker. Restoring its output now would race it.
+            detail = str(error) or type(error).__name__
+            raise ProjectError(
+                f"Run on {attached.label} interrupted: {detail}. Running recipes may "
+                "still finish; their uncommitted outputs have been left in place. "
+                "Stop the cluster in Lightcone sidebar › Compute, then inspect "
+                "those outputs before restoring them or rerunning."
+            ) from error
+        raise
     finally:
-        # Whatever never reported — an interrupt, a dead cluster — left a
-        # reset output directory behind. Scoped to this run's outputs and
-        # never to the whole tree, so edits made while the graph ran
-        # survive.
-        for task in outstanding.values():
-            dataset.restore(root, _owned(root, task))
+        # Owned clusters have stopped their workers by now. Restore only
+        # this run's outputs, so unrelated edits made during it survive.
+        if attached is None:
+            for task in outstanding.values():
+                dataset.restore(root, _owned(root, task))
     # The tree was clean at the start-of-run refusal and save/restore
     # keeps `results/` clean, so anything dirty *now* was edited while
     # the graph ran — and every manifest records the starting commit,
@@ -656,11 +694,9 @@ def _consume(
 class Scheduler(Protocol):
     """How the driver talks to whatever is running the graph.
 
-    Two methods, because that is all the driver needs and all a venue has
-    to supply: hand over a task with its upstream handles, and iterate the
-    results as they land. Keeping it this narrow is what lets the suite
-    run the graph inline — and what will let a venue larger than a laptop
-    land behind :func:`cluster_for_run` without the driver noticing.
+    Hand over a task with its upstream handles, then iterate results as
+    they land. All venues share this interface; the suite can also run
+    the graph inline.
     """
 
     def submit(self, fn: Any, *args: Any, key: str) -> Any:
@@ -669,7 +705,7 @@ class Scheduler(Protocol):
         Args:
             fn: The function to run.
             *args: Its arguments, upstream handles included.
-            key: A display name for the task.
+            key: A unique run-scoped scheduler key.
 
         Returns:
             A handle to pass to dependents.
@@ -704,19 +740,19 @@ class _Dask:
         # annotated rather than the module exempted.
         from distributed import as_completed
 
-        for _, result in as_completed(handles, with_results=True):  # type: ignore[no-untyped-call]
+        for _, result in as_completed(  # type: ignore[no-untyped-call]
+            handles, with_results=True, loop=self.client.loop
+        ):
             yield result
 
 
 @contextmanager
-def cluster_for_run() -> Iterator[Scheduler]:
+def cluster_for_run(root: Path, attached: clusters.Record | None) -> Iterator[Scheduler]:
     """Open a scheduler for one run — the venue ladder, and nothing else.
 
-    Every core, with no knob to say otherwise: how much of a machine a run
-    may use, and which machine, is one question, and the venue answers it —
-    a SLURM allocation spans every node it was granted, and the local
-    machine is the whole of itself. Detected, never configured, and only
-    here: nothing outside this function asks where a run executes.
+    Selection happens once, before the login guard and venue announcement.
+    An attached client borrows its cluster; only clusters created here are
+    closed with the run.
 
     Threads rather than processes on the local branch — every task's real
     work happens in a subprocess behind the exec boundary, so a worker
@@ -731,6 +767,17 @@ def cluster_for_run() -> Iterator[Scheduler]:
         with venue.slurm_client() as client:
             yield _Dask(client)
         return
+    if attached is not None:
+        with clusters.client(attached, root) as client:
+            hosts = {worker["host"] for worker in client.scheduler_info()["workers"].values()}
+            # Slurm workers can still be joining after the first one is
+            # ready. Its declared size prevents a transient single-host
+            # view from admitting a node-local image store.
+            requested = attached.section("slurm").get("nodes", 1)
+            nodes = max(len(hosts), requested if isinstance(requested, int) else 1)
+            _require_shared_image_store(root, nodes)
+            yield _Dask(client)
+        return
     from distributed import Client, LocalCluster
 
     with LocalCluster(  # type: ignore[no-untyped-call]
@@ -741,6 +788,22 @@ def cluster_for_run() -> Iterator[Scheduler]:
     ) as cluster:
         with Client(cluster) as client:  # type: ignore[no-untyped-call]
             yield _Dask(client)
+
+
+def _require_shared_image_store(root: Path, nodes: int) -> None:
+    """Refuse a multi-host container run before paying for an image build."""
+    if (
+        nodes > 1
+        and project.mode(root) == "containerized"
+        and (name := container.runtime_hint())
+        and name not in container._SHARED_STORE_RUNTIMES
+    ):
+        raise ProjectError(
+            f"this run spans {nodes} nodes and `{name}`'s image store is "
+            "node-local, so recipes scheduled on the other nodes would not find "
+            "the image. Use a single-node cluster or allocation, or a system whose "
+            "runtime shares images across nodes (NERSC's podman-hpc)."
+        )
 
 
 def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:

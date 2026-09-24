@@ -28,9 +28,10 @@ owning the loop.
 from __future__ import annotations
 
 import functools
+import os
 import sys
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -54,6 +55,18 @@ Head = tuple[str, str]
 #: bash is in the exec allowlist, so it is granted by the same rule that
 #: grants everything else the boundary lets a recipe run.
 _SHELL = "bash"
+
+
+def _worker_local(name: str) -> bool:
+    """Identify variables whose meaning belongs to the worker's host or job."""
+    return name in {"HOSTNAME", "TMPDIR", "XDG_RUNTIME_DIR", "DISPLAY"} or name.startswith(
+        ("SLURM_", "SLURMD_", "JUPYTER_", "JPY_", "SSH_")
+    )
+
+
+def _driver_environment() -> dict[str, str]:
+    """Snapshot the driver's recipe environment without its host/job settings."""
+    return child_env({name: value for name, value in os.environ.items() if not _worker_local(name)})
 
 
 @dataclass(frozen=True)
@@ -108,6 +121,9 @@ class RunContext:
     runtime: container.Runtime
     #: The uv that converges environments this run. Attestation only.
     uv_version: str
+    #: Recipe settings captured once by the driver, never installed in the
+    #: shared worker's environment or recorded in provenance (may contain credentials).
+    environment: dict[str, str] = field(default_factory=_driver_environment, repr=False)
 
 
 # =============================================================================
@@ -250,7 +266,12 @@ def execute(
             [_SHELL, "-c", task.recipe],
             cwd=root,
             prefix=uv_prefix(root, sync=False),
-            env=child_env(),
+            env=child_env(
+                {
+                    **context.environment,
+                    **{name: value for name, value in os.environ.items() if _worker_local(name)},
+                }
+            ),
         )
     finished_at = _now()
 

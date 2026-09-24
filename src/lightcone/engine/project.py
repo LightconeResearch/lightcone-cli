@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
@@ -752,22 +752,26 @@ def _uv_scrubbed(name: str) -> bool:
     )
 
 
-def child_env() -> dict[str, str]:
+def child_env(environment: Mapping[str, str] | None = None) -> dict[str, str]:
     """Build the environment external tools run in.
 
-    Ours, minus ``VIRTUAL_ENV`` and minus every ``UV_*`` variable outside
-    the :data:`_UV_KEPT` plumbing allowlist. Every uv invocation names its
-    project explicitly, so an activated environment elsewhere is never
+    Ours (or the supplied mapping), minus ``VIRTUAL_ENV`` and every
+    ``UV_*`` variable outside the :data:`_UV_KEPT` plumbing allowlist.
+    Every uv invocation names its project explicitly, so an activated
+    environment elsewhere is never
     what we mean — and an ambient install setting would change what a
     sync installs without moving ``env_version``, which is the identity
     hole the scrub closes.
 
+    Args:
+        environment: An explicit environment, or the current process's.
+
     Returns:
-        The current environment without ``VIRTUAL_ENV`` or scrubbed ``UV_*``.
+        The environment without ``VIRTUAL_ENV`` or scrubbed ``UV_*``.
     """
     return {
         k: v
-        for k, v in os.environ.items()
+        for k, v in (os.environ if environment is None else environment).items()
         if k != "VIRTUAL_ENV" and not _uv_scrubbed(k)
     }
 
