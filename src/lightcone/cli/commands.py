@@ -292,27 +292,37 @@ def materialize(
     records the environment and the commit that produced it. Pass
     --refresh to remake those too.
     """
+    from rich.markup import escape
+
     from lightcone.engine import container as engine_container
     from lightcone.engine import materialize as engine
     from lightcone.engine.project import current_project
 
     root = current_project()
-    if not check_only and not as_json:
-        # The engine never prints, and the build it may be about to run
-        # can take minutes — so the one place that owns the console says
-        # so before handing over. Conditional mood, deliberately: the
-        # engine's own refusals (a dirty tree, an invalid spec) come
-        # first and cost no build, so this must promise nothing.
+
+    def announce(selected: dict[str, str | int]) -> None:
+        if selected["kind"] == "cluster":
+            target = f"{selected['label']} ({selected['backend']}, {selected['id']})"
+        elif selected["kind"] == "allocation":
+            target = f"SLURM allocation ({selected['nodes']} nodes)"
+        else:
+            target = "this host"
+        _console().print(f"Running on {escape(target)}")
+        # Announce the build before it starts; engine refusals still come
+        # first, so this promises nothing until preparation succeeds.
         state, tag, _ = engine_container.image_state(root)
         if state == "absent":
             _console().print(
                 f"image absent — the run rebuilds [bold]{tag}[/bold] first "
                 "(this can take minutes)"
             )
+
     if check_only:
         report = engine.check(root, targets, refresh=refresh)
     else:
-        report = engine.materialize(root, targets, refresh=refresh)
+        report = engine.materialize(
+            root, targets, refresh=refresh, on_venue=None if as_json else announce
+        )
 
     if as_json:
         click.echo(json.dumps(report.as_dict(), indent=2))

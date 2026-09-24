@@ -77,7 +77,7 @@ def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
     """Point the run at a custom scheduler — the one monkeypatch point."""
 
     @contextmanager
-    def fake() -> Iterator[_Inline]:
+    def fake(root: Path, attached: object) -> Iterator[_Inline]:
         yield scheduler
 
     monkeypatch.setattr(engine, "cluster_for_run", fake)
@@ -967,7 +967,7 @@ def test_a_processes_cluster_fits_through_the_seam(
     results travel back whole."""
 
     @contextmanager
-    def processes() -> Iterator[engine._Dask]:
+    def processes(root: Path, attached: object) -> Iterator[engine._Dask]:
         from distributed import Client, LocalCluster
 
         with LocalCluster(  # type: ignore[no-untyped-call]

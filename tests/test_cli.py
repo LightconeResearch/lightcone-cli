@@ -327,8 +327,12 @@ def _stub(monkeypatch: pytest.MonkeyPatch, **outcomes: object) -> list[tuple[str
 
     def record(name: str) -> object:
         def call(root: Path, targets: object, **kwargs: object) -> object:
+            announce = kwargs.pop("on_venue", None)
             seen.append((name, (list(targets), kwargs)))
-            return outcomes.get(name, engine.MaterializeReport())
+            report = outcomes.get(name, engine.MaterializeReport())
+            if announce is not None:
+                announce(report.venue or {"kind": "local"})
+            return report
 
         return call
 
@@ -469,7 +473,48 @@ def test_the_json_report_is_machine_readable(
         "planned": {},
         "warnings": [],
         "notes": [],
+        "venue": None,
     }
+
+
+@pytest.mark.parametrize(
+    ("venue", "description"),
+    [
+        ({"kind": "local"}, "this host"),
+        ({"kind": "allocation", "nodes": 4}, "SLURM allocation (4 nodes)"),
+        (
+            {"kind": "cluster", "backend": "slurm", "id": "cluster-id", "label": "[debug]"},
+            "[debug] (slurm, cluster-id)",
+        ),
+    ],
+)
+def test_materialize_announces_its_venue_and_includes_it_in_json(
+    runner: CliRunner,
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    venue: dict[str, str | int],
+    description: str,
+) -> None:
+    from lightcone.engine.materialize import MaterializeReport
+
+    _stub(monkeypatch, materialize=MaterializeReport(venue=venue))
+
+    result = runner.invoke(main, ["materialize"])
+    assert result.exit_code == 0, result.output
+    assert result.output.startswith(f"Running on {description}\n")
+
+    result = runner.invoke(main, ["materialize", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["venue"] == venue
+
+
+def test_check_never_announces_an_execution_venue(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub(monkeypatch)
+    result = runner.invoke(main, ["materialize", "--check"])
+    assert result.exit_code == 0, result.output
+    assert "Running on" not in result.output
 
 
 def test_an_engine_refusal_is_a_clean_error(

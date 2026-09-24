@@ -29,8 +29,12 @@ dependencies = [
     "rich>=13.0",
     "git-annex>=10.2026",
     "distributed>=2026.7",
+    "psutil>=5.8",
     "rocrate>=0.15",
 ]
+
+[project.optional-dependencies]
+gateway = ["dask-gateway>=2025.4"]
 
 [dependency-groups]
 dev = [
@@ -91,6 +95,10 @@ strict = true
 namespace_packages = true
 explicit_package_bases = true
 mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["dask_gateway.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["astra.*", "rocrate.*"]

@@ -1,20 +1,18 @@
-"""Where a run executes: the venue a materialization finds itself on.
+"""Where a run executes: an allocation, a managed cluster, or this host.
 
-A venue is host state, never project state — nothing here reads the
-project or enters any identity. The one venue beyond the local machine is
-a SLURM allocation, detected rather than configured: the user already
-declared every resource question to SLURM (`salloc -N4 …`), so the
-allocation *is* the declaration, and lc's job is to span it — one Dask
-worker per allocated node, launched with a single `srun`, all connected
-to a scheduler living in the driver process.
+An active SLURM allocation takes precedence over the user's managed
+clusters. Otherwise :func:`attached_cluster` selects a compatible cluster
+from the registry; absent one, the login-node guard protects this host.
+Managed clusters outlive runs: only the allocation workers launched here
+belong to the engine and are retired when its client closes.
 
-Workers run the driver's own interpreter (`sys.executable -m`), which on
+Allocation workers run the driver's interpreter (`sys.executable -m`), which on
 an HPC system is the lc tool environment on the shared filesystem — so
 driver and workers are the identical installation, which is all a worker
 process needs: `lightcone.engine` importable at the driver's version.
 Workers need no git and no git-annex; the driver owns git alone.
 
-If the driver dies uncleanly, workers exit on their own (death timeout)
+If the allocation's driver dies, its workers exit on their own (death timeout)
 and the allocation's walltime is the backstop; whatever the interrupted
 run left behind meets the next run's dirty-tree refusal, which names the
 `results/` paths to discard — that is the designed recovery, not a
@@ -32,9 +30,14 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from lightcone.engine import clusters
 from lightcone.engine.project import ProjectError
+
+#: The complete attachment contract understood by this engine.
+CLUSTER_RECORD_FORMAT = clusters.FORMAT
 
 #: How long the allocation's workers get to connect before the run
 #: refuses. Generous because the first import of `distributed` from a
@@ -81,6 +84,18 @@ _SITES = (
 )
 
 
+def attached_cluster(root: Path) -> clusters.Record | None:
+    """Select this project's managed cluster, unless already in an allocation.
+
+    Raises ProjectError when several compatible live clusters exist. A
+    selected cluster's connection or compatibility failure never falls
+    back to this host.
+    """
+    if "SLURM_JOB_ID" in os.environ:
+        return None
+    return clusters.attached_cluster(root)
+
+
 def require_compute_node(command: str = "lc materialize") -> None:
     """Refuse to execute recipes on a known HPC center's login node.
 
@@ -102,6 +117,11 @@ def require_compute_node(command: str = "lc materialize") -> None:
     site = next((s for s in _SITES if s.marker in os.environ), None)
     if site is None:
         return
+    cluster_remedy = (
+        "Or start a cluster in Lightcone sidebar › Compute, then run again.\n\n"
+        if command == "lc materialize"
+        else ""
+    )
     raise ProjectError(
         f"{command} executes recipes on compute nodes, and this is a "
         f"{site.name} login node ({site.marker} is set with no SLURM "
@@ -117,6 +137,7 @@ def require_compute_node(command: str = "lc materialize") -> None:
         f"      {site.sbatch} \\\n"
         f"          --wrap '{command}'\n"
         "\n"
+        f"{cluster_remedy}"
         "lc materialize --check, lc status and lc run work anywhere."
     )
 

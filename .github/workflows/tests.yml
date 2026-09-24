@@ -52,7 +52,7 @@ jobs:
           activate-environment: true
 
       - name: Install dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --extra gateway
 
       - name: Report the sandbox this runner can build
         # Printed before the suite so a failure downstream can be read

@@ -44,10 +44,42 @@ drafted with any AI coding assistant.
 - **Multiverse analysis** — declare methodological decisions with multiple defensible options; `lc` materializes your analysis across every universe you define
 - **Provenance by construction** — every output is committed to git together with a content-addressed manifest and a re-runnable run record; git-annex carries the bytes, so results travel with the repository
 - **Locked, isolated execution** — a project's environment is `pyproject.toml` + `uv.lock`; recipes run in it under a sandbox (Landlock on Linux, Seatbelt on macOS) that keeps undeclared files out and stray writes contained
-- **Containers and HPC** — declare `[tool.lightcone.image]` and recipes run in a content-addressed image archived in the repository itself; a SLURM allocation is detected and used automatically, every node included
+- **Containers and HPC** — declare `[tool.lightcone.image]` and recipes run in a content-addressed image archived in the repository itself; use every node of a SLURM allocation or attach to a cluster from JupyterLab's Lightcone sidebar
 - **Publication view** — declare a license and `lc materialize` maintains an [RO-Crate](https://www.researchobject.org/ro-crate/) of the project and its provenance, ready to archive or deposit
 
 → [Full documentation](https://docs.lightconeresearch.org)
+
+## Compute clusters
+
+Start a cluster in JupyterLab's **Lightcone sidebar › Compute**, then run
+`lc materialize` as usual. The CLI chooses an execution target in this order:
+
+1. An existing SLURM allocation, when `SLURM_JOB_ID` is set.
+2. The one compatible live cluster registered by the sidebar.
+3. This machine, subject to the existing HPC login-node guard.
+
+The run names its target, and `--json` includes a `venue` object. If several
+clusters can serve the project, stop all but one. A selected cluster that is
+queued, unreachable, or incompatible with the installed engine produces an
+actionable refusal; the run does not silently switch targets. Workers need
+the same Lightcone, Dask Distributed and Python versions as the CLI, and must
+see the project at the same filesystem path.
+
+Clusters remain available after each run. The CLI closes its connection;
+cluster creation, scaling and shutdown remain with the sidebar and its
+backend. Interrupting an attached run leaves unfinished outputs uncommitted:
+stop the cluster and inspect them before restoring or rerunning. Direct-mode
+recipes receive the invoking shell's environment while retaining the workers'
+own host and job settings; containers retain their existing environment policy.
+
+Local and SLURM clusters also support containerized projects. Using several
+worker hosts requires a shared image store such as `podman-hpc`. Dask Gateway
+supports direct-mode projects in the same JupyterHub image; install its
+optional client and use the hub's Gateway configuration:
+
+```bash
+uv tool install 'lightcone-cli[gateway]'
+```
 
 ## License
 
