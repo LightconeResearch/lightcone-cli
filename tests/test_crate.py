@@ -140,6 +140,22 @@ def test_rendering_twice_at_the_same_state_is_byte_identical(project: Path) -> N
     assert first == second
 
 
+def test_a_single_value_is_never_a_singleton_array(project: Path) -> None:
+    """Compacted JSON-LD: one author, one parameter, one result are plain
+    values — RO-Crate 1.1's recommendation, and what its validator checks.
+    The arrays come from three builders, so this pins the serialization."""
+    _made(project, "baseline", "first", git_sha="aaa111")
+    rendered = crate.render(
+        project, _graph(project), license="MIT", dsid=_DSID, writer=_writer, keys={}
+    )
+    document = json.loads(rendered)
+    for entity in document["@graph"]:
+        for name, value in entity.items():
+            assert not (isinstance(value, list) and len(value) == 1), (entity["@id"], name)
+    entities = _entities(document)
+    assert entities["./"]["author"] == {"@id": "mailto:ada@example.org"}
+
+
 def test_the_clock_never_enters_the_document(project: Path) -> None:
     """`datePublished` is the newest recorded instant — rocrate's own
     default stamps the current time, and this pins the override."""
@@ -230,7 +246,7 @@ def test_an_action_chains_its_inputs_and_its_environment(project: Path) -> None:
     first_objects = {ref["@id"] for ref in first["object"]}
     assert {"uv.lock", ".python-version", "pyproject.toml", "data/catalog.csv"} <= first_objects
     assert "results/baseline/first.txt" in {ref["@id"] for ref in second["object"]}
-    assert second["result"] == [{"@id": "results/baseline/second.txt"}]
+    assert second["result"] == {"@id": "results/baseline/second.txt"}
     assert second["description"] == "make second"
     assert entities["results/baseline/second.txt"]["version"] == "sha256:baseline-second"
 
@@ -280,7 +296,7 @@ def test_the_person_is_the_saving_commits_author(project: Path) -> None:
     assert person["name"] == "Ada Lovelace"
     action = next(e for e in entities.values() if e["@type"] == "CreateAction")
     assert action["agent"] == {"@id": "mailto:ada@example.org"}
-    assert {"@id": "mailto:ada@example.org"} in entities["./"]["author"]
+    assert {"@id": "mailto:ada@example.org"} in _as_list(entities["./"]["author"])
 
 
 def test_decision_values_point_back_at_their_parameter(project: Path) -> None:
