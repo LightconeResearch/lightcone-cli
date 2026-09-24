@@ -25,7 +25,10 @@ Source: `src/lightcone/engine/crate.py` (converged by
   never-materialized project) and must override rocrate's
   construction-time default. Entities build in sorted order,
   serialization is `sort_keys` — render-twice-identical is the one
-  byte-level claim, and it is what makes convergence sound.
+  byte-level claim, and it is what makes convergence sound. The
+  serialization also compacts every one-element array to its value,
+  as RO-Crate 1.1 recommends: which properties hold one value depends
+  on the project, so the rule lives in one place, not in each builder.
 - **Maintenance is derived, never configured.** RO-Crate requires a
   license; materialize must not refuse to run science over a missing
   key, and inventing one asserts terms over someone's data. Absent ⇒

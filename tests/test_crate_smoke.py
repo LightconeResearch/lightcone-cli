@@ -41,8 +41,8 @@ _FLOOR = {
     "process-run-crate-0.5_13.2",
     # lc knows no publishing organization and no author affiliation
     "ro-crate-1.1_22.3",
-    "ro-crate-1.1_29.2",
-    "ro-crate-1.1_29.3",
+    "ro-crate-1.1_30.2",
+    "ro-crate-1.1_30.3",
 }
 
 _SPEC = """
