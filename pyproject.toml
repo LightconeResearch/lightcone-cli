@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "astra-tools>=0.2.17",
+    "astra-tools==0.2.18",
     "click>=8.0",
     "rich>=13.0",
     "git-annex>=10.2026",
@@ -109,6 +109,3 @@ testpaths = ["tests"]
 # tmp_path; keeping every passing run's directories exhausts a tmpfs.
 tmp_path_retention_policy = "failed"
 tmp_path_retention_count = 1
-
-[tool.uv.sources]
-astra-tools = { git = "https://github.com/LightconeResearch/astra-tools", branch = "empty-scaffold" }
