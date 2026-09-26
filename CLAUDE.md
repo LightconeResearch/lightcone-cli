@@ -322,7 +322,7 @@ user owns:
 
 | Path | Role |
 |---|---|
-| `astra.yaml` + `universes/baseline.yaml` | astra's boilerplate spec, verbatim, as **one item keyed on `astra.yaml`** — the baseline references the boilerplate's example decision, so it must never land beside a user-authored spec. Its `container:` key is ignored outright — see Recorded decisions |
+| `astra.yaml` + `universes/baseline.yaml` | astra's scaffold, verbatim: an **empty** analysis (`inputs: []`, `outputs: []`, `decisions: {}` — the root collections are required fields) and a baseline that selects nothing, which exists because `plan.build` refuses a project with no universe. **One item keyed on `astra.yaml`**, so the baseline never lands beside a user-authored spec |
 | `pyproject.toml` | The uv project: **virtual** (no `[build-system]`), no dependencies — the engine is the host's uv tool, never a project dependency (see Recorded decisions), so the lock carries only what the analysis imports |
 | `.python-version` | The exact patch of the interpreter `lc` is running on |
 | `uv.lock`, `.venv` | **Derived** — converged by correctness, not existence: `uv lock --check` / `uv sync --locked --exact --check` decide, then `uv lock` / `uv sync --locked --exact --compile-bytecode` repair |
@@ -338,7 +338,7 @@ user owns:
   `universes/`: git does not track empty directories, so converging one
   reports drift on every fresh clone, forever. astra dropped `src/` for the
   same reason (astra-tools#100) — where analysis code lives is the user's
-  layout, and the boilerplate's `python src/main.py` is a placeholder.
+  layout.
   Universes are discovered by `glob("*.yaml")`, which is empty-not-error on
   a missing directory. `tests/test_project.py::test_a_clone_of_a_converged_project_is_converged`
   pins this: a clone must need nothing but `.venv` and `git annex init`.
@@ -2118,12 +2118,11 @@ unlinks before writing; a new tampering test should too.
   `hermeticity-enforcement.md` §3 call bwrap "an opportunistic upgrade,
   never the requirement". Re-add triggers: a policy shape that genuinely
   needs subtraction, or ambient `bwrap` becoming universal.
-- **The ASTRA `container:` directive is ignored, entirely.** astra's
-  boilerplate writes `container: python:3.12-slim` into `astra.yaml`, and
-  lightcone-cli does nothing with it: not read, not stripped, not
-  validated, not migrated. The environment is `pyproject.toml` + `uv.lock`
-  (spec §2), so a scaffolded project simply carries a key no code path
-  consults. Don't "fix" this by reconciling the two — a later layer will
+- **The ASTRA `container:` directive is ignored, entirely.** A spec may
+  carry one (astra's scaffold no longer writes it), and lightcone-cli does
+  nothing with it: not read, not stripped, not validated, not migrated.
+  The environment is `pyproject.toml` + `uv.lock` (spec §2), so such a
+  project simply carries a key no code path consults. Don't "fix" this by reconciling the two — a later layer will
   decide whether the key is dropped upstream, refused, or migrated.
 - **Multi-runtime, podman recommended** (2026-08, layer 6 — superseding
   an earlier "podman only" plan decision). podman and docker ship

@@ -25,7 +25,7 @@ it later only fills in whatever is missing.
 
 ```
 line-fit-demo/
-├── astra.yaml          # the spec — this is where everything lives
+├── astra.yaml          # the spec, empty for now — this is where everything lives
 ├── pyproject.toml      # the project's environment: its dependencies…
 ├── .python-version     # …and the exact interpreter, locked by uv
 ├── uv.lock
@@ -37,9 +37,9 @@ line-fit-demo/
 ├── data/               # declared input data lives here
 ├── results/            # outputs materialize here — lc's to write, not yours
 ├── universes/
-│   └── baseline.yaml   # one universe, built from decision defaults
+│   └── baseline.yaml   # one universe, selecting nothing yet
 ├── myst.yml            # MyST report configuration
-└── index.md            # template report that references the spec
+└── index.md            # template report, to reference the spec from
 ```
 
 Two things are worth registering now:
@@ -83,7 +83,7 @@ your tree, and the repository stays light.
 
 ## 3. Write the spec
 
-Open `astra.yaml` and replace the boilerplate with our analysis:
+`astra.yaml` was scaffolded as an empty analysis. Fill it in with ours:
 
 ```yaml
 version: "0.0.13"   # ASTRA schema version — keep what the scaffold wrote
@@ -147,8 +147,8 @@ A few things to notice:
 - The decision's options aren't hardcoded anywhere in code; the scripts
   will take them as command-line arguments.
 
-`universes/baseline.yaml` was scaffolded against the boilerplate spec,
-so point it at our decision instead:
+`universes/baseline.yaml` was scaffolded empty, so give it a value for
+our decision:
 
 ```yaml
 id: baseline

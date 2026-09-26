@@ -60,9 +60,9 @@ start of a session to make sure the directory is workable.
 Inside `DIRECTORY` (creating it if needed):
 
 ```text
-astra.yaml                    # boilerplate spec with one example output
+astra.yaml                    # an empty analysis spec, ready to fill in
 universes/
-  baseline.yaml               # the default universe
+  baseline.yaml               # the default universe (selects nothing yet)
 pyproject.toml                # the uv project — the environment's source of truth
 .python-version               # the exact interpreter, pinned
 uv.lock                       # derived: converged by correctness, not existence
@@ -74,7 +74,7 @@ uv.lock                       # derived: converged by correctness, not existence
 data/  + README.md            # declared input data lives here
 results/  + README.md         # outputs land here — lc's to write
 myst.yml                      # MyST report configuration
-index.md                      # template report referencing astra.yaml
+index.md                      # template report, to reference astra.yaml from
 ```
 
 Two things it deliberately does *not* create: a `src/` directory
