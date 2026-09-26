@@ -205,10 +205,10 @@ def converge(directory: Path, *, write: bool = True) -> ConvergenceReport:
         directory.mkdir(parents=True, exist_ok=True)
 
     # `astra.scaffold` is astra's public scaffold API, the same one
-    # `astra init` delegates to: it writes the spec — astra.yaml plus
-    # universes/baseline.yaml, which converge as one item because the
-    # baseline references the boilerplate's example decision — and nothing
-    # else. It is stdlib-only and imports in milliseconds, which is why it
+    # `astra init` delegates to: it writes the spec — an empty astra.yaml
+    # plus a universes/baseline.yaml selecting nothing, which converge as
+    # one item so the baseline never lands beside a user-authored spec —
+    # and nothing else. It is stdlib-only and imports in milliseconds, which is why it
     # sits at module scope where the validation stack cannot.
     c.item(
         "astra.yaml",

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from conftest import probes, uv_calls
 
-from lightcone.engine import dataset, templates
+from lightcone.engine import dataset, plan, templates
 from lightcone.engine.project import (
     SPEC_FILENAME,
     ConvergenceReport,
@@ -110,11 +110,19 @@ def test_converge_writes_the_templates_verbatim(tmp_path: Path) -> None:
     assert (project / "index.md").read_text() == templates.index_md(title="proj")
 
 
+def test_a_fresh_spec_is_empty_and_passes_the_gate(tmp_path: Path) -> None:
+    """The scaffold is an empty analysis, not an example to delete — and
+    still one ASTRA accepts and lc can plan, so every verb works on a
+    project nobody has edited yet."""
+    project = tmp_path / "proj"
+    converge(project)
+
+    assert plan.build(project).tasks == {}
+
+
 def test_converge_scaffolds_no_environment_escalation(tmp_path: Path) -> None:
     """Containerized mode is *derived* from a declaration the user makes, so
-    the scaffold never writes one. What astra's boilerplate puts
-    in `astra.yaml` is astra's business — reconciling that with the
-    environment model belongs to the environment layer."""
+    the scaffold never writes one."""
     project = tmp_path / "proj"
     converge(project)
 
@@ -149,9 +157,9 @@ def test_a_containerized_project_converges_no_host_venv(
 
 
 def test_converge_scaffolds_no_src_directory(tmp_path: Path) -> None:
-    """astra stopped creating it (astra-tools#100) and so do we: the
-    boilerplate's `python src/main.py` is a TODO placeholder, and git drops
-    the empty directory from every clone anyway."""
+    """astra stopped creating it (astra-tools#100) and so do we: where
+    analysis code lives is the user's layout, and git drops the empty
+    directory from every clone anyway."""
     project = tmp_path / "proj"
     converge(project)
     assert not (project / "src").exists()
