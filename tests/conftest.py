@@ -26,28 +26,6 @@ def runner() -> CliRunner:
 
 
 @pytest.fixture(autouse=True)
-def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip the host's venue out of the suite's environment.
-
-    On a known center's login node every materialize test would otherwise
-    meet the login guard. The site markers come from the guard's
-    own table, so a center added there is scrubbed here for free; the
-    venue tests set these back deliberately.
-    """
-    from lightcone.engine import venue
-
-    for name in (
-        *(site.marker for site in venue._SITES),
-        "SLURM_JOB_ID",
-        "SLURMD_NODENAME",
-        "SLURM_JOB_NUM_NODES",
-        "SLURM_NNODES",
-        "SLURM_CPUS_ON_NODE",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-
-@pytest.fixture(autouse=True)
 def ambient_uv(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip scrubbable ``UV_*`` out of the suite's environment.
 
@@ -174,9 +152,6 @@ class _Inline:
     def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
         return fn(*args)
 
-    def prepare(self, runtime: object, inputs: object) -> None:
-        pass
-
     def completed(self, handles: list[object]) -> Iterator[object]:
         yield from handles
 
@@ -188,7 +163,7 @@ def inline(monkeypatch: pytest.MonkeyPatch) -> None:
     from lightcone.engine import materialize
 
     @contextmanager
-    def fake(cluster_id: str, root: Path) -> Iterator[_Inline]:
+    def fake(cluster_id: str) -> Iterator[_Inline]:
         assert cluster_id == CLUSTER_ID
         yield _Inline()
 

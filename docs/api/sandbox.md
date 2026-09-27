@@ -22,6 +22,10 @@ plus `lightcone/_sandbox_exec.py`, the Landlock shim.
 | `Unavailable` | A real backend that wraps to the same argv and attests `fs: open`. Saying so is the caller's job; pretending is nobody's. |
 | `denial.explain()` / `denial.trailer()` | Best-guess remedies (allowed to return nothing) and the unconditional trailer on every nonzero sandboxed exit. |
 
+An optional output receiver gets stdout/stderr byte chunks. Capturing output never
+decodes or normalizes stdout; only the retained stderr tail is decoded for denial
+classification. Without a receiver, stdout remains inherited.
+
 ## What must stay true
 
 - **`wrap` stays pure** — no temp files, no FDs, no global state

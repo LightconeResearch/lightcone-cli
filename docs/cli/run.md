@@ -23,8 +23,10 @@ lc run "$CLUSTER" -- python -c "import numpy; print(numpy.__version__)"
 lc run "$CLUSTER" -- python src/fit.py --points data/points.csv --outliers keep --output /tmp/probe
 ```
 
-The command executes on a validated worker of that cluster, and streams its
-stdout/stderr back to the CLI. The client detaches on completion; the allocation
+The command is submitted as an ordinary task to the cluster's Dask scheduler,
+which chooses a worker. The command uses the prepared project environment and
+the same sandbox as a recipe. stdout/stderr are forwarded as bytes, preserving binary output and
+line endings when redirected. The client detaches on completion; the allocation
 stays available until `lc compute down` or its time limit. A missing cluster ID
 is an error, with no implicit local execution. See [compute](compute.md).
 

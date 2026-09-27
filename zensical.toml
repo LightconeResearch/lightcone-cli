@@ -40,7 +40,6 @@ nav = [
       {"assets" = "api/assets.md"},
       {"worker" = "api/worker.md"},
       {"materialize" = "api/materialize.md"},
-      {"venue" = "api/venue.md"},
       {"compute" = "api/compute.md"},
       {"sandbox" = "api/sandbox.md"},
       {"image & container" = "api/container.md"},

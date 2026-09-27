@@ -14,12 +14,11 @@ one it finishes with.
 
 from __future__ import annotations
 
-import sys
-import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from lightcone.engine import container, sandbox
 from lightcone.engine.project import (
@@ -47,29 +46,19 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
         ProjectError: If the cluster or its workers cannot execute this project.
     """
     from lightcone.engine import compute
-    from lightcone.engine.compute.execution import workers
+    from lightcone.engine.compute.output import call, forwarding
 
-    with compute.connect(cluster_id) as client, workers(client, project) as execution:
+    with compute.connect(cluster_id) as client:
         require_uv()
         paths = input_paths(project, read_spec(project))
         runtime = container.runtime_for_run(project, build=False)
         warnings = container.converge(runtime)
-        execution.prepare(runtime, paths)
-        topic = f"lc-output-{execution.invocation}"
-        finished = threading.Event()
-
-        def receive(event: tuple[float, dict[str, Any]]) -> None:
-            message = event[1]
-            if message.get("done"):
-                finished.set()
-            elif message.get("stream") in ("stdout", "stderr"):
-                stream = sys.stdout if message["stream"] == "stdout" else sys.stderr
-                stream.write(message["text"])
-                stream.flush()
-
-        client.subscribe_topic(topic, receive)
-        try:
-            future = execution.submit(_probe, runtime, paths, tuple(command), topic, key="probe")
+        invocation = uuid4().hex
+        with forwarding(client, invocation) as output:
+            future = client.submit(
+                call, _probe, output.topic, "probe", runtime, paths, tuple(command),
+                key=f"lc-{invocation}-probe", pure=False,
+            )
             try:
                 outcome: sandbox.Outcome = future.result()
             except ProjectError:
@@ -79,10 +68,8 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
                     f"cluster execution failed: {exc}. lc did not stop the allocation; "
                     "tasks that did not report may still be running"
                 ) from exc
-            if not finished.wait(timeout=10):
+            if not output.wait("probe"):
                 warnings.append("remote output forwarding did not finish before its deadline")
-        finally:
-            client.unsubscribe_topic(topic)
     notes = [*(f"uv: {warning}" for warning in warnings)]
     if warning := uv_scrub_warning():
         notes.append(warning)
@@ -90,28 +77,19 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
 
 
 def _probe(
-    runtime: container.Runtime, paths: list[Path], command: tuple[str, ...], topic: str
+    runtime: container.Runtime, paths: list[Path], command: tuple[str, ...],
+    *, output: Callable[[str, bytes], None],
 ) -> sandbox.Outcome:
     """Execute the prepared probe; the driver alone converges its environment."""
-    from distributed import get_worker
-
-    worker = get_worker()
-
-    def output(stream: str, text: str) -> None:
-        worker.log_event(topic, {"stream": stream, "text": text})
-
-    try:
-        built = container.policy_for(runtime, paths)
-        with sandbox.scope(built) as policy:
-            outcome = sandbox.run(
-                container.backend(runtime), policy, command, cwd=runtime.root,
-                prefix=uv_prefix(runtime.root, sync=False), env=child_env(), output=output,
-            )
-        if warning := uv_scrub_warning():
-            outcome = replace(outcome, notes=(*outcome.notes, warning))
-        return outcome
-    finally:
-        worker.log_event(topic, {"done": True})
+    built = container.policy_for(runtime, paths)
+    with sandbox.scope(built) as policy:
+        outcome = sandbox.run(
+            container.backend(runtime), policy, command, cwd=runtime.root,
+            prefix=uv_prefix(runtime.root, sync=False), env=child_env(), output=output,
+        )
+    if warning := uv_scrub_warning():
+        outcome = replace(outcome, notes=(*outcome.notes, warning))
+    return outcome
 
 
 def read_spec(project: Path) -> dict[str, Any]:

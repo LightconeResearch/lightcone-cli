@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import signal
 import sys
@@ -34,6 +35,10 @@ def main() -> None:
         # This bound does not depend on the scheduler loop or graceful Dask close.
         os.killpg(os.getpgrp(), signal.SIGKILL)
 
+    # Register before importing Dask so its multiprocessing finalizers run first.
+    # A recipe can ignore SIGTERM and outlive its worker: keep custody of the
+    # session and walltime timer until every member has been sent SIGKILL.
+    atexit.register(os.killpg, os.getpgrp(), signal.SIGKILL)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGALRM, expire)
@@ -47,9 +52,6 @@ def main() -> None:
         import dask
         from distributed import LocalCluster
 
-        from lightcone.engine.venue import require_compute_node
-
-        require_compute_node("lc compute launch")
         security = create_security(directory)
         with dask.config.set({
             "distributed.scheduler.http.routes": [],

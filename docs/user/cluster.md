@@ -47,9 +47,9 @@ allocation ends at its time limit or when you call `down`.
 Local resources are cooperative limits, not an exclusive CPU/RAM reservation.
 An allocation owns a detached process session and standard `LocalCluster`.
 Private process locators are checked against the current host, boot, UID, PID
-birth time, session, and command before attachment or termination. Local compute
-is refused on recognized login nodes. Worker placement is also checked before
-executing a command or recipe.
+birth time, session, and command before attachment or termination. Local compute is available wherever the catalog exposes a valid local offer;
+Lightcone does not infer permission from login-node names or site environment
+variables. Allocation choices are explicit and native permissions still apply.
 
 ## Configure Slurm
 
@@ -138,7 +138,11 @@ since the original allocation may have been accepted.
 
 Driver and workers must see the same project, prepared environment, and inputs
 at the same absolute paths. They need matching Lightcone code, Python major/minor,
-and Dask versions. Execution verifies shared storage and worker compatibility.
+and Dask versions. The deployment is responsible for making that environment available across
+the cluster. Commands and recipes are ordinary tasks submitted to the Dask
+scheduler, which chooses their workers; task runtime and sandbox checks still
+apply. Recipe output is forwarded to the invoking terminal on stderr; `run`
+preserves the command's stdout and stderr bytes separately.
 Containerized projects also require the prepared image and runtime on each
 worker; `podman-hpc` can expose its migrated image across NERSC nodes.
 

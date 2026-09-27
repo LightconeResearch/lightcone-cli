@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import psutil
@@ -34,7 +35,6 @@ from lightcone.engine.compute.runtime import (
     read_private_json,
     write_private_json,
 )
-from lightcone.engine.project import ProjectError
 
 
 @pytest.fixture
@@ -78,6 +78,26 @@ def _ended(provider: LocalProvider, identity: Identity, timeout: float = 5) -> N
             return
         time.sleep(0.05)
     pytest.fail("the local allocation did not terminate")
+
+
+def _ignoring_recipe(provider: LocalProvider, identity: Identity) -> psutil.Process:
+    with provider.connect(identity) as client:
+        def spawn() -> int:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                    "print('ready', flush=True); time.sleep(120)",
+                ],
+                stdout=subprocess.PIPE,
+            )
+            assert process.stdout is not None
+            assert process.stdout.readline() == b"ready\n"
+            process.stdout.close()
+            return process.pid
+
+        return psutil.Process(client.submit(spawn).result(timeout=5))
 
 
 def test_allocation_survives_launcher_and_borrowed_client_exit(provider: LocalProvider) -> None:
@@ -177,6 +197,134 @@ def test_down_kills_frozen_owner_and_workers_without_contacting_dask(
         assert all(
             not child.is_running() or child.status() == psutil.STATUS_ZOMBIE for child in children
         )
+    finally:
+        provider.terminate(identity)
+
+
+def test_down_drains_sigterm_ignoring_recipe_process(provider: LocalProvider) -> None:
+    identity = _launch(provider)
+    child: psutil.Process | None = None
+    try:
+        _ready(provider, identity)
+        child = _ignoring_recipe(provider, identity)
+        assert os.getpgid(child.pid) == int(identity.native_id)
+        provider.terminate(identity)
+        assert not child.is_running() or child.status() == psutil.STATUS_ZOMBIE
+        assert provider.inspect(identity).phase == "ended"
+        provider.terminate(identity)
+    finally:
+        provider.terminate(identity)
+        if child is not None and child.is_running():
+            child.kill()
+
+
+def test_owner_shutdown_drains_recipes_without_a_waiting_cli(provider: LocalProvider) -> None:
+    identity = _launch(provider)
+    child: psutil.Process | None = None
+    try:
+        _ready(provider, identity)
+        child = _ignoring_recipe(provider, identity)
+        os.kill(int(identity.native_id), signal.SIGTERM)
+        _ended(provider, identity, timeout=10)
+        deadline = time.monotonic() + 3
+        while child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+    finally:
+        provider.terminate(identity)
+        if child is not None and child.is_running():
+            child.kill()
+
+
+def test_termination_escalates_captured_children_when_owner_exits_first(
+    provider: LocalProvider, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # Isolate the provider's drain from the runtime finalizer: this owner exits
+    # immediately on SIGTERM while leaving a signal-ignoring member behind.
+    script = """
+import signal, subprocess, sys, time
+child = subprocess.Popen([sys.executable, '-c',
+    "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "print('ready',flush=True); time.sleep(120)"], stdout=subprocess.PIPE)
+assert child.stdout.readline() == b'ready\\n'
+print(child.pid, flush=True)
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+time.sleep(120)
+"""
+    owner = subprocess.Popen(
+        [sys.executable, "-c", script], start_new_session=True, stdout=subprocess.PIPE,
+    )
+    assert owner.stdout is not None
+    child = psutil.Process(int(owner.stdout.readline()))
+    process = psutil.Process(owner.pid)
+    identity = Identity(provider.connection.namespace, str(owner.pid), uuid4().hex)
+    monkeypatch.setattr(provider, "_record", lambda _identity: (tmp_path, {}))
+    monkeypatch.setattr(
+        provider, "_process", lambda *_args: process if owner.poll() is None else None,
+    )
+    monkeypatch.setattr("lightcone.engine.compute.local._STOP_GRACE", 0.2)
+    try:
+        provider.terminate(identity)
+        assert owner.poll() is not None
+        assert not child.is_running() or child.status() == psutil.STATUS_ZOMBIE
+    finally:
+        if child.is_running():
+            child.kill()
+        if owner.poll() is None:
+            owner.kill()
+        owner.wait(timeout=3)
+        owner.stdout.close()
+
+
+@pytest.mark.parametrize("exited", [False, True])
+def test_command_line_access_denial_requires_confirmed_exit(
+    provider: LocalProvider, monkeypatch: pytest.MonkeyPatch, exited: bool,
+) -> None:
+    def denied() -> None:
+        raise psutil.AccessDenied(123)
+
+    def wait(*, timeout: float) -> None:
+        if not exited:
+            raise psutil.TimeoutExpired(timeout, pid=123)
+
+    process = SimpleNamespace(
+        status=lambda: psutil.STATUS_RUNNING,
+        create_time=lambda: 123,
+        uids=lambda: SimpleNamespace(real=os.getuid()),
+        cmdline=denied,
+        wait=wait,
+    )
+    monkeypatch.setattr("lightcone.engine.compute.local.psutil.Process", lambda _pid: process)
+    monkeypatch.setattr("lightcone.engine.compute.local._boot_identity", lambda: "test-boot")
+    identity = Identity(provider.connection.namespace, "123", uuid4().hex)
+    record = {"created": 123, "boot": "test-boot"}
+    if exited:
+        assert provider._process(identity, provider.root, record) is None
+    else:
+        with pytest.raises(ComputeError, match="cannot verify"):
+            provider._process(identity, provider.root, record)
+
+
+def test_failed_spawn_and_unpublished_launch_do_not_hide_healthy_allocations(
+    provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = _launch(provider)
+    try:
+        _ready(provider, identity)
+        before = set(provider.root.iterdir())
+        with monkeypatch.context() as patch:
+            def fail(*args: object, **kwargs: object) -> None:
+                raise OSError("configured interpreter cannot execute")
+
+            patch.setattr("lightcone.engine.compute.local.subprocess.Popen", fail)
+            with pytest.raises(ComputeError, match="cannot execute"):
+                _launch(provider)
+        assert set(provider.root.iterdir()) == before
+        # A launcher interrupted before identity publication can also leave a
+        # directory. This is not a published allocation or a discovery error.
+        interrupted = private_directory(provider.root / uuid4().hex, create=True)
+        write_private_json(interrupted / "launch.json", {"identity": ""})
+        assert [snapshot.identity for snapshot in provider.discover()] == [identity]
     finally:
         provider.terminate(identity)
 
@@ -310,17 +458,13 @@ def test_os_temporary_directory_alias_is_resolved_but_configured_paths_stay_stri
         private_directory(Path(strict.details["scratch_root"]) / "configured", create=True)
 
 
-def test_login_node_refusal_precedes_process_start_even_with_leaked_allocation(
+def test_local_plan_does_not_infer_policy_from_login_hostname_or_slurm_environment(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("NERSC_HOST", "perlmutter")
     monkeypatch.setenv("SLURM_JOB_ID", "123")
     monkeypatch.setattr(socket, "gethostname", lambda: "login01")
-    monkeypatch.setattr(
-        "lightcone.engine.compute.local.subprocess.Popen",
-        lambda *args, **kwargs: pytest.fail("a login node must not spawn local compute"),
-    )
     offer = Offer("small", "workstation", Resources(1, 512 * 1024**2), 1, 60, 60)
-    with pytest.raises(ProjectError, match="compute"):
-        provider.plan(offer, Request(1, 512 * 1024**2))
+    plan = provider.plan(offer, Request(1, 512 * 1024**2))
+    assert plan.resources == offer.resources
     assert not provider.root.exists()

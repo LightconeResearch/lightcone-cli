@@ -77,7 +77,7 @@ def _cluster(monkeypatch: pytest.MonkeyPatch, scheduler: _Inline) -> None:
     """Point the run at a custom scheduler — the one monkeypatch point."""
 
     @contextmanager
-    def fake(cluster_id: str, root: Path) -> Iterator[_Inline]:
+    def fake(cluster_id: str) -> Iterator[_Inline]:
         yield scheduler
 
     monkeypatch.setattr(engine, "cluster_for_run", fake)

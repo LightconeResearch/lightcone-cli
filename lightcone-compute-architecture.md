@@ -8,6 +8,8 @@ This is the current architecture proposal, developing the
 below describe the full design. The first implemented slice supplies the common
 resource API, local and native Slurm providers, and explicit-cluster execution
 for `run` and `materialize`. Gateway and browser integration remain unimplemented.
+Execution uses ordinary Dask submission without a separate worker-selection or
+per-worker validation framework, following the PR review's simplicity decision.
 The reusable-execution cancellation/fencing work is deferred by user decision;
 the [current deployment guide](docs/user/cluster.md) states the implemented limits.
 Research used official documentation and upstream source; no live NERSC or Gateway
@@ -70,9 +72,9 @@ A practical workflow looks like this:
    ends supported allocations. Resources remain allocated while idle.
 
 When selection chooses a configured local offer, this same workflow creates
-a reusable `LocalCluster`. There is no automatic local execution mode. On a
-recognized login node, local allocation is refused; the CLI can submit work to
-validated compute workers. Read-only `lc materialize --check [TARGETS...]` remains
+a reusable `LocalCluster`. There is no automatic local execution mode and no
+login-node guard. The catalog and native backend permissions determine what
+compute is exposed. Read-only `lc materialize --check [TARGETS...]` remains
 cluster-free because it reports project state without executing recipes.
 
 **There is no Lightcone cluster database or management server.** Slurm answers
@@ -205,9 +207,8 @@ Runtime compatibility is still checked when borrowing a cluster.
 
 Local compute is an ordinary configured offer on the current host. It is subject
 to the same selection and lifecycle contract, with no implicit local fallback or
-special `local` cluster ID. Site placement policy makes a local offer ineligible
-on a recognized login node. Selecting remote compute from that node is permitted
-when its workers satisfy the site's execution policy.
+special `local` cluster ID. No site-marker or hostname guard makes an otherwise
+valid local offer ineligible; users explicitly configure the compute they expose.
 
 The following is an illustrative NERSC catalog, not a verified installation
 recipe. Paths, affinity, task slots, and memory budgets need a deployment test.
@@ -416,7 +417,7 @@ launcher are part of compute and end with it. Each command obtains fresh evidenc
 | Which resource requests may this user make? | Canonical user/site catalog, constrained by native permissions and quotas. |
 | Does an allocation exist, and what resources did it receive? | Slurm, Gateway, or validated local OS process identity. |
 | Which Dask workers are connected? | The live scheduler. |
-| Can a worker execute this project? | Execution-time placement/environment/storage/sandbox checks. |
+| Can a worker execute this project? | Execution-time environment/storage/sandbox checks. |
 | How does a client connect? | Identity-checked private credentials and endpoint material. |
 
 A cluster ID has an opaque `clu_` representation. CLI and browser encode the same
@@ -864,10 +865,9 @@ Neither execution command starts a `LocalCluster` automatically. Finishing an
 invocation leaves the local cluster alive until `down`, its enforced time limit,
 or a native process/session failure ends it.
 
-Before creating any local Dask processes, reject launch on a recognized login
-node. The execution path also validates the selected workers' actual placement,
-so choosing an existing local cluster cannot bypass the policy. The caller's
-`SLURM_JOB_ID` alone is not proof that this host or a worker is a compute node.
+Local allocation is controlled by the explicit catalog and native permissions.
+There is no hostname or environment-based login-node guard. Ambient Slurm values
+do not select a cluster or change this rule.
 
 An allocation-scoped background process owns a standard `LocalCluster` and enforces
 the selected finite lifetime; Dask manages its scheduler and worker processes.
@@ -974,8 +974,7 @@ before environment preparation or task execution. Do not guess whether it was an
 output target or silently reinterpret an old invocation. There is no optional
 cluster flag or default cluster.
 
-Resolve native state, pin the attempt, connect with a deadline, and validate
-placement and execution compatibility. If unavailable or not ready, fail with
+Resolve native state, pin the attempt, and connect with a deadline. If unavailable or not ready, fail with
 current evidence and a `status CLUSTER_ID --wait` remedy. Never silently allocate,
 resize, replace, or fall back to another cluster. This is the same path for all
 providers, including local.
@@ -1012,31 +1011,25 @@ a custom Dask worker class or Lightcone-specific scheduler. The existing
 
 ### Compatibility and command meaning
 
-Before scheduling work, check every eligible worker for matching engine code and
-compatible Python/Dask, permitted execution placement, the same project and
-external input storage at the same absolute paths, permissions, runtime/image
-availability, and the project sandbox.
-A path string alone does not prove shared storage. Validate new/restarted workers
-before they become eligible. Gateway management support does not imply automatic
-project copying into arbitrary pods.
+Deployments must provide compatible Lightcone/Python/Dask installations and the
+same project and external input storage at the same absolute paths, with the
+prepared runtime/image available. This is a deployment prerequisite; the initial
+implementation does not add a separate per-worker preflight, source-fingerprint,
+or shared-storage challenge protocol around Dask. Existing task runtime gates and
+sandbox checks remain in place. Gateway management support does not imply
+implicit project copying into arbitrary pods.
 
-Both commands apply the same placement policy to the actual selected workers;
-an opaque cluster ID or the driver's environment alone is not placement evidence.
-Recognized login nodes cannot host local allocations or execute submitted recipes
-and commands. The CLI driver may run there to inspect, submit, and coordinate
-work on permitted compute nodes. Driver-side git, annex, environment preparation,
-and any image build remain subject to site policy; selecting a cluster does not
-implicitly authorize heavy preparation on a login node.
-
-`lc materialize CLUSTER_ID` keeps the existing graph scheduler seam. Placement and
-container checks inspect the selected workers, with no driver-side Slurm/local
-venue selection.
+Both commands submit ordinary tasks to the scheduler, which chooses their workers.
+There is no login-node guard on local allocation, commands, recipes, or standalone
+reruns. Driver-side git, annex, environment preparation, and image builds remain
+ordinary operations subject to native permissions and the user's site policy.
+`lc materialize CLUSTER_ID` keeps the existing submission/completion seam.
 
 `lc run CLUSTER_ID -- COMMAND...` executes the supplied argv as **one task on one
 compatible worker**, in the project's locked environment and sandbox. It does not distribute
 a single ordinary program across nodes. Split current probe preparation from
 execution so git/annex work stays on the driver. Preserve live stdout/stderr,
-exit status, diagnostics, and bounded interruption through the existing authenticated
+binary stdout bytes and line endings, exit status, diagnostics, and bounded interruption through the existing authenticated
 Dask connection. Merely exporting a scheduler address to a local command is not
 this behavior. It remains the environment/sandbox probe command, now probing the
 selected worker's execution environment. Noninteractive commands are the initial
@@ -1083,9 +1076,8 @@ claim; that does not disable Dask's own recomputation behavior.
 | Current code | Proposed change |
 |---|---|
 | `cli/commands.py`, `run` and `materialize` | Require the first positional cluster ID for execution; keep check-only targets separate. |
-| `engine/venue.py:84`, `require_compute_node` | Apply site placement policy before local allocation and on selected workers, rather than rejecting a submission driver solely for being on a login node. |
-| `engine/venue.py:159`, `slurm_client` | Reuse appropriate native launch details in the allocation adapter; remove implicit ambient cluster creation from execution. |
-| `engine/materialize.py:474`, `materialize` | Require cluster identity; retain driver responsibilities and validate target placement. |
+| `engine/venue.py` | Remove the module and login-node guard entirely; native lifecycle lives in the compute adapters. |
+| `engine/materialize.py:474`, `materialize` | Require cluster identity; retain driver preparation and existing task runtime gates. |
 | `engine/materialize.py:595`, task submission | Invocation-scoped keys. |
 | `engine/materialize.py:600`, final restoration | Restore only after confirmed writer quiescence. |
 | `engine/materialize.py:656`, `Scheduler` | Keep the narrow submission/completion interface. |
@@ -1151,7 +1143,7 @@ Begin with narrow proofs, not a framework:
    and the actual installed API/path mapping. Confirm interactive remains capability-gated.
 4. Land the common lifecycle and resource-discovery interface with local, native
    Slurm, and Gateway adapters; exercise partial/ambiguous starts from the outset.
-5. Prove required-cluster parsing, placement checks, cancellation, replay/write
+5. Prove required-cluster parsing, compatibility checks, cancellation, replay/write
    exclusion, and remote output before switching both execution commands to the
    explicit-cluster contract. Include managed local clusters in these checks.
 
@@ -1161,8 +1153,8 @@ Begin with narrow proofs, not a framework:
 | Missing/malformed cluster on `run` or executing `materialize` | Usage error before environment preparation or task execution; no implicit allocation. |
 | `materialize --check [TARGETS...]` | Existing classification and exit status, with no cluster lookup, native allocation query, or Dask startup. |
 | Ambient Slurm environment or one available cluster | No implicit selection; execution requires its positional cluster ID. |
-| Local launch on a recognized login node; selected worker on a login node | Refuse allocation before Dask startup and refuse workload execution on forbidden placement. |
-| Driver on a login node with a valid compute cluster | Submission permitted; workload runs only on validated workers and driver preparation respects site policy. |
+| Local launch or execution with site/login environment markers | No inferred refusal; explicit catalog and native permissions govern allocation, compatibility governs execution. |
+| Driver on a login node with a valid cluster | Ordinary scheduler submission; existing task runtime and sandbox checks apply. |
 | Reuse a local cluster across successful/failed invocations | Ordinary ID-based lifecycle; invocation cleanup leaves the cluster alive until explicit/native termination. |
 | `status` with/without ID; readiness wait options | Native discovery without ID, inspection with ID; reject `--wait` without ID and `--timeout` without `--wait`. |
 | `down` on pending, active, or known ended allocations | Native cancellation/termination or successful no-op; never a resumable pause. |

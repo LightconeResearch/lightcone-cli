@@ -7,6 +7,9 @@ its classification walk.
 
 Source: `src/lightcone/engine/materialize.py`.
 
+Recipes are ordinary Dask tasks. Their stdout/stderr is forwarded as bytes to the
+driver's stderr, independently of success or failure, leaving stdout for the report.
+
 ## Key symbols
 
 | Symbol | Role |
@@ -15,14 +18,14 @@ Source: `src/lightcone/engine/materialize.py`.
 | `check(root, targets, *, refresh)` | The same classification without executing, committing, or fetching. Exempt from the dirty refusal. |
 | `status(root)` | The report: every output's state and provenance commit, plus the mode/image/sandbox header facts. |
 | `MaterializeReport` / `StatusReport` | The JSON surfaces; `ok` and `up_to_date` first. |
-| `cluster_for_run(cluster_id, root)` | Borrow and validate the cluster; the prepare/submit/completed scheduler seam (`submit`, `completed`). |
+| `cluster_for_run(cluster_id)` | Borrow the cluster; the submit/completed scheduler seam (`submit`, `completed`). |
 | `run_record(...)` / `datalad_run_subject(...)` | The commit message `datalad rerun` replays, and the one spelling of its subject line — shared with the foreign-write comparator, because two strings here would drift. |
 | `_engine_requirement()` | How a record pins its engine: by version for a release, by source commit (hatch-vcs) for a dev build. |
 
 ## The run's order, and why
 
-1. **Explicit cluster first** — connect and validate actual worker placement,
-   compatibility and shared project storage before preparing the project.
+1. **Explicit cluster first** — validate native allocation identity and connect
+   to its scheduler before preparing the project.
 2. **Dirty refusal before the environment converge** — in
    containerized mode the converge can commit an image archive, and
    `dataset.save` commits the whole index; on a dirty tree the user's

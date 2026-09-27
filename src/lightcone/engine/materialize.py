@@ -36,13 +36,17 @@ import json
 import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
 
 from lightcone.engine import assets, container, dataset, identity, plan, project, worker
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
+
+if TYPE_CHECKING:
+    from lightcone.engine.compute.output import Forwarder
 
 
 @dataclass
@@ -484,10 +488,9 @@ def materialize(
         Completed, current, failed and blocked outputs and their diagnostics.
 
     Raises:
-        ProjectError: If the cluster is unavailable, workers are incompatible,
-            or the project cannot be safely prepared.
+        ProjectError: If the cluster is unavailable or the project cannot be safely prepared.
     """
-    with cluster_for_run(cluster_id, root) as scheduler:
+    with cluster_for_run(cluster_id) as scheduler:
         return _materialize(root, targets, scheduler, refresh=refresh)
 
 
@@ -529,10 +532,6 @@ def _materialize(
     # only place on a run's path where it is made to match the lock. (A
     # rerun does not come through here; its entry point converges too.)
     report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
-    from lightcone.engine.run import input_paths, read_spec
-
-    scheduler.prepare(runtime, input_paths(root, read_spec(root)))
-
     # The run's driver-resolved facts, each read once: HEAD because the
     # driver commits as outputs land and a per-task read would stamp
     # later manifests with a commit this run created; the uv probe
@@ -560,7 +559,7 @@ def _materialize(
     }
     pending: dict[Key, Any] = {}
     # Futures retain dependency ordering; task placement belongs to the
-    # validated cluster, while commits stay in this one driver thread.
+    # selected cluster, while commits stay in this one driver thread.
     for key in graph.order():
         task = graph.tasks[key]
         pending[key] = scheduler.submit(
@@ -629,14 +628,9 @@ def _consume(
 class Scheduler(Protocol):
     """How the driver talks to whatever is running the graph.
 
-    Validate the prepared runtime, hand over tasks with their upstream
-    handles, and iterate results as they land. This keeps the driver's
-    commit logic independent of the allocation provider.
+    Hand over tasks with their upstream handles and iterate results as
+    they land, keeping the commit logic independent of the provider.
     """
-
-    def prepare(self, runtime: container.Runtime, inputs: Sequence[Path]) -> None:
-        """Validate the prepared runtime and input storage on selected workers."""
-        ...
 
     def submit(self, fn: Any, *args: Any, key: str) -> Any:
         """Schedule a call.
@@ -665,17 +659,20 @@ class Scheduler(Protocol):
 
 @dataclass(frozen=True)
 class _Dask:
-    """A validated Dask execution, narrowed to what the graph driver needs."""
+    """A borrowed Dask client, narrowed to what the graph driver needs."""
 
-    execution: Any
-
-    def prepare(self, runtime: container.Runtime, inputs: Sequence[Path]) -> None:
-        """Validate worker access to the prepared runtime and input paths."""
-        self.execution.prepare(runtime, inputs)
+    client: Any
+    invocation: str
+    output: Forwarder
 
     def submit(self, fn: Any, *args: Any, key: str) -> Any:
-        """Submit to the validated worker cohort with an invocation-scoped key."""
-        return self.execution.submit(fn, *args, key=key)
+        """Submit an ordinary Dask task with a unique key and forwarded output."""
+        from lightcone.engine.compute.output import call
+
+        return self.client.submit(
+            call, fn, self.output.topic, key, *args,
+            key=f"lc-{self.invocation}-{key}", pure=False,
+        )
 
     def completed(self, handles: list[Any]) -> Iterator[worker.TaskResult]:
         """Yield each task result as Dask completes it."""
@@ -683,8 +680,14 @@ class _Dask:
 
         try:
             for _, result in as_completed(  # type: ignore[no-untyped-call]
-                handles, with_results=True, loop=self.execution.client.loop
+                handles, with_results=True, loop=self.client.loop
             ):
+                if not self.output.wait(_name(result.key)):
+                    result = replace(
+                        result,
+                        notes=(*result.notes,
+                               "remote output forwarding did not finish before its deadline"),
+                    )
                 yield result
         except ProjectError:
             raise
@@ -696,21 +699,22 @@ class _Dask:
 
 
 @contextmanager
-def cluster_for_run(cluster_id: str, root: Path) -> Iterator[Scheduler]:
-    """Borrow and validate the explicit allocation without creating any compute.
+def cluster_for_run(cluster_id: str) -> Iterator[Scheduler]:
+    """Borrow the explicit allocation without creating any compute.
 
     Args:
         cluster_id: The selected allocation identity.
-        root: The shared project root.
 
     Yields:
         A scheduler whose connection is detached when the invocation ends.
     """
     from lightcone.engine import compute
-    from lightcone.engine.compute.execution import workers
+    from lightcone.engine.compute.output import forwarding
 
-    with compute.connect(cluster_id) as client, workers(client, root) as execution:
-        yield _Dask(execution)
+    with compute.connect(cluster_id) as client:
+        invocation = uuid4().hex
+        with forwarding(client, invocation, stdout="stderr") as output:
+            yield _Dask(client, invocation, output)
 
 
 def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:

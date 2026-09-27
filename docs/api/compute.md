@@ -29,10 +29,20 @@ persist independently of offers, and IDs encode native incarnation evidence
 without a UUID-to-job lookup database. Exceptions retain known cluster IDs and
 submission tokens for partial/ambiguous acceptance.
 
-`execution.py` validates worker placement, code/version compatibility, prepared
-runtime and shared project storage, then pins invocation-unique tasks to the
-validated workers. Cancellation and concurrent project writers are not made safe
-by allocation management; callers must respect the documented execution limits.
+Execution submits ordinary tasks through the borrowed client's `submit` method.
+Dask chooses the workers and handles dependencies; invocation-specific keys prevent
+unintended reuse across commands. There is no worker-selection layer, per-worker
+preflight orchestration, source fingerprinting, or login-node guard. Driver-side
+preparation and the existing task runtime/sandbox checks remain in their owners.
+`output.py` transports byte chunks through standard Dask events so detached
+workers' output reaches the invoking CLI. Probes preserve both streams;
+materialization sends recipe output to stderr to leave stdout for its report.
+
+Local teardown drains the allocation's validated process group rather than
+assuming the owner's exit proves every child stopped. Failed unpublished launches
+are cleaned up, and incomplete locator directories do not hide healthy allocations.
+Cancellation and concurrent project writers are not made safe by allocation
+management; callers must respect the documented execution limits.
 
 Tests cover deterministic selection, malformed identities and catalogs, partial
 native failures, acceptance ambiguity, PID reuse, detached local lifetime, standard

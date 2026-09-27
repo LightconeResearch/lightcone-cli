@@ -55,7 +55,7 @@ speculatively.
 | 4 | **Fabric** — `lc materialize`, worker sequence, mid-run relock gate | ✅ **done** |
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
-| 7 | **Compute** — explicit local/Slurm allocation, login guard, podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
+| 7 | **Compute** — explicit local/Slurm allocation and podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
 | 8 | **Publication view** — the RO-Crate converged by materialize, foreign writes stale by history; **no `lc verify`, no `lc export`, by decision** | ✅ **done** |
 
 `lc status` landed with the invalidation model rather than at layer 8:
@@ -1265,12 +1265,12 @@ papered over — what answers whether an output's bytes are its own is
 every *other* results tree: another universe, and another analysis's
 own.
 
-**`cluster_for_run(cluster_id, root)` is the execution seam.** It borrows a
-standard client, validates the selected workers, and returns `prepare`, `submit`,
-and `completed`. Runtime/input preflight stays separate from task submission and
-result consumption. Inline schedulers keep graph tests cheap, while real borrowed
-clients cover the allocation boundary. Workers must match the driver installation
-and see the shared project; git and git-annex remain driver responsibilities.
+**`cluster_for_run(cluster_id)` is the execution seam.** It borrows a
+standard client and returns `submit` and `completed`. Dask chooses workers and
+orders dependencies. There is no additional execution wrapper for worker selection,
+source fingerprinting, or per-worker preflight. Keep the deployment's shared
+project/environment prerequisites documented. Git and convergence belong to the
+driver; runtime gates and sandboxing belong to tasks.
 
 ### Recorded deviations from the spec (layers 2 and 4)
 
@@ -1692,17 +1692,23 @@ identities are the allocation authority; standard Dask supplies execution state.
 No Lightcone server, lifecycle database, custom Dask worker, or implicit local fallback.
 
 **Execution borrows a client and leaves the allocation alive.** Validate native
-identity, actual worker placement, matching code/Python/Dask, shared project reads
-and writes, runtime and inputs. The driver keeps git and convergence. Use unique
+identity and scheduler readiness. The driver keeps git and convergence. Use unique
 invocation task keys. Interrupted unreported outputs remain in place because a
 client disconnect does not prove remote subprocess termination. Comprehensive
 cancellation/fencing and simultaneous writers are deferred by explicit user decision.
 
-**Local allocation and workers enforce the login policy.** A recognized site
-requires a matching actual host/SLURMD_NODENAME and job ID. Inheriting a job ID in a
-login shell is insufficient. Login-node drivers may submit and attach to remote
-compute. Containerized execution verifies the prepared runtime/image on every
-selected worker; shared podman-hpc storage remains the NERSC deployment path.
+**No login-node guard or venue module (PR #226 review).** Explicit catalog
+selection and native backend permissions determine allocation. Do not infer
+permission from hostnames, NERSC_HOST, or inherited Slurm job variables. Both
+commands submit ordinary tasks to the Dask scheduler without worker restrictions;
+existing task runtime gates and sandbox checks remain. Do not add a per-worker
+validation framework around ordinary Dask task submission. Shared project storage
+and compatible worker installations are deployment prerequisites.
+
+**Remote output preserves bytes.** Standard Dask events carry bounded stdout/stderr
+chunks. `run` preserves the two streams, including binary stdout and CRLF.
+Materialization forwards recipe diagnostics to stderr, reserving stdout for its
+report. Detached workers must not swallow a failed recipe's real error.
 
 **podman-hpc is a spelling, not a shape.** It rides the existing
 `OCIBackend` (standard podman flags, `--userns=keep-id`,
@@ -2321,7 +2327,7 @@ written to" — a path the schema never defined. What changed, and why:
   clean afterwards are not questions a stub can answer. It is cheap anyway
   — the fixture's project declares no dependencies, so `uv lock` and
   `uv sync` together cost milliseconds.
-  - **`cluster_for_run(cluster_id, root)` is the graph-test monkeypatch point.**
+  - **`cluster_for_run(cluster_id)` is the graph-test monkeypatch point.**
     Most tests use an inline scheduler; integration tests borrow real standard
     Dask clients, including detached allocation and processes-based cases.
 - `tests/test_cli.py` — the CLI surface only: flags reaching the engine,
@@ -2350,8 +2356,8 @@ The sandbox suite splits along the seam, which is what makes it cheap:
 - `tests/test_compute*.py` — resource contracts, malformed native identity,
   real detached local lifecycle and fresh-process reconnects, simulated Slurm
   commands and a real standard-Dask bootstrap. No Slurm allocation is submitted.
-  `tests/test_venue.py` varies environment and hostname evidence to exercise
-  placement policy. Shared fixtures remove ambient site markers.
+  Real command/materialization tests exercise standard task submission and remote
+  byte forwarding. No site-marker guard or worker-selection layer remains.
 - `tests/test_image.py` — **pure**: the declaration, the document, the
   render's structure and ordering, tag sensitivity both ways, and the
   `env_version` integration. `tests/test_sandbox_oci.py` — **pure**: the

@@ -36,8 +36,6 @@ from lightcone.engine.compute.runtime import (
     read_private_json,
     write_private_json,
 )
-from lightcone.engine.project import ProjectError
-from lightcone.engine.venue import require_compute_node
 
 _OWNER_MODULE = "lightcone.engine.compute.local_runtime"
 _STOP_GRACE = 3.0
@@ -62,10 +60,6 @@ class LocalProvider:
 
     def plan(self, offer: Offer, request: Request) -> LaunchPlan:
         """Validate a one-node local offer without creating allocation files."""
-        try:
-            require_compute_node("lc compute launch")
-        except ProjectError as exc:
-            raise UnavailableOfferError(str(exc)) from exc
         if os.name != "posix":
             raise ComputeError("local allocations require POSIX process sessions and signals")
         if request.num_nodes != 1:
@@ -124,7 +118,6 @@ class LocalProvider:
 
     def launch(self, plan: LaunchPlan) -> Identity:
         """Start a detached allocation owner and retain its immutable OS identity."""
-        require_compute_node("lc compute launch")
         if plan.connection != self.connection or plan.num_nodes != 1:
             raise ComputeError("local launch plan belongs to a different connection or node count")
         token = uuid4().hex
@@ -188,6 +181,17 @@ class LocalProvider:
                 except ProcessLookupError:
                     pass
                 process.wait(timeout=_STOP_GRACE)
+            if identity is None:
+                # Publication is the discovery boundary. A failed spawn has no
+                # allocation to retain, and these are the only files we wrote.
+                try:
+                    (directory / "launch.json").unlink(missing_ok=True)
+                    directory.rmdir()
+                    scratch.rmdir()
+                except OSError:
+                    # Discovery ignores unpublished directories even if cleanup
+                    # is interrupted or the filesystem becomes unavailable.
+                    pass
             raise ComputeError(
                 f"cannot start the local allocation: {exc}",
                 cluster_id=identity.encode() if identity is not None else None,
@@ -253,6 +257,16 @@ class LocalProvider:
         except (psutil.NoSuchProcess, ProcessLookupError):
             return None
         except psutil.AccessDenied as exc:
+            # On macOS, command-line inspection can fail during exit before the
+            # process table reports death. Confirm exit; never infer it merely
+            # from a permission error on an otherwise live process.
+            try:
+                psutil.Process(int(identity.native_id)).wait(timeout=0.1)
+                return None
+            except psutil.NoSuchProcess:
+                return None
+            except (psutil.TimeoutExpired, psutil.AccessDenied):
+                pass
             raise ComputeError("cannot verify the local allocation process identity") from exc
 
     def discover(self) -> Sequence[Snapshot]:
@@ -263,6 +277,10 @@ class LocalProvider:
         snapshots = []
         for directory in sorted(self.root.iterdir()):
             if not re.fullmatch(r"[0-9a-f]{32}", directory.name):
+                continue
+            if not (directory / "identity.json").exists():
+                # Launch publishes the identity atomically after Popen. A
+                # launcher can still be starting, or have failed before that.
                 continue
             record = read_private_json(directory / "identity.json")
             identity = Identity.decode(str(record.get("identity", "")))
@@ -316,18 +334,64 @@ class LocalProvider:
         process = self._process(identity, directory, record)
         if process is None:
             return
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=_STOP_GRACE)
-            return
-        except psutil.TimeoutExpired:
-            pass
+        members = []
+        for member in psutil.process_iter():
+            try:
+                if (
+                    member.uids().real == os.getuid()
+                    and os.getpgid(member.pid) == process.pid
+                    and os.getsid(member.pid) == process.pid
+                ):
+                    # Capture each birth identity while the owner still proves
+                    # this session is ours. psutil's signal methods check reuse.
+                    member.create_time()
+                    members.append(member)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+                continue
         process = self._process(identity, directory, record)
         if process is not None:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+        else:
+            for member in members:
+                try:
+                    member.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+        for escalation in (False, True):
+            deadline = time.monotonic() + _STOP_GRACE
+            while members and time.monotonic() < deadline:
+                living = []
+                for member in members:
+                    try:
+                        if member.is_running() and member.status() != psutil.STATUS_ZOMBIE:
+                            living.append(member)
+                    except psutil.NoSuchProcess:
+                        pass
+                members = living
+                if members:
+                    time.sleep(0.05)
+            if not members:
+                return
+            if escalation:
+                raise ComputeError(
+                    "local allocation processes have not exited after SIGKILL",
+                    cluster_id=identity.encode(),
+                )
+            process = self._process(identity, directory, record)
+            if process is not None:
+                try:
+                    # A live, verified owner also covers children created while
+                    # stopping. Its finalizer provides the same group-wide kill.
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            for member in members:
+                try:
+                    # The owner may have exited first. Never signal its old PGID
+                    # without an owner; use the captured process identities.
+                    member.kill()
+                except psutil.NoSuchProcess:
+                    pass

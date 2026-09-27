@@ -29,13 +29,13 @@ from __future__ import annotations
 
 import functools
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from lightcone.engine import assets, container, dataset, identity, plan, project, sandbox, venue
+from lightcone.engine import assets, container, dataset, identity, plan, project, sandbox
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
     ProjectError,
@@ -122,6 +122,7 @@ def materialize(
     refresh: bool,
     foreign: dataset.LastWrite | None,
     *upstream: TaskResult,
+    output: Callable[[str, bytes], None] | None = None,
 ) -> TaskResult:
     """Make *task* if it needs making. What Dask submits, once per task.
 
@@ -142,12 +143,13 @@ def materialize(
         *upstream: The results of this task's dependencies, arriving as
             the futures it was given — which is what makes Dask the
             scheduler rather than a loop here.
+        output: Optional receiver forwarding recipe stdout and stderr bytes.
 
     Returns:
         What happened. Never raises.
     """
     try:
-        return _materialize(root, task, context, refresh, foreign, upstream)
+        return _materialize(root, task, context, refresh, foreign, upstream, output)
     except Exception as e:  # the contract is that this function returns
         return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
 
@@ -159,6 +161,7 @@ def _materialize(
     refresh: bool,
     foreign: dataset.LastWrite | None,
     upstream: tuple[TaskResult, ...],
+    output: Callable[[str, bytes], None] | None,
 ) -> TaskResult:
     reported = {u.key: u for u in upstream if u.usable}
     if absent := [dep for dep in task.depends_on if dep not in reported]:
@@ -179,7 +182,7 @@ def _materialize(
         foreign=foreign,
     )
     if verdict.calls_for_a_remake(refresh=refresh):
-        return execute(root, task, inputs, context)
+        return execute(root, task, inputs, context, output=output)
 
     # Left alone, so the bytes on disk stand. Their *recorded* digest,
     # never a recomputed one: on a clone that has fetched no annex content
@@ -201,6 +204,8 @@ def execute(
     task: Task,
     input_versions: Mapping[str, str],
     context: RunContext,
+    *,
+    output: Callable[[str, bytes], None] | None = None,
 ) -> TaskResult:
     """Run *task*'s recipe and record what it produced.
 
@@ -216,6 +221,7 @@ def execute(
         input_versions: Each declared input's content identity, recorded
             in the manifest as the chain.
         context: The run's driver-resolved facts.
+        output: Optional receiver forwarding recipe stdout and stderr bytes.
 
     Returns:
         ``ok`` with the output's ``data_version``, or ``failed``. Commits
@@ -251,6 +257,7 @@ def execute(
             cwd=root,
             prefix=uv_prefix(root, sync=False),
             env=child_env(),
+            output=output,
         )
     finished_at = _now()
 
@@ -396,9 +403,6 @@ def main(argv: list[str]) -> int:
 
     universe_id, _, output_id = argv[0].partition("/")
     try:
-        # A rerun executes a recipe, so it is gated the way materialize
-        # is: compute nodes, never a NERSC login node.
-        venue.require_compute_node("datalad rerun <commit>")
         root = declared_project()
         # The graph — and with it the task lookup — before any converge:
         # a typo'd target must cost nothing and mask nothing, and a

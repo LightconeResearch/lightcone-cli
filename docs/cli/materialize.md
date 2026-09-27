@@ -47,6 +47,9 @@ never touched, under any flag.
   not in this clone are fetched before anything hashes.
 - **Commits as it goes.** Each output lands in its own commit, written
   by the driver in one thread while other recipes keep running.
+- **Forwards recipe diagnostics.** Recipe stdout and stderr reach the invoking
+  terminal on stderr, including failed recipes. stdout remains available for the
+  report, so `--json` stays machine-readable.
 - **Reports every independent failure.** One failing recipe doesn't
   abort the rest; its dependents report `blocked` and the run exits 1
   with all of it listed.

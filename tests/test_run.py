@@ -1,14 +1,14 @@
 """Tests for `lightcone.engine.run` — what `lc run` decides before it execs.
 
-The project check, declared inputs, worker validation and remote command
+The project check, declared inputs, unique task submission and remote command
 forwarding. Sandbox enforcement is tested in `test_sandbox_*`.
 """
 
 from __future__ import annotations
 
 import sys
-from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -275,35 +275,28 @@ def test_a_remote_task_exception_is_an_engine_error_and_leaves_compute_available
         assert client.scheduler_info()["workers"]
 
 
-def test_worker_validation_checks_compatibility_and_shared_storage(
-    project: Path, cluster_id: str,
-) -> None:
-    from lightcone.engine import compute
-    from lightcone.engine.compute.execution import workers
-
-    with compute.connect(cluster_id) as client, workers(client, project) as execution:
-        environment = execution.environment
-        execution.environment = replace(environment, signature=("other source", (3, 1), "0"))
-        with pytest.raises(ProjectError, match="does not match"):
-            execution.validate()
-        execution.environment = environment
-        environment.marker.write_text("another filesystem's contents")
-        with pytest.raises(ProjectError, match="same project storage"):
-            execution.validate()
-
-
 def test_each_invocation_gets_new_task_keys_and_keeps_the_cluster_alive(
-    project: Path, cluster_id: str,
+    project: Path, cluster_id: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from lightcone.engine import compute
-    from lightcone.engine.compute.execution import workers
+    from distributed import Client
+
+    from lightcone.engine import compute, container
+    from lightcone.engine.sandbox.boundary import Unavailable
+
+    monkeypatch.setattr(engine_run, "uv_prefix", lambda *a, **k: [])
+    monkeypatch.setattr(container, "backend", lambda _: Unavailable())
+    keys = []
+    submit = Client.submit
+
+    def record(client: Any, *args: Any, **kwargs: Any) -> Any:
+        keys.append(kwargs["key"])
+        assert "workers" not in kwargs
+        return submit(client, *args, **kwargs)
+
+    monkeypatch.setattr(Client, "submit", record)
+    for _ in range(2):
+        assert engine_run.probe(project, ["true"], cluster_id=cluster_id).returncode == 0
+    assert len(keys) == 2 and keys[0] != keys[1]
 
     with compute.connect(cluster_id) as client:
-        with workers(client, project) as execution:
-            first = execution.submit(str, "first", key="probe")
-            assert first.result() == "first"
-        with workers(client, project) as execution:
-            second = execution.submit(str, "second", key="probe")
-            assert second.result() == "second"
-        assert first.key != second.key
         assert client.scheduler_info()["workers"]

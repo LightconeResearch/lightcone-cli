@@ -16,7 +16,7 @@ and audit it.
   alone, which is what makes the CLI safe to drive from scripts and
   agents.
 - **Refusals carry their remedy.** When a command refuses (a dirty
-  tree, a login node, a missing image), the message names the exact
+  tree, an unavailable cluster, a missing image), the message names the exact
   command that fixes it.
 
 ## Commands

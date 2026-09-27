@@ -18,7 +18,7 @@ use it".
 | How a recipe runs | `engine/worker.py` (+ `test_worker.py`) | Never raises; no git; mutation-check every denial test. |
 | What a run commits | `engine/materialize.py` (+ `test_materialize.py`) | The driver owns git alone; the tree ends as clean as it started. |
 | Where a run executes | `engine/compute/` + `cluster_for_run` (+ `test_compute*.py`) | Explicit allocation IDs; implement the provider protocol and register one factory. Execution borrows standard clients. |
-| Supporting a new HPC center | `venue._SITES` | One row for placement policy; native allocation settings belong in the compute catalog. |
+| Supporting a new HPC center | Compute catalog | Expose resource offers with the site's native Slurm settings; there is no hostname-based placement guard. |
 | What a sandboxed command may touch | `sandbox/policy.py` (+ `test_sandbox_policy.py`) | Path sets only — no mechanism leaks in. |
 | Adding a sandbox mechanism | one module in `sandbox/` + one line in `detect()` | `wrap` pure, `attest` honest, `contains_prefix` answered. Nothing above the seam changes. |
 | A denial message | `sandbox/denial.py` (+ `test_sandbox_denial.py`) | Remedies copy-pasteable and real *today*; the trailer stays unconditional. |

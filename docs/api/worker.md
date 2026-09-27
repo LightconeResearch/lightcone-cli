@@ -16,6 +16,10 @@ so advertising it would hand people a footgun.
 
 Source: `src/lightcone/engine/worker.py`.
 
+Cluster execution supplies an output receiver to `materialize`/`execute`, which
+passes byte chunks from the sandbox back to the invocation. Standalone reruns
+retain direct terminal output.
+
 ## Key symbols
 
 | Symbol | Role |

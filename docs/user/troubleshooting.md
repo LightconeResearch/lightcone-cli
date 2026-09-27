@@ -157,13 +157,12 @@ committing a multi-gigabyte dataset into git proper, silently, where
 every clone carries it forever. A refused `git add` costs you one
 `lc init`; the silent version costs you the repository.
 
-## "… and this is a NERSC login node"
+## Selecting compute from a login shell
 
-Local allocation and actual execution workers refuse recognized login nodes.
-A login-node driver can submit Slurm compute and attach to its workers: use
-`lc compute launch`, wait for readiness, and pass its ID to `run` or `materialize`.
-An inherited `SLURM_JOB_ID` alone does not prove compute-node placement.
-See [Running on a Cluster](cluster.md).
+Use `lc compute resources` and `lc compute launch`, then pass the returned cluster
+ID to `run` or `materialize`. Lightcone does not inspect hostnames or site markers
+to reject local compute. The configured catalog and native backend permissions
+determine what can be allocated. See [Running on a Cluster](cluster.md).
 
 ## git doesn't know who you are
 

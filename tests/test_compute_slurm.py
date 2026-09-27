@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import psutil
 import pytest
 
 from lightcone.engine.compute import Compute, slurm, slurm_bootstrap
@@ -554,6 +555,14 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
 ) -> None:
     """Exercise real Dask/TLS subprocesses locally; no native Slurm command is run."""
     args = _bootstrap_args(tmp_path)
+    # Both ranks run on this host; CI must not depend on hostname/mDNS resolution.
+    loopback = [
+        name
+        for name, addresses in psutil.net_if_addrs().items()
+        if any(address.address == "127.0.0.1" for address in addresses)
+    ]
+    assert loopback, "the local bootstrap smoke test requires an IPv4 loopback interface"
+    args.interface = loopback[0]
     argv = [sys.executable, "-m", "lightcone.engine.compute.slurm_bootstrap"]
     for key, value in vars(args).items():
         if value is not None:
@@ -591,7 +600,8 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
         assert {worker["name"] for worker in workers.values()} == {"lightcone-0", "lightcone-1"}
         assert all(worker["nthreads"] == 1 for worker in workers.values())
         assert client.submit(sum, [2, 3]).result(timeout=5) == 5
-        assert client.scheduler_info()["address"].startswith("tls://")
+        assert client.scheduler_info()["address"].startswith("tls://127.0.0.1:")
+        assert all(address.startswith("tls://127.0.0.1:") for address in workers)
         assert (
             client.run_on_scheduler(lambda dask_scheduler: dask_scheduler.http_server.address)
             == "127.0.0.1"

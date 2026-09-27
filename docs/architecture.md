@@ -36,13 +36,12 @@ imports.
 
 ```text
 lc materialize "$CLUSTER"
-  │  connect: native identity + Dask readiness + worker/shared-storage validation
+  │  connect: native identity + Dask readiness
   │  guard: tools?  git identity?
   │  refuse: dirty tree
   │  converge: uv.lock ⇄ .venv   (and the image, containerized)
   │  plan: astra validate + resolve  →  Graph of Tasks
   │  fetch: git annex get (declared inputs not in this clone)
-  │  prepare: validate runtime and inputs on selected workers
   ├─► workers: reset output dir → sandbox → recipe → hash → manifest
   │            (never raise; return ok/current/behind/failed/blocked)
   └─  driver: consume results in one thread
@@ -163,9 +162,9 @@ material, not a registry.
 
 `compute.connect(CLUSTER_ID)` borrows a standard Dask client and closes only that
 client on exit. Both execution commands require a cluster ID. The materialization
-scheduler has `prepare`/`submit`/`completed` operations; `compute.execution` validates
-worker placement, matching code and versions, shared project storage, prepared
-runtime, and readable inputs. No execution command implicitly allocates compute.
+scheduler keeps its `submit`/`completed` seam. Driver preparation and existing
+task runtime/sandbox checks remain unchanged. Tasks use ordinary Dask scheduling;
+there is no separate worker-selection or preflight layer, or site-marker guard. No execution command implicitly allocates compute.
 See [compute internals](api/compute.md) and [deployment limits](user/cluster.md).
 
 ## The publication view
@@ -197,7 +196,6 @@ src/lightcone/              # namespace — NO __init__.py
     ├── materialize.py      # the driver: gates, Dask, the save/restore loop
     ├── run.py              # what `lc run` is
     ├── compute/            # common allocation API, local and Slurm providers
-    ├── venue.py            # site placement checks
     ├── sandbox/            # the exec boundary
     └── templates/          # the scaffold's file content, as real files
 ```
