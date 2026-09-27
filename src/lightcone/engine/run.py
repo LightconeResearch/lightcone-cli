@@ -141,7 +141,7 @@ def input_paths(project: Path, spec: dict[str, Any]) -> list[Path]:
             if not isinstance(source, str) or not source:
                 continue
             candidate = Path(source)
-            declared = candidate if candidate.is_absolute() else project / candidate
-            if (readable := plan.readable_source(declared)) is not None:
+            path = candidate if candidate.is_absolute() else project / candidate
+            if (readable := plan.readable_source(path)) is not None:
                 found.append(readable)
     return list(dict.fromkeys(found))

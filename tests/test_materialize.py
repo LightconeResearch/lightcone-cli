@@ -570,7 +570,8 @@ def test_an_output_made_from_a_family_of_files_is_not_stale_at_once(
     moment after it was made, and no run could ever converge."""
     spec = _SPEC.replace("source: data/catalog.fits", "source: data/v{version}/cat.fits")
     spec = spec.replace(
-        "    format: txt\n    decisions: [method]", "    format: txt\n    inputs: [catalog]\n    decisions: [method]"
+        "    format: txt\n    decisions: [method]",
+        "    format: txt\n    inputs: [catalog]\n    decisions: [method]",
     )
     root = analysis(spec, universes={"baseline": _UNIVERSE})
 
