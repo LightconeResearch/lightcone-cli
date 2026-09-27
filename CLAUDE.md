@@ -1689,7 +1689,13 @@ require a cluster ID as their first positional argument; neither creates compute
 `materialize --check` remains cluster-free. Catalog offers expose resource shapes;
 connections supply stable native namespaces. Native jobs and validated local OS
 identities are the allocation authority; standard Dask supplies execution state.
-No Lightcone server, lifecycle database, custom Dask worker, or implicit local fallback.
+No Lightcone server, lifecycle database, custom Dask worker, or implicit allocation.
+
+**Local compute needs no setup.** An absent implicit `~/lightcone-compute.yaml`
+selects a built-in local catalog: one CPU, 1 GiB, one node, fast startup, 30-minute
+default and two-hour maximum lifetime. It writes no catalog and starts no cluster.
+Configured catalogs replace it completely; missing explicit paths and invalid
+files are errors. Execution still requires an explicitly launched cluster ID.
 
 **Execution borrows a client and leaves the allocation alive.** Validate native
 identity and scheduler readiness. The driver keeps git and convergence. Use unique

@@ -1,16 +1,29 @@
-"""The user's ordered resource offers and stable native service namespaces."""
+"""Ordered resource offers and stable native service namespaces."""
 
 from __future__ import annotations
 
 import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import yaml
 
-from .model import ComputeError, Connection, Offer, Resources, duration, memory_bytes, positive_int
+from .model import (
+    GIB,
+    ComputeError,
+    Connection,
+    Offer,
+    Resources,
+    duration,
+    memory_bytes,
+    positive_int,
+)
+
+# Isolate hosts sharing a home directory while keeping fresh CLI invocations stable.
+_LOCAL_NAMESPACE = UUID("22c84e48-2f0a-4cd2-90a2-30ce2e909bd1")
 
 
 class _UniqueLoader(yaml.SafeLoader):
@@ -53,11 +66,29 @@ class Catalog:
 
     @classmethod
     def load(cls, path: Path | None = None) -> Catalog:
-        """Load the canonical catalog; no provider or cluster is implicit."""
-        path = path or Path(os.environ.get("LC_COMPUTE_CONFIG", "~/lightcone-compute.yaml"))
+        """Load configured offers, or a small local offer if the default file is absent.
+
+        Explicit paths and existing catalogs must be readable and valid. Loading
+        the built-in offer writes no catalog and allocates no compute.
+        """
+        configured = path is not None or "LC_COMPUTE_CONFIG" in os.environ
+        path = path if path is not None else Path(
+            os.environ.get("LC_COMPUTE_CONFIG", "~/lightcone-compute.yaml")
+        )
         path = path.expanduser()
         try:
             raw = yaml.load(path.read_text(), Loader=_UniqueLoader)
+        except FileNotFoundError as exc:
+            if configured or path.is_symlink():
+                raise ComputeError(f"cannot read compute catalog {path}: {exc}") from exc
+            return cls(
+                connections={
+                    "local": Connection(
+                        "local", str(uuid5(_LOCAL_NAMESPACE, socket.gethostname())), "local"
+                    )
+                },
+                offers=(Offer("local", "local", Resources(1, GIB), 1, 1800, 7200, "fast"),),
+            )
         except (OSError, UnicodeError, yaml.YAMLError) as exc:
             raise ComputeError(f"cannot read compute catalog {path}: {exc}") from exc
         data = _mapping(raw, "catalog", {"version", "connections", "offers"})

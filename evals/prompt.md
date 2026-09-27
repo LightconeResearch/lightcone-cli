@@ -9,13 +9,13 @@ This project is driven by two CLIs — use them rather than improvising:
   skill or plugin is available in your environment, load it before reading
   or editing `astra.yaml` — it documents the full spec format.
 - `lc` (lightcone-cli) is the execution layer:
-    - `lc materialize` makes every output the spec declares, running each
+    - `lc materialize "$CLUSTER"` makes every output the spec declares, running each
       recipe in dependency order and committing each result to git as it
       lands, together with a provenance manifest. It refuses to start on
       a dirty tree: commit your own edits first, with plain `git add` and
       `git commit` — the project's git-annex filter handles large files
       transparently, so never run a git-annex command yourself.
-    - `lc materialize <output_id>` (or `<universe>/<output_id>`) narrows
+    - `lc materialize "$CLUSTER" <output_id>` (or `<universe>/<output_id>`) narrows
       a run to one output and whatever it depends on. Re-running is
       idempotent: only what is stale gets remade — an output the spec now
       defines differently, or one whose declared inputs changed.
@@ -23,13 +23,13 @@ This project is driven by two CLIs — use them rather than improvising:
       with the commit it was made at; `lc status --json` is the
       machine-readable form. It always exits 0. The pass/fail gate is
       `lc materialize --check`, which exits 1 while anything still needs
-      making.
-    - `lc run <command>` runs an ad-hoc command in the project
+      making. `--check` needs no cluster.
+    - `lc run "$CLUSTER" -- <command>` runs an ad-hoc command in the project
       environment under the same isolation a recipe gets — useful for
       probing why a recipe would fail. Argv style, like `docker run` or
-      `uv run`: `lc run python scripts/fit.py --output /tmp/x`, never a
+      `uv run`: `lc run "$CLUSTER" -- python scripts/fit.py --output /tmp/x`, never a
       single quoted shell string; for shell syntax use
-      `lc run bash -c '...'`.
+      `lc run "$CLUSTER" -- bash -c '...'`.
     - Outputs land in `results/baseline/<output_id>.<format>`, each with a
       `.<output_id>.manifest.json` manifest beside it, written and
       committed by the engine. Never write into `results/` yourself: a
@@ -37,6 +37,19 @@ This project is driven by two CLIs — use them rather than improvising:
       foreign write and remakes the output.
     - When a recipe fails, `lc materialize` reports which output failed
       and why; fix the script or the spec, commit, and re-run.
+
+Allocate compute before running commands or recipes. A fresh installation exposes
+a built-in local offer with no configuration file needed:
+
+```bash
+CLUSTER=$(lc compute launch --cpus 1 --memory 1 --json | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+lc compute status "$CLUSTER" --wait
+```
+
+Retain this ID and reuse it with `run` and `materialize`; neither creates compute
+automatically. If the 30-minute allocation expires, launch another and use its new
+ID. A configured catalog replaces the default offers; inspect `lc compute resources`
+if the request does not match.
 
 ## Recipe template grammar
 
@@ -101,8 +114,8 @@ the task. For each output:
    `decisions:` lists.
 3. Write the script at the path the command names, parameterizing every
    decision via argparse — never hardcode option values.
-4. Commit your edits, then run `lc materialize` (or
-   `lc materialize <output_id>`) to build through the engine.
+4. Commit your edits, then run `lc materialize "$CLUSTER"` (or
+   `lc materialize "$CLUSTER" <output_id>`) to build through the engine.
 
 Build iteratively from upstream outputs to downstream. `lc status` shows
 where every output stands.
@@ -117,11 +130,12 @@ publication:
    turns publication on: from then on `lc materialize` also maintains
    `ro-crate-metadata.json` at the project root, an RO-Crate view of
    the project and its provenance.
-2. Commit the edit, then run `lc materialize` once more — nothing is
+2. Commit the edit, then run `lc materialize "$CLUSTER"` once more — nothing is
    remade, but the crate document is generated and committed.
 
 You're done when `astra validate astra.yaml` and
 `lc materialize --check` pass and `ro-crate-metadata.json` exists.
+Release your allocation with `lc compute down "$CLUSTER"` when finished.
 
 Skip plan approval and interactive confirmations — this is an automated
 eval run.

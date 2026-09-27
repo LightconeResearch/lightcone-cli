@@ -1,6 +1,6 @@
 # lc compute
 
-Manage explicitly allocated Dask clusters using configured resource offers.
+Manage explicitly allocated Dask clusters using resource offers.
 No project is required for these commands.
 
 ```text
@@ -11,13 +11,21 @@ lc compute [--config PATH] status [CLUSTER_ID] [--wait] [--timeout SECONDS] [--j
 lc compute [--config PATH] down CLUSTER_ID [--json]
 ```
 
-The default catalog is `~/lightcone-compute.yaml`; `LC_COMPUTE_CONFIG` selects
-another file for both compute and execution commands. See the
-[local and Slurm setup](../user/cluster.md) for complete examples.
+Without configuration, `resources` exposes a built-in `local` offer: one CPU,
+1 GiB, one node, fast startup, and a 30-minute default lifetime (two-hour maximum).
+Launch it with `lc compute launch --cpus 1 --memory 1`; execution still requires
+the returned cluster ID.
+
+`~/lightcone-compute.yaml`, when present, replaces this built-in catalog.
+`LC_COMPUTE_CONFIG` selects another file for both compute and execution commands;
+`--config PATH` overrides it for this invocation. Missing explicit paths and
+invalid catalogs are errors. Only a missing implicit default file enables the
+built-in catalog, without writing a file or starting any compute. See the
+[local and Slurm setup](../user/cluster.md) for examples.
 
 | Command | Behavior |
 |---|---|
-| `resources` | Ordered configured offers, per-node shape, node limit, default/maximum time, and startup class. Free capacity remains unknown. |
+| `resources` | Ordered available offers, per-node shape, node limit, default/maximum time, and startup class. Free capacity remains unknown. |
 | `launch` | Resolve one resource request and submit exactly once; print the opaque cluster ID on acceptance. |
 | `launch --dry-run` | Show the resolved shape and native launch parameters without allocation. |
 | `status` | Query each configured native authority once; retain partial discovery errors. |

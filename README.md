@@ -20,8 +20,9 @@ Then to install **lightcone-cli**:
 uv tool install lightcone-cli
 ```
 
-Configure a [local or Slurm resource offer](docs/user/cluster.md), then create
-an ASTRA project and explicitly allocate its compute:
+Create an ASTRA project and launch the built-in local compute offer; no compute
+configuration is needed. [Configure resource offers](docs/user/cluster.md) for
+larger local allocations or Slurm:
 
 ```bash
 lc init my-analysis

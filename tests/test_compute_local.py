@@ -166,6 +166,54 @@ with p.connect(Identity.decode(sys.argv[2])) as client:
     provider.terminate(identity)
 
 
+def test_builtin_allocation_can_be_reopened_in_another_process_without_a_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine.compute import Compute
+    from lightcone.engine.compute.model import GIB
+
+    expanduser = Path.expanduser
+
+    def expand(path: Path) -> Path:
+        if str(path) == "~":
+            return tmp_path
+        if str(path).startswith("~/"):
+            return tmp_path / str(path)[2:]
+        return expanduser(path)
+
+    monkeypatch.setattr(Path, "expanduser", expand)
+    monkeypatch.delenv("LC_COMPUTE_CONFIG", raising=False)
+    service = Compute()
+    identity = service.launch(service.plan(Request(1, GIB, seconds=60)))
+    try:
+        script = """
+import sys
+from pathlib import Path
+expanduser = Path.expanduser
+def expand(path):
+    if str(path) == '~':
+        return Path(sys.argv[1])
+    if str(path).startswith('~/'):
+        return Path(sys.argv[1]) / str(path)[2:]
+    return expanduser(path)
+Path.expanduser = expand
+from lightcone.engine.compute import Compute, connect
+assert Compute().status(sys.argv[2], wait=True, timeout=20).ready
+with connect(sys.argv[2]) as client:
+    print(client.submit(sum, [4, 5]).result(timeout=5))
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path), identity.encode()],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        assert result.stdout.strip() == "9"
+        assert not (tmp_path / "lightcone-compute.yaml").exists()
+    finally:
+        Compute().down(identity.encode())
+    assert Compute().status(identity.encode()).phase == "ended"
+    assert Compute().discover() == ([], {})
+
+
 def test_walltime_expires_without_a_connected_client(provider: LocalProvider) -> None:
     identity = _launch(provider, seconds=2)
     try:

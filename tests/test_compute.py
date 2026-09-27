@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
+from uuid import UUID
 
 import pytest
 import yaml
@@ -26,6 +27,22 @@ from lightcone.engine.compute.model import (
 
 NAMESPACE = "5a9d058c-7c6e-4e2a-919b-786f1148536c"
 IDENTITY = Identity(NAMESPACE, "1234", "abc")
+
+
+@pytest.fixture
+def default_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    expanduser = Path.expanduser
+
+    def expand(path: Path) -> Path:
+        if str(path) == "~":
+            return tmp_path
+        if str(path).startswith("~/"):
+            return tmp_path / str(path)[2:]
+        return expanduser(path)
+
+    monkeypatch.setattr(Path, "expanduser", expand)
+    monkeypatch.delenv("LC_COMPUTE_CONFIG", raising=False)
+    return tmp_path
 
 
 @pytest.fixture
@@ -81,6 +98,94 @@ def test_identity_is_self_contained_and_canonical() -> None:
     for value in ("slurm:1234", "local", IDENTITY.encode() + "=", "clu_A", "clu_eyJ2IjoxfQ"):
         with pytest.raises(ComputeError):
             Identity.decode(value)
+
+
+def test_missing_default_catalog_exposes_stable_local_resources_without_writing_files(
+    default_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = Catalog.load(), Catalog.load()
+    assert first == second
+    assert set(first.connections) == {"local"}
+    connection = first.connections["local"]
+    assert connection.provider == "local"
+    assert str(UUID(connection.namespace)) == connection.namespace
+    with monkeypatch.context() as patch:
+        patch.setattr("lightcone.engine.compute.catalog.socket.gethostname", lambda: "other-host")
+        assert Catalog.load().connections["local"].namespace != connection.namespace
+    assert Catalog.load().connections["local"].namespace == connection.namespace
+    assert len(first.offers) == 1
+    offer = first.offers[0]
+    assert (offer.name, offer.connection) == ("local", "local")
+    assert (offer.resources.cpus, offer.resources.memory, offer.max_nodes) == (1, GIB, 1)
+    assert (offer.default_seconds, offer.max_seconds, offer.startup) == (1800, 7200, "fast")
+    monkeypatch.setattr("dask.system.CPU_COUNT", 1)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", GIB)
+    runner = CliRunner()
+    resources = runner.invoke(main, ["compute", "resources", "--json"])
+    assert resources.exit_code == 0, resources.output
+    assert [item["name"] for item in json.loads(resources.output)["offers"]] == ["local"]
+    planned = runner.invoke(
+        main, ["compute", "launch", "--cpus", "1", "--memory", "1", "--dry-run", "--json"],
+    )
+    assert planned.exit_code == 0, planned.output
+    assert json.loads(planned.output)["plan"]["offer"] == "local"
+    assert list(default_home.iterdir()) == []
+    service = compute.Compute()
+    assert service.plan(Request.parse("1", "1", time="2h", startup="fast")).seconds == 7200
+    for request in (
+        Request.parse("2", "1"), Request.parse("1", "2"),
+        Request.parse("1", "1", num_nodes=2), Request.parse("1", "1", time="3h"),
+    ):
+        with pytest.raises(ComputeError, match="no configured offer"):
+            service.plan(request)
+    assert list(default_home.iterdir()) == []
+
+
+def test_configured_catalogs_replace_the_builtin_and_obey_path_precedence(
+    catalog: Path, default_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LC_COMPUTE_CONFIG", raising=False)
+    default = default_home / "lightcone-compute.yaml"
+    default.write_text(catalog.read_text())
+    configured = Catalog.load()
+    assert set(configured.connections) == {"test"}
+    assert [offer.name for offer in configured.offers] == ["quick", "large"]
+    # An empty configured catalog explicitly exposes nothing; the builtin is
+    # never merged into it, whether selected by default, environment, or option.
+    default.write_text("version: 1\nconnections: {}\noffers: []\n")
+    assert Catalog.load().offers == ()
+    monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
+    assert Catalog.load() == configured
+    assert Catalog.load(default).offers == ()
+    default.unlink()
+    assert Catalog.load() == configured
+
+
+def test_only_an_absent_implicit_catalog_uses_the_builtin(
+    default_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    default = default_home / "lightcone-compute.yaml"
+    with pytest.raises(ComputeError, match="cannot read compute catalog"):
+        Catalog.load(default)
+    monkeypatch.setenv("LC_COMPUTE_CONFIG", str(default))
+    with pytest.raises(ComputeError, match="cannot read compute catalog"):
+        Catalog.load()
+    monkeypatch.delenv("LC_COMPUTE_CONFIG")
+    default.symlink_to(default_home / "absent.yaml")
+    with pytest.raises(ComputeError, match="cannot read compute catalog"):
+        Catalog.load()
+    default.unlink()
+    default.write_text("version: [\n")
+    with pytest.raises(ComputeError, match="cannot read compute catalog"):
+        Catalog.load()
+    default.write_text("version: 1\nconnections: {}\noffers: []\n")
+
+    def unreadable(_path: Path, *args: object, **kwargs: object) -> str:
+        raise PermissionError("catalog is not readable")
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    with pytest.raises(ComputeError, match="not readable"):
+        Catalog.load()
 
 
 @pytest.mark.parametrize(

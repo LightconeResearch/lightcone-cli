@@ -155,7 +155,10 @@ config-blob id, never a tag.
 
 `engine.compute` owns allocation lifecycle through a small provider protocol.
 A visible YAML catalog supplies ordered resource offers and stable native service
-namespaces. `compute launch` resolves resources and submits once. Slurm queries
+namespaces. When the implicit default file is absent, a built-in local catalog
+provides one CPU and 1 GiB without setup. An explicit catalog replaces that default;
+missing explicit paths and invalid files remain errors. No catalog is written and
+no allocation starts until `compute launch` resolves resources and submits once. Slurm queries
 and validated local OS identities are authoritative for allocations; Dask is the
 authority for connected workers. Private scheduler/TLS files are connection
 material, not a registry.

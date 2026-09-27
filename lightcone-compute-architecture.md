@@ -71,7 +71,7 @@ A practical workflow looks like this:
    one still waiting in a queue. The configured or requested time limit also
    ends supported allocations. Resources remain allocated while idle.
 
-When selection chooses a configured local offer, this same workflow creates
+When selection chooses a local offer, this same workflow creates
 a reusable `LocalCluster`. There is no automatic local execution mode and no
 login-node guard. The catalog and native backend permissions determine what
 compute is exposed. Read-only `lc materialize --check [TARGETS...]` remains
@@ -175,7 +175,7 @@ pretend Dask `nthreads` proves a CPU reservation. Unknown fields stay unknown.
 An allocation may remain active with less execution capacity than its initial
 request; show the observed shortfall rather than retaining a fictional capacity.
 
-## 2. A small catalog supplied by the user
+## 2. A small resource catalog
 
 The user exposes **offers**: permitted resource shapes and the native settings
 that can supply them. An offer is policy for new allocations, not a running
@@ -189,8 +189,12 @@ Keep two configuration concepts:
 - An **offer** binds one resource shape and its limits to a connection. List
   order is the user's selection preference.
 
-Use one canonical, nonsecret catalog, proposed default
+Use one canonical, nonsecret catalog, default
 `~/lightcone-compute.yaml`, with an explicit path override for deployments.
+When that implicit file is absent, expose a built-in local offer: one CPU,
+1 GiB, one node, fast startup, 30-minute default and two-hour maximum lifetime.
+This writes no file and starts no cluster. A configured catalog replaces the
+default; missing explicit paths and invalid catalogs remain errors.
 The browser reads that same artifact through Contents or an existing site API.
 The file must actually lie within the accessible Contents root, or an existing
 endpoint must expose it; a visible home file is not necessarily accessible from
@@ -205,10 +209,10 @@ merely because its CPU count matches. A remote cloud with no access to this
 project is not silently substituted, and nothing uploads code or data implicitly.
 Runtime compatibility is still checked when borrowing a cluster.
 
-Local compute is an ordinary configured offer on the current host. It is subject
+Local compute is an ordinary offer on the current host. It is subject
 to the same selection and lifecycle contract, with no implicit local fallback or
 special `local` cluster ID. No site-marker or hostname guard makes an otherwise
-valid local offer ineligible; users explicitly configure the compute they expose.
+valid local offer ineligible; users can replace the default resource policy.
 
 The following is an illustrative NERSC catalog, not a verified installation
 recipe. Paths, affinity, task slots, and memory budgets need a deployment test.

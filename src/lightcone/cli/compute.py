@@ -55,7 +55,10 @@ def _table(headers: list[str], rows: list[list[str]]) -> None:
     "--config",
     "config_path",
     type=click.Path(path_type=Path, dir_okay=False),
-    help="Catalog path (default: LC_COMPUTE_CONFIG or ~/lightcone-compute.yaml).",
+    help=(
+        "Catalog path (default: LC_COMPUTE_CONFIG or ~/lightcone-compute.yaml; "
+        "built-in local offer when the default file is absent)."
+    ),
 )
 @click.pass_context
 def compute(ctx: click.Context, config_path: Path | None) -> None:
@@ -67,7 +70,7 @@ def compute(ctx: click.Context, config_path: Path | None) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Emit structured output.")
 @click.pass_obj
 def resources(config_path: Path | None, as_json: bool) -> None:
-    """Show the configured resource offers in preference order."""
+    """Show available resource offers in preference order."""
     from lightcone.engine.compute import Compute
 
     with _errors(as_json):

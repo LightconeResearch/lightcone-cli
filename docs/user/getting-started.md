@@ -249,13 +249,19 @@ the record of what your results were computed with.
 
 ## 5. Materialize
 
-Configure the small local offer in [Running on a Cluster](cluster.md#start-locally),
-then allocate it explicitly. Keep the returned ID in `CLUSTER` for this walkthrough:
+Launch the built-in local offer; no compute configuration is needed. It provides
+one CPU and 1 GiB for 30 minutes. Keep the returned ID in `CLUSTER` for this
+walkthrough. If you already have a compute catalog, its offers replace that default;
+see [Running on a Cluster](cluster.md).
 
 ```bash
 CLUSTER=$(lc compute launch --cpus 1 --memory 1 --json | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 lc compute status "$CLUSTER" --wait
 ```
+
+Execution always requires this cluster ID. `lc materialize --check` can inspect
+what needs rebuilding without allocating compute. If the allocation expires
+during the walkthrough, launch another one and replace `CLUSTER` with its new ID.
 
 Commit, then build:
 
@@ -386,7 +392,7 @@ repository you already have.
 
 Clone this repository on a fresh machine, run `lc init` (it rebuilds
 the two pieces of local state git doesn't carry — the `.venv` and the
-annex), then `lc materialize`: it reports up to date without fetching a
+annex), then `lc materialize --check`: it reports up to date without fetching a
 single data byte, because the provenance travels in git. The bytes
 themselves follow with `git annex get` whenever you actually need them.
 

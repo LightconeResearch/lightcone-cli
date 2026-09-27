@@ -7,27 +7,11 @@ present. `lc materialize --check` and `lc status` remain local project inspectio
 
 ## Start locally
 
-Create `~/lightcone-compute.yaml` with a fixed resource offer. The namespace is a
-stable UUID identifying this connection; keep it unchanged while its clusters exist.
-The following small offer uses one logical CPU and 1 GiB on your workstation:
-
-```yaml
-version: 1
-connections:
-  workstation:
-    namespace: 22c84e48-2f0a-4cd2-90a2-30ce2e909bd1
-    provider: local
-offers:
-  - name: small
-    connection: workstation
-    resources: {cpus: 1, memory: 1}
-    max_nodes: 1
-    time: {default: 30m, max: 2h}
-    startup: {class: fast}
-```
-
-For a different catalog location, set `LC_COMPUTE_CONFIG` for all commands. The
-compute group's `--config PATH` overrides it for that invocation only.
+No configuration is needed on a fresh installation. When
+`~/lightcone-compute.yaml` is absent, Lightcone exposes one built-in `local` offer:
+one logical CPU, 1 GiB, one node, and fast startup. Its default lifetime is
+30 minutes, with a maximum of two hours. This creates no catalog file and starts
+no processes until you launch a cluster.
 
 ```bash
 lc compute resources
@@ -50,6 +34,36 @@ Private process locators are checked against the current host, boot, UID, PID
 birth time, session, and command before attachment or termination. Local compute is available wherever the catalog exposes a valid local offer;
 Lightcone does not infer permission from login-node names or site environment
 variables. Allocation choices are explicit and native permissions still apply.
+
+## Customize resource offers
+
+Create `~/lightcone-compute.yaml` to expose other resource shapes or services.
+A configured catalog replaces the built-in catalog completely; no extra local
+offer is added to it. The namespace is a stable UUID identifying a connection;
+keep it unchanged while that connection's clusters exist.
+
+For example, this catalog exposes a larger local allocation:
+
+```yaml
+version: 1
+connections:
+  workstation:
+    namespace: 22c84e48-2f0a-4cd2-90a2-30ce2e909bd1
+    provider: local
+offers:
+  - name: workstation
+    connection: workstation
+    resources: {cpus: 4, memory: 8}
+    max_nodes: 1
+    time: {default: 30m, max: 2h}
+    startup: {class: fast}
+```
+
+Set `LC_COMPUTE_CONFIG` to choose another file for all commands. The compute
+group's `--config PATH` overrides it for that invocation only. A missing explicit
+path or an invalid catalog is an error; only an absent implicit default file
+selects the built-in offer. Stop existing built-in allocations before replacing
+their connection with your own catalog.
 
 ## Configure Slurm
 

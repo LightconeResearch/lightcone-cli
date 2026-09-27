@@ -1,13 +1,13 @@
 # lightcone.engine.compute
 
 The allocation boundary shared by CLI lifecycle operations and execution.
-`Compute` reads the canonical catalog and obtains fresh native observations.
+`Compute` loads resource policy and obtains fresh native observations.
 It owns no service, registry, or saved current-cluster selection.
 
 | Symbol | Contract |
 |---|---|
 | `Request.parse(...)` | Common exact/minimum CPU and memory requests, node count, walltime, startup class. |
-| `Catalog.load(path)` | Ordered fixed shapes and stable connection namespaces, separate from running allocations. |
+| `Catalog.load(path)` | Ordered fixed shapes and stable connection namespaces; use the built-in local catalog only when the implicit default file is absent. |
 | `Compute.plan(request)` | Select an eligible offer and freeze its native launch settings without allocation. |
 | `Compute.launch(plan)` | Submit once and return a self-contained `Identity`. |
 | `Compute.discover()` | Snapshots and per-connection errors, querying each authority once. |
@@ -15,6 +15,13 @@ It owns no service, registry, or saved current-cluster selection.
 | `Compute.down(id)` | Native termination independent of scheduler health. |
 | `connect(id, timeout=10, config_path=None)` | Context manager borrowing a standard Dask client; closes the client, never the allocation. |
 | `Provider` | `plan`, `launch`, `discover`, `inspect`, `connect`, `terminate`. |
+
+The built-in catalog exposes one `local` offer: one CPU, 1 GiB, one node,
+fast startup, 30-minute default and two-hour maximum lifetime. It creates no
+configuration file or allocation. Configured catalogs replace it completely.
+Missing paths selected through an argument or `LC_COMPUTE_CONFIG`, unreadable
+files, and invalid catalogs remain errors. Stable connection namespaces let
+separate invocations discover and attach to the same local allocations.
 
 `local.py` and `slurm.py` implement the provider protocol. Adding an adapter means
 adding one provider factory and its native mapping; `run` and `materialize` only
