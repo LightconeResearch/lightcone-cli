@@ -51,9 +51,9 @@ to its own directory: `results/<universe>/<output_id>.<format>`.
 ## Sub-analysis
 
 A nested ASTRA analysis with its own inputs, outputs, and decisions,
-referenced from a parent's `analyses:` section. `lc` materializes a flat
-analysis: an output id it cannot name a file from is refused, so a
-nested spec is not buildable today.
+referenced from a parent's `analyses:` section. Its outputs materialize
+under a directory named for it: an output `number` of sub-analysis `part`
+lands at `results/<universe>/part/number.<format>`.
 
 ## Materialize
 

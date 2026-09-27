@@ -6,4 +6,7 @@ from the output's id and the `format:` its spec declares:
     results/<universe>/<output_id>.<format>
 
 Beside each one is a `.<output_id>.manifest.json` recording how it was
-made.
+made. An output declared in a sub-analysis lands in a directory named for
+that sub-analysis:
+
+    results/<universe>/<analysis>/<output_id>.<format>
