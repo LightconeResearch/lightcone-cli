@@ -697,6 +697,8 @@ analyses:
     path: ./part
 """
 
+# The seed sits at the project root, not under part/: a `path:` sub-analysis
+# resolves its sources and runs its recipe from the root (#201).
 _PART = """
 version: "0.0.13"
 name: part
