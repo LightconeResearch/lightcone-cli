@@ -179,31 +179,52 @@ def test_the_read_only_verbs_work_on_a_login_node(
 # ---- the srun invocation ----------------------------------------------------
 
 
-def test_the_srun_argv_spans_the_allocation() -> None:
+def test_the_srun_argv_spans_the_allocation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One whole-node worker step per node: each worker sizes itself from
+    its own node's SLURM_CPUS_ON_NODE, so heterogeneous nodes are each
+    used in full rather than capped at a uniform --cpus-per-task."""
+    import shlex
+    import subprocess
     import sys
 
+    monkeypatch.setenv("LC_TASK_SLOT_CPUS", "4")
     argv = venue._srun_argv("tcp://10.0.0.1:8786", 4, 128, "/scratch")
 
-    assert argv == [
+    assert argv[:7] == [
         "srun",
         "--overlap",
         "--ntasks=4",
         "--nodes=4",
         "--ntasks-per-node=1",
-        "--cpus-per-task=128",
-        sys.executable,
-        "-m",
-        "distributed.cli.dask_worker",
-        "tcp://10.0.0.1:8786",
-        "--nthreads", "128",
-        "--resources", "CPU=128",
-        "--nworkers", "1",
-        "--no-dashboard",
-        "--no-nanny",
-        "--death-timeout", "60",
-        "--memory-limit", "0",
-        "--local-directory", "/scratch",
-    ]  # fmt: skip
+        "--whole",
+        "bash",
+    ]
+    assert not any(a.startswith("--cpus-per-task") for a in argv)
+    assert argv[7] == "-c"
+    script = argv[8]
+    assert script.startswith(
+        f"exec {shlex.quote(sys.executable)} -m distributed.cli.dask_worker "
+        "tcp://10.0.0.1:8786 "
+    )
+    assert script.endswith(
+        "--nworkers 1 --no-dashboard --no-nanny --death-timeout 60 "
+        "--memory-limit 0 --local-directory /scratch"
+    )
+
+    # The shell arithmetic, evaluated: slots = node cores / slot width,
+    # the CPU resource = node cores, and the driver's count as fallback.
+    def worker_flags(env: dict[str, str]) -> str:
+        probe = script.replace(
+            f"exec {shlex.quote(sys.executable)} -m distributed.cli.dask_worker",
+            "echo",
+        )
+        return subprocess.run(
+            ["bash", "-c", probe], env=env, capture_output=True, text=True, check=True
+        ).stdout
+
+    assert "--nthreads 12 --resources CPU=48 " in worker_flags({"SLURM_CPUS_ON_NODE": "48"})
+    assert "--nthreads 32 --resources CPU=128 " in worker_flags({})
+    assert "--nthreads 1 --resources CPU=2 " in worker_flags({"SLURM_CPUS_ON_NODE": "2"})
 
 
 def test_slurm_without_srun_refuses(
