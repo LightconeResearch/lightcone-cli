@@ -63,14 +63,12 @@ Repository = "https://github.com/LightconeResearch/lightcone-cli"
 
 [project.scripts]
 lc = "lightcone.cli:main"
-# git-annex is no longer bundled by default (see require_git_annex() in
-# engine/project.py) — its own wheel declares `git-annex` / `git-annex-shell`
-# / `git-remote-annex` / `git-remote-tor-annex` console-scripts already, so
-# `uv tool install 'lightcone-cli[bundled-annex]'` gets them from there. Not
-# re-declaring them here avoids shipping broken shims (importing a module
-# that isn't installed) on hosts that skip the extra and use a distro
-# package or conda-forge build instead — which would also collide on PATH
-# with a real git-annex install in the same bin directory.
+# git-annex is not bundled by default (see require_git_annex() in
+# engine/project.py): its own wheel declares the `git-annex` /
+# `git-annex-shell` / `git-remote-annex` / `git-remote-tor-annex`
+# console-scripts, so `uv tool install 'lightcone-cli[bundled-annex]'` gets
+# them from there. Re-declaring them here would ship broken shims on hosts
+# that skip the extra, colliding on PATH with a real git-annex install.
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
