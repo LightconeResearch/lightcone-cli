@@ -561,6 +561,77 @@ def test_a_clean_run_reports_no_in_flight_edit(root: Path, inline: None) -> None
     assert not any("in flight" in w for w in report.warnings)
 
 
+# ---- a spec with a sub-analysis --------------------------------------------
+
+_PARENT = """
+version: "0.0.13"
+name: parent
+
+inputs: []
+
+outputs:
+  - id: number
+    from: part.number
+
+  - id: overview
+    type: report
+    format: txt
+    inputs: [number]
+    recipe:
+      command: cat {inputs.number} > {output}
+
+analyses:
+  part:
+    path: ./part
+"""
+
+_PART = """
+version: "0.0.13"
+name: part
+
+inputs:
+  - id: seed
+    type: data
+    source: data/seed.txt
+
+outputs:
+  - id: number
+    type: metric
+    format: txt
+    inputs: [seed]
+    recipe:
+      command: cat {inputs.seed} > {output}
+"""
+
+
+def test_a_root_output_consumes_a_sub_analysis_output(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """ASTRA qualifies a sub-analysis output as `<analysis>.<output>`; its
+    scope becomes a directory under the universe, so the file and its
+    manifest are named from the local id and a root output can chain on
+    it. The whole tree materializes from the root and converges."""
+    root = analysis(_PARENT, files={"part/astra.yaml": _PART, "data/seed.txt": "42\n"})
+
+    report = engine.materialize(root, [])
+
+    assert report.made == ["baseline/part.number", "baseline/overview"]
+    assert (root / "results/baseline/part/number.txt").read_text() == "42\n"
+    assert (root / "results/baseline/part/.number.manifest.json").is_file()
+    assert (root / "results/baseline/overview.txt").read_text() == "42\n"
+    assert not dataset.status(root)
+
+    def blob(rel: str) -> str:
+        return dataset._git(["cat-file", "-p", f"HEAD:{rel}"], cwd=root)
+
+    assert blob("results/baseline/part/number.txt").startswith("/annex/objects/")
+    assert blob("results/baseline/part/.number.manifest.json").startswith("{")
+    manifest = assets.read(root / "results/baseline/part/.number.manifest.json")
+    assert manifest is not None and manifest.output_id == "part.number"
+    assert engine.check(root, []).up_to_date
+    assert engine.status(root).counts == {"current": 2, "behind": 0, "stale": 0}
+
+
 # ---- leaving the tree as clean as it was found -----------------------------
 
 
@@ -590,7 +661,6 @@ def test_a_scoped_output_stages_the_files_it_actually_wrote(tmp_path: Path) -> N
         ":(glob)results/baseline/catalog/survey_properties.*",
         ":(glob)results/baseline/catalog/.survey_properties.manifest.json*",
     ]
-
 
 
 def test_a_failing_recipe_commits_nothing_and_leaves_the_tree_clean(
