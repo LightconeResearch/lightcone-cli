@@ -235,6 +235,29 @@ def test_a_run_spans_the_allocation(
     assert not dataset.status(root)
 
 
+def test_recipe_output_never_reaches_stdout_from_a_worker(
+    analysis: Callable[..., Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """lc's stdout is its report, and under an allocation a recipe runs in
+    a worker process srun launched — whose output must land on stderr."""
+    root = analysis(
+        _SPEC.replace("echo {decisions.method}", "echo chatty && echo {decisions.method}"),
+        universes={"baseline": _UNIVERSE},
+    )
+    _allocation(monkeypatch)
+    _stub_srun(tmp_path, monkeypatch, _FAITHFUL)
+
+    report = engine.materialize(root, [])
+
+    out, err = capfd.readouterr()
+    assert report.made == ["baseline/first", "baseline/second"]
+    assert "chatty" not in out
+    assert "chatty" in err
+
+
 def test_every_allocated_node_gets_a_worker(
     root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

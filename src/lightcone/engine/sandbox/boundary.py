@@ -131,12 +131,15 @@ def run(
     cwd: Path,
     env: dict[str, str],
     prefix: Sequence[str] = (),
+    stdout_to_stderr: bool = False,
 ) -> Outcome:
     """Run a command through a backend, and explain it if it fails.
 
-    stdout is inherited untouched, so output arrives live. stderr is teed
-    — written through as it arrives and retained — because the denial
-    classifier needs text and the user needs immediacy.
+    stdout is inherited untouched, so output arrives live — or handed
+    our stderr descriptor, for a caller whose own stdout is spoken for.
+    stderr is teed — written through as it arrives and retained —
+    because the denial classifier needs text and the user needs
+    immediacy.
 
     Args:
         backend: The mechanism to wrap with.
@@ -152,6 +155,12 @@ def run(
             host plumbing inside a container, and the env overlay is
             that backend's to apply natively rather than through a
             host-resolved ``env``.
+        stdout_to_stderr: Give the command our stderr descriptor as its
+            stdout, so both its streams arrive there. For a recipe, whose
+            output is never lc's to report: lc's stdout carries the verb's
+            own report, and ``--json`` must parse. The descriptor itself,
+            not a pipe: a terminal stays a terminal, so the command's
+            output stays line-buffered and live.
 
     Returns:
         The exit code, what was actually enforced, and any lines the
@@ -178,6 +187,7 @@ def run(
         wrapped,
         cwd=cwd,
         env=child_env,
+        stdout=2 if stdout_to_stderr else None,
         stderr=subprocess.PIPE,
         text=True,
         errors="replace",

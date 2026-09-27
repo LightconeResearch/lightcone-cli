@@ -251,6 +251,7 @@ def execute(
             cwd=root,
             prefix=uv_prefix(root, sync=False),
             env=child_env(),
+            stdout_to_stderr=True,
         )
     finished_at = _now()
 
