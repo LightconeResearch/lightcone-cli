@@ -214,8 +214,6 @@ def slurm_client() -> Iterator[Any]:
         # prolog can scope TMPDIR to the node or job step that set
         # it, and a driver-side path baked into every worker's argv
         # would then be absent on the allocation's other nodes.
-        # stdout to our stderr (descriptor 2): the workers have nothing
-        # to report, and lc's stdout is the verb's own report.
         proc = subprocess.Popen(
             _srun_argv(cluster.scheduler_address, nodes, cpus, "/tmp"),
             env=env,

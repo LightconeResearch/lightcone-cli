@@ -241,8 +241,7 @@ def test_recipe_output_never_reaches_stdout_from_a_worker(
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """lc's stdout is its report, and under an allocation a recipe runs in
-    a worker process srun launched — whose output must land on stderr."""
+    """Under an allocation too, a recipe's output goes to stderr."""
     root = analysis(
         _SPEC.replace("echo {decisions.method}", "echo chatty && echo {decisions.method}"),
         universes={"baseline": _UNIVERSE},

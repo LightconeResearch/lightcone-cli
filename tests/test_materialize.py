@@ -1000,9 +1000,8 @@ def test_json_stdout_is_the_report_alone(
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """A recipe that prints must not corrupt `--json`: its output goes to
-    stderr. Captured at the descriptor, since that is where a recipe
-    writes — `CliRunner` swaps only `sys.stdout` and would miss it."""
+    """A recipe's output goes to stderr. Captured at the descriptor:
+    `CliRunner` swaps only `sys.stdout` and would miss it."""
     from lightcone.cli.commands import main
 
     chatty = _SPEC.replace("echo {decisions.method}", "echo chatty && echo {decisions.method}")

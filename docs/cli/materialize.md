@@ -46,9 +46,6 @@ never touched, under any flag.
 - **Reports every independent failure.** One failing recipe doesn't
   abort the rest; its dependents report `blocked` and the run exits 1
   with all of it listed.
-- **Keeps stdout for the report.** Recipe output, stdout and stderr
-  alike, streams live to lc's stderr, so `--json` output always
-  parses.
 - **Maintains the publication view.** With a `[project].license`
   declared, the run converges `ro-crate-metadata.json` in a trailing
   commit.
