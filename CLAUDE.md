@@ -2226,11 +2226,17 @@ written to" — a path the schema never defined. What changed, and why:
   and nothing detects directory-shaped outputs from a previous engine;
   they are invisible to every walk. `git rm -r results/` and
   re-materialize.
-- **A nested spec is not buildable.** lc materializes a flat analysis:
-  ASTRA qualifies an output declared in a sub-analysis as `<a>.<b>`, and
-  `output_path` refuses a dotted id because the sidecar could not be told
-  from the payload. Supporting nesting means deciding where a nested
-  output's file goes, which is its own change (issues #201, #202).
+- **A sub-analysis's scope is a directory.** ASTRA qualifies an output
+  declared in a sub-analysis as `<a>.<b>`; `output_path` spells each scope
+  segment as a directory and names the file from the local id, so it lands
+  at `results/<universe>/<a>/<b>.<format>` beside `.<b>.manifest.json`.
+  The file's name never carries a dot before the format, which keeps the
+  first-dot partition in `manifest_path` exact, and two scopes declaring
+  one local id land in different directories. Anything that matches an
+  output's files by name (the staging pathspecs, the worker's stale sweep)
+  uses `Task.output_stem`, never the qualified id. There is one results
+  tree, at the root: a `path:` sub-analysis's outputs are filed under the
+  parent's universe, not beside the sub-analysis's own spec (#202).
 
 ### Recorded deviations from the spec
 
