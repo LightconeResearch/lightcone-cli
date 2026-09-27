@@ -68,7 +68,7 @@ read-only apart from the directory their output lands in. The common cases:
   belongs in `{output}`; for true scratch files, use
   `tempfile.mkdtemp()`, which lands in the writable temp area.
 
-To probe interactively, `lc run <command>` runs any command under
+To probe interactively, `lc run CLUSTER_ID -- <command>` runs any command under
 exactly the isolation a recipe gets — if it works there, it works as a
 recipe.
 
@@ -82,7 +82,7 @@ each output, so nothing is lost by leaving it. When you do want them
 remade under the current environment:
 
 ```bash
-lc materialize --refresh
+lc materialize "$CLUSTER" --refresh
 ```
 
 See [Core Concepts](concepts.md) for the `stale` / `behind`
@@ -159,12 +159,11 @@ every clone carries it forever. A refused `git add` costs you one
 
 ## "… and this is a NERSC login node"
 
-`lc materialize` executes recipes, and on centers `lc` recognizes it
-refuses to do that on a shared login node. The refusal prints the
-center's own `salloc` and `sbatch` spellings — copy one, run the same
-command inside the allocation. `lc status`, `lc materialize --check`,
-`lc build` and `lc run` work anywhere. See
-[Running on a Cluster](cluster.md).
+Local allocation and actual execution workers refuse recognized login nodes.
+A login-node driver can submit Slurm compute and attach to its workers: use
+`lc compute launch`, wait for readiness, and pass its ID to `run` or `materialize`.
+An inherited `SLURM_JOB_ID` alone does not prove compute-node placement.
+See [Running on a Cluster](cluster.md).
 
 ## git doesn't know who you are
 

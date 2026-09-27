@@ -130,6 +130,6 @@ cd my-analysis
 # decisions — and write the scripts the recipes name.
 uv add numpy               # declare what the scripts import
 git add -A && git commit -m "First analysis"
-lc materialize             # make the outputs
+lc materialize "$CLUSTER"             # make the outputs
 lc status                  # see where everything stands
 ```

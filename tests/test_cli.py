@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from conftest import CLUSTER_ID
 
 from lightcone.cli.commands import main
 
@@ -208,10 +209,23 @@ def test_run_passes_the_command_through_untouched(
 ) -> None:
     """A probe's command has its own flags, and they belong to it — not
     to us. `--help` after the command must reach the command."""
-    result = runner.invoke(main, ["run", "python", "-c", "print(1)", "--help"])
+    result = runner.invoke(main, ["run", CLUSTER_ID, "--", "python", "-c", "print(1)", "--help"])
     assert result.exit_code == 0
     assert spawned[0]["command"] == ["python", "-c", "print(1)", "--help"]
     assert spawned[0]["project"] == project.resolve()
+    assert spawned[0]["cluster_id"] == CLUSTER_ID
+
+
+@pytest.mark.parametrize("argv", [["run"], ["materialize"], ["run", "python", "true"],
+                                 ["materialize", "baseline/first"]])
+def test_execution_requires_an_allocation_identity_before_project_discovery(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(main, argv)
+    assert result.exit_code == 2
+    assert "CLUSTER_ID" in result.output
+    assert "not a Lightcone project" not in result.output
 
 
 def test_the_childs_exit_code_is_the_cli_s(
@@ -230,7 +244,7 @@ def test_the_childs_exit_code_is_the_cli_s(
             returncode=42, attestation=Attestation(mechanism="none", fs="open")
         ),
     )
-    assert runner.invoke(main, ["run", "false"]).exit_code == 42
+    assert runner.invoke(main, ["run", CLUSTER_ID, "--", "false"]).exit_code == 42
 
 
 def test_a_signal_killed_command_reports_the_conventional_status(
@@ -249,7 +263,7 @@ def test_a_signal_killed_command_reports_the_conventional_status(
             returncode=-9, attestation=Attestation(mechanism="landlock", fs="declared")
         ),
     )
-    assert runner.invoke(main, ["run", "sleep"]).exit_code == 137
+    assert runner.invoke(main, ["run", CLUSTER_ID, "--", "sleep"]).exit_code == 137
 
 
 def test_notes_are_rendered(
@@ -268,7 +282,7 @@ def test_notes_are_rendered(
             notes=("blocked by lc sandbox: cannot execute /usr/bin/latex —",),
         ),
     )
-    result = runner.invoke(main, ["run", "latex"])
+    result = runner.invoke(main, ["run", CLUSTER_ID, "--", "latex"])
     assert "blocked by lc sandbox" in result.output
 
 
@@ -287,7 +301,7 @@ def test_outside_a_project_is_a_clean_error(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(main, ["run", "true"])
+    result = runner.invoke(main, ["run", CLUSTER_ID, "--", "true"])
     assert result.exit_code == 1
     assert "not a Lightcone project" in result.output
 
@@ -300,7 +314,7 @@ def test_a_subdirectory_of_a_project_is_not_the_project(
     nested = project / "sub"
     nested.mkdir()
     monkeypatch.chdir(nested)
-    result = runner.invoke(main, ["run", "true"])
+    result = runner.invoke(main, ["run", CLUSTER_ID, "--", "true"])
     assert result.exit_code == 1
     assert "not a Lightcone project" in result.output
 
@@ -311,7 +325,7 @@ def test_run_needs_no_spec_file(
     """The environment is what a probe needs; `astra.yaml` is not
     required to run a command in it."""
     assert not (project / "astra.yaml").exists()
-    result = runner.invoke(main, ["run", "true"])
+    result = runner.invoke(main, ["run", CLUSTER_ID, "--", "true"])
     assert result.exit_code == 0
     assert spawned[0]["project"] == project.resolve()
 
@@ -352,9 +366,11 @@ def test_targets_reach_the_engine(
 ) -> None:
     seen = _stub(monkeypatch)
 
-    runner.invoke(main, ["materialize", "baseline/fit", "report"])
+    runner.invoke(main, ["materialize", CLUSTER_ID, "baseline/fit", "report"])
 
-    assert seen == [("materialize", (["baseline/fit", "report"], {"refresh": False}))]
+    assert seen == [
+        ("materialize", (["baseline/fit", "report"], {"refresh": False, "cluster_id": CLUSTER_ID}))
+    ]
 
 
 def test_refresh_reaches_both_modes(
@@ -364,11 +380,11 @@ def test_refresh_reaches_both_modes(
     reports on a run nobody is going to make."""
     seen = _stub(monkeypatch)
 
-    runner.invoke(main, ["materialize", "--refresh"])
+    runner.invoke(main, ["materialize", CLUSTER_ID, "--refresh"])
     runner.invoke(main, ["materialize", "--check", "--refresh"])
 
     assert seen == [
-        ("materialize", ([], {"refresh": True})),
+        ("materialize", ([], {"refresh": True, "cluster_id": CLUSTER_ID})),
         ("check", ([], {"refresh": True})),
     ]
 
@@ -393,7 +409,7 @@ def test_a_run_with_nothing_to_do_exits_zero(
 ) -> None:
     _stub(monkeypatch)
 
-    result = runner.invoke(main, ["materialize"])
+    result = runner.invoke(main, ["materialize", CLUSTER_ID])
 
     assert result.exit_code == 0
     assert "nothing to do" in result.output
@@ -414,6 +430,22 @@ def test_check_exits_nonzero_when_something_would_run(
     assert "would run baseline/fit" in result.output
 
 
+def test_check_treats_all_positionals_as_targets_without_querying_compute(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine import compute
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("check contacted compute")
+
+    monkeypatch.setattr(compute, "connect", unexpected)
+    monkeypatch.setattr(compute, "validate_id", unexpected)
+    seen = _stub(monkeypatch)
+    result = runner.invoke(main, ["materialize", "--check", "baseline/first"])
+    assert result.exit_code == 0
+    assert seen == [("check", (["baseline/first"], {"refresh": False}))]
+
+
 def test_a_failure_exits_nonzero(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -424,7 +456,7 @@ def test_a_failure_exits_nonzero(
         materialize=MaterializeReport(failed=["baseline/fit"], blocked=["baseline/report"]),
     )
 
-    result = runner.invoke(main, ["materialize"])
+    result = runner.invoke(main, ["materialize", CLUSTER_ID])
 
     assert result.exit_code == 1
     assert "failed baseline/fit" in result.output
@@ -444,7 +476,7 @@ def test_engine_prose_is_rendered_as_written(
         materialize=MaterializeReport(warnings=["no [project].license declared"]),
     )
 
-    result = runner.invoke(main, ["materialize"])
+    result = runner.invoke(main, ["materialize", CLUSTER_ID])
 
     assert "no [project].license declared" in result.output
 
@@ -456,7 +488,7 @@ def test_the_json_report_is_machine_readable(
 
     _stub(monkeypatch, materialize=MaterializeReport(made=["baseline/fit"]))
 
-    result = runner.invoke(main, ["materialize", "--json"])
+    result = runner.invoke(main, ["materialize", CLUSTER_ID, "--json"])
 
     assert json.loads(result.output) == {
         "ok": True,
@@ -485,7 +517,7 @@ def test_an_engine_refusal_is_a_clean_error(
 
     monkeypatch.setattr(engine, "materialize", refuse)
 
-    result = runner.invoke(main, ["materialize"])
+    result = runner.invoke(main, ["materialize", CLUSTER_ID])
 
     assert result.exit_code == 1
     assert "uncommitted changes" in result.output

@@ -42,13 +42,6 @@ from lightcone.engine.project import ProjectError, _check_call
 #: inheriting podman behavior through a `!= "docker"` back door.
 _PODMAN_FAMILY = ("podman", "podman-hpc")
 
-#: The runtimes whose image store every node of an allocation can see —
-#: podman-hpc's migrate squashes the image to the shared filesystem.
-#: podman's and docker's overlay stores are node-local, which is what
-#: the multi-node materialize refusal stands on.
-_SHARED_STORE_RUNTIMES = ("podman-hpc",)
-
-
 @dataclass(frozen=True)
 class Runtime:
     """The execution world one run enters, resolved once by whoever owns it.
@@ -399,9 +392,9 @@ def converge(runtime: Runtime) -> list[str]:
     """Make the environment match the lock, whichever world this is.
 
     The one spelling of the mode dispatch, so the entry points that
-    converge (materialize, the rerun worker) cannot drift apart. The
-    probe deliberately does not call this in direct mode — its syncing
-    ``uv run`` hop *is* its converge, documented at the call site.
+    converge (materialize, probes, the rerun worker) cannot drift apart.
+    Cluster execution converges on the driver before submitting tasks;
+    workers use the prepared environment without concurrent sync writes.
 
     Args:
         runtime: The resolved runtime.

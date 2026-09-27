@@ -25,6 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from conftest import CLUSTER_ID
 
 from lightcone.engine import dataset
 from lightcone.engine import materialize as engine
@@ -121,12 +122,10 @@ def test_a_materialized_crate_validates_against_the_provenance_profile(
     pyproject = root / "pyproject.toml"
     pyproject.write_text(pyproject.read_text() + 'license = "MIT"\n')
     # A remote gives the tools http ids; the manifests record origin.
-    dataset._git(
-        ["remote", "add", "origin", "https://github.com/example/analysis.git"], cwd=root
-    )
+    dataset._git(["remote", "add", "origin", "https://github.com/example/analysis.git"], cwd=root)
     dataset.save(root, [root], "license and remote")
 
-    report = engine.materialize(root, [])
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
     assert report.ok and (root / "ro-crate-metadata.json").is_file()
     assert not dataset.status(root)
 

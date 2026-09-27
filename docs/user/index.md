@@ -39,7 +39,7 @@ recipe, the decisions, the input data, the environment, and the commit.
         # describe your analysis in astra.yaml, write your scripts,
         # declare what they import (uv add numpy ...), then:
         git add -A && git commit -m "First analysis"
-        lc materialize
+        lc materialize "$CLUSTER"
         ```
 
     === "pip"
@@ -49,7 +49,7 @@ recipe, the decisions, the input data, the environment, and the commit.
         # describe your analysis in astra.yaml, write your scripts,
         # declare what they import (uv add numpy ...), then:
         git add -A && git commit -m "First analysis"
-        lc materialize
+        lc materialize "$CLUSTER"
         ```
 
 That's the shortest possible path. The rest of the guide is the

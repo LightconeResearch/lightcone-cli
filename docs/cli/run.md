@@ -9,19 +9,24 @@ question.
 ## Synopsis
 
 ```text
-lc run COMMAND...
+lc run CLUSTER_ID -- COMMAND...
 ```
 
-Everything after `run` is the command, verbatim — flags included.
+The first argument is the cluster ID returned by `lc compute launch`.
+Everything after `--` is the command, verbatim — flags included.
 Argv, the `docker run` / `uv run` convention: a single quoted string
 would be exec'd as one filename, so probe shell syntax through
-`bash -c` instead. `lc run` takes no options of its own, so nothing
-else needs escaping:
+`bash -c` instead. Set `CLUSTER` to your allocated cluster ID:
 
 ```bash
-lc run python -c "import numpy; print(numpy.__version__)"
-lc run python src/fit.py --points data/points.csv --outliers keep --output /tmp/probe
+lc run "$CLUSTER" -- python -c "import numpy; print(numpy.__version__)"
+lc run "$CLUSTER" -- python src/fit.py --points data/points.csv --outliers keep --output /tmp/probe
 ```
+
+The command executes on a validated worker of that cluster, and streams its
+stdout/stderr back to the CLI. The client detaches on completion; the allocation
+stays available until `lc compute down` or its time limit. A missing cluster ID
+is an error, with no implicit local execution. See [compute](compute.md).
 
 ## What it does
 
@@ -55,7 +60,7 @@ and the fix (declare the dependency) is the same in both places.
 ## Examples
 
 ```bash
-lc run python -c "import scipy"        # is the package in the lock?
-lc run bash -c 'echo $HOME'            # see the private HOME a recipe gets
-lc run python src/fit.py --help        # exercise a script exactly as a recipe would
+lc run "$CLUSTER" -- python -c "import scipy"        # is the package in the lock?
+lc run "$CLUSTER" -- bash -c 'echo $HOME'            # see the private HOME a recipe gets
+lc run "$CLUSTER" -- python src/fit.py --help        # exercise a script exactly as a recipe would
 ```

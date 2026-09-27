@@ -1,11 +1,13 @@
 """Tests for `lightcone.engine.run` — what `lc run` decides before it execs.
 
-The project check, the declared inputs, and the uv hop. Nothing here
-spawns a command; the boundary is tested in `test_sandbox_*`.
+The project check, declared inputs, worker validation and remote command
+forwarding. Sandbox enforcement is tested in `test_sandbox_*`.
 """
 
 from __future__ import annotations
 
+import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -190,16 +192,14 @@ def test_uv_is_pinned_to_the_project_and_refuses_to_drift(project: Path) -> None
     assert prefix[-1] == "--"
 
 
-def test_a_recipe_does_not_sync_where_a_probe_does(project: Path) -> None:
-    """The one thing the two hops disagree about: a probe converges the
-    environment it is about to describe, and a recipe must not, or every
-    concurrent worker writes the same `.venv`."""
+def test_a_worker_does_not_sync_the_prepared_environment(project: Path) -> None:
+    """The driver converges once; concurrent workers must not rewrite it."""
     assert "--no-sync" in uv_prefix(project, sync=False)
     assert "--exact" not in uv_prefix(project, sync=False)
 
 
 def test_the_probe_reports_the_uv_scrub_in_its_notes(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str
 ) -> None:
     """The probe is what builds the child environment, so the scrub's
     fact rides its outcome — the caller prints notes verbatim, and no
@@ -214,6 +214,96 @@ def test_the_probe_reports_the_uv_scrub_in_its_notes(
     )
     monkeypatch.setattr(sandbox, "run", lambda *a, **k: outcome)
 
-    outcome = engine_run.probe(project, ["true"])
+    outcome = engine_run.probe(project, ["true"], cluster_id=cluster_id)
 
     assert any("UV_NO_BINARY" in note for note in outcome.notes)
+
+
+def test_remote_probe_forwards_both_streams_and_exit_status(
+    project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from lightcone.engine import container
+    from lightcone.engine.sandbox.boundary import Unavailable
+    from lightcone.engine.sandbox.model import Capability
+
+    monkeypatch.setattr(engine_run, "uv_prefix", lambda *a, **k: [])
+    monkeypatch.setattr(container, "backend", lambda _: Unavailable(Capability("none")))
+    outcome = engine_run.probe(
+        project,
+        [sys.executable, "-c", (
+            "import sys; print('remote stdout'); print('remote stderr', file=sys.stderr); "
+            "assert sys.stdin.read() == ''; sys.exit(7)"
+        )],
+        cluster_id=cluster_id,
+    )
+    output = capsys.readouterr()
+    assert "remote stdout\n" in output.out
+    assert "remote stderr\n" in output.err
+    assert outcome.returncode == 7
+
+
+def test_an_unavailable_cluster_fails_before_environment_preparation(
+    project: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine import compute, container
+
+    def unavailable(value: str) -> None:
+        raise ProjectError("allocation is pending")
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("project preparation ran before cluster validation")
+
+    monkeypatch.setattr(compute, "connect", unavailable)
+    monkeypatch.setattr(container, "runtime_for_run", unexpected)
+    with pytest.raises(ProjectError, match="pending"):
+        engine_run.probe(project, ["true"], cluster_id="pending")
+
+
+def test_a_remote_task_exception_is_an_engine_error_and_leaves_compute_available(
+    project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str,
+) -> None:
+    from lightcone.engine import compute, container
+    from lightcone.engine.sandbox.boundary import Unavailable
+
+    monkeypatch.setattr(engine_run, "uv_prefix", lambda *a, **k: ["/nonexistent-lc-test-uv"])
+    monkeypatch.setattr(container, "backend", lambda _: Unavailable())
+    with pytest.raises(ProjectError, match="cluster execution failed") as raised:
+        engine_run.probe(project, ["true"], cluster_id=cluster_id)
+    assert "did not stop the allocation" in str(raised.value)
+    with compute.connect(cluster_id) as client:
+        assert client.scheduler_info()["workers"]
+
+
+def test_worker_validation_checks_compatibility_and_shared_storage(
+    project: Path, cluster_id: str,
+) -> None:
+    from lightcone.engine import compute
+    from lightcone.engine.compute.execution import workers
+
+    with compute.connect(cluster_id) as client, workers(client, project) as execution:
+        environment = execution.environment
+        execution.environment = replace(environment, signature=("other source", (3, 1), "0"))
+        with pytest.raises(ProjectError, match="does not match"):
+            execution.validate()
+        execution.environment = environment
+        environment.marker.write_text("another filesystem's contents")
+        with pytest.raises(ProjectError, match="same project storage"):
+            execution.validate()
+
+
+def test_each_invocation_gets_new_task_keys_and_keeps_the_cluster_alive(
+    project: Path, cluster_id: str,
+) -> None:
+    from lightcone.engine import compute
+    from lightcone.engine.compute.execution import workers
+
+    with compute.connect(cluster_id) as client:
+        with workers(client, project) as execution:
+            first = execution.submit(str, "first", key="probe")
+            assert first.result() == "first"
+        with workers(client, project) as execution:
+            second = execution.submit(str, "second", key="probe")
+            assert second.result() == "second"
+        assert first.key != second.key
+        assert client.scheduler_info()["workers"]

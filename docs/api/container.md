@@ -57,7 +57,7 @@ Sources: `src/lightcone/engine/image.py`,
   `OCIBackend`, data-parameterized; the podman family is stated once
   (`_PODMAN_FAMILY`) and asked positively, so a new runtime falls
   outside it by default. podman-hpc adds exactly one step (`migrate`,
-  outside the load branch) and joins `_SHARED_STORE_RUNTIMES`.
+  outside the load branch). Execution verifies the prepared image on each worker.
   Detection order podman-hpc → podman → docker; docker's daemon is
   probed at detection.
 - **The architecture gate refuses before the load** — a wrong-arch

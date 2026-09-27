@@ -55,7 +55,7 @@ speculatively.
 | 4 | **Fabric** — `lc materialize`, worker sequence, mid-run relock gate | ✅ **done** |
 | 5 | **Sandbox layer** — Landlock / Seatbelt, exec-shim, denial UX, `lc run` | ✅ **done** |
 | 6 | **Container hatch** — `[tool.lightcone.image]`, `lc build`, OCI runtimes as the exec boundary, the image archived in the dataset | ✅ **done** |
-| 7 | **Venues** — SLURM in-allocation execution, login guard, podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
+| 7 | **Compute** — explicit local/Slurm allocation, login guard, podman-hpc | 🔶 **landed; Perlmutter spike pending** — hub/GKE and Cloud Build deferred to their own layer |
 | 8 | **Publication view** — the RO-Crate converged by materialize, foreign writes stale by history; **no `lc verify`, no `lc export`, by decision** | ✅ **done** |
 
 `lc status` landed with the invalidation model rather than at layer 8:
@@ -1265,15 +1265,12 @@ papered over — what answers whether an output's bytes are its own is
 every *other* results tree: another universe, and another analysis's
 own.
 
-**`cluster_for_run()` is the seam, and it is two methods wide.**
-`submit(fn, *args, key=…)` and `completed(handles)`. That is all the
-driver asks of a scheduler and all a venue has to supply — which is what
-lets the suite run a graph inline in-process, and what will let something
-larger than a laptop land behind it without the driver noticing. A venue
-owes one thing beyond the two methods: its worker processes must run an
-interpreter that imports `lightcone.engine` at the driver's version —
-see the engine-is-the-host's-uv-tool decision for how each venue
-provides that, and for what workers do *not* need (git, git-annex).
+**`cluster_for_run(cluster_id, root)` is the execution seam.** It borrows a
+standard client, validates the selected workers, and returns `prepare`, `submit`,
+and `completed`. Runtime/input preflight stays separate from task submission and
+result consumption. Inline schedulers keep graph tests cheap, while real borrowed
+clients cover the allocation boundary. Workers must match the driver installation
+and see the shared project; git and git-annex remain driver responsibilities.
 
 ### Recorded deviations from the spec (layers 2 and 4)
 
@@ -1685,98 +1682,27 @@ refusal point.
 
 ## Key Invariants (layer 7)
 
-**The venue is detected, never configured, and only in one place.**
-`cluster_for_run()` is the whole ladder — a SLURM allocation
-(`SLURM_JOB_ID` set) spans every node it was granted, anything else is
-the local machine — and nothing outside that function asks where a run
-executes. The allocation *is* the resource declaration: the user already
-answered every sizing question at `salloc`/`sbatch`, so lc adds no venue
-config surface, no report field, and no status line (a venue is host
-state, and the status header is repository facts). The venue speaks only
-when it refuses, and those refusals carry the job facts (nodes expected
-vs connected, srun's exit code). A future submission-model venue
-(dask-jobqueue) is one more branch in this ladder plus the config table
-it genuinely needs — nothing else changes.
+**Compute is explicitly allocated and borrowed (2026-09).** This supersedes
+the ambient venue ladder. `lc compute resources/launch/status/down` manages local
+and Slurm allocations through `engine.compute.Provider`. `run` and `materialize`
+require a cluster ID as their first positional argument; neither creates compute.
+`materialize --check` remains cluster-free. Catalog offers expose resource shapes;
+connections supply stable native namespaces. Native jobs and validated local OS
+identities are the allocation authority; standard Dask supplies execution state.
+No Lightcone server, lifecycle database, custom Dask worker, or implicit local fallback.
 
-**The allocation branch is `venue.slurm_client()`**: a scheduler in the
-driver process bound to `SLURMD_NODENAME` (the default loopback bind is
-unreachable from peer nodes), one `srun --overlap --ntasks=<nodes>
---ntasks-per-node=1` launching `sys.executable -m
-distributed.cli.dask_worker` — the driver's own interpreter, the tool
-env on the shared filesystem, so driver and workers are the identical
-installation and `-m` cannot resolve to a different install the way a
-PATH-found `dask` can. One worker process per node with
-`--nthreads=<cpus>` (tasks block in `subprocess.wait()` with the GIL
-released — the local branch's own rationale), `--no-nanny` (srun won't
-relaunch either; the nanny logs a spurious death on every clean
-retirement), `--memory-limit 0` (the real work is in subprocesses behind
-the exec boundary, so Dask's memory manager could only pause workers
-over phantom numbers), `--death-timeout 60` (a worker whose driver died
-exits instead of holding its node to walltime), and `--local-directory`
-on a **literal `/tmp`** — never the project tree, explicit so ambient
-`DASK_TEMPORARY_DIRECTORY` cannot point it there, and literal rather
-than the driver's `tempfile.gettempdir()` because a site prolog can
-scope `TMPDIR` to the node or job step that set it, leaving a
-driver-resolved path absent on the allocation's other nodes. The
-driver's node
-hosts a worker too, and a single-node allocation takes the same srun
-path — one path means the venue is exercised on the cheapest allocation.
+**Execution borrows a client and leaves the allocation alive.** Validate native
+identity, actual worker placement, matching code/Python/Dask, shared project reads
+and writes, runtime and inputs. The driver keeps git and convergence. Use unique
+invocation task keys. Interrupted unreported outputs remain in place because a
+client disconnect does not prove remote subprocess termination. Comprehensive
+cancellation/fencing and simultaneous writers are deferred by explicit user decision.
 
-**The srun child is the one documented exception to `project._run`.**
-That seam is run-to-completion capture; this child lives as long as the
-run, and its stderr must reach the terminal live (srun's own errors are
-the user's to see as they happen). It is a `subprocess.Popen` with the
-rationale at the call site, and the fake-srun tests keep the argv
-inspectable. Worker connection is a poll loop rather than
-`wait_for_workers`, so a dead srun is reported as *its exit code*
-immediately, not as a timeout two minutes later; teardown retires
-workers first (they exit 0, srun ends silently — killing srun prints
-"srun: forcing job termination" on every clean run) and escalates
-wait → terminate → kill, bounded, never a hang. A leaked `SLURM_JOB_ID`
-with no srun on PATH is a loud refusal, never a silent local fallback —
-and the other leak shapes get the same treatment: a non-integer SLURM
-count refuses naming the variable (`venue._int_env`), and a
-`SLURMD_NODENAME` that does not resolve becomes a `ProjectError` naming
-the bind rather than the raw `socket.gaierror` (distributed wraps it in
-a `RuntimeError`, so the constructor catches both).
-
-**The login guard is materialize-scoped, table-driven, and comes
-first.** `venue.require_compute_node()` refuses iff a known center's
-marker is in the environment and `SLURM_JOB_ID` is not (a marker is set
-on compute nodes too; the allocation is what distinguishes them),
-naming that center's copy-pasteable `salloc` and `sbatch --wrap 'lc
-materialize'` commands. The centers live in `venue._SITES` — one row
-each: name, marker variable, and the center's own allocation spellings,
-**verified against the center's documentation, never guessed** (the
-remedies rule). NERSC is the seeded row; supporting another center is
-one row, and nothing else moves — the conftest scrub derives its marker
-list from the table, and `test_a_new_center_is_one_table_row` pins that
-the row alone drives the message. The guard is the first line of
-`materialize()`, before even the tool checks: the allocation is the
-remedy with queue latency, so the user submits it first and fixes
-whatever later refusals name while waiting. The rerun entry point
-(`worker.main`) is guarded too — a rerun executes a recipe, and the
-record's `cmd` is how recipes reach a login node without `lc` in the
-command line. `check()`, `status()` and `lc run` never call it — a login
-node is exactly where "where does this project stand" gets asked.
-
-**Containerized runs assume a homogeneous allocation**, and the one
-part of that lc can check is *enforced*: a multi-node allocation with a
-containerized project **refuses** unless the runtime's image store spans
-nodes — `container._SHARED_STORE_RUNTIMES`, a positively-stated fact
-like `_PODMAN_FAMILY`, holding podman-hpc alone — because podman's and
-docker's stores are node-local: the image loads on the driver's node
-only, and every task scheduled elsewhere would fail at `run <id>` with
-`--pull=never` forbidding the fetch. The check sits in `materialize()`
-before the runtime resolves (a refusal must not cost an image build, so
-it asks `runtime_hint()`, letting a wholly missing runtime reach
-`runtime_for_run`'s own refusal) and not in `runtime_for_run` (the rerun
-entry point shares that, and a rerun is a one-node run wherever it
-sits). The rest stays a
-recorded assumption: every node offers the same runtime binary and sees
-the shared-filesystem project tree. podman-hpc is what makes multi-node
-true on NERSC — `migrate` squashes the image to the shared filesystem,
-where every compute node runs it.
+**Local allocation and workers enforce the login policy.** A recognized site
+requires a matching actual host/SLURMD_NODENAME and job ID. Inheriting a job ID in a
+login shell is insufficient. Login-node drivers may submit and attach to remote
+compute. Containerized execution verifies the prepared runtime/image on every
+selected worker; shared podman-hpc storage remains the NERSC deployment path.
 
 **podman-hpc is a spelling, not a shape.** It rides the existing
 `OCIBackend` (standard podman flags, `--userns=keep-id`,
@@ -1829,9 +1755,9 @@ imitate there. `boundary.run`'s exit-125 note is a
 podman/docker-family fact, not a `contains_prefix` fact — it becomes
 mechanism-keyed when a non-OCI backend lands.
 
-**Pending the one-time Perlmutter spike** (run `tests/
+**Pending the one-time Perlmutter deployment test** (run `tests/
 test_container_smoke.py` on a login node, then one materialize through
-`sbatch`; record findings here): `--overlap` and `--cpus-per-task`
+`sbatch`; record findings here): detached salloc session lifetime and `--cpus-per-task`
 behavior inside salloc/sbatch steps; `nidXXXXXX` resolution from peer
 nodes (else `--interface hsn0`); `SLURM_CPUS_ON_NODE` on a CPU node
 (128 vs 256 hyperthreads); cold-Lustre `distributed` import vs the
@@ -2349,7 +2275,7 @@ written to" — a path the schema never defined. What changed, and why:
 | Change how the spec becomes a graph | `src/lightcone/engine/plan.py` + `tests/test_plan.py` | Ask `astra.resolve`; if the answer is missing, the fix is a PR to astra-tools. Anything ambiguous is a `ProjectError`, never a guess |
 | Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
 | Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
-| Change where a run executes | `src/lightcone/engine/venue.py` + `materialize.cluster_for_run` + `tests/test_venue.py` | One detection ladder, in `cluster_for_run` alone; venues are detected, never configured; test by faking the host (env vars + a stub srun), never the code |
+| Change where a run executes | `src/lightcone/engine/compute/` + `materialize.cluster_for_run` + `tests/test_compute*.py` | Explicit cluster IDs; provider-owned native allocation lifecycle; borrowed standard Dask clients |
 | Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer` and the annex key map as `keys`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
 | Change how a foreign write is detected | `dataset.last_writer` + `materialize._foreign_write` + `tests/test_dataset.py` | History, never hashing; `datalad_run_subject` is the one spelling of the record's subject; a foreign write classifies `stale` in every verb |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
@@ -2395,10 +2321,9 @@ written to" — a path the schema never defined. What changed, and why:
   clean afterwards are not questions a stub can answer. It is cheap anyway
   — the fixture's project declares no dependencies, so `uv lock` and
   `uv sync` together cost milliseconds.
-  - **`cluster_for_run()` is the one new monkeypatch point.** Most tests
-    swap in an inline scheduler and never start Dask; exactly one starts a
-    real `LocalCluster`, because a seam is only worth having if the thing
-    it abstracts still fits through it.
+  - **`cluster_for_run(cluster_id, root)` is the graph-test monkeypatch point.**
+    Most tests use an inline scheduler; integration tests borrow real standard
+    Dask clients, including detached allocation and processes-based cases.
 - `tests/test_cli.py` — the CLI surface only: flags reaching the engine,
   rendering, exit codes, error translation. Rich wraps output at terminal
   width, so assert on short unwrappable fragments.
@@ -2422,17 +2347,11 @@ The sandbox suite splits along the seam, which is what makes it cheap:
 - `tests/test_run.py` — what `lc run` decides *before* it execs: the
   current-directory project check, declared inputs, the uv hop. Nothing
   spawns.
-- `tests/test_venue.py` — the venue's surface is ambient (env vars, an
-  srun on PATH), so the suite fakes the *host*, never the code: SLURM
-  variables set deliberately, a bash stub standing in for srun, and the
-  end-to-end tests run a real graph through the real detection, bind,
-  launch and teardown path on any machine — real worker processes, no
-  SLURM anywhere. `SLURMD_NODENAME=127.0.0.1` keeps the scheduler bind
-  hermetic against CI DNS. No required-vs-skip gating: nothing depends
-  on host capability. The `venue_env` autouse fixture in conftest scrubs
-  the venue variables suite-wide — without it the whole suite fails on a
-  NERSC login node (the guard) and the real-cluster test would srun
-  across a live allocation.
+- `tests/test_compute*.py` — resource contracts, malformed native identity,
+  real detached local lifecycle and fresh-process reconnects, simulated Slurm
+  commands and a real standard-Dask bootstrap. No Slurm allocation is submitted.
+  `tests/test_venue.py` varies environment and hostname evidence to exercise
+  placement policy. Shared fixtures remove ambient site markers.
 - `tests/test_image.py` — **pure**: the declaration, the document, the
   render's structure and ordering, tag sensitivity both ways, and the
   `env_version` integration. `tests/test_sandbox_oci.py` — **pure**: the
@@ -2462,8 +2381,8 @@ The sandbox suite splits along the seam, which is what makes it cheap:
   RECOMMENDED pinned to the recorded `_FLOOR` set.
 
 Note the autouse `tools` fixture stubs `engine.project._run` only —
-sandbox tests spawn real processes deliberately, and are the one place in
-the suite that does.
+sandbox, allocation, and execution integration tests also spawn real processes
+deliberately. Slurm tests simulate native submission commands.
 
 ### The enforcement suite, and why it is shaped that way
 

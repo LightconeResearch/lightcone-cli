@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 from collections import deque
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -131,12 +131,12 @@ def run(
     cwd: Path,
     env: dict[str, str],
     prefix: Sequence[str] = (),
+    output: Callable[[str, str], None] | None = None,
 ) -> Outcome:
     """Run a command through a backend, and explain it if it fails.
 
-    stdout is inherited untouched, so output arrives live. stderr is teed
-    — written through as it arrives and retained — because the denial
-    classifier needs text and the user needs immediacy.
+    stdout is inherited unless an output receiver forwards both streams.
+    stderr is also retained because the denial classifier needs its text.
 
     Args:
         backend: The mechanism to wrap with.
@@ -152,6 +152,8 @@ def run(
             host plumbing inside a container, and the env overlay is
             that backend's to apply natively rather than through a
             host-resolved ``env``.
+        output: Optional receiver for stdout/stderr chunks, used when the
+            caller forwards a remote command's output to its own terminal.
 
     Returns:
         The exit code, what was actually enforced, and any lines the
@@ -178,15 +180,30 @@ def run(
         wrapped,
         cwd=cwd,
         env=child_env,
+        stdin=subprocess.DEVNULL if output is not None else None,
+        stdout=subprocess.PIPE if output is not None else None,
         stderr=subprocess.PIPE,
         text=True,
         errors="replace",
     )
     assert proc.stderr is not None  # Popen was given PIPE
-    tail = _Tail(proc.stderr)
+    tail = _Tail(proc.stderr, output)
     tail.start()
+    stdout: threading.Thread | None = None
+    if output is not None:
+        assert proc.stdout is not None
+
+        def forward() -> None:
+            assert proc.stdout is not None and output is not None
+            for line in proc.stdout:
+                output("stdout", line)
+
+        stdout = threading.Thread(target=forward, daemon=True)
+        stdout.start()
     returncode = proc.wait()
     tail.join(timeout=5)
+    if stdout is not None:
+        stdout.join(timeout=5)
 
     # Imported here, not at module scope: `sandbox/__init__` loads this
     # module eagerly, and the shim drags ctypes in for one integer.
@@ -272,9 +289,12 @@ class _Tail(threading.Thread):
     and a recipe that prints megabytes must not be held whole.
     """
 
-    def __init__(self, stream: IO[str]) -> None:
+    def __init__(
+        self, stream: IO[str], output: Callable[[str, str], None] | None = None
+    ) -> None:
         super().__init__(daemon=True)
         self._stream = stream
+        self._output = output
         # A deque because the bound is on *bytes*, so it cannot be
         # delegated to `maxlen` — but eviction is from the left, and
         # `list.pop(0)` is O(n) under exactly the load the bound exists
@@ -285,7 +305,10 @@ class _Tail(threading.Thread):
     def run(self) -> None:
         """Pump the stream through to stderr, keeping a bounded tail."""
         for line in self._stream:
-            sys.stderr.write(line)
+            if self._output is None:
+                sys.stderr.write(line)
+            else:
+                self._output("stderr", line)
             self._chunks.append(line)
             self._size += len(line)
             while self._size > _STDERR_TAIL_BYTES and len(self._chunks) > 1:

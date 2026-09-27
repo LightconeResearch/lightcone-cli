@@ -14,6 +14,8 @@ one it finishes with.
 
 from __future__ import annotations
 
+import sys
+import threading
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -22,6 +24,7 @@ from typing import Any
 from lightcone.engine import container, sandbox
 from lightcone.engine.project import (
     SPEC_FILENAME,
+    ProjectError,
     child_env,
     require_uv,
     uv_prefix,
@@ -29,57 +32,86 @@ from lightcone.engine.project import (
 )
 
 
-def probe(project: Path, command: Sequence[str]) -> sandbox.Outcome:
-    """Run a command in the project environment, inside the boundary.
-
-    A containerized probe never builds the image — it finds one, or
-    refuses naming the exact ``lc build`` — and converges the in-image
-    environment before executing, which is the same promise the direct
-    probe makes through its syncing ``uv run`` hop: the environment a
-    probe describes is one it just converged.
+def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.Outcome:
+    """Run a sandboxed command on one worker of the selected cluster.
 
     Args:
-        project: The project root.
-        command: The argv to run. Required — there is deliberately no bare
-            ``lc run`` shell, since an agent that opens an interactive
-            shell waits forever for input nobody will type.
+        project: The shared project root.
+        command: Command argv; no implicit shell is opened.
+        cluster_id: The allocation identity returned by ``lc compute launch``.
 
     Returns:
-        The exit code, what the boundary enforced, and any lines the
-        caller should print verbatim.
+        The command's exit status, sandbox attestation and diagnostic notes.
+
+    Raises:
+        ProjectError: If the cluster or its workers cannot execute this project.
     """
-    require_uv()
-    spec = read_spec(project)
+    from lightcone.engine import compute
+    from lightcone.engine.compute.execution import workers
 
-    runtime = container.runtime_for_run(project, build=False)
-    if runtime.mode == "containerized":
-        # The probe's converge. Direct mode's is the syncing hop below —
-        # the deliberate exception to `container.converge`, because there
-        # the hop itself is what converges.
-        container.sync(project, runtime)
+    with compute.connect(cluster_id) as client, workers(client, project) as execution:
+        require_uv()
+        paths = input_paths(project, read_spec(project))
+        runtime = container.runtime_for_run(project, build=False)
+        warnings = container.converge(runtime)
+        execution.prepare(runtime, paths)
+        topic = f"lc-output-{execution.invocation}"
+        finished = threading.Event()
 
-    built = container.policy_for(runtime, input_paths(project, spec))
-    with sandbox.scope(built) as policy:
-        outcome = sandbox.run(
-            container.backend(runtime),
-            policy,
-            list(command),
-            cwd=project,
-            # The direct hop converges; the containerized one must not —
-            # the converge above already did, into the in-image
-            # environment the hop is about to enter.
-            prefix=uv_prefix(project, sync=runtime.mode == "direct"),
-            # Same reason as convergence: this uv invocation names its
-            # project explicitly, so an environment activated elsewhere
-            # is never what we mean — and uv says so, once per run, in
-            # the middle of the probe's own output.
-            env=child_env(),
-        )
-    # The probe is what called `child_env`, so the probe's outcome is
-    # where the scrub's fact belongs — the caller prints notes verbatim.
+        def receive(event: tuple[float, dict[str, Any]]) -> None:
+            message = event[1]
+            if message.get("done"):
+                finished.set()
+            elif message.get("stream") in ("stdout", "stderr"):
+                stream = sys.stdout if message["stream"] == "stdout" else sys.stderr
+                stream.write(message["text"])
+                stream.flush()
+
+        client.subscribe_topic(topic, receive)
+        try:
+            future = execution.submit(_probe, runtime, paths, tuple(command), topic, key="probe")
+            try:
+                outcome: sandbox.Outcome = future.result()
+            except ProjectError:
+                raise
+            except Exception as exc:
+                raise ProjectError(
+                    f"cluster execution failed: {exc}. lc did not stop the allocation; "
+                    "tasks that did not report may still be running"
+                ) from exc
+            if not finished.wait(timeout=10):
+                warnings.append("remote output forwarding did not finish before its deadline")
+        finally:
+            client.unsubscribe_topic(topic)
+    notes = [*(f"uv: {warning}" for warning in warnings)]
     if warning := uv_scrub_warning():
-        outcome = replace(outcome, notes=(warning, *outcome.notes))
-    return outcome
+        notes.append(warning)
+    return replace(outcome, notes=tuple(dict.fromkeys((*outcome.notes, *notes))))
+
+
+def _probe(
+    runtime: container.Runtime, paths: list[Path], command: tuple[str, ...], topic: str
+) -> sandbox.Outcome:
+    """Execute the prepared probe; the driver alone converges its environment."""
+    from distributed import get_worker
+
+    worker = get_worker()
+
+    def output(stream: str, text: str) -> None:
+        worker.log_event(topic, {"stream": stream, "text": text})
+
+    try:
+        built = container.policy_for(runtime, paths)
+        with sandbox.scope(built) as policy:
+            outcome = sandbox.run(
+                container.backend(runtime), policy, command, cwd=runtime.root,
+                prefix=uv_prefix(runtime.root, sync=False), env=child_env(), output=output,
+            )
+        if warning := uv_scrub_warning():
+            outcome = replace(outcome, notes=(*outcome.notes, warning))
+        return outcome
+    finally:
+        worker.log_event(topic, {"done": True})
 
 
 def read_spec(project: Path) -> dict[str, Any]:

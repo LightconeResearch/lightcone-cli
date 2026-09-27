@@ -14,7 +14,10 @@ import pytest
 from click.testing import CliRunner
 
 from lightcone.engine import dataset, project, templates
+from lightcone.engine.compute.model import Identity
 from lightcone.engine.project import _run as _real_run
+
+CLUSTER_ID = Identity("00000000-0000-0000-0000-000000000001", "test", "test").encode()
 
 
 @pytest.fixture
@@ -27,8 +30,7 @@ def venue_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip the host's venue out of the suite's environment.
 
     On a known center's login node every materialize test would otherwise
-    meet the login guard, and inside an allocation the real-cluster test
-    would launch srun across it. The site markers come from the guard's
+    meet the login guard. The site markers come from the guard's
     own table, so a center added there is scrubbed here for free; the
     venue tests set these back deliberately.
     """
@@ -172,6 +174,9 @@ class _Inline:
     def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
         return fn(*args)
 
+    def prepare(self, runtime: object, inputs: object) -> None:
+        pass
+
     def completed(self, handles: list[object]) -> Iterator[object]:
         yield from handles
 
@@ -183,10 +188,31 @@ def inline(monkeypatch: pytest.MonkeyPatch) -> None:
     from lightcone.engine import materialize
 
     @contextmanager
-    def fake() -> Iterator[_Inline]:
+    def fake(cluster_id: str, root: Path) -> Iterator[_Inline]:
+        assert cluster_id == CLUSTER_ID
         yield _Inline()
 
     monkeypatch.setattr(materialize, "cluster_for_run", fake)
+
+
+@pytest.fixture
+def cluster_id(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """Borrow a real small Dask cluster through the explicit connection seam."""
+    from distributed import Client, LocalCluster
+
+    from lightcone.engine import compute
+
+    with LocalCluster(
+        n_workers=1, threads_per_worker=2, processes=False, dashboard_address=None
+    ) as cluster:
+        @contextmanager
+        def connect(value: str) -> Iterator[Client]:
+            assert value == CLUSTER_ID
+            with Client(cluster, set_as_default=False) as client:
+                yield client
+
+        monkeypatch.setattr(compute, "connect", connect)
+        yield CLUSTER_ID
 
 
 @pytest.fixture

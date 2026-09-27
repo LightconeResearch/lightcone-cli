@@ -249,11 +249,19 @@ the record of what your results were computed with.
 
 ## 5. Materialize
 
+Configure the small local offer in [Running on a Cluster](cluster.md#start-locally),
+then allocate it explicitly. Keep the returned ID in `CLUSTER` for this walkthrough:
+
+```bash
+CLUSTER=$(lc compute launch --cpus 1 --memory 1 --json | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+lc compute status "$CLUSTER" --wait
+```
+
 Commit, then build:
 
 ```bash
 git add -A && git commit -m "Line-fit analysis"
-lc materialize
+lc materialize "$CLUSTER"
 ```
 
 The commit isn't ceremony — every output is committed together with the
@@ -313,7 +321,7 @@ Commit and materialize again:
 
 ```bash
 git add -A && git commit -m "Add the robust universe"
-lc materialize
+lc materialize "$CLUSTER"
 ```
 
 ```
@@ -349,7 +357,7 @@ then commit and materialize once more:
 
 ```bash
 git add -A && git commit -m "Declare a license"
-lc materialize
+lc materialize "$CLUSTER"
 ```
 
 Nothing is rebuilt — but `ro-crate-metadata.json` appears at the project
@@ -392,3 +400,5 @@ themselves follow with `git annex get` whenever you actually need them.
   in plain language.
 - The [ASTRA docs](https://astra-spec.org/latest/) — the full spec:
   sub-analyses, prior insights, findings, and evidence.
+
+Release the allocation when finished: `lc compute down "$CLUSTER"`.

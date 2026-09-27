@@ -30,6 +30,9 @@ dependencies = [
     "git-annex>=10.2026",
     "distributed>=2026.7",
     "rocrate>=0.15",
+    "cryptography>=44",
+    "psutil>=6",
+    "pyyaml>=6",
 ]
 
 [dependency-groups]
@@ -40,6 +43,8 @@ dev = [
     "mypy",
     "datalad",
     "roc-validator>=0.11.4",
+    "types-pyyaml>=6.0.12.20260906",
+    "types-psutil>=7.2.2.20260906",
 ]
 docs = [
     "zensical>=0.0.33",

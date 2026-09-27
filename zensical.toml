@@ -28,6 +28,7 @@ nav = [
       {"lc materialize" = "cli/materialize.md"},
       {"lc status" = "cli/status.md"},
       {"lc run" = "cli/run.md"},
+      {"lc compute" = "cli/compute.md"},
       {"lc build" = "cli/build.md"},
     ]},
     {"Engine Internals" = [
@@ -40,6 +41,7 @@ nav = [
       {"worker" = "api/worker.md"},
       {"materialize" = "api/materialize.md"},
       {"venue" = "api/venue.md"},
+      {"compute" = "api/compute.md"},
       {"sandbox" = "api/sandbox.md"},
       {"image & container" = "api/container.md"},
       {"crate" = "api/crate.md"},

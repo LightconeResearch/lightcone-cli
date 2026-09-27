@@ -11,18 +11,18 @@ Source: `src/lightcone/engine/materialize.py`.
 
 | Symbol | Role |
 |---|---|
-| `materialize(root, targets, *, refresh)` | The run: guards → converge → plan → fetch → schedule → save/restore loop → crate converge. |
+| `materialize(root, targets, *, cluster_id, refresh)` | The run: guards → converge → plan → fetch → schedule → save/restore loop → crate converge. |
 | `check(root, targets, *, refresh)` | The same classification without executing, committing, or fetching. Exempt from the dirty refusal. |
 | `status(root)` | The report: every output's state and provenance commit, plus the mode/image/sandbox header facts. |
 | `MaterializeReport` / `StatusReport` | The JSON surfaces; `ok` and `up_to_date` first. |
-| `cluster_for_run()` | The venue ladder, and the two-method scheduler seam (`submit`, `completed`). |
+| `cluster_for_run(cluster_id, root)` | Borrow and validate the cluster; the prepare/submit/completed scheduler seam (`submit`, `completed`). |
 | `run_record(...)` / `datalad_run_subject(...)` | The commit message `datalad rerun` replays, and the one spelling of its subject line — shared with the foreign-write comparator, because two strings here would drift. |
 | `_engine_requirement()` | How a record pins its engine: by version for a release, by source commit (hatch-vcs) for a dev build. |
 
 ## The run's order, and why
 
-1. **Login guard first** — the allocation is the remedy with queue
-   latency, so the user submits it before fixing anything else.
+1. **Explicit cluster first** — connect and validate actual worker placement,
+   compatibility and shared project storage before preparing the project.
 2. **Dirty refusal before the environment converge** — in
    containerized mode the converge can commit an image archive, and
    `dataset.save` commits the whole index; on a dirty tree the user's
@@ -37,9 +37,9 @@ Source: `src/lightcone/engine/materialize.py`.
    — the driver commits as results arrive, so any per-task read could
    answer differently mid-run. Nondeterminism in a provenance field is
    worse than either answer.
-6. **Save on `ok`, restore otherwise, `try/finally` around the loop**
-   — an interrupt restores whatever is still outstanding; the tree
-   ends as clean as it started.
+6. **Save on `ok`, restore reported failures** — unreported outputs are retained
+   after interruption because their tasks may still be writing. Allocation
+   management does not provide concurrent-writer or cancellation guarantees.
 
 ## What must stay true
 
@@ -69,4 +69,4 @@ Source: `src/lightcone/engine/materialize.py`.
 `tests/test_materialize.py` — real repositories, real recipes, a real
 `LocalCluster` through the seam exactly once, real `datalad rerun` for
 the record's whole claim. `cluster_for_run` is the one monkeypatch
-point for venue-free tests.
+point for allocation-free tests.

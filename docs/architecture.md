@@ -35,13 +35,14 @@ imports.
 ## One run, end to end
 
 ```text
-lc materialize
-  │  guard: compute node?  tools?  git identity?
+lc materialize "$CLUSTER"
+  │  connect: native identity + Dask readiness + worker/shared-storage validation
+  │  guard: tools?  git identity?
   │  refuse: dirty tree
   │  converge: uv.lock ⇄ .venv   (and the image, containerized)
   │  plan: astra validate + resolve  →  Graph of Tasks
   │  fetch: git annex get (declared inputs not in this clone)
-  │  venue: SLURM allocation? → srun workers · else LocalCluster
+  │  prepare: validate runtime and inputs on selected workers
   ├─► workers: reset output dir → sandbox → recipe → hash → manifest
   │            (never raise; return ok/current/behind/failed/blocked)
   └─  driver: consume results in one thread
@@ -151,16 +152,21 @@ environment sync and each recipe exec, over a read-only rootfs with
 the mount table as the whole policy. Execution pins the archive's
 config-blob id, never a tag.
 
-## Venues
+## Compute allocations
 
-`materialize.cluster_for_run()` is the one place that decides where a
-run executes, and the seam it returns is two methods wide —
-`submit(fn, *args, key=…)` and `completed(handles)`. A SLURM
-allocation (detected by `SLURM_JOB_ID`) gets one worker per node via a
-single `srun`, running the driver's own interpreter so driver and
-workers are the identical installation. Anything else is the local
-machine. Venues are detected, never configured; the only venue config
-that exists is the allocation the user already requested.
+`engine.compute` owns allocation lifecycle through a small provider protocol.
+A visible YAML catalog supplies ordered resource offers and stable native service
+namespaces. `compute launch` resolves resources and submits once. Slurm queries
+and validated local OS identities are authoritative for allocations; Dask is the
+authority for connected workers. Private scheduler/TLS files are connection
+material, not a registry.
+
+`compute.connect(CLUSTER_ID)` borrows a standard Dask client and closes only that
+client on exit. Both execution commands require a cluster ID. The materialization
+scheduler has `prepare`/`submit`/`completed` operations; `compute.execution` validates
+worker placement, matching code and versions, shared project storage, prepared
+runtime, and readable inputs. No execution command implicitly allocates compute.
+See [compute internals](api/compute.md) and [deployment limits](user/cluster.md).
 
 ## The publication view
 
@@ -190,7 +196,8 @@ src/lightcone/              # namespace — NO __init__.py
     ├── worker.py           # making one output; the rerun entry point
     ├── materialize.py      # the driver: gates, Dask, the save/restore loop
     ├── run.py              # what `lc run` is
-    ├── venue.py            # where a run executes
+    ├── compute/            # common allocation API, local and Slurm providers
+    ├── venue.py            # site placement checks
     ├── sandbox/            # the exec boundary
     └── templates/          # the scaffold's file content, as real files
 ```

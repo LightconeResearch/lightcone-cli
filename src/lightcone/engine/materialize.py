@@ -14,9 +14,8 @@ here to get wrong.
 **It owns git, alone.** Workers execute and return; the driver commits, in
 one thread, as results arrive. That is not a preference: concurrent git
 operations on one repository race on the index lock. The same loop
-restores what a failed or interrupted task left behind, so the tree ends
-exactly as clean as it started — which is what makes the refusal above
-survivable rather than a trap.
+restores what a completed failed task left behind. Unreported tasks may
+still be writing, so interruptions retain their partial files.
 
 One consequence, checked rather than assumed: a dependent starts as soon
 as its upstream's *worker* returns, which is milliseconds before the
@@ -34,7 +33,6 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -42,7 +40,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from lightcone.engine import assets, container, dataset, identity, plan, project, venue, worker
+from lightcone.engine import assets, container, dataset, identity, plan, project, worker
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
 
@@ -472,30 +470,31 @@ def _sandbox_line(mode: str) -> str:
 
 
 def materialize(
-    root: Path, targets: Sequence[str], *, refresh: bool = False
+    root: Path, targets: Sequence[str], *, cluster_id: str, refresh: bool = False
 ) -> MaterializeReport:
-    """Make everything *targets* names, committing each output as it lands.
+    """Materialize selected outputs on an explicitly selected, borrowed cluster.
 
     Args:
         root: The project root.
-        targets: What to make; empty means everything. Asking for an
-            output asks for what it is made of.
-        refresh: Also remake outputs that are merely behind — still what
-            the spec asks for, but made under an earlier environment.
+        targets: Outputs to make, including dependencies; empty means everything.
+        cluster_id: The allocation identity returned by ``lc compute launch``.
+        refresh: Also remake outputs produced under an earlier environment.
 
     Returns:
-        What was made, what was current or behind, what failed or was
-        blocked, plus the boundary's notes and the lock scan's warnings.
+        Completed, current, failed and blocked outputs and their diagnostics.
 
     Raises:
-        ProjectError: If this is a login node, a required tool or git's
-            committer identity is missing, the tree has uncommitted
-            changes, or the lock cannot be audited.
+        ProjectError: If the cluster is unavailable, workers are incompatible,
+            or the project cannot be safely prepared.
     """
-    # First, because its remedy is the one with queue latency: the user
-    # can submit the allocation and fix anything the later refusals name
-    # while waiting for it.
-    venue.require_compute_node()
+    with cluster_for_run(cluster_id, root) as scheduler:
+        return _materialize(root, targets, scheduler, refresh=refresh)
+
+
+def _materialize(
+    root: Path, targets: Sequence[str], scheduler: Scheduler, *, refresh: bool
+) -> MaterializeReport:
+    """Prepare on the driver, submit recipes, and serialize their git commits."""
     project.require_uv()
     project.require_git()
     project.require_git_annex()
@@ -522,25 +521,6 @@ def materialize(
         _converge_crate(root, report, full, dsid)
         return report
     _fetch_inputs(root, graph, report)
-    # Before the runtime resolves, because the refusal must not cost an
-    # image build: a containerized graph can span an allocation only if
-    # every node can see the image — the hint suffices, since which
-    # stores span nodes is `container._SHARED_STORE_RUNTIMES`'s fact and
-    # a wholly missing runtime gets `runtime_for_run`'s own refusal. Off
-    # the driver's node a task would otherwise fail to find an image
-    # `--pull=never` forbids it to fetch.
-    if (
-        (nodes := venue.allocation_nodes()) > 1
-        and project.mode(root) == "containerized"
-        and (name := container.runtime_hint())
-        and name not in container._SHARED_STORE_RUNTIMES
-    ):
-        raise ProjectError(
-            f"this allocation spans {nodes} nodes and `{name}`'s image store is "
-            "node-local, so recipes scheduled on the other nodes would not find "
-            "the image. Use a single-node allocation, or a system whose runtime "
-            "shares images across nodes (NERSC's podman-hpc)."
-        )
     # Materialize is one of the two verbs allowed to build the image (the
     # other is `lc build`); the probe and the rerun entry point only find
     # one. Resolved once, then handed to every task — the HEAD discipline.
@@ -549,6 +529,9 @@ def materialize(
     # only place on a run's path where it is made to match the lock. (A
     # rerun does not come through here; its entry point converges too.)
     report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
+    from lightcone.engine.run import input_paths, read_spec
+
+    scheduler.prepare(runtime, input_paths(root, read_spec(root)))
 
     # The run's driver-resolved facts, each read once: HEAD because the
     # driver commits as outputs land and a per-task read would stamp
@@ -575,35 +558,25 @@ def materialize(
         key: _foreign_write(root, task) if task.manifest_path.is_file() else None
         for key, task in graph.tasks.items()
     }
-    outstanding: dict[Key, Task] = dict(graph.tasks)
-    try:
-        with cluster_for_run() as scheduler:
-            pending: dict[Key, Any] = {}
-            # Submitted in dependency order so a task's upstream futures
-            # exist to be passed to it. Dask still derives the *execution*
-            # order — from those arguments, not from this loop.
-            for key in graph.order():
-                task = graph.tasks[key]
-                pending[key] = scheduler.submit(
-                    worker.materialize,
-                    root,
-                    task,
-                    context,
-                    refresh,
-                    foreign[key],
-                    *[pending[dep] for dep in task.depends_on],
-                    key=_name(key),
-                )
-            for result in scheduler.completed(list(pending.values())):
-                _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
-                outstanding.pop(result.key, None)
-    finally:
-        # Whatever never reported — an interrupt, a dead cluster — left a
-        # reset output directory behind. Scoped to this run's outputs and
-        # never to the whole tree, so edits made while the graph ran
-        # survive.
-        for task in outstanding.values():
-            dataset.restore(root, _owned(root, task))
+    pending: dict[Key, Any] = {}
+    # Futures retain dependency ordering; task placement belongs to the
+    # validated cluster, while commits stay in this one driver thread.
+    for key in graph.order():
+        task = graph.tasks[key]
+        pending[key] = scheduler.submit(
+            worker.materialize,
+            root,
+            task,
+            context,
+            refresh,
+            foreign[key],
+            *[pending[dep] for dep in task.depends_on],
+            key=_name(key),
+        )
+    # An unreported task can still have a running subprocess. Leave its
+    # partial files in place on interruption rather than restoring over it.
+    for result in scheduler.completed(list(pending.values())):
+        _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
     # The tree was clean at the start-of-run refusal and save/restore
     # keeps `results/` clean, so anything dirty *now* was edited while
     # the graph ran — and every manifest records the starting commit,
@@ -656,12 +629,14 @@ def _consume(
 class Scheduler(Protocol):
     """How the driver talks to whatever is running the graph.
 
-    Two methods, because that is all the driver needs and all a venue has
-    to supply: hand over a task with its upstream handles, and iterate the
-    results as they land. Keeping it this narrow is what lets the suite
-    run the graph inline — and what will let a venue larger than a laptop
-    land behind :func:`cluster_for_run` without the driver noticing.
+    Validate the prepared runtime, hand over tasks with their upstream
+    handles, and iterate results as they land. This keeps the driver's
+    commit logic independent of the allocation provider.
     """
+
+    def prepare(self, runtime: container.Runtime, inputs: Sequence[Path]) -> None:
+        """Validate the prepared runtime and input storage on selected workers."""
+        ...
 
     def submit(self, fn: Any, *args: Any, key: str) -> Any:
         """Schedule a call.
@@ -690,57 +665,52 @@ class Scheduler(Protocol):
 
 @dataclass(frozen=True)
 class _Dask:
-    """A Dask client, narrowed to what the driver asks of it."""
+    """A validated Dask execution, narrowed to what the graph driver needs."""
 
-    client: Any
+    execution: Any
+
+    def prepare(self, runtime: container.Runtime, inputs: Sequence[Path]) -> None:
+        """Validate worker access to the prepared runtime and input paths."""
+        self.execution.prepare(runtime, inputs)
 
     def submit(self, fn: Any, *args: Any, key: str) -> Any:
-        """Schedule a call on the Dask client. See :class:`Scheduler`."""
-        return self.client.submit(fn, *args, key=key)
+        """Submit to the validated worker cohort with an invocation-scoped key."""
+        return self.execution.submit(fn, *args, key=key)
 
     def completed(self, handles: list[Any]) -> Iterator[worker.TaskResult]:
-        """Yield results as Dask completes them. See :class:`Scheduler`."""
-        # distributed ships no type information, so this one call is
-        # annotated rather than the module exempted.
+        """Yield each task result as Dask completes it."""
         from distributed import as_completed
 
-        for _, result in as_completed(handles, with_results=True):  # type: ignore[no-untyped-call]
-            yield result
+        try:
+            for _, result in as_completed(  # type: ignore[no-untyped-call]
+                handles, with_results=True, loop=self.execution.client.loop
+            ):
+                yield result
+        except ProjectError:
+            raise
+        except Exception as exc:
+            raise ProjectError(
+                f"cluster execution failed: {exc}. lc did not stop the allocation; "
+                "tasks that did not report may still be running and their partial files remain"
+            ) from exc
 
 
 @contextmanager
-def cluster_for_run() -> Iterator[Scheduler]:
-    """Open a scheduler for one run — the venue ladder, and nothing else.
+def cluster_for_run(cluster_id: str, root: Path) -> Iterator[Scheduler]:
+    """Borrow and validate the explicit allocation without creating any compute.
 
-    Every core, with no knob to say otherwise: how much of a machine a run
-    may use, and which machine, is one question, and the venue answers it —
-    a SLURM allocation spans every node it was granted, and the local
-    machine is the whole of itself. Detected, never configured, and only
-    here: nothing outside this function asks where a run executes.
-
-    Threads rather than processes on the local branch — every task's real
-    work happens in a subprocess behind the exec boundary, so a worker
-    spends its time in ``wait()`` with the GIL released, and a threaded
-    cluster costs no interpreter startup and no pickling of results. The
-    allocation branch runs one such worker per node.
+    Args:
+        cluster_id: The selected allocation identity.
+        root: The shared project root.
 
     Yields:
-        A scheduler bound to a Dask cluster, closed on exit.
+        A scheduler whose connection is detached when the invocation ends.
     """
-    if venue.allocation_nodes():
-        with venue.slurm_client() as client:
-            yield _Dask(client)
-        return
-    from distributed import Client, LocalCluster
+    from lightcone.engine import compute
+    from lightcone.engine.compute.execution import workers
 
-    with LocalCluster(  # type: ignore[no-untyped-call]
-        n_workers=1,
-        threads_per_worker=os.cpu_count() or 1,
-        processes=False,
-        dashboard_address=None,
-    ) as cluster:
-        with Client(cluster) as client:  # type: ignore[no-untyped-call]
-            yield _Dask(client)
+    with compute.connect(cluster_id) as client, workers(client, root) as execution:
+        yield _Dask(execution)
 
 
 def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:

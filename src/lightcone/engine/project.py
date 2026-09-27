@@ -321,10 +321,10 @@ def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
 
     Args:
         directory: The project to pin to.
-        sync: True for a probe, which converges the environment it is
-            about to describe. False for a recipe: the environment was
-            converged before the run, and syncing per task would have
-            every concurrent worker writing the same ``.venv``.
+        sync: Whether this hop may converge the environment. Cluster
+            tasks use False because the driver already converged it;
+            syncing per task would have concurrent workers writing
+            the same ``.venv``.
 
     Returns:
         The argv prefix, ending in ``--``.

@@ -1,127 +1,155 @@
 # Running on a Cluster
 
-When local laptop time isn't enough, the same project runs on a SLURM
-HPC system. There is no separate configuration to learn and no flag to
-pass — `lc materialize` detects where it is running, and the allocation
-you request *is* the resource declaration.
+Allocate compute explicitly, then pass the returned cluster ID to either execution
+command. The same commands work for a local workstation and Slurm. No cluster is
+started by `lc run` or `lc materialize`, even when Slurm environment variables are
+present. `lc materialize --check` and `lc status` remain local project inspection.
 
-## The big picture
+## Start locally
 
-`lc materialize` runs its tasks through a scheduler, and picks the venue
-by looking at the environment:
+Create `~/lightcone-compute.yaml` with a fixed resource offer. The namespace is a
+stable UUID identifying this connection; keep it unchanged while its clusters exist.
+The following small offer uses one logical CPU and 1 GiB on your workstation:
 
-1. **Inside a SLURM allocation** (`SLURM_JOB_ID` is set) → the run
-   spans every node the allocation holds: one worker per node, launched
-   via `srun`, using every core it was granted.
-2. **Anywhere else** → the local machine, using every core.
+```yaml
+version: 1
+connections:
+  workstation:
+    namespace: 22c84e48-2f0a-4cd2-90a2-30ce2e909bd1
+    provider: local
+offers:
+  - name: small
+    connection: workstation
+    resources: {cpus: 1, memory: 1}
+    max_nodes: 1
+    time: {default: 30m, max: 2h}
+    startup: {class: fast}
+```
 
-You already answered every sizing question at `salloc` / `sbatch` —
-how many nodes, which constraint, how long — so `lc` asks none of its
-own. There is no `--jobs`, no worker count, no venue config file.
-
-## A typical SLURM workflow
-
-### 1. Prepare on the login node
-
-Everything except executing recipes works on a login node — and one
-verb is *for* it:
+For a different catalog location, set `LC_COMPUTE_CONFIG` for all commands. The
+compute group's `--config PATH` overrides it for that invocation only.
 
 ```bash
-cd $SCRATCH/my-analysis
-lc materialize --check     # what would run, and why
-lc status                  # where every output stands
-lc build                   # containerized projects: build + commit the image
+lc compute resources
+lc compute launch --cpus 1 --memory 1 --dry-run
+CLUSTER=$(lc compute launch --cpus 1 --memory 1 --json | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+lc compute status "$CLUSTER" --wait
+lc run "$CLUSTER" -- python -c 'print("hello from the cluster")'
+lc materialize "$CLUSTER"
+lc compute down "$CLUSTER"
 ```
 
-### 2. Get an allocation and materialize inside it
+Run the execution commands from your project root. A launch returns when native
+allocation is accepted; `status --wait` waits for Dask readiness. Finishing a run
+detaches its client and leaves the cluster available for another command. The
+allocation ends at its time limit or when you call `down`.
 
-=== "Interactive"
-    ```bash
-    salloc --nodes=1 --constraint=cpu --qos=interactive --time=02:00:00
-    # salloc drops you onto a compute node; from there:
-    cd $SCRATCH/my-analysis
-    lc materialize
-    ```
+Local resources are cooperative limits, not an exclusive CPU/RAM reservation.
+An allocation owns a detached process session and standard `LocalCluster`.
+Private process locators are checked against the current host, boot, UID, PID
+birth time, session, and command before attachment or termination. Local compute
+is refused on recognized login nodes. Worker placement is also checked before
+executing a command or recipe.
 
-=== "Batch"
-    ```bash
-    cd $SCRATCH/my-analysis
-    sbatch --nodes=1 --constraint=cpu --qos=regular --time=02:00:00 \
-        --wrap 'lc materialize'
-    ```
+## Configure Slurm
 
-    (Make sure `lc` is on `PATH` in the batch environment — with a
-    `uv tool install`, that's `export PATH=$HOME/.local/bin:$PATH` in
-    the script if your shell profile doesn't already do it.)
+The CLI runs the native `sbatch`, `salloc`, `squeue`, `sacct`, `scontrol`, and
+`scancel` commands as the current user. It needs a compatible Slurm client
+installation and access to the selected service. `context` is the native Slurm
+cluster name; omit it to use the current service.
 
-Ask for more nodes and the run uses them — independent outputs and
-universes spread across the allocation with nothing else to say.
+This illustrative NERSC configuration requires deployment-specific paths, account,
+and resource sizing. It has not been validated by submitting a job at NERSC:
 
-### 3. Guard rails on known centers
+```yaml
+version: 1
+connections:
+  perlmutter:
+    namespace: 9d0c0fc5-9be8-407a-a3ec-f17c4110b162
+    provider: slurm
+    context: perlmutter
+    launch:
+      python: /shared/tools/lightcone/bin/python
+      connection_root: /shared/home/alice/.lightcone/compute
+      scratch_root: /shared/scratch/alice/lightcone
+      task_slots_per_node: 126
+      cpu_bind: threads
+      # interface: hsn0
 
-On centers `lc` knows (NERSC today), running `lc materialize` on a
-login node refuses with the center's own allocation spellings rather
-than quietly hammering a shared node:
-
+offers:
+  - name: quick
+    connection: perlmutter
+    resources: {cpus: 256, memory: 480}
+    max_nodes: 2
+    time: {default: 1h, max: 4h}
+    startup: {class: fast}
+    config:
+      submit: salloc
+      account: myproject
+      constraint: cpu
+      qos: interactive
+  - name: batch
+    connection: perlmutter
+    resources: {cpus: 256, memory: 480}
+    max_nodes: 16
+    time: {default: 1h, max: 12h}
+    startup: {class: batch}
+    config:
+      submit: sbatch
+      account: myproject
+      constraint: cpu
+      qos: regular
 ```
-Error: lc materialize executes recipes on compute nodes, and this is a
-NERSC login node (NERSC_HOST is set with no SLURM allocation active).
 
-Get an allocation and run it there:
+The offered CPU and memory shape is per node. Bare resource quantities request an
+exact match; a trailing `+` permits a larger offered shape. Selection takes the
+first eligible offer in catalog order. `--startup fast` filters to that service
+class; it does not guarantee a queue wait. Inspect the resolved plan before launch:
 
-  interactive:
-      salloc --nodes=1 --constraint=cpu --qos=interactive --time=02:00:00
-      lc materialize
-
-  batch (from the project root):
-      sbatch --nodes=1 --constraint=cpu --qos=regular --time=02:00:00 \
-          --wrap 'lc materialize'
-
-lc materialize --check, lc status and lc run work anywhere.
+```bash
+lc compute launch --cpus 32+ --memory 128+ --num-nodes 2 --time 1h --dry-run
 ```
 
-The read-only verbs are exempt on purpose — a login node is exactly
-where "where does this project stand?" gets asked.
+One allocation contains one `srun` step with one process per node. Rank zero
+composes standard Dask `Scheduler` and `Worker` objects, and every other rank
+starts a standard `Worker`. A one-node allocation has both scheduler and worker.
+The scheduler consumes part of the offered resources; `task_slots_per_node`
+controls Dask task concurrency independently of the allocation's logical CPUs.
+Dask memory management is disabled because recipes run in external subprocesses;
+Slurm supplies allocation containment and memory enforcement. Planning reads
+the effective partition overrun policy and termination grace, rejects an unlimited
+overrun, and freezes the chosen partition. Native administrators can still change
+policy after submission.
 
-## Containers on HPC
+Jobs carry a random submission token in their `lc-dask-v1-…` name. The opaque
+cluster ID encodes the connection namespace, native job ID, and token. There is
+no job registry to reconcile. Removing an offer prevents new launches without
+hiding existing jobs; retain its connection to inspect and terminate them.
+Native job state and live Dask readiness are separate observations. A worker loss
+can leave a job active but not ready. Unknown native state is reported as unknown.
 
-A containerized project (one with `[tool.lightcone.image]` in its
-`pyproject.toml`) works the same way, with three site realities to
-know:
+An `salloc` launch retains native `salloc`/`srun` processes on the submit host.
+Its survival across logout, Jupyter shutdown, and site session cleanup must be
+checked on the deployment. Batch jobs are independent of the submitting CLI.
+An ambiguous submission reports its token; inspect native state before retrying,
+since the original allocation may have been accepted.
 
-- **`podman-hpc` is detected first.** Sites install it precisely
-  because plain podman's image store is invisible to compute nodes;
-  where both exist, `lc` prefers the wrapper and runs its extra
-  `migrate` step automatically, so the image is readable from every
-  node.
-- **Build on a login node, once.** `lc build` builds the image and
-  commits it into the repository as versioned content — compute nodes
-  never build and need no registry access; an unfetched image arrives
-  through the annex like any other data. The archive records the
-  architecture it was built for, and a mismatched host is refused
-  before anything runs — so build where the architecture matches the
-  compute nodes (on NERSC, a login node).
-- **Multi-node runs require a shared image store.** With plain podman
-  or docker the image exists only on the driver's node, so `lc`
-  refuses a multi-node containerized run unless the runtime is
-  `podman-hpc`. Single-node allocations work with any runtime.
+## Execution requirements and limits
 
-## Data on parallel filesystems
+Driver and workers must see the same project, prepared environment, and inputs
+at the same absolute paths. They need matching Lightcone code, Python major/minor,
+and Dask versions. Execution verifies shared storage and worker compatibility.
+Containerized projects also require the prepared image and runtime on each
+worker; `podman-hpc` can expose its migrated image across NERSC nodes.
 
-Keep active projects on the filesystem your center recommends for job
-I/O (`$SCRATCH` on NERSC), and remember scratch purge policies — the
-project is a git repository, so `git push` to a remote (and
-`git annex copy --to` for the bytes) is the durable copy.
+The catalog contains policy, not credentials or live state. Scheduler connection
+material is private and uses standard Dask TLS and scheduler files. Keep the
+catalog in a visible, readable location if it is to be read by a browser frontend;
+its location is independent of private connection files.
 
-!!! warning "Early days"
-    HPC support is the youngest part of lightcone-cli and has not yet
-    been broadly validated on production systems. If something refuses,
-    hangs, or surprises you on your center, please
-    [open an issue](https://github.com/LightconeResearch/lightcone-cli/issues)
-    — site reports are exactly what this layer needs right now.
-
-## Where to next
-
-- [Core Concepts](concepts.md) — the model all of this rests on.
-- [Troubleshooting](troubleshooting.md) — the refusals, quoted, with
-  remedies.
+Use one execution invocation per project at a time. Concurrent writers,
+comprehensive cancellation, task fencing, and recovery after client/worker loss
+are not guaranteed. A lost client does not prove its subprocesses stopped.
+Unreported partial outputs are retained after interruption rather than restored
+while a task may still write them. End the allocation and establish that work has
+stopped before inspecting or repairing that project's outputs.
