@@ -397,8 +397,13 @@ user owns:
   - The sharing silently stops working when the cache and the project are
     on **different filesystems** (uv falls back to full copies). uv warns;
     `tool_warnings()` lifts that warning out of uv's progress output into
-    the report, so it reaches both the console and `--json`. This is why
-    the site registry supplies `UV_CACHE_DIR` on Perlmutter (spec §4).
+    the report, so it reaches both the console and `--json`.
+  - At NERSC, `UV_CACHE_DIR` must move off `$HOME` for a different reason:
+    compute nodes cannot lock files there (uv fails with os error 524),
+    and every recipe's `uv run` hop locks the cache. The user exports it
+    before `lc compute launch`, which the Slurm job inherits;
+    `child_env` keeps it (`_UV_KEPT`). Documented in the user guide rather
+    than configured, by decision (2026-09).
   - `--compile-bytecode` is the one genuinely per-project cost: bytecode is
     generated into the venv, never linked (~55 MB of 216 MB here). It is a
     deliberate trade: paying compilation once here beats paying it on the

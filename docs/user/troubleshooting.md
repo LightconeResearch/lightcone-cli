@@ -183,6 +183,22 @@ does not match the offer, or a scheduler that did not start within 120
 seconds. A local allocation's startup failure is shown as the reason by
 `lc compute status CLUSTER`.
 
+## uv: "Could not acquire lock" (os error 524) on a cluster
+
+A recipe or `lc run` probe on a Slurm compute node fails because uv
+cannot lock its cache: the cache is on a filesystem the compute nodes
+mount without file locking, which is the case for `$HOME` at NERSC. Put
+the cache on one that supports locks, then launch a new allocation,
+since workers keep the environment they were launched with:
+
+```bash
+export UV_CACHE_DIR=$PSCRATCH/uv-cache
+lc compute down "$OLD_CLUSTER_ID"
+CLUSTER=$(lc compute launch --cpus 256 --memory 480)
+```
+
+See [Configure Slurm](cluster.md#configure-slurm).
+
 ## Selecting compute from a login shell
 
 Use `lc compute resources` and `lc compute launch`, then pass the returned cluster

@@ -255,6 +255,19 @@ testing, inspect the submitted job's actual `Partition` with `scontrol show job`
 [NERSC's workflow guidance](https://docs.nersc.gov/jobs/workflow/maestro/)
 describes its QOS-driven partition selection.
 
+At NERSC, move uv's cache off `$HOME` before launching. Every recipe and probe
+runs through `uv run`, which locks uv's cache, and Perlmutter's compute nodes
+cannot lock files in `$HOME`, where the cache lives by default. Workers inherit
+the environment `lc compute launch` runs in, so set the variable there, for
+example in your shell profile:
+
+```bash
+export UV_CACHE_DIR=$PSCRATCH/uv-cache
+```
+
+An allocation launched without it has to be relaunched. `$PSCRATCH` is purged
+when idle; a purged cache is only downloaded again.
+
 Slurm displays `lc-v1-<name>` as the job name, for example `lc-v1-analysis`.
 Its native comment carries the random submission token as
 `lightcone:v1:kind=dask:token=<32hex>`. Lightcone verifies the name, token, and owner
