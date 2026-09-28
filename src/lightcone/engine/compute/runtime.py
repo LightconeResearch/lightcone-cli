@@ -12,6 +12,8 @@ from typing import Any
 
 from lightcone.engine.compute.model import ComputeError
 
+DEFAULT_CONNECTION_ROOT = "~/.lightcone/compute"
+
 
 def configured_directory(path: Path) -> Path:
     """Resolve a trusted configured root before appending managed allocation paths.

@@ -8,6 +8,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,7 +52,6 @@ def provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> slurm.SlurmProv
             provider="slurm",
             context="perlmutter",
             launch={
-                "python": sys.executable,
                 "connection_root": str(tmp_path / "private"),
                 "scratch_root": str(tmp_path / "scratch"),
                 "cwd": str(tmp_path),
@@ -167,6 +167,25 @@ def test_plan_preserves_native_envelope_without_native_queries(
     assert not any(arg.startswith("--partition=") for arg in plan.details["native_args"])
     assert "time_policy" not in plan.details
     assert calls == []
+
+
+def test_default_launch_assumes_a_shared_home_and_node_local_scratch(
+    offer: Offer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    calls = _native(monkeypatch, {"sbatch": "123\n"})
+    provider = slurm.SlurmProvider(Connection(namespace=NAMESPACE, provider="slurm"))
+    plan = provider.plan(offer, Request.parse("256", "480"))
+    root = str(tmp_path.resolve() / ".lightcone" / "compute")
+    assert plan.details["python"] == sys.executable
+    assert plan.details["connection_root"] == root
+    assert plan.details["scratch_root"] is None
+    identity = provider.launch(plan)
+    script = next(kwargs for argv, kwargs in calls if argv[0] == "sbatch")["input"]
+    payload = shlex.split(script.splitlines()[-1])
+    assert payload[payload.index("--connection-root") + 1] == root
+    assert "--scratch-root" not in payload
+    assert slurm.attempt_directory(provider.connection, identity, 0).is_relative_to(root)
 
 
 def test_plan_resolves_configured_roots_but_preserves_virtualenv_python(
@@ -871,6 +890,19 @@ def test_worker_rendezvous_has_a_finite_deadline(
     with pytest.raises(ComputeError, match="timed out"):
         asyncio.run(slurm_bootstrap.run(_bootstrap_args(tmp_path)))
 
+
+def test_bootstrap_defaults_scratch_to_the_node_temporary_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key, value in _bootstrap_env(1).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(slurm_bootstrap, "_STARTUP_TIMEOUT", 0)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "node"))
+    args = _bootstrap_args(tmp_path)
+    args.scratch_root = None
+    with pytest.raises(ComputeError, match="timed out"):
+        asyncio.run(slurm_bootstrap.run(args))
+    assert (tmp_path / "node" / TOKEN / "attempt-0" / "1").is_dir()
 
 def test_bootstrap_refuses_a_managed_scratch_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

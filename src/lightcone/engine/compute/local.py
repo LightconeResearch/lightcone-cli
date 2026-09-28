@@ -32,6 +32,7 @@ from lightcone.engine.compute.model import (
     validate_name,
 )
 from lightcone.engine.compute.runtime import (
+    DEFAULT_CONNECTION_ROOT,
     configured_directory,
     open_client,
     private_directory,
@@ -64,7 +65,7 @@ class LocalProvider:
 
     def __init__(self, connection: Connection) -> None:
         self.connection = connection
-        root = connection.launch.get("connection_root", "~/.lightcone/compute")
+        root = connection.launch.get("connection_root", DEFAULT_CONNECTION_ROOT)
         if not isinstance(root, str) or not root or any(ord(c) < 32 for c in root):
             raise ComputeError("local connection_root must be a nonempty path string")
         self.root = configured_directory(Path(root)) / connection.namespace

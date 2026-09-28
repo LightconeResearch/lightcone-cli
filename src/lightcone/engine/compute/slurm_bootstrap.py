@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import socket
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -79,7 +80,7 @@ async def run(args: argparse.Namespace) -> None:
         launch={"connection_root": args.connection_root},
     )
     directory = attempt_directory(connection, identity, restarts)
-    scratch = configured_directory(Path(args.scratch_root))
+    scratch = configured_directory(Path(args.scratch_root or tempfile.gettempdir()))
     scratch = private_directory(
         scratch / identity.token / f"attempt-{restarts}" / str(rank), create=True
     )
@@ -153,10 +154,11 @@ async def run(args: argparse.Namespace) -> None:
 def main() -> None:
     """Read frozen launcher arguments; a failure becomes a nonzero native task exit."""
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("submission", "namespace", "connection-root", "scratch-root"):
+    for name in ("submission", "namespace", "connection-root"):
         parser.add_argument(f"--{name}", required=True)
     for name in ("num-nodes", "cpus", "memory-bytes", "task-slots"):
         parser.add_argument(f"--{name}", required=True, type=int)
+    parser.add_argument("--scratch-root")
     parser.add_argument("--interface")
     args = parser.parse_args()
     os.umask(0o077)

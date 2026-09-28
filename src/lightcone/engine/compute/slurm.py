@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
@@ -27,6 +28,7 @@ from lightcone.engine.compute.model import (
     validate_name,
 )
 from lightcone.engine.compute.runtime import (
+    DEFAULT_CONNECTION_ROOT,
     configured_directory,
     open_client,
     private_directory,
@@ -69,7 +71,9 @@ def native_environment() -> dict[str, str]:
 
 def attempt_directory(connection: Connection, identity: Identity, restarts: int) -> Path:
     """Locate connection material for one native allocation incarnation and attempt."""
-    root = configured_directory(Path(str(connection.launch.get("connection_root", ""))))
+    root = configured_directory(
+        Path(str(connection.launch.get("connection_root", DEFAULT_CONNECTION_ROOT)))
+    )
     return (
         root
         / connection.namespace
@@ -152,9 +156,21 @@ class SlurmProvider:
         }
         if extra := launch.keys() - allowed:
             raise ComputeError(f"unknown Slurm launch settings: {', '.join(sorted(extra))}")
-        paths: dict[str, str] = {}
+        # The defaults assume a home directory shared by login and compute
+        # nodes: workers run the driver's own installation, so they match it
+        # exactly, and rendezvous under its home. Scratch left unset is chosen
+        # by each node, whose temporary directory may not be the driver's.
+        defaults = {
+            "python": sys.executable,
+            "connection_root": DEFAULT_CONNECTION_ROOT,
+            "cwd": str(Path.home()),
+        }
+        paths: dict[str, str | None] = {}
         for name in ("python", "connection_root", "scratch_root", "cwd"):
-            value = launch.get(name, str(Path.home()) if name == "cwd" else None)
+            if name not in launch and name not in defaults:
+                paths[name] = None
+                continue
+            value = launch.get(name, defaults.get(name))
             path = Path(_value(value, name))
             if name in {"connection_root", "scratch_root"}:
                 path = configured_directory(path)
@@ -244,8 +260,6 @@ class SlurmProvider:
             self.connection.namespace,
             "--connection-root",
             details["connection_root"],
-            "--scratch-root",
-            details["scratch_root"],
             "--num-nodes",
             str(plan.num_nodes),
             "--cpus",
@@ -255,6 +269,8 @@ class SlurmProvider:
             "--task-slots",
             str(details["task_slots_per_node"]),
         ]
+        if details["scratch_root"] is not None:
+            argv += ["--scratch-root", details["scratch_root"]]
         if details["interface"] is not None:
             argv += ["--interface", details["interface"]]
         return argv

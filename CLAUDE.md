@@ -1712,6 +1712,20 @@ default and two-hour maximum lifetime. It writes no catalog and starts no cluste
 Configured catalogs replace it completely; missing explicit paths and invalid
 files are errors. Execution still requires an explicitly launched cluster's name or ID.
 
+**A Slurm connection needs no launch settings (2026-09).** Every `launch` key
+defaults, and the defaults assume a home directory shared by login and compute
+nodes, which is also what SkyPilot's Slurm backend assumes. Workers run
+`sys.executable`, the driver's own installation, so client, scheduler and workers
+match exactly with no resolution and no network on compute nodes. Launching the
+bootstrap through `uv run --with` at job time was considered and rejected: it
+re-resolves the Dask closure away from the driver's, and it needs package-index
+access from compute nodes. SkyPilot installs its runtime per node only because its
+client is off-cluster; lc submits from the login node, where its installation
+already is. `connection_root` defaults to `~/.lightcone/compute`
+(`runtime.DEFAULT_CONNECTION_ROOT`, shared with local). An unset `scratch_root`
+is chosen by the bootstrap on each node (`tempfile.gettempdir()`), never frozen
+from the driver's temporary directory.
+
 **Compute uses one shared Pydantic model family.** `Catalog` loads directly into
 the `Connection`, `Offer`, `Resources`, `TimeLimits`, and `Startup` objects used by
 providers; do not introduce parallel configuration classes. Memory units are explicit:

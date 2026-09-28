@@ -113,8 +113,8 @@ The CLI runs the native `sbatch`, `salloc`, `squeue`, `sacct`, `scontrol`, and
 installation and access to the selected service. `context` is the native Slurm
 cluster name; omit it to use the current service.
 
-This illustrative NERSC configuration requires deployment-specific paths, account,
-and resource sizing. It has not been validated by submitting a job at NERSC:
+This illustrative NERSC configuration requires a deployment-specific account and
+resource sizing. It has not been validated by submitting a job at NERSC:
 
 ```yaml
 version: 1
@@ -123,13 +123,6 @@ connections:
     namespace: 9d0c0fc5-9be8-407a-a3ec-f17c4110b162
     provider: slurm
     context: perlmutter
-    launch:
-      python: /shared/tools/lightcone/bin/python
-      connection_root: /shared/home/alice/.lightcone/compute
-      scratch_root: /shared/scratch/alice/lightcone
-      task_slots_per_node: 126
-      cpu_bind: threads
-      # interface: hsn0
 
 offers:
   - name: quick
@@ -155,6 +148,27 @@ offers:
       constraint: cpu
       qos: regular
 ```
+
+Every setting under a Slurm connection's `launch` mapping is optional. The
+defaults assume a home directory that the login and compute nodes share:
+
+- `python`: the interpreter that ran `lc compute launch`, so workers use the
+  driver's own Lightcone installation. `uv tool install lightcone-cli` places it
+  under `$HOME`. Avoid launching through `uvx`, whose environment lives in uv's
+  cache and can be pruned while the allocation runs.
+- `connection_root`: `~/.lightcone/compute`. The scheduler's connection files,
+  TLS credentials, and batch logs live in private directories there, which the
+  driver and every node must reach.
+- `scratch_root`: each node's own temporary directory (`$TMPDIR`, usually
+  `/tmp`), which holds the Dask workers' files.
+- `cwd`: your home directory, as the job's working directory.
+- `task_slots_per_node`: one fewer than the offer's CPUs, leaving room for the
+  scheduler. Lower it when recipes are multithreaded or memory-heavy.
+- `cpu_bind`: `threads`, which binds each node's process to its allocated
+  hardware threads. `cores` and `none` are also accepted.
+- `interface`: unset, so Dask listens on the node's hostname. Name a network
+  interface instead if nodes cannot reach each other by hostname; Perlmutter's
+  high-speed network is `hsn0`.
 
 The offered CPU and memory shape is per node. Bare resource quantities request an
 exact match; a trailing `+` permits a larger offered shape. Selection takes the
@@ -210,8 +224,9 @@ since the original allocation may have been accepted.
 
 Driver and workers must see the same project, prepared environment, and inputs
 at the same absolute paths. They need matching Lightcone code, Python major/minor,
-and Dask versions. The deployment is responsible for making that environment available across
-the cluster; relaunch allocations after upgrading the worker installation.
+and Dask versions. By default, Slurm workers run the driver's own installation
+(see the `python` launch setting above). Relaunch allocations after upgrading
+the worker installation.
 Commands and recipes are ordinary tasks submitted to the Dask
 scheduler, which chooses their workers; task runtime and sandbox checks still
 apply. Recipe output is forwarded to the invoking terminal on stderr; `run`
