@@ -101,6 +101,7 @@ async def run(args: argparse.Namespace) -> None:
         **address,
         "nthreads": args.task_slots,
         "memory_limit": 0,
+        "resources": {"CPU": args.cpus, "MEMORY": args.memory_bytes},
         "local_directory": str(scratch),
         "dashboard_address": "127.0.0.1:0",
         "dashboard": False,

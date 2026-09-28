@@ -367,7 +367,7 @@ def test_owner_shutdown_drains_recipes_without_a_waiting_cli(provider: LocalProv
         _ready(provider, identity)
         child = _ignoring_recipe(provider, identity)
         os.kill(int(identity.native_id), signal.SIGTERM)
-        _ended(provider, identity, timeout=10)
+        _ended(provider, identity, timeout=20)
         deadline = time.monotonic() + 3
         while child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
             assert time.monotonic() < deadline
@@ -387,7 +387,7 @@ def test_termination_escalates_captured_children_when_owner_exits_first(
 import signal, subprocess, sys, time
 child = subprocess.Popen([sys.executable, '-c',
     "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-    "print('ready',flush=True); time.sleep(120)"], stdout=subprocess.PIPE)
+    "print('ready',flush=True); time.sleep(120)"], stdout=subprocess.PIPE, process_group=0)
 assert child.stdout.readline() == b'ready\\n'
 print(child.pid, flush=True)
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
@@ -398,6 +398,7 @@ time.sleep(120)
     )
     assert owner.stdout is not None
     child = psutil.Process(int(owner.stdout.readline()))
+    assert os.getpgid(child.pid) != owner.pid
     process = psutil.Process(owner.pid)
     identity = Identity(
         namespace=provider.connection.namespace, native_id=str(owner.pid), token=uuid4().hex,

@@ -83,7 +83,9 @@ class OCIBackend:
         mounts += [f"--volume={path.resolve()}:{path}:rw" for path in policy.write]
         overlay = [f"--env={k}={v}" for k, v in sorted(policy.env.items())]
         return [
-            self.runtime, "run", "--rm",
+            # The custodian retains the native record until it has inspected
+            # the immutable container ID and confirmed the payload stopped.
+            self.runtime, "run",
             "--entrypoint", "",
             # The rootfs is read-only so a write outside the declared set
             # is a loud denial rather than bytes vanishing with the

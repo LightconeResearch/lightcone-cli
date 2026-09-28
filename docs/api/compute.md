@@ -113,15 +113,49 @@ Dask chooses the workers and handles dependencies; invocation-specific keys prev
 unintended reuse across commands. There is no worker-selection layer, per-worker
 preflight orchestration, source fingerprinting, or login-node guard. Driver-side
 preparation and the existing task runtime/sandbox checks remain in their owners.
+
+Workers advertise standard Dask `CPU` and `MEMORY` resources; memory is measured
+in bytes. `engine.execution_resources.TaskResources` validates ASTRA's
+`recipe.resources` into whole CPUs, bytes, and optional walltime seconds, and
+`plan.Task` carries that request. `requirements(workers)` checks that one worker
+can satisfy it and returns the resource dictionary used by `Client.submit`.
+An omitted memory request reserves the full homogeneous worker budget;
+`whole_worker=True` reserves CPU and memory for a probe. Unsupported GPU/disk
+requests and fractional CPUs fail before execution.
+
+The materialize scheduler validates every selected task before preparation or
+submission, preventing earlier tasks from starting before a later impossible
+request is discovered. Standard Dask scheduling accounts for concurrent CPU and
+memory reservations; Dask execution-thread counts remain a separate concurrency
+cap. Reservations do not impose hard limits on recipe subprocesses. Task walltime
+uses the subprocess boundary's timeout and teardown, independent of the native
+allocation's lifetime.
+
 `output.py` transports byte chunks through standard Dask events so detached
 workers' output reaches the invoking CLI. It uses the borrowed client's event
 topic, which the schedulers lc launches drop as soon as the client disconnects
 (`runtime.SCHEDULER_CONFIG`), rather than retaining a separate topic for every
-command. A driver that exits before every task reports says so with
-`UNSTOPPED`: closing a client cannot prove that a remote subprocess stopped. Probes preserve both streams;
+command. Output-delivery errors cannot replace an execution-safety exception.
+Probes preserve both streams;
 materialization sends recipe output to stderr to leave stdout for its report.
 
-Local teardown drains the allocation's validated process group rather than
+`engine.execution.invocation` owns a short renewable authorization in the existing
+scheduler. Each task claims its logical key before touching files. Completion
+receipts preserve the original result if Dask recomputes a lost result; a running
+or uncertain claim refuses replay and revokes the invocation. Missing state also
+refuses execution. This uses ordinary tasks and `run_on_scheduler`, without a
+custom worker, service, project lock, or persistent execution registry.
+
+On exit the invocation revokes admission, cancels pending futures, and waits for
+claimed tasks to acknowledge cleanup. Dask cancellation alone is insufficient:
+running tasks poll authorization and the subprocess boundary stops their commands.
+Only a positive `Invocation.stopped` flag permits restoring unconsumed outputs;
+an exception from closing another context cannot manufacture that confirmation.
+Scheduler loss or an unacknowledged attempt raises `ExecutionUncertain` and retains
+outputs. Receipts are removed after confirmed cleanup; uncertain records remain
+until the allocation ends. They are not a recovery log for a later invocation.
+
+Local teardown drains the allocation's validated process session rather than
 assuming the owner's exit proves every child stopped. Boot UUID, UID, process
 session and the exact command containing a random allocation token establish
 identity without depending on hostname or wall-clock creation time. Discovery
@@ -131,9 +165,11 @@ are cleaned up, and incomplete locator directories do not hide healthy allocatio
 An allocation verified as ended, by `down` or by discovery, is retired: its TLS
 material, scheduler files and scratch are removed, and a marker lets discovery
 skip it unread. Its identity record stays, so a full ID still reports `ended`.
-Cancellation and concurrent project writers are not made safe by allocation
-management; callers must respect the documented execution limits. Containers
-managed outside that process group can survive local teardown.
+Concurrent invocations writing the same project remain unsupported. Command
+cleanup covers process groups and native OCI container identities; recipes must
+not daemonize into new sessions. Killing the command supervisor can leave an
+external runtime's container alive, so an uncertain execution requires native
+verification before output repair.
 
 Tests cover deterministic selection, malformed identities and catalogs, partial
 native failures, acceptance ambiguity, PID reuse, detached local lifetime, standard

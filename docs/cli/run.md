@@ -40,12 +40,12 @@ that variable to an existing cluster. Set command-specific values inside the
 command, for example `lc run "$CLUSTER" -- env NAME=value python script.py`.
 Containerized commands use the image's environment and the sandbox overlays.
 
-Interrupting the CLI detaches its client; the remote command may still be running.
-Stop the allocation with `lc compute down` and its full ID (a name can already
-belong to a newer allocation) before working with files the interrupted command
-could still be writing. Confirm that the command has
-stopped; local containers may require separate termination through their runtime
-(see [execution limits](../user/cluster.md#execution-requirements-and-limits)).
+The command reserves one worker's full CPU and memory budgets for its duration.
+Interrupting the CLI requests cancellation and waits for command cleanup; the
+cluster remains available. If cleanup cannot be confirmed, the error says so.
+Stop the allocation using `lc compute down` with its full ID (names can be reused)
+and verify its commands and containers have stopped before repairing outputs.
+See [execution limits](../user/cluster.md#execution-requirements-and-limits).
 
 ## What it does
 

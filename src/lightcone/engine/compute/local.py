@@ -382,7 +382,7 @@ class LocalProvider:
             client.close(timeout=min(timeout, 5))
 
     def terminate(self, identity: Identity) -> None:
-        """Terminate the validated allocation process group even if Dask is wedged."""
+        """Terminate the validated allocation session even if Dask is wedged."""
         directory, record = self._record(identity)
         self._stop(identity, directory, record)
         self._retire(directory)
@@ -396,7 +396,6 @@ class LocalProvider:
             try:
                 if (
                     member.uids().real == os.getuid()
-                    and os.getpgid(member.pid) == process.pid
                     and os.getsid(member.pid) == process.pid
                 ):
                     # Capture each birth identity while the owner still proves
@@ -405,20 +404,16 @@ class LocalProvider:
                     members.append(member)
             except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
                 continue
-        process = self._process(identity, directory, record)
-        if process is not None:
+        for member in members:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
+                member.terminate()
+            except psutil.NoSuchProcess:
                 pass
-        else:
-            for member in members:
-                try:
-                    member.terminate()
-                except psutil.NoSuchProcess:
-                    pass
         for escalation in (False, True):
-            deadline = time.monotonic() + _STOP_GRACE
+            from lightcone.engine.sandbox.processes import has_custodian
+
+            grace = max(_STOP_GRACE, 16) if has_custodian(members) else _STOP_GRACE
+            deadline = time.monotonic() + grace
             while members and time.monotonic() < deadline:
                 living = []
                 for member in members:
@@ -439,12 +434,15 @@ class LocalProvider:
                 )
             process = self._process(identity, directory, record)
             if process is not None:
-                try:
-                    # A live, verified owner also covers children created while
-                    # stopping. Its finalizer provides the same group-wide kill.
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                # Commands have separate groups inside this session. The
+                # live owner establishes custody of newly created members.
+                from lightcone.engine.sandbox.processes import members as session_members
+
+                for member in session_members(session=process.pid):
+                    try:
+                        member.kill()
+                    except psutil.NoSuchProcess:
+                        pass
             for member in members:
                 try:
                     # The owner may have exited first. Never signal its old PGID

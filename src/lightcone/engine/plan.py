@@ -23,11 +23,12 @@ task depends on which.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 
 from lightcone.engine import assets, identity
+from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
 #: A task's identity within a run: which universe, which output.
@@ -51,6 +52,7 @@ class Task:
     produced_by: dict[str, Key]
     decisions: dict[str, str]
     definition_version: str
+    resources: TaskResources = field(default_factory=TaskResources)
 
     @property
     def manifest_path(self) -> Path:
@@ -331,6 +333,10 @@ def _tasks(
             )
         except ValueError as e:
             raise ProjectError(f"output `{out.id}`: {e}") from e
+        try:
+            resources = TaskResources.parse((out.definition.get("recipe") or {}).get("resources"))
+        except ProjectError as e:
+            raise ProjectError(f"output `{out.id}`: {e}") from e
 
         tasks.append(
             Task(
@@ -344,6 +350,7 @@ def _tasks(
                 definition_version=identity.definition_version(
                     recipe=recipe, decisions=out.decisions, fmt=str(out.format)
                 ),
+                resources=resources,
             )
         )
     return tasks

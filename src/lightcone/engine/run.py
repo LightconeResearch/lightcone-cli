@@ -18,9 +18,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
-from lightcone.engine import container, sandbox
+from lightcone.engine import container, execution, sandbox
+from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.project import (
     SPEC_FILENAME,
     ProjectError,
@@ -51,13 +51,15 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
     require_uv()
     paths = input_paths(project, read_spec(project))
     with compute.connect(cluster_id) as client:
+        resources = TaskResources().requirements(
+            client.scheduler_info()["workers"], whole_worker=True,
+        )
         runtime = container.runtime_for_run(project, build=False)
         notes = [f"uv: {warning}" for warning in container.converge(runtime)]
-        invocation = uuid4().hex
-        with forwarding(client) as output:
-            future = client.submit(
+        with forwarding(client) as output, execution.invocation(client) as invocation:
+            future = invocation.submit(
                 call, _probe, output.topic, "probe", runtime, paths, tuple(command),
-                key=f"lc-{invocation}-probe", pure=False,
+                key="probe", resources=resources,
             )
             try:
                 outcome: sandbox.Outcome = future.result()
@@ -84,6 +86,7 @@ def _probe(
         outcome = sandbox.run(
             container.backend(runtime), policy, command, cwd=runtime.root,
             prefix=uv_prefix(runtime.root), env=child_env(), output=output,
+            cancelled=execution.cancelled,
         )
     return outcome
 

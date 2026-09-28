@@ -188,8 +188,13 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
         raise click.UsageError("A command is required; no interactive shell is opened.")
     try:
         outcome = engine_run.probe(current_project(), command, cluster_id=cluster_id)
-    except KeyboardInterrupt:
-        _interrupted(cluster_id, "the remote command may still be running")
+    except KeyboardInterrupt as exc:
+        if getattr(exc, "execution_stopped", False):
+            click.echo(
+                "Interrupted; the command has stopped. The cluster remains available.", err=True,
+            )
+        else:
+            _interrupted(cluster_id, "the remote command may still be running")
         raise
     if outcome.notes:
         click.echo("\n".join(["", *outcome.notes]), err=True)
@@ -377,11 +382,17 @@ def materialize(
     else:
         try:
             report = engine.materialize(root, targets, cluster_id=cluster_id, refresh=refresh)
-        except KeyboardInterrupt:
-            _interrupted(
-                cluster_id, "remote recipes may still be writing results",
-                " and confirm they have stopped before cleaning results/",
-            )
+        except KeyboardInterrupt as exc:
+            if getattr(exc, "execution_stopped", False):
+                click.echo(
+                    "Interrupted; recipes have stopped and uncommitted outputs were restored. "
+                    "The cluster remains available.", err=True,
+                )
+            else:
+                _interrupted(
+                    cluster_id, "remote recipes may still be writing results",
+                    " and confirm they have stopped before cleaning results/",
+                )
             raise
 
     if as_json:

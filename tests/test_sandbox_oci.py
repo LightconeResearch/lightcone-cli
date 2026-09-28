@@ -7,7 +7,6 @@ here with nothing spawned and no runtime installed.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -221,7 +220,7 @@ def test_the_attestation_is_derived_from_the_flags(root: Path, policy: Policy) -
 
 
 class _Recorder:
-    """A Popen stand-in that records the argv and exits as told."""
+    """A custodian stand-in recording the sandbox's fully wrapped argv."""
 
     def __init__(self, returncode: int = 0) -> None:
         self.argv: list[str] | None = None
@@ -234,13 +233,22 @@ class _Recorder:
         class _Proc:
             import io
 
-            stderr = io.StringIO("")
+            stderr = io.BytesIO(b"")
             returncode = code
 
-            def wait(self) -> int:
-                return code
+        class _Command:
+            process = _Proc()
 
-        return _Proc()
+            def __enter__(self) -> _Command:
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                pass
+
+            def wait(self, cancelled: Any) -> tuple[int, str]:
+                return code, ""
+
+        return _Command()
 
 
 def test_a_world_backend_takes_the_prefix_inside(
@@ -250,7 +258,7 @@ def test_a_world_backend_takes_the_prefix_inside(
     is part of the world being entered, so it lands after the image in
     the argv rather than in front of the runtime."""
     recorder = _Recorder()
-    monkeypatch.setattr(subprocess, "Popen", recorder)
+    monkeypatch.setattr(boundary, "Command", recorder)
 
     boundary.run(
         _backend(root),
@@ -275,7 +283,7 @@ def test_a_host_backend_keeps_the_prefix_outside(
     """The existing composition, pinned: uv's config and caches are
     trusted plumbing outside a host mechanism's rewrite."""
     recorder = _Recorder()
-    monkeypatch.setattr(subprocess, "Popen", recorder)
+    monkeypatch.setattr(boundary, "Command", recorder)
 
     boundary.run(
         Unavailable(),
@@ -296,7 +304,7 @@ def test_exit_97_is_the_shims_only_under_landlock(
     """97 is the shim's reserved code, and there is no shim in a
     container — a recipe legitimately exiting 97 must not be told lc
     could not set up the sandbox."""
-    monkeypatch.setattr(subprocess, "Popen", _Recorder(returncode=97))
+    monkeypatch.setattr(boundary, "Command", _Recorder(returncode=97))
     outcome = boundary.run(_backend(root), policy, ["true"], cwd=root, env={})
     assert not any("could not set up" in note for note in outcome.notes)
 
@@ -307,7 +315,7 @@ def test_exit_125_names_the_runtime_not_the_command(
     """The runtimes reserve 125 for their own failures — the command
     never ran, so neither the denial heuristics nor the trailer should
     point at it."""
-    monkeypatch.setattr(subprocess, "Popen", _Recorder(returncode=125))
+    monkeypatch.setattr(boundary, "Command", _Recorder(returncode=125))
     outcome = boundary.run(_backend(root), policy, ["true"], cwd=root, env={})
     assert any("runtime failed before the command ran" in note for note in outcome.notes)
     assert not any("ran under the lc sandbox" in note for note in outcome.notes)

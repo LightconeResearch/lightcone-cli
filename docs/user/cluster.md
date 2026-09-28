@@ -44,9 +44,10 @@ Local resources are cooperative limits, not an exclusive CPU/RAM reservation.
 An allocation owns a detached process session and standard `LocalCluster`: one
 worker process with `task_slots_per_node` threads, and a scheduler that listens
 on `127.0.0.1` over TLS. Its own logs are discarded; a startup failure is kept
-and shown as the reason by `lc compute status`. At its time limit the whole
-process session is killed with SIGKILL, so a recipe still running stops mid-write.
-`down` sends SIGTERM, waits three seconds, then sends SIGKILL.
+and shown as the reason by `lc compute status`. At its time limit, or on `down`,
+the allocation stops its process session with SIGTERM, then SIGKILL if needed.
+Shutdown normally allows three seconds; active command supervisors get up to
+sixteen seconds to stop their commands and containers before escalation.
 Private process locators are checked against the native boot UUID, UID, process
 session, and exact command containing the allocation's random token before
 attachment or termination. Hostname changes and clock adjustments do not change
@@ -308,6 +309,46 @@ has as long to start. A failed check or timeout logs
 `Slurm Dask startup failed: …` to the submission log and exits nonzero. Look
 there when a job is active but never becomes ready.
 
+## Recipe resource requirements
+
+Declare each recipe's needs in `astra.yaml`:
+
+```yaml
+recipe:
+  command: python src/fit.py {output}
+  resources:
+    cpus: 4
+    memory: 8Gi
+    time_limit: 1h30m
+```
+
+Each recipe runs on one worker. Its CPU and memory request must fit that
+worker, even when the cluster has several nodes. Dask reserves both budgets
+while the task runs, so recipes can run together only when their combined
+requests fit. `task_slots_per_node` also caps concurrent tasks; it does not
+limit how many CPUs a single recipe may request.
+
+CPUs must be positive whole numbers and default to one. Memory needs units:
+`512Mi` and `8Gi` are binary sizes; `8GB` is decimal. Without a memory
+declaration, a recipe reserves the worker's entire memory budget, so only
+one such recipe runs per worker. `lc run` reserves an entire worker's CPU and
+memory budgets because its arbitrary command has no recipe declaration.
+Time limits accept combinations such as `1h30m` or `45s`; exceeding the limit
+stops the recipe and reports failure. Fractional CPUs, GPUs, and disk requests
+are rejected rather than ignored.
+
+`lc materialize` validates the complete selected graph against the cluster
+before fetching inputs, preparing the environment, or starting a recipe. This
+also validates currently complete outputs, which workers may need to rebuild
+after an upstream change. Use `lc materialize --check` to inspect currency
+without allocation.
+
+These are scheduling reservations, not per-recipe CPU or RAM enforcement.
+Recipes must respect their declarations; a subprocess can otherwise exceed
+its request. Slurm enforces the overall allocation, while local execution
+uses cooperative budgets. Leave capacity for the scheduler, workers, and other
+overhead when declaring recipe requirements.
+
 ## Execution requirements and limits
 
 Driver and workers must see the same project, prepared environment, and inputs
@@ -332,13 +373,23 @@ directories and credential files still reject symlinks, retain ownership and
 ancestor-permission checks, and require modes `0700` and `0600`, respectively.
 The catalog's location is independent of the private connection files.
 
-Use one execution invocation per project at a time. Concurrent writers,
-comprehensive cancellation, task fencing, and recovery after client/worker loss
-are not guaranteed. A lost client does not prove its subprocesses stopped.
-Unreported partial outputs are retained after interruption rather than restored
-while a task may still write them. End the allocation and establish that work has
-stopped before inspecting or repairing that project's outputs.
-For local containerized execution, `down` and walltime expiry stop the managed
-process group but do not guarantee termination of containers managed by an
-external runtime. A Podman container that ignores SIGTERM can survive. Inspect
-and stop such containers through the container runtime before cleaning results.
+Ctrl-C revokes the invocation and waits for its commands to stop. Materialize
+keeps completed commits and restores uncommitted outputs only after cleanup is
+confirmed. If cleanup cannot be confirmed, partial outputs stay in place and the
+error asks you to stop the allocation and verify its commands and containers
+before retrying. The allocation remains available after ordinary cancellation.
+
+The existing Dask scheduler holds invocation claims and completion receipts.
+After a worker disappears, a replacement task cannot rerun a recipe whose result
+is uncertain. A completed task returns its original receipt. Loss of the client
+or its heartbeat revokes further work; a small command supervisor also stops the
+command if its worker dies. There is no automatic recovery or replay after an
+uncertain execution, and no additional server or checkout state directory.
+
+Use one execution invocation per project at a time: there is no checkout lock
+across invocations. Recipes must finish all their work before returning and must
+not detach daemon processes into new sessions. Cleanup covers each command's
+process group and its OCI container, whose immutable runtime ID is checked.
+If a supervisor itself is forcibly killed, a container managed by an external
+runtime can survive; native allocation termination alone cannot prove it stopped.
+Inspect and stop such containers before repairing outputs.

@@ -10,7 +10,6 @@ if a third mechanism landed tomorrow.
 from __future__ import annotations
 
 import shutil
-import subprocess
 import sys
 import threading
 from collections import deque
@@ -22,6 +21,7 @@ from typing import IO
 
 from lightcone.engine.sandbox import policy as policy_module
 from lightcone.engine.sandbox.model import Attestation, Backend, Capability, Policy
+from lightcone.engine.sandbox.processes import Command
 
 #: How much of the child's stderr to keep for the denial classifier. The
 #: denial is in the last few lines of a traceback, and a recipe that
@@ -117,10 +117,17 @@ def scope(policy: Policy) -> Iterator[Policy]:
     Yields:
         The same policy, with its ``tmp_home`` removed on exit.
     """
+    from lightcone.engine.execution import ExecutionUncertain
+
+    cleanup = True
     try:
         yield policy
+    except ExecutionUncertain:
+        cleanup = False
+        raise
     finally:
-        shutil.rmtree(policy.tmp_home, ignore_errors=True)
+        if cleanup:
+            shutil.rmtree(policy.tmp_home, ignore_errors=True)
 
 
 def run(
@@ -132,6 +139,8 @@ def run(
     env: dict[str, str],
     prefix: Sequence[str] = (),
     output: Callable[[str, bytes], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    timeout: float | None = None,
 ) -> Outcome:
     """Run a command through a backend, and explain it if it fails.
 
@@ -154,6 +163,8 @@ def run(
             host-resolved ``env``.
         output: Optional receiver for unchanged stdout/stderr bytes, used when the
             caller forwards a remote command's output to its own terminal.
+        cancelled: A stop predicate polled while the command runs.
+        timeout: Maximum command runtime in seconds, or no bound.
 
     Returns:
         The exit code, what was actually enforced, and any lines the
@@ -176,33 +187,33 @@ def run(
     if backend.capability.kind == "none":
         notes.append(_downgrade_note(backend.capability))
 
-    proc = subprocess.Popen(
-        wrapped,
-        cwd=cwd,
-        env=child_env,
-        stdin=subprocess.DEVNULL if output is not None else None,
-        stdout=subprocess.PIPE if output is not None else None,
-        stderr=subprocess.PIPE,
-        bufsize=0,
-    )
-    assert proc.stderr is not None  # Popen was given PIPE
-    tail = _Tail(proc.stderr, output)
-    tail.start()
-    stdout: threading.Thread | None = None
-    if output is not None:
-        assert proc.stdout is not None
+    with Command(
+        wrapped, cwd=cwd, env=child_env, capture=output is not None, timeout=timeout,
+        container=backend.contains_prefix,
+    ) as command:
+        proc = command.process
+        assert proc.stderr is not None  # Popen was given PIPE
+        tail = _Tail(proc.stderr, output)
+        tail.start()
+        stdout: threading.Thread | None = None
+        if output is not None:
+            assert proc.stdout is not None
 
-        def forward() -> None:
-            assert proc.stdout is not None and output is not None
-            while chunk := proc.stdout.read(64 * 1024):
-                output("stdout", chunk)
+            def forward() -> None:
+                assert proc.stdout is not None and output is not None
+                while chunk := proc.stdout.read(64 * 1024):
+                    output("stdout", chunk)
 
-        stdout = threading.Thread(target=forward, daemon=True)
-        stdout.start()
-    returncode = proc.wait()
-    tail.join(timeout=5)
-    if stdout is not None:
-        stdout.join(timeout=5)
+            stdout = threading.Thread(target=forward, daemon=True)
+            stdout.start()
+        try:
+            returncode, lifecycle_note = command.wait(cancelled)
+        finally:
+            tail.join(timeout=5)
+            if stdout is not None:
+                stdout.join(timeout=5)
+    if lifecycle_note:
+        notes.append(lifecycle_note)
 
     # Imported here, not at module scope: `sandbox/__init__` loads this
     # module eagerly, and the shim drags ctypes in for one integer.
@@ -228,7 +239,7 @@ def run(
             f"above, `{attestation.mechanism}` exit 125) — this is a "
             "runtime problem, not your command's"
         )
-    elif returncode != 0 and attestation.mechanism != "none":
+    elif returncode != 0 and attestation.mechanism != "none" and not lifecycle_note:
         from lightcone.engine.sandbox import denial
 
         explanation = denial.explain(tail.text(), policy, cwd=cwd)

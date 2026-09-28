@@ -3,7 +3,8 @@
 The spec, read as a graph of tasks. `astra.yaml` × `universes/*.yaml`
 gives one task per `(universe, output)` pair that has a recipe; a task
 carries everything executing it needs — the rendered command, where its
-bytes go, what it reads, its decisions, its `definition_version` — and
+bytes go, what it reads, its decisions, its `definition_version`, and its
+resource requirements — and
 nothing about *how* it will be executed.
 
 Source: `src/lightcone/engine/plan.py`.
@@ -14,7 +15,8 @@ Source: `src/lightcone/engine/plan.py`.
 |---|---|
 | `build(root)` | Validate the spec with ASTRA's own validators, resolve every universe, return the `Graph`. |
 | `Graph` | Tasks keyed on `(universe_id, output_id)`; `order()` for the read-only topological walk, `resolve(targets)` for what a user typed, `closure(keys)` to narrow a run. |
-| `Task` | One output in one universe, frozen. |
+| `Task` | One output in one universe, frozen, including its parsed `resources`. |
+| `TaskResources` | Frozen Pydantic request from `engine.execution_resources`: positive whole CPUs, optional memory bytes, and optional walltime seconds. |
 | `declared_path(root, path)` | The one rule that names a path: project-relative inside the tree, absolute outside, never resolved. |
 
 ## What must stay true
@@ -31,6 +33,12 @@ Source: `src/lightcone/engine/plan.py`.
   schema, file, and universe validators before resolving anything —
   resolution answers what a *valid* spec means and does not re-check
   that it is one.
+- **Resource declarations survive resolution.** `build` reads
+  `recipe.resources` from ASTRA's resolved output definition and validates
+  units and supported requirements through `TaskResources.parse`. It rejects
+  unsupported GPU/disk requests and fractional CPUs with the output's name.
+  Cluster capacity is checked later, before materialize prepares the project
+  or submits any task. No worker placement belongs in this module.
 - **The layout is flat and path-addressed.**
   `results/<universe>/<id>.<format>`, and the path in a
   rendered recipe *is* the path on disk — no staging, no relocation.
@@ -50,7 +58,7 @@ Source: `src/lightcone/engine/plan.py`.
 ## Tests
 
 `tests/test_plan.py` — pure; tests what lc *adds* (directories, edges,
-versions, the validation gate), never what a spec means — that
+versions, resource requirements, the validation gate), never what a spec means — that
 coverage lives in astra-tools' own suite, and re-asserting it here
 would recreate the second implementation this module deleted. Every
 fixture must be a spec `astra validate` accepts; the gate enforces it

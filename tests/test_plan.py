@@ -122,6 +122,31 @@ def test_an_output_addresses_its_own_file(tmp_path: Path) -> None:
     assert "results/baseline/fit.json" in task.recipe
 
 
+def test_recipe_resources_survive_graph_resolution(tmp_path: Path) -> None:
+    spec = _SPEC.replace(
+        "command: python src/fit.py",
+        "resources: {cpus: 4, memory: 6Gi, time_limit: 1h30m}\n"
+        "      command: python src/fit.py",
+    )
+    graph = _build(_project(tmp_path, spec))
+    task = graph.tasks[("baseline", "fit")]
+    assert task.resources.cpus == 4
+    assert task.resources.memory_bytes == 6 * 1024**3
+    assert task.resources.time_seconds == 5400
+    unspecified = graph.tasks[("baseline", "report")].resources
+    assert unspecified.cpus == 1
+    assert unspecified.memory_bytes is None
+
+
+def test_unhonored_recipe_resources_refuse_graph_construction(tmp_path: Path) -> None:
+    spec = _SPEC.replace(
+        "command: python src/fit.py",
+        "resources: {gpus: 1}\n      command: python src/fit.py",
+    )
+    with pytest.raises(ProjectError, match="unsupported recipe resource.*gpus"):
+        _build(_project(tmp_path, spec))
+
+
 def test_a_declared_input_resolves_to_its_source(tmp_path: Path) -> None:
     task = _build(_project(tmp_path)).tasks[("baseline", "fit")]
     assert task.inputs == {"catalog": tmp_path / "data" / "catalog.fits"}
@@ -274,7 +299,6 @@ def test_an_output_without_a_format_is_refused_by_name(tmp_path: Path) -> None:
 
 
 # ---- rendering a recipe ----------------------------------------------------
-
 
 
 

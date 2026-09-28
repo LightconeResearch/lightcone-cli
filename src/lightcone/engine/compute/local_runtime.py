@@ -20,6 +20,34 @@ from lightcone.engine.compute.runtime import (
 )
 
 
+def _stop_session() -> None:
+    """Give command custodians time to drain, then kill the allocation session."""
+    import psutil
+
+    from lightcone.engine.sandbox.processes import has_custodian, members
+
+    owner = os.getpid()
+    remaining = [member for member in members(session=owner) if member.pid != owner]
+    for member in remaining:
+        try:
+            member.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    started = time.monotonic()
+    while remaining:
+        grace = 15 if has_custodian(remaining) else 2.5
+        if time.monotonic() - started >= grace:
+            break
+        time.sleep(0.05)
+        remaining = [member for member in members(session=owner) if member.pid != owner]
+    for member in remaining:
+        try:
+            member.kill()
+        except psutil.NoSuchProcess:
+            pass
+    os.kill(owner, signal.SIGKILL)
+
+
 def main() -> None:
     """Run the detached allocation owner until shutdown or its walltime expires."""
     os.umask(0o077)
@@ -34,12 +62,12 @@ def main() -> None:
 
     def expire(_signum: int, _frame: FrameType | None) -> None:
         # This bound does not depend on the scheduler loop or graceful Dask close.
-        os.killpg(os.getpgrp(), signal.SIGKILL)
+        _stop_session()
 
     # Register before importing Dask so its multiprocessing finalizers run first.
     # A recipe can ignore SIGTERM and outlive its worker: keep custody of the
     # session and walltime timer until every member has been sent SIGKILL.
-    atexit.register(os.killpg, os.getpgrp(), signal.SIGKILL)
+    atexit.register(_stop_session)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGALRM, expire)
@@ -54,6 +82,7 @@ def main() -> None:
         from distributed import LocalCluster
 
         security = create_security(directory)
+        allocation = read_private_json(directory / "identity.json")
         with dask.config.set(SCHEDULER_CONFIG), LocalCluster(  # type: ignore[no-untyped-call]
             n_workers=1,
             threads_per_worker=int(launch["task_slots"]),
@@ -73,6 +102,7 @@ def main() -> None:
             # Recipes use subprocesses: Dask's Python-process RSS cannot enforce
             # their RAM envelope. Local resource limits are explicitly cooperative.
             memory_limit=0,
+            resources={"CPU": int(allocation["cpus"]), "MEMORY": int(allocation["memory"])},
             silence_logs=50,
         ) as cluster:
             write_private_json(

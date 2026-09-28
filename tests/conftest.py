@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import textwrap
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -151,6 +151,11 @@ class _Inline:
     are the upstream results themselves, exactly what the worker expects.
     """
 
+    stopped = True  # Calls are synchronous; no remote work can survive the fixture.
+
+    def validate(self, tasks: Iterable[object]) -> None:
+        """Run fixture tasks without a finite cluster resource envelope."""
+
     def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
         return fn(*args)
 
@@ -180,7 +185,8 @@ def cluster_id(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     from lightcone.engine import compute
 
     with LocalCluster(
-        n_workers=1, threads_per_worker=2, processes=False, dashboard_address=None
+        n_workers=1, threads_per_worker=2, processes=False, dashboard_address=None,
+        resources={"CPU": 2, "MEMORY": 1024**3},
     ) as cluster:
         @contextmanager
         def connect(value: str) -> Iterator[Client]:

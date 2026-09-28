@@ -996,14 +996,16 @@ same run created, and whether it did would depend on whether a recipe
 finished before or after the previous save. Nondeterminism in a
 provenance field is worse than either answer.
 
-**The worker never raises, and that is enforced at the unit boundary.**
+**Ordinary recipe failures are results; execution-safety failures propagate.**
 It returns `ok`, `current`, `behind`, `failed`, or `blocked`. A task whose upstream
 did not report — failed, or never finished at all — returns `blocked`
 without running. Raising would make Dask re-raise in the driver and abort
 every task in flight, and reporting all independent failures in one run
 is most of what owning the loop buys. `worker.materialize` wraps the
-whole unit, so the contract holds for failure modes nobody enumerated;
-the one inner guard that remains exists because "your recipe failed" and
+whole unit, so ordinary failures keep that contract. `ExecutionCancelled` and
+`ExecutionUncertain` bypass it: reporting an uncertain writer as an ordinary
+failure would let the driver restore files underneath it. The
+one inner guard that remains exists because "your recipe failed" and
 "your recipe worked and we could not record it" deserve different words.
 
 **`data_version` is computed in the worker, before anything is staged.**
@@ -1195,12 +1197,12 @@ crash, or a Ctrl-C would otherwise leave tracked files deleted or
 half-written — and the next run's refusal would tell the user to commit
 truncated, manifest-less garbage into `results/`, destroying the one
 property the layer exists for. So `ok` → `dataset.save`, and `failed` or
-`blocked` → `dataset.restore`. The one exception is an interrupted run: a
-task that never reported may still have a recipe writing on the cluster, so
-its files are left in place rather than restored underneath it, and the
-dirty-tree refusal's `results/` block says to stop the allocation before
-discarding them. This is what makes the refusal survivable rather than a
-trap.
+`blocked` → `dataset.restore`. On interruption or driver failure, the invocation
+first revokes admission and drains its claimed tasks. Restore unconsumed outputs
+only with positive `Invocation.stopped` confirmation, independent of exception
+type: a later context's error may mask uncertain cleanup. Otherwise leave files
+in place and require native verification before repair. No cross-invocation
+checkout lock is provided; run one execution invocation per project at a time.
 
 **The run record names declared paths, never resolved ones.** Every
 declared input under `data/` is an annex symlink, so a `Path.resolve()`
@@ -1766,18 +1768,30 @@ Walltime follows Slurm's native overrun and termination-grace policy; Lightcone
 does not independently guarantee a finite termination deadline for Slurm jobs.
 
 **Execution borrows a client and leaves the allocation alive.** Validate native
-identity and scheduler readiness. The driver keeps git and convergence. Use unique
-invocation task keys. Interrupted unreported outputs remain in place because a
-client disconnect does not prove remote subprocess termination. Comprehensive
-cancellation/fencing and simultaneous writers are deferred by explicit user decision.
-Local containerized processes can outlive process-group shutdown; do not claim
-that `down` or walltime proves an external runtime's containers have stopped.
+identity and scheduler readiness. The driver keeps git and convergence. Unique
+invocation task keys plus claims and completion receipts in the existing Dask
+scheduler prevent uncertain automatic recipe replay; missing state refuses work.
+The driver renews authorization, then revokes and drains it before detaching.
+Only positively confirmed cleanup permits restoring unconsumed outputs. A command
+supervisor watches worker liveness through a pipe, drains the command group on
+timeout/cancellation, and verifies native OCI container termination by immutable ID.
+Recipes must not daemonize into other sessions. A hard-killed supervisor can leave
+external containers alive; do not claim allocation termination proves otherwise.
+Cross-invocation checkout locking remains deferred by explicit user decision.
 Read-only project validation precedes cluster connection, and a run with no
 tasks never connects: it only converges the crate. Populate the declared
 input-hash memo on the driver before serializing it to independent worker tasks.
-Any driver failure while tasks are outstanding (a failed commit included, not
-only a cluster error) carries `compute.UNSTOPPED`, the one wording for "the
-allocation was not stopped and unreported tasks may still be running".
+Any driver failure while tasks are outstanding (a failed commit included) first
+drains the invocation. Unconfirmed cleanup raises `ExecutionUncertain` and retains
+partial outputs; completing cleanup does not terminate the reusable allocation.
+
+**Recipe resources use standard Dask admission.** Preserve ASTRA `recipe.resources`
+in `plan.Task` as validated `TaskResources`: whole CPUs, memory bytes, and optional
+command walltime. Validate the whole selected graph before preparation or submission.
+Workers advertise CPU/MEMORY; tasks reserve their declarations, with omitted RAM
+reserving a whole worker's memory and probes reserving both whole-worker budgets.
+Thread slots remain a separate concurrency cap. Reservations are cooperative, not
+per-command OS CPU/RAM limits; unsupported GPU/disk requests fail explicitly.
 
 **One catalog selector, `LC_COMPUTE_CONFIG` (2026-09).** `lc compute --config`
 was removed: `run` and `materialize` resolve clusters through the catalog too,

@@ -41,10 +41,11 @@ lc materialize "$CLUSTER"
   │  plan: astra validate + resolve  →  Graph of Tasks
   │        (no tasks → converge the crate and stop; nothing connects)
   │  connect: native identity + Dask readiness
+  │  admit: each task's CPU and memory request fits a worker
   │  fetch: git annex get (declared inputs not in this clone)
   │  converge: uv.lock ⇄ .venv   (and the image, containerized)
   ├─► workers: reset output file → sandbox → recipe → hash → manifest
-  │            (never raise; return ok/current/behind/failed/blocked)
+  │            (ordinary failures return failed/blocked)
   └─  driver: consume results in one thread
         ok      → dataset.save   (commit + run record)
         failed  → dataset.restore (tree as clean as it started)
@@ -60,10 +61,15 @@ The division of labor is strict and load-bearing:
 - **Dask owns the ordering.** Every task is submitted with its
   upstream futures as arguments; there is no ready-set loop or
   hand-rolled topological sort on the execution path.
-- **The worker never raises.** A recipe failure, a gate failure, an
-  unreadable manifest — all come back as a state, so one failure
-  doesn't abort every task in flight, and a run reports *all* its
-  independent failures.
+- **Ordinary failures are task results.** A recipe failure, a gate failure,
+  or an unreadable manifest returns a state so independent tasks can continue.
+  Cancellation and uncertain execution propagate instead, aborting the
+  invocation. Partial outputs are restored only after writers are confirmed
+  stopped; uncertainty retains those files for inspection.
+- **Dask accounts for task resources.** Workers advertise CPU and memory
+  budgets; submissions reserve the recipe's requirements. The subprocess
+  boundary applies time limits and owns process teardown. CPU and memory
+  reservations coordinate scheduling rather than imposing per-recipe OS limits.
 - **Values are resolved once and handed down.** HEAD, the container
   runtime, and the foreign-write facts are read by the driver and
   passed to workers as values — a worker that asked git itself could
@@ -166,9 +172,12 @@ material, not a registry.
 
 `compute.connect(CLUSTER_ID)` borrows a standard Dask client and closes only that
 client on exit. Both execution commands require a cluster ID. The materialization
-scheduler keeps its `submit`/`completed` seam. Driver preparation and existing
-task runtime/sandbox checks remain unchanged. Tasks use ordinary Dask scheduling;
-there is no separate worker-selection or preflight layer, or site-marker guard. No execution command implicitly allocates compute.
+scheduler validates resource requests, then keeps its `submit`/`completed` seam;
+ordinary Dask scheduling places the tasks. Driver preparation and task runtime
+checks remain in their existing owners. `engine.execution` holds invocation claims
+and receipts in the scheduler, revokes admission on cancellation, and waits for
+command cleanup before allowing output restoration. No execution command
+implicitly allocates compute, and there is no separate execution service.
 See [compute internals](api/compute.md) and [deployment limits](user/cluster.md).
 
 ## The publication view

@@ -440,7 +440,7 @@ def test_a_run_with_nothing_to_make_needs_no_cluster(
 
 
 @pytest.mark.parametrize("failing", ["baseline/first", "baseline/second"])
-def test_a_failed_commit_says_whether_remote_tasks_may_still_run(
+def test_a_failed_commit_restores_unconsumed_outputs_after_confirmed_stop(
     root: Path, monkeypatch: pytest.MonkeyPatch, failing: str,
 ) -> None:
     _cluster(monkeypatch, _Inline())
@@ -455,8 +455,10 @@ def test_a_failed_commit_says_whether_remote_tasks_may_still_run(
     monkeypatch.setattr(dataset, "save", fail)
     with pytest.raises(ProjectError, match="git commit failed") as raised:
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    # Only the first output leaves another one outstanding.
-    assert ("did not stop the allocation" in str(raised.value)) == (failing == "baseline/first")
+    assert str(raised.value) == "git commit failed"
+    assert not dataset.status(root)
+    assert (root / "results/baseline/first.txt").exists() == (failing == "baseline/second")
+    assert not (root / "results/baseline/second.txt").exists()
 
 def test_shared_inputs_are_hashed_once_before_task_serialization(
     analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
@@ -729,27 +731,42 @@ def test_a_rebuild_that_fails_puts_the_previous_output_back(
     assert not dataset.status(root)
 
 
-def test_an_interrupted_run_retains_what_never_reported(
-    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("failure", ["confirmed", "uncertain", "masked", "second_interrupt"])
+def test_interrupted_outputs_are_restored_only_after_confirmed_stop(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch, failure: str,
 ) -> None:
-    """A sibling that already saved keeps its commit; the output still in
-    flight may still have a writer, so its partial files are retained."""
+    """A completed sibling keeps its commit; unconfirmed writers retain their files."""
+    from lightcone.engine.execution import ExecutionUncertain
+
+    uncertain = failure != "confirmed"
+
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "astra.yaml").write_text(_SPEC.replace("echo {decisions.method}", "echo changed"))
     dataset.save(root, [root], "edit both recipes")
 
     class _Interrupted(_Inline):
+        stopped = not uncertain
+
         def completed(self, handles: list[Any]) -> Iterator[TaskResult]:
             yield handles[0]
+            if failure == "masked":
+                raise RuntimeError("client close masked uncertain cleanup")
+            if failure == "uncertain":
+                raise ExecutionUncertain("worker disappeared without acknowledging stop")
             raise KeyboardInterrupt
 
     _cluster(monkeypatch, _Interrupted())
 
-    with pytest.raises(KeyboardInterrupt):
+    expected = {"masked": RuntimeError, "uncertain": ExecutionUncertain}.get(
+        failure, KeyboardInterrupt,
+    )
+    with pytest.raises(expected):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert dataset.status(root)
-    assert (root / "results/baseline/second.txt").read_text() == "changed\n"
+    assert bool(dataset.status(root)) is uncertain
+    assert (root / "results/baseline/second.txt").read_text() == (
+        "changed\n" if uncertain else "alpha\n"
+    )
 
 
 # ---- the commit message ----------------------------------------------------
@@ -1060,6 +1077,104 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
 # ---- the scheduler seam ----------------------------------------------------
 
 
+def _resource_cluster(monkeypatch: pytest.MonkeyPatch, *, workers: int = 1) -> None:
+    from distributed import Client, LocalCluster
+
+    from lightcone.engine import compute
+
+    @contextmanager
+    def connect(cluster_id: str) -> Iterator[Any]:
+        with LocalCluster(
+            n_workers=workers, threads_per_worker=4, processes=False,
+            dashboard_address=None, resources={"CPU": 4, "MEMORY": 2 * 1024**3},
+        ) as cluster, Client(cluster, set_as_default=False) as client:
+            yield client
+
+    monkeypatch.setattr(compute, "connect", connect)
+
+
+@pytest.mark.parametrize("resource_spec", ["cpus: 5", "memory: 3Gi"])
+def test_resource_refusal_precedes_preparation_and_all_recipes(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, resource_spec: str,
+) -> None:
+    spec = _SPEC.replace(
+        "command: cat", f"resources: {{{resource_spec}}}\n      command: cat"
+    )
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    before = dataset.head(root)
+    _resource_cluster(monkeypatch)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("preparation began before all resource requests were validated")
+
+    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    monkeypatch.setattr(engine.container, "runtime_for_run", unexpected)
+    with pytest.raises(ProjectError, match="baseline/second:.*no worker"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert dataset.head(root) == before
+    assert not dataset.status(root)
+    assert not (root / "results/baseline/first.txt").exists()
+
+
+def test_empty_cluster_refuses_before_project_preparation(
+    root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _resource_cluster(monkeypatch, workers=0)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("preparation began without an available worker")
+
+    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    with pytest.raises(ProjectError, match="no workers"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert not dataset.status(root)
+
+
+@pytest.mark.parametrize(
+    ("resource_spec", "expected_parallelism"),
+    [("cpus: 3, memory: 256Mi", 1), ("cpus: 1, memory: 1Gi", 2)],
+)
+def test_real_dask_respects_recipe_cpu_and_memory_reservations(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+    resource_spec: str, expected_parallelism: int,
+) -> None:
+    # Four Dask threads would run all four subprocesses together without
+    # resource reservations. Each independent output records its live interval.
+    spec = 'version: "0.0.13"\nname: analysis\ninputs: []\noutputs:\n' + "".join(
+        f"  - id: task{index}\n"
+        "    type: metric\n"
+        "    format: json\n"
+        "    recipe:\n"
+        f"      resources: {{{resource_spec}}}\n"
+        "      command: python src/work.py {output}\n"
+        for index in range(4)
+    )
+    root = analysis(spec, files={"src/work.py": """
+        import json
+        import sys
+        import time
+        from pathlib import Path
+        start = time.monotonic()
+        time.sleep(0.5)
+        Path(sys.argv[1]).write_text(json.dumps([start, time.monotonic()]))
+    """})
+    _resource_cluster(monkeypatch)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and len(report.made) == 4
+    events = []
+    for path in (root / "results/baseline").glob("task*.json"):
+        start, finish = json.loads(path.read_text())
+        events.extend([(start, 1), (finish, -1)])
+    live = peak = 0
+    for _, change in sorted(events):
+        live += change
+        peak = max(peak, live)
+    assert peak == expected_parallelism
+    assert not dataset.status(root)
+
+
 def test_a_real_cluster_still_fits_through_the_seam(root: Path, cluster_id: str) -> None:
     """The one test that starts Dask. The seam is only worth having if the
     thing it abstracts still goes through it."""
@@ -1084,7 +1199,8 @@ def test_a_processes_cluster_fits_through_the_seam(
     @contextmanager
     def processes(cluster_id: str) -> Iterator[Any]:
         with LocalCluster(
-            n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None
+            n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None,
+            resources={"CPU": 1, "MEMORY": 1024**3},
         ) as cluster:
             with Client(cluster, set_as_default=False) as client:
                 yield client
@@ -1320,3 +1436,56 @@ def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: No
     assert any(".second.manifest.json" in w for w in report.warnings)
     document = (root / "ro-crate-metadata.json").read_text()
     assert "results/baseline/second.txt" not in document
+
+
+def test_recipe_time_limit_stops_writes_restores_output_and_keeps_cluster_usable(
+    root: Path, cluster_id: str, capsys: pytest.CaptureFixture[str],
+) -> None:
+    import psutil
+
+    engine.materialize(root, ["first"], cluster_id=cluster_id)
+    output = root / "results/baseline/first.txt"
+    manifest = root / "results/baseline/.first.manifest.json"
+    original_output, original_manifest = output.read_bytes(), manifest.read_bytes()
+
+    script = root / "src/slow.py"
+    script.parent.mkdir(exist_ok=True)
+    script.write_text(
+        "import os, sys, time\n"
+        "from pathlib import Path\n"
+        "Path(sys.argv[1]).write_text('partial output')\n"
+        "print('slow-recipe-pid:', os.getpid(), flush=True)\n"
+        "time.sleep(30)\n"
+        "Path(sys.argv[1]).write_text('should never finish')\n"
+    )
+    spec = root / "astra.yaml"
+    spec.write_text(spec.read_text().replace(
+        "command: echo {decisions.method} > {output}",
+        "resources: {time_limit: 1s}\n      command: python src/slow.py {output}",
+    ))
+    dataset.save(root, [spec, script], "Run the recipe with a walltime limit")
+    capsys.readouterr()
+
+    failed = engine.materialize(root, ["first"], cluster_id=cluster_id)
+
+    assert failed.failed == ["baseline/first"]
+    assert any("timed out" in note for note in failed.notes)
+    pid_line = next(
+        line for line in capsys.readouterr().err.splitlines()
+        if line.startswith("slow-recipe-pid:")
+    )
+    assert not psutil.pid_exists(int(pid_line.split(":", 1)[1]))
+    assert output.read_bytes() == original_output
+    assert manifest.read_bytes() == original_manifest
+    assert not dataset.status(root)
+
+    # The fixture holds the same LocalCluster across both invocations; a
+    # successful new recipe demonstrates that timeout did not terminate it.
+    spec.write_text(spec.read_text().replace(
+        "python src/slow.py {output}", "echo recovered > {output}",
+    ))
+    dataset.save(root, [spec], "Use a recipe that completes within its limit")
+    recovered = engine.materialize(root, ["first"], cluster_id=cluster_id)
+    assert recovered.made == ["baseline/first"]
+    assert output.read_text() == "recovered\n"
+    assert not dataset.status(root)

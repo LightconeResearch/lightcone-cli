@@ -48,14 +48,16 @@ never touched, under any flag.
 ## The run's contract
 
 - **Starts clean.** A dirty tree is a refusal. A recipe that returns a
-  failure has its partial work restored. After a cluster interruption,
-  unreported outputs are retained because tasks may still be running. The
-  same holds when a commit fails while other recipes are still running: the
-  error says so.
-  Stop the allocation with `lc compute down` and its full ID (a name can
-  already belong to a newer allocation), and confirm its recipes have
-  stopped before cleaning results. Local containers may need separate
-  termination through their runtime; see [execution limits](../user/cluster.md#execution-requirements-and-limits).
+  failure has its partial work restored. On interruption or a driver failure,
+  lc cancels outstanding tasks and restores their uncommitted outputs only after
+  cleanup is positively confirmed. Completed commits remain. If cleanup is
+  uncertain, outputs stay in place: stop the allocation by its full ID and verify
+  its commands and containers have stopped before repairing results. See
+  [execution limits](../user/cluster.md#execution-requirements-and-limits).
+- **Honors recipe resources.** CPU and memory requests must fit one worker and
+  are reserved through standard Dask scheduling; time limits stop overrunning
+  commands. The whole selected graph is checked before preparation or submission.
+  See [recipe resource requirements](../user/cluster.md#recipe-resource-requirements).
 - **Fetches what it needs.** Declared inputs whose annexed content is
   not in this clone are fetched before anything hashes.
 - **Commits as it goes.** Each output lands in its own commit, written

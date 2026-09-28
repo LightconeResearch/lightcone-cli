@@ -65,4 +65,9 @@ def call(function: Callable[..., Any], topic: str, task: str, *args: Any) -> Any
     try:
         return function(*args, output=output)
     finally:
-        worker.log_event(topic, {"done": task})
+        # Output delivery must not mask an execution-safety exception. A lost
+        # final marker is reported by the driver's bounded output wait.
+        try:
+            worker.log_event(topic, {"done": task})
+        except Exception:
+            pass
