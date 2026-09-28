@@ -8,7 +8,7 @@ present. `lc materialize --check` and `lc status` remain local project inspectio
 ## Start locally
 
 No configuration is needed on a fresh installation. When
-`~/lightcone-compute.yaml` is absent, Lightcone exposes one built-in `local` offer:
+`~/.lightcone/compute.yaml` is absent, Lightcone exposes one built-in `local` offer:
 one logical CPU, 1 GiB, one node, and fast startup. Its default lifetime is
 30 minutes, with a maximum of two hours. This creates no catalog file and starts
 no processes until you launch a cluster.
@@ -70,7 +70,7 @@ separate name registry. Native state still decides whether an allocation exists.
 
 ## Customize resource offers
 
-Create `~/lightcone-compute.yaml` to expose other resource shapes or services.
+Create `~/.lightcone/compute.yaml` to expose other resource shapes or services.
 A configured catalog replaces the built-in catalog completely; no extra local
 offer is added to it. The namespace is a stable UUID identifying a connection;
 keep it unchanged while that connection's clusters exist.
@@ -213,9 +213,10 @@ Direct recipes inherit the allocation workers' environment, not variables added
 to the invoking CLI after launch. Remote execution does not forward stdin.
 
 The catalog contains policy, not credentials or live state. Scheduler connection
-material is private and uses standard Dask TLS and scheduler files. Keep the
-catalog in a visible, readable location if it is to be read by a browser frontend;
-its location is independent of private connection files.
+material is private and uses standard Dask TLS and scheduler files. The CLI's
+default catalog is hidden. For browser access, expose that same file through an
+existing API, or configure both clients to use one visible catalog with the CLI
+path override. Its location is independent of private connection files.
 
 Use one execution invocation per project at a time. Concurrent writers,
 comprehensive cancellation, task fencing, and recovery after client/worker loss

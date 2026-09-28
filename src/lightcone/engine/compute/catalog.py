@@ -72,7 +72,7 @@ class Catalog:
         """
         configured = path is not None or "LC_COMPUTE_CONFIG" in os.environ
         path = path if path is not None else Path(
-            os.environ.get("LC_COMPUTE_CONFIG", "~/lightcone-compute.yaml")
+            os.environ.get("LC_COMPUTE_CONFIG", "~/.lightcone/compute.yaml")
         )
         path = path.expanduser()
         try:

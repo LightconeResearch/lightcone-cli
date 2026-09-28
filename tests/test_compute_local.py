@@ -208,7 +208,7 @@ with connect(sys.argv[2]) as client:
             capture_output=True, text=True, timeout=30, check=True,
         )
         assert result.stdout.strip() == "9"
-        assert not (tmp_path / "lightcone-compute.yaml").exists()
+        assert not (tmp_path / ".lightcone" / "compute.yaml").exists()
     finally:
         Compute().down(identity.encode())
     assert Compute().status(identity.encode()).phase == "ended"

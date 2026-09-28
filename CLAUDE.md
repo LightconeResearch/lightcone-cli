@@ -1704,7 +1704,7 @@ fields before attachment or cancellation. Missing live comments make discovery
 incomplete; missing historical comments leave identity unknown. Historical
 comment retention requires Slurm's `AccountingStoreFlags` to include `job_comment`.
 
-**Local compute needs no setup.** An absent implicit `~/lightcone-compute.yaml`
+**Local compute needs no setup.** An absent implicit `~/.lightcone/compute.yaml`
 selects a built-in local catalog: one CPU, 1 GiB, one node, fast startup, 30-minute
 default and two-hour maximum lifetime. It writes no catalog and starts no cluster.
 Configured catalogs replace it completely; missing explicit paths and invalid

@@ -272,7 +272,8 @@ def test_configured_catalogs_replace_the_builtin_and_obey_path_precedence(
     catalog: Path, default_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LC_COMPUTE_CONFIG", raising=False)
-    default = default_home / "lightcone-compute.yaml"
+    default = default_home / ".lightcone" / "compute.yaml"
+    default.parent.mkdir()
     default.write_text(catalog.read_text())
     configured = Catalog.load()
     assert set(configured.connections) == {"test"}
@@ -291,13 +292,14 @@ def test_configured_catalogs_replace_the_builtin_and_obey_path_precedence(
 def test_only_an_absent_implicit_catalog_uses_the_builtin(
     default_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    default = default_home / "lightcone-compute.yaml"
+    default = default_home / ".lightcone" / "compute.yaml"
     with pytest.raises(ComputeError, match="cannot read compute catalog"):
         Catalog.load(default)
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(default))
     with pytest.raises(ComputeError, match="cannot read compute catalog"):
         Catalog.load()
     monkeypatch.delenv("LC_COMPUTE_CONFIG")
+    default.parent.mkdir()
     default.symlink_to(default_home / "absent.yaml")
     with pytest.raises(ComputeError, match="cannot read compute catalog"):
         Catalog.load()

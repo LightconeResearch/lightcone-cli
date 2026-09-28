@@ -16,7 +16,7 @@ Without configuration, `resources` exposes a built-in `local` offer: one CPU,
 Launch it with `lc compute launch --cpus 1 --memory 1`; execution still requires
 the returned cluster name or its full immutable ID.
 
-`~/lightcone-compute.yaml`, when present, replaces this built-in catalog.
+`~/.lightcone/compute.yaml`, when present, replaces this built-in catalog.
 `LC_COMPUTE_CONFIG` selects another file for both compute and execution commands;
 `--config PATH` overrides it for this invocation. Missing explicit paths and
 invalid catalogs are errors. Only a missing implicit default file enables the

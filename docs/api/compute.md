@@ -16,7 +16,8 @@ It owns no service, registry, or saved current-cluster selection.
 | `connect(cluster_id, timeout=10, config_path=None)` | Resolve a name or full ID; borrow a standard Dask client, closing the client but never the allocation. |
 | `Provider` | `plan`, `launch`, `discover`, `inspect`, `connect`, `terminate`. |
 
-The built-in catalog exposes one `local` offer: one CPU, 1 GiB, one node,
+`Catalog.load()` defaults to `~/.lightcone/compute.yaml`. When that implicit file
+is absent, the built-in catalog exposes one `local` offer: one CPU, 1 GiB, one node,
 fast startup, 30-minute default and two-hour maximum lifetime. It creates no
 configuration file or allocation. Configured catalogs replace it completely.
 Missing paths selected through an argument or `LC_COMPUTE_CONFIG`, unreadable

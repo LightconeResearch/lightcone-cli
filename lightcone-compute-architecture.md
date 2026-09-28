@@ -87,7 +87,9 @@ and `Worker`, local compute uses `LocalCluster`, and Gateway uses its official
 client and deployment-managed workers. Lightcone submits ordinary Python tasks.
 
 **A browser uses the same resource contract and cluster IDs.** It reads the same
-nonsecret catalog from a visible file or existing site endpoint and manages
+nonsecret catalog through an existing site endpoint, or both clients use one
+visible file selected by the CLI path override and browser configuration. The
+hidden CLI default is not assumed readable through Contents. The browser manages
 allocations through existing authenticated APIs. At NERSC, `jupyterlab-slurm`
 supports batch submission, listing, and cancellation without reading `.lightcone`.
 Its name-only queue listing shows candidate clusters and job IDs; native job
@@ -193,16 +195,17 @@ Keep two configuration concepts:
   order is the user's selection preference.
 
 Use one canonical, nonsecret catalog, default
-`~/lightcone-compute.yaml`, with an explicit path override for deployments.
+`~/.lightcone/compute.yaml`, with an explicit path override for deployments.
 When that implicit file is absent, expose a built-in local offer: one CPU,
 1 GiB, one node, fast startup, 30-minute default and two-hour maximum lifetime.
 This writes no file and starts no cluster. A configured catalog replaces the
 default; missing explicit paths and invalid catalogs remain errors.
-The browser reads that same artifact through Contents or an existing site API.
-The file must actually lie within the accessible Contents root, or an existing
-endpoint must expose it; a visible home file is not necessarily accessible from
-a project-rooted Jupyter server. Configure the canonical filesystem and virtual
-paths accordingly. Do not maintain separate Python and browser copies.
+The CLI default is hidden and cannot be assumed accessible through Jupyter
+Contents. Expose that same file through an existing site API, or configure the
+CLI path override and browser to use one visible catalog. A visible file must
+actually lie within the accessible Contents root; a home file is not necessarily
+accessible from a project-rooted Jupyter server. Configure the canonical filesystem
+and virtual paths accordingly. Do not maintain separate Python and browser copies.
 Credentials stay in native authentication mechanisms,
 not in this catalog. Private connection material remains private.
 

@@ -56,7 +56,7 @@ def _table(headers: list[str], rows: list[list[str]]) -> None:
     "config_path",
     type=click.Path(path_type=Path, dir_okay=False),
     help=(
-        "Catalog path (default: LC_COMPUTE_CONFIG or ~/lightcone-compute.yaml; "
+        "Catalog path (default: LC_COMPUTE_CONFIG or ~/.lightcone/compute.yaml; "
         "built-in local offer when the default file is absent)."
     ),
 )
