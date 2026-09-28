@@ -105,15 +105,18 @@ def _control(
 def _history(
     *, token: str = TOKEN, state: str = "COMPLETED", name: str = IDENTITY.name,
     job_id: str = "123", submitted: str = "2026-09-27T10:00:00", comment: str | None = None,
+    uid: int | None = None,
 ) -> str:
     comment = comment if comment is not None else f"lightcone:v1:kind=dask:token={token}"
-    return f"{job_id}|lc-v1-{name}|{os.getuid()}|{state}|{submitted}|{comment}\n"
+    owner = os.getuid() if uid is None else uid
+    return f"{job_id}|lc-v1-{name}|{owner}|{state}|{submitted}|{comment}\n"
 
 
 def _native(
     monkeypatch: pytest.MonkeyPatch, answers: dict[str, Any]
 ) -> list[tuple[list[str], dict[str, Any]]]:
     calls: list[tuple[list[str], dict[str, Any]]] = []
+    answers = {"id": f"{os.getuid()}\n", **answers}
 
     def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append((argv, kwargs))
@@ -305,13 +308,20 @@ def test_uncertain_submission_recovers_known_id_without_accounting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(slurm.uuid, "uuid4", lambda: SimpleNamespace(hex=TOKEN))
+    target_uid = os.getuid() + 10000
     calls = _native(
-        monkeypatch, {"sbatch": subprocess.TimeoutExpired("sbatch", 60), "squeue": _live()}
+        monkeypatch,
+        {
+            "id": f"{target_uid}\n",
+            "sbatch": subprocess.TimeoutExpired("sbatch", 60),
+            "squeue": _live(uid=target_uid),
+        },
     )
     assert provider.launch(provider.plan(offer, Request.parse("256", "480"))) == IDENTITY
-    assert [call[0][0] for call in calls][-2:] == ["sbatch", "squeue"]
-    assert calls[-2][1]["timeout"] == 60
-    assert calls[-1][1]["timeout"] == 10
+    slurm_calls = [(argv, kwargs) for argv, kwargs in calls if argv[0] != "id"]
+    assert [argv[0] for argv, _ in slurm_calls] == ["sbatch", "squeue"]
+    assert slurm_calls[0][1]["timeout"] == 60
+    assert slurm_calls[1][1]["timeout"] == 10
 
 
 def test_unknown_submission_returns_reconciliation_token_and_never_resubmits(
@@ -405,16 +415,21 @@ def test_named_submission_recovers_from_history_when_sbatch_output_is_malformed(
     provider: slurm.SlurmProvider, offer: Offer, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     name = "analysis-2026"
+    target_uid = os.getuid() + 10000
     monkeypatch.setattr(slurm.uuid, "uuid4", lambda: SimpleNamespace(hex=TOKEN))
     calls = _native(monkeypatch, {
-        "sbatch": "garbled", "squeue": "", "sacct": _history(name=name),
+        "id": f"{target_uid}\n",
+        "sbatch": "garbled", "squeue": "", "sacct": _history(name=name, uid=target_uid),
     })
     plan = replace(provider.plan(offer, Request.parse("256", "480")), name=name)
 
-    assert provider.launch(plan) == replace(IDENTITY, name=name)
+    identity = provider.launch(plan)
+    assert identity == replace(IDENTITY, name=name)
+    assert provider.inspect(identity).phase == "ended"
 
     accounting = next(argv for argv, _ in calls if argv[0] == "sacct")
     assert f"--name=lc-v1-{name}" in accounting
+    assert f"--uid={target_uid}" in accounting
     assert "--format=JobIDRaw,JobName%128,UID,State,Submit,Comment%128" in accounting
     assert sum(argv[0] == "sbatch" for argv, _ in calls) == 1
 
@@ -444,7 +459,45 @@ def test_named_jobs_are_discovered_and_cancelled_from_native_names(
     assert snapshot.identity.name == name
     provider.terminate(snapshot.identity)
     assert f"--name=lc-v1-{name}" in calls[-1][0]
-    assert "--format=%i|%128j|%U|%T|%128k" in calls[0][0]
+    assert "--format=%i|%128j|%U|%T|%128k" in next(
+        argv for argv, _ in calls if argv[0] == "squeue"
+    )
+
+
+def test_discovery_and_cancellation_resolve_the_execution_user_once_per_provider(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_uid = os.getuid() + 10000
+    calls = _native(monkeypatch, {
+        "id": f"{target_uid}\n",
+        "squeue": _live(uid=target_uid),
+        "scontrol": _control(uid=target_uid),
+        "scancel": "",
+    })
+    snapshot, = provider.discover()
+    assert snapshot.identity == IDENTITY
+    provider.terminate(snapshot.identity)
+    assert all(
+        f"--user={target_uid}" in argv
+        for argv, _ in calls if argv[0] in {"squeue", "scancel"}
+    )
+    identity_calls = [(argv, kwargs) for argv, kwargs in calls if argv[0] == "id"]
+    assert len(identity_calls) == 1
+    assert identity_calls[0][0] == ["id", "-u"]
+    assert not identity_calls[0][1].get("shell", False)
+
+    slurm.SlurmProvider(provider.connection).discover()
+    assert sum(argv[0] == "id" for argv, _ in calls) == 2
+
+
+@pytest.mark.parametrize("answer", ["", "1000\n1001\n", "١٠٠٠\n", (1, "", "no identity")])
+def test_unresolved_execution_user_refuses_cancellation(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch, answer: Any,
+) -> None:
+    calls = _native(monkeypatch, {"id": answer})
+    with pytest.raises(ComputeError):
+        provider.terminate(IDENTITY)
+    assert [argv for argv, _ in calls] == [["id", "-u"]]
 
 
 @pytest.mark.parametrize("comment", [None, "", "(null)", "unrelated|comment", COMMENT + "extra"])
@@ -556,7 +609,7 @@ def test_live_discovery_uses_native_marker_and_keeps_grant_evidence_honest(
     assert snapshot.resources == Resources(256, 480 * 1024**3)
     assert snapshot.evidence == "requested"
     assert snapshot.ready is None
-    assert all("--clusters=perlmutter" in argv for argv, _ in calls)
+    assert all("--clusters=perlmutter" in argv for argv, _ in calls if argv[0] != "id")
 
 
 def test_native_query_failure_is_not_an_empty_list(
@@ -656,8 +709,12 @@ def test_requeue_never_reads_previous_attempt_credentials(
 def test_requeue_keeps_native_identity_but_uses_fresh_attempt(
     provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch, name: str,
 ) -> None:
-    directory = _metadata(provider, restarts=1)
-    _native(monkeypatch, {"scontrol": _control(restarts=1, name=name)})
+    target_uid = os.getuid() + 10000
+    directory = _metadata(provider, restarts=1, uid=target_uid)
+    _native(monkeypatch, {
+        "id": f"{target_uid}\n",
+        "scontrol": _control(restarts=1, name=name, uid=target_uid),
+    })
     client = MagicMock()
     client.scheduler_info.return_value = {"workers": {"one": {}, "two": {}}}
     opened = MagicMock(return_value=client)

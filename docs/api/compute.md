@@ -61,6 +61,11 @@ encoded identity. Slurm discovery and lifecycle checks verify both native fields
 and the owner. A marked live job with no valid token makes discovery incomplete.
 Neither is a second source of lifecycle state or a name-to-ID registry.
 
+The Slurm provider resolves its user ID once through `id -u` using the same
+command runner as Slurm. Discovery, accounting, cancellation, and allocation
+ownership checks all use that ID. Commands currently execute locally; filesystem
+ownership checks still validate the local process's access to connection material.
+
 Historical Slurm identity requires the accounting `Comment` field. Slurm stores
 it when `AccountingStoreFlags` includes `job_comment`; without a matching retained
 token, a missing live job remains unknown and cannot authorize cancellation.

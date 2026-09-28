@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +100,14 @@ class SlurmProvider:
 
     def __init__(self, connection: Connection) -> None:
         self.connection = connection
+
+    @cached_property
+    def _uid(self) -> int:
+        """Resolve ownership where native commands execute, once per provider."""
+        value = self._command(["id", "-u"]).stdout.strip()
+        if not re.fullmatch(r"[0-9]+", value):
+            raise ComputeError("id -u did not return a numeric Slurm command user ID")
+        return int(value)
 
     def _scope(self) -> list[str]:
         context = self.connection.context
@@ -336,7 +345,7 @@ class SlurmProvider:
             "squeue",
             *self._scope(),
             "--noheader",
-            f"--user={os.getuid()}",
+            f"--user={self._uid}",
             "--format=%i|%128j|%U|%T|%128k",
         ]
         rows = []
@@ -367,7 +376,7 @@ class SlurmProvider:
             "--parsable2",
             "--allocations",
             "--duplicates",
-            f"--uid={os.getuid()}",
+            f"--uid={self._uid}",
             "--starttime=1970-01-01",
             "--format=JobIDRaw,JobName%128,UID,State,Submit,Comment%128",
         ]
@@ -400,7 +409,7 @@ class SlurmProvider:
         matches = {
             Identity(self.connection.namespace, row["JobId"], token, name=name)
             for row in rows
-            if row["JobName"] == job_name and row["UID"] == str(os.getuid())
+            if row["JobName"] == job_name and row["UID"] == str(self._uid)
             and row["Comment"] == _COMMENT_PREFIX + token
         }
         if matches or not history:
@@ -409,7 +418,7 @@ class SlurmProvider:
             {
                 Identity(self.connection.namespace, row["JobId"], token, name=name)
                 for row in self._history(job_name=job_name)
-                if row["JobName"] == job_name and row["UID"] == str(os.getuid())
+                if row["JobName"] == job_name and row["UID"] == str(self._uid)
                 and row["Comment"] == _COMMENT_PREFIX + token
             }
         )
@@ -431,7 +440,7 @@ class SlurmProvider:
             row.get("JobId") != identity.native_id
             or row.get("JobName") != _PREFIX + identity.name
             or row.get("Comment") != _COMMENT_PREFIX + identity.token
-            or row.get("UID") != str(os.getuid())
+            or row.get("UID") != str(self._uid)
         ):
             raise ComputeError(
                 "Slurm allocation ownership, submission token, or name "
@@ -511,7 +520,7 @@ class SlurmProvider:
             if row["JobId"] == identity.native_id
             and row["JobName"] == _PREFIX + identity.name
             and row["Comment"] == _COMMENT_PREFIX + identity.token
-            and row["UID"] == str(os.getuid())
+            and row["UID"] == str(self._uid)
         ]
         if matches:
             latest = max(matches, key=lambda row: row["SubmitTime"])
@@ -546,7 +555,7 @@ class SlurmProvider:
             "namespace": identity.namespace,
             "native_id": identity.native_id,
             "token": identity.token,
-            "uid": os.getuid(),
+            "uid": self._uid,
             "restarts": restarts,
         }
         if any(
@@ -586,7 +595,7 @@ class SlurmProvider:
                 "scancel",
                 "--ctld",
                 *self._scope(),
-                f"--user={os.getuid()}",
+                f"--user={self._uid}",
                 f"--name={_PREFIX}{identity.name}",
                 identity.native_id,
             ]

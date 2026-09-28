@@ -1703,6 +1703,8 @@ Slurm uses `JobName=lc-v1-<name>` and
 fields before attachment or cancellation. Missing live comments make discovery
 incomplete; missing historical comments leave identity unknown. Historical
 comment retention requires Slurm's `AccountingStoreFlags` to include `job_comment`.
+Resolve the Slurm command user's UID through `id -u` on the same command runner,
+and use it for every native ownership check and filter.
 
 **Local compute needs no setup.** An absent implicit `~/.lightcone/compute.yaml`
 selects a built-in local catalog: one CPU, 1 GiB, one node, fast startup, 30-minute
