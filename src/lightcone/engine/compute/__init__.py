@@ -6,8 +6,10 @@ import math
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .catalog import Catalog
 from .model import (
@@ -20,6 +22,7 @@ from .model import (
     Request,
     Snapshot,
     UnavailableOfferError,
+    validate_name,
 )
 
 
@@ -41,7 +44,10 @@ PROVIDERS: dict[str, ProviderFactory] = {"local": _local, "slurm": _slurm}
 
 def validate_id(value: str) -> None:
     """Reject invalid execution targets before preparing a project."""
-    Identity.decode(value)
+    if value.startswith("clu_"):
+        Identity.decode(value)
+    else:
+        validate_name(value)
 
 
 class Compute:
@@ -58,8 +64,33 @@ class Compute:
         return factory(connection)
 
     def resolve(self, cluster_id: str) -> tuple[Provider, Identity]:
-        """Resolve a self-contained identity, independent of offer ordering."""
-        identity = Identity.decode(cluster_id)
+        """Route an immutable ID, or resolve one unambiguous name from native state."""
+        validate_id(cluster_id)
+        if cluster_id.startswith("clu_"):
+            identity = Identity.decode(cluster_id)
+        else:
+            snapshots, errors = self.discover()
+            if errors:
+                detail = "; ".join(f"{name}: {error}" for name, error in errors.items())
+                raise ComputeError(
+                    f"cannot resolve cluster name while discovery is incomplete: {detail}; "
+                    "use its full cluster ID to address a known allocation directly"
+                )
+            matches = {
+                snapshot.identity for snapshot in snapshots
+                if snapshot.identity.name == cluster_id and snapshot.phase != "ended"
+            }
+            if not matches:
+                raise ComputeError(
+                    f"no current cluster named {cluster_id!r}; see lc compute status "
+                    "or create one with lc compute launch"
+                )
+            if len(matches) > 1:
+                ids = ", ".join(sorted(item.encode() for item in matches))
+                raise ComputeError(
+                    f"cluster name {cluster_id!r} is ambiguous; use a full cluster ID: {ids}"
+                )
+            identity = matches.pop()
         return self.provider(self.catalog.connection_for(identity.namespace)), identity
 
     def resources(self) -> dict[str, Any]:
@@ -82,8 +113,10 @@ class Compute:
             ],
         }
 
-    def plan(self, request: Request) -> LaunchPlan:
+    def plan(self, request: Request, *, name: str | None = None) -> LaunchPlan:
         """Select the first eligible fixed shape; a failed launch never retries elsewhere."""
+        if name is not None:
+            validate_name(name)
         unavailable: list[str] = []
         for offer in self.catalog.offers:
             if request.num_nodes > offer.max_nodes:
@@ -105,8 +138,9 @@ class Compute:
             ):
                 continue
             try:
-                return self.provider(self.catalog.connections[offer.connection]).plan(
-                    offer, request
+                return replace(
+                    self.provider(self.catalog.connections[offer.connection]).plan(offer, request),
+                    name=name,
                 )
             except UnavailableOfferError as exc:
                 unavailable.append(f"{offer.name}: {exc}")
@@ -116,8 +150,27 @@ class Compute:
         )
 
     def launch(self, plan: LaunchPlan) -> Identity:
-        """Submit exactly once using the frozen plan."""
-        return self.provider(plan.connection).launch(plan)
+        """Choose an unused name from native observations, then submit exactly once."""
+        if plan.name is not None:
+            validate_name(plan.name)
+        snapshots, errors = self.discover()
+        if errors:
+            detail = "; ".join(f"{name}: {error}" for name, error in errors.items())
+            raise ComputeError(
+                f"cannot check cluster names while discovery is incomplete: {detail}"
+            )
+        names = {item.identity.name for item in snapshots if item.phase != "ended"}
+        name = plan.name
+        if name is None:
+            for _ in range(10):
+                name = f"lc-{uuid4().hex[:12]}"
+                if name not in names:
+                    break
+            else:
+                raise ComputeError("could not generate an unused cluster name; no allocation made")
+        elif name in names:
+            raise ComputeError(f"cluster name {name!r} is already in use; choose another name")
+        return self.provider(plan.connection).launch(replace(plan, name=name))
 
     def discover(self) -> tuple[list[Snapshot], dict[str, str]]:
         """Query each native authority once, retaining partial discovery failures."""
@@ -146,7 +199,7 @@ class Compute:
                     raise ComputeError(
                         f"cluster did not become ready within {timeout:g}s; "
                         "allocation is unchanged",
-                        cluster_id=cluster_id,
+                        cluster_id=identity.encode(),
                     )
                 try:
                     with provider.connect(identity, timeout=min(10, remaining)) as client:
@@ -166,14 +219,15 @@ class Compute:
             if remaining <= 0:
                 raise ComputeError(
                     f"cluster did not become ready within {timeout:g}s; allocation is unchanged",
-                    cluster_id=cluster_id,
+                    cluster_id=identity.encode(),
                 )
             time.sleep(min(1, remaining))
 
-    def down(self, cluster_id: str) -> None:
+    def down(self, cluster_id: str) -> Identity:
         """Ask the native provider to end the allocation, independently of Dask health."""
         provider, identity = self.resolve(cluster_id)
         provider.terminate(identity)
+        return identity
 
 
 @contextmanager
@@ -190,12 +244,14 @@ def connect(
     provider, identity = Compute(config_path).resolve(cluster_id)
     snapshot = provider.inspect(identity)
     if snapshot.phase != "active":
-        raise ComputeError(f"cluster is {snapshot.phase}: {snapshot.reason}", cluster_id=cluster_id)
+        raise ComputeError(
+            f"cluster is {snapshot.phase}: {snapshot.reason}", cluster_id=identity.encode()
+        )
     with provider.connect(identity, timeout=timeout) as client:
         workers = client.scheduler_info().get("workers", {})
         if snapshot.num_nodes is None or len(workers) < snapshot.num_nodes:
             raise ComputeError(
                 "cluster does not have its expected workers; inspect lc compute status",
-                cluster_id=cluster_id,
+                cluster_id=identity.encode(),
             )
         yield client

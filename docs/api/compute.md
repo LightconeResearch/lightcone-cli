@@ -8,12 +8,12 @@ It owns no service, registry, or saved current-cluster selection.
 |---|---|
 | `Request.parse(...)` | Common exact/minimum CPU and memory requests, node count, walltime, startup class. |
 | `Catalog.load(path)` | Ordered fixed shapes and stable connection namespaces; use the built-in local catalog only when the implicit default file is absent. |
-| `Compute.plan(request)` | Select an eligible offer and freeze its native launch settings without allocation. |
-| `Compute.launch(plan)` | Submit once and return a self-contained `Identity`. |
+| `Compute.plan(request, *, name=None)` | Select an eligible offer and freeze its native launch settings and optional name without allocation. |
+| `Compute.launch(plan)` | Check names across native authorities, generate one if omitted, submit once, and return a self-contained `Identity`. |
 | `Compute.discover()` | Snapshots and per-connection errors, querying each authority once. |
-| `Compute.status(id, wait=False, timeout=300)` | Native allocation state plus authenticated Dask readiness. |
-| `Compute.down(id)` | Native termination independent of scheduler health. |
-| `connect(id, timeout=10, config_path=None)` | Context manager borrowing a standard Dask client; closes the client, never the allocation. |
+| `Compute.status(cluster_id, wait=False, timeout=300)` | Resolve a name or full ID; return native allocation state plus authenticated Dask readiness. |
+| `Compute.down(cluster_id)` | Resolve a name or full ID, request native termination independent of scheduler health, and return the canonical `Identity`. |
+| `connect(cluster_id, timeout=10, config_path=None)` | Resolve a name or full ID; borrow a standard Dask client, closing the client but never the allocation. |
 | `Provider` | `plan`, `launch`, `discover`, `inspect`, `connect`, `terminate`. |
 
 The built-in catalog exposes one `local` offer: one CPU, 1 GiB, one node,
@@ -35,6 +35,17 @@ No live allocation size is filled from today's catalog. Connection namespaces
 persist independently of offers, and IDs encode native incarnation evidence
 without a UUID-to-job lookup database. Exceptions retain known cluster IDs and
 submission tokens for partial/ambiguous acceptance.
+
+`Identity.name` is a human-facing name; `Identity.encode()` is the immutable
+allocation reference. Generated names use `lc-` plus 12 hexadecimal characters
+from a standard-library UUID4. Launch checks every configured connection and
+rejects explicit duplicates or incomplete discovery before submission. Name
+resolution also requires complete discovery and exactly one current match.
+Concurrent launches can still race; ambiguous names are refused. Names can be
+reused after termination, while full IDs continue to identify the original
+allocation without discovering unrelated connections. Slurm carries the name
+and nonce in its job name; local private locators carry the encoded identity.
+Neither is a second source of lifecycle state or a name-to-ID registry.
 
 Execution submits ordinary tasks through the borrowed client's `submit` method.
 Dask chooses the workers and handles dependencies; invocation-specific keys prevent

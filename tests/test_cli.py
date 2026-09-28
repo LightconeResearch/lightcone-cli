@@ -204,19 +204,20 @@ def test_run_is_advertised(runner: CliRunner) -> None:
     assert "run" in result.output
 
 
+@pytest.mark.parametrize("cluster", [CLUSTER_ID, "analysis"])
 def test_run_passes_the_command_through_untouched(
-    runner: CliRunner, project: Path, spawned: list[dict[str, object]]
+    runner: CliRunner, project: Path, spawned: list[dict[str, object]], cluster: str,
 ) -> None:
     """A probe's command has its own flags, and they belong to it — not
     to us. `--help` after the command must reach the command."""
-    result = runner.invoke(main, ["run", CLUSTER_ID, "--", "python", "-c", "print(1)", "--help"])
+    result = runner.invoke(main, ["run", cluster, "--", "python", "-c", "print(1)", "--help"])
     assert result.exit_code == 0
     assert spawned[0]["command"] == ["python", "-c", "print(1)", "--help"]
     assert spawned[0]["project"] == project.resolve()
-    assert spawned[0]["cluster_id"] == CLUSTER_ID
+    assert spawned[0]["cluster_id"] == cluster
 
 
-@pytest.mark.parametrize("argv", [["run"], ["materialize"], ["run", "python", "true"],
+@pytest.mark.parametrize("argv", [["run"], ["materialize"], ["run", "bad:name", "true"],
                                  ["materialize", "baseline/first"]])
 def test_execution_requires_an_allocation_identity_before_project_discovery(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str],
@@ -224,7 +225,7 @@ def test_execution_requires_an_allocation_identity_before_project_discovery(
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(main, argv)
     assert result.exit_code == 2
-    assert "CLUSTER_ID" in result.output
+    assert "CLUSTER" in result.output
     assert "not a Lightcone project" not in result.output
 
 
@@ -361,15 +362,17 @@ def test_check_reaches_check_mode_and_nothing_else(
     assert [name for name, _ in seen] == ["check"]
 
 
+@pytest.mark.parametrize("cluster", [CLUSTER_ID, "analysis"])
 def test_targets_reach_the_engine(
-    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch, cluster: str,
 ) -> None:
     seen = _stub(monkeypatch)
 
-    runner.invoke(main, ["materialize", CLUSTER_ID, "baseline/fit", "report"])
+    result = runner.invoke(main, ["materialize", cluster, "baseline/fit", "report"])
+    assert result.exit_code == 0, result.output
 
     assert seen == [
-        ("materialize", (["baseline/fit", "report"], {"refresh": False, "cluster_id": CLUSTER_ID}))
+        ("materialize", (["baseline/fit", "report"], {"refresh": False, "cluster_id": cluster}))
     ]
 
 
@@ -453,8 +456,10 @@ def test_check_explains_that_a_cluster_id_is_not_a_target(runner: CliRunner) -> 
 
 
 @pytest.mark.parametrize("command", ["run", "materialize"])
+@pytest.mark.parametrize("cluster", [CLUSTER_ID, "analysis"])
 def test_execution_interrupt_explains_how_to_stop_remote_work(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch, command: str,
+    cluster: str,
 ) -> None:
     from lightcone.engine import materialize as engine_materialize
     from lightcone.engine import run as engine_run
@@ -464,10 +469,14 @@ def test_execution_interrupt_explains_how_to_stop_remote_work(
 
     monkeypatch.setattr(engine_run, "probe", interrupt)
     monkeypatch.setattr(engine_materialize, "materialize", interrupt)
-    args = [command, CLUSTER_ID, "--", "true"] if command == "run" else [command, CLUSTER_ID]
+    args = [command, cluster, "--", "true"] if command == "run" else [command, cluster]
     result = runner.invoke(main, args)
     assert result.exit_code != 0
-    assert f"lc compute down {CLUSTER_ID}" in result.output
+    target = cluster if cluster == CLUSTER_ID else "<full-id>"
+    assert f"lc compute down {target}" in result.output
+    if cluster != CLUSTER_ID:
+        assert "cluster names can be reused" in result.output
+        assert f"lc compute down {cluster}" not in result.output
 
 
 def test_a_failure_exits_nonzero(

@@ -481,7 +481,7 @@ def materialize(
     Args:
         root: The project root.
         targets: Outputs to make, including dependencies; empty means everything.
-        cluster_id: The allocation identity returned by ``lc compute launch``.
+        cluster_id: The name or immutable ID returned by ``lc compute launch``.
         refresh: Also remake outputs produced under an earlier environment.
 
     Returns:
@@ -708,7 +708,7 @@ def cluster_for_run(cluster_id: str) -> Iterator[Scheduler]:
     """Borrow the explicit allocation without creating any compute.
 
     Args:
-        cluster_id: The selected allocation identity.
+        cluster_id: The selected cluster name or immutable allocation ID.
 
     Yields:
         A scheduler whose connection is detached when the invocation ends.

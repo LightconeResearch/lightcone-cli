@@ -32,7 +32,7 @@ cd my-analysis
 uv add numpy
 # When you are done with your edits, commit:
 git add -A && git commit -m "First analysis"
-CLUSTER=$(lc compute launch --cpus 1 --memory 1 --json | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+CLUSTER=$(lc compute launch --cpus 1 --memory 1)
 lc compute status "$CLUSTER" --wait
 # Generate outputs with full provenance tracking
 lc materialize "$CLUSTER"
@@ -49,7 +49,7 @@ drafted with any AI coding assistant.
 - **Multiverse analysis** — declare methodological decisions with multiple defensible options; `lc` materializes your analysis across every universe you define
 - **Provenance by construction** — every output is committed to git together with a content-addressed manifest and a re-runnable run record; git-annex carries the bytes, so results travel with the repository
 - **Locked, isolated execution** — a project's environment is `pyproject.toml` + `uv.lock`; recipes run in it under a sandbox (Landlock on Linux, Seatbelt on macOS) that keeps undeclared files out and stray writes contained
-- **Containers and HPC** — declare `[tool.lightcone.image]` and recipes run in a content-addressed image archived in the repository itself; allocate local or Slurm Dask clusters explicitly with `lc compute`, then pass the cluster ID to `run` or `materialize`
+- **Containers and HPC** — declare `[tool.lightcone.image]` and recipes run in a content-addressed image archived in the repository itself; allocate local or Slurm Dask clusters explicitly with `lc compute`, then pass the cluster name or full ID to `run` or `materialize`
 - **Publication view** — declare a license and `lc materialize` maintains an [RO-Crate](https://www.researchobject.org/ro-crate/) of the project and its provenance, ready to archive or deposit
 
 → [Full documentation](https://docs.lightconeresearch.org)

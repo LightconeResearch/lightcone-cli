@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 from uuid import UUID
@@ -23,6 +24,7 @@ from lightcone.engine.compute.model import (
     Snapshot,
     UnavailableOfferError,
     memory_bytes,
+    validate_name,
 )
 
 NAMESPACE = "5a9d058c-7c6e-4e2a-919b-786f1148536c"
@@ -98,6 +100,131 @@ def test_identity_is_self_contained_and_canonical() -> None:
     for value in ("slurm:1234", "local", IDENTITY.encode() + "=", "clu_A", "clu_eyJ2IjoxfQ"):
         with pytest.raises(ComputeError):
             Identity.decode(value)
+
+
+@pytest.mark.parametrize("name", ["analysis", "a", "run-2", "lc-7f3a92c810bd", "a" * 63])
+def test_cluster_names_and_named_identities(name: str) -> None:
+    validate_name(name)
+    compute.validate_id(name)
+    identity = replace(IDENTITY, name=name)
+    assert Identity.decode(identity.encode()) == identity
+    assert Snapshot(identity, "pending").as_dict()["name"] == name
+
+
+@pytest.mark.parametrize("name", ["", "A", "2a", "-a", "a-", "a_b", "a.b", "a b", "a\n",
+                                  "a" * 64, "clu_foo", "a/../../b"])
+def test_invalid_cluster_names_are_rejected_before_planning(
+    catalog: Path, provider: MagicMock, name: str,
+) -> None:
+    with pytest.raises(ComputeError, match="cluster names"):
+        compute.Compute().plan(Request.parse("4", "8"), name=name)
+    provider.plan.assert_not_called()
+    provider.launch.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["pending", "active", "stopping", "unknown"])
+def test_launch_refuses_names_in_use_without_submitting(
+    catalog: Path, provider: MagicMock, phase: str,
+) -> None:
+    provider.discover.return_value = [Snapshot(IDENTITY, phase)]
+    service = compute.Compute()
+    plan = service.plan(Request.parse("4", "8"), name=IDENTITY.name)
+    with pytest.raises(ComputeError, match="already in use"):
+        service.launch(plan)
+    provider.launch.assert_not_called()
+
+
+def test_generated_name_collision_retries_only_the_name(
+    catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = [UUID("12345678-1234-4234-8234-123456789abc"),
+              UUID("87654321-4321-4321-8321-123456789abc")]
+    provider.discover.return_value = [
+        Snapshot(replace(IDENTITY, name=f"lc-{values[0].hex[:12]}"), "pending")
+    ]
+    generator = MagicMock(side_effect=values)
+    monkeypatch.setattr(compute, "uuid4", generator)
+    service = compute.Compute()
+    service.launch(service.plan(Request.parse("4", "8")))
+    assert generator.call_count == 2
+    assert provider.launch.call_count == 1
+    assert provider.launch.call_args.args[0].name == "lc-876543214321"
+
+
+def test_names_resolve_freshly_to_native_identities_for_every_operation(
+    catalog: Path, provider: MagicMock,
+) -> None:
+    service = compute.Compute()
+    assert service.status(IDENTITY.name).identity == IDENTITY
+    with compute.connect(IDENTITY.name) as client:
+        assert client is provider.connect.return_value.__enter__.return_value
+    assert service.down(IDENTITY.name) == IDENTITY
+    assert provider.discover.call_count == 3
+    provider.terminate.assert_called_once_with(IDENTITY)
+
+
+def test_named_cluster_errors_retain_the_immutable_id(
+    catalog: Path, provider: MagicMock,
+) -> None:
+    provider.connect.return_value.__enter__.return_value.scheduler_info.return_value = {
+        "workers": {}
+    }
+    with pytest.raises(ComputeError, match="expected workers") as error:
+        with compute.connect(IDENTITY.name):
+            pytest.fail("borrowed a degraded allocation")
+    assert error.value.cluster_id == IDENTITY.encode()
+    result = CliRunner().invoke(main, [
+        "compute", "status", IDENTITY.name, "--wait", "--timeout", "0.01", "--json",
+    ])
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["id"] == IDENTITY.encode()
+    provider.inspect.return_value.phase = "pending"
+    with pytest.raises(ComputeError, match="pending") as error:
+        with compute.connect(IDENTITY.name):
+            pytest.fail("borrowed a pending allocation")
+    assert error.value.cluster_id == IDENTITY.encode()
+
+
+@pytest.mark.parametrize("observations", [[], [Snapshot(IDENTITY, "ended")]])
+def test_missing_and_ended_names_do_not_select_an_allocation(
+    catalog: Path, provider: MagicMock, observations: list[Snapshot],
+) -> None:
+    provider.discover.return_value = observations
+    with pytest.raises(ComputeError, match="no current cluster"):
+        compute.Compute().down(IDENTITY.name)
+    provider.terminate.assert_not_called()
+
+
+def test_name_races_are_ambiguous_but_full_ids_still_work(
+    catalog: Path, provider: MagicMock,
+) -> None:
+    other = replace(IDENTITY, native_id="5678", token="different")
+    provider.discover.return_value = [Snapshot(IDENTITY, "active"), Snapshot(other, "pending")]
+    service = compute.Compute()
+    with pytest.raises(ComputeError, match="ambiguous") as error:
+        service.down(IDENTITY.name)
+    assert IDENTITY.encode() in str(error.value)
+    assert other.encode() in str(error.value)
+    provider.terminate.assert_not_called()
+    service.down(IDENTITY.encode())
+    provider.terminate.assert_called_once_with(IDENTITY)
+
+
+def test_incomplete_discovery_cannot_establish_names_but_full_ids_still_work(
+    catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compute.Compute, "discover", lambda self: (
+        [Snapshot(IDENTITY, "active")], {"other": "native service unavailable"}
+    ))
+    service = compute.Compute()
+    with pytest.raises(ComputeError, match="incomplete"):
+        service.down(IDENTITY.name)
+    with pytest.raises(ComputeError, match="incomplete"):
+        service.launch(service.plan(Request.parse("4", "8"), name="analysis"))
+    provider.terminate.assert_not_called()
+    provider.launch.assert_not_called()
+    service.down(IDENTITY.encode())
+    provider.terminate.assert_called_once_with(IDENTITY)
 
 
 def test_missing_default_catalog_exposes_stable_local_resources_without_writing_files(
@@ -399,12 +526,45 @@ def test_cli_resources_dry_run_launch_down(catalog: Path, provider: MagicMock) -
     provider.terminate.assert_called_once_with(IDENTITY)
 
 
+def test_cli_launch_name_output_can_be_captured_without_json(
+    catalog: Path, provider: MagicMock,
+) -> None:
+    identity = replace(IDENTITY, name="analysis")
+    provider.launch.return_value = identity
+    runner = CliRunner()
+    args = ["compute", "launch", "--name", "analysis", "--cpus", "4", "--memory", "8"]
+    dry_run = runner.invoke(main, [*args, "--dry-run", "--json"])
+    assert dry_run.exit_code == 0, dry_run.output
+    assert json.loads(dry_run.stdout)["plan"]["name"] == "analysis"
+    provider.discover.assert_not_called()
+    result = runner.invoke(main, args)
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "analysis\n"
+    assert "lc compute status analysis --wait" in result.stderr
+    assert provider.launch.call_args.args[0].name == "analysis"
+    result = runner.invoke(main, [*args, "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["name"] == "analysis"
+    assert json.loads(result.stdout)["id"] == identity.encode()
+    provider.discover.return_value = [Snapshot(identity, "pending")]
+    result = runner.invoke(main, ["compute", "status"])
+    assert result.exit_code == 0, result.output
+    assert "analysis" in result.stdout
+    assert "clu_" not in result.stdout
+    result = runner.invoke(main, ["compute", "down", "analysis", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["id"] == identity.encode()
+    assert json.loads(result.stdout)["name"] == "analysis"
+    provider.terminate.assert_called_once_with(identity)
+
+
 def test_cli_partial_failure_and_ambiguous_submit(catalog: Path, provider: MagicMock) -> None:
     provider.discover.side_effect = ComputeError("unavailable")
     runner = CliRunner()
     result = runner.invoke(main, ["compute", "status", "--json"])
     assert result.exit_code == 1
     assert json.loads(result.output)["errors"] == {"test": "unavailable"}
+    provider.discover.side_effect = None
     provider.launch.side_effect = ComputeError("uncertain", submission_token="token")
     result = runner.invoke(main, ["compute", "launch", "--cpus", "4", "--memory", "8", "--json"])
     assert result.exit_code == 1

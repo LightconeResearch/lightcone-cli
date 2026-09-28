@@ -37,7 +37,7 @@ from lightcone.engine.compute.runtime import (
 NAMESPACE = "9d0c0fc5-9be8-407a-a3ec-f17c4110b162"
 TOKEN = "c82a7b8d0ccf40a4be0e57e784edb989"
 IDENTITY = Identity(NAMESPACE, "123", TOKEN)
-NAME = f"lc-dask-v1-{TOKEN}"
+NAME = f"lc-dask-v1-{TOKEN}-{IDENTITY.name}"
 
 
 @pytest.fixture
@@ -79,24 +79,29 @@ def offer() -> Offer:
 
 
 def _live(
-    *, job_id: str = "123", token: str = TOKEN, uid: int | None = None, state: str = "RUNNING"
+    *, job_id: str = "123", token: str = TOKEN, uid: int | None = None,
+    state: str = "RUNNING", name: str | None = None,
 ) -> str:
-    return f"{job_id}|lc-dask-v1-{token}|{os.getuid() if uid is None else uid}|{state}\n"
+    name = name if name is not None else f"lc-{token[:12]}"
+    return f"{job_id}|lc-dask-v1-{token}-{name}|{os.getuid() if uid is None else uid}|{state}\n"
 
 
 def _control(
-    *, token: str = TOKEN, uid: int | None = None, state: str = "RUNNING", restarts: int = 0
+    *, token: str = TOKEN, uid: int | None = None, state: str = "RUNNING", restarts: int = 0,
+    name: str | None = None,
 ) -> str:
     owner = os.getuid() if uid is None else uid
+    name = name if name is not None else f"lc-{token[:12]}"
     return (
-        f"JobId=123 JobName=lc-dask-v1-{token} UserId=alice({owner}) JobState={state} "
+        f"JobId=123 JobName=lc-dask-v1-{token}-{name} UserId=alice({owner}) JobState={state} "
         f"NumNodes=2 NumCPUs=512 CPUs/Task=256 MinMemoryNode=480G Restarts={restarts} "
         "SubmitTime=2026-09-27T10:00:00 StartTime=2026-09-27T10:00:05 Reason=None\n"
     )
 
 
-def _history(*, token: str = TOKEN, state: str = "COMPLETED") -> str:
-    return f"123|lc-dask-v1-{token}|{os.getuid()}|{state}|2026-09-27T10:00:00\n"
+def _history(*, token: str = TOKEN, state: str = "COMPLETED", name: str | None = None) -> str:
+    name = name if name is not None else f"lc-{token[:12]}"
+    return f"123|lc-dask-v1-{token}-{name}|{os.getuid()}|{state}|2026-09-27T10:00:00\n"
 
 
 def _native(
@@ -361,6 +366,105 @@ def test_salloc_runs_the_native_driver_detached_until_authoritative_acceptance(
     assert popen.call_args.kwargs["stdout"] is not subprocess.PIPE
 
 
+@pytest.mark.parametrize("submit", ["sbatch", "salloc"])
+@pytest.mark.parametrize("name", ["a", "cosmology-fast", "a" * 63])
+def test_named_launch_keeps_the_full_submission_token_in_native_metadata(
+    provider: slurm.SlurmProvider, offer: Offer, monkeypatch: pytest.MonkeyPatch,
+    submit: str, name: str,
+) -> None:
+    monkeypatch.setattr(slurm.uuid, "uuid4", lambda: SimpleNamespace(hex=TOKEN))
+    popen = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(slurm.subprocess, "Popen", popen)
+    calls = _native(monkeypatch, {"sbatch": "123\n", "squeue": _live(name=name)})
+    selected = replace(offer, config={**offer.config, "submit": submit})
+    plan = replace(provider.plan(selected, Request.parse("256", "480")), name=name)
+
+    launched = provider.launch(plan)
+
+    assert launched == replace(IDENTITY, name=name)
+    argv = (next(argv for argv, _ in calls if argv[0] == "sbatch")
+            if submit == "sbatch" else popen.call_args.args[0])
+    assert f"--job-name=lc-dask-v1-{TOKEN}-{name}" in argv
+    assert len(f"lc-dask-v1-{TOKEN}-{name}") <= 107
+
+
+@pytest.mark.parametrize("name", ["", "Upper", "two words", "-leading", "trailing-", "a" * 64])
+def test_invalid_name_is_rejected_before_native_submission(
+    provider: slurm.SlurmProvider, offer: Offer, monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    calls = _native(monkeypatch, {})
+    plan = replace(provider.plan(offer, Request.parse("256", "480")), name=name)
+    with pytest.raises(ComputeError, match="cluster names"):
+        provider.launch(plan)
+    assert all(argv[0] == "scontrol" for argv, _ in calls)
+
+
+def test_named_submission_recovers_from_history_when_sbatch_output_is_malformed(
+    provider: slurm.SlurmProvider, offer: Offer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = "analysis-2026"
+    monkeypatch.setattr(slurm.uuid, "uuid4", lambda: SimpleNamespace(hex=TOKEN))
+    calls = _native(monkeypatch, {
+        "sbatch": "garbled", "squeue": "", "sacct": _history(name=name),
+    })
+    plan = replace(provider.plan(offer, Request.parse("256", "480")), name=name)
+
+    assert provider.launch(plan) == replace(IDENTITY, name=name)
+
+    accounting = next(argv for argv, _ in calls if argv[0] == "sacct")
+    assert f"--name=lc-dask-v1-{TOKEN}-{name}" in accounting
+    assert "--format=JobIDRaw,JobName%128,UID,State,Submit" in accounting
+    assert sum(argv[0] == "sbatch" for argv, _ in calls) == 1
+
+
+def test_recovery_does_not_accept_a_different_name_with_the_same_nonce(
+    provider: slurm.SlurmProvider, offer: Offer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(slurm.uuid, "uuid4", lambda: SimpleNamespace(hex=TOKEN))
+    _native(monkeypatch, {
+        "sbatch": "garbled", "squeue": _live(name="other"), "sacct": _history(name="other"),
+    })
+    plan = replace(provider.plan(offer, Request.parse("256", "480")), name="requested")
+    with pytest.raises(ComputeError, match=f"lc-dask-v1-{TOKEN}-requested") as raised:
+        provider.launch(plan)
+    assert raised.value.submission_token == TOKEN
+
+
+def test_named_jobs_are_discovered_and_cancelled_from_native_names(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = "a" * 63
+    calls = _native(monkeypatch, {
+        "squeue": _live(name=name), "scontrol": _control(name=name), "scancel": "",
+    })
+    snapshot, = provider.discover()
+    assert snapshot.identity == replace(IDENTITY, name=name)
+    assert snapshot.identity.name == name
+    provider.terminate(snapshot.identity)
+    assert f"--name=lc-dask-v1-{TOKEN}-{name}" in calls[-1][0]
+    assert "--format=%i|%128j|%U|%T" in calls[0][0]
+
+
+def test_named_job_identity_survives_terminal_accounting(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _native(monkeypatch, {"squeue": "", "sacct": _history(name="finished-analysis")})
+    identity = replace(IDENTITY, name="finished-analysis")
+    snapshot = provider.inspect(identity)
+    assert snapshot.identity == identity
+    assert snapshot.phase == "ended"
+    assert provider.inspect(replace(identity, name="other")).phase == "unknown"
+
+
+@pytest.mark.parametrize("name", ["", "Upper", "two words", "-leading", "trailing-", "a" * 64])
+def test_discovery_ignores_invalid_native_names(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch, name: str,
+) -> None:
+    _native(monkeypatch, {"squeue": _live(name=name)})
+    assert provider.discover() == []
+
+
 def test_live_discovery_uses_native_marker_and_keeps_grant_evidence_honest(
     provider: slurm.SlurmProvider,
     monkeypatch: pytest.MonkeyPatch,
@@ -386,14 +490,14 @@ def test_native_query_failure_is_not_an_empty_list(
         provider.discover()
 
 
-@pytest.mark.parametrize("row", [_live(token="a" * 32), _live(uid=999999)])
+@pytest.mark.parametrize("row", [_live(token="a" * 32), _live(uid=999999), _live(name="other")])
 def test_reused_id_or_wrong_owner_cannot_be_cancelled(
     provider: slurm.SlurmProvider,
     monkeypatch: pytest.MonkeyPatch,
     row: str,
 ) -> None:
     calls = _native(monkeypatch, {"squeue": row})
-    with pytest.raises(ComputeError, match="ownership or submission token"):
+    with pytest.raises(ComputeError, match="ownership, submission token, or name"):
         provider.terminate(IDENTITY)
     assert all(argv[0] != "scancel" for argv, _ in calls)
 
@@ -402,7 +506,7 @@ def test_control_record_revalidated_before_cancellation(
     provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = _native(monkeypatch, {"squeue": _live(), "scontrol": _control(token="a" * 32)})
-    with pytest.raises(ComputeError, match="ownership or submission token"):
+    with pytest.raises(ComputeError, match="ownership, submission token, or name"):
         provider.terminate(IDENTITY)
     assert all(argv[0] != "scancel" for argv, _ in calls)
 
@@ -457,16 +561,17 @@ def test_requeue_never_reads_previous_attempt_credentials(
     opened.assert_not_called()
 
 
+@pytest.mark.parametrize("name", [IDENTITY.name, "analysis"])
 def test_requeue_keeps_native_identity_but_uses_fresh_attempt(
-    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch, name: str,
 ) -> None:
     directory = _metadata(provider, restarts=1)
-    _native(monkeypatch, {"scontrol": _control(restarts=1)})
+    _native(monkeypatch, {"scontrol": _control(restarts=1, name=name)})
     client = MagicMock()
     client.scheduler_info.return_value = {"workers": {"one": {}, "two": {}}}
     opened = MagicMock(return_value=client)
     monkeypatch.setattr(slurm, "open_client", opened)
-    with provider.connect(IDENTITY) as connected:
+    with provider.connect(replace(IDENTITY, name=name)) as connected:
         assert connected is client
     opened.assert_called_once_with(directory, "Scheduler-test", timeout=10)
     client.close.assert_called_once()

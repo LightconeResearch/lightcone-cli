@@ -214,6 +214,55 @@ with connect(sys.argv[2]) as client:
     assert Compute().discover() == ([], {})
 
 
+def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
+    provider: LocalProvider, tmp_path: Path,
+) -> None:
+    from lightcone.engine.compute import Compute, connect
+
+    catalog = tmp_path / "compute.yaml"
+    catalog.write_text(json.dumps({
+        "version": 1,
+        "connections": {
+            provider.connection.name: {
+                "provider": "local",
+                "namespace": provider.connection.namespace,
+                "launch": provider.connection.launch,
+            },
+        },
+        "offers": [{
+            "name": "small",
+            "connection": provider.connection.name,
+            "resources": {"cpus": 1, "memory": 0.5},
+            "max_nodes": 1,
+            "time": {"default": "1m", "max": "1m"},
+        }],
+    }))
+    service = Compute(catalog)
+    plan = service.plan(Request(1, 512 * 1024**2), name="analysis")
+    identities = []
+    try:
+        first = service.launch(plan)
+        identities.append(first)
+        assert first.name == "analysis"
+        assert Identity.decode(first.encode()) == first
+        # A new adapter reconstructs the name from the existing native locator.
+        assert [item.identity for item in LocalProvider(provider.connection).discover()] == [first]
+        assert Compute(catalog).status("analysis", wait=True, timeout=20).identity == first
+        with connect("analysis", config_path=catalog) as client:
+            assert client.submit(sum, [7, 8]).result(timeout=5) == 15
+        Compute(catalog).down("analysis")
+        assert Compute(catalog).status(first.encode()).phase == "ended"
+        second = Compute(catalog).launch(plan)
+        identities.append(second)
+        assert second.name == first.name
+        assert second.encode() != first.encode()
+        assert Compute(catalog).status("analysis", wait=True, timeout=20).identity == second
+        assert Compute(catalog).status(first.encode()).phase == "ended"
+    finally:
+        for identity in identities:
+            provider.terminate(identity)
+
+
 def test_walltime_expires_without_a_connected_client(provider: LocalProvider) -> None:
     identity = _launch(provider, seconds=2)
     try:

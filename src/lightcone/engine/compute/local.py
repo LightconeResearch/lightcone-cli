@@ -29,6 +29,7 @@ from lightcone.engine.compute.model import (
     Snapshot,
     UnavailableOfferError,
     positive_int,
+    validate_name,
 )
 from lightcone.engine.compute.runtime import (
     open_client,
@@ -129,6 +130,8 @@ class LocalProvider:
         """Start a detached allocation owner and retain its immutable OS identity."""
         if plan.connection != self.connection or plan.num_nodes != 1:
             raise ComputeError("local launch plan belongs to a different connection or node count")
+        if plan.name is not None:
+            validate_name(plan.name)
         boot = _boot_identity()
         token = uuid4().hex
         directory = private_directory(self.root / token, create=True)
@@ -157,7 +160,8 @@ class LocalProvider:
                 close_fds=True,
             )
             identity = Identity(
-                self.connection.namespace, str(process.pid), token, socket.gethostname()
+                self.connection.namespace, str(process.pid), token, socket.gethostname(),
+                name=plan.name or "",
             )
             record = {
                 "identity": identity.encode(),

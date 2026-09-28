@@ -23,11 +23,13 @@ from lightcone.engine.compute.model import (
     Resources,
     Snapshot,
     positive_int,
+    validate_name,
 )
 from lightcone.engine.compute.runtime import open_client, private_directory, read_private_json
 
 _PREFIX = "lc-dask-v1-"
 _TOKEN = re.compile(r"[0-9a-f]{32}")
+_JOB_NAME = re.compile(r"lc-dask-v1-([0-9a-f]{32})-([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)")
 _QUERY_TIMEOUT = 10.0
 _SUBMIT_TIMEOUT = 60.0
 _ACCEPT_TIMEOUT = 10.0
@@ -283,13 +285,16 @@ class SlurmProvider:
         if plan.connection != self.connection:
             raise ComputeError("Slurm launch plan belongs to another connection")
         token = uuid.uuid4().hex
+        name = plan.name if plan.name is not None else f"lc-{token[:12]}"
+        validate_name(name)
+        job_name = f"{_PREFIX}{token}-{name}"
         details = plan.details
         logs = private_directory(
             Path(details["connection_root"]) / "submissions" / token, create=True
         )
         common = [
             *details["native_args"],
-            f"--job-name={_PREFIX}{token}",
+            f"--job-name={job_name}",
             "--comment=lightcone:v1:kind=dask",
         ]
         payload = self._payload(plan, token)
@@ -302,11 +307,11 @@ class SlurmProvider:
                 if match and (
                     not self.connection.context or match[2] in (None, self.connection.context)
                 ):
-                    return Identity(self.connection.namespace, match[1], token)
+                    return Identity(self.connection.namespace, match[1], token, name=name)
                 reason = "sbatch did not return an unambiguous allocation ID"
             except ComputeError as exc:
                 reason = str(exc)
-            return self._recover_or_raise(token, reason)
+            return self._recover_or_raise(token, name, reason)
 
         argv = ["salloc", *common, "--kill-command=TERM", *payload]
         try:
@@ -325,7 +330,7 @@ class SlurmProvider:
         deadline = time.monotonic() + _ACCEPT_TIMEOUT
         while time.monotonic() < deadline:
             try:
-                matches = self._find_token(token)
+                matches = self._find_token(token, name)
             except ComputeError:
                 matches = []
             if len(matches) == 1:
@@ -336,23 +341,23 @@ class SlurmProvider:
                 )
             if process.poll() is not None:
                 return self._recover_or_raise(
-                    token, f"salloc exited with status {process.returncode}"
+                    token, name, f"salloc exited with status {process.returncode}"
                 )
             time.sleep(0.2)
         return self._recover_or_raise(
-            token, "salloc acceptance could not be established before the deadline"
+            token, name, "salloc acceptance could not be established before the deadline"
         )
 
-    def _recover_or_raise(self, token: str, reason: str) -> Identity:
+    def _recover_or_raise(self, token: str, name: str, reason: str) -> Identity:
         try:
-            matches = self._find_token(token, history=True)
+            matches = self._find_token(token, name, history=True)
         except ComputeError:
             matches = []
         if len(matches) == 1:
             return matches[0]
         raise ComputeError(
             f"{reason}; submission outcome is uncertain. Do not resubmit automatically; "
-            f"reconcile native job name {_PREFIX}{token} (submission token {token}).",
+            f"reconcile native job name {_PREFIX}{token}-{name} (submission token {token}).",
             submission_token=token,
         )
 
@@ -362,7 +367,7 @@ class SlurmProvider:
             *self._scope(),
             "--noheader",
             f"--user={os.getuid()}",
-            "--format=%i|%j|%U|%T",
+            "--format=%i|%128j|%U|%T",
         ]
         rows = []
         for line in self._command(argv).stdout.splitlines():
@@ -374,17 +379,13 @@ class SlurmProvider:
             job_id, name, uid, state = fields[0], "|".join(fields[1:-2]), fields[-2], fields[-1]
             if native_id is not None and job_id != native_id:
                 continue
-            if not name.startswith(_PREFIX):
-                continue
-            if not re.fullmatch(r"[0-9]+", job_id) or not _TOKEN.fullmatch(
-                name.removeprefix(_PREFIX)
-            ):
+            if not re.fullmatch(r"[0-9]+", job_id) or not _JOB_NAME.fullmatch(name):
                 continue
             rows.append({"JobId": job_id, "JobName": name, "UID": uid, "JobState": state})
         return rows
 
     def _history(
-        self, identity: Identity | None = None, *, token: str | None = None
+        self, identity: Identity | None = None, *, job_name: str | None = None
     ) -> list[dict[str, str]]:
         argv = [
             "sacct",
@@ -397,7 +398,7 @@ class SlurmProvider:
             "--starttime=1970-01-01",
             "--format=JobIDRaw,JobName%128,UID,State,Submit",
         ]
-        argv.append(f"--jobs={identity.native_id}" if identity else f"--name={_PREFIX}{token}")
+        argv.append(f"--jobs={identity.native_id}" if identity else f"--name={job_name}")
         rows = []
         for line in self._command(argv).stdout.splitlines():
             if not line.strip():
@@ -421,20 +422,21 @@ class SlurmProvider:
             )
         return rows
 
-    def _find_token(self, token: str, *, history: bool = False) -> list[Identity]:
+    def _find_token(self, token: str, name: str, *, history: bool = False) -> list[Identity]:
         rows = self._live()
+        job_name = f"{_PREFIX}{token}-{name}"
         matches = {
-            Identity(self.connection.namespace, row["JobId"], token)
+            Identity(self.connection.namespace, row["JobId"], token, name=name)
             for row in rows
-            if row["JobName"] == _PREFIX + token and row["UID"] == str(os.getuid())
+            if row["JobName"] == job_name and row["UID"] == str(os.getuid())
         }
         if matches or not history:
             return list(matches)
         return list(
             {
-                Identity(self.connection.namespace, row["JobId"], token)
-                for row in self._history(token=token)
-                if row["JobName"] == _PREFIX + token and row["UID"] == str(os.getuid())
+                Identity(self.connection.namespace, row["JobId"], token, name=name)
+                for row in self._history(job_name=job_name)
+                if row["JobName"] == job_name and row["UID"] == str(os.getuid())
             }
         )
 
@@ -444,6 +446,7 @@ class SlurmProvider:
             or identity.host
             or not re.fullmatch(r"[0-9]+", identity.native_id)
             or not _TOKEN.fullmatch(identity.token)
+            or not _JOB_NAME.fullmatch(f"{_PREFIX}{identity.token}-{identity.name}")
         ):
             raise ComputeError(
                 "cluster ID does not identify an allocation on this Slurm connection"
@@ -452,11 +455,12 @@ class SlurmProvider:
     def _validate_row(self, identity: Identity, row: Mapping[str, str]) -> None:
         if (
             row.get("JobId") != identity.native_id
-            or row.get("JobName") != _PREFIX + identity.token
+            or row.get("JobName") != f"{_PREFIX}{identity.token}-{identity.name}"
             or row.get("UID") != str(os.getuid())
         ):
             raise ComputeError(
-                "Slurm allocation ownership or submission token does not match this cluster ID"
+                "Slurm allocation ownership, submission token, or name "
+                "does not match this cluster ID"
             )
 
     def _control(self, identity: Identity) -> dict[str, str]:
@@ -497,8 +501,9 @@ class SlurmProvider:
         """List managed allocations directly from this user's live Slurm jobs."""
         snapshots = []
         for row in self._live():
+            token, name = row["JobName"].removeprefix(_PREFIX).split("-", 1)
             identity = Identity(
-                self.connection.namespace, row["JobId"], row["JobName"].removeprefix(_PREFIX)
+                self.connection.namespace, row["JobId"], token, name=name
             )
             self._validate_row(identity, row)
             snapshots.append(self.inspect(identity))
@@ -517,7 +522,7 @@ class SlurmProvider:
             row
             for row in self._history(identity)
             if row["JobId"] == identity.native_id
-            and row["JobName"] == _PREFIX + identity.token
+            and row["JobName"] == f"{_PREFIX}{identity.token}-{identity.name}"
             and row["UID"] == str(os.getuid())
         ]
         if matches:
@@ -590,7 +595,7 @@ class SlurmProvider:
                 "scancel",
                 *self._scope(),
                 f"--user={os.getuid()}",
-                f"--name={_PREFIX}{identity.token}",
+                f"--name={_PREFIX}{identity.token}-{identity.name}",
                 identity.native_id,
             ]
         )

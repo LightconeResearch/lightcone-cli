@@ -98,6 +98,7 @@ def resources(config_path: Path | None, as_json: bool) -> None:
 
 
 @compute.command()
+@click.option("--name", help="Cluster name; defaults to a generated short name.")
 @click.option("--cpus", required=True, help="Logical CPUs per node; suffix + requests a minimum.")
 @click.option("--memory", required=True, help="GiB per node; suffix + requests a minimum.")
 @click.option("--num-nodes", default=1, type=click.IntRange(min=1), show_default=True)
@@ -112,6 +113,7 @@ def resources(config_path: Path | None, as_json: bool) -> None:
 @click.pass_obj
 def launch(
     config_path: Path | None,
+    name: str | None,
     cpus: str,
     memory: str,
     num_nodes: int,
@@ -133,7 +135,8 @@ def launch(
                 num_nodes=num_nodes,
                 time=walltime,
                 startup=startup,
-            )
+            ),
+            name=name,
         )
         data: dict[str, Any] = {"schema_version": 1, "plan": plan.as_dict()}
         if dry_run:
@@ -143,18 +146,19 @@ def launch(
                 click.echo(json.dumps(plan.as_dict(), indent=2))
             return
         identity = service.launch(plan)
-        data.update(id=identity.encode(), accepted=True)
+        data.update(id=identity.encode(), name=identity.name, accepted=True)
         if as_json:
             click.echo(json.dumps(data))
         else:
-            click.echo(identity.encode())
+            click.echo(identity.name)
             click.echo(
-                "Allocation accepted. Use lc compute status CLUSTER_ID --wait for readiness."
+                f"Allocation accepted. Use lc compute status {identity.name} --wait for readiness.",
+                err=True,
             )
 
 
 @compute.command()
-@click.argument("cluster_id", required=False)
+@click.argument("cluster_id", metavar="[CLUSTER]", required=False)
 @click.option("--wait", is_flag=True, help="Wait for the selected cluster to become ready.")
 @click.option(
     "--timeout",
@@ -170,13 +174,13 @@ def status(
     timeout: float | None,
     as_json: bool,
 ) -> None:
-    """Inspect one cluster, or discover allocations from each native authority."""
+    """Inspect a cluster by name or ID, or discover allocations from each authority."""
     from lightcone.engine.compute import Compute
     from lightcone.engine.compute.model import ComputeError
 
     with _errors(as_json):
         if wait and cluster_id is None:
-            raise ComputeError("--wait requires a cluster ID")
+            raise ComputeError("--wait requires a cluster name or ID")
         if timeout is not None and not wait:
             raise ComputeError("--timeout requires --wait")
         service = Compute(config_path)
@@ -187,7 +191,7 @@ def status(
                 click.echo(json.dumps(data))
             else:
                 click.echo(
-                    f"{cluster_id}\nAllocation: {snapshot.phase}; "
+                    f"{snapshot.identity.name}\nAllocation: {snapshot.phase}; "
                     f"Dask: {snapshot.observation}; ready: {snapshot.ready}"
                 )
                 if snapshot.resources:
@@ -214,7 +218,7 @@ def status(
             )
         else:
             for item in snapshots:
-                click.echo(f"{item.identity.encode()}\n  {item.phase}: {item.reason}")
+                click.echo(f"{item.identity.name}\n  {item.phase}: {item.reason}")
             if not snapshots and not errors:
                 click.echo("No allocations found.")
             for name, error in errors.items():
@@ -224,18 +228,23 @@ def status(
 
 
 @compute.command()
-@click.argument("cluster_id")
+@click.argument("cluster_id", metavar="CLUSTER")
 @click.option("--json", "as_json", is_flag=True, help="Emit structured output.")
 @click.pass_obj
 def down(config_path: Path | None, cluster_id: str, as_json: bool) -> None:
-    """End the native allocation; scheduler reachability is not required."""
+    """End a cluster by name or ID; scheduler reachability is not required."""
     from lightcone.engine.compute import Compute
 
     with _errors(as_json):
-        Compute(config_path).down(cluster_id)
+        identity = Compute(config_path).down(cluster_id)
         if as_json:
             click.echo(
-                json.dumps({"schema_version": 1, "id": cluster_id, "termination_requested": True})
+                json.dumps({
+                    "schema_version": 1,
+                    "id": identity.encode(),
+                    "name": identity.name,
+                    "termination_requested": True,
+                })
             )
         else:
-            click.echo(f"Termination requested: {cluster_id}")
+            click.echo(f"Termination requested: {identity.name}")

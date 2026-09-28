@@ -37,7 +37,7 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
     Args:
         project: The shared project root.
         command: Command argv; no implicit shell is opened.
-        cluster_id: The allocation identity returned by ``lc compute launch``.
+        cluster_id: The name or immutable ID returned by ``lc compute launch``.
 
     Returns:
         The command's exit status, sandbox attestation and diagnostic notes.

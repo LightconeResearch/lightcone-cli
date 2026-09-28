@@ -1,8 +1,18 @@
 # Serverless Compute Allocation Management for `lightcone-cli`
 
-**Status:** proposed specification\
+**Status:** initial proposal, superseded by the [current architecture](lightcone-compute-architecture.md)\
 **Date:** 2026-09-27\
 **Target:** `LightconeResearch/lightcone-cli` main at `3aa823b46ec016a1b7a52515f4c0ee6eb35d3b8d`
+
+This document preserves the initial proposal. Its provider-prefixed references
+and lifecycle commands are not the current CLI contract. The implementation uses
+`lc compute launch [--name NAME] --cpus VALUE --memory VALUE`, with a generated
+name of `lc-` plus 12 hexadecimal characters when omitted. `status`, `down`, `run`, and
+`materialize` accept a name or full immutable ID; launch and status JSON expose
+both. Names resolve through fresh native discovery, without a registry, and can
+be reused after termination. Full IDs identify one allocation incarnation.
+See the [current compute reference](docs/cli/compute.md) for naming rules,
+collision handling, and the implemented local/Slurm scope.
 
 ## 1. Purpose
 

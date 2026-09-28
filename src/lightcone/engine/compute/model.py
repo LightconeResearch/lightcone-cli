@@ -61,6 +61,15 @@ def positive_int(value: object, name: str) -> int:
     return int(str(value))
 
 
+def validate_name(value: str) -> None:
+    """Keep cluster names portable across native providers and safe in commands."""
+    if not re.fullmatch(r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", value):
+        raise ComputeError(
+            "cluster names must be 1–63 lowercase letters, digits, or hyphens; "
+            "start with a letter and end with a letter or digit"
+        )
+
+
 @dataclass(frozen=True)
 class Resources:
     """The fixed per-node allocation envelope; memory is stored in bytes."""
@@ -166,11 +175,17 @@ class Identity:
     native_id: str
     token: str
     host: str = ""
+    name: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            object.__setattr__(self, "name", f"lc-{self.token[:12]}")
 
     def encode(self) -> str:
         """Encode identity without a local UUID-to-allocation database."""
         payload = json.dumps(
-            [1, self.namespace, self.native_id, self.token, self.host], separators=(",", ":")
+            [1, self.namespace, self.native_id, self.token, self.host, self.name],
+            separators=(",", ":"),
         ).encode()
         return "clu_" + base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
@@ -182,16 +197,17 @@ class Identity:
                 raise ValueError
             raw = value[4:]
             data = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4), altchars=b"-_"))
-            if not isinstance(data, list) or len(data) != 5 or type(data[0]) is not int:
+            if not isinstance(data, list) or len(data) != 6 or type(data[0]) is not int:
                 raise ValueError
-            version, namespace, native_id, token, host = data
+            version, namespace, native_id, token, host, name = data
             if version != 1 or not all(isinstance(item, str) for item in data[1:]):
                 raise ValueError
             if str(UUID(namespace)) != namespace or not native_id or not token:
                 raise ValueError
             if any(ord(char) < 32 for item in data[1:] for char in item):
                 raise ValueError
-            identity = cls(namespace, native_id, token, host)
+            validate_name(name)
+            identity = cls(namespace, native_id, token, host, name)
             if identity.encode() != value:
                 raise ValueError
             return identity
@@ -210,6 +226,7 @@ class LaunchPlan:
     request: Request
     seconds: int
     details: dict[str, Any] = field(default_factory=dict)
+    name: str | None = None
 
     @property
     def resources(self) -> Resources:
@@ -223,6 +240,7 @@ class LaunchPlan:
         """Allowlist the plan's public contract; details must contain no credentials."""
         return {
             "schema_version": 1,
+            "name": self.name,
             "request": self.request.as_dict(),
             "offer": self.offer.name,
             "connection": self.connection.name,
@@ -254,6 +272,7 @@ class Snapshot:
         return {
             "schema_version": 1,
             "id": self.identity.encode(),
+            "name": self.identity.name,
             "phase": self.phase,
             "allocation": {
                 "num_nodes": self.num_nodes,

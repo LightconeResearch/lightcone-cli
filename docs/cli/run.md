@@ -9,14 +9,14 @@ question.
 ## Synopsis
 
 ```text
-lc run CLUSTER_ID -- COMMAND...
+lc run CLUSTER -- COMMAND...
 ```
 
-The first argument is the cluster ID returned by `lc compute launch`.
+The first argument is a cluster name or full immutable ID from `lc compute launch`.
 Everything after `--` is the command, verbatim — flags included.
 Argv, the `docker run` / `uv run` convention: a single quoted string
 would be exec'd as one filename, so probe shell syntax through
-`bash -c` instead. Set `CLUSTER` to your allocated cluster ID:
+`bash -c` instead. Set `CLUSTER` to your allocated cluster's name or full ID:
 
 ```bash
 lc run "$CLUSTER" -- python -c "import numpy; print(numpy.__version__)"
@@ -27,7 +27,7 @@ The command is submitted as an ordinary task to the cluster's Dask scheduler,
 which chooses a worker. The command uses the prepared project environment and
 the same sandbox as a recipe. stdout/stderr are forwarded as bytes, preserving binary output and
 line endings when redirected. The client detaches on completion; the allocation
-stays available until `lc compute down` or its time limit. A missing cluster ID
+stays available until `lc compute down` or its time limit. A missing cluster
 is an error, with no implicit local execution. See [compute](compute.md).
 
 The command receives EOF on stdin; terminal input and pipes into `lc run` are not

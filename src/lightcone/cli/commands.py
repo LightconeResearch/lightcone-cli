@@ -170,13 +170,13 @@ def _render_init_output(report: ConvergenceReport, directory: Path, *, dry_run: 
 
 
 @main.command(context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False})
-@click.argument("cluster_id")
+@click.argument("cluster_id", metavar="CLUSTER")
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
 def run(cluster_id: str, command: tuple[str, ...]) -> None:
-    """Run COMMAND on CLUSTER_ID in the project's sandboxed environment.
+    """Run COMMAND on CLUSTER in the project's sandboxed environment.
 
-    Use `lc run CLUSTER_ID -- COMMAND...`; the allocation remains available
-    after the command finishes.
+    Use `lc run CLUSTER -- COMMAND...` with a cluster name or ID; the allocation
+    remains available after the command finishes.
     """
     from lightcone.engine import run as engine_run
     from lightcone.engine.project import current_project
@@ -189,11 +189,17 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
     try:
         outcome = engine_run.probe(current_project(), command, cluster_id=cluster_id)
     except KeyboardInterrupt:
+        target = cluster_id if cluster_id.startswith("clu_") else "<full-id>"
         click.echo(
             "Interrupted; the remote command may still be running. "
-            f"Stop its allocation with `lc compute down {cluster_id}`.",
+            f"Stop its allocation with `lc compute down {target}`.",
             err=True,
         )
+        if target != cluster_id:
+            click.echo(
+                "Inspect `lc compute status --json` to identify the original allocation; "
+                "cluster names can be reused.", err=True,
+            )
         raise
     if outcome.notes:
         click.echo("\n".join(["", *outcome.notes]), err=True)
@@ -212,7 +218,7 @@ def _require_cluster_id(value: str) -> None:
     try:
         compute.validate_id(value)
     except ProjectError as exc:
-        raise click.BadParameter(str(exc), param_hint="CLUSTER_ID") from exc
+        raise click.BadParameter(str(exc), param_hint="CLUSTER") from exc
 
 
 # =============================================================================
@@ -277,7 +283,7 @@ def build(as_json: bool) -> None:
 
 
 @main.command()
-@click.argument("targets", nargs=-1, metavar="CLUSTER_ID [TARGETS...]")
+@click.argument("targets", nargs=-1, metavar="CLUSTER [TARGETS...]")
 @click.option(
     "--check",
     "check_only",
@@ -304,9 +310,9 @@ def build(as_json: bool) -> None:
 def materialize(
     targets: tuple[str, ...], check_only: bool, refresh: bool, as_json: bool
 ) -> None:
-    """Make selected outputs on CLUSTER_ID, committing each as it lands.
+    """Make selected outputs on CLUSTER, committing each as it lands.
 
-    Execution requires the cluster ID as its first positional argument.
+    Execution requires a cluster name or ID as its first positional argument.
     With --check, all positional arguments are targets and no cluster is used.
 
     Each output is committed together with its manifest, in a commit that
@@ -340,7 +346,7 @@ def materialize(
     else:
         if not targets:
             raise click.UsageError(
-                "Missing CLUSTER_ID; create an allocation with lc compute launch."
+                "Missing CLUSTER; create an allocation with lc compute launch."
             )
         cluster_id, *remaining = targets
         _require_cluster_id(cluster_id)
@@ -364,12 +370,18 @@ def materialize(
         try:
             report = engine.materialize(root, targets, cluster_id=cluster_id, refresh=refresh)
         except KeyboardInterrupt:
+            target = cluster_id if cluster_id.startswith("clu_") else "<full-id>"
             click.echo(
                 "Interrupted; remote recipes may still be writing results. "
-                f"Stop their allocation with `lc compute down {cluster_id}` "
+                f"Stop their allocation with `lc compute down {target}` "
                 "and confirm they have stopped before cleaning results/.",
                 err=True,
             )
+            if target != cluster_id:
+                click.echo(
+                    "Inspect `lc compute status --json` to identify the original allocation; "
+                    "cluster names can be reused.", err=True,
+                )
             raise
 
     if as_json:

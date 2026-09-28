@@ -22,9 +22,9 @@ those resources can come from.** Lightcone uses native Slurm, Dask Gateway, or
 local processes to create and manage that cluster. We borrow the small resource
 vocabulary of SkyPilot; we do not integrate SkyPilot now.
 
-**Execution always names a cluster.** `lc run` and `lc materialize` take its ID
-as their first argument. This applies equally to local, Slurm, and Gateway
-compute. Only `lc compute launch` creates a cluster; execution commands never
+**Execution always names a cluster.** `lc run` and `lc materialize` take its name
+or full immutable ID as their first argument. This applies equally to local,
+Slurm, and Gateway compute. Only `lc compute launch` creates a cluster; execution commands never
 create one implicitly or infer one from the current environment.
 
 A practical workflow looks like this:
@@ -37,8 +37,8 @@ A practical workflow looks like this:
 2. **Request a cluster.** For example:
 
    ```bash
-   lc compute launch --num-nodes 2 --cpus '32+' --memory '128+' --time 1h
-   # Returns an opaque cluster ID, illustrated below as clu_…
+   lc compute launch --name analysis --num-nodes 2 --cpus '32+' --memory '128+' --time 1h
+   # Prints analysis; omitting --name generates a short name.
    ```
 
    This asks for two execution nodes, each with at least 32 logical CPUs and
@@ -54,20 +54,20 @@ A practical workflow looks like this:
    settings, private connection material, and allocation identity. Dask supplies
    the scheduler and worker lifecycle; Slurm owns and terminates the allocation.
    There is no custom Dask worker or per-node process supervisor.
-4. **Wait, then reuse the cluster.** Substitute the returned ID for `clu_…`:
+4. **Wait, then reuse the cluster.** Pass the returned name:
 
    ```bash
    lc compute status                         # List active allocations
-   lc compute status clu_… --wait --timeout 1800
-   lc materialize clu_…
-   lc run clu_… -- python scripts/check.py
+   lc compute status analysis --wait --timeout 1800
+   lc materialize analysis
+   lc run analysis -- python scripts/check.py
    ```
 
    Materialization distributes recipes; `lc run` runs one sandboxed command on
    one worker. The invoking process still prepares the project and records
    results. Each execution leaves the cluster available for another command.
    Omitting the cluster is an error before execution or environment preparation.
-5. **Release it.** `lc compute down clu_…` terminates the allocation, including
+5. **Release it.** `lc compute down analysis` terminates the allocation, including
    one still waiting in a queue. The configured or requested time limit also
    ends supported allocations. Resources remain allocated while idle.
 
@@ -308,12 +308,12 @@ attempt. [Slurm walltime enforcement](https://slurm.schedmd.com/slurm.conf.html#
 ```text
 lc compute resources [--json]
 lc compute launch --cpus VALUE --memory VALUE [--num-nodes N]
-                  [--time DURATION] [--startup fast] [--dry-run] [--json]
-lc compute status [CLUSTER_ID] [--wait] [--timeout SECONDS] [--json]
-lc compute down CLUSTER_ID [--json]
+                  [--name NAME] [--time DURATION] [--startup fast] [--dry-run] [--json]
+lc compute status [CLUSTER] [--wait] [--timeout SECONDS] [--json]
+lc compute down CLUSTER [--json]
 
-lc materialize CLUSTER_ID [TARGETS...]
-lc run CLUSTER_ID -- COMMAND...
+lc materialize CLUSTER [TARGETS...]
+lc run CLUSTER -- COMMAND...
 lc materialize --check [TARGETS...]
 ```
 
@@ -343,15 +343,15 @@ aliases. `resources` retains its specific meaning: discover the user's configure
 resource offers. This is vocabulary alignment, not SkyPilot integration or full
 command compatibility. [SkyPilot CLI](https://docs.skypilot.ai/en/latest/reference/cli.html)
 
-`launch` creates one new allocation from resource requirements and returns its ID;
+`launch` creates one new allocation from resource requirements and returns its name;
 it does not take a command payload or implicitly reuse, resume, or repair a cluster.
-Execution remains `lc run` or `lc materialize` with an explicit cluster ID.
+Execution remains `lc run` or `lc materialize` with an explicit cluster name or full ID.
 Their names remain unchanged; the cluster is their mandatory first positional
 argument when executing work. This follows SkyPilot's existing-cluster execution
 pattern: `sky exec` requires an explicit target. Lightcone keeps allocation and
 execution in separate commands, whereas `sky launch` can also execute a task.
 [SkyPilot execution target](https://github.com/skypilot-org/skypilot/blob/637488e5583fe9e5fc8564bd126c68b675ef86d5/sky/client/cli/command.py#L1692-L1702)
-`status CLUSTER_ID --wait` avoids a separate wait verb. `launch --dry-run` shows the same plan
+`status CLUSTER --wait` avoids a separate wait verb. `launch --dry-run` shows the same plan
 that submission would use, without allocating. No separate `list`, provider selector,
 native option passthrough, cluster alias database, saved current cluster, rename,
 scale, adapt, SSH, or log-aggregation verb is needed. The earlier draft's
@@ -382,8 +382,10 @@ It must distinguish “requestable” from “free now,” “configured” from
 and discovery permission from permission to allocate. Read-only operations do not
 install dependencies, start services, or open authentication prompts.
 
-`launch` emits the cluster ID as soon as native identity is known. Success means
-the allocation and necessary initial-size requests have been accepted; it is not
+`launch` emits only the cluster name on stdout as soon as native identity is known;
+readiness guidance goes to stderr. Thus `CLUSTER=$(lc compute launch --cpus 1 --memory 1)`
+captures a usable target directly. JSON includes both `name` and the full immutable `id`.
+Success means the allocation and necessary initial-size requests have been accepted; it is not
 a Dask readiness assertion. Provider operations have finite internal deadlines.
 Partial creation, timeout, or interruption returns the known ID and a concrete
 `status`/`down` remedy. Gateway has an unavoidable second initialization request,
@@ -391,26 +393,26 @@ described below. No hidden process retries the operation after the CLI exits.
 
 Bare `status` discovers active allocations across configured connections; it is
 not an independently maintained history service and does not require probing every
-Dask scheduler. `status CLUSTER_ID` inspects that allocation, including native
+Dask scheduler. `status CLUSTER` inspects that allocation, including native
 terminal evidence where available. Both query native authority afresh; no
 `--refresh` flag or saved lifecycle cache is needed.
 
-`status CLUSTER_ID --wait` polls for client-verified Dask readiness with bounded
+`status CLUSTER --wait` polls for client-verified Dask readiness with bounded
 native calls, backoff, and a finite default timeout, proposed 300 seconds. `--wait`
-requires an ID, and `--timeout` requires `--wait`. Its timeout does not cancel the
-allocation. `down CLUSTER_ID` directly requests whole-allocation termination even
-while pending or unreachable; known already-ended clusters are a successful no-op.
+requires a name or full ID, and `--timeout` requires `--wait`. Its timeout does not cancel the
+allocation. `down CLUSTER` directly requests whole-allocation termination even
+while pending or unreachable; a full ID for a known already-ended cluster is a successful no-op.
 Acceptance of termination is not proof it has finished; inspect with `status`.
-`down` takes one explicit ID, with no wildcard or all-clusters form. It releases
+`down` takes one explicit name or full ID, with no wildcard or all-clusters form. It releases
 compute, without deleting the shared project or providing a resume operation.
 
 JSON is a versioned, explicitly allowlisted projection of common records:
-request/plan where known, cluster ID, resource evidence, phase, readiness, reasons,
+request/plan where known, cluster name and immutable ID, resource evidence, phase, readiness, reasons,
 observation times, and per-connection errors. Native diagnostics may explain a
 failure, but agents never need to parse a provider name to route another command.
 Never serialize a native object wholesale; some contain TLS credentials.
 
-## 4. Native authority and opaque cluster identity
+## 4. Native authority, cluster names, and immutable identity
 
 “Serverless” means no persistent Lightcone management API, allocation database,
 or background reconciliation service. Dask processes and any allocation-scoped
@@ -424,14 +426,29 @@ launcher are part of compute and end with it. Each command obtains fresh evidenc
 | Can a worker execute this project? | Execution-time environment/storage/sandbox checks. |
 | How does a client connect? | Identity-checked private credentials and endpoint material. |
 
-A cluster ID has an opaque `clu_` representation. CLI and browser encode the same
-versioned tuple: connection namespace, native allocation identity, and immutable
-allocation incarnation. Use a self-contained encoding, not a random short ID that
-requires a UUID-to-job lookup database. The exact byte encoding is an implementation
+A cluster has a name and a full immutable ID. `--name` accepts 1–63 lowercase ASCII
+letters, digits, or hyphens, starting with a letter and ending with a letter or
+digit. Without it, Lightcone generates `lc-` plus 12 hexadecimal characters from
+a standard-library UUID4, giving the name 48 random bits with no new dependency.
+
+Before submission, query every configured connection and check current names.
+Reject an explicit duplicate; regenerate a generated collision before the single
+native submission. Incomplete discovery prevents launch. This is not an atomic
+global reservation: concurrent launches can race. Name resolution requires
+complete discovery and exactly one current match, otherwise it refuses. A name
+can be reused after termination, so it is not a durable allocation-incarnation
+handle. A full ID addresses its allocation directly without querying unrelated
+connections. There is no name-to-ID registry.
+
+A full cluster ID has an opaque `clu_` representation. CLI and browser encode the
+same versioned tuple: connection namespace, native allocation identity, immutable
+allocation incarnation, and name. Use a self-contained encoding, not a random
+short ID that requires a UUID-to-job lookup database. The exact byte encoding is an implementation
 choice; interoperability fixtures must fix it before a frontend is shipped.
 
-For Slurm, use the connection namespace, native job ID, and random submission
-token in the job name. The namespace fixes native scope; owner and submission
+For Slurm, use the connection namespace, native job ID, random submission token,
+and cluster name; the job name carries the token and name. The namespace fixes
+native scope; owner and submission
 times are validation/query evidence, not fields that change the ID when details
 become available. In particular, Slurm can reset its reported submission time on
 requeue. Gateway's native cluster name identifies its allocation within the service.
@@ -439,8 +456,8 @@ Local identity includes host and an allocation UUID. Offer names, requested
 resources, credentials, and changing state are not part of the public ID.
 
 Opaque means callers pass the ID back unchanged, not that it is encrypted or an
-authorization token. Full IDs may be longer than `slurm:12345`; readable short
-labels are presentation only. Validate ownership and native identity before
+authorization token. Full IDs may be longer than `slurm:12345`; human-facing names
+resolve through fresh native discovery. Validate ownership and native identity before
 attachment or termination. Changing providers for *new* allocations does not
 rewrite an existing ID or move an existing cluster.
 
@@ -476,6 +493,7 @@ can return this common snapshot (memory remains GiB):
 {
   "schema_version": 1,
   "id": "clu_…",
+  "name": "analysis",
   "phase": "active",
   "allocation": {
     "num_nodes": 2,
@@ -605,7 +623,7 @@ not a worker implementation or an existing command:
 
 ```bash
 #!/bin/bash
-#SBATCH --job-name=lc-dask-v1-c82a7b8d0ccf40a4be0e57e784edb989
+#SBATCH --job-name=lc-dask-v1-c82a7b8d0ccf40a4be0e57e784edb989-analysis
 #SBATCH --comment=lightcone:v1:kind=dask
 #SBATCH --no-requeue
 
@@ -674,7 +692,7 @@ For the quick offer, generate a command of this shape, using the same resolved
 salloc --account=myproject --constraint=cpu --qos=interactive \
   --nodes=2 --ntasks-per-node=1 --cpus-per-task=256 \
   --mem=491520M --time=01:00:00 \
-  --job-name=lc-dask-v1-c82a7b8d0ccf40a4be0e57e784edb989 \
+  --job-name=lc-dask-v1-c82a7b8d0ccf40a4be0e57e784edb989-analysis \
   --comment=lightcone:v1:kind=dask --kill-command=TERM \
   srun --ntasks=2 --ntasks-per-node=1 --cpus-per-task=256 \
     --cpu-bind=threads --kill-on-bad-exit=1 \
@@ -748,10 +766,12 @@ still require fresh attempt identity and credentials.
 
 ### Native Slurm discovery
 
-Use the required name `lc-dask-v1-<random-submission-token>` plus the optional richer
+Use the required name `lc-dask-v1-<random-submission-token>-<cluster-name>` plus the optional richer
 comment `lightcone:v1:kind=dask`. The name is the common discovery marker because
 the NERSC queue API exposes names but not comments. Neither field is health or a
-credential. Include complete, untruncated names in CLI queries.
+credential. The 32-character token and up-to-63-character cluster name fit within
+the 128-character job-name field used for accounting queries. Include complete,
+untruncated names in CLI queries.
 
 Query the current user's jobs once per context using structured `squeue` output
 where supported, or a tested explicit-format fallback. Filter marked jobs and
@@ -863,8 +883,8 @@ covers the current allocation attempt, including workers and their replacements.
 ### Local
 
 Expose one logical node on the current host through a normal catalog offer.
-`lc compute launch` creates the local cluster and returns an opaque cluster ID;
-`status`, `run`, `materialize`, and `down` use it just like any other allocation.
+`lc compute launch` creates the local cluster and returns its name;
+`status`, `run`, `materialize`, and `down` accept that name or its full immutable ID.
 Neither execution command starts a `LocalCluster` automatically. Finishing an
 invocation leaves the local cluster alive until `down`, its enforced time limit,
 or a native process/session failure ends it.
@@ -883,7 +903,9 @@ Configured budgets are cooperative unless an actual enforcement mechanism exists
 never advertise local CPU/RAM as an exclusive OS reservation.
 
 The OS does not provide a portable authenticated directory of Dask clusters.
-Minimal private locator files are necessary here. Validate host/boot identity,
+Minimal private locator files are necessary here. The private `identity.json`
+contains the encoded identity, including its name; native processes remain the
+lifecycle authority. Validate host/boot identity,
 owner, PID, session and the exact command containing the allocation token before
 signalling the managed process group. Boot UUIDs and allocation tokens avoid
 depending on mutable hostnames or wall-clock creation timestamps.
@@ -974,14 +996,14 @@ a mandatory Lightcone server extension.
 ## 10. `lc run` and `lc materialize` require a cluster
 
 The first positional argument selects the cluster for every executing invocation:
-`lc run CLUSTER_ID -- COMMAND...` or `lc materialize CLUSTER_ID [TARGETS...]`.
-Validate this argument as a cluster ID; a missing or malformed ID is a usage error
+`lc run CLUSTER -- COMMAND...` or `lc materialize CLUSTER [TARGETS...]`, using a name or full ID.
+Validate this argument as a cluster name or full ID; a missing or malformed target is a usage error
 before environment preparation or task execution. Do not guess whether it was an
 output target or silently reinterpret an old invocation. There is no optional
 cluster flag or default cluster.
 
 Resolve native state, pin the attempt, and connect with a deadline. If unavailable or not ready, fail with
-current evidence and a `status CLUSTER_ID --wait` remedy. Never silently allocate,
+current evidence and a `status CLUSTER --wait` remedy. Never silently allocate,
 resize, replace, or fall back to another cluster. This is the same path for all
 providers, including local.
 
@@ -1029,9 +1051,9 @@ Both commands submit ordinary tasks to the scheduler, which chooses their worker
 There is no login-node guard on local allocation, commands, recipes, or standalone
 reruns. Driver-side git, annex, environment preparation, and image builds remain
 ordinary operations subject to native permissions and the user's site policy.
-`lc materialize CLUSTER_ID` keeps the existing submission/completion seam.
+`lc materialize CLUSTER` keeps the existing submission/completion seam.
 
-`lc run CLUSTER_ID -- COMMAND...` executes the supplied argv as **one task on one
+`lc run CLUSTER -- COMMAND...` executes the supplied argv as **one task on one
 compatible worker**, in the project's locked environment and sandbox. It does not distribute
 a single ordinary program across nodes. Split current probe preparation from
 execution so git/annex work stays on the driver. Preserve live stdout/stderr,

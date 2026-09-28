@@ -1685,17 +1685,25 @@ refusal point.
 **Compute is explicitly allocated and borrowed (2026-09).** This supersedes
 the ambient venue ladder. `lc compute resources/launch/status/down` manages local
 and Slurm allocations through `engine.compute.Provider`. `run` and `materialize`
-require a cluster ID as their first positional argument; neither creates compute.
+require a cluster name or full ID as their first positional argument; neither creates compute.
 `materialize --check` remains cluster-free. Catalog offers expose resource shapes;
 connections supply stable native namespaces. Native jobs and validated local OS
 identities are the allocation authority; standard Dask supplies execution state.
 No Lightcone server, lifecycle database, custom Dask worker, or implicit allocation.
 
+**Names are native labels, not a registry.** `launch --name analysis` chooses a name;
+otherwise launch generates `lc-` plus 12 random hexadecimal characters. Plain stdout
+contains only the name for shell capture; JSON retains the full immutable ID too.
+Resolve names through fresh discovery and refuse missing, ambiguous, or incomplete
+observations. Check existing names before submission, but do not claim atomic global
+reservation across native backends. A name can be reused after termination; use the
+full ID to address an exact incarnation or bypass unrelated discovery failures.
+
 **Local compute needs no setup.** An absent implicit `~/lightcone-compute.yaml`
 selects a built-in local catalog: one CPU, 1 GiB, one node, fast startup, 30-minute
 default and two-hour maximum lifetime. It writes no catalog and starts no cluster.
 Configured catalogs replace it completely; missing explicit paths and invalid
-files are errors. Execution still requires an explicitly launched cluster ID.
+files are errors. Execution still requires an explicitly launched cluster's name or ID.
 
 **Execution borrows a client and leaves the allocation alive.** Validate native
 identity and scheduler readiness. The driver keeps git and convergence. Use unique
@@ -2291,7 +2299,7 @@ written to" — a path the schema never defined. What changed, and why:
 | Change how the spec becomes a graph | `src/lightcone/engine/plan.py` + `tests/test_plan.py` | Ask `astra.resolve`; if the answer is missing, the fix is a PR to astra-tools. Anything ambiguous is a `ProjectError`, never a guess |
 | Change how a recipe runs | `src/lightcone/engine/worker.py` + `tests/test_worker.py` | Never raises, never writes git; mutation-check every denial test |
 | Change what a run commits | `src/lightcone/engine/materialize.py` + `tests/test_materialize.py` | The driver owns git alone; the tree ends as clean as it started |
-| Change where a run executes | `src/lightcone/engine/compute/` + `materialize.cluster_for_run` + `tests/test_compute*.py` | Explicit cluster IDs; provider-owned native allocation lifecycle; borrowed standard Dask clients |
+| Change where a run executes | `src/lightcone/engine/compute/` + `materialize.cluster_for_run` + `tests/test_compute*.py` | Explicit cluster names or IDs; provider-owned native allocation lifecycle; borrowed standard Dask clients |
 | Change what the crate says | `src/lightcone/engine/crate.py` + `tests/test_crate.py` | Pure builder: sorted iteration, no clock, git injected as `writer` and the annex key map as `keys`; structure tests, never byte goldens — the one byte-level claim is render-twice-identical. The validator floor lives in `tests/test_crate_smoke.py::_FLOOR` |
 | Change how a foreign write is detected | `dataset.last_writer` + `materialize._foreign_write` + `tests/test_dataset.py` | History, never hashing; `datalad_run_subject` is the one spelling of the record's subject; a foreign write classifies `stale` in every verb |
 | Add a CLI verb | `src/lightcone/cli/commands.py` | `@main.command()`; keep logic in the engine, raise `ProjectError`, render here |
