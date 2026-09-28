@@ -1702,6 +1702,10 @@ identity and scheduler readiness. The driver keeps git and convergence. Use uniq
 invocation task keys. Interrupted unreported outputs remain in place because a
 client disconnect does not prove remote subprocess termination. Comprehensive
 cancellation/fencing and simultaneous writers are deferred by explicit user decision.
+Local containerized processes can outlive process-group shutdown; do not claim
+that `down` or walltime proves an external runtime's containers have stopped.
+Read-only project validation precedes cluster connection. Populate the declared
+input-hash memo on the driver before serializing it to independent worker tasks.
 
 **No login-node guard or venue module (PR #226 review).** Explicit catalog
 selection and native backend permissions determine allocation. Do not infer

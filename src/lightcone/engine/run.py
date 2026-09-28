@@ -48,13 +48,13 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
     from lightcone.engine import compute
     from lightcone.engine.compute.output import call, forwarding
 
+    require_uv()
+    paths = input_paths(project, read_spec(project))
     with compute.connect(cluster_id) as client:
-        require_uv()
-        paths = input_paths(project, read_spec(project))
         runtime = container.runtime_for_run(project, build=False)
         warnings = container.converge(runtime)
         invocation = uuid4().hex
-        with forwarding(client, invocation) as output:
+        with forwarding(client) as output:
             future = client.submit(
                 call, _probe, output.topic, "probe", runtime, paths, tuple(command),
                 key=f"lc-{invocation}-probe", pure=False,
@@ -73,7 +73,7 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
     notes = [*(f"uv: {warning}" for warning in warnings)]
     if warning := uv_scrub_warning():
         notes.append(warning)
-    return replace(outcome, notes=tuple(dict.fromkeys((*outcome.notes, *notes))))
+    return replace(outcome, notes=(*notes, *outcome.notes))
 
 
 def _probe(
@@ -87,8 +87,6 @@ def _probe(
             container.backend(runtime), policy, command, cwd=runtime.root,
             prefix=uv_prefix(runtime.root, sync=False), env=child_env(), output=output,
         )
-    if warning := uv_scrub_warning():
-        outcome = replace(outcome, notes=(*outcome.notes, warning))
     return outcome
 
 

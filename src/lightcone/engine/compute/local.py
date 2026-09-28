@@ -14,7 +14,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psutil
 
@@ -42,10 +42,19 @@ _STOP_GRACE = 3.0
 
 
 def _boot_identity() -> str:
-    boot_id = Path("/proc/sys/kernel/random/boot_id")
-    if boot_id.exists():
-        return boot_id.read_text().strip()
-    return str(psutil.boot_time())
+    try:
+        if sys.platform == "linux":
+            value = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        elif sys.platform == "darwin":
+            value = subprocess.run(
+                ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True, timeout=5,
+            ).stdout.strip()
+        else:
+            raise ComputeError("local allocation identity requires Linux or macOS")
+        return str(UUID(value))
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise ComputeError("cannot verify this host's boot identity") from exc
 
 
 class LocalProvider:
@@ -120,10 +129,11 @@ class LocalProvider:
         """Start a detached allocation owner and retain its immutable OS identity."""
         if plan.connection != self.connection or plan.num_nodes != 1:
             raise ComputeError("local launch plan belongs to a different connection or node count")
+        boot = _boot_identity()
         token = uuid4().hex
         directory = private_directory(self.root / token, create=True)
         scratch = private_directory(Path(plan.details["scratch_root"]) / f"lc-{token}", create=True)
-        started = time.time()
+        started = time.monotonic()
         write_private_json(
             directory / "launch.json",
             {
@@ -139,24 +149,22 @@ class LocalProvider:
             # This allocation outlives a command; the ordinary run-to-completion
             # subprocess seam cannot own it. Logs are discarded rather than grow.
             process = subprocess.Popen(
-                [plan.details["python"], "-m", _OWNER_MODULE, str(directory)],
+                [plan.details["python"], "-P", "-m", _OWNER_MODULE, str(directory)],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
                 close_fds=True,
             )
-            native = psutil.Process(process.pid)
             identity = Identity(
                 self.connection.namespace, str(process.pid), token, socket.gethostname()
             )
             record = {
                 "identity": identity.encode(),
                 "pid": process.pid,
-                "created": native.create_time(),
                 "uid": os.getuid(),
-                "boot": _boot_identity(),
-                "host": socket.gethostname(),
+                "boot": boot,
+                "host": identity.host,
                 "cpus": plan.resources.cpus,
                 "memory": plan.resources.memory,
             }
@@ -200,11 +208,10 @@ class LocalProvider:
     def _directory(self, identity: Identity) -> Path:
         if (
             identity.namespace != self.connection.namespace
-            or identity.host != socket.gethostname()
             or not re.fullmatch(r"[0-9a-f]{32}", identity.token)
             or not re.fullmatch(r"[1-9][0-9]*", identity.native_id)
         ):
-            raise ComputeError("this local allocation does not belong to this host/connection")
+            raise ComputeError("this local allocation does not belong to this connection")
         return private_directory(self.root / identity.token)
 
     def _record(self, identity: Identity) -> tuple[Path, dict[str, Any]]:
@@ -215,7 +222,6 @@ class LocalProvider:
             or record.get("host") != identity.host
             or record.get("pid") != int(identity.native_id)
             or record.get("uid") != os.getuid()
-            or not isinstance(record.get("created"), (float, int))
         ):
             raise ComputeError("the private locator does not match this local allocation identity")
         positive_int(record.get("cpus"), "recorded local cpus")
@@ -226,15 +232,17 @@ class LocalProvider:
         self, identity: Identity, directory: Path, record: dict[str, Any]
     ) -> psutil.Process | None:
         if record.get("boot") != _boot_identity():
-            return None
+            raise ComputeError(
+                "the local allocation belongs to a different host or boot; "
+                "inspect it from its launch host",
+                cluster_id=identity.encode(),
+            )
         try:
             process = psutil.Process(int(identity.native_id))
             if process.status() == psutil.STATUS_ZOMBIE:
                 return None
-            if process.create_time() != record["created"]:
-                return None
             if process.uids().real != os.getuid():
-                raise ComputeError("the local allocation process belongs to another user")
+                return None
             argv = process.cmdline()
             if not argv:
                 # Linux clears argv during exit before publishing zombie state.
@@ -245,14 +253,16 @@ class LocalProvider:
                 except psutil.TimeoutExpired:
                     raise ComputeError("the local process identity is unavailable") from None
             if (
-                len(argv) != 4
-                or argv[1:] != ["-m", _OWNER_MODULE, str(directory)]
+                len(argv) != 5
+                or argv[1:] != ["-P", "-m", _OWNER_MODULE, str(directory)]
                 or os.getpgid(process.pid) != process.pid
                 or os.getsid(process.pid) != process.pid
             ):
-                raise ComputeError(
-                    "the local allocation owner no longer matches its recorded process session"
-                )
+                # This PID now identifies another process, not this allocation.
+                return None
+            # The exact command includes this launch's random token directory.
+            # PID reuse cannot match another allocation, and unlike wall-clock
+            # create_time this identity survives clock corrections and renames.
             return process
         except (psutil.NoSuchProcess, ProcessLookupError):
             return None
@@ -274,6 +284,7 @@ class LocalProvider:
         if not self.root.exists():
             return []
         private_directory(self.root)
+        boot = _boot_identity()
         snapshots = []
         for directory in sorted(self.root.iterdir()):
             if not re.fullmatch(r"[0-9a-f]{32}", directory.name):
@@ -283,6 +294,10 @@ class LocalProvider:
                 # launcher can still be starting, or have failed before that.
                 continue
             record = read_private_json(directory / "identity.json")
+            if record.get("boot") != boot:
+                # A shared home can contain locators from another machine.
+                # This host cannot observe whether those allocations have ended.
+                continue
             identity = Identity.decode(str(record.get("identity", "")))
             snapshot = self.inspect(identity)
             if snapshot.phase != "ended":

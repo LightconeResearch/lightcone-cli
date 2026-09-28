@@ -94,7 +94,7 @@ def resources(config_path: Path | None, as_json: bool) -> None:
                 for offer in data["offers"]
             ],
         )
-        click.echo("Current free capacity: unknown. Limits apply to each allocation.")
+        click.echo("Limits apply to each allocation; offers are not live free capacity.")
 
 
 @compute.command()

@@ -29,6 +29,7 @@ from lightcone.engine.compute.runtime import open_client, private_directory, rea
 _PREFIX = "lc-dask-v1-"
 _TOKEN = re.compile(r"[0-9a-f]{32}")
 _QUERY_TIMEOUT = 10.0
+_SUBMIT_TIMEOUT = 60.0
 _ACCEPT_TIMEOUT = 10.0
 _MIB = 1024**2
 _FINISHED = {
@@ -102,7 +103,7 @@ class SlurmProvider:
         return [f"--clusters={context}"]
 
     def _command(
-        self, argv: list[str], *, payload: str | None = None
+        self, argv: list[str], *, payload: str | None = None, timeout: float = _QUERY_TIMEOUT
     ) -> subprocess.CompletedProcess[str]:
         try:
             result = subprocess.run(
@@ -111,11 +112,11 @@ class SlurmProvider:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=_QUERY_TIMEOUT,
+                timeout=timeout,
                 env=native_environment(),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ComputeError(f"cannot complete {argv[0]} query: {exc}") from exc
+            raise ComputeError(f"cannot complete {argv[0]}: {exc}") from exc
         if result.returncode:
             raise ComputeError(
                 f"{argv[0]} failed: {result.stderr.strip() or 'native command failed'}"
@@ -253,6 +254,7 @@ class SlurmProvider:
             f"--cpu-bind={details['cpu_bind']}",
             "--kill-on-bad-exit=1",
             details["python"],
+            "-P",
             "-m",
             "lightcone.engine.compute.slurm_bootstrap",
             "--submission",
@@ -295,7 +297,7 @@ class SlurmProvider:
             argv = ["sbatch", "--parsable", "--no-requeue", *common, f"--output={logs}/%j.out"]
             script = "#!/bin/bash\nset -euo pipefail\numask 077\nexec " + shlex.join(payload) + "\n"
             try:
-                result = self._command(argv, payload=script)
+                result = self._command(argv, payload=script, timeout=_SUBMIT_TIMEOUT)
                 match = re.fullmatch(r"([0-9]+)(?:;([^;\s]+))?", result.stdout.strip())
                 if match and (
                     not self.connection.context or match[2] in (None, self.connection.context)

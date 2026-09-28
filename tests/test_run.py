@@ -210,13 +210,32 @@ def test_the_probe_reports_the_uv_scrub_in_its_notes(
 
     monkeypatch.setenv("UV_NO_BINARY", "1")
     outcome = sandbox.Outcome(
-        returncode=0, attestation=Attestation(mechanism="none", fs="open")
+        returncode=0, attestation=Attestation(mechanism="none", fs="open"),
+        notes=("denial", "", "remedy", "", "trailer"),
     )
     monkeypatch.setattr(sandbox, "run", lambda *a, **k: outcome)
 
     outcome = engine_run.probe(project, ["true"], cluster_id=cluster_id)
 
-    assert any("UV_NO_BINARY" in note for note in outcome.notes)
+    assert sum("UV_NO_BINARY" in note for note in outcome.notes) == 1
+    assert outcome.notes[-5:] == ("denial", "", "remedy", "", "trailer")
+
+
+def test_missing_driver_tool_is_reported_before_contacting_compute(
+    project: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine import compute
+
+    def unavailable() -> None:
+        raise ProjectError("uv is missing")
+
+    def unexpected(*args: Any) -> None:
+        pytest.fail("contacted compute before checking driver tools")
+
+    monkeypatch.setattr(engine_run, "require_uv", unavailable)
+    monkeypatch.setattr(compute, "connect", unexpected)
+    with pytest.raises(ProjectError, match="uv is missing"):
+        engine_run.probe(project, ["true"], cluster_id="unused")
 
 
 def test_remote_probe_forwards_both_streams_and_exit_status(

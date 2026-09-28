@@ -446,6 +446,30 @@ def test_check_treats_all_positionals_as_targets_without_querying_compute(
     assert seen == [("check", (["baseline/first"], {"refresh": False}))]
 
 
+def test_check_explains_that_a_cluster_id_is_not_a_target(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["materialize", "--check", CLUSTER_ID])
+    assert result.exit_code == 2
+    assert "omit the ID" in result.output
+
+
+@pytest.mark.parametrize("command", ["run", "materialize"])
+def test_execution_interrupt_explains_how_to_stop_remote_work(
+    runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch, command: str,
+) -> None:
+    from lightcone.engine import materialize as engine_materialize
+    from lightcone.engine import run as engine_run
+
+    def interrupt(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(engine_run, "probe", interrupt)
+    monkeypatch.setattr(engine_materialize, "materialize", interrupt)
+    args = [command, CLUSTER_ID, "--", "true"] if command == "run" else [command, CLUSTER_ID]
+    result = runner.invoke(main, args)
+    assert result.exit_code != 0
+    assert f"lc compute down {CLUSTER_ID}" in result.output
+
+
 def test_a_failure_exits_nonzero(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

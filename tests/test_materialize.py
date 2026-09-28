@@ -13,6 +13,7 @@ the seam is only worth having if the real thing still fits through it.
 from __future__ import annotations
 
 import json
+import pickle
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -398,6 +399,77 @@ def test_a_dirty_tree_refuses_and_says_what_to_do_about_each_path(
     message = str(raised.value)
     assert "commit these" in message and "notes.md" in message
     assert "discard these" in message and "results/baseline/stray.txt" in message
+    assert message.index("lc compute down") < message.index("git restore")
+
+
+@pytest.mark.parametrize("invalid", ["dirty", "spec"])
+def test_project_refusals_precede_cluster_connection(
+    root: Path, monkeypatch: pytest.MonkeyPatch, invalid: str,
+) -> None:
+    if invalid == "dirty":
+        (root / "notes.md").write_text("in progress\n")
+    else:
+        (root / "astra.yaml").write_text(_SPEC.replace("    format: txt\n", ""))
+        dataset.save(root, [root], "invalid spec")
+
+    def unexpected(*args: object) -> None:
+        pytest.fail("an invalid project contacted the cluster")
+
+    monkeypatch.setattr(engine, "cluster_for_run", unexpected)
+    with pytest.raises(ProjectError):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+
+def test_shared_inputs_are_hashed_once_before_task_serialization(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _consuming("data/catalog.fits").replace("inputs: [first]", "inputs: [first, catalog]")
+    root = analysis(spec, files={"data/catalog.fits": "data"}, universes={"baseline": _UNIVERSE})
+    hashed: list[Path] = []
+    real = assets.data_version
+
+    def digest(path: Path) -> str:
+        hashed.append(path)
+        return real(path)
+
+    class _Copied(_Inline):
+        def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
+            return fn(*pickle.loads(pickle.dumps(args)))
+
+    monkeypatch.setattr(assets, "data_version", digest)
+    _cluster(monkeypatch, _Copied())
+    first = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert len(first.made) == 2
+    assert hashed.count(root / "data/catalog.fits") == 1
+    second = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert len(second.current) == 2
+    assert hashed.count(root / "data/catalog.fits") == 2
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink-loop"])
+def test_an_unreadable_input_fails_only_its_dependent_tasks(
+    analysis: Callable[..., Path], inline: None, tmp_path: Path, kind: str,
+) -> None:
+    source = "data/missing.fits"
+    if kind == "symlink-loop":
+        loop = tmp_path / "loop"
+        loop.symlink_to(loop.name)
+        source = str(loop)
+    spec = _consuming(source).replace("decisions:\n  method:", """
+  - id: independent
+    type: metric
+    format: txt
+    recipe:
+      command: echo done > {output}
+
+decisions:
+  method:""")
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert report.failed == ["baseline/first"]
+    assert report.blocked == ["baseline/second"]
+    assert report.made == ["baseline/independent"]
+    assert not dataset.status(root)
 
 
 def _consuming(source: str) -> str:

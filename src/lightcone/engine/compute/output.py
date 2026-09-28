@@ -39,10 +39,12 @@ class Forwarder:
 
 @contextmanager
 def forwarding(
-    client: Any, invocation: str, *, stdout: Literal["stdout", "stderr"] = "stdout"
+    client: Any, *, stdout: Literal["stdout", "stderr"] = "stdout"
 ) -> Iterator[Forwarder]:
     """Subscribe before any task starts and unsubscribe when the invocation ends."""
-    forwarder = Forwarder(f"lc-output-{invocation}", stdout)
+    # Dask expires a disconnected client's event log through its native cleanup
+    # policy. A separate custom topic would retain output for the whole allocation.
+    forwarder = Forwarder(client.id, stdout)
     client.subscribe_topic(forwarder.topic, forwarder.receive)
     try:
         yield forwarder

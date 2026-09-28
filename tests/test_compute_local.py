@@ -222,6 +222,18 @@ def test_walltime_expires_without_a_connected_client(provider: LocalProvider) ->
         provider.terminate(identity)
 
 
+def test_unavailable_boot_identity_refuses_before_creating_an_allocation(
+    provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable() -> str:
+        raise ComputeError("cannot verify this host's boot identity")
+
+    monkeypatch.setattr("lightcone.engine.compute.local._boot_identity", unavailable)
+    with pytest.raises(ComputeError, match="boot identity"):
+        _launch(provider)
+    assert not provider.root.exists()
+
+
 def test_down_kills_frozen_owner_and_workers_without_contacting_dask(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -389,9 +401,28 @@ def test_reused_pid_and_boot_identity_are_never_signalled(
                 "lightcone.engine.compute.local.os.killpg",
                 lambda *args: pytest.fail("a stale process identity must never be signalled"),
             )
-            for changed in ({"created": original["created"] + 1}, {"boot": "another-boot"}):
-                write_private_json(path, {**original, **changed})
+            write_private_json(path, {**original, "boot": "another-boot"})
+            assert provider.discover() == []
+            with pytest.raises(ComputeError, match="different host or boot"):
+                provider.inspect(identity)
+            with pytest.raises(ComputeError, match="different host or boot"):
+                provider.terminate(identity)
+            with (
+                pytest.raises(ComputeError, match="different host or boot"),
+                provider.connect(identity),
+            ):
+                pytest.fail("a different boot must not attach to a scheduler")
+            write_private_json(path, original)
+            with patch.context() as reused:
+                reused.setattr(
+                    psutil.Process, "cmdline",
+                    lambda _process: [
+                        sys.executable, "-P", "-m", "lightcone.engine.compute.local_runtime",
+                        str(provider.root / uuid4().hex),
+                    ],
+                )
                 assert provider.inspect(identity).phase == "ended"
+                assert provider.discover() == []
                 provider.terminate(identity)
             unrelated = replace(identity, native_id=str(os.getpid()))
             write_private_json(
@@ -400,14 +431,99 @@ def test_reused_pid_and_boot_identity_are_never_signalled(
                     **original,
                     "identity": unrelated.encode(),
                     "pid": os.getpid(),
-                    "created": psutil.Process().create_time(),
                 },
             )
-            with pytest.raises(ComputeError, match="process session"):
-                provider.terminate(unrelated)
+            assert provider.inspect(unrelated).phase == "ended"
+            provider.terminate(unrelated)
     finally:
         write_private_json(path, original)
         provider.terminate(identity)
+
+
+def test_shared_home_does_not_claim_foreign_allocations_ended_or_terminated(
+    provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = _launch(provider)
+    try:
+        _ready(provider, identity)
+        remote_boot = str(uuid4())
+        with monkeypatch.context() as remote:
+            remote.setattr(socket, "gethostname", lambda: identity.host + "-other")
+            remote.setattr("lightcone.engine.compute.local._boot_identity", lambda: remote_boot)
+            remote.setattr(
+                "lightcone.engine.compute.local.os.killpg",
+                lambda *args: pytest.fail("another host cannot signal the allocation"),
+            )
+            assert provider.discover() == []
+            with pytest.raises(ComputeError, match="different host or boot"):
+                provider.inspect(identity)
+            with pytest.raises(ComputeError, match="different host or boot"):
+                provider.terminate(identity)
+            with (
+                pytest.raises(ComputeError, match="different host or boot"),
+                provider.connect(identity),
+            ):
+                pytest.fail("another host cannot borrow the allocation")
+        assert provider.inspect(identity).phase == "active"
+        assert [item.identity for item in provider.discover()] == [identity]
+    finally:
+        provider.terminate(identity)
+
+
+def test_local_identity_survives_hostname_and_wall_clock_changes(
+    provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = _launch(provider)
+    try:
+        _ready(provider, identity)
+        created = psutil.Process.create_time
+        booted = psutil.boot_time()
+        monkeypatch.setattr(socket, "gethostname", lambda: identity.host + "-renamed")
+        monkeypatch.setattr(psutil.Process, "create_time", lambda process: created(process) + 3600)
+        monkeypatch.setattr(psutil, "boot_time", lambda: booted + 3600)
+        assert provider.inspect(identity).phase == "active"
+        assert [item.identity for item in provider.discover()] == [identity]
+        with provider.connect(identity) as client:
+            assert client.submit(sum, [1, 2]).result(timeout=5) == 3
+    finally:
+        provider.terminate(identity)
+    assert provider.inspect(identity).phase == "ended"
+
+
+def test_local_bootstrap_does_not_import_modules_from_the_launch_directory(
+    provider: LocalProvider, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launch_directory = tmp_path / "project"
+    launch_directory.mkdir()
+    (launch_directory / "signal.py").write_text(
+        "raise RuntimeError('project module shadowed stdlib')"
+    )
+    monkeypatch.chdir(launch_directory)
+    identity = _launch(provider)
+    try:
+        _ready(provider, identity)
+        with provider.connect(identity) as client:
+            paths = client.run(lambda: __import__("signal").__file__)
+            assert all(Path(path).parent != launch_directory for path in paths.values())
+    finally:
+        provider.terminate(identity)
+
+
+def test_macos_boot_identity_uses_the_native_boot_uuid(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lightcone.engine.compute.local import _boot_identity
+
+    value = str(uuid4())
+    calls = []
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        assert kwargs["timeout"] == 5
+        return subprocess.CompletedProcess(argv, 0, value.upper() + "\n")
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(subprocess, "run", run)
+    assert _boot_identity() == value
+    assert calls == [["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"]]
 
 
 def test_connection_files_are_private_and_scheduler_identity_is_authenticated(

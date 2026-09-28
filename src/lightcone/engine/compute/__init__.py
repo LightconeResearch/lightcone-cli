@@ -77,7 +77,6 @@ class Compute:
                         "max_seconds": offer.max_seconds,
                     },
                     "startup": offer.startup,
-                    "free_capacity": None,
                 }
                 for offer in self.catalog.offers
             ],

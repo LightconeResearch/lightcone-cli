@@ -110,8 +110,8 @@ def test_missing_default_catalog_exposes_stable_local_resources_without_writing_
     assert connection.provider == "local"
     assert str(UUID(connection.namespace)) == connection.namespace
     with monkeypatch.context() as patch:
-        patch.setattr("lightcone.engine.compute.catalog.socket.gethostname", lambda: "other-host")
-        assert Catalog.load().connections["local"].namespace != connection.namespace
+        patch.setattr("socket.gethostname", lambda: "other-host")
+        assert Catalog.load().connections["local"].namespace == connection.namespace
     assert Catalog.load().connections["local"].namespace == connection.namespace
     assert len(first.offers) == 1
     offer = first.offers[0]

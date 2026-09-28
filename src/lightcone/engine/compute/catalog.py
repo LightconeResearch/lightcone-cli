@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from uuid import UUID, uuid5
+from uuid import UUID
 
 import yaml
 
@@ -22,8 +21,8 @@ from .model import (
     positive_int,
 )
 
-# Isolate hosts sharing a home directory while keeping fresh CLI invocations stable.
-_LOCAL_NAMESPACE = UUID("22c84e48-2f0a-4cd2-90a2-30ce2e909bd1")
+# Native boot/session evidence identifies the host, independently of its hostname.
+_LOCAL_NAMESPACE = "22c84e48-2f0a-4cd2-90a2-30ce2e909bd1"
 
 
 class _UniqueLoader(yaml.SafeLoader):
@@ -82,11 +81,7 @@ class Catalog:
             if configured or path.is_symlink():
                 raise ComputeError(f"cannot read compute catalog {path}: {exc}") from exc
             return cls(
-                connections={
-                    "local": Connection(
-                        "local", str(uuid5(_LOCAL_NAMESPACE, socket.gethostname())), "local"
-                    )
-                },
+                connections={"local": Connection("local", _LOCAL_NAMESPACE, "local")},
                 offers=(Offer("local", "local", Resources(1, GIB), 1, 1800, 7200, "fast"),),
             )
         except (OSError, UnicodeError, yaml.YAMLError) as exc:

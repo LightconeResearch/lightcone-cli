@@ -186,7 +186,15 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
         command = command[1:]
     if not command:
         raise click.UsageError("A command is required; no interactive shell is opened.")
-    outcome = engine_run.probe(current_project(), command, cluster_id=cluster_id)
+    try:
+        outcome = engine_run.probe(current_project(), command, cluster_id=cluster_id)
+    except KeyboardInterrupt:
+        click.echo(
+            "Interrupted; the remote command may still be running. "
+            f"Stop its allocation with `lc compute down {cluster_id}`.",
+            err=True,
+        )
+        raise
     if outcome.notes:
         click.echo("\n".join(["", *outcome.notes]), err=True)
     # `Popen.returncode` is negative for a signal, and `sys.exit(-9)`
@@ -320,7 +328,16 @@ def materialize(
     from lightcone.engine.project import current_project
 
     cluster_id = ""
-    if not check_only:
+    if check_only:
+        from lightcone.engine.compute.model import ComputeError, Identity
+
+        for target in targets:
+            try:
+                Identity.decode(target)
+            except ComputeError:
+                continue
+            raise click.UsageError("--check takes output targets, not a cluster ID; omit the ID.")
+    else:
         if not targets:
             raise click.UsageError(
                 "Missing CLUSTER_ID; create an allocation with lc compute launch."
@@ -344,7 +361,16 @@ def materialize(
     if check_only:
         report = engine.check(root, targets, refresh=refresh)
     else:
-        report = engine.materialize(root, targets, cluster_id=cluster_id, refresh=refresh)
+        try:
+            report = engine.materialize(root, targets, cluster_id=cluster_id, refresh=refresh)
+        except KeyboardInterrupt:
+            click.echo(
+                "Interrupted; remote recipes may still be writing results. "
+                f"Stop their allocation with `lc compute down {cluster_id}` "
+                "and confirm they have stopped before cleaning results/.",
+                err=True,
+            )
+            raise
 
     if as_json:
         click.echo(json.dumps(report.as_dict(), indent=2))

@@ -15,6 +15,7 @@ lc materialize --check [OPTIONS] [TARGETS]...
 
 Execution requires the cluster ID returned by `lc compute launch`. No cluster
 is chosen or started implicitly. `--check` needs no cluster.
+Project validation and the dirty-tree check run before connecting to compute.
 
 With no targets, everything the spec declares, across every universe.
 A target narrows the run to an output and whatever it depends on:
@@ -43,6 +44,9 @@ never touched, under any flag.
 - **Starts clean.** A dirty tree is a refusal. A recipe that returns a
   failure has its partial work restored. After a cluster interruption,
   unreported outputs are retained because tasks may still be running.
+  Stop the allocation with `lc compute down CLUSTER_ID` and confirm its recipes
+  have stopped before cleaning results. Local containers may need separate
+  termination through their runtime; see [execution limits](../user/cluster.md#execution-requirements-and-limits).
 - **Fetches what it needs.** Declared inputs whose annexed content is
   not in this clone are fetched before anything hashes.
 - **Commits as it goes.** Each output lands in its own commit, written

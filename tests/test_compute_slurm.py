@@ -272,7 +272,12 @@ def test_sbatch_launch_owns_payload_and_scrubs_ambient_overrides(
     assert payload[:2] == ["exec", "srun"]
     assert "--kill-on-bad-exit=1" in payload and "--overlap" not in payload
     assert "--ntasks=2" in payload
-    assert "lightcone.engine.compute.slurm_bootstrap" in payload
+    python = payload.index(sys.executable)
+    assert payload[python + 1 : python + 4] == [
+        "-P",
+        "-m",
+        "lightcone.engine.compute.slurm_bootstrap",
+    ]
     assert payload[payload.index("--memory-bytes") + 1] == "515396075520"
 
 
@@ -296,10 +301,12 @@ def test_uncertain_submission_recovers_known_id_without_accounting(
 ) -> None:
     monkeypatch.setattr(slurm.uuid, "uuid4", lambda: SimpleNamespace(hex=TOKEN))
     calls = _native(
-        monkeypatch, {"sbatch": subprocess.TimeoutExpired("sbatch", 10), "squeue": _live()}
+        monkeypatch, {"sbatch": subprocess.TimeoutExpired("sbatch", 60), "squeue": _live()}
     )
     assert provider.launch(provider.plan(offer, Request.parse("256", "480"))) == IDENTITY
     assert [call[0][0] for call in calls][-2:] == ["sbatch", "squeue"]
+    assert calls[-2][1]["timeout"] == 60
+    assert calls[-1][1]["timeout"] == 10
 
 
 def test_unknown_submission_returns_reconciliation_token_and_never_resubmits(
@@ -342,6 +349,12 @@ def test_salloc_runs_the_native_driver_detached_until_authoritative_acceptance(
     argv = popen.call_args.args[0]
     assert argv[0] == "salloc" and "srun" in argv
     assert "--kill-command=TERM" in argv
+    python = argv.index(sys.executable)
+    assert argv[python + 1 : python + 4] == [
+        "-P",
+        "-m",
+        "lightcone.engine.compute.slurm_bootstrap",
+    ]
     assert not {"--no-shell", "--no-requeue", "--parsable"}.intersection(argv)
     assert popen.call_args.kwargs["start_new_session"] is True
     assert popen.call_args.kwargs["stdin"] == subprocess.DEVNULL
@@ -563,7 +576,11 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
     ]
     assert loopback, "the local bootstrap smoke test requires an IPv4 loopback interface"
     args.interface = loopback[0]
-    argv = [sys.executable, "-m", "lightcone.engine.compute.slurm_bootstrap"]
+    for module in ("signal", "platform"):
+        (tmp_path / f"{module}.py").write_text(
+            "raise RuntimeError('working directory shadowed Python')\n"
+        )
+    argv = [sys.executable, "-P", "-m", "lightcone.engine.compute.slurm_bootstrap"]
     for key, value in vars(args).items():
         if value is not None:
             argv += ["--" + key.replace("_", "-"), str(value)]
@@ -579,6 +596,7 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
                 processes.append(
                     subprocess.Popen(
                         argv,
+                        cwd=tmp_path,
                         env={**os.environ, **_bootstrap_env(rank)},
                         stdin=subprocess.DEVNULL,
                         stdout=log,

@@ -30,6 +30,20 @@ line endings when redirected. The client detaches on completion; the allocation
 stays available until `lc compute down` or its time limit. A missing cluster ID
 is an error, with no implicit local execution. See [compute](compute.md).
 
+The command receives EOF on stdin; terminal input and pipes into `lc run` are not
+forwarded. Pass input files through the project's declared inputs instead.
+For direct execution, ambient environment variables come from the worker's
+allocation environment. Prefixing the CLI with `NAME=value` does not forward
+that variable to an existing cluster. Set command-specific values inside the
+command, for example `lc run "$CLUSTER" -- env NAME=value python script.py`.
+Containerized commands use the image's environment and the sandbox overlays.
+
+Interrupting the CLI detaches its client; the remote command may still be running.
+Use `lc compute down "$CLUSTER"` to stop the allocation before working with files
+the interrupted command could still be writing. Confirm that the command has
+stopped; local containers may require separate termination through their runtime
+(see [execution limits](../user/cluster.md#execution-requirements-and-limits)).
+
 ## What it does
 
 - **Converges the environment first.** The probe syncs `.venv` to the

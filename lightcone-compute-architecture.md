@@ -884,7 +884,9 @@ never advertise local CPU/RAM as an exclusive OS reservation.
 
 The OS does not provide a portable authenticated directory of Dask clusters.
 Minimal private locator files are necessary here. Validate host/boot identity,
-owner, PID and process creation time before signalling the managed process group.
+owner, PID, session and the exact command containing the allocation token before
+signalling the managed process group. Boot UUIDs and allocation tokens avoid
+depending on mutable hostnames or wall-clock creation timestamps.
 Attachment additionally authenticates scheduler identity. A wedged scheduler must
 not prevent safe OS-level termination. A stale PID is never sufficient evidence.
 
@@ -1181,6 +1183,7 @@ Begin with narrow proofs, not a framework:
 | Driver cancellation/partition and Dask replay | No restoration or overlapping writes without proven exclusion. |
 
 The unresolved deployment questions are concrete: NERSC interactive detachment,
+explicit partition compatibility with QOS/constraint routing,
 CPU/memory enforcement and placement, browser submission capabilities, Gateway
 option/lifetime mappings, and execution writer fencing. None requires changing
 the agent-facing resource request or introducing a Lightcone management service.

@@ -30,8 +30,13 @@ allocation ends at its time limit or when you call `down`.
 
 Local resources are cooperative limits, not an exclusive CPU/RAM reservation.
 An allocation owns a detached process session and standard `LocalCluster`.
-Private process locators are checked against the current host, boot, UID, PID
-birth time, session, and command before attachment or termination. Local compute is available wherever the catalog exposes a valid local offer;
+Private process locators are checked against the native boot UUID, UID, process
+session, and exact command containing the allocation's random token before
+attachment or termination. Hostname changes and clock adjustments do not change
+that identity. Manage a local allocation from the host and boot session that
+launched it. Other boot sessions are excluded from discovery, and an explicit
+ID from one is refused rather than reported as stopped.
+Local compute is available wherever the catalog exposes a valid local offer;
 Lightcone does not infer permission from login-node names or site environment
 variables. Allocation choices are explicit and native permissions still apply.
 
@@ -135,6 +140,13 @@ the effective partition overrun policy and termination grace, rejects an unlimit
 overrun, and freezes the chosen partition. Native administrators can still change
 policy after submission.
 
+At NERSC, verify the resolved partition for every intended QOS/constraint pair:
+site routing can select the partition from the QOS, whereas this implementation
+freezes an explicit partition to establish its walltime policy. Inspect the
+submitted job's actual `Partition` during the deployment test.
+[NERSC's workflow guidance](https://docs.nersc.gov/jobs/workflow/maestro/)
+describes its QOS-driven partition selection.
+
 Jobs carry a random submission token in their `lc-dask-v1-…` name. The opaque
 cluster ID encodes the connection namespace, native job ID, and token. There is
 no job registry to reconcile. Removing an offer prevents new launches without
@@ -153,12 +165,15 @@ since the original allocation may have been accepted.
 Driver and workers must see the same project, prepared environment, and inputs
 at the same absolute paths. They need matching Lightcone code, Python major/minor,
 and Dask versions. The deployment is responsible for making that environment available across
-the cluster. Commands and recipes are ordinary tasks submitted to the Dask
+the cluster; relaunch allocations after upgrading the worker installation.
+Commands and recipes are ordinary tasks submitted to the Dask
 scheduler, which chooses their workers; task runtime and sandbox checks still
 apply. Recipe output is forwarded to the invoking terminal on stderr; `run`
 preserves the command's stdout and stderr bytes separately.
 Containerized projects also require the prepared image and runtime on each
 worker; `podman-hpc` can expose its migrated image across NERSC nodes.
+Direct recipes inherit the allocation workers' environment, not variables added
+to the invoking CLI after launch. Remote execution does not forward stdin.
 
 The catalog contains policy, not credentials or live state. Scheduler connection
 material is private and uses standard Dask TLS and scheduler files. Keep the
@@ -171,3 +186,7 @@ are not guaranteed. A lost client does not prove its subprocesses stopped.
 Unreported partial outputs are retained after interruption rather than restored
 while a task may still write them. End the allocation and establish that work has
 stopped before inspecting or repairing that project's outputs.
+For local containerized execution, `down` and walltime expiry stop the managed
+process group but do not guarantee termination of containers managed by an
+external runtime. A Podman container that ignores SIGTERM can survive. Inspect
+and stop such containers through the container runtime before cleaning results.

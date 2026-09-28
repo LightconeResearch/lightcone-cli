@@ -14,7 +14,7 @@ driver's stderr, independently of success or failure, leaving stdout for the rep
 
 | Symbol | Role |
 |---|---|
-| `materialize(root, targets, *, cluster_id, refresh)` | The run: guards → converge → plan → fetch → schedule → save/restore loop → crate converge. |
+| `materialize(root, targets, *, cluster_id, refresh)` | Project checks → graph → cluster connection → fetch/converge → schedule → save/restore → crate converge. |
 | `check(root, targets, *, refresh)` | The same classification without executing, committing, or fetching. Exempt from the dirty refusal. |
 | `status(root)` | The report: every output's state and provenance commit, plus the mode/image/sandbox header facts. |
 | `MaterializeReport` / `StatusReport` | The JSON surfaces; `ok` and `up_to_date` first. |
@@ -24,9 +24,11 @@ driver's stderr, independently of success or failure, leaving stdout for the rep
 
 ## The run's order, and why
 
-1. **Explicit cluster first** — validate native allocation identity and connect
-   to its scheduler before preparing the project.
-2. **Dirty refusal before the environment converge** — in
+1. **Read-only project checks before connecting** — tool, committer, dirty-tree,
+   spec and lock errors do not require a reachable cluster to report.
+2. **Explicit cluster before preparing the environment** — validate native
+   allocation identity and connect before fetching inputs or building an image.
+   The dirty refusal has already run: in
    containerized mode the converge can commit an image archive, and
    `dataset.save` commits the whole index; on a dirty tree the user's
    staged edits would be swept in.
@@ -36,10 +38,12 @@ driver's stderr, independently of success or failure, leaving stdout for the rep
    is made impossible rather than detected).
 4. **Graph (validation, lock scan) before the image** — a refusal
    over a typo must not cost a minutes-long build.
-5. **HEAD, runtime, and foreign-write facts read once, handed down**
+5. **HEAD, runtime, input hashes and foreign-write facts read once, handed down**
    — the driver commits as results arrive, so any per-task read could
    answer differently mid-run. Nondeterminism in a provenance field is
-   worse than either answer.
+   worse than either answer. The populated input-hash memo travels with each
+   task; independent worker processes do not rehash shared inputs. Unreadable
+   inputs still fail only the tasks that need them.
 6. **Save on `ok`, restore reported failures** — unreported outputs are retained
    after interruption because their tasks may still be writing. Allocation
    management does not provide concurrent-writer or cancellation guarantees.

@@ -42,7 +42,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGALRM, expire)
-    remaining = float(launch["deadline"]) - time.time()
+    remaining = float(launch["deadline"]) - time.monotonic()
     signal.setitimer(signal.ITIMER_REAL, max(0.001, remaining))
     try:
         while not launch["identity"]:
