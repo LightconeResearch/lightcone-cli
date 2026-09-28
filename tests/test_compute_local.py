@@ -15,6 +15,7 @@ import urllib.request
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import psutil
@@ -421,9 +422,13 @@ def test_failed_spawn_and_unpublished_launch_do_not_hide_healthy_allocations(
     try:
         _ready(provider, identity)
         before = set(provider.root.iterdir())
+        popen = subprocess.Popen
         with monkeypatch.context() as patch:
-            def fail(*args: object, **kwargs: object) -> None:
-                raise OSError("configured interpreter cannot execute")
+            def fail(argv: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+                if "lightcone.engine.compute.local_runtime" in argv:
+                    raise OSError("configured interpreter cannot execute")
+                # macOS also uses Popen for its native boot-identity query.
+                return popen(argv, **kwargs)
 
             patch.setattr("lightcone.engine.compute.local.subprocess.Popen", fail)
             with pytest.raises(ComputeError, match="cannot execute"):
