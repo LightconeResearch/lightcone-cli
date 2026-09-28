@@ -6,7 +6,6 @@ import math
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -104,10 +103,10 @@ class Compute:
                     "resources": offer.resources.as_dict(),
                     "max_nodes": offer.max_nodes,
                     "time": {
-                        "default_seconds": offer.default_seconds,
-                        "max_seconds": offer.max_seconds,
+                        "default_seconds": offer.time.default_seconds,
+                        "max_seconds": offer.time.max_seconds,
                     },
-                    "startup": offer.startup,
+                    "startup": offer.startup.class_,
                 }
                 for offer in self.catalog.offers
             ],
@@ -121,9 +120,9 @@ class Compute:
         for offer in self.catalog.offers:
             if request.num_nodes > offer.max_nodes:
                 continue
-            if request.startup is not None and request.startup != offer.startup:
+            if request.startup is not None and request.startup != offer.startup.class_:
                 continue
-            if request.seconds is not None and request.seconds > offer.max_seconds:
+            if request.seconds is not None and request.seconds > offer.time.max_seconds:
                 continue
             if (
                 offer.resources.cpus < request.cpus
@@ -132,16 +131,15 @@ class Compute:
             ):
                 continue
             if (
-                offer.resources.memory < request.memory
+                offer.resources.memory_bytes < request.memory_bytes
                 if request.min_memory
-                else offer.resources.memory != request.memory
+                else offer.resources.memory_bytes != request.memory_bytes
             ):
                 continue
             try:
-                return replace(
-                    self.provider(self.catalog.connections[offer.connection]).plan(offer, request),
-                    name=name,
-                )
+                provider = self.provider(self.catalog.connections[offer.connection])
+                plan = provider.plan(offer, request)
+                return plan.replace(name=name)
             except UnavailableOfferError as exc:
                 unavailable.append(f"{offer.name}: {exc}")
         raise ComputeError(
@@ -170,17 +168,17 @@ class Compute:
                 raise ComputeError("could not generate an unused cluster name; no allocation made")
         elif name in names:
             raise ComputeError(f"cluster name {name!r} is already in use; choose another name")
-        return self.provider(plan.connection).launch(replace(plan, name=name))
+        return self.provider(plan.connection).launch(plan.replace(name=name))
 
     def discover(self) -> tuple[list[Snapshot], dict[str, str]]:
         """Query each native authority once, retaining partial discovery failures."""
         snapshots: list[Snapshot] = []
         errors: dict[str, str] = {}
-        for connection in self.catalog.connections.values():
+        for name, connection in self.catalog.connections.items():
             try:
                 snapshots.extend(self.provider(connection).discover())
             except ComputeError as exc:
-                errors[connection.name] = str(exc)
+                errors[name] = str(exc)
         return snapshots, errors
 
     def status(self, cluster_id: str, *, wait: bool = False, timeout: float = 300) -> Snapshot:

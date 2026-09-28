@@ -197,7 +197,7 @@ def status(
                 if snapshot.resources:
                     click.echo(
                         f"{snapshot.num_nodes} node(s), {snapshot.resources.cpus} CPUs and "
-                        f"{snapshot.resources.memory / 1024**3:g} GiB per node "
+                        f"{snapshot.resources.memory_gib:g} GiB per node "
                         f"({snapshot.evidence})"
                     )
                 if snapshot.reason:

@@ -24,13 +24,27 @@ Missing paths selected through an argument or `LC_COMPUTE_CONFIG`, unreadable
 files, and invalid catalogs remain errors. Stable connection namespaces let
 separate invocations discover and attach to the same local allocations.
 
-`catalog.py` validates YAML with strict Pydantic input models for connections,
-offers, resources, and time limits. Unknown common fields are rejected; errors
-identify field paths such as `offers.0.resources.cpus` without echoing input values.
-The YAML loader also rejects duplicate and non-string mapping keys before model
-validation. Shared quantity parsers normalize memory to bytes and durations to
-seconds. Validated input becomes the plain runtime dataclasses in `model.py`;
-provider-specific `launch` and `config` mappings remain the provider's responsibility.
+`model.py` defines the shared Pydantic models: `Connection`, `Offer`, `Resources`,
+`TimeLimits`, `Startup`, `Request`, `Identity`, `LaunchPlan`, and `Snapshot`.
+`Catalog` validates YAML directly into these objects, which providers also use.
+Unknown common fields are rejected; schema errors identify paths such as
+`offers.0.resources.cpus` without echoing input values. The YAML loader rejects
+duplicate and non-string mapping keys before model validation. Provider-specific
+`launch` and `config` mappings remain the provider's responsibility.
+
+Units are explicit. `Resources.memory_gib` stores exact decimal GiB (the YAML key
+is `memory`), and `memory_bytes` derives an exact integer. Native observations use
+`Resources.from_bytes(...)`; requests store `Request.memory_bytes`. `TimeLimits`
+keeps the configured `default` and `max` duration strings and exposes
+`default_seconds` and `max_seconds`. `Startup.class_` corresponds to YAML `class`.
+Connection names exist only as catalog mapping keys, referenced by `Offer.connection`.
+
+Model constructors take keyword arguments. `replace(...)` validates updates;
+`model_dump()` and `model_validate()` support internal roundtrips without changing
+units. Keep the explicit `as_dict()` methods for public CLI output so internal
+configuration does not leak. Value models are frozen; `Snapshot` permits validated
+updates as native and scheduler observations arrive. Nested settings dictionaries
+and catalog collections are not deeply immutable.
 
 `local.py` and `slurm.py` implement the provider protocol. Adding an adapter means
 adding one provider factory and its native mapping; `run` and `materialize` only

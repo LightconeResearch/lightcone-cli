@@ -1712,11 +1712,14 @@ default and two-hour maximum lifetime. It writes no catalog and starts no cluste
 Configured catalogs replace it completely; missing explicit paths and invalid
 files are errors. Execution still requires an explicitly launched cluster's name or ID.
 
-**Catalog validation stays at the input boundary.** Strict Pydantic models own
-the common YAML schema, field errors, and cross-field constraints. Keep runtime
-dataclasses and provider contracts independent of those input models. Preserve
-duplicate-key rejection in the YAML loader and reuse the shared quantity parsers;
-providers validate their own `launch` and `config` mappings.
+**Compute uses one shared Pydantic model family.** `Catalog` loads directly into
+the `Connection`, `Offer`, `Resources`, `TimeLimits`, and `Startup` objects used by
+providers; do not introduce parallel configuration classes. Memory units are explicit:
+`Resources.memory_gib` / `memory_bytes`, `Resources.from_bytes(...)`, and
+`Request.memory_bytes`. Duration strings expose derived seconds through `TimeLimits`.
+Connection names live only in the catalog's mapping keys. Use validated `replace`
+for updates and the explicit `as_dict` allowlists for public output. Preserve
+duplicate-key rejection in YAML; providers validate their own `launch` and `config`.
 
 **Configured compute roots may be filesystem aliases.** Resolve connection and
 scratch roots before appending managed namespace, submission, or attempt paths.

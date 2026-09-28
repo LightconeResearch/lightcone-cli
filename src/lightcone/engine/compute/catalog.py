@@ -3,31 +3,23 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self
-from uuid import UUID
+from typing import Annotated, Any, Self
 
 import yaml
-from pydantic import (
-    AfterValidator,
-    BaseModel,
-    BeforeValidator,
-    ConfigDict,
-    Field,
-    ValidationError,
-    model_validator,
-)
+from pydantic import Field, ValidationError, model_validator
 
 from .model import (
-    GIB,
     ComputeError,
+    ComputeModel,
     Connection,
+    Name,
     Offer,
     Resources,
-    duration,
-    memory_bytes,
-    positive_int,
+    Startup,
+    TimeLimits,
+    validation_message,
 )
 
 # Native boot/session evidence identifies the host, independently of its hostname.
@@ -51,97 +43,12 @@ def _unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict[str
 _UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
 
 
-def _name(value: str) -> str:
-    if not value.strip():
-        raise ValueError("must be a nonempty string")
-    return value
+class Catalog(ComputeModel):
+    """Configuration for new requests, never a registry of live clusters."""
 
-
-def _namespace(value: str) -> str:
-    try:
-        if str(UUID(value)) == value:
-            return value
-    except ValueError:
-        pass
-    raise ValueError("must be a canonical UUID")
-
-
-def _count(value: object) -> int:
-    try:
-        return positive_int(value, "count")
-    except ComputeError as exc:
-        raise ValueError(str(exc)) from exc
-
-
-def _memory(value: object) -> int:
-    try:
-        return memory_bytes(value)
-    except ComputeError as exc:
-        raise ValueError(str(exc)) from exc
-
-
-def _seconds(value: object) -> int:
-    try:
-        return duration(value)
-    except ComputeError as exc:
-        raise ValueError(str(exc)) from exc
-
-
-_Text = Annotated[str, Field(pattern=r"^[^\x00-\x1f]*$")]
-_Name = Annotated[_Text, AfterValidator(_name)]
-_Namespace = Annotated[str, AfterValidator(_namespace)]
-_Count = Annotated[int, BeforeValidator(_count, json_schema_input_type=int | str)]
-_Memory = Annotated[int, BeforeValidator(_memory, json_schema_input_type=int | float | str)]
-_Seconds = Annotated[int, BeforeValidator(_seconds, json_schema_input_type=str)]
-_StartupClass = Literal["fast", "batch", "unknown"]
-
-
-class _Config(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-
-class _ConnectionConfig(_Config):
-    namespace: _Namespace
-    provider: _Name
-    context: _Text = ""
-    launch: dict[str, Any] = Field(default_factory=dict)
-
-
-class _ResourcesConfig(_Config):
-    cpus: _Count
-    memory: _Memory
-
-
-class _TimeConfig(_Config):
-    default: _Seconds
-    max: _Seconds
-
-    @model_validator(mode="after")
-    def ordered_limits(self) -> Self:
-        if self.default > self.max:
-            raise ValueError("default time exceeds its maximum")
-        return self
-
-
-class _StartupConfig(_Config):
-    class_: _StartupClass = Field(alias="class")
-    source: Any = None
-
-
-class _OfferConfig(_Config):
-    name: _Name
-    connection: _Name
-    resources: _ResourcesConfig
-    max_nodes: _Count
-    time: _TimeConfig
-    startup: _StartupClass | _StartupConfig = "unknown"
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class _CatalogConfig(_Config):
     version: Annotated[int, Field(ge=1, le=1)]
-    connections: dict[_Name, _ConnectionConfig]
-    offers: list[_OfferConfig]
+    connections: dict[Name, Connection]
+    offers: list[Offer]
 
     @model_validator(mode="after")
     def relationships(self) -> Self:
@@ -164,14 +71,6 @@ class _CatalogConfig(_Config):
                 )
         return self
 
-
-@dataclass(frozen=True)
-class Catalog:
-    """Configuration for new requests, never a registry of live clusters."""
-
-    connections: dict[str, Connection]
-    offers: tuple[Offer, ...]
-
     @classmethod
     def load(cls, path: Path | None = None) -> Catalog:
         """Load configured offers, or a small local offer if the default file is absent.
@@ -190,40 +89,23 @@ class Catalog:
             if configured or path.is_symlink():
                 raise ComputeError(f"cannot read compute catalog {path}: {exc}") from exc
             return cls(
-                connections={"local": Connection("local", _LOCAL_NAMESPACE, "local")},
-                offers=(Offer("local", "local", Resources(1, GIB), 1, 1800, 7200, "fast"),),
+                version=1,
+                connections={"local": Connection(namespace=_LOCAL_NAMESPACE, provider="local")},
+                offers=[Offer(
+                    name="local", connection="local",
+                    resources=Resources(cpus=1, memory_gib=Decimal(1)),
+                    max_nodes=1, time=TimeLimits(default="30m", max="2h"),
+                    startup=Startup(class_="fast"),
+                )],
             )
         except (OSError, UnicodeError, yaml.YAMLError) as exc:
             raise ComputeError(f"cannot read compute catalog {path}: {exc}") from exc
         try:
-            config = _CatalogConfig.model_validate(raw)
+            return cls.model_validate(raw)
         except ValidationError as exc:
-            details = "\n".join(
-                f"{'.'.join(map(str, error['loc'])) or 'catalog'}: {error['msg']}"
-                for error in exc.errors(
-                    include_url=False, include_context=False, include_input=False
-                )
-            )
-            raise ComputeError(f"invalid compute catalog {path}:\n{details}") from exc
-        return cls(
-            connections={
-                name: Connection(name, item.namespace, item.provider, item.context, item.launch)
-                for name, item in config.connections.items()
-            },
-            offers=tuple(
-                Offer(
-                    item.name,
-                    item.connection,
-                    Resources(item.resources.cpus, item.resources.memory),
-                    item.max_nodes,
-                    item.time.default,
-                    item.time.max,
-                    item.startup if isinstance(item.startup, str) else item.startup.class_,
-                    item.config,
-                )
-                for item in config.offers
-            ),
-        )
+            raise ComputeError(
+                f"invalid compute catalog {path}:\n{validation_message(exc)}"
+            ) from exc
 
     def connection_for(self, namespace: str) -> Connection:
         """Find the configured authority without relying on current offers."""

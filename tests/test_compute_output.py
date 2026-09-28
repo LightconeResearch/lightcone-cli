@@ -45,7 +45,7 @@ def detached_cluster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     }))
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
     compute = Compute()
-    identity = compute.launch(compute.plan(Request(1, GIB))).encode()
+    identity = compute.launch(compute.plan(Request(cpus=1, memory_bytes=GIB))).encode()
     try:
         assert compute.status(identity, wait=True, timeout=30).ready
         yield identity

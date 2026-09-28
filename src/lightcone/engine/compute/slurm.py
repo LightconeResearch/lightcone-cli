@@ -174,7 +174,7 @@ class SlurmProvider:
         submit = config.get("submit", "sbatch")
         if submit not in {"sbatch", "salloc"}:
             raise ComputeError("Slurm submit must be sbatch or salloc")
-        cpus, memory = offer.resources.cpus, offer.resources.memory
+        cpus, memory = offer.resources.cpus, offer.resources.memory_bytes
         if memory % _MIB:
             raise ComputeError("Slurm offer memory must be an exact whole number of MiB")
         slots = positive_int(
@@ -190,7 +190,7 @@ class SlurmProvider:
         interface = launch.get("interface")
         if interface is not None:
             interface = _value(interface, "interface")
-        seconds = request.seconds or offer.default_seconds
+        seconds = request.seconds or offer.time.default_seconds
         hours, remainder = divmod(seconds, 3600)
         minutes, seconds_part = divmod(remainder, 60)
         args = self._scope()
@@ -211,11 +211,11 @@ class SlurmProvider:
             f"--chdir={paths['cwd']}",
         ]
         return LaunchPlan(
-            self.connection,
-            offer,
-            request,
-            seconds,
-            {
+            connection=self.connection,
+            offer=offer,
+            request=request,
+            seconds=seconds,
+            details={
                 "submit": submit,
                 "native_args": args,
                 **paths,
@@ -251,7 +251,7 @@ class SlurmProvider:
             "--cpus",
             str(plan.resources.cpus),
             "--memory-bytes",
-            str(plan.resources.memory),
+            str(plan.resources.memory_bytes),
             "--task-slots",
             str(details["task_slots_per_node"]),
         ]
@@ -286,7 +286,10 @@ class SlurmProvider:
                 if match and (
                     not self.connection.context or match[2] in (None, self.connection.context)
                 ):
-                    return Identity(self.connection.namespace, match[1], token, name=name)
+                    return Identity(
+                        namespace=self.connection.namespace, native_id=match[1], token=token,
+                        name=name,
+                    )
                 reason = "sbatch did not return an unambiguous allocation ID"
             except ComputeError as exc:
                 reason = str(exc)
@@ -407,7 +410,10 @@ class SlurmProvider:
         rows = self._live()
         job_name = f"{_PREFIX}{name}"
         matches = {
-            Identity(self.connection.namespace, row["JobId"], token, name=name)
+            Identity(
+                namespace=self.connection.namespace, native_id=row["JobId"], token=token,
+                name=name,
+            )
             for row in rows
             if row["JobName"] == job_name and row["UID"] == str(self._uid)
             and row["Comment"] == _COMMENT_PREFIX + token
@@ -416,7 +422,10 @@ class SlurmProvider:
             return list(matches)
         return list(
             {
-                Identity(self.connection.namespace, row["JobId"], token, name=name)
+                Identity(
+                    namespace=self.connection.namespace, native_id=row["JobId"], token=token,
+                    name=name,
+                )
                 for row in self._history(job_name=job_name)
                 if row["JobName"] == job_name and row["UID"] == str(self._uid)
                 and row["Comment"] == _COMMENT_PREFIX + token
@@ -473,14 +482,16 @@ class SlurmProvider:
         cpus = row.get("CPUs/Task", "")
         memory = re.fullmatch(r"([0-9]+)([KMGT]?)", row.get("MinMemoryNode", ""))
         resources = None
-        if cpus.isdigit() and int(cpus) > 0 and memory:
+        if cpus.isdigit() and int(cpus) > 0 and memory and int(memory[1]) > 0:
             scale = {"": _MIB, "K": 1024, "M": _MIB, "G": 1024**3, "T": 1024**4}
-            resources = Resources(int(cpus), int(memory[1]) * scale[memory[2]])
+            resources = Resources.from_bytes(
+                cpus=int(cpus), memory_bytes=int(memory[1]) * scale[memory[2]]
+            )
         return Snapshot(
-            identity,
-            _phase(state),
-            resources,
-            nodes,
+            identity=identity,
+            phase=_phase(state),
+            resources=resources,
+            num_nodes=nodes,
             evidence="requested" if resources else "unknown",
             native_state=state,
             reason=row.get("Reason", "").replace("None", ""),
@@ -499,7 +510,8 @@ class SlurmProvider:
                     "submission token in Comment; its allocation identity is unknown"
                 )
             identity = Identity(
-                self.connection.namespace, row["JobId"], token, name=name
+                namespace=self.connection.namespace, native_id=row["JobId"], token=token,
+                name=name,
             )
             self._validate_row(identity, row)
             snapshots.append(self.inspect(identity))
@@ -530,8 +542,8 @@ class SlurmProvider:
                 snapshot.reason = "allocation is absent from squeue but accounting is not terminal"
             return snapshot
         return Snapshot(
-            identity,
-            "unknown",
+            identity=identity,
+            phase="unknown",
             reason=(
                 "allocation is absent from live jobs and its submission token "
                 "cannot be verified in accounting"

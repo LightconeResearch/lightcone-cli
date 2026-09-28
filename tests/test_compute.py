@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from decimal import Decimal, localcontext
 from pathlib import Path
 from unittest.mock import MagicMock
 from uuid import UUID
@@ -11,6 +11,7 @@ from uuid import UUID
 import pytest
 import yaml
 from click.testing import CliRunner
+from pydantic import BaseModel, ValidationError
 
 from lightcone.cli.commands import main
 from lightcone.engine import compute
@@ -18,17 +19,22 @@ from lightcone.engine.compute.catalog import Catalog
 from lightcone.engine.compute.model import (
     GIB,
     ComputeError,
+    Connection,
     Identity,
     LaunchPlan,
+    Offer,
     Request,
+    Resources,
     Snapshot,
+    Startup,
+    TimeLimits,
     UnavailableOfferError,
     memory_bytes,
     validate_name,
 )
 
 NAMESPACE = "5a9d058c-7c6e-4e2a-919b-786f1148536c"
-IDENTITY = Identity(NAMESPACE, "1234", "abc")
+IDENTITY = Identity(namespace=NAMESPACE, native_id="1234", token="abc")
 
 
 @pytest.fixture
@@ -80,14 +86,14 @@ def catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def provider(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     adapter = MagicMock()
     adapter.plan.side_effect = lambda offer, request: LaunchPlan(
-        compute.Compute().catalog.connections["test"],
-        offer,
-        request,
-        request.seconds or offer.default_seconds,
+        connection=compute.Compute().catalog.connections["test"],
+        offer=offer,
+        request=request,
+        seconds=request.seconds or offer.time.default_seconds,
     )
     adapter.launch.return_value = IDENTITY
-    adapter.inspect.return_value = Snapshot(IDENTITY, "active", num_nodes=1)
-    adapter.discover.return_value = [Snapshot(IDENTITY, "pending")]
+    adapter.inspect.return_value = Snapshot(identity=IDENTITY, phase="active", num_nodes=1)
+    adapter.discover.return_value = [Snapshot(identity=IDENTITY, phase="pending")]
     client = MagicMock()
     client.scheduler_info.return_value = {"workers": {"one": {}}}
     adapter.connect.return_value.__enter__.return_value = client
@@ -102,13 +108,23 @@ def test_identity_is_self_contained_and_canonical() -> None:
             Identity.decode(value)
 
 
+def test_only_immutable_cluster_identities_are_hashable() -> None:
+    decoded = Identity.decode(IDENTITY.encode())
+    assert {IDENTITY, decoded} == {IDENTITY}
+    snapshot = Snapshot(identity=IDENTITY, phase="pending")
+    with pytest.raises(TypeError, match="unhashable"):
+        hash(snapshot)
+    snapshot.phase = "active"
+    assert snapshot.phase == "active"
+
+
 @pytest.mark.parametrize("name", ["analysis", "a", "run-2", "lc-7f3a92c810bd", "a" * 63])
 def test_cluster_names_and_named_identities(name: str) -> None:
     validate_name(name)
     compute.validate_id(name)
-    identity = replace(IDENTITY, name=name)
+    identity = IDENTITY.replace(name=name)
     assert Identity.decode(identity.encode()) == identity
-    assert Snapshot(identity, "pending").as_dict()["name"] == name
+    assert Snapshot(identity=identity, phase="pending").as_dict()["name"] == name
 
 
 @pytest.mark.parametrize("name", ["", "A", "2a", "-a", "a-", "a_b", "a.b", "a b", "a\n",
@@ -126,7 +142,7 @@ def test_invalid_cluster_names_are_rejected_before_planning(
 def test_launch_refuses_names_in_use_without_submitting(
     catalog: Path, provider: MagicMock, phase: str,
 ) -> None:
-    provider.discover.return_value = [Snapshot(IDENTITY, phase)]
+    provider.discover.return_value = [Snapshot(identity=IDENTITY, phase=phase)]
     service = compute.Compute()
     plan = service.plan(Request.parse("4", "8"), name=IDENTITY.name)
     with pytest.raises(ComputeError, match="already in use"):
@@ -140,7 +156,7 @@ def test_generated_name_collision_retries_only_the_name(
     values = [UUID("12345678-1234-4234-8234-123456789abc"),
               UUID("87654321-4321-4321-8321-123456789abc")]
     provider.discover.return_value = [
-        Snapshot(replace(IDENTITY, name=f"lc-{values[0].hex[:12]}"), "pending")
+        Snapshot(identity=IDENTITY.replace(name=f"lc-{values[0].hex[:12]}"), phase="pending")
     ]
     generator = MagicMock(side_effect=values)
     monkeypatch.setattr(compute, "uuid4", generator)
@@ -185,7 +201,7 @@ def test_named_cluster_errors_retain_the_immutable_id(
     assert error.value.cluster_id == IDENTITY.encode()
 
 
-@pytest.mark.parametrize("observations", [[], [Snapshot(IDENTITY, "ended")]])
+@pytest.mark.parametrize("observations", [[], [Snapshot(identity=IDENTITY, phase="ended")]])
 def test_missing_and_ended_names_do_not_select_an_allocation(
     catalog: Path, provider: MagicMock, observations: list[Snapshot],
 ) -> None:
@@ -198,8 +214,10 @@ def test_missing_and_ended_names_do_not_select_an_allocation(
 def test_name_races_are_ambiguous_but_full_ids_still_work(
     catalog: Path, provider: MagicMock,
 ) -> None:
-    other = replace(IDENTITY, native_id="5678", token="different")
-    provider.discover.return_value = [Snapshot(IDENTITY, "active"), Snapshot(other, "pending")]
+    other = IDENTITY.replace(native_id="5678", token="different")
+    provider.discover.return_value = [
+        Snapshot(identity=IDENTITY, phase="active"), Snapshot(identity=other, phase="pending"),
+    ]
     service = compute.Compute()
     with pytest.raises(ComputeError, match="ambiguous") as error:
         service.down(IDENTITY.name)
@@ -214,7 +232,7 @@ def test_incomplete_discovery_cannot_establish_names_but_full_ids_still_work(
     catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(compute.Compute, "discover", lambda self: (
-        [Snapshot(IDENTITY, "active")], {"other": "native service unavailable"}
+        [Snapshot(identity=IDENTITY, phase="active")], {"other": "native service unavailable"}
     ))
     service = compute.Compute()
     with pytest.raises(ComputeError, match="incomplete"):
@@ -243,8 +261,10 @@ def test_missing_default_catalog_exposes_stable_local_resources_without_writing_
     assert len(first.offers) == 1
     offer = first.offers[0]
     assert (offer.name, offer.connection) == ("local", "local")
-    assert (offer.resources.cpus, offer.resources.memory, offer.max_nodes) == (1, GIB, 1)
-    assert (offer.default_seconds, offer.max_seconds, offer.startup) == (1800, 7200, "fast")
+    assert (offer.resources.cpus, offer.resources.memory_bytes, offer.max_nodes) == (1, GIB, 1)
+    assert (offer.time.default_seconds, offer.time.max_seconds, offer.startup.class_) == (
+        1800, 7200, "fast",
+    )
     monkeypatch.setattr("dask.system.CPU_COUNT", 1)
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", GIB)
     runner = CliRunner()
@@ -281,10 +301,10 @@ def test_configured_catalogs_replace_the_builtin_and_obey_path_precedence(
     # An empty configured catalog explicitly exposes nothing; the builtin is
     # never merged into it, whether selected by default, environment, or option.
     default.write_text("version: 1\nconnections: {}\noffers: []\n")
-    assert Catalog.load().offers == ()
+    assert Catalog.load().offers == []
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
     assert Catalog.load() == configured
-    assert Catalog.load(default).offers == ()
+    assert Catalog.load(default).offers == []
     default.unlink()
     assert Catalog.load() == configured
 
@@ -328,14 +348,14 @@ def test_request_rejects_invalid_resources(cpus: str, memory: str) -> None:
 @pytest.mark.parametrize(
     "override",
     [
-        {"cpus": 0}, {"cpus": True}, {"memory": -1}, {"num_nodes": 0},
+        {"cpus": 0}, {"cpus": True}, {"memory_bytes": -1}, {"num_nodes": 0},
         {"num_nodes": 1.5}, {"seconds": 0}, {"seconds": float("inf")},
         {"min_cpus": "yes"}, {"startup": "batch"},
     ],
 )
 def test_programmatic_requests_validate_the_same_resource_contract(override: dict) -> None:
-    with pytest.raises(ComputeError):
-        Request(**{"cpus": 1, "memory": GIB, **override})
+    with pytest.raises(ValidationError):
+        Request(**{"cpus": 1, "memory_bytes": GIB, **override})
 
 
 def test_memory_conversion_does_not_round_fractional_bytes() -> None:
@@ -344,11 +364,80 @@ def test_memory_conversion_does_not_round_fractional_bytes() -> None:
         memory_bytes("0.000000000931322574615478515625000000000000000001")
 
 
+@pytest.mark.parametrize("size", [1, GIB // 2, 8 * GIB, 2**80 + 1])
+def test_resource_units_survive_construction_serialization_and_updates(size: int) -> None:
+    whole, fraction = divmod(size, GIB)
+    expected_gib = Decimal(f"{whole}.{fraction * 5**30:030d}")
+    resource = Resources.from_bytes(cpus=4, memory_bytes=size)
+    assert resource.memory_gib == expected_gib
+    assert Resources(cpus=4, memory_gib=expected_gib) == resource
+    assert Resources.model_validate({"cpus": 4, "memory": format(expected_gib, "f")}) == resource
+    for restored in (
+        Resources.model_validate(resource.model_dump()),
+        Resources.model_validate(resource.model_dump(by_alias=True)),
+        Resources.model_validate_json(resource.model_dump_json(by_alias=True)),
+        resource.replace(cpus=8),
+    ):
+        assert restored.memory_gib == expected_gib
+        assert restored.memory_bytes == size
+    assert Request(cpus=4, memory_bytes=size).memory_bytes == size
+
+
+@pytest.mark.parametrize("size", [1, 2**80 + 1])
+def test_request_quantities_roundtrip_under_low_decimal_precision(size: int) -> None:
+    request = Request(cpus=4, memory_bytes=size, min_cpus=True, min_memory=True)
+    with localcontext() as context:
+        context.prec = 4
+        quantities = request.as_dict()["resources"]
+        restored = Request.parse(quantities["cpus"], quantities["memory"])
+    assert quantities["cpus"] == "4+"
+    assert quantities["memory"].endswith("+")
+    assert restored == request
+
+
+def test_catalog_uses_the_public_models_and_roundtrips_without_an_adapter(catalog: Path) -> None:
+    loaded = Catalog.load(catalog)
+    offer = loaded.offers[0]
+    for instance, model in (
+        (loaded, Catalog),
+        (loaded.connections["test"], Connection),
+        (offer, Offer),
+        (offer.resources, Resources),
+        (offer.time, TimeLimits),
+        (offer.startup, Startup),
+    ):
+        assert isinstance(instance, BaseModel)
+        assert type(instance) is model
+    assert "name" not in loaded.connections["test"].model_dump()
+    dumped = loaded.model_dump(by_alias=True)
+    assert dumped["offers"][0]["resources"] == {"cpus": 4, "memory": Decimal(8)}
+    assert dumped["offers"][0]["time"] == {"default": "30m", "max": "2h"}
+    assert Catalog.model_validate(dumped) == loaded
+    assert Catalog.model_validate_json(loaded.model_dump_json(by_alias=True)) == loaded
+
+
+def test_model_updates_revalidate_fields_and_catalog_relationships(catalog: Path) -> None:
+    loaded = Catalog.load(catalog)
+    offer = loaded.offers[0]
+    updated = offer.replace(resources=offer.resources.replace(cpus=8))
+    assert updated.resources.cpus == 8
+    assert offer.resources.cpus == 4
+    assert updated.resources.memory_bytes == 8 * GIB
+    with pytest.raises(ValidationError):
+        offer.resources.replace(cpus=True)
+    with pytest.raises(ValidationError):
+        offer.time.replace(default="3h")
+    with pytest.raises(ValidationError):
+        loaded.replace(offers=[offer.replace(connection="missing")])
+    with pytest.raises(ValidationError):
+        Request(cpus=1, memory_bytes=GIB).replace(memory_bytes=0)
+
+
 def test_exact_minimum_selection_and_limits(catalog: Path, provider: MagicMock) -> None:
     service = compute.Compute()
     assert service.plan(Request.parse("4", "8")).offer.name == "quick"
     assert service.plan(Request.parse("4+", "8+", num_nodes=2)).offer.name == "large"
-    assert service.plan(Request.parse("5+", "9+")).resources.memory == 32 * GIB
+    assert service.plan(Request.parse("5+", "9+")).resources.memory_bytes == 32 * GIB
     for request in [
         Request.parse("4", "9"),
         Request.parse("16", "32", startup="fast"),
@@ -373,8 +462,8 @@ def test_selection_skips_known_ineligibility_but_stops_on_an_unknown_authority(
 ) -> None:
     service = compute.Compute()
     selected = LaunchPlan(
-        service.catalog.connections["test"], service.catalog.offers[1],
-        Request.parse("1+", "1+"), 1800,
+        connection=service.catalog.connections["test"], offer=service.catalog.offers[1],
+        request=Request.parse("1+", "1+"), seconds=1800,
     )
     provider.plan.side_effect = [UnavailableOfferError("login host"), selected]
     assert service.plan(Request.parse("1+", "1+")).offer.name == "large"
@@ -452,12 +541,14 @@ def test_borrowed_client_only_detaches(catalog: Path, provider: MagicMock) -> No
 
 
 @pytest.mark.parametrize("mutation", [
-    "namespace", "context", "offer", "limits", "reference", "unknown",
+    "version_missing", "namespace", "context", "offer", "limits", "reference", "unknown",
     "resources_extra", "time_extra", "startup_extra", "connection_extra",
 ])
 def test_invalid_catalog_is_rejected(catalog: Path, mutation: str) -> None:
     data = yaml.safe_load(catalog.read_text())
-    if mutation == "namespace":
+    if mutation == "version_missing":
+        data.pop("version")
+    elif mutation == "namespace":
         data["connections"]["other"] = {"namespace": NAMESPACE, "provider": "other"}
     elif mutation == "context":
         data["connections"]["other"] = {
@@ -527,9 +618,9 @@ def test_catalog_normalizes_units_and_startup_without_changing_offer_order(
     loaded = Catalog.load(catalog)
     assert [entry.name for entry in loaded.offers] == ["quick", "large"]
     first = loaded.offers[0]
-    assert (first.resources.cpus, first.resources.memory, first.max_nodes) == (4, 1, 2)
-    assert (first.default_seconds, first.max_seconds) == (1800, 7200)
-    assert first.startup == ("unknown" if startup is None else "fast")
+    assert (first.resources.cpus, first.resources.memory_bytes, first.max_nodes) == (4, 1, 2)
+    assert (first.time.default_seconds, first.time.max_seconds) == (1800, 7200)
+    assert first.startup.class_ == ("unknown" if startup is None else "fast")
 
 
 def test_catalog_keeps_provider_payloads_opaque(catalog: Path) -> None:
@@ -605,11 +696,20 @@ def test_cli_resources_dry_run_launch_down(catalog: Path, provider: MagicMock) -
     runner = CliRunner()
     result = runner.invoke(main, ["compute", "resources", "--json"])
     assert result.exit_code == 0, result.output
-    assert [item["name"] for item in json.loads(result.output)["offers"]] == ["quick", "large"]
+    resources = json.loads(result.output)
+    assert [item["name"] for item in resources["offers"]] == ["quick", "large"]
+    assert resources["offers"][0]["resources"] == {"cpus": 4, "memory": 8}
     args = ["compute", "launch", "--cpus", "4", "--memory", "8", "--json"]
     result = runner.invoke(main, [*args, "--dry-run"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["plan"]["offer"] == "quick"
+    plan = json.loads(result.output)["plan"]
+    assert plan["offer"] == "quick"
+    assert plan["connection"] == "test"
+    assert plan["resources"] == {"cpus": 4, "memory": 8}
+    assert plan["time_seconds"] == 1800
+    assert plan["startup"] == "fast"
+    assert "memory_gib" not in result.output
+    assert "class_" not in result.output
     provider.launch.assert_not_called()
     result = runner.invoke(main, args)
     assert json.loads(result.output)["id"] == IDENTITY.encode()
@@ -621,7 +721,7 @@ def test_cli_resources_dry_run_launch_down(catalog: Path, provider: MagicMock) -
 def test_cli_launch_name_output_can_be_captured_without_json(
     catalog: Path, provider: MagicMock,
 ) -> None:
-    identity = replace(IDENTITY, name="analysis")
+    identity = IDENTITY.replace(name="analysis")
     provider.launch.return_value = identity
     runner = CliRunner()
     args = ["compute", "launch", "--name", "analysis", "--cpus", "4", "--memory", "8"]
@@ -638,7 +738,7 @@ def test_cli_launch_name_output_can_be_captured_without_json(
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["name"] == "analysis"
     assert json.loads(result.stdout)["id"] == identity.encode()
-    provider.discover.return_value = [Snapshot(identity, "pending")]
+    provider.discover.return_value = [Snapshot(identity=identity, phase="pending")]
     result = runner.invoke(main, ["compute", "status"])
     assert result.exit_code == 0, result.output
     assert "analysis" in result.stdout

@@ -98,10 +98,10 @@ class LocalProvider:
         from dask.system import CPU_COUNT
         from distributed.system import MEMORY_LIMIT
 
-        if offer.resources.cpus > CPU_COUNT or offer.resources.memory > MEMORY_LIMIT:
+        if offer.resources.cpus > CPU_COUNT or offer.resources.memory_bytes > MEMORY_LIMIT:
             raise UnavailableOfferError("the local offer exceeds this host's CPU or RAM capacity")
-        seconds = request.seconds if request.seconds is not None else offer.default_seconds
-        if seconds <= 0 or seconds > offer.max_seconds:
+        seconds = request.seconds if request.seconds is not None else offer.time.default_seconds
+        if seconds <= 0 or seconds > offer.time.max_seconds:
             raise ComputeError("local allocations require a finite time within the offer's limit")
         python = Path(self.connection.launch.get("python", sys.executable)).expanduser()
         scratch = configured_directory(
@@ -110,11 +110,11 @@ class LocalProvider:
         if not python.is_absolute() or not python.is_file() or not os.access(python, os.X_OK):
             raise ComputeError("the configured local Python must be an executable absolute path")
         return LaunchPlan(
-            self.connection,
-            offer,
-            request,
-            seconds,
-            {
+            connection=self.connection,
+            offer=offer,
+            request=request,
+            seconds=seconds,
+            details={
                 "python": str(python),
                 "connection_root": str(self.root),
                 "scratch_root": str(scratch),
@@ -158,7 +158,8 @@ class LocalProvider:
                 close_fds=True,
             )
             identity = Identity(
-                self.connection.namespace, str(process.pid), token, socket.gethostname(),
+                namespace=self.connection.namespace, native_id=str(process.pid), token=token,
+                host=socket.gethostname(),
                 name=plan.name or "",
             )
             record = {
@@ -168,7 +169,7 @@ class LocalProvider:
                 "boot": boot,
                 "host": identity.host,
                 "cpus": plan.resources.cpus,
-                "memory": plan.resources.memory,
+                "memory": plan.resources.memory_bytes,
             }
             write_private_json(directory / "identity.json", record)
             # The child waits for this file before publishing its TLS connection.
@@ -319,9 +320,11 @@ class LocalProvider:
         if process is None and (directory / "error.json").exists():
             reason = str(read_private_json(directory / "error.json").get("error", ""))
         return Snapshot(
-            identity,
-            "active" if process is not None else "ended",
-            resources=Resources(int(record["cpus"]), int(record["memory"])),
+            identity=identity,
+            phase="active" if process is not None else "ended",
+            resources=Resources.from_bytes(
+                cpus=int(record["cpus"]), memory_bytes=int(record["memory"]),
+            ),
             num_nodes=1,
             evidence="configured",
             reason=reason,

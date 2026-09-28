@@ -9,7 +9,6 @@ import shlex
 import subprocess
 import sys
 import time
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -27,6 +26,7 @@ from lightcone.engine.compute.model import (
     Offer,
     Request,
     Resources,
+    TimeLimits,
 )
 from lightcone.engine.compute.runtime import (
     open_client,
@@ -37,7 +37,7 @@ from lightcone.engine.compute.runtime import (
 
 NAMESPACE = "9d0c0fc5-9be8-407a-a3ec-f17c4110b162"
 TOKEN = "c82a7b8d0ccf40a4be0e57e784edb989"
-IDENTITY = Identity(NAMESPACE, "123", TOKEN)
+IDENTITY = Identity(namespace=NAMESPACE, native_id="123", token=TOKEN)
 NAME = f"lc-v1-{IDENTITY.name}"
 COMMENT = f"lightcone:v1:kind=dask:token={TOKEN}"
 
@@ -47,11 +47,10 @@ def provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> slurm.SlurmProv
     _native(monkeypatch, {})
     return slurm.SlurmProvider(
         Connection(
-            "nersc",
-            NAMESPACE,
-            "slurm",
-            "perlmutter",
-            {
+            namespace=NAMESPACE,
+            provider="slurm",
+            context="perlmutter",
+            launch={
                 "python": sys.executable,
                 "connection_root": str(tmp_path / "private"),
                 "scratch_root": str(tmp_path / "scratch"),
@@ -65,12 +64,11 @@ def provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> slurm.SlurmProv
 @pytest.fixture
 def offer() -> Offer:
     return Offer(
-        "batch",
-        "nersc",
-        Resources(256, 480 * 1024**3),
-        4,
-        3600,
-        14400,
+        name="batch",
+        connection="nersc",
+        resources=Resources(cpus=256, memory_gib=480),
+        max_nodes=4,
+        time=TimeLimits(default="1h", max="4h"),
         config={
             "submit": "sbatch",
             "account": "myproject",
@@ -159,7 +157,7 @@ def test_plan_preserves_native_envelope_without_native_queries(
 ) -> None:
     calls = _native(monkeypatch, {})
     plan = provider.plan(offer, Request.parse("32+", "120+", num_nodes=2))
-    assert plan.resources == Resources(256, 515396075520)
+    assert plan.resources == Resources.from_bytes(cpus=256, memory_bytes=515396075520)
     assert plan.details["task_slots_per_node"] == 126
     assert "--mem=491520M" in plan.details["native_args"]
     assert "--cpus-per-task=256" in plan.details["native_args"]
@@ -181,8 +179,7 @@ def test_plan_resolves_configured_roots_but_preserves_virtualenv_python(
     python = alias / "venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
     python.symlink_to(sys.executable)
-    connection = replace(
-        provider.connection,
+    connection = provider.connection.replace(
         launch={
             **provider.connection.launch,
             "python": str(python),
@@ -210,12 +207,15 @@ def test_plan_rejects_unowned_native_options(
     provider: slurm.SlurmProvider, offer: Offer, config: dict[str, Any]
 ) -> None:
     with pytest.raises(ComputeError):
-        provider.plan(replace(offer, config=config), Request.parse("256", "480"))
+        provider.plan(offer.replace(config=config), Request.parse("256", "480"))
 
 
 def test_plan_refuses_hidden_memory_rounding(provider: slurm.SlurmProvider, offer: Offer) -> None:
     with pytest.raises(ComputeError, match="whole number of MiB"):
-        provider.plan(replace(offer, resources=Resources(256, 100001)), Request(256, 100001))
+        provider.plan(
+            offer.replace(resources=Resources.from_bytes(cpus=256, memory_bytes=100001)),
+            Request(cpus=256, memory_bytes=100001),
+        )
 
 
 @pytest.mark.parametrize("submit", ["sbatch", "salloc"])
@@ -227,7 +227,7 @@ def test_plan_includes_only_an_explicit_partition_and_requested_walltime(
 ) -> None:
     calls = _native(monkeypatch, {})
     plan = provider.plan(
-        replace(offer, config={**offer.config, "partition": "short", "submit": submit}),
+        offer.replace(config={**offer.config, "partition": "short", "submit": submit}),
         Request.parse("256", "480", time="30m"),
     )
     assert "--partition=short" in plan.details["native_args"]
@@ -239,7 +239,7 @@ def test_plan_includes_only_an_explicit_partition_and_requested_walltime(
 def test_plan_refuses_multiple_partitions(provider: slurm.SlurmProvider, offer: Offer) -> None:
     with pytest.raises(ComputeError, match="one native partition"):
         provider.plan(
-            replace(offer, config={**offer.config, "partition": "short,long"}),
+            offer.replace(config={**offer.config, "partition": "short,long"}),
             Request.parse("256", "480"),
         )
 
@@ -296,7 +296,7 @@ def test_sbatch_argv_does_not_interpret_shell_metacharacters(
 ) -> None:
     calls = _native(monkeypatch, {"sbatch": "123\n"})
     config = {**offer.config, "account": "project;$(touch /tmp/not-executed)"}
-    provider.launch(provider.plan(replace(offer, config=config), Request.parse("256", "480")))
+    provider.launch(provider.plan(offer.replace(config=config), Request.parse("256", "480")))
     argv, kwargs = next(call for call in calls if call[0][0] == "sbatch")
     assert "--account=project;$(touch /tmp/not-executed)" in argv
     assert "shell" not in kwargs
@@ -359,7 +359,7 @@ def test_salloc_runs_the_native_driver_detached_until_authoritative_acceptance(
     popen = MagicMock(return_value=MagicMock())
     monkeypatch.setattr(slurm.subprocess, "Popen", popen)
     _native(monkeypatch, {"squeue": _live(state="PENDING")})
-    interactive = replace(offer, config={**offer.config, "submit": "salloc", "qos": "interactive"})
+    interactive = offer.replace(config={**offer.config, "submit": "salloc", "qos": "interactive"})
     assert provider.launch(provider.plan(interactive, Request.parse("256", "480"))) == IDENTITY
     argv = popen.call_args.args[0]
     assert argv[0] == "salloc" and "srun" in argv
@@ -386,12 +386,12 @@ def test_named_launch_keeps_the_full_submission_token_in_native_metadata(
     popen = MagicMock(return_value=MagicMock())
     monkeypatch.setattr(slurm.subprocess, "Popen", popen)
     calls = _native(monkeypatch, {"sbatch": "123\n", "squeue": _live(name=name)})
-    selected = replace(offer, config={**offer.config, "submit": submit})
-    plan = replace(provider.plan(selected, Request.parse("256", "480")), name=name)
+    selected = offer.replace(config={**offer.config, "submit": submit})
+    plan = provider.plan(selected, Request.parse("256", "480")).replace(name=name)
 
     launched = provider.launch(plan)
 
-    assert launched == replace(IDENTITY, name=name)
+    assert launched == IDENTITY.replace(name=name)
     argv = (next(argv for argv, _ in calls if argv[0] == "sbatch")
             if submit == "sbatch" else popen.call_args.args[0])
     assert f"--job-name=lc-v1-{name}" in argv
@@ -405,7 +405,7 @@ def test_invalid_name_is_rejected_before_native_submission(
     name: str,
 ) -> None:
     calls = _native(monkeypatch, {})
-    plan = replace(provider.plan(offer, Request.parse("256", "480")), name=name)
+    plan = provider.plan(offer, Request.parse("256", "480")).replace(name=name)
     with pytest.raises(ComputeError, match="cluster names"):
         provider.launch(plan)
     assert calls == []
@@ -421,10 +421,10 @@ def test_named_submission_recovers_from_history_when_sbatch_output_is_malformed(
         "id": f"{target_uid}\n",
         "sbatch": "garbled", "squeue": "", "sacct": _history(name=name, uid=target_uid),
     })
-    plan = replace(provider.plan(offer, Request.parse("256", "480")), name=name)
+    plan = provider.plan(offer, Request.parse("256", "480")).replace(name=name)
 
     identity = provider.launch(plan)
-    assert identity == replace(IDENTITY, name=name)
+    assert identity == IDENTITY.replace(name=name)
     assert provider.inspect(identity).phase == "ended"
 
     accounting = next(argv for argv, _ in calls if argv[0] == "sacct")
@@ -441,7 +441,7 @@ def test_recovery_does_not_accept_a_different_name_with_the_same_nonce(
     _native(monkeypatch, {
         "sbatch": "garbled", "squeue": _live(name="other"), "sacct": _history(name="other"),
     })
-    plan = replace(provider.plan(offer, Request.parse("256", "480")), name="requested")
+    plan = provider.plan(offer, Request.parse("256", "480")).replace(name="requested")
     with pytest.raises(ComputeError, match=f"lc-v1-requested and comment token {TOKEN}") as raised:
         provider.launch(plan)
     assert raised.value.submission_token == TOKEN
@@ -455,7 +455,7 @@ def test_named_jobs_are_discovered_and_cancelled_from_native_names(
         "squeue": _live(name=name), "scontrol": _control(name=name), "scancel": "",
     })
     snapshot, = provider.discover()
-    assert snapshot.identity == replace(IDENTITY, name=name)
+    assert snapshot.identity == IDENTITY.replace(name=name)
     assert snapshot.identity.name == name
     provider.terminate(snapshot.identity)
     assert f"--name=lc-v1-{name}" in calls[-1][0]
@@ -510,9 +510,9 @@ def test_existing_native_name_cannot_be_hidden_from_duplicate_name_checks(
         "scontrol": _control(name="analysis", comment=comment),
     })
     compute = Compute.__new__(Compute)
-    compute.catalog = Catalog({"nersc": provider.connection}, (offer,))
+    compute.catalog = Catalog(version=1, connections={"nersc": provider.connection}, offers=[offer])
     monkeypatch.setattr(compute, "provider", lambda connection: provider)
-    plan = replace(provider.plan(offer, Request.parse("256", "480")), name="analysis")
+    plan = provider.plan(offer, Request.parse("256", "480")).replace(name="analysis")
 
     expected = "already in use" if comment is None else "discovery is incomplete"
     with pytest.raises(ComputeError, match=expected):
@@ -534,11 +534,11 @@ def test_named_job_identity_survives_terminal_accounting(
     provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _native(monkeypatch, {"squeue": "", "sacct": _history(name="finished-analysis")})
-    identity = replace(IDENTITY, name="finished-analysis")
+    identity = IDENTITY.replace(name="finished-analysis")
     snapshot = provider.inspect(identity)
     assert snapshot.identity == identity
     assert snapshot.phase == "ended"
-    assert provider.inspect(replace(identity, name="other")).phase == "unknown"
+    assert provider.inspect(identity.replace(name="other")).phase == "unknown"
 
 
 @pytest.mark.parametrize("comment", ["", "(null)", "missing-token", COMMENT + "|extra"])
@@ -561,7 +561,7 @@ def test_accounting_keeps_equal_job_ids_and_names_separate_by_submission_token(
     newer = _history(token="a" * 32, state="RUNNING", submitted="2026-09-28T10:00:00")
     _native(monkeypatch, {"squeue": "", "sacct": older + newer})
     assert provider.inspect(IDENTITY).phase == "ended"
-    assert provider.inspect(replace(IDENTITY, token="a" * 32)).phase == "unknown"
+    assert provider.inspect(IDENTITY.replace(token="a" * 32)).phase == "unknown"
 
 
 def test_submission_recovery_uses_nonce_among_historical_name_and_id_duplicates(
@@ -606,10 +606,29 @@ def test_live_discovery_uses_native_marker_and_keeps_grant_evidence_honest(
     snapshot = snapshots[0]
     assert snapshot.identity == IDENTITY
     assert snapshot.phase == "active"
-    assert snapshot.resources == Resources(256, 480 * 1024**3)
+    assert snapshot.resources == Resources.from_bytes(cpus=256, memory_bytes=480 * 1024**3)
     assert snapshot.evidence == "requested"
     assert snapshot.ready is None
     assert all("--clusters=perlmutter" in argv for argv, _ in calls if argv[0] != "id")
+
+
+@pytest.mark.parametrize("cpus,memory", [
+    ("256", "0"), ("256", "0G"), ("256", "unknown"), ("0", "480G"),
+])
+def test_discovery_preserves_allocations_with_unknown_native_resource_evidence(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
+    cpus: str, memory: str,
+) -> None:
+    control = _control().replace("CPUs/Task=256", f"CPUs/Task={cpus}")
+    control = control.replace("MinMemoryNode=480G", f"MinMemoryNode={memory}")
+    _native(monkeypatch, {"squeue": _live(), "scontrol": control})
+
+    snapshot, = provider.discover()
+
+    assert snapshot.identity == IDENTITY
+    assert snapshot.phase == "active"
+    assert snapshot.resources is None
+    assert snapshot.evidence == "unknown"
 
 
 def test_native_query_failure_is_not_an_empty_list(
@@ -656,7 +675,7 @@ def test_changed_or_missing_control_comment_cannot_be_cancelled(
 def test_cancel_targets_allocation_with_native_name_and_owner_filters(
     provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch, context: str,
 ) -> None:
-    provider = slurm.SlurmProvider(replace(provider.connection, context=context))
+    provider = slurm.SlurmProvider(provider.connection.replace(context=context))
     calls = _native(monkeypatch, {"squeue": _live(), "scontrol": _control(), "scancel": ""})
     provider.terminate(IDENTITY)
     argv = calls[-1][0]
@@ -719,7 +738,7 @@ def test_requeue_keeps_native_identity_but_uses_fresh_attempt(
     client.scheduler_info.return_value = {"workers": {"one": {}, "two": {}}}
     opened = MagicMock(return_value=client)
     monkeypatch.setattr(slurm, "open_client", opened)
-    with provider.connect(replace(IDENTITY, name=name)) as connected:
+    with provider.connect(IDENTITY.replace(name=name)) as connected:
         assert connected is client
     opened.assert_called_once_with(directory, "Scheduler-test", timeout=10)
     client.close.assert_called_once()
@@ -736,8 +755,7 @@ def test_connect_resolves_only_the_configured_root(
     actual.mkdir()
     alias = tmp_path / "home"
     alias.symlink_to(actual, target_is_directory=True)
-    connection = replace(
-        provider.connection,
+    connection = provider.connection.replace(
         launch={**provider.connection.launch, "connection_root": str(alias / "private")},
     )
     provider = slurm.SlurmProvider(connection)
@@ -895,7 +913,7 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
         if value is not None:
             argv += ["--" + key.replace("_", "-"), str(value)]
     connection = Connection(
-        "", NAMESPACE, "slurm", launch={"connection_root": args.connection_root}
+        namespace=NAMESPACE, provider="slurm", launch={"connection_root": args.connection_root}
     )
     directory = slurm.attempt_directory(connection, IDENTITY, 0)
     processes = []

@@ -63,7 +63,7 @@ def _allocation(args: argparse.Namespace) -> tuple[Identity, int, int]:
     if not restarts.isdigit():
         raise ComputeError("invalid native Slurm restart count")
     return (
-        Identity(args.namespace, native_id, args.submission),
+        Identity(namespace=args.namespace, native_id=native_id, token=args.submission),
         int(restarts),
         values["SLURM_PROCID"],
     )
@@ -75,7 +75,8 @@ async def run(args: argparse.Namespace) -> None:
 
     identity, restarts, rank = _allocation(args)
     connection = Connection(
-        "", identity.namespace, "slurm", launch={"connection_root": args.connection_root}
+        namespace=identity.namespace, provider="slurm",
+        launch={"connection_root": args.connection_root},
     )
     directory = attempt_directory(connection, identity, restarts)
     scratch = configured_directory(Path(args.scratch_root))
