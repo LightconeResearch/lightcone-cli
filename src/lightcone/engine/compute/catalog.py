@@ -5,10 +5,19 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
 import yaml
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from .model import (
     GIB,
@@ -42,18 +51,118 @@ def _unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict[str
 _UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
 
 
-def _mapping(value: object, where: str, allowed: set[str] | None = None) -> dict[str, Any]:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        raise ComputeError(f"{where} must be a mapping")
-    if allowed is not None and (extra := set(value) - allowed):
-        raise ComputeError(f"unknown {where} field(s): {', '.join(sorted(extra))}")
+def _name(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must be a nonempty string")
     return value
 
 
-def _name(value: object, where: str) -> str:
-    if not isinstance(value, str) or not value.strip() or any(ord(c) < 32 for c in value):
-        raise ComputeError(f"{where} must be a nonempty string without control characters")
-    return value
+def _namespace(value: str) -> str:
+    try:
+        if str(UUID(value)) == value:
+            return value
+    except ValueError:
+        pass
+    raise ValueError("must be a canonical UUID")
+
+
+def _count(value: object) -> int:
+    try:
+        return positive_int(value, "count")
+    except ComputeError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def _memory(value: object) -> int:
+    try:
+        return memory_bytes(value)
+    except ComputeError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def _seconds(value: object) -> int:
+    try:
+        return duration(value)
+    except ComputeError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+_Text = Annotated[str, Field(pattern=r"^[^\x00-\x1f]*$")]
+_Name = Annotated[_Text, AfterValidator(_name)]
+_Namespace = Annotated[str, AfterValidator(_namespace)]
+_Count = Annotated[int, BeforeValidator(_count, json_schema_input_type=int | str)]
+_Memory = Annotated[int, BeforeValidator(_memory, json_schema_input_type=int | float | str)]
+_Seconds = Annotated[int, BeforeValidator(_seconds, json_schema_input_type=str)]
+_StartupClass = Literal["fast", "batch", "unknown"]
+
+
+class _Config(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class _ConnectionConfig(_Config):
+    namespace: _Namespace
+    provider: _Name
+    context: _Text = ""
+    launch: dict[str, Any] = Field(default_factory=dict)
+
+
+class _ResourcesConfig(_Config):
+    cpus: _Count
+    memory: _Memory
+
+
+class _TimeConfig(_Config):
+    default: _Seconds
+    max: _Seconds
+
+    @model_validator(mode="after")
+    def ordered_limits(self) -> Self:
+        if self.default > self.max:
+            raise ValueError("default time exceeds its maximum")
+        return self
+
+
+class _StartupConfig(_Config):
+    class_: _StartupClass = Field(alias="class")
+    source: Any = None
+
+
+class _OfferConfig(_Config):
+    name: _Name
+    connection: _Name
+    resources: _ResourcesConfig
+    max_nodes: _Count
+    time: _TimeConfig
+    startup: _StartupClass | _StartupConfig = "unknown"
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class _CatalogConfig(_Config):
+    version: Annotated[int, Field(ge=1, le=1)]
+    connections: dict[_Name, _ConnectionConfig]
+    offers: list[_OfferConfig]
+
+    @model_validator(mode="after")
+    def relationships(self) -> Self:
+        namespaces: set[str] = set()
+        contexts: set[tuple[str, str]] = set()
+        for connection in self.connections.values():
+            context = (connection.provider, connection.context)
+            if connection.namespace in namespaces or context in contexts:
+                raise ValueError("connections must have unique namespaces and native contexts")
+            namespaces.add(connection.namespace)
+            contexts.add(context)
+        names: set[str] = set()
+        for offer in self.offers:
+            if offer.name in names:
+                raise ValueError(f"duplicate offer name: {offer.name}")
+            names.add(offer.name)
+            if offer.connection not in self.connections:
+                raise ValueError(
+                    f"offer {offer.name} references unknown connection {offer.connection}"
+                )
+        return self
 
 
 @dataclass(frozen=True)
@@ -86,94 +195,35 @@ class Catalog:
             )
         except (OSError, UnicodeError, yaml.YAMLError) as exc:
             raise ComputeError(f"cannot read compute catalog {path}: {exc}") from exc
-        data = _mapping(raw, "catalog", {"version", "connections", "offers"})
-        if type(data.get("version")) is not int or data["version"] != 1:
-            raise ComputeError("compute catalog version must be 1")
-        connections: dict[str, Connection] = {}
-        namespaces: set[str] = set()
-        contexts: set[tuple[str, str]] = set()
-        for name, entry in _mapping(data.get("connections"), "connections").items():
-            _name(name, "connection name")
-            item = _mapping(
-                entry, f"connection {name}", {"namespace", "provider", "context", "launch"}
-            )
-            namespace = _name(item.get("namespace"), f"connection {name} namespace")
-            try:
-                if str(UUID(namespace)) != namespace:
-                    raise ValueError
-            except ValueError as exc:
-                raise ComputeError(f"connection {name} namespace must be a canonical UUID") from exc
-            provider = _name(item.get("provider"), f"connection {name} provider")
-            context = item.get("context", "")
-            if not isinstance(context, str) or any(ord(c) < 32 for c in context):
-                raise ComputeError(f"connection {name} context must be a string")
-            if namespace in namespaces or (provider, context) in contexts:
-                raise ComputeError("connections must have unique namespaces and native contexts")
-            namespaces.add(namespace)
-            contexts.add((provider, context))
-            connections[name] = Connection(
-                name,
-                namespace,
-                provider,
-                context,
-                _mapping(item.get("launch", {}), f"connection {name} launch"),
-            )
-        raw_offers = data.get("offers")
-        if not isinstance(raw_offers, list):
-            raise ComputeError("offers must be an ordered list")
-        offers: list[Offer] = []
-        names: set[str] = set()
-        for raw_offer in raw_offers:
-            item = _mapping(
-                raw_offer,
-                "offer",
-                {
-                    "name",
-                    "connection",
-                    "resources",
-                    "max_nodes",
-                    "time",
-                    "startup",
-                    "config",
-                },
-            )
-            name = _name(item.get("name"), "offer name")
-            if name in names:
-                raise ComputeError(f"duplicate offer name: {name}")
-            names.add(name)
-            connection = _name(item.get("connection"), f"offer {name} connection")
-            if connection not in connections:
-                raise ComputeError(f"offer {name} references unknown connection {connection}")
-            resources = _mapping(
-                item.get("resources"), f"offer {name} resources", {"cpus", "memory"}
-            )
-            timing = _mapping(item.get("time"), f"offer {name} time", {"default", "max"})
-            default, maximum = duration(timing.get("default")), duration(timing.get("max"))
-            if default > maximum:
-                raise ComputeError(f"offer {name} default time exceeds its maximum")
-            startup = item.get("startup", {"class": "unknown"})
-            if isinstance(startup, dict):
-                startup = _mapping(startup, f"offer {name} startup", {"class", "source"}).get(
-                    "class"
+        try:
+            config = _CatalogConfig.model_validate(raw)
+        except ValidationError as exc:
+            details = "\n".join(
+                f"{'.'.join(map(str, error['loc'])) or 'catalog'}: {error['msg']}"
+                for error in exc.errors(
+                    include_url=False, include_context=False, include_input=False
                 )
-            if startup not in ("fast", "batch", "unknown"):
-                raise ComputeError(f"offer {name} startup class must be fast, batch, or unknown")
-            offers.append(
+            )
+            raise ComputeError(f"invalid compute catalog {path}:\n{details}") from exc
+        return cls(
+            connections={
+                name: Connection(name, item.namespace, item.provider, item.context, item.launch)
+                for name, item in config.connections.items()
+            },
+            offers=tuple(
                 Offer(
-                    name,
-                    connection,
-                    Resources(
-                        positive_int(resources.get("cpus"), "cpus"),
-                        memory_bytes(resources.get("memory")),
-                    ),
-                    positive_int(item.get("max_nodes"), "max_nodes"),
-                    default,
-                    maximum,
-                    startup,
-                    _mapping(item.get("config", {}), f"offer {name} config"),
+                    item.name,
+                    item.connection,
+                    Resources(item.resources.cpus, item.resources.memory),
+                    item.max_nodes,
+                    item.time.default,
+                    item.time.max,
+                    item.startup if isinstance(item.startup, str) else item.startup.class_,
+                    item.config,
                 )
-            )
-        return cls(connections, tuple(offers))
+                for item in config.offers
+            ),
+        )
 
     def connection_for(self, namespace: str) -> Connection:
         """Find the configured authority without relying on current offers."""

@@ -451,7 +451,10 @@ def test_borrowed_client_only_detaches(catalog: Path, provider: MagicMock) -> No
     provider.terminate.assert_not_called()
 
 
-@pytest.mark.parametrize("mutation", ["namespace", "context", "offer", "limits", "unknown"])
+@pytest.mark.parametrize("mutation", [
+    "namespace", "context", "offer", "limits", "reference", "unknown",
+    "resources_extra", "time_extra", "startup_extra", "connection_extra",
+])
 def test_invalid_catalog_is_rejected(catalog: Path, mutation: str) -> None:
     data = yaml.safe_load(catalog.read_text())
     if mutation == "namespace":
@@ -465,6 +468,12 @@ def test_invalid_catalog_is_rejected(catalog: Path, mutation: str) -> None:
         data["offers"][1]["name"] = "quick"
     elif mutation == "limits":
         data["offers"][0]["time"]["default"] = "3h"
+    elif mutation == "reference":
+        data["offers"][0]["connection"] = "missing"
+    elif mutation == "connection_extra":
+        data["connections"]["test"]["extra"] = 1
+    elif mutation.endswith("_extra"):
+        data["offers"][0][mutation.removesuffix("_extra")]["extra"] = 1
     else:
         data["offers"][0]["gpus"] = 1
     catalog.write_text(yaml.safe_dump(data))
@@ -472,8 +481,89 @@ def test_invalid_catalog_is_rejected(catalog: Path, mutation: str) -> None:
         Catalog.load(catalog)
 
 
-def test_duplicate_yaml_keys_are_rejected(catalog: Path) -> None:
-    catalog.write_text("version: 1\nversion: 1\nconnections: {}\noffers: []\n")
+@pytest.mark.parametrize("field,value", [
+    (("version",), True),
+    (("version",), 1.0),
+    (("version",), "1"),
+    (("connections", "test", "namespace"), NAMESPACE.upper()),
+    (("offers", 0, "resources", "cpus"), True),
+    (("offers", 0, "resources", "cpus"), 4.0),
+    (("offers", 0, "max_nodes"), 1.0),
+    (("offers", 0, "resources", "memory"), True),
+    (("offers", 0, "resources", "memory"), "0.000000000931322574615478515626"),
+    (("offers", 0, "time", "default"), 1800),
+    (("offers", 0, "startup"), {}),
+    (("offers",), None),
+])
+def test_catalog_rejects_coercion_with_the_field_location(
+    catalog: Path, field: tuple[str | int, ...], value: object,
+) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    parent = data
+    for key in field[:-1]:
+        parent = parent[key]
+    parent[field[-1]] = value
+    catalog.write_text(yaml.safe_dump(data))
+    with pytest.raises(ComputeError) as error:
+        Catalog.load(catalog)
+    assert ".".join(map(str, field)) in str(error.value)
+
+
+@pytest.mark.parametrize("startup", [
+    "fast", {"class": "fast", "source": {"operator": [True, None]}}, None,
+])
+def test_catalog_normalizes_units_and_startup_without_changing_offer_order(
+    catalog: Path, startup: object,
+) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    offer = data["offers"][0]
+    offer["resources"] = {"cpus": "4", "memory": "0.000000000931322574615478515625"}
+    offer["max_nodes"] = "2"
+    if startup is None:
+        offer.pop("startup")
+    else:
+        offer["startup"] = startup
+    catalog.write_text(yaml.safe_dump(data))
+    loaded = Catalog.load(catalog)
+    assert [entry.name for entry in loaded.offers] == ["quick", "large"]
+    first = loaded.offers[0]
+    assert (first.resources.cpus, first.resources.memory, first.max_nodes) == (4, 1, 2)
+    assert (first.default_seconds, first.max_seconds) == (1800, 7200)
+    assert first.startup == ("unknown" if startup is None else "fast")
+
+
+def test_catalog_keeps_provider_payloads_opaque(catalog: Path) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    launch = {"future-setting": {"nested": [True, 2, None, "value"]}}
+    config = {"future-option": ["native", {"enabled": False}]}
+    data["connections"]["test"].update(provider="future-provider", launch=launch)
+    data["offers"][0]["config"] = config
+    catalog.write_text(yaml.safe_dump(data))
+    loaded = Catalog.load(catalog)
+    assert loaded.connections["test"].provider == "future-provider"
+    assert loaded.connections["test"].launch == launch
+    assert loaded.offers[0].config == config
+
+
+def test_catalog_validation_errors_do_not_echo_provider_values(catalog: Path) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    secret = "private-provider-credential"
+    data["connections"]["test"]["launch"] = secret
+    catalog.write_text(yaml.safe_dump(data))
+    result = CliRunner().invoke(main, ["compute", "resources", "--json"])
+    assert result.exit_code == 1
+    error = json.loads(result.output)["error"]
+    assert "connections.test.launch" in error
+    assert secret not in error
+
+
+@pytest.mark.parametrize("document", [
+    "version: 1\nversion: 1\nconnections: {}\noffers: []\n",
+    "connections: {test: {launch: {option: 1, option: 2}}}\n",
+    "connections: {test: {launch: {1: value}}}\n",
+])
+def test_duplicate_or_nonstring_yaml_keys_are_rejected(catalog: Path, document: str) -> None:
+    catalog.write_text(document)
     with pytest.raises(ComputeError, match="unique"):
         Catalog.load(catalog)
 

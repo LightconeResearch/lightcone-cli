@@ -24,6 +24,14 @@ Missing paths selected through an argument or `LC_COMPUTE_CONFIG`, unreadable
 files, and invalid catalogs remain errors. Stable connection namespaces let
 separate invocations discover and attach to the same local allocations.
 
+`catalog.py` validates YAML with strict Pydantic input models for connections,
+offers, resources, and time limits. Unknown common fields are rejected; errors
+identify field paths such as `offers.0.resources.cpus` without echoing input values.
+The YAML loader also rejects duplicate and non-string mapping keys before model
+validation. Shared quantity parsers normalize memory to bytes and durations to
+seconds. Validated input becomes the plain runtime dataclasses in `model.py`;
+provider-specific `launch` and `config` mappings remain the provider's responsibility.
+
 `local.py` and `slurm.py` implement the provider protocol. Adding an adapter means
 adding one provider factory and its native mapping; `run` and `materialize` only
 borrow clients through the common API. Provider settings stay behind that seam.

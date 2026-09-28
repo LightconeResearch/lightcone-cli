@@ -98,6 +98,11 @@ path or an invalid catalog is an error; only an absent implicit default file
 selects the built-in offer. Stop existing built-in allocations before replacing
 their connection with your own catalog.
 
+Catalog errors identify the invalid field, for example `offers.0.resources.cpus`.
+Unknown common fields and duplicate YAML keys are rejected. CPU and node counts
+must be positive integers; memory is in GiB, and durations use minutes or hours
+such as `30m` or `2h`.
+
 ## Configure Slurm
 
 The CLI runs the native `sbatch`, `salloc`, `squeue`, `sacct`, `scontrol`, and

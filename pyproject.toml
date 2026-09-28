@@ -32,6 +32,7 @@ dependencies = [
     "rocrate>=0.15",
     "cryptography>=44",
     "psutil>=6",
+    "pydantic>=2.9,<3",
     "pyyaml>=6",
 ]
 

@@ -1712,6 +1712,12 @@ default and two-hour maximum lifetime. It writes no catalog and starts no cluste
 Configured catalogs replace it completely; missing explicit paths and invalid
 files are errors. Execution still requires an explicitly launched cluster's name or ID.
 
+**Catalog validation stays at the input boundary.** Strict Pydantic models own
+the common YAML schema, field errors, and cross-field constraints. Keep runtime
+dataclasses and provider contracts independent of those input models. Preserve
+duplicate-key rejection in the YAML loader and reuse the shared quantity parsers;
+providers validate their own `launch` and `config` mappings.
+
 **Configured compute roots may be filesystem aliases.** Resolve connection and
 scratch roots before appending managed namespace, submission, or attempt paths.
 Keep symlink rejection within those managed paths and enforce private directory
