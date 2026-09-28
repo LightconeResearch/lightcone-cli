@@ -187,10 +187,7 @@ class Versions:
     cannot change underneath it.
 
     A class rather than a closure, so what it keeps alive is one dict and
-    not whatever scope built it. Deliberately unlocked: concurrent workers
-    can race to compute the same digest, which wastes one hash rather than
-    serialising every hash behind a lock — and a lock would not survive
-    being handed to a worker in another process.
+    not whatever scope built it.
     """
 
     def __init__(self) -> None:

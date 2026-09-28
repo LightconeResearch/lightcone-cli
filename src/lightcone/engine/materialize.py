@@ -428,6 +428,29 @@ def _crate_line(root: Path, newest: str) -> str:
     return "up to date with the outputs"
 
 
+def _resolve_declared(graph: Graph) -> assets.Versions:
+    """Hash every declared input once, here in the driver.
+
+    `RunContext` reaches each task as a pickled copy, so a memo left for
+    the tasks to fill is filled once per task: a catalog every output
+    declares is read once per output. Filled here, it is read once per run.
+
+    Inputs an upstream task produces are versioned by that task's result.
+    One that cannot be hashed is left out, so the worker's own lookup
+    raises inside that task and the failure stays the task's.
+    """
+    versions = assets.Versions()
+    for task in graph.tasks.values():
+        for name, path in task.inputs.items():
+            if name in task.produced_by:
+                continue
+            try:
+                versions.of(path)
+            except (assets.ContentNotFetchedError, OSError):
+                continue
+    return versions
+
+
 def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
     """Find the commit that last touched *task*'s manifest, unless it is
     the output's own run record — then ``None``, the clean answer. The
@@ -559,7 +582,7 @@ def materialize(
     context = worker.RunContext(
         env_version=env_version,
         head=dataset.head(root),
-        versions=assets.Versions(),
+        versions=_resolve_declared(graph),
         runtime=runtime,
         uv_version=project.uv_version(root),
     )
