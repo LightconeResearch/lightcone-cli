@@ -164,8 +164,6 @@ defaults assume a home directory that the login and compute nodes share:
 - `cwd`: your home directory, as the job's working directory.
 - `task_slots_per_node`: one fewer than the offer's CPUs, leaving room for the
   scheduler. Lower it when recipes are multithreaded or memory-heavy.
-- `cpu_bind`: `threads`, which binds each node's process to its allocated
-  hardware threads. `cores` and `none` are also accepted.
 - `interface`: unset, so Dask listens on the node's hostname. Name a network
   interface instead if nodes cannot reach each other by hostname; Perlmutter's
   high-speed network is `hsn0`.

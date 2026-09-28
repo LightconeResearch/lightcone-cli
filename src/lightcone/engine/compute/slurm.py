@@ -150,7 +150,6 @@ class SlurmProvider:
             "connection_root",
             "scratch_root",
             "task_slots_per_node",
-            "cpu_bind",
             "interface",
             "cwd",
         }
@@ -200,9 +199,6 @@ class SlurmProvider:
             raise ComputeError(
                 "Slurm task_slots_per_node cannot exceed the allocation CPU envelope"
             )
-        binding = launch.get("cpu_bind", "threads")
-        if binding not in {"threads", "cores", "none"}:
-            raise ComputeError("Slurm cpu_bind must be threads, cores, or none")
         interface = launch.get("interface")
         if interface is not None:
             interface = _value(interface, "interface")
@@ -236,7 +232,6 @@ class SlurmProvider:
                 "native_args": args,
                 **paths,
                 "task_slots_per_node": slots,
-                "cpu_bind": binding,
                 "interface": interface,
             },
         )
@@ -248,7 +243,9 @@ class SlurmProvider:
             f"--ntasks={plan.num_nodes}",
             "--ntasks-per-node=1",
             f"--cpus-per-task={plan.resources.cpus}",
-            f"--cpu-bind={details['cpu_bind']}",
+            # One process per node holds the whole allocation, so binding to
+            # exactly its allocated hardware threads is the only useful mask.
+            "--cpu-bind=threads",
             "--kill-on-bad-exit=1",
             details["python"],
             "-P",

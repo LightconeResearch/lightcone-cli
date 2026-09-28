@@ -263,6 +263,15 @@ def test_plan_refuses_multiple_partitions(provider: slurm.SlurmProvider, offer: 
         )
 
 
+def test_plan_rejects_unknown_launch_settings(
+    provider: slurm.SlurmProvider, offer: Offer,
+) -> None:
+    connection = provider.connection.replace(
+        launch={**provider.connection.launch, "cpu_bind": "cores"}
+    )
+    with pytest.raises(ComputeError, match="unknown Slurm launch settings: cpu_bind"):
+        slurm.SlurmProvider(connection).plan(offer, Request.parse("256", "480"))
+
 def test_sbatch_launch_owns_payload_and_scrubs_ambient_overrides(
     provider: slurm.SlurmProvider,
     offer: Offer,
@@ -298,6 +307,7 @@ def test_sbatch_launch_owns_payload_and_scrubs_ambient_overrides(
     payload = shlex.split(script.splitlines()[-1])
     assert payload[:2] == ["exec", "srun"]
     assert "--kill-on-bad-exit=1" in payload and "--overlap" not in payload
+    assert "--cpu-bind=threads" in payload
     assert "--ntasks=2" in payload
     python = payload.index(sys.executable)
     assert payload[python + 1 : python + 4] == [
