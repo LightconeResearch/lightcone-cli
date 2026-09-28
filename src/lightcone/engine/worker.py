@@ -447,8 +447,8 @@ def _from_disk(task: Task) -> dict[str, str]:
     """
     versions: dict[str, str] = {}
     for name, path in task.inputs.items():
-        if task.produced_by.get(name) is not None:
-            if (manifest := assets.read(assets.manifest_path(path))) is None:
+        if (upstream := task.produced_by.get(name)) is not None:
+            if (manifest := assets.read(assets.manifest_path(path.parent, upstream[1]))) is None:
                 raise ProjectError(
                     f"the input `{name}` has never been materialized — there is no "
                     f"manifest beside {path}. Run `lc materialize` instead."

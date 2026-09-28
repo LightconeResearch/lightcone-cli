@@ -906,15 +906,13 @@ that is not one path component** — an empty or `..`-bearing universe or
 output id would place a file outside the tree every guard above it
 checked — and a `format` that could not be an extension (empty, a
 separator, or leading-dot, which would make the output look like its own
-sidecar). It also refuses an output id carrying a **dot**: the sidecar is
-recovered by partitioning the filename on the first one, so a dotted id
-would name a manifest for something else. ASTRA's own id grammar carries
-no dot, so this only ever fires on an id lc did not compose.
+sidecar). A qualified id's dots separate scopes, so each segment is
+checked as a component of its own.
 
 **The reset takes what the output's id names, never the directory.**
 Outputs share a directory now and Dask writes them concurrently, so a
 whole-directory delete would take a neighbour's bytes. It unlinks the
-sidecar and globs `<output_id>.*`: an id cannot contain a dot, so the glob
+sidecar and globs `<local_id>.*`: a local id cannot contain a dot, so the glob
 cannot reach a sibling, a longer id, another output's sidecar or a scope
 directory of the same name — and it *does* reach a payload left by a run
 that declared another `format`, which is what stops one orphaning.
@@ -931,9 +929,9 @@ evidence that anything was written.
 id alone and never the format.** So it keeps its path — and therefore its
 history — across a re-declared serialization, which is what lets
 `_foreign_write` still answer for an output whose payload path is new.
-Decomposition is safe by partitioning on the **first** dot (ids carry
-none; formats may, `tar.gz`), never `Path.stem`. The old
-`_HASH_EXCLUDE` is gone with the directory that made it necessary: the
+`manifest_path` takes the id rather than reading it back from the
+filename, which a format with a dot of its own (`tar.gz`) makes
+ambiguous. The old `_HASH_EXCLUDE` is gone with the directory that made it necessary: the
 manifest cannot be inside the thing it describes any more.
 
 **Dask owns the ordering.** Every task is submitted with its upstream
@@ -2230,9 +2228,7 @@ written to" — a path the schema never defined. What changed, and why:
   declared in a sub-analysis as `<a>.<b>`; `output_path` spells each scope
   segment as a directory and names the file from the local id, so it lands
   at `results/<universe>/<a>/<b>.<format>` beside `.<b>.manifest.json`.
-  The file's name never carries a dot before the format, which keeps the
-  first-dot partition in `manifest_path` exact, and two scopes declaring
-  one local id land in different directories. Anything that matches an
+  Two scopes declaring one local id land in different directories. Anything that matches an
   output's files by name (the staging pathspecs, the worker's stale sweep)
   uses `Task.output_stem`, never the qualified id. There is one results
   tree, at the root: a `path:` sub-analysis's outputs are filed under the
