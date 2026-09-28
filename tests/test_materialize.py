@@ -420,6 +420,44 @@ def test_project_refusals_precede_cluster_connection(
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
 
+def test_a_run_with_nothing_to_make_needs_no_cluster(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = analysis(
+        'version: "0.0.13"\nname: analysis\ninputs: []\noutputs: []\ndecisions: {}\n',
+        universes={"baseline": "id: baseline\ndecisions: {}\n"},
+    )
+    _declare_license(root)
+
+    def unexpected(*args: object) -> None:
+        pytest.fail("a run that submits nothing contacted the cluster")
+
+    monkeypatch.setattr(engine, "cluster_for_run", unexpected)
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and report.up_to_date
+    assert (root / "ro-crate-metadata.json").is_file()
+
+
+@pytest.mark.parametrize("failing", ["baseline/first", "baseline/second"])
+def test_a_failed_commit_says_whether_remote_tasks_may_still_run(
+    root: Path, monkeypatch: pytest.MonkeyPatch, failing: str,
+) -> None:
+    _cluster(monkeypatch, _Inline())
+    save = dataset.save
+
+    def fail(root: Path, paths: list[Path], message: str) -> None:
+        universe, output = failing.split("/")
+        if message.startswith(engine.datalad_run_subject((universe, output))):
+            raise ProjectError("git commit failed")
+        save(root, paths, message)
+
+    monkeypatch.setattr(dataset, "save", fail)
+    with pytest.raises(ProjectError, match="git commit failed") as raised:
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    # Only the first output leaves another one outstanding.
+    assert ("did not stop the allocation" in str(raised.value)) == (failing == "baseline/first")
+
 def test_shared_inputs_are_hashed_once_before_task_serialization(
     analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -184,18 +184,17 @@ def test_an_unresolvable_tree_degrades_to_the_top_level_document(project: Path) 
 def test_uv_is_pinned_to_the_project_and_refuses_to_drift(project: Path) -> None:
     """uv's own walk-up discovery is never trusted, and a stale lock must
     be uv's loud error rather than a silent relock."""
-    prefix = uv_prefix(project, sync=True)
+    prefix = uv_prefix(project)
     assert prefix[:2] == ["uv", "run"]
     assert "--locked" in prefix
-    assert "--exact" in prefix
     assert prefix[prefix.index("--project") + 1] == str(project)
     assert prefix[-1] == "--"
 
 
 def test_a_worker_does_not_sync_the_prepared_environment(project: Path) -> None:
     """The driver converges once; concurrent workers must not rewrite it."""
-    assert "--no-sync" in uv_prefix(project, sync=False)
-    assert "--exact" not in uv_prefix(project, sync=False)
+    assert "--no-sync" in uv_prefix(project)
+    assert "--exact" not in uv_prefix(project)
 
 
 def test_the_probe_reports_the_uv_scrub_in_its_notes(
@@ -219,6 +218,27 @@ def test_the_probe_reports_the_uv_scrub_in_its_notes(
 
     assert sum("UV_NO_BINARY" in note for note in outcome.notes) == 1
     assert outcome.notes[-5:] == ("denial", "", "remedy", "", "trailer")
+
+
+def test_a_forwarding_deadline_is_not_reported_as_uv_output(
+    project: Path, monkeypatch: pytest.MonkeyPatch, cluster_id: str
+) -> None:
+    from lightcone.engine import container, sandbox
+    from lightcone.engine.compute.output import Forwarder
+    from lightcone.engine.sandbox.model import Attestation
+
+    monkeypatch.setattr(container, "converge", lambda runtime: ["Resolved 1 package"])
+    monkeypatch.setattr(Forwarder, "wait", lambda self, task: False)
+    monkeypatch.setattr(sandbox, "run", lambda *a, **k: sandbox.Outcome(
+        returncode=0, attestation=Attestation(mechanism="none", fs="open"),
+    ))
+
+    outcome = engine_run.probe(project, ["true"], cluster_id=cluster_id)
+
+    assert outcome.notes[:2] == (
+        "uv: Resolved 1 package",
+        "remote output forwarding did not finish before its deadline",
+    )
 
 
 def test_missing_driver_tool_is_reported_before_contacting_compute(

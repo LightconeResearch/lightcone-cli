@@ -52,7 +52,7 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
     paths = input_paths(project, read_spec(project))
     with compute.connect(cluster_id) as client:
         runtime = container.runtime_for_run(project, build=False)
-        warnings = container.converge(runtime)
+        notes = [f"uv: {warning}" for warning in container.converge(runtime)]
         invocation = uuid4().hex
         with forwarding(client) as output:
             future = client.submit(
@@ -65,12 +65,10 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
                 raise
             except Exception as exc:
                 raise ProjectError(
-                    f"cluster execution failed: {exc}. lc did not stop the allocation; "
-                    "tasks that did not report may still be running"
+                    f"cluster execution failed: {exc}. {compute.UNSTOPPED}"
                 ) from exc
             if not output.wait("probe"):
-                warnings.append("remote output forwarding did not finish before its deadline")
-    notes = [*(f"uv: {warning}" for warning in warnings)]
+                notes.append("remote output forwarding did not finish before its deadline")
     if warning := uv_scrub_warning():
         notes.append(warning)
     return replace(outcome, notes=(*notes, *outcome.notes))
@@ -85,7 +83,7 @@ def _probe(
     with sandbox.scope(built) as policy:
         outcome = sandbox.run(
             container.backend(runtime), policy, command, cwd=runtime.root,
-            prefix=uv_prefix(runtime.root, sync=False), env=child_env(), output=output,
+            prefix=uv_prefix(runtime.root), env=child_env(), output=output,
         )
     return outcome
 

@@ -6,7 +6,6 @@ import math
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -40,6 +39,13 @@ def _slurm(connection: Connection) -> Provider:
 # The lifecycle seam is intentionally small: execution never dispatches on a provider.
 PROVIDERS: dict[str, ProviderFactory] = {"local": _local, "slurm": _slurm}
 
+#: What a driver leaving early must say: closing a client cannot prove that a
+#: remote subprocess has stopped.
+UNSTOPPED = (
+    "lc did not stop the allocation; tasks that did not report may still be "
+    "running, and any files they wrote remain"
+)
+
 
 def validate_id(value: str) -> None:
     """Reject invalid execution targets before preparing a project."""
@@ -52,8 +58,8 @@ def validate_id(value: str) -> None:
 class Compute:
     """One command's view of configuration and fresh native observations."""
 
-    def __init__(self, config_path: Path | None = None) -> None:
-        self.catalog = Catalog.load(config_path)
+    def __init__(self) -> None:
+        self.catalog = Catalog.load()
 
     def provider(self, connection: Connection) -> Provider:
         """Construct an adapter for an explicitly configured native authority."""
@@ -64,10 +70,10 @@ class Compute:
 
     def resolve(self, cluster_id: str) -> tuple[Provider, Identity]:
         """Route an immutable ID, or resolve one unambiguous name from native state."""
-        validate_id(cluster_id)
         if cluster_id.startswith("clu_"):
             identity = Identity.decode(cluster_id)
         else:
+            validate_name(cluster_id)
             snapshots, errors = self.discover()
             if errors:
                 detail = "; ".join(f"{name}: {error}" for name, error in errors.items())
@@ -187,6 +193,9 @@ class Compute:
             raise ComputeError("timeout must be finite and positive")
         provider, identity = self.resolve(cluster_id)
         deadline = time.monotonic() + timeout
+        # Native schedulers ask users not to poll in a tight loop: back off
+        # from one second, so a long queue wait costs a few dozen queries.
+        delay = 1.0
         while True:
             snapshot = provider.inspect(identity)
             if snapshot.phase == "active":
@@ -219,7 +228,8 @@ class Compute:
                     f"cluster did not become ready within {timeout:g}s; allocation is unchanged",
                     cluster_id=identity.encode(),
                 )
-            time.sleep(min(1, remaining))
+            time.sleep(min(delay, remaining))
+            delay = min(2 * delay, 30.0)
 
     def down(self, cluster_id: str) -> Identity:
         """Ask the native provider to end the allocation, independently of Dask health."""
@@ -229,17 +239,11 @@ class Compute:
 
 
 @contextmanager
-def connect(
-    cluster_id: str,
-    *,
-    timeout: float = 10,
-    config_path: Path | None = None,
-) -> Iterator[Any]:
+def connect(cluster_id: str, *, timeout: float = 10) -> Iterator[Any]:
     """Borrow a validated standard Dask client; detach without closing its cluster."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise ComputeError("timeout must be finite and positive")
-    validate_id(cluster_id)
-    provider, identity = Compute(config_path).resolve(cluster_id)
+    provider, identity = Compute().resolve(cluster_id)
     snapshot = provider.inspect(identity)
     if snapshot.phase != "active":
         raise ComputeError(

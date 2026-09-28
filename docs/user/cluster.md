@@ -38,7 +38,9 @@ session, and exact command containing the allocation's random token before
 attachment or termination. Hostname changes and clock adjustments do not change
 that identity. Manage a local allocation from the host and boot session that
 launched it. Other boot sessions are excluded from discovery, and an explicit
-ID from one is refused rather than reported as stopped.
+ID from one is refused rather than reported as stopped. Once an allocation has
+ended, its credentials and scratch directory are removed; its full ID still
+reports `ended`.
 Local compute is available wherever the catalog exposes a valid local offer;
 Lightcone does not infer permission from login-node names or site environment
 variables. Allocation choices are explicit and native permissions still apply.
@@ -95,9 +97,9 @@ offers:
     startup: {class: fast}
 ```
 
-Set `LC_COMPUTE_CONFIG` to choose another file for all commands. The compute
-group's `--config PATH` overrides it for that invocation only. A missing explicit
-path or an invalid catalog is an error; only an absent implicit default file
+Set `LC_COMPUTE_CONFIG` to choose another file for all commands, including
+`lc run` and `lc materialize`, which find clusters through the same catalog. A
+missing explicit path or an invalid catalog is an error; only an absent implicit default file
 selects the built-in offer. Stop existing built-in allocations before replacing
 their connection with your own catalog.
 
@@ -241,8 +243,8 @@ directory: Lightcone resolves the root before appending managed paths. Allocatio
 directories and credential files still reject symlinks, retain ownership and
 ancestor-permission checks, and require modes `0700` and `0600`, respectively.
 The CLI's default catalog is hidden. For browser access, expose that same file through an
-existing API, or configure both clients to use one visible catalog with the CLI
-path override. Its location is independent of private connection files.
+existing API, or configure both clients to use one visible catalog through
+`LC_COMPUTE_CONFIG`. Its location is independent of private connection files.
 
 Use one execution invocation per project at a time. Concurrent writers,
 comprehensive cancellation, task fencing, and recovery after client/worker loss

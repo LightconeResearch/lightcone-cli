@@ -511,7 +511,11 @@ class SlurmProvider:
         )
 
     def discover(self) -> Sequence[Snapshot]:
-        """List managed allocations directly from this user's live Slurm jobs."""
+        """List managed allocations from one query of this user's live Slurm jobs.
+
+        Each job's controller record, a single-job lookup, supplies its
+        requested resources and re-verifies its owner, name and token.
+        """
         snapshots = []
         for row in self._live():
             name = row["JobName"].removeprefix(_PREFIX)
@@ -527,18 +531,25 @@ class SlurmProvider:
                 name=name,
             )
             self._validate_row(identity, row)
-            snapshots.append(self.inspect(identity))
+            snapshots.append(self._snapshot(identity, self._control(identity)))
         return snapshots
 
     def inspect(self, identity: Identity) -> Snapshot:
         """Read current native state, using accounting only after live absence."""
         self._validate_identity(identity)
+        if self._is_live(identity):
+            return self._snapshot(identity, self._control(identity))
+        return self._recorded(identity)
+
+    def _is_live(self, identity: Identity) -> bool:
         live = [row for row in self._live(identity.native_id) if row["JobId"] == identity.native_id]
         if len(live) > 1:
             raise ComputeError("Slurm returned multiple live records for this allocation")
         if live:
             self._validate_row(identity, live[0])
-            return self._snapshot(identity, self._control(identity))
+        return bool(live)
+
+    def _recorded(self, identity: Identity) -> Snapshot:
         matches = [
             row
             for row in self._history(identity)
@@ -609,12 +620,19 @@ class SlurmProvider:
             client.close(timeout=min(timeout, 5))
 
     def terminate(self, identity: Identity) -> None:
-        """Cancel the allocation after fresh native ownership and nonce validation."""
-        snapshot = self.inspect(identity)
-        if snapshot.phase == "ended":
-            return
-        if snapshot.phase == "unknown":
+        """Cancel the allocation after fresh native ownership and nonce validation.
+
+        A live job whose owner, name and token match is cancelled whatever
+        state Slurm reports; only a job absent from live jobs must prove from
+        accounting that it ended.
+        """
+        self._validate_identity(identity)
+        if not self._is_live(identity):
+            if self._recorded(identity).phase == "ended":
+                return
             raise ComputeError("cannot cancel an allocation whose native identity/state is unknown")
+        if _phase(self._control(identity).get("JobState", "UNKNOWN")) == "ended":
+            return
         self._command(
             [
                 "scancel",

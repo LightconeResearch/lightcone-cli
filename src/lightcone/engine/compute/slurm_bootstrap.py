@@ -16,6 +16,7 @@ from uuid import UUID
 
 from lightcone.engine.compute.model import ComputeError, Connection, Identity
 from lightcone.engine.compute.runtime import (
+    SCHEDULER_CONFIG,
     configured_directory,
     create_security,
     load_security,
@@ -165,12 +166,7 @@ def main() -> None:
     import dask
 
     try:
-        with dask.config.set(
-            {
-                "distributed.scheduler.http.routes": [],
-                "distributed.worker.http.routes": [],
-            }
-        ):
+        with dask.config.set(SCHEDULER_CONFIG):
             asyncio.run(run(args))
     except (ComputeError, ValueError) as exc:
         logging.error("Slurm Dask startup failed: %s", exc)

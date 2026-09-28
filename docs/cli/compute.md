@@ -4,11 +4,11 @@ Manage explicitly allocated Dask clusters using resource offers.
 No project is required for these commands.
 
 ```text
-lc compute [--config PATH] resources [--json]
-lc compute [--config PATH] launch --cpus VALUE --memory VALUE
+lc compute resources [--json]
+lc compute launch --cpus VALUE --memory VALUE
     [--name NAME] [--num-nodes N] [--time DURATION] [--startup fast] [--dry-run] [--json]
-lc compute [--config PATH] status [CLUSTER] [--wait] [--timeout SECONDS] [--json]
-lc compute [--config PATH] down CLUSTER [--json]
+lc compute status [CLUSTER] [--wait] [--timeout SECONDS] [--json]
+lc compute down CLUSTER [--json]
 ```
 
 Without configuration, `resources` exposes a built-in `local` offer: one CPU,
@@ -17,9 +17,9 @@ Launch it with `lc compute launch --cpus 1 --memory 1`; execution still requires
 the returned cluster name or its full immutable ID.
 
 `~/.lightcone/compute.yaml`, when present, replaces this built-in catalog.
-`LC_COMPUTE_CONFIG` selects another file for both compute and execution commands;
-`--config PATH` overrides it for this invocation. Missing explicit paths and
-invalid catalogs are errors. Only a missing implicit default file enables the
+`LC_COMPUTE_CONFIG` selects another file for both compute and execution commands,
+so an allocation launched from a catalog can be found by `lc run` and
+`lc materialize` too. Missing explicit paths and invalid catalogs are errors. Only a missing implicit default file enables the
 built-in catalog, without writing a file or starting any compute. See the
 [local and Slurm setup](../user/cluster.md) for examples.
 
@@ -30,7 +30,7 @@ built-in catalog, without writing a file or starting any compute. See the
 | `launch --dry-run` | Show the resolved shape and native launch parameters without allocation. |
 | `status` | List one `name: status` line per allocation, querying each configured native authority once; retain partial discovery errors. |
 | `status CLUSTER` | Resolve a name or full ID, inspect native state, and probe Dask readiness separately. |
-| `status CLUSTER --wait` | Wait for readiness, with a default deadline of 300 seconds; timeout leaves the allocation unchanged. |
+| `status CLUSTER --wait` | Wait for readiness, with a default deadline of 300 seconds, querying less often as the wait grows (up to every 30 seconds); timeout leaves the allocation unchanged. |
 | `down CLUSTER` | Request native termination even if the scheduler is unavailable. |
 
 Choose a name with `--name analysis`, or omit it to generate `lc-` followed by

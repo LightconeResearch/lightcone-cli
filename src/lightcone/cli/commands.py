@@ -189,17 +189,7 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
     try:
         outcome = engine_run.probe(current_project(), command, cluster_id=cluster_id)
     except KeyboardInterrupt:
-        target = cluster_id if cluster_id.startswith("clu_") else "<full-id>"
-        click.echo(
-            "Interrupted; the remote command may still be running. "
-            f"Stop its allocation with `lc compute down {target}`.",
-            err=True,
-        )
-        if target != cluster_id:
-            click.echo(
-                "Inspect `lc compute status --json` to identify the original allocation; "
-                "cluster names can be reused.", err=True,
-            )
+        _interrupted(cluster_id, "the remote command may still be running")
         raise
     if outcome.notes:
         click.echo("\n".join(["", *outcome.notes]), err=True)
@@ -208,6 +198,24 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
     # an OOM-killed probe comes back as the shell's conventional 128+N.
     code = outcome.returncode
     sys.exit(128 - code if code < 0 else code)
+
+
+def _interrupted(cluster_id: str, still: str, then: str = "") -> None:
+    """Say what an interrupt leaves behind: the allocation outlives the client.
+
+    A name can be reused once its allocation ends, so the remedy asks for
+    the full ID rather than repeating a name that may point elsewhere.
+    """
+    target = cluster_id if cluster_id.startswith("clu_") else "<full-id>"
+    click.echo(
+        f"Interrupted; {still}. Stop the allocation with `lc compute down {target}`{then}.",
+        err=True,
+    )
+    if target != cluster_id:
+        click.echo(
+            "Inspect `lc compute status --json` to identify the original allocation; "
+            "cluster names can be reused.", err=True,
+        )
 
 
 def _require_cluster_id(value: str) -> None:
@@ -370,18 +378,10 @@ def materialize(
         try:
             report = engine.materialize(root, targets, cluster_id=cluster_id, refresh=refresh)
         except KeyboardInterrupt:
-            target = cluster_id if cluster_id.startswith("clu_") else "<full-id>"
-            click.echo(
-                "Interrupted; remote recipes may still be writing results. "
-                f"Stop their allocation with `lc compute down {target}` "
-                "and confirm they have stopped before cleaning results/.",
-                err=True,
+            _interrupted(
+                cluster_id, "remote recipes may still be writing results",
+                " and confirm they have stopped before cleaning results/",
             )
-            if target != cluster_id:
-                click.echo(
-                    "Inspect `lc compute status --json` to identify the original allocation; "
-                    "cluster names can be reused.", err=True,
-                )
             raise
 
     if as_json:

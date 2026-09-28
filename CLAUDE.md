@@ -1115,15 +1115,15 @@ commit the run went on to create. It is the code that produced the output.
 A test that reads `dataset.head()` after materializing and expects a match
 is asserting the wrong thing.
 
-**One *project* uv hop, one spelling** (`project.uv_prefix(root, *,
-sync)`). The only thing its callers disagree about is `sync`: a probe
-converges the environment it is about to describe, a recipe must not, or
-every concurrent worker writes the same `.venv`.
+**One *project* uv hop, one spelling** (`project.uv_prefix(root)`),
+always `--no-sync`: the driver converges the environment before it
+submits a probe or a recipe, and a per-task sync would have every
+concurrent worker writing the same `.venv`.
 
 The run record's `cmd` is the deliberate second shape, and it is not the
 drift the rule guards against: it is *project-less* by construction
 (`uv run --no-project --with lightcone-cli==<v>`), so it shares no flag
-with `uv_prefix` — no `--project`, no `--locked`, no sync selection,
+with `uv_prefix` — no `--project`, no `--locked`, no `--no-sync`,
 because there is no project environment involved. It builds an engine to
 run, where `uv_prefix` enters an environment already built. Routing one
 through the other would mean a helper with two disjoint output shapes.
@@ -1754,8 +1754,33 @@ client disconnect does not prove remote subprocess termination. Comprehensive
 cancellation/fencing and simultaneous writers are deferred by explicit user decision.
 Local containerized processes can outlive process-group shutdown; do not claim
 that `down` or walltime proves an external runtime's containers have stopped.
-Read-only project validation precedes cluster connection. Populate the declared
+Read-only project validation precedes cluster connection, and a run with no
+tasks never connects: it only converges the crate. Populate the declared
 input-hash memo on the driver before serializing it to independent worker tasks.
+Any driver failure while tasks are outstanding (a failed commit included, not
+only a cluster error) carries `compute.UNSTOPPED`, the one wording for "the
+allocation was not stopped and unreported tasks may still be running".
+
+**One catalog selector, `LC_COMPUTE_CONFIG` (2026-09).** `lc compute --config`
+was removed: `run` and `materialize` resolve clusters through the catalog too,
+and a per-invocation override on one command group launched allocations those
+verbs could never find. An environment variable reaches every verb.
+
+**Retire ended local allocations; never delete their record.** Once `down` or
+discovery verifies the owner process is gone, `_retire` removes the TLS
+material, scheduler files and scratch, and writes `ended.json`, which discovery
+skips unread. `identity.json` stays, so a full ID still answers `ended` with
+its startup error. Deleting the directory was rejected: a missing record cannot
+be told from a changed `connection_root`, and treating it as ended would let
+`down` return while a live owner runs to walltime.
+
+**Native queries stay sparse.** Slurm discovery is one `squeue` plus one
+single-job `scontrol` per managed job; `status --wait` backs off from one to
+30 seconds. A live job whose owner, name and token verify is cancelled in any
+Slurm state; only a job absent from `squeue` must prove from accounting that it
+ended. Every scheduler lc launches runs under `runtime.SCHEDULER_CONFIG`, whose
+zero `events-cleanup-delay` drops a departed client's forwarded recipe output
+instead of holding it for Dask's default hour.
 
 **No login-node guard or venue module (PR #226 review).** Explicit catalog
 selection and native backend permissions determine allocation. Do not infer

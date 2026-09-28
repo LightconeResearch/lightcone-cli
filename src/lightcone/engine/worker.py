@@ -255,7 +255,7 @@ def execute(
             policy,
             [_SHELL, "-c", task.recipe],
             cwd=root,
-            prefix=uv_prefix(root, sync=False),
+            prefix=uv_prefix(root),
             env=child_env(),
             output=output,
         )
@@ -341,7 +341,7 @@ def _gate(root: Path, env_version: str) -> str:
     return (
         "the environment changed while the run was in flight — uv.lock, "
         ".python-version, or an install setting was edited. Nothing was "
-        "recorded; re-run `lc materialize`."
+        "recorded; re-run `lc materialize <cluster>`."
     )
 
 
@@ -453,7 +453,7 @@ def _from_disk(task: Task) -> dict[str, str]:
             if (manifest := assets.read(assets.manifest_path(path))) is None:
                 raise ProjectError(
                     f"the input `{name}` has never been materialized — there is no "
-                    f"manifest beside {path}. Run `lc materialize` instead."
+                    f"manifest beside {path}. Run `lc materialize <cluster>` instead."
                 )
             versions[name] = manifest.data_version
         else:

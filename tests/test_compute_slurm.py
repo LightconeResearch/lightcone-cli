@@ -493,6 +493,42 @@ def test_named_jobs_are_discovered_and_cancelled_from_native_names(
     )
 
 
+@pytest.mark.parametrize("state", ["STOPPED", "SIGNALING", "STAGE_OUT", "SOMETHING_NEW"])
+def test_a_verified_live_job_is_cancelled_in_any_state(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    calls = _native(monkeypatch, {
+        "squeue": _live(state=state), "scontrol": _control(state=state), "scancel": "",
+    })
+    provider.terminate(IDENTITY)
+    assert calls[-1][0][0] == "scancel"
+
+
+def test_a_job_that_ended_live_is_not_cancelled_again(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _native(monkeypatch, {
+        "squeue": _live(state="COMPLETED"), "scontrol": _control(state="COMPLETED"),
+    })
+    provider.terminate(IDENTITY)
+    assert all(argv[0] != "scancel" for argv, _ in calls)
+
+def test_discovery_queries_live_jobs_once_however_many_it_finds(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = "b" * 32
+    calls = _native(monkeypatch, {
+        "squeue": _live() + _live(job_id="124", token=other, name="second"),
+        "scontrol": [
+            _control(),
+            _control(token=other, name="second").replace("JobId=123", "JobId=124"),
+        ],
+    })
+    snapshots = provider.discover()
+    assert [item.identity.name for item in snapshots] == [IDENTITY.name, "second"]
+    assert all(item.resources is not None for item in snapshots)
+    assert [argv[0] for argv, _ in calls].count("squeue") == 1
+
 def test_discovery_and_cancellation_resolve_the_execution_user_once_per_provider(
     provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

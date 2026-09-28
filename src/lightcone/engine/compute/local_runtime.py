@@ -12,6 +12,7 @@ from pathlib import Path
 from types import FrameType
 
 from lightcone.engine.compute.runtime import (
+    SCHEDULER_CONFIG,
     create_security,
     private_directory,
     read_private_json,
@@ -53,10 +54,7 @@ def main() -> None:
         from distributed import LocalCluster
 
         security = create_security(directory)
-        with dask.config.set({
-            "distributed.scheduler.http.routes": [],
-            "distributed.worker.http.routes": [],
-        }), LocalCluster(  # type: ignore[no-untyped-call]
+        with dask.config.set(SCHEDULER_CONFIG), LocalCluster(  # type: ignore[no-untyped-call]
             n_workers=1,
             threads_per_worker=int(launch["task_slots"]),
             processes=True,

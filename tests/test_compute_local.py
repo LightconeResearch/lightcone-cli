@@ -224,7 +224,7 @@ with connect(sys.argv[2]) as client:
 
 
 def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
-    provider: LocalProvider, tmp_path: Path,
+    provider: LocalProvider, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from lightcone.engine.compute import Compute, connect
 
@@ -246,7 +246,8 @@ def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
             "time": {"default": "1m", "max": "1m"},
         }],
     }))
-    service = Compute(catalog)
+    monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
+    service = Compute()
     plan = service.plan(Request(cpus=1, memory_bytes=512 * 1024**2), name="analysis")
     identities = []
     try:
@@ -256,17 +257,17 @@ def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
         assert Identity.decode(first.encode()) == first
         # A new adapter reconstructs the name from the existing native locator.
         assert [item.identity for item in LocalProvider(provider.connection).discover()] == [first]
-        assert Compute(catalog).status("analysis", wait=True, timeout=20).identity == first
-        with connect("analysis", config_path=catalog) as client:
+        assert Compute().status("analysis", wait=True, timeout=20).identity == first
+        with connect("analysis") as client:
             assert client.submit(sum, [7, 8]).result(timeout=5) == 15
-        Compute(catalog).down("analysis")
-        assert Compute(catalog).status(first.encode()).phase == "ended"
-        second = Compute(catalog).launch(plan)
+        Compute().down("analysis")
+        assert Compute().status(first.encode()).phase == "ended"
+        second = Compute().launch(plan)
         identities.append(second)
         assert second.name == first.name
         assert second.encode() != first.encode()
-        assert Compute(catalog).status("analysis", wait=True, timeout=20).identity == second
-        assert Compute(catalog).status(first.encode()).phase == "ended"
+        assert Compute().status("analysis", wait=True, timeout=20).identity == second
+        assert Compute().status(first.encode()).phase == "ended"
     finally:
         for identity in identities:
             provider.terminate(identity)
@@ -279,6 +280,29 @@ def test_walltime_expires_without_a_connected_client(provider: LocalProvider) ->
     finally:
         provider.terminate(identity)
 
+
+@pytest.mark.parametrize("ending", ["down", "walltime"])
+def test_an_ended_allocation_keeps_its_record_but_not_its_secrets_or_scratch(
+    provider: LocalProvider, ending: str,
+) -> None:
+    identity = _launch(provider, seconds=2 if ending == "walltime" else 60)
+    directory = provider.root / identity.token
+    scratch = Path(str(read_private_json(directory / "launch.json")["scratch"]))
+    try:
+        if ending == "down":
+            _ready(provider, identity)
+            provider.terminate(identity)
+        else:
+            _ended(provider, identity, timeout=6)
+            assert provider.discover() == []
+    finally:
+        provider.terminate(identity)
+    assert not (directory / "tls-key.pem").exists()
+    assert not scratch.exists()
+    assert provider.inspect(identity).phase == "ended"
+    # A retired record is never read again, so it cannot break discovery.
+    (directory / "identity.json").write_text("{")
+    assert provider.discover() == []
 
 def test_unavailable_boot_identity_refuses_before_creating_an_allocation(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,

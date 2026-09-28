@@ -312,25 +312,22 @@ def require_git_annex() -> None:
         )
 
 
-def uv_prefix(directory: Path, *, sync: bool) -> list[str]:
+def uv_prefix(directory: Path) -> list[str]:
     """Build the ``uv run`` hop that pins a command to a project.
 
     ``--locked`` makes a stale lock uv's loud error rather than a silent
     relock, and ``--project`` is explicit because uv's walk-up discovery
-    is never trusted.
+    is never trusted. ``--no-sync`` because the driver converges the
+    environment before submitting anything; a per-task sync would have
+    concurrent workers writing the same ``.venv``.
 
     Args:
         directory: The project to pin to.
-        sync: Whether this hop may converge the environment. Cluster
-            tasks use False because the driver already converged it;
-            syncing per task would have concurrent workers writing
-            the same ``.venv``.
 
     Returns:
         The argv prefix, ending in ``--``.
     """
-    selection = ["--exact"] if sync else ["--no-sync"]
-    return ["uv", "run", "--locked", *selection, "--project", str(directory), "--"]
+    return ["uv", "run", "--locked", "--no-sync", "--project", str(directory), "--"]
 
 
 def sync(directory: Path) -> list[str]:

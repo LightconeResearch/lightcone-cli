@@ -16,7 +16,7 @@ Source: `src/lightcone/engine/project.py` (+
 | `current_project()` | The cwd as a project: requires `pyproject.toml`, `uv.lock`, `.venv`. |
 | `declared_project()` | The weaker question — what the repository carries, without `.venv`. One caller: the worker entry point, which builds the venv a moment later. |
 | `mode(root)` | `"direct"` or `"containerized"` — presence of `[tool.lightcone.image]`, nothing else. |
-| `uv_prefix(root, *, sync)` | The one spelling of the project uv hop. Callers differ only in `sync`: a probe converges the environment, a recipe must not. |
+| `uv_prefix(root)` | The one spelling of the project uv hop, `--no-sync` because the driver converges the environment before any probe or recipe runs. |
 | `project_name(dir)` | PEP 503-ish name from the directory name. |
 | `_run` / `_check_call` | Every external tool invocation, and the suite's one monkeypatch point. |
 | `ProjectError` | The engine's one exception; the CLI translates it once. |

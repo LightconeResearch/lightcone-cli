@@ -508,14 +508,14 @@ def materialize(
     # build, and must not leave an archive commit behind a run that
     # "failed" on a typo in the spec.
     graph, env_version, full = _graph(root, targets, report)
+    dsid = dataset.dataset_id(root)
+    if not graph.tasks:
+        # No tasks is not no project: a spec whose outputs were all dropped
+        # still has a crate describing them, and this is its only
+        # maintainer. Nothing is submitted, so no allocation is needed.
+        _converge_crate(root, report, full, dsid)
+        return report
     with cluster_for_run(cluster_id) as scheduler:
-        dsid = dataset.dataset_id(root)
-        if not graph.tasks:
-            # No tasks is not no project: a spec whose outputs were all
-            # dropped still has a crate describing them, and this is its
-            # only maintainer.
-            _converge_crate(root, report, full, dsid)
-            return report
         _fetch_inputs(root, graph, report)
         # Materialize is one of the two verbs allowed to build the image (the
         # other is `lc build`); the probe and the rerun entry point only find
@@ -577,10 +577,19 @@ def materialize(
                 *[pending[dep] for dep in task.depends_on],
                 key=_name(key),
             )
+        from lightcone.engine.compute import UNSTOPPED
+
         # An unreported task can still have a running subprocess. Leave its
         # partial files in place on interruption rather than restoring over it.
+        outstanding = len(pending)
         for result in scheduler.completed(list(pending.values())):
-            _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
+            outstanding -= 1
+            try:
+                _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
+            except Exception as exc:
+                if not outstanding:
+                    raise
+                raise ProjectError(f"{exc}. {UNSTOPPED}") from exc
         # The tree was clean at the start-of-run refusal and save/restore
         # keeps `results/` clean, so anything dirty *now* was edited while
         # the graph ran — and every manifest records the starting commit,
@@ -697,10 +706,9 @@ class _Dask:
         except ProjectError:
             raise
         except Exception as exc:
-            raise ProjectError(
-                f"cluster execution failed: {exc}. lc did not stop the allocation; "
-                "tasks that did not report may still be running and their partial files remain"
-            ) from exc
+            from lightcone.engine.compute import UNSTOPPED
+
+            raise ProjectError(f"cluster execution failed: {exc}. {UNSTOPPED}") from exc
 
 
 @contextmanager

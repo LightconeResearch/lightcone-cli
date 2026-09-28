@@ -502,6 +502,25 @@ def test_live_allocation_is_not_automatically_ready(catalog: Path, provider: Mag
     provider.terminate.assert_not_called()
 
 
+def test_waiting_for_readiness_backs_off_between_native_queries(
+    catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider.inspect.return_value.phase = "pending"
+    clock = [0.0]
+    naps: list[float] = []
+
+    def nap(seconds: float) -> None:
+        naps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(compute.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(compute.time, "sleep", nap)
+    with pytest.raises(ComputeError, match="did not become ready"):
+        compute.Compute().status(IDENTITY.encode(), wait=True, timeout=300)
+    assert naps[:6] == [1, 2, 4, 8, 16, 30]
+    assert max(naps) == 30
+    assert provider.inspect.call_count < 20
+
 @pytest.mark.parametrize("timeout", [float("nan"), float("inf"), float("-inf"), 0])
 def test_readiness_deadline_must_be_finite(
     catalog: Path, provider: MagicMock, timeout: float,

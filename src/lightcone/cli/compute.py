@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
 import click
@@ -51,30 +50,22 @@ def _table(headers: list[str], rows: list[list[str]]) -> None:
 
 
 @click.group()
-@click.option(
-    "--config",
-    "config_path",
-    type=click.Path(path_type=Path, dir_okay=False),
-    help=(
-        "Catalog path (default: LC_COMPUTE_CONFIG or ~/.lightcone/compute.yaml; "
-        "built-in local offer when the default file is absent)."
-    ),
-)
-@click.pass_context
-def compute(ctx: click.Context, config_path: Path | None) -> None:
-    """Allocate resources, inspect clusters, and end allocations."""
-    ctx.obj = config_path
+def compute() -> None:
+    """Allocate resources, inspect clusters, and end allocations.
+
+    The catalog is LC_COMPUTE_CONFIG, else ~/.lightcone/compute.yaml, else a
+    built-in local offer.
+    """
 
 
 @compute.command()
 @click.option("--json", "as_json", is_flag=True, help="Emit structured output.")
-@click.pass_obj
-def resources(config_path: Path | None, as_json: bool) -> None:
+def resources(as_json: bool) -> None:
     """Show available resource offers in preference order."""
     from lightcone.engine.compute import Compute
 
     with _errors(as_json):
-        data = Compute(config_path).resources()
+        data = Compute().resources()
         if as_json:
             click.echo(json.dumps(data))
             return
@@ -108,9 +99,7 @@ def resources(config_path: Path | None, as_json: bool) -> None:
 )
 @click.option("--dry-run", is_flag=True, help="Resolve the launch without allocating compute.")
 @click.option("--json", "as_json", is_flag=True, help="Emit structured output.")
-@click.pass_obj
 def launch(
-    config_path: Path | None,
     name: str | None,
     cpus: str,
     memory: str,
@@ -125,7 +114,7 @@ def launch(
     from lightcone.engine.compute.model import Request
 
     with _errors(as_json):
-        service = Compute(config_path)
+        service = Compute()
         plan = service.plan(
             Request.parse(
                 cpus,
@@ -164,9 +153,7 @@ def launch(
     help="Readiness deadline in seconds (default: 300); requires --wait.",
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit structured output.")
-@click.pass_obj
 def status(
-    config_path: Path | None,
     cluster_id: str | None,
     wait: bool,
     timeout: float | None,
@@ -181,7 +168,7 @@ def status(
             raise ComputeError("--wait requires a cluster name or ID")
         if timeout is not None and not wait:
             raise ComputeError("--timeout requires --wait")
-        service = Compute(config_path)
+        service = Compute()
         if cluster_id is not None:
             snapshot = service.status(cluster_id, wait=wait, timeout=timeout or 300)
             data = snapshot.as_dict()
@@ -228,13 +215,12 @@ def status(
 @compute.command()
 @click.argument("cluster_id", metavar="CLUSTER")
 @click.option("--json", "as_json", is_flag=True, help="Emit structured output.")
-@click.pass_obj
-def down(config_path: Path | None, cluster_id: str, as_json: bool) -> None:
+def down(cluster_id: str, as_json: bool) -> None:
     """End a cluster by name or ID; scheduler reachability is not required."""
     from lightcone.engine.compute import Compute
 
     with _errors(as_json):
-        identity = Compute(config_path).down(cluster_id)
+        identity = Compute().down(cluster_id)
         if as_json:
             click.echo(
                 json.dumps({

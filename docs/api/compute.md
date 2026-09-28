@@ -11,9 +11,9 @@ It owns no service, registry, or saved current-cluster selection.
 | `Compute.plan(request, *, name=None)` | Select an eligible offer and freeze its native launch settings and optional name without allocation. |
 | `Compute.launch(plan)` | Check names across native authorities, generate one if omitted, submit once, and return a self-contained `Identity`. |
 | `Compute.discover()` | Snapshots and per-connection errors, querying each authority once. |
-| `Compute.status(cluster_id, wait=False, timeout=300)` | Resolve a name or full ID; return native allocation state plus authenticated Dask readiness. |
+| `Compute.status(cluster_id, wait=False, timeout=300)` | Resolve a name or full ID; return native allocation state plus authenticated Dask readiness. Waiting backs off from one to 30 seconds between native queries. |
 | `Compute.down(cluster_id)` | Resolve a name or full ID, request native termination independent of scheduler health, and return the canonical `Identity`. |
-| `connect(cluster_id, timeout=10, config_path=None)` | Resolve a name or full ID; borrow a standard Dask client, closing the client but never the allocation. |
+| `connect(cluster_id, timeout=10)` | Resolve a name or full ID; borrow a standard Dask client, closing the client but never the allocation. |
 | `Provider` | `plan`, `launch`, `discover`, `inspect`, `connect`, `terminate`. |
 
 `Catalog.load()` defaults to `~/.lightcone/compute.yaml`. When that implicit file
@@ -80,7 +80,10 @@ allocation without discovering unrelated connections. Slurm carries the name
 in `JobName=lc-v1-<name>` and the submission token in
 `Comment=lightcone:v1:kind=dask:token=<32hex>`; local private locators carry the
 encoded identity. Slurm discovery and lifecycle checks verify both native fields
-and the owner. A marked live job with no valid token makes discovery incomplete.
+and the owner. Discovery makes one `squeue` query, then one single-job
+`scontrol` lookup per managed job. A marked live job with no valid token makes
+discovery incomplete. A verified live job is cancelled whatever state Slurm
+reports; a job absent from live jobs must prove from accounting that it ended.
 Neither is a second source of lifecycle state or a name-to-ID registry.
 
 The Slurm provider resolves its user ID once through `id -u` using the same
@@ -100,8 +103,10 @@ preflight orchestration, source fingerprinting, or login-node guard. Driver-side
 preparation and the existing task runtime/sandbox checks remain in their owners.
 `output.py` transports byte chunks through standard Dask events so detached
 workers' output reaches the invoking CLI. It uses the borrowed client's event
-topic, which Dask removes according to its native client-disconnect cleanup
-policy, rather than retaining a separate topic for every command. Probes preserve both streams;
+topic, which the schedulers lc launches drop as soon as the client disconnects
+(`runtime.SCHEDULER_CONFIG`), rather than retaining a separate topic for every
+command. A driver that exits before every task reports says so with
+`UNSTOPPED`: closing a client cannot prove that a remote subprocess stopped. Probes preserve both streams;
 materialization sends recipe output to stderr to leave stdout for its report.
 
 Local teardown drains the allocation's validated process group rather than
@@ -111,6 +116,9 @@ identity without depending on hostname or wall-clock creation time. Discovery
 skips other boot sessions; explicit operations refuse them because this process
 cannot establish their state on another host. Failed unpublished launches
 are cleaned up, and incomplete locator directories do not hide healthy allocations.
+An allocation verified as ended, by `down` or by discovery, is retired: its TLS
+material, scheduler files and scratch are removed, and a marker lets discovery
+skip it unread. Its identity record stays, so a full ID still reports `ended`.
 Cancellation and concurrent project writers are not made safe by allocation
 management; callers must respect the documented execution limits. Containers
 managed outside that process group can survive local teardown.

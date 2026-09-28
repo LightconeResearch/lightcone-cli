@@ -204,3 +204,30 @@ def test_a_text_only_output_receiver_remains_readable(monkeypatch: pytest.Monkey
     monkeypatch.setattr(sys, "stdout", output)
     write_output("stdout", b"diagnostic\r\n")
     assert output.getvalue() == "diagnostic\r\n"
+
+
+def test_a_departed_clients_forwarded_output_is_not_retained() -> None:
+    import dask
+    from distributed import Client, LocalCluster
+
+    from lightcone.engine.compute.output import call, forwarding
+    from lightcone.engine.compute.runtime import SCHEDULER_CONFIG
+
+    def noisy(*, output: Callable[[str, bytes], None]) -> None:
+        output("stderr", b"x" * 1024)
+
+    with (
+        dask.config.set(SCHEDULER_CONFIG),
+        LocalCluster(
+            n_workers=1, threads_per_worker=1, processes=False, dashboard_address=None,
+        ) as cluster,
+        Client(cluster, set_as_default=False) as observer,
+    ):
+        with Client(cluster, set_as_default=False) as client, forwarding(client) as output:
+            client.submit(call, noisy, output.topic, "noisy", pure=False).result()
+            assert output.wait("noisy")
+            assert observer.get_events(output.topic)
+        deadline = time.monotonic() + 10
+        while observer.get_events(output.topic):
+            assert time.monotonic() < deadline, "the departed client's output was retained"
+            time.sleep(0.05)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -42,6 +43,7 @@ from lightcone.engine.compute.runtime import (
 
 _OWNER_MODULE = "lightcone.engine.compute.local_runtime"
 _STOP_GRACE = 3.0
+_RETIRED = "ended.json"
 
 
 def _boot_identity() -> str:
@@ -293,6 +295,9 @@ class LocalProvider:
         for directory in sorted(self.root.iterdir()):
             if not re.fullmatch(r"[0-9a-f]{32}", directory.name):
                 continue
+            if (directory / _RETIRED).exists():
+                # Verified ended and retired: nothing is left to observe.
+                continue
             if not (directory / "identity.json").exists():
                 # Launch publishes the identity atomically after Popen. A
                 # launcher can still be starting, or have failed before that.
@@ -304,9 +309,33 @@ class LocalProvider:
                 continue
             identity = Identity.decode(str(record.get("identity", "")))
             snapshot = self.inspect(identity)
-            if snapshot.phase != "ended":
+            if snapshot.phase == "ended":
+                self._retire(directory)
+            else:
                 snapshots.append(snapshot)
         return snapshots
+
+    def _retire(self, directory: Path) -> None:
+        """Remove an ended allocation's credentials and scratch, keeping its record.
+
+        The identity record (and any startup error) still answers an
+        inspection by full ID, while the marker lets discovery skip the
+        allocation without reading it. Best effort: an allocation left
+        half-retired is still ended, and the next discovery finishes the job.
+        """
+        try:
+            if (launch := directory / "launch.json").exists():
+                scratch = Path(str(read_private_json(launch).get("scratch", "")))
+                # Only this allocation's own scratch, never any path a record names.
+                if scratch.name == f"lc-{directory.name}":
+                    shutil.rmtree(scratch, ignore_errors=True)
+            for name in (
+                "tls-key.pem", "tls-cert.pem", "scheduler.json", "connection.json", "launch.json",
+            ):
+                (directory / name).unlink(missing_ok=True)
+            write_private_json(directory / _RETIRED, {})
+        except (OSError, ComputeError):
+            pass
 
     def inspect(self, identity: Identity) -> Snapshot:
         """Report native process existence without requiring a reachable scheduler."""
@@ -352,6 +381,10 @@ class LocalProvider:
     def terminate(self, identity: Identity) -> None:
         """Terminate the validated allocation process group even if Dask is wedged."""
         directory, record = self._record(identity)
+        self._stop(identity, directory, record)
+        self._retire(directory)
+
+    def _stop(self, identity: Identity, directory: Path, record: dict[str, Any]) -> None:
         process = self._process(identity, directory, record)
         if process is None:
             return

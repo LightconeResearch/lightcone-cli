@@ -14,6 +14,16 @@ from lightcone.engine.compute.model import ComputeError
 
 DEFAULT_CONNECTION_ROOT = "~/.lightcone/compute"
 
+#: Dask configuration for every scheduler lc launches. No HTTP routes are
+#: served. A departed client's events, which carry the recipe output it
+#: forwarded, are dropped at once rather than after Dask's default hour, so
+#: a long-lived allocation does not accumulate every invocation's output.
+SCHEDULER_CONFIG = {
+    "distributed.scheduler.http.routes": [],
+    "distributed.worker.http.routes": [],
+    "distributed.scheduler.events-cleanup-delay": "0s",
+}
+
 
 def configured_directory(path: Path) -> Path:
     """Resolve a trusted configured root before appending managed allocation paths.

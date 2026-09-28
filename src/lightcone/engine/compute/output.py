@@ -42,8 +42,9 @@ def forwarding(
     client: Any, *, stdout: Literal["stdout", "stderr"] = "stdout"
 ) -> Iterator[Forwarder]:
     """Subscribe before any task starts and unsubscribe when the invocation ends."""
-    # Dask expires a disconnected client's event log through its native cleanup
-    # policy. A separate custom topic would retain output for the whole allocation.
+    # The client's own topic, because Dask drops a departed client's events
+    # (immediately, under SCHEDULER_CONFIG). A separate custom topic would
+    # retain output for the whole allocation.
     forwarder = Forwarder(client.id, stdout)
     client.subscribe_topic(forwarder.topic, forwarder.receive)
     try:
