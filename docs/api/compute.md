@@ -44,8 +44,16 @@ resolution also requires complete discovery and exactly one current match.
 Concurrent launches can still race; ambiguous names are refused. Names can be
 reused after termination, while full IDs continue to identify the original
 allocation without discovering unrelated connections. Slurm carries the name
-and nonce in its job name; local private locators carry the encoded identity.
+in `JobName=lc-v1-<name>` and the submission token in
+`Comment=lightcone:v1:kind=dask:token=<32hex>`; local private locators carry the
+encoded identity. Slurm discovery and lifecycle checks verify both native fields
+and the owner. A marked live job with no valid token makes discovery incomplete.
 Neither is a second source of lifecycle state or a name-to-ID registry.
+
+Historical Slurm identity requires the accounting `Comment` field. Slurm stores
+it when `AccountingStoreFlags` includes `job_comment`; without a matching retained
+token, a missing live job remains unknown and cannot authorize cancellation.
+See [Slurm's accounting field documentation](https://slurm.schedmd.com/sacct.html).
 
 Execution submits ordinary tasks through the borrowed client's `submit` method.
 Dask chooses the workers and handles dependencies; invocation-specific keys prevent

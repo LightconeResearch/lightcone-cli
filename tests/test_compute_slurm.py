@@ -19,6 +19,7 @@ import psutil
 import pytest
 
 from lightcone.engine.compute import Compute, slurm, slurm_bootstrap
+from lightcone.engine.compute.catalog import Catalog
 from lightcone.engine.compute.model import (
     ComputeError,
     Connection,
@@ -37,7 +38,8 @@ from lightcone.engine.compute.runtime import (
 NAMESPACE = "9d0c0fc5-9be8-407a-a3ec-f17c4110b162"
 TOKEN = "c82a7b8d0ccf40a4be0e57e784edb989"
 IDENTITY = Identity(NAMESPACE, "123", TOKEN)
-NAME = f"lc-dask-v1-{TOKEN}-{IDENTITY.name}"
+NAME = f"lc-v1-{IDENTITY.name}"
+COMMENT = f"lightcone:v1:kind=dask:token={TOKEN}"
 
 
 @pytest.fixture
@@ -80,28 +82,32 @@ def offer() -> Offer:
 
 def _live(
     *, job_id: str = "123", token: str = TOKEN, uid: int | None = None,
-    state: str = "RUNNING", name: str | None = None,
+    state: str = "RUNNING", name: str = IDENTITY.name, comment: str | None = None,
 ) -> str:
-    name = name if name is not None else f"lc-{token[:12]}"
-    return f"{job_id}|lc-dask-v1-{token}-{name}|{os.getuid() if uid is None else uid}|{state}\n"
+    comment = comment if comment is not None else f"lightcone:v1:kind=dask:token={token}"
+    return f"{job_id}|lc-v1-{name}|{os.getuid() if uid is None else uid}|{state}|{comment}\n"
 
 
 def _control(
     *, token: str = TOKEN, uid: int | None = None, state: str = "RUNNING", restarts: int = 0,
-    name: str | None = None,
+    name: str = IDENTITY.name, comment: str | None = None,
 ) -> str:
     owner = os.getuid() if uid is None else uid
-    name = name if name is not None else f"lc-{token[:12]}"
+    comment = comment if comment is not None else f"lightcone:v1:kind=dask:token={token}"
     return (
-        f"JobId=123 JobName=lc-dask-v1-{token}-{name} UserId=alice({owner}) JobState={state} "
-        f"NumNodes=2 NumCPUs=512 CPUs/Task=256 MinMemoryNode=480G Restarts={restarts} "
+        f"JobId=123 JobName=lc-v1-{name} UserId=alice({owner}) JobState={state}\n"
+        f"   Comment={comment} \n"
+        f"   NumNodes=2 NumCPUs=512 CPUs/Task=256 MinMemoryNode=480G Restarts={restarts} "
         "SubmitTime=2026-09-27T10:00:00 StartTime=2026-09-27T10:00:05 Reason=None\n"
     )
 
 
-def _history(*, token: str = TOKEN, state: str = "COMPLETED", name: str | None = None) -> str:
-    name = name if name is not None else f"lc-{token[:12]}"
-    return f"123|lc-dask-v1-{token}-{name}|{os.getuid()}|{state}|2026-09-27T10:00:00\n"
+def _history(
+    *, token: str = TOKEN, state: str = "COMPLETED", name: str = IDENTITY.name,
+    job_id: str = "123", submitted: str = "2026-09-27T10:00:00", comment: str | None = None,
+) -> str:
+    comment = comment if comment is not None else f"lightcone:v1:kind=dask:token={token}"
+    return f"{job_id}|lc-v1-{name}|{os.getuid()}|{state}|{submitted}|{comment}\n"
 
 
 def _native(
@@ -265,6 +271,7 @@ def test_sbatch_launch_owns_payload_and_scrubs_ambient_overrides(
     argv, kwargs = next(call for call in calls if call[0][0] == "sbatch")
     assert "--parsable" in argv and "--no-requeue" in argv
     assert f"--job-name={NAME}" in argv
+    assert f"--comment={COMMENT}" in argv
     assert kwargs["timeout"] > 0
     assert kwargs["env"]["SLURM_CONF"] == "/etc/slurm/site.conf"
     assert kwargs["env"]["SLURM_JWT"] == "private-auth"
@@ -384,8 +391,9 @@ def test_named_launch_keeps_the_full_submission_token_in_native_metadata(
     assert launched == replace(IDENTITY, name=name)
     argv = (next(argv for argv, _ in calls if argv[0] == "sbatch")
             if submit == "sbatch" else popen.call_args.args[0])
-    assert f"--job-name=lc-dask-v1-{TOKEN}-{name}" in argv
-    assert len(f"lc-dask-v1-{TOKEN}-{name}") <= 107
+    assert f"--job-name=lc-v1-{name}" in argv
+    assert f"--comment={COMMENT}" in argv
+    assert len(f"lc-v1-{name}") <= 69
 
 
 @pytest.mark.parametrize("name", ["", "Upper", "two words", "-leading", "trailing-", "a" * 64])
@@ -413,8 +421,8 @@ def test_named_submission_recovers_from_history_when_sbatch_output_is_malformed(
     assert provider.launch(plan) == replace(IDENTITY, name=name)
 
     accounting = next(argv for argv, _ in calls if argv[0] == "sacct")
-    assert f"--name=lc-dask-v1-{TOKEN}-{name}" in accounting
-    assert "--format=JobIDRaw,JobName%128,UID,State,Submit" in accounting
+    assert f"--name=lc-v1-{name}" in accounting
+    assert "--format=JobIDRaw,JobName%128,UID,State,Submit,Comment%128" in accounting
     assert sum(argv[0] == "sbatch" for argv, _ in calls) == 1
 
 
@@ -426,7 +434,7 @@ def test_recovery_does_not_accept_a_different_name_with_the_same_nonce(
         "sbatch": "garbled", "squeue": _live(name="other"), "sacct": _history(name="other"),
     })
     plan = replace(provider.plan(offer, Request.parse("256", "480")), name="requested")
-    with pytest.raises(ComputeError, match=f"lc-dask-v1-{TOKEN}-requested") as raised:
+    with pytest.raises(ComputeError, match=f"lc-v1-requested and comment token {TOKEN}") as raised:
         provider.launch(plan)
     assert raised.value.submission_token == TOKEN
 
@@ -442,8 +450,38 @@ def test_named_jobs_are_discovered_and_cancelled_from_native_names(
     assert snapshot.identity == replace(IDENTITY, name=name)
     assert snapshot.identity.name == name
     provider.terminate(snapshot.identity)
-    assert f"--name=lc-dask-v1-{TOKEN}-{name}" in calls[-1][0]
-    assert "--format=%i|%128j|%U|%T" in calls[0][0]
+    assert f"--name=lc-v1-{name}" in calls[-1][0]
+    assert "--format=%i|%128j|%U|%T|%128k" in calls[0][0]
+
+
+@pytest.mark.parametrize("comment", [None, "", "(null)", "unrelated|comment", COMMENT + "extra"])
+def test_existing_native_name_cannot_be_hidden_from_duplicate_name_checks(
+    provider: slurm.SlurmProvider, offer: Offer, monkeypatch: pytest.MonkeyPatch,
+    comment: str | None,
+) -> None:
+    calls = _native(monkeypatch, {
+        "squeue": _live(name="analysis", comment=comment),
+        "scontrol": _control(name="analysis", comment=comment),
+    })
+    compute = Compute.__new__(Compute)
+    compute.catalog = Catalog({"nersc": provider.connection}, (offer,))
+    monkeypatch.setattr(compute, "provider", lambda connection: provider)
+    plan = replace(provider.plan(offer, Request.parse("256", "480")), name="analysis")
+
+    expected = "already in use" if comment is None else "discovery is incomplete"
+    with pytest.raises(ComputeError, match=expected):
+        compute.launch(plan)
+
+    assert all(argv[0] != "sbatch" for argv, _ in calls)
+
+
+@pytest.mark.parametrize("comment", ["", "(null)", "wrong-kind:token=" + TOKEN, COMMENT + "|extra"])
+def test_discovery_refuses_missing_or_malformed_native_submission_identity(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch, comment: str,
+) -> None:
+    _native(monkeypatch, {"squeue": _live(comment=comment)})
+    with pytest.raises(ComputeError, match="missing or malformed.*Comment"):
+        provider.discover()
 
 
 def test_named_job_identity_survives_terminal_accounting(
@@ -455,6 +493,52 @@ def test_named_job_identity_survives_terminal_accounting(
     assert snapshot.identity == identity
     assert snapshot.phase == "ended"
     assert provider.inspect(replace(identity, name="other")).phase == "unknown"
+
+
+@pytest.mark.parametrize("comment", ["", "(null)", "missing-token", COMMENT + "|extra"])
+def test_accounting_without_verified_comment_cannot_prove_allocation_ended(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch, comment: str,
+) -> None:
+    calls = _native(monkeypatch, {"squeue": "", "sacct": _history(comment=comment)})
+    observed = provider.inspect(IDENTITY)
+    assert observed.phase == "unknown"
+    assert "submission token cannot be verified" in observed.reason
+    with pytest.raises(ComputeError, match="unknown"):
+        provider.terminate(IDENTITY)
+    assert all(argv[0] != "scancel" for argv, _ in calls)
+
+
+def test_accounting_keeps_equal_job_ids_and_names_separate_by_submission_token(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    older = _history(state="COMPLETED")
+    newer = _history(token="a" * 32, state="RUNNING", submitted="2026-09-28T10:00:00")
+    _native(monkeypatch, {"squeue": "", "sacct": older + newer})
+    assert provider.inspect(IDENTITY).phase == "ended"
+    assert provider.inspect(replace(IDENTITY, token="a" * 32)).phase == "unknown"
+
+
+def test_submission_recovery_uses_nonce_among_historical_name_and_id_duplicates(
+    provider: slurm.SlurmProvider, offer: Offer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(slurm.uuid, "uuid4", lambda: SimpleNamespace(hex=TOKEN))
+    calls = _native(monkeypatch, {
+        "sbatch": "garbled",
+        "squeue": _live(token="a" * 32),
+        "sacct": _history() + _history(token="a" * 32, submitted="2026-09-28T10:00:00"),
+    })
+    assert provider.launch(provider.plan(offer, Request.parse("256", "480"))) == IDENTITY
+    assert sum(argv[0] == "sbatch" for argv, _ in calls) == 1
+
+
+def test_historical_recovery_never_infers_a_missing_submission_token(
+    provider: slurm.SlurmProvider, offer: Offer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(slurm.uuid, "uuid4", lambda: SimpleNamespace(hex=TOKEN))
+    _native(monkeypatch, {"sbatch": "garbled", "squeue": "", "sacct": _history(comment="")})
+    with pytest.raises(ComputeError, match="submission outcome is uncertain") as raised:
+        provider.launch(provider.plan(offer, Request.parse("256", "480")))
+    assert raised.value.submission_token == TOKEN
 
 
 @pytest.mark.parametrize("name", ["", "Upper", "two words", "-leading", "trailing-", "a" * 64])
@@ -511,15 +595,29 @@ def test_control_record_revalidated_before_cancellation(
     assert all(argv[0] != "scancel" for argv, _ in calls)
 
 
-def test_cancel_targets_allocation_with_native_name_and_owner_filters(
-    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("comment", ["", "changed-token", COMMENT + " extra",
+                                     COMMENT + " extra=value"])
+def test_changed_or_missing_control_comment_cannot_be_cancelled(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch, comment: str,
 ) -> None:
+    calls = _native(monkeypatch, {"squeue": _live(), "scontrol": _control(comment=comment)})
+    with pytest.raises(ComputeError, match="ownership, submission token, or name"):
+        provider.terminate(IDENTITY)
+    assert all(argv[0] != "scancel" for argv, _ in calls)
+
+
+@pytest.mark.parametrize("context", ["perlmutter", ""])
+def test_cancel_targets_allocation_with_native_name_and_owner_filters(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch, context: str,
+) -> None:
+    provider = slurm.SlurmProvider(replace(provider.connection, context=context))
     calls = _native(monkeypatch, {"squeue": _live(), "scontrol": _control(), "scancel": ""})
     provider.terminate(IDENTITY)
     argv = calls[-1][0]
     assert argv == [
         "scancel",
-        "--clusters=perlmutter",
+        "--ctld",
+        *(["--clusters=perlmutter"] if context else []),
         f"--user={os.getuid()}",
         f"--name={NAME}",
         "123",

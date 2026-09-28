@@ -175,13 +175,21 @@ submitted job's actual `Partition` during the deployment test.
 [NERSC's workflow guidance](https://docs.nersc.gov/jobs/workflow/maestro/)
 describes its QOS-driven partition selection.
 
-Jobs carry both the random submission token and cluster name in
-`lc-dask-v1-<token>-<name>`. The opaque cluster ID encodes the connection namespace,
-native job ID, token, and name. There is
-no job registry to reconcile. Removing an offer prevents new launches without
+Slurm displays `lc-v1-<name>` as the job name, for example `lc-v1-analysis`.
+Its native comment carries the random submission token as
+`lightcone:v1:kind=dask:token=<32hex>`. Lightcone verifies the name, token, and owner
+before attaching or cancelling; a job name alone does not establish identity.
+The opaque cluster ID encodes the connection namespace, native job ID, token,
+and name. There is no job registry to reconcile. Removing an offer prevents new launches without
 hiding existing jobs; retain its connection to inspect and terminate them.
 Native job state and live Dask readiness are separate observations. A worker loss
 can leave a job active but not ready. Unknown native state is reported as unknown.
+
+Live discovery requires the native comment. Historical inspection also needs
+Slurm accounting to retain it through `AccountingStoreFlags=job_comment`.
+If accounting has no matching token, Lightcone reports unknown rather than
+assuming the allocation ended or cancelling a job with a reused ID.
+[Slurm documents this comment-retention setting](https://slurm.schedmd.com/sacct.html).
 
 An `salloc` launch retains native `salloc`/`srun` processes on the submit host.
 Its survival across logout, Jupyter shutdown, and site session cleanup must be

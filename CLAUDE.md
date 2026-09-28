@@ -1698,6 +1698,11 @@ Resolve names through fresh discovery and refuse missing, ambiguous, or incomple
 observations. Check existing names before submission, but do not claim atomic global
 reservation across native backends. A name can be reused after termination; use the
 full ID to address an exact incarnation or bypass unrelated discovery failures.
+Slurm uses `JobName=lc-v1-<name>` and
+`Comment=lightcone:v1:kind=dask:token=<32hex>`. Verify the owner and both native
+fields before attachment or cancellation. Missing live comments make discovery
+incomplete; missing historical comments leave identity unknown. Historical
+comment retention requires Slurm's `AccountingStoreFlags` to include `job_comment`.
 
 **Local compute needs no setup.** An absent implicit `~/lightcone-compute.yaml`
 selects a built-in local catalog: one CPU, 1 GiB, one node, fast startup, 30-minute

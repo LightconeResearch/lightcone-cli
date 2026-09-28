@@ -90,6 +90,9 @@ client and deployment-managed workers. Lightcone submits ordinary Python tasks.
 nonsecret catalog from a visible file or existing site endpoint and manages
 allocations through existing authenticated APIs. At NERSC, `jupyterlab-slurm`
 supports batch submission, listing, and cancellation without reading `.lightcone`.
+Its name-only queue listing shows candidate clusters and job IDs; native job
+details expose the `Comment` needed to reconstruct a full cluster ID and verify
+lifecycle actions.
 Its current API does not provide `salloc`, so interactive creation needs an
 additional existing execution transport before it can be enabled in the browser.
 
@@ -447,7 +450,8 @@ short ID that requires a UUID-to-job lookup database. The exact byte encoding is
 choice; interoperability fixtures must fix it before a frontend is shipped.
 
 For Slurm, use the connection namespace, native job ID, random submission token,
-and cluster name; the job name carries the token and name. The namespace fixes
+and cluster name. `JobName=lc-v1-<name>` carries the readable name, while
+`Comment=lightcone:v1:kind=dask:token=<32hex>` carries the token. The namespace fixes
 native scope; owner and submission
 times are validation/query evidence, not fields that change the ID when details
 become available. In particular, Slurm can reset its reported submission time on
@@ -618,13 +622,12 @@ sbatch --parsable \
 
 The paths must already be available and correctly owned. It passes this generated
 script on stdin. Values shown are illustrative resolved values; `slurm_bootstrap`
-is the proposed thin entry point that constructs the standard Dask objects,
-not a worker implementation or an existing command:
+is the thin entry point that constructs the standard Dask objects:
 
 ```bash
 #!/bin/bash
-#SBATCH --job-name=lc-dask-v1-c82a7b8d0ccf40a4be0e57e784edb989-analysis
-#SBATCH --comment=lightcone:v1:kind=dask
+#SBATCH --job-name=lc-v1-analysis
+#SBATCH --comment=lightcone:v1:kind=dask:token=c82a7b8d0ccf40a4be0e57e784edb989
 #SBATCH --no-requeue
 
 set -euo pipefail
@@ -632,7 +635,7 @@ umask 077
 
 exec srun --ntasks=2 --ntasks-per-node=1 --cpus-per-task=256 \
   --cpu-bind=threads --kill-on-bad-exit=1 \
-  /shared/tools/lightcone/bin/python -m lightcone.engine.compute.slurm_bootstrap \
+  /shared/tools/lightcone/bin/python -P -m lightcone.engine.compute.slurm_bootstrap \
   --submission c82a7b8d0ccf40a4be0e57e784edb989 \
   --namespace 9d0c0fc5-9be8-407a-a3ec-f17c4110b162 \
   --connection-root /shared/home/alice/.lightcone/compute \
@@ -692,11 +695,12 @@ For the quick offer, generate a command of this shape, using the same resolved
 salloc --account=myproject --constraint=cpu --qos=interactive \
   --nodes=2 --ntasks-per-node=1 --cpus-per-task=256 \
   --mem=491520M --time=01:00:00 \
-  --job-name=lc-dask-v1-c82a7b8d0ccf40a4be0e57e784edb989-analysis \
-  --comment=lightcone:v1:kind=dask --kill-command=TERM \
+  --job-name=lc-v1-analysis \
+  --comment=lightcone:v1:kind=dask:token=c82a7b8d0ccf40a4be0e57e784edb989 \
+  --kill-command=TERM \
   srun --ntasks=2 --ntasks-per-node=1 --cpus-per-task=256 \
     --cpu-bind=threads --kill-on-bad-exit=1 \
-    /shared/tools/lightcone/bin/python -m lightcone.engine.compute.slurm_bootstrap \
+    /shared/tools/lightcone/bin/python -P -m lightcone.engine.compute.slurm_bootstrap \
     --submission c82a7b8d0ccf40a4be0e57e784edb989 \
     --namespace 9d0c0fc5-9be8-407a-a3ec-f17c4110b162 \
     --connection-root /shared/home/alice/.lightcone/compute \
@@ -766,30 +770,35 @@ still require fresh attempt identity and credentials.
 
 ### Native Slurm discovery
 
-Use the required name `lc-dask-v1-<random-submission-token>-<cluster-name>` plus the optional richer
-comment `lightcone:v1:kind=dask`. The name is the common discovery marker because
-the NERSC queue API exposes names but not comments. Neither field is health or a
-credential. The 32-character token and up-to-63-character cluster name fit within
-the 128-character job-name field used for accounting queries. Include complete,
-untruncated names in CLI queries.
+Use `JobName=lc-v1-<cluster-name>` and the required native comment
+`lightcone:v1:kind=dask:token=<32hex>`. The name identifies a candidate managed job;
+the comment's random token distinguishes allocation incarnations when a name or
+job ID is reused. Neither field is health or a credential. CLI queries include
+complete, untruncated names and comments. A marked live job with a missing or
+malformed token makes discovery incomplete, so it cannot silently clear a name
+for another launch.
 
 Query the current user's jobs once per context using structured `squeue` output
 where supported, or a tested explicit-format fallback. Filter marked jobs and
 validate native scope/owner/token before acting. For known IDs absent from the
 active queue, inspect scoped `sacct` history and select the allocation record,
 not `.batch`/`.extern` steps. Accounting may be unavailable, delayed, or no longer
-retain a job; that means unknown, not successful completion. Historical comments
-are not guaranteed. Account for reused/requeued job records with `sacct --duplicates`
+retain a job; that means unknown, not successful completion. Retaining `Comment`
+in accounting requires `AccountingStoreFlags` to include `job_comment`. Missing
+or mismatched historical tokens also mean unknown and cannot authorize cancellation.
+Account for reused/requeued job records with `sacct --duplicates`
 where needed, and validate the submission token rather than trusting a reused ID.
 Poll conservatively with batching and backoff.
 [Queue queries](https://slurm.schedmd.com/squeue.html),
 [accounting queries](https://slurm.schedmd.com/sacct.html)
 
-If submission's response is lost, search native jobs by the token before any
+If submission's response is lost, match the native name and comment token before any
 further action. Report ambiguity if identity cannot be established. There is no
-blind retry or exactly-once submission claim. `down` uses ordinary `scancel JOBID`
-on the verified allocation, not cancellation of one step or an explicit signal
-that leaves allocation ownership intact.
+blind retry or exactly-once submission claim. `down` verifies the current owner,
+name, and token before cancelling the native allocation with `scancel` using its
+job ID, user, and name filters. Slurm has no comment filter for atomic cancellation
+by token. This ends the allocation rather than cancelling one step or sending an
+explicit signal that leaves allocation ownership intact.
 [Cancellation semantics](https://slurm.schedmd.com/scancel.html)
 
 ### Standard connection files, not a second registry
@@ -931,7 +940,7 @@ For NERSC, inspected `jupyterlab-slurm` revision
 | Route | Relevant contract |
 |---|---|
 | `GET /jupyterlab_slurm/squeue` | Job ID, name, user, state, and node information; no comment field. |
-| `GET /jupyterlab_slurm/job/<id>` | Detailed job information, including raw native output. |
+| `GET /jupyterlab_slurm/job/<id>` | `data.fields.RawScontrol` includes native `Comment` for active jobs. |
 | `POST /jupyterlab_slurm/sbatch` | JSON `inputPath` is a script's OS path; optional `outputPath` is the subprocess working directory, not its log destination. |
 | `DELETE /jupyterlab_slurm/scancel` | JSON `job_ids` requests cancellation. |
 | `GET /jupyterlab_slurm/ui-config` | Exposes server root information for path translation in this revision. |
@@ -939,12 +948,23 @@ For NERSC, inspected `jupyterlab-slurm` revision
 Verify the installed version and check the response's `success`/`exitCode` as well
 as HTTP status. [Inspected handlers](https://github.com/NERSC/jupyterlab-slurm/blob/8dccb39808f8a1b77712a9a5773a7d2601a56683/jupyterlab_slurm/handlers.py)
 
+The queue route can list `lc-v1-<name>` candidates and their native job IDs, but
+cannot reconstruct the full immutable ID because it omits `Comment`. Fetch the
+selected job's details and verify its native owner, name, and comment token from
+`data.fields.RawScontrol` before reconstructing the ID or authorizing lifecycle
+actions. This uses the existing REST endpoint and does not require hidden-file
+access. Other installed versions must expose equivalent native evidence;
+otherwise the frontend can only show unverified candidates.
+[Job details handler](https://github.com/NERSC/jupyterlab-slurm/blob/8dccb39808f8a1b77712a9a5773a7d2601a56683/jupyterlab_slurm/handlers.py#L672-L746),
+[native field handling](https://github.com/NERSC/jupyterlab-slurm/blob/8dccb39808f8a1b77712a9a5773a7d2601a56683/jupyterlab_slurm/handlers.py#L1692-L1732)
+
 A batch-capable frontend selects and renders the resolved plan, saves a nonsecret
 script in a visible temporary directory through Contents, translates the virtual
 path to a confirmed OS path, and submits through `sbatch`. Delete the staging
 script after confirmed submission; retain it on ambiguity for diagnosis. The
 running launcher creates private credentials and starts standard Dask components.
-Inspect and release by native identity, matching CLI `status` and `down`.
+Inspect and release only after verifying native identity through those job details,
+matching CLI `status` and `down`.
 No hidden-file access is needed.
 
 Browser creation also requires a verified clean submission environment. This
