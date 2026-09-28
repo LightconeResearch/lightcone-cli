@@ -13,8 +13,10 @@ the seam is only worth having if the real thing still fits through it.
 from __future__ import annotations
 
 import json
+import pickle
 import subprocess
 import sys
+from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -577,6 +579,77 @@ def test_an_output_made_from_a_family_of_files_is_not_stale_at_once(
 
     assert engine.materialize(root, []).ok
     assert engine.check(root, []).up_to_date
+
+
+class _ByValue(_Inline):
+    """`_Inline`, but each task gets its own pickled copy of its arguments —
+    what Dask does to a task sent to a worker in another process."""
+
+    def submit(self, fn: Callable[..., object], *args: object, key: str, cpus: int = 1) -> object:
+        return fn(*pickle.loads(pickle.dumps(args)))
+
+
+_SHARED_SPEC = """
+version: "0.0.13"
+name: analysis
+
+inputs:
+  - id: catalog
+    type: data
+    source: data/catalog.fits
+
+outputs:
+""" + "".join(
+    f"""
+  - id: {name}
+    type: metric
+    format: txt
+    inputs: [catalog]
+    recipe:
+      command: cat {{inputs.catalog}} > {{output}}
+"""
+    for name in ("one", "two", "three")
+)
+
+
+def test_a_declared_input_every_output_reads_is_hashed_once_per_run(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The memo reaches each task as its own copy, so a digest a task
+    computes is lost to the next: a shared catalog must be hashed by the
+    driver, before submission, or it is read once per output."""
+    root = analysis(_SHARED_SPEC, files={"data/catalog.fits": "stars\n"})
+    _cluster(monkeypatch, _ByValue())
+    hashed: Counter[Path] = Counter()
+    data_version = assets.data_version
+
+    def counting(path: Path) -> str:
+        hashed[path.resolve()] += 1
+        return data_version(path)
+
+    monkeypatch.setattr(assets, "data_version", counting)
+    report = engine.materialize(root, [])
+
+    assert sorted(report.made) == ["baseline/one", "baseline/three", "baseline/two"]
+    assert hashed[(root / "data" / "catalog.fits").resolve()] == 1
+
+
+def test_an_unreadable_declared_input_fails_its_task_not_the_run(
+    analysis: Callable[..., Path], inline: None
+) -> None:
+    """The driver hashes declared inputs up front, but one it cannot read
+    is still the failure of the task that reads it, as the worker reports
+    it — independent outputs are still made."""
+    root = analysis(_consuming("data/inputs"), universes={"baseline": _UNIVERSE})
+    (root / "data" / "inputs").mkdir()
+    (root / "data" / "inputs" / "broken").symlink_to("nowhere.fits")
+    dataset._git(["add", "data/inputs"], cwd=root)
+    dataset._git(["commit", "-q", "-m", "a broken link"], cwd=root)
+
+    report = engine.materialize(root, [])
+
+    assert report.failed == ["baseline/first"]
+    assert report.blocked == ["baseline/second"]
 
 
 # ---- leaving the tree as clean as it was found -----------------------------

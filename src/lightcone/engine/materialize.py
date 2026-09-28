@@ -443,6 +443,38 @@ def _crate_line(root: Path, newest: str) -> str:
     return "up to date with the outputs"
 
 
+def _resolve_declared(graph: Graph) -> assets.Versions:
+    """Hash every declared input *graph*'s tasks read, once, in the driver.
+
+    The memo crosses to workers by value inside `worker.RunContext`, so a
+    digest a worker computes stays in that worker's copy: left for the
+    tasks to fill, a catalog every output declares is read once per task.
+    Filled here, each declared input is read once per run, and the
+    worker's own lookup only ever hits the memo.
+
+    The inputs are exactly the ones the worker would hash — neither made
+    by an upstream task nor a family of files. One that cannot be hashed
+    stays out of the memo, so the worker's lookup raises again inside its
+    task, and the failure is that task's rather than the run's.
+
+    Args:
+        graph: The run's task graph.
+
+    Returns:
+        The run's content-hash memo, holding every readable declared input.
+    """
+    versions = assets.Versions()
+    for task in graph.tasks.values():
+        for name, path in task.inputs.items():
+            if name in task.produced_by or plan.names_a_family(path):
+                continue
+            try:
+                versions.of(path)
+            except (assets.ContentNotFetchedError, OSError):
+                continue
+    return versions
+
+
 def _foreign_write(root: Path, task: Task) -> dataset.LastWrite | None:
     """Find the commit that last touched *task*'s manifest, unless it is
     the output's own run record — then ``None``, the clean answer. The
@@ -569,12 +601,13 @@ def materialize(
     # driver commits as outputs land and a per-task read would stamp
     # later manifests with a commit this run created; the uv probe
     # because attestation is a fact about the run (and empty is an
-    # answer, not a failure); one content-hash memo because a declared
-    # input shared by several outputs is the same bytes every time.
+    # answer, not a failure); the declared inputs' digests because one
+    # shared by several outputs is the same bytes every time — hashed
+    # here, before the memo is copied out to every task.
     context = worker.RunContext(
         env_version=env_version,
         head=dataset.head(root),
-        versions=assets.Versions(),
+        versions=_resolve_declared(graph),
         runtime=runtime,
         uv_version=project.uv_version(root),
     )

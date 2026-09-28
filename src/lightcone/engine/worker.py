@@ -102,7 +102,8 @@ class RunContext:
     env_version: str
     #: The run's ``(commit sha, origin URL)``.
     head: Head
-    #: The run's content-hash memo for declared inputs.
+    #: The run's content-hash memo. Each task receives its own copy, so
+    #: the driver fills it with the declared inputs before submitting.
     versions: assets.Versions
     #: The execution world — the host mechanism, or the project image.
     runtime: container.Runtime
