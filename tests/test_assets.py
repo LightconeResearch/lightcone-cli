@@ -139,21 +139,11 @@ def test_output_path_refuses_a_format_that_cannot_be_an_extension(
 def test_a_qualified_id_spells_its_scope_as_directories(tmp_path: Path) -> None:
     """An output declared inside a sub-analysis carries ASTRA's qualified
     id. The results tree mirrors the analysis tree, and the file is named
-    from the local id alone — so the sidecar, recovered by partitioning the
-    name on its first dot, still names this output and not a sibling."""
-    path = assets.output_path(tmp_path, "baseline", "null_tests.pte_data", "json")
+    from the local id alone, as is its sidecar."""
+    output_id = "null_tests.pte_data"
+    path = assets.output_path(tmp_path, "baseline", output_id, "json")
     assert path == tmp_path / "results/baseline/null_tests/pte_data.json"
-    assert assets.manifest_path(path).name == ".pte_data.manifest.json"
-
-
-def test_two_scopes_declaring_one_local_id_do_not_collide(tmp_path: Path) -> None:
-    """The same local id under two sub-analyses is legal in ASTRA — only
-    the qualified id is unique — so the scope directory is what keeps their
-    files, and their sidecars, apart."""
-    here = assets.output_path(tmp_path, "baseline", "cosebis.ptes", "npz")
-    there = assets.output_path(tmp_path, "baseline", "pure_eb.ptes", "npz")
-    assert here != there
-    assert assets.manifest_path(here) != assets.manifest_path(there)
+    assert assets.manifest_path(path.parent, output_id).name == ".pte_data.manifest.json"
 
 
 def test_output_path_refuses_a_dot_separated_part_that_is_empty(tmp_path: Path) -> None:

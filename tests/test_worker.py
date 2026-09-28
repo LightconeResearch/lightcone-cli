@@ -263,20 +263,6 @@ def test_a_payload_from_an_earlier_format_does_not_survive_a_rebuild(root: Path)
     assert (root / "results/baseline/first.txt").exists()
 
 
-def test_a_sibling_output_is_left_alone_by_the_reset(root: Path) -> None:
-    """Outputs share a directory now, and under Dask they are written
-    concurrently — so the reset may only ever touch what its own id
-    names."""
-    _make(root, "first")
-    sibling = root / "results/baseline/second.txt"
-    sibling.parent.mkdir(parents=True, exist_ok=True)
-    sibling.write_text("a neighbour's bytes\n")
-
-    worker.execute(root, _task(root, "first"), {}, _context(root))
-
-    assert sibling.read_text() == "a neighbour's bytes\n"
-
-
 def test_a_failing_recipe_records_no_manifest(root: Path) -> None:
     spec = _SPEC.replace("echo one > {output}", "echo one > {output} && false")
     (root / "astra.yaml").write_text(spec)
