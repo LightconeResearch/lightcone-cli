@@ -252,7 +252,9 @@ def _predicted(
             # them would report a different output and cascade a rebuild
             # over a project that is perfectly up to date.
             manifest = (
-                None if upstream in would_run else assets.read(assets.manifest_path(path))
+                None
+                if upstream in would_run
+                else assets.read(assets.manifest_path(path.parent, upstream[1]))
             )
             predicted[name] = manifest.data_version if manifest else None
         elif not path.exists():

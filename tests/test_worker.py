@@ -164,7 +164,7 @@ def test_a_skip_returns_the_recorded_digest_rather_than_rehashing(root: Path) ->
     symlinks, so a recompute would quietly report a different output."""
     _make(root, "first")
     output = root / "results/baseline/first.txt"
-    manifest = assets.read(assets.manifest_path(output))
+    manifest = assets.read(assets.manifest_path(output.parent, "first"))
     assert manifest is not None
     output.unlink()
 

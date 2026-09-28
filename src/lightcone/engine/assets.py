@@ -60,8 +60,7 @@ def output_path(root: Path, universe_id: str, output_id: str, fmt: str) -> Path:
     id — the scope path and the local id joined with dots, e.g.
     ``null_tests.config_space_pte_data``. Each scope becomes a directory,
     so the results tree mirrors the analysis tree and the file's own name
-    is the local id alone. That keeps :func:`manifest_path` exact: the
-    name it partitions carries no dot before the format.
+    is the local id alone.
 
     Args:
         root: The project root.
@@ -98,26 +97,25 @@ def output_path(root: Path, universe_id: str, output_id: str, fmt: str) -> Path:
     return root.joinpath("results", universe_id, *segments[:-1], f"{segments[-1]}.{fmt}")
 
 
-def manifest_path(output: Path) -> Path:
-    """The manifest sidecar beside *output*.
+def manifest_path(directory: Path, output_id: str) -> Path:
+    """The manifest sidecar of the output *output_id* in *directory*.
 
-    ``.<output_id>.manifest.json``, named from the output's id alone and
-    never its format — so the manifest keeps its path, and therefore its
-    history, when a spec re-declares the output in another serialization.
-
-    The file's name carries no dot before the format — :func:`output_path`
-    spells a qualified id as directories and names the file from the local
-    id alone — while a format may (``tar.gz``), so the id is recovered by
-    partitioning on the **first** dot. ``Path.stem`` would answer ``x.tar``
-    for ``x.tar.gz``.
+    ``.<local_id>.manifest.json``, named from the id alone and never the
+    format — so the manifest keeps its path, and therefore its history,
+    when a spec re-declares the output in another serialization. The id is
+    taken, not read back from the output's file name, which a format with
+    a dot of its own (``tar.gz``) makes ambiguous. A qualified id's scope
+    is already *directory* (:func:`output_path`), so only its last segment
+    names the sidecar.
 
     Args:
-        output: The output's own path.
+        directory: The directory the output's file is in.
+        output_id: The output's id, qualified or local.
 
     Returns:
         The sidecar's path.
     """
-    return output.parent / f".{output.name.partition('.')[0]}{MANIFEST_SUFFIX}"
+    return directory / f".{output_id.rpartition('.')[2]}{MANIFEST_SUFFIX}"
 
 
 # =============================================================================

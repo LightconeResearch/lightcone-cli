@@ -54,7 +54,7 @@ def _made(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(f"{universe_id}/{output_id}\n")
     assets.write(
-        assets.manifest_path(output),
+        assets.manifest_path(output.parent, output_id),
         assets.Manifest(
             output_id=output_id,
             universe_id=universe_id,

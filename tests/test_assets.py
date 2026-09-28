@@ -100,7 +100,7 @@ def test_the_manifest_is_not_part_of_its_own_hash(tmp_path: Path) -> None:
     output = tmp_path / "fit.csv"
     output.write_text("x,y\n")
     before = data_version(output)
-    assets.write(assets.manifest_path(output), _manifest())
+    assets.write(assets.manifest_path(tmp_path, "fit"), _manifest())
     assert data_version(output) == before
 
 
@@ -162,16 +162,6 @@ def test_output_path_refuses_a_dot_separated_part_that_is_empty(tmp_path: Path) 
     for bad in ("fit..plot", ".fit", "fit."):
         with pytest.raises(ProjectError):
             assets.output_path(tmp_path, "baseline", bad, "png")
-
-
-def test_the_manifest_is_named_from_the_id_never_the_format(tmp_path: Path) -> None:
-    """A format may contain dots, and `Path.stem` would answer `x.tar` for
-    `x.tar.gz`. Naming the sidecar from the id alone also keeps its path —
-    and so its history — across a re-declared serialization."""
-    packed = assets.output_path(tmp_path, "baseline", "chain", "tar.gz")
-    plain = assets.output_path(tmp_path, "baseline", "chain", "npz")
-    assert assets.manifest_path(packed).name == ".chain.manifest.json"
-    assert assets.manifest_path(packed) == assets.manifest_path(plain)
 
 
 def test_a_file_hashes_its_own_bytes_and_nothing_else(tmp_path: Path) -> None:
@@ -292,7 +282,7 @@ def test_the_memo_does_not_confuse_two_inputs(tmp_path: Path) -> None:
 
 def test_a_manifest_round_trips(tmp_path: Path) -> None:
     written = _manifest()
-    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
+    sidecar = assets.manifest_path(tmp_path, "best_fit")
     assets.write(sidecar, written)
     assert assets.read(sidecar) == written
 
@@ -300,7 +290,7 @@ def test_a_manifest_round_trips(tmp_path: Path) -> None:
 def test_the_manifest_is_readable_json_with_the_schema_first(tmp_path: Path) -> None:
     """It stays out of the annex precisely so a clone with no content
     fetched can read it — including with a plain `grep`."""
-    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
+    sidecar = assets.manifest_path(tmp_path, "best_fit")
     assets.write(sidecar, _manifest())
     text = sidecar.read_text()
     assert next(iter(json.loads(text))) == "schema_version"
@@ -308,19 +298,19 @@ def test_the_manifest_is_readable_json_with_the_schema_first(tmp_path: Path) -> 
 
 
 def test_no_manifest_reads_as_none(tmp_path: Path) -> None:
-    assert assets.read(assets.manifest_path(tmp_path / "best_fit.csv")) is None
+    assert assets.read(assets.manifest_path(tmp_path, "best_fit")) is None
 
 
 def test_an_unparseable_manifest_reads_as_none(tmp_path: Path) -> None:
     """The safe direction: an unreadable record means make it again, not
     trust it."""
-    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
+    sidecar = assets.manifest_path(tmp_path, "best_fit")
     sidecar.write_text("{not json")
     assert assets.read(sidecar) is None
 
 
 def test_writing_a_manifest_replaces_the_previous_one_whole(tmp_path: Path) -> None:
-    sidecar = assets.manifest_path(tmp_path / "best_fit.csv")
+    sidecar = assets.manifest_path(tmp_path, "best_fit")
     assets.write(sidecar, _manifest())
     assets.write(sidecar, _manifest(data_version="sha256:second"))
 

@@ -58,19 +58,19 @@ class Task:
     @property
     def manifest_path(self) -> Path:
         """This output's manifest sidecar."""
-        return assets.manifest_path(self.output_path)
+        return assets.manifest_path(self.output_path.parent, self.output_id)
 
     @property
     def output_stem(self) -> str:
-        """The output file's own name, without its format.
+        """The output file's own name, without its format: the local id.
 
         A qualified id spells its scope as directories, so the file is
-        named from the local id alone (:func:`assets.output_path`).
+        named from the id's last segment alone (:func:`assets.output_path`).
         Anything that matches this output's files *by name* — a glob, a git
         pathspec — has to say that name and never the qualified id, which
         would match nothing for a scoped output.
         """
-        return self.output_path.name.partition(".")[0]
+        return self.output_id.rpartition(".")[2]
 
     @property
     def key(self) -> Key:
