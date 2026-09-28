@@ -741,8 +741,7 @@ def test_cli_launch_name_output_can_be_captured_without_json(
     provider.discover.return_value = [Snapshot(identity=identity, phase="pending")]
     result = runner.invoke(main, ["compute", "status"])
     assert result.exit_code == 0, result.output
-    assert "analysis" in result.stdout
-    assert "clu_" not in result.stdout
+    assert result.stdout == "analysis: pending\n"
     result = runner.invoke(main, ["compute", "down", "analysis", "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["id"] == identity.encode()

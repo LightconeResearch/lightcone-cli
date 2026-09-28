@@ -336,15 +336,9 @@ For the example catalog, the agent sees this concise resource view:
 
 ```text
 $ lc compute resources
-
-Resources per node. Offers listed in preference order.
-
-OFFER   CPUS   MEMORY    MAX NODES   MAX TIME   STARTUP
-quick    256   480 GiB           2         4h   fast
-batch    256   480 GiB          16        12h   batch
-
-Default duration: 1h
-Current free capacity: unknown.
+  OFFER    CPUS    MEMORY     MAX NODES    DEFAULT    MAX TIME    STARTUP
+  quick    256     480 GiB    2            60m        240m        fast
+  batch    256     480 GiB    16           60m        720m        batch
 ```
 
 `--json` exposes the same resource shapes, limits, startup classes, and operation

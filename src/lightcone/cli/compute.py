@@ -78,7 +78,6 @@ def resources(config_path: Path | None, as_json: bool) -> None:
         if as_json:
             click.echo(json.dumps(data))
             return
-        click.echo("Resources per node. Offers listed in preference order.")
         _table(
             ["OFFER", "CPUS", "MEMORY", "MAX NODES", "DEFAULT", "MAX TIME", "STARTUP"],
             [
@@ -94,7 +93,6 @@ def resources(config_path: Path | None, as_json: bool) -> None:
                 for offer in data["offers"]
             ],
         )
-        click.echo("Limits apply to each allocation; offers are not live free capacity.")
 
 
 @compute.command()
@@ -218,7 +216,7 @@ def status(
             )
         else:
             for item in snapshots:
-                click.echo(f"{item.identity.name}\n  {item.phase}: {item.reason}")
+                click.echo(f"{item.identity.name}: {item.phase}")
             if not snapshots and not errors:
                 click.echo("No allocations found.")
             for name, error in errors.items():

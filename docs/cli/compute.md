@@ -28,7 +28,7 @@ built-in catalog, without writing a file or starting any compute. See the
 | `resources` | Ordered available offers, per-node shape, node limit, default/maximum time, and startup class. Free capacity remains unknown. |
 | `launch` | Resolve one resource request and submit exactly once; print only the cluster name to stdout on acceptance. |
 | `launch --dry-run` | Show the resolved shape and native launch parameters without allocation. |
-| `status` | Query each configured native authority once; retain partial discovery errors. |
+| `status` | List one `name: status` line per allocation, querying each configured native authority once; retain partial discovery errors. |
 | `status CLUSTER` | Resolve a name or full ID, inspect native state, and probe Dask readiness separately. |
 | `status CLUSTER --wait` | Wait for readiness, with a default deadline of 300 seconds; timeout leaves the allocation unchanged. |
 | `down CLUSTER` | Request native termination even if the scheduler is unavailable. |

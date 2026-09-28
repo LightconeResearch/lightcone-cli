@@ -28,6 +28,9 @@ allocation is accepted; `status --wait` waits for Dask readiness. Finishing a ru
 detaches its client and leaves the cluster available for another command. The
 allocation ends at its time limit or when you call `down`.
 
+`lc compute status` lists allocations as `name: status`, one per line.
+Use `lc compute status NAME` for resource details and Dask readiness.
+
 Local resources are cooperative limits, not an exclusive CPU/RAM reservation.
 An allocation owns a detached process session and standard `LocalCluster`.
 Private process locators are checked against the native boot UUID, UID, process
