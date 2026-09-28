@@ -27,8 +27,10 @@ The command is submitted as an ordinary task to the cluster's Dask scheduler,
 which chooses a worker. The command uses the prepared project environment and
 the same sandbox as a recipe. stdout/stderr are forwarded as bytes, preserving binary output and
 line endings when redirected. The client detaches on completion; the allocation
-stays available until `lc compute down` or its time limit. A missing cluster
-is an error, with no implicit local execution. See [compute](compute.md).
+stays available until `lc compute down` or its time limit. A missing cluster,
+or one that is not yet active with every expected worker connected, is an
+error: nothing waits and nothing runs locally instead. Use
+`lc compute status CLUSTER --wait` first. See [compute](compute.md).
 
 The command receives EOF on stdin; terminal input and pipes into `lc run` are not
 forwarded. Pass input files through the project's declared inputs instead.
@@ -39,8 +41,9 @@ command, for example `lc run "$CLUSTER" -- env NAME=value python script.py`.
 Containerized commands use the image's environment and the sandbox overlays.
 
 Interrupting the CLI detaches its client; the remote command may still be running.
-Use `lc compute down "$CLUSTER"` to stop the allocation before working with files
-the interrupted command could still be writing. Confirm that the command has
+Stop the allocation with `lc compute down` and its full ID (a name can already
+belong to a newer allocation) before working with files the interrupted command
+could still be writing. Confirm that the command has
 stopped; local containers may require separate termination through their runtime
 (see [execution limits](../user/cluster.md#execution-requirements-and-limits)).
 

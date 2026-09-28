@@ -164,7 +164,8 @@ src/lightcone/              # namespace — NO __init__.py
 ├── _sandbox_exec.py        # the Landlock shim — stdlib only, zero lightcone imports
 ├── cli/                    # the CLI only: flags, rendering, exit codes
 │   ├── __init__.py         # exposes main(), lazily
-│   └── commands.py         # lc init, lc run, lc materialize, lc status
+│   ├── commands.py         # lc init, lc run, lc materialize, lc status, lc build
+│   └── compute.py          # lc compute resources, launch, status, down
 └── engine/
     ├── __init__.py         # docstring only
     ├── project.py          # what a project is: convergence, discovery, mode
@@ -178,6 +179,16 @@ src/lightcone/              # namespace — NO __init__.py
     ├── worker.py           # making one output; also the `python -m` entry point
     ├── materialize.py      # the driver: dirty gate, Dask, the save/restore loop
     ├── run.py              # what `lc run` is: the probe + the uv hop
+    ├── compute/            # explicit allocations and borrowed Dask clients
+    │   ├── __init__.py     # Compute: catalog, resolve, launch, status, down; connect()
+    │   ├── model.py        # the shared Pydantic models and the Provider protocol
+    │   ├── catalog.py      # compute.yaml, or the built-in local offer
+    │   ├── runtime.py      # private files, TLS material, the scheduler config
+    │   ├── local.py        # local provider: validated OS process identities
+    │   ├── local_runtime.py  # the detached LocalCluster owner
+    │   ├── slurm.py        # Slurm provider: native commands, JobName + Comment
+    │   ├── slurm_bootstrap.py  # one stock Dask process per Slurm rank
+    │   └── output.py       # recipe bytes through Dask events
     ├── sandbox/            # the exec boundary
     │   ├── __init__.py     # the public surface (detect, run, scope, the types)
     │   ├── model.py        # Policy · Capability · Attestation · Backend protocol
@@ -1160,10 +1171,10 @@ Out-of-tree inputs are not fetched (no annex holds them — the recorded
 weaker promise), and `test_check_mode_never_fetches` pins the read-only
 half.
 
-**A run takes every core, and there is no flag to say otherwise.** How
-much of a machine a run may use — and which machine — is one question, and
-it belongs to a declared execution backend rather than to a `--jobs` knob
-only a `LocalCluster` could honour.
+**A run's concurrency is the cluster's, and there is no flag to say
+otherwise.** How much of a machine a run may use — and which machine — is
+one question, answered by the allocation it borrows (each node's worker
+runs `task_slots_per_node` tasks at once) rather than by a `--jobs` knob.
 
 **A dirty tree is a refusal, and `--check` is exempt.** Every
 materialization is committed with the code that produced it, so a run that
@@ -1178,11 +1189,13 @@ resets the output directory *before* executing, so a failed recipe, a
 crash, or a Ctrl-C would otherwise leave tracked files deleted or
 half-written — and the next run's refusal would tell the user to commit
 truncated, manifest-less garbage into `results/`, destroying the one
-property the layer exists for. So `ok` → `dataset.save`, and `failed`,
-`blocked` or never-reported → `dataset.restore`, with the consumption
-loop in a `try/finally` so an interrupt restores whatever is still
-outstanding. This is what makes the dirty-tree refusal survivable rather
-than a trap.
+property the layer exists for. So `ok` → `dataset.save`, and `failed` or
+`blocked` → `dataset.restore`. The one exception is an interrupted run: a
+task that never reported may still have a recipe writing on the cluster, so
+its files are left in place rather than restored underneath it, and the
+dirty-tree refusal's `results/` block says to stop the allocation before
+discarding them. This is what makes the refusal survivable rather than a
+trap.
 
 **The run record names declared paths, never resolved ones.** Every
 declared input under `data/` is an annex symlink, so a `Path.resolve()`
@@ -1850,8 +1863,9 @@ mechanism-keyed when a non-OCI backend lands.
 test_container_smoke.py` on a login node, then one materialize through
 `sbatch`; record findings here): detached salloc session lifetime and `--cpus-per-task`
 behavior inside salloc/sbatch steps; `nidXXXXXX` resolution from peer
-nodes (else `--interface hsn0`); `SLURM_CPUS_ON_NODE` on a CPU node
-(128 vs 256 hyperthreads); cold-Lustre `distributed` import vs the
+nodes (else `launch.interface: hsn0`); whether `--cpus-per-task=256`
+and the task's CPU affinity agree on a CPU node (128 cores, 256
+hyperthreads); cold-Lustre `distributed` import vs the
 120 s worker wait; `podman-hpc migrate` accepting a bare image id and
 re-running cheaply; podman-hpc `--module`
 site-injected mounts vs the honesty of `fs: declared` (the one item
@@ -2050,17 +2064,15 @@ unlinks before writing; a new tampering test should too.
     materialization through a `LocalCluster(processes=True)`): the
     code works unchanged across process boundaries, and workers
     need **no git and no git-annex** (the driver owns git alone;
-    `data_version` is pure file hashing). So per venue: on HPC the tool env lives on the shared
-    filesystem and the venue launches workers on the driver's own
-    interpreter (`sys.executable` — dask-jobqueue's `python=`), which
-    makes driver and workers the identical installation; in containerized
-    mode driver and workers share the image, same result. Both also
-    satisfy `distributed`'s own client/scheduler/worker coherence
-    requirement for free. A connect-time engine-version probe is needed
-    only for a cluster lc did not launch (a pre-existing gateway with its
-    own image). One venue cost to remember: the `assets.Versions` memo
-    degrades to once **per worker process**, so a declared input shared
-    by many tasks is re-hashed per process — efficiency, not correctness.
+    `data_version` is pure file hashing). So workers run the driver's own
+    interpreter (`sys.executable`, the default for both providers), which
+    on HPC is the tool environment on the shared filesystem: driver and
+    workers are the identical installation, which also satisfies
+    `distributed`'s own client/scheduler/worker coherence requirement. In
+    containerized mode the same host installation runs the workers; only
+    recipes enter the image. The `assets.Versions` memo is filled on the
+    driver before tasks are serialized, so a declared input shared by many
+    tasks is hashed once per run, not once per worker process.
   - *The engine's dependency closure left the record entirely, and is
     mostly not replaced.* The project lock used to pin what the engine
     resolved — most concretely the git-annex build that wrote the bytes.

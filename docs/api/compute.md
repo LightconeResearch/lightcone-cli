@@ -88,8 +88,20 @@ Neither is a second source of lifecycle state or a name-to-ID registry.
 
 The Slurm provider resolves its user ID once through `id -u` using the same
 command runner as Slurm. Discovery, accounting, cancellation, and allocation
-ownership checks all use that ID. Commands currently execute locally; filesystem
-ownership checks still validate the local process's access to connection material.
+ownership checks all use that ID. The commands execute on the host running `lc`,
+and filesystem ownership checks validate that process's access to connection
+material.
+
+`slurm.py` maps native states onto the common phases: `PENDING`, `CONFIGURING`,
+`SUSPENDED`, `RESIZING` and the requeue states are `pending`, `RUNNING` is
+`active`, `COMPLETING` is `stopping`, and every terminal state is `ended`. Any
+other state is `unknown` for `status`, while `terminate` still cancels such a
+job once its owner, name and token verify. `connect` pins the job's current
+restart count and reads only that attempt's connection material, then checks the
+count again after the TLS handshake, so a requeued job cannot hand over an
+earlier attempt's scheduler. A job that is running but has not yet published its
+scheduler, like a local allocation still starting, is refused with
+`runtime.NOT_STARTED`.
 
 Historical Slurm identity requires the accounting `Comment` field. Slurm stores
 it when `AccountingStoreFlags` includes `job_comment`; without a matching retained

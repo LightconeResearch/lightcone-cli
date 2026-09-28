@@ -14,10 +14,14 @@ lc materialize --check [OPTIONS] [TARGETS]...
 ```
 
 Execution requires a cluster name or full immutable ID from `lc compute launch`.
-No cluster is chosen or started implicitly. `--check` needs no cluster, and
-neither does a run whose spec selects no outputs: it only updates the
-publication view. Project validation and the dirty-tree check run before
-connecting to compute.
+No cluster is chosen or started implicitly, and the run never waits for one: a
+cluster that is not active with every expected worker connected is refused
+(`lc compute status CLUSTER --wait` waits for readiness). `--check` needs no
+cluster. Project validation and the dirty-tree check run before connecting to
+compute. A run whose spec selects no outputs still takes the CLUSTER argument
+but never connects to it: it only updates the publication view. A run whose
+outputs are all current does connect, because each output's state is decided
+on the cluster.
 
 With no targets, everything the spec declares, across every universe.
 A target narrows the run to an output and whatever it depends on:
@@ -48,8 +52,9 @@ never touched, under any flag.
   unreported outputs are retained because tasks may still be running. The
   same holds when a commit fails while other recipes are still running: the
   error says so.
-  Stop the allocation with `lc compute down CLUSTER` and confirm its recipes
-  have stopped before cleaning results. Local containers may need separate
+  Stop the allocation with `lc compute down` and its full ID (a name can
+  already belong to a newer allocation), and confirm its recipes have
+  stopped before cleaning results. Local containers may need separate
   termination through their runtime; see [execution limits](../user/cluster.md#execution-requirements-and-limits).
 - **Fetches what it needs.** Declared inputs whose annexed content is
   not in this clone are fetched before anything hashes.
@@ -88,7 +93,7 @@ is what it is for.
 
 There is deliberately no `--jobs` (task concurrency belongs to the configured
 cluster), no `--force`, and no flag to
-*skip* a stale output — deleting its directory is your own file
+*skip* a stale output — deleting its file is your own file
 operation, and stronger consent than a flag.
 
 ## The JSON report

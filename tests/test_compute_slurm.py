@@ -859,6 +859,15 @@ def test_connect_refuses_wrong_or_untyped_identity_metadata(
             pytest.fail("invalid identity must not connect")
 
 
+def test_a_running_job_without_its_scheduler_yet_says_to_wait(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _native(monkeypatch, {"scontrol": _control()})
+    with pytest.raises(ComputeError, match="has not started yet") as raised:
+        with provider.connect(IDENTITY):
+            pytest.fail("a job without a scheduler must not connect")
+    assert raised.value.cluster_id == IDENTITY.encode()
+
 def test_status_can_observe_a_reachable_but_degraded_scheduler(
     provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:

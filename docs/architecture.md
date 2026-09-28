@@ -36,18 +36,19 @@ imports.
 
 ```text
 lc materialize "$CLUSTER"
-  │  connect: native identity + Dask readiness
   │  guard: tools?  git identity?
   │  refuse: dirty tree
-  │  converge: uv.lock ⇄ .venv   (and the image, containerized)
   │  plan: astra validate + resolve  →  Graph of Tasks
+  │        (no tasks → converge the crate and stop; nothing connects)
+  │  connect: native identity + Dask readiness
   │  fetch: git annex get (declared inputs not in this clone)
-  ├─► workers: reset output dir → sandbox → recipe → hash → manifest
+  │  converge: uv.lock ⇄ .venv   (and the image, containerized)
+  ├─► workers: reset output file → sandbox → recipe → hash → manifest
   │            (never raise; return ok/current/behind/failed/blocked)
   └─  driver: consume results in one thread
         ok      → dataset.save   (commit + run record)
         failed  → dataset.restore (tree as clean as it started)
-        finally → converge ro-crate-metadata.json (if licensed)
+        then    → converge ro-crate-metadata.json (if licensed)
 ```
 
 The division of labor is strict and load-bearing:
@@ -154,7 +155,7 @@ config-blob id, never a tag.
 ## Compute allocations
 
 `engine.compute` owns allocation lifecycle through a small provider protocol.
-A visible YAML catalog supplies ordered resource offers and stable native service
+A YAML catalog supplies ordered resource offers and stable native service
 namespaces. When the implicit default file is absent, a built-in local catalog
 provides one CPU and 1 GiB without setup. An explicit catalog replaces that default;
 missing explicit paths and invalid files remain errors. No catalog is written and

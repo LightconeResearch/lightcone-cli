@@ -34,6 +34,7 @@ from lightcone.engine.compute.model import (
 )
 from lightcone.engine.compute.runtime import (
     DEFAULT_CONNECTION_ROOT,
+    NOT_STARTED,
     configured_directory,
     open_client,
     private_directory,
@@ -367,6 +368,8 @@ class LocalProvider:
         directory, record = self._record(identity)
         if self._process(identity, directory, record) is None:
             raise ComputeError("the local allocation has ended", cluster_id=identity.encode())
+        if not (directory / "connection.json").exists():
+            raise ComputeError(NOT_STARTED, cluster_id=identity.encode())
         connection = read_private_json(directory / "connection.json")
         if connection.get("identity") != identity.encode():
             raise ComputeError("the local scheduler connection belongs to a different allocation")

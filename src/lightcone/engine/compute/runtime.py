@@ -14,6 +14,13 @@ from lightcone.engine.compute.model import ComputeError
 
 DEFAULT_CONNECTION_ROOT = "~/.lightcone/compute"
 
+#: The one refusal for an allocation that is running natively but has not yet
+#: published its Dask scheduler.
+NOT_STARTED = (
+    "this allocation's Dask scheduler has not started yet; "
+    "wait for readiness with `lc compute status CLUSTER --wait`"
+)
+
 #: Dask configuration for every scheduler lc launches. No HTTP routes are
 #: served. A departed client's events, which carry the recipe output it
 #: forwarded, are dropped at once rather than after Dask's default hour, so

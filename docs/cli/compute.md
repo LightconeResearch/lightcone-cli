@@ -28,10 +28,10 @@ built-in catalog, without writing a file or starting any compute. See the
 | `resources` | Ordered available offers, per-node shape, node limit, default/maximum time, and startup class. Free capacity remains unknown. |
 | `launch` | Resolve one resource request and submit exactly once; print only the cluster name to stdout on acceptance. |
 | `launch --dry-run` | Show the resolved shape and native launch parameters without allocation. |
-| `status` | List one `name: status` line per allocation, querying each configured native authority once; retain partial discovery errors. |
+| `status` | List one `name: status` line per current allocation across every configured connection; report the connections that could not be queried. |
 | `status CLUSTER` | Resolve a name or full ID, inspect native state, and probe Dask readiness separately. |
-| `status CLUSTER --wait` | Wait for readiness, with a default deadline of 300 seconds, querying less often as the wait grows (up to every 30 seconds); timeout leaves the allocation unchanged. |
-| `down CLUSTER` | Request native termination even if the scheduler is unavailable. |
+| `status CLUSTER --wait` | Wait for readiness: the allocation is active and every node's worker is connected. The default deadline is 300 seconds, and queries grow less frequent as the wait goes on (up to every 30 seconds). Exits 1 on timeout, or at once if the allocation is ending or has ended; the allocation is left unchanged. |
+| `down CLUSTER` | Request native termination even if the scheduler is unavailable. An allocation that has already ended is a successful no-op when addressed by full ID; its name no longer resolves. A Slurm job that has left the queue is refused unless accounting confirms it ended. |
 
 Choose a name with `--name analysis`, or omit it to generate `lc-` followed by
 12 random hexadecimal characters. Names contain 1–63 lowercase ASCII letters,
@@ -65,14 +65,28 @@ termination-grace policy determines actual expiry and can allow unlimited
 overrun; Lightcone supplies no independent Slurm runtime deadline. A partition
 is passed only when explicitly set in the offer's configuration.
 
-The first eligible offer wins. An invalid configuration or failed submission is
-an error, with no automatic resubmission elsewhere. An uncertain submission error
+The first eligible offer wins; an offer this host cannot provide is skipped, and
+the error lists why when nothing matches. An invalid configuration or failed
+submission is an error, with no automatic resubmission elsewhere. An uncertain submission error
 includes its token and any known cluster ID. Inspect existing allocations before
 retrying it.
 
-`--json` emits versioned, allowlisted data without scheduler credentials. Launch
-and status include both `name` and the full immutable `id`. Status
-reports phases `pending`, `active`, `stopping`, `ended`, or `unknown`; allocation
-evidence is separate from Dask `observation`, `ready`, and worker count. Discovery
-can partially succeed and still exit 1. Native errors, invalid requests, and
-readiness timeouts also exit 1.
+`--wait` requires a CLUSTER, and `--timeout` requires `--wait`.
+
+`--json` emits versioned (`schema_version: 1`), allowlisted data without
+scheduler credentials:
+
+| Command | Keys |
+|---|---|
+| `launch` | `plan`, `id`, `name`, `accepted` (only `plan` with `--dry-run`) |
+| `status CLUSTER` | `id`, `name`, `phase`, `allocation`, `dask`, `reason`, `native_state` |
+| `status` | `clusters` (a list of the above) and `errors` (by connection name) |
+| `down` | `id`, `name`, `termination_requested` |
+| any failure | `error`, `id`, `submission_token`, on stdout, with exit 1 |
+
+`phase` is `pending`, `active`, `stopping`, `ended`, or `unknown`. `allocation`
+holds `num_nodes`, per-node `resources`, and their `evidence` (`configured`,
+`requested`, or `unknown`). `dask` is observed separately: `observation`
+(`unverified`, `reachable`, or `unreachable`), `ready`, and `workers`. A
+discovery that partially succeeds still exits 1. Native errors, invalid
+requests, and readiness timeouts also exit 1.

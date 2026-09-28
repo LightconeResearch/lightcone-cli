@@ -651,6 +651,20 @@ def test_missing_credentials_preserve_native_discovery_and_termination(
         provider.terminate(identity)
 
 
+def test_a_starting_allocation_says_to_wait(provider: LocalProvider) -> None:
+    identity = _launch(provider)
+    connection = provider.root / identity.token / "connection.json"
+    try:
+        _ready(provider, identity)
+        # The owner publishes this file once its scheduler is up.
+        connection.rename(connection.with_suffix(".held"))
+        with pytest.raises(ComputeError, match="has not started yet"):
+            with provider.connect(identity):
+                pytest.fail("a starting allocation must not connect")
+        connection.with_suffix(".held").rename(connection)
+    finally:
+        provider.terminate(identity)
+
 def test_private_material_rejects_symlinks_broad_modes_and_hardlinks(tmp_path: Path) -> None:
     directory = private_directory(tmp_path / "private", create=True)
     path = directory / "test.json"

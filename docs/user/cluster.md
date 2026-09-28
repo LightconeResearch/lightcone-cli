@@ -24,15 +24,29 @@ lc compute down "$CLUSTER"
 ```
 
 Run the execution commands from your project root. A launch returns when native
-allocation is accepted; `status --wait` waits for Dask readiness. Finishing a run
-detaches its client and leaves the cluster available for another command. The
-allocation ends at its time limit or when you call `down`.
+allocation is accepted; `status --wait` waits for Dask readiness. Execution never
+waits: `lc run` and `lc materialize` refuse a cluster that is not active with
+every expected worker connected, for example:
+
+```text
+Error: this allocation's Dask scheduler has not started yet; wait for readiness with `lc compute status CLUSTER --wait`
+```
+
+Finishing a run detaches its client and leaves the cluster available for another
+command. The allocation ends at its time limit or when you call `down`.
 
 `lc compute status` lists allocations as `name: status`, one per line.
 Use `lc compute status NAME` for resource details and Dask readiness.
 
+## Local allocations
+
 Local resources are cooperative limits, not an exclusive CPU/RAM reservation.
-An allocation owns a detached process session and standard `LocalCluster`.
+An allocation owns a detached process session and standard `LocalCluster`: one
+worker process with `task_slots_per_node` threads, and a scheduler that listens
+on `127.0.0.1` over TLS. Its own logs are discarded; a startup failure is kept
+and shown as the reason by `lc compute status`. At its time limit the whole
+process session is killed with SIGKILL, so a recipe still running stops mid-write.
+`down` sends SIGTERM, waits three seconds, then sends SIGKILL.
 Private process locators are checked against the native boot UUID, UID, process
 session, and exact command containing the allocation's random token before
 attachment or termination. Hostname changes and clock adjustments do not change
@@ -44,6 +58,12 @@ reports `ended`.
 Local compute is available wherever the catalog exposes a valid local offer;
 Lightcone does not infer permission from login-node names or site environment
 variables. Allocation choices are explicit and native permissions still apply.
+
+A local connection's optional `launch` settings are `connection_root` (default
+`~/.lightcone/compute`), `scratch_root` (default: the temporary directory),
+`python` (default: the interpreter running `lc`), and `task_slots_per_node`
+(default: all of the offer's CPUs). A local connection's `context`, when set, is
+the hostname it belongs to. Local offers take no `config`.
 
 ## Cluster names
 
@@ -103,10 +123,35 @@ missing explicit path or an invalid catalog is an error; only an absent implicit
 selects the built-in offer. Stop existing built-in allocations before replacing
 their connection with your own catalog.
 
+This example keeps the built-in connection's namespace, so allocations launched
+from the built-in offer stay visible and can still be stopped after the file
+exists.
+
+A catalog has `version: 1`, a `connections` mapping, and an ordered `offers`
+list:
+
+- A connection has a `namespace` (a UUID), a `provider` (`local` or `slurm`), an
+  optional `context`, and optional provider `launch` settings. Namespaces must
+  be unique, and so must each provider/`context` pair.
+- An offer has a unique `name`, the `connection` it uses, per-node `resources`
+  (`cpus` and `memory` in GiB), `max_nodes`, and `time` with a `default` no
+  longer than its `max`. `startup` is optional (`fast`, `batch`, or the default
+  `unknown`), written either as a bare class or as `{class: …, source: …}`.
+  `config` holds provider-specific settings.
+
 Catalog errors identify the invalid field, for example `offers.0.resources.cpus`.
 Unknown common fields and duplicate YAML keys are rejected. CPU and node counts
-must be positive integers; memory is in GiB, and durations use minutes or hours
-such as `30m` or `2h`.
+must be positive integers; memory is in GiB and may be fractional if it is an
+exact number of bytes, and durations use minutes or hours such as `30m` or `2h`.
+
+Selection takes the first offer in catalog order that matches the request. An
+offer this host cannot provide is skipped: a local offer with more nodes, CPUs or
+memory than the host has, or whose `context` names another host. When nothing
+matches, the error lists why each skipped offer was unavailable:
+
+```text
+Error: no configured offer matches this resource request; see lc compute resources; huge: the local offer exceeds this host's CPU or RAM capacity
+```
 
 ## Configure Slurm
 
@@ -114,6 +159,12 @@ The CLI runs the native `sbatch`, `salloc`, `squeue`, `sacct`, `scontrol`, and
 `scancel` commands as the current user. It needs a compatible Slurm client
 installation and access to the selected service. `context` is the native Slurm
 cluster name; omit it to use the current service.
+
+Those commands run without inherited request settings: every `SBATCH_*`,
+`SALLOC_*`, `SRUN_*`, `SQUEUE_*`, `SACCT_*`, `SCANCEL_*`, and `SLURM_*` variable
+is removed, except `SLURM_CONF`, `SLURM_CONF_SERVER`, and `SLURM_JWT`. An
+`SBATCH_ACCOUNT` in your shell profile therefore has no effect; put the account
+in the offer.
 
 This illustrative NERSC configuration requires a deployment-specific account and
 resource sizing. It has not been validated by submitting a job at NERSC:
@@ -151,6 +202,10 @@ offers:
       qos: regular
 ```
 
+An offer's `config` accepts `submit` (`sbatch`, the default, or `salloc`),
+`account`, `partition`, `qos`, `constraint`, and `reservation`. Slurm offers must
+state memory as a whole number of MiB.
+
 Every setting under a Slurm connection's `launch` mapping is optional. The
 defaults assume a home directory that the login and compute nodes share:
 
@@ -179,9 +234,11 @@ class; it does not guarantee a queue wait. Inspect the resolved plan before laun
 lc compute launch --cpus 32+ --memory 128+ --num-nodes 2 --time 1h --dry-run
 ```
 
-One allocation contains one `srun` step with one process per node. Rank zero
+One allocation contains one `srun` step with one process per node, bound with
+`--cpu-bind=threads` to exactly the hardware threads Slurm allocated. Rank zero
 composes standard Dask `Scheduler` and `Worker` objects, and every other rank
 starts a standard `Worker`. A one-node allocation has both scheduler and worker.
+Neither serves a dashboard or any other HTTP route.
 The scheduler consumes part of the offered resources; `task_slots_per_node`
 controls Dask task concurrency independently of the allocation's logical CPUs.
 Dask memory management is disabled because recipes run in external subprocesses;
@@ -220,6 +277,24 @@ checked on the deployment. Batch jobs are independent of the submitting CLI.
 An ambiguous submission reports its token; inspect native state before retrying,
 since the original allocation may have been accepted.
 
+A batch launch submits with `sbatch --parsable --no-requeue`. An `salloc` launch
+starts `salloc --kill-command=TERM` detached and returns once Slurm lists the job,
+waiting at most ten seconds. Everything lives under the connection root:
+
+- Submission logs: `submissions/<token>/<job-id>.out` for `sbatch`, or
+  `submissions/<token>/salloc.log`.
+- Scheduler connection files and TLS credentials:
+  `<namespace>/<job-id>-<token>/attempt-<restarts>/`.
+
+Each worker's files go under `<scratch>/<token>/attempt-<restarts>/<rank>`.
+
+Before starting Dask, every rank checks that Slurm gave it what the plan
+requested: the node count, CPUs per task and its actual CPU affinity, and memory
+per node. Ranks other than zero wait up to 120 seconds for the scheduler, which
+has as long to start. A failed check or timeout logs
+`Slurm Dask startup failed: …` to the submission log and exits nonzero. Look
+there when a job is active but never becomes ready.
+
 ## Execution requirements and limits
 
 Driver and workers must see the same project, prepared environment, and inputs
@@ -242,9 +317,7 @@ connection and scratch roots can contain symlinks, including a symlinked home
 directory: Lightcone resolves the root before appending managed paths. Allocation
 directories and credential files still reject symlinks, retain ownership and
 ancestor-permission checks, and require modes `0700` and `0600`, respectively.
-The CLI's default catalog is hidden. For browser access, expose that same file through an
-existing API, or configure both clients to use one visible catalog through
-`LC_COMPUTE_CONFIG`. Its location is independent of private connection files.
+The catalog's location is independent of the private connection files.
 
 Use one execution invocation per project at a time. Concurrent writers,
 comprehensive cancellation, task fencing, and recovery after client/worker loss

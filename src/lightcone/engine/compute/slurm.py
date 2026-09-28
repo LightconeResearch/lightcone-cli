@@ -29,6 +29,7 @@ from lightcone.engine.compute.model import (
 )
 from lightcone.engine.compute.runtime import (
     DEFAULT_CONNECTION_ROOT,
+    NOT_STARTED,
     configured_directory,
     open_client,
     private_directory,
@@ -586,6 +587,8 @@ class SlurmProvider:
             raise ComputeError("Slurm did not identify the current allocation attempt")
         restarts = int(restart_text)
         directory = attempt_directory(self.connection, identity, restarts)
+        if not (directory / "identity.json").exists():
+            raise ComputeError(NOT_STARTED, cluster_id=identity.encode())
         metadata = read_private_json(directory / "identity.json")
         expected = {
             "namespace": identity.namespace,
