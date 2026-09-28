@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import psutil
 import pytest
@@ -15,6 +16,47 @@ import pytest
 from lightcone.engine.execution import ExecutionCancelled, ExecutionUncertain
 from lightcone.engine.sandbox import Policy, Unavailable, run
 from lightcone.engine.sandbox.processes import Command
+
+
+def test_finished_group_is_reaped_without_signalling(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lightcone.engine.sandbox import processes
+
+    process = Mock(spec=subprocess.Popen, pid=1234)
+    signal_group = Mock(side_effect=PermissionError("no live signalable processes"))
+    monkeypatch.setattr(processes, "members", lambda **kwargs: [])
+    monkeypatch.setattr(processes.os, "killpg", signal_group)
+    assert processes._drain(process)
+    signal_group.assert_not_called()
+    process.wait.assert_called_once_with()
+
+
+def test_permission_error_after_last_group_member_exits_is_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine.sandbox import processes
+
+    process = Mock(spec=subprocess.Popen, pid=1234)
+    monkeypatch.setattr(processes, "members", Mock(side_effect=[[object()], []]))
+    monkeypatch.setattr(
+        processes.os, "killpg", Mock(side_effect=PermissionError("no live signalable processes")),
+    )
+    assert processes._drain(process)
+    process.wait.assert_called_once_with()
+
+
+def test_permission_error_with_a_live_group_member_remains_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine.sandbox import processes
+
+    process = Mock(spec=subprocess.Popen, pid=1234)
+    monkeypatch.setattr(processes, "members", lambda **kwargs: [object()])
+    monkeypatch.setattr(
+        processes.os, "killpg", Mock(side_effect=PermissionError("not permitted")),
+    )
+    with pytest.raises(PermissionError, match="not permitted"):
+        processes._drain(process)
+    process.wait.assert_not_called()
 
 
 def _policy(root: Path) -> Policy:

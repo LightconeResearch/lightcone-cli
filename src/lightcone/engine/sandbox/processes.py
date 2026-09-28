@@ -64,10 +64,20 @@ def has_custodian(processes: Sequence[psutil.Process]) -> bool:
 def _drain(process: subprocess.Popen[bytes]) -> bool:
     """Stop the whole command group while its unreaped leader pins the group ID."""
     for sig in (signal.SIGTERM, signal.SIGKILL):
+        if not members(group=process.pid):
+            process.wait()
+            return True
         try:
             os.killpg(process.pid, sig)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            # Darwin reports EPERM when only zombies remain. Accept that race
+            # only after confirming no live group member still needs stopping.
+            if members(group=process.pid):
+                raise
+            process.wait()
+            return True
         deadline = time.monotonic() + _GRACE
         while members(group=process.pid):
             if time.monotonic() >= deadline:
