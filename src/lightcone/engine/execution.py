@@ -13,10 +13,11 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
-from lightcone.engine.project import ProjectError
+from lightcone.engine.sandbox.model import ExecutionCancelled as ExecutionCancelled
+from lightcone.engine.sandbox.model import ExecutionUncertain as ExecutionUncertain
 
 _HEARTBEAT = 2.0
 _LEASE = 15.0
@@ -27,12 +28,27 @@ _CANCELLED: ContextVar[Callable[[], bool]] = ContextVar(
 )
 
 
-class ExecutionUncertain(ProjectError):  # noqa: N818
-    """Execution may still own writers; its partial outputs must be retained."""
+Operation = Literal[
+    "register", "heartbeat", "active", "claim", "finished", "stopped", "uncertain",
+    "revoke", "pending", "forget",
+]
 
 
-class ExecutionCancelled(ProjectError):  # noqa: N818
-    """Execution was revoked and its command has stopped."""
+class ExecutionInterrupted(KeyboardInterrupt):
+    """An interrupt whose invocation has positively confirmed command cleanup."""
+
+
+@dataclass(frozen=True)
+class _Claim:
+    fresh: bool
+    result: Any
+    remaining: float
+
+
+@dataclass(frozen=True)
+class _Progress:
+    running: tuple[str, ...]
+    uncertain: tuple[str, ...]
 
 
 def cancelled() -> bool:
@@ -47,7 +63,7 @@ def check_cancelled() -> None:
 
 
 def _state(
-    invocation: str, operation: str, task: str = "", value: Any = None,
+    invocation: str, operation: Operation, task: str = "", value: Any = None,
     *, dask_scheduler: Any,
 ) -> Any:
     # Scheduler callbacks run serially on its event loop. Registration is a
@@ -70,18 +86,18 @@ def _state(
             record["deadline"] = now + _LEASE
         return record["active"]
     if operation == "active":
-        return record["active"]
+        return max(0.0, record["deadline"] - now) if record["active"] else 0.0
     if operation == "claim":
         if not record["active"]:
             raise ExecutionCancelled("execution is no longer active")
         previous = record["tasks"].get(task)
         if previous is not None:
             if previous["state"] == "finished":
-                return False, previous["result"]
+                return _Claim(False, previous["result"], 0.0)
             record["active"] = False
             raise ExecutionUncertain(f"{task}: a previous attempt has no confirmed result")
         record["tasks"][task] = {"state": "running", "attempt": value}
-        return True, None
+        return _Claim(True, None, record["deadline"] - now)
     if operation in {"finished", "stopped", "uncertain"}:
         attempt, result = value
         if record["tasks"].get(task, {}).get("attempt") != attempt:
@@ -93,21 +109,22 @@ def _state(
     if operation == "revoke":
         record["active"] = False
     if operation in {"revoke", "pending"}:
-        return [name for name, item in record["tasks"].items()
-                if item["state"] in {"running", "uncertain"}]
+        return _Progress(
+            tuple(name for name, item in record["tasks"].items() if item["state"] == "running"),
+            tuple(name for name, item in record["tasks"].items() if item["state"] == "uncertain"),
+        )
     if operation == "forget":
         del records[invocation]
         return None
     raise ValueError(f"unknown execution operation: {operation}")
 
 
-async def _request(client: Any, invocation: str, operation: str, task: str, value: Any) -> Any:
-    return await client.run_on_scheduler(_state, invocation, operation, task, value)
-
-
-def _rpc(client: Any, invocation: str, operation: str, task: str = "", value: Any = None) -> Any:
+def _rpc(
+    client: Any, invocation: str, operation: Operation, task: str = "", value: Any = None,
+) -> Any:
     return client.sync(
-        _request, client, invocation, operation, task, value, callback_timeout=_RPC_TIMEOUT,
+        client.run_on_scheduler, _state, invocation, operation, task, value,
+        callback_timeout=_RPC_TIMEOUT,
     )
 
 
@@ -117,30 +134,49 @@ def _call(invocation: str, task: str, function: Callable[..., Any], *args: Any) 
     client = get_client()
     # A lost claim reply is ambiguous. Do not execute unless it was received.
     attempt = uuid4().hex
-    claimed, result = _rpc(client, invocation, "claim", task, attempt)
-    if not claimed:
-        return result
+    requested_at = time.monotonic()
+    claim: _Claim = _rpc(client, invocation, "claim", task, attempt)
+    if not claim.fresh:
+        return claim.result
+    deadline = requested_at + claim.remaining
     stopped = threading.Event()
     revoked = threading.Event()
 
     def monitor() -> None:
+        nonlocal deadline
         while not stopped.wait(_HEARTBEAT):
-            try:
-                active = _rpc(client, invocation, "active")
-            except Exception:
-                active = False
-            if not active:
+            requested_at = time.monotonic()
+            if requested_at >= deadline:
                 revoked.set()
                 return
+            try:
+                remaining = _rpc(client, invocation, "active")
+            except ExecutionUncertain:
+                revoked.set()
+                return
+            except Exception:
+                # An unavailable RPC is not a revocation. Keep the last grant,
+                # without extending it, while retrying within its deadline.
+                continue
+            if not remaining or time.monotonic() >= deadline:
+                revoked.set()
+                return
+            deadline = requested_at + remaining
+
+    def is_cancelled() -> bool:
+        if time.monotonic() >= deadline:
+            revoked.set()
+        return revoked.is_set()
 
     watcher = threading.Thread(target=monitor, daemon=True)
     watcher.start()
-    token = _CANCELLED.set(revoked.is_set)
+    token = _CANCELLED.set(is_cancelled)
     try:
+        check_cancelled()
         result = function(*args)
         check_cancelled()
     except BaseException as exc:
-        state = "uncertain" if isinstance(exc, ExecutionUncertain) else "stopped"
+        state: Operation = "uncertain" if isinstance(exc, ExecutionUncertain) else "stopped"
         try:
             _rpc(client, invocation, state, task, (attempt, None))
         except Exception:
@@ -151,7 +187,7 @@ def _call(invocation: str, task: str, function: Callable[..., Any], *args: Any) 
             _rpc(client, invocation, "finished", task, (attempt, result))
         except Exception as exc:
             raise ExecutionUncertain(
-                f"{task}: could not record completion; outputs retained, refusing replay"
+                f"{task}: could not record completion; refusing replay"
             ) from exc
         return result
     finally:
@@ -167,11 +203,15 @@ class Invocation:
     id: str = field(default_factory=lambda: uuid4().hex)
     futures: list[Any] = field(default_factory=list)
     stopped: bool = False
+    _submissions: int = 0
 
     def submit(
         self, function: Callable[..., Any], *args: Any, key: str, resources: dict[str, float],
     ) -> Any:
         """Claim each logical task inside its worker before it can mutate files."""
+        # A submit failure may follow native acceptance. Count it before the
+        # call so even a caught exception cannot manufacture full completion.
+        self._submissions += 1
         future = self.client.submit(
             _call, self.id, key, function, *args,
             key=f"lc-{self.id}-{key}", pure=False, retries=0, resources=resources,
@@ -184,44 +224,68 @@ class Invocation:
 def invocation(client: Any) -> Iterator[Invocation]:
     """Own authorization and wait for running commands to stop before detaching."""
     run = Invocation(client)
+    registered_at = time.monotonic()
     _rpc(client, run.id, "register", value=client.id)
     stopped = threading.Event()
 
     def heartbeat() -> None:
+        deadline = registered_at + _LEASE
         while not stopped.wait(_HEARTBEAT):
+            requested_at = time.monotonic()
+            if requested_at >= deadline:
+                return
             try:
                 if not _rpc(client, run.id, "heartbeat"):
                     return
-            except Exception:
+            except ExecutionUncertain:
                 return
+            except Exception:
+                continue
+            deadline = requested_at + _LEASE
 
     threading.Thread(target=heartbeat, daemon=True).start()
-    interruption: KeyboardInterrupt | None = None
+    failure: BaseException | None = None
     try:
         yield run
-    except KeyboardInterrupt as exc:
-        interruption = exc
+    except BaseException as exc:
+        failure = exc
         raise
     finally:
         stopped.set()
+        # A finished wrapper has already acknowledged command cleanup and
+        # published its result. Losing metadata-cleanup RPCs cannot undo that.
+        run.stopped = (
+            run._submissions == len(run.futures)
+            and all(future.status == "finished" for future in run.futures)
+        )
         try:
             pending = _rpc(client, run.id, "revoke")
             unfinished = [future for future in run.futures if not future.done()]
             if unfinished:
                 client.sync(client.cancel, unfinished, callback_timeout=_RPC_TIMEOUT)
             deadline = time.monotonic() + _STOP_TIMEOUT
-            while pending and time.monotonic() < deadline:
+            while pending.running and not pending.uncertain and time.monotonic() < deadline:
                 time.sleep(0.1)
                 pending = _rpc(client, run.id, "pending")
-            if pending:
-                raise ExecutionUncertain("unconfirmed tasks: " + ", ".join(pending))
-            # A late dispatch cannot recreate this record: missing is a refusal.
-            _rpc(client, run.id, "forget")
+            if pending.running or pending.uncertain:
+                run.stopped = False
+                raise ExecutionUncertain(
+                    "unconfirmed tasks: " + ", ".join((*pending.running, *pending.uncertain))
+                )
             run.stopped = True
-            if interruption is not None:
-                interruption.execution_stopped = True  # type: ignore[attr-defined]
         except Exception as exc:
-            raise ExecutionUncertain(
-                f"could not confirm execution stopped: {exc}; partial outputs were retained. "
-                "Stop the allocation and verify its commands/containers have ended before retrying"
-            ) from exc
+            if not run.stopped:
+                raise ExecutionUncertain(
+                    f"could not confirm execution stopped: {exc}; partial outputs were retained. "
+                    "Stop the allocation and verify its commands/containers have ended "
+                    "before retrying"
+                ) from exc
+        else:
+            # Revoked admission plus no unfinished claims already proves stop.
+            # Forgetting receipts is metadata cleanup, not another safety gate.
+            try:
+                _rpc(client, run.id, "forget")
+            except Exception:
+                pass
+        if isinstance(failure, KeyboardInterrupt) and run.stopped:
+            raise ExecutionInterrupted() from failure

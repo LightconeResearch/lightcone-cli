@@ -15,6 +15,7 @@ from click.testing import CliRunner
 
 from lightcone.engine import dataset, project, templates
 from lightcone.engine.compute.model import Identity
+from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import _run as _real_run
 
 CLUSTER_ID = Identity(
@@ -153,10 +154,13 @@ class _Inline:
 
     stopped = True  # Calls are synchronous; no remote work can survive the fixture.
 
-    def validate(self, tasks: Iterable[object]) -> None:
+    def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
         """Run fixture tasks without a finite cluster resource envelope."""
+        return {task.key: {} for task in tasks}
 
-    def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
+    def submit(
+        self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
+    ) -> object:
         return fn(*args)
 
     def completed(self, handles: list[object]) -> Iterator[object]:

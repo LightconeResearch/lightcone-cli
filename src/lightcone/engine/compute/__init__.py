@@ -39,14 +39,6 @@ def _slurm(connection: Connection) -> Provider:
 # The lifecycle seam is intentionally small: execution never dispatches on a provider.
 PROVIDERS: dict[str, ProviderFactory] = {"local": _local, "slurm": _slurm}
 
-#: What a driver leaving early must say: closing a client cannot prove that a
-#: remote subprocess has stopped.
-UNSTOPPED = (
-    "lc did not stop the allocation; tasks that did not report may still be "
-    "running, and any files they wrote remain"
-)
-
-
 def validate_id(value: str) -> None:
     """Reject invalid execution targets before preparing a project."""
     if value.startswith("clu_"):

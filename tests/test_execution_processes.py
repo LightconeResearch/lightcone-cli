@@ -13,9 +13,9 @@ from unittest.mock import Mock
 import psutil
 import pytest
 
-from lightcone.engine.execution import ExecutionCancelled, ExecutionUncertain
 from lightcone.engine.sandbox import Policy, Unavailable, run
-from lightcone.engine.sandbox.processes import Command
+from lightcone.engine.sandbox.model import ExecutionCancelled, ExecutionUncertain
+from lightcone.engine.sandbox.processes import CIDFILE, Command
 
 
 def test_finished_group_is_reaped_without_signalling(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,6 +59,28 @@ def test_permission_error_with_a_live_group_member_remains_an_error(
     process.wait.assert_not_called()
 
 
+def test_kill_confirmation_uses_the_remaining_cleanup_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine.sandbox import processes
+
+    clock = [0.0]
+    process = Mock(spec=subprocess.Popen, pid=1234)
+    signal_group = Mock()
+    monkeypatch.setattr(processes.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        processes.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+    monkeypatch.setattr(processes, "members", lambda **kwargs: [object()] if clock[0] < 2.6 else [])
+    monkeypatch.setattr(processes.os, "killpg", signal_group)
+    assert processes._drain(process, deadline=10)
+    assert [call.args[1] for call in signal_group.call_args_list] == [
+        signal.SIGTERM, signal.SIGKILL,
+    ]
+    assert 2.6 <= clock[0] < 3
+    process.wait.assert_called_once_with()
+
+
 def _policy(root: Path) -> Policy:
     return Policy(read=(root,), write=(root,), execute=(), tmp_home=root)
 
@@ -78,7 +100,7 @@ def test_timeout_escalates_ignoring_command(tmp_path: Path) -> None:
             "import os,signal,time; from pathlib import Path; "
             "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
             f"Path({str(pidfile)!r}).write_text(str(os.getpid())); time.sleep(60)"
-        )], cwd=tmp_path, env=dict(os.environ), timeout=0.2,
+        )], cwd=tmp_path, env=dict(os.environ), timeout=1,
     )
     assert outcome.returncode == 124
     assert any("timed out" in note for note in outcome.notes)
@@ -102,6 +124,21 @@ def test_cancel_stops_only_its_command(tmp_path: Path) -> None:
         unrelated.wait()
 
 
+def test_interrupt_cleanup_does_not_wait_for_the_original_task_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = Command(
+        [sys.executable, "-c", "import time; time.sleep(60)"], cwd=tmp_path,
+        env=dict(os.environ), capture=False, timeout=60,
+    )
+    wait = Mock(wraps=command.process.wait)
+    monkeypatch.setattr(command.process, "poll", Mock(side_effect=KeyboardInterrupt))
+    monkeypatch.setattr(command.process, "wait", wait)
+    with pytest.raises(KeyboardInterrupt):
+        command.wait()
+    assert wait.call_args.kwargs["timeout"] <= 16
+
+
 def test_successful_leader_cannot_leave_a_background_writer(tmp_path: Path) -> None:
     pidfile = tmp_path / "child"
     child = (
@@ -120,6 +157,24 @@ def test_successful_leader_cannot_leave_a_background_writer(tmp_path: Path) -> N
     assert outcome.returncode == 1
     assert any("background processes" in note for note in outcome.notes)
     assert _gone(int(pidfile.read_text()))
+
+
+def test_short_lived_helpers_can_finish_after_the_command(tmp_path: Path) -> None:
+    helper = (
+        "import time; from pathlib import Path; "
+        "Path('ready').touch(); time.sleep(.2); Path('finished').touch()"
+    )
+    outcome = run(
+        Unavailable(), _policy(tmp_path),
+        [sys.executable, "-c", (
+            "import subprocess,sys,time; from pathlib import Path; "
+            f"subprocess.Popen([sys.executable, '-c', {helper!r}]); "
+            "\nwhile not Path('ready').exists(): time.sleep(.01)"
+        )], cwd=tmp_path, env=dict(os.environ),
+    )
+    assert outcome.returncode == 0
+    assert (tmp_path / "finished").exists()
+    assert not any("background processes" in note for note in outcome.notes)
 
 
 def test_worker_sigkill_closes_custody_pipe_and_stops_child(tmp_path: Path) -> None:
@@ -170,10 +225,13 @@ def test_stdout_bytes_are_unchanged_by_custody(tmp_path: Path) -> None:
     assert b"".join(received) == b"\xff\r\n"
 
 
-def test_container_timeout_uses_its_immutable_runtime_id(tmp_path: Path) -> None:
+@pytest.mark.parametrize("inspection_delay", [0, 2.2])
+def test_container_timeout_uses_its_immutable_runtime_id(
+    tmp_path: Path, inspection_delay: float,
+) -> None:
     runtime = tmp_path / "runtime"
     runtime.write_text(f"#!{sys.executable}\n" + '''
-import json, os, signal, subprocess, sys
+import json, os, signal, subprocess, sys, time
 from pathlib import Path
 import psutil
 root = Path(os.environ['STATE_ROOT'])
@@ -187,9 +245,10 @@ if argv[0] == 'run':
         start_new_session=True)
     (root / 'payload').write_text(str(process.pid))
     Path(argv[argv.index('--cidfile') + 1]).write_text(identity)
-    (root / 'cidfile').write_text(argv[argv.index('--cidfile') + 1])
+    (root / 'cidfile').write_text(str(Path(argv[argv.index('--cidfile') + 1]).resolve()))
     process.wait()
 elif argv[0] == 'inspect':
+    time.sleep(float(os.environ['INSPECTION_DELAY']))
     try:
         alive = psutil.Process(int((root / 'payload').read_text())).status() != psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
@@ -202,9 +261,9 @@ elif argv[0] == 'rm':
 ''')
     runtime.chmod(0o700)
     command = Command(
-        [str(runtime), "run", "image"], cwd=tmp_path,
-        env={**os.environ, "STATE_ROOT": str(tmp_path)}, capture=False,
-        container=True, timeout=0.4,
+        [str(runtime), "run", "--cidfile", CIDFILE, "image"], cwd=tmp_path,
+        env={**os.environ, "STATE_ROOT": str(tmp_path), "INSPECTION_DELAY": str(inspection_delay)},
+        capture=False, oci_runtime=str(runtime), timeout=1,
     )
     try:
         code, note = command.wait()

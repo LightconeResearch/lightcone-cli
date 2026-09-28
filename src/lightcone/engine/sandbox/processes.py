@@ -24,7 +24,10 @@ from typing import Any, Self
 import psutil
 
 _GRACE = 1.0
+_EXIT_GRACE = 1.0
 _CLEANUP_TIMEOUT = 15.0
+_REPORT_GRACE = 1.0
+CIDFILE = "container.cid"
 
 
 def members(*, group: int | None = None, session: int | None = None) -> list[psutil.Process]:
@@ -61,8 +64,10 @@ def has_custodian(processes: Sequence[psutil.Process]) -> bool:
     return False
 
 
-def _drain(process: subprocess.Popen[bytes]) -> bool:
+def _drain(process: subprocess.Popen[bytes], *, deadline: float | None = None) -> bool:
     """Stop the whole command group while its unreaped leader pins the group ID."""
+    if deadline is None:
+        deadline = time.monotonic() + _CLEANUP_TIMEOUT
     for sig in (signal.SIGTERM, signal.SIGKILL):
         if not members(group=process.pid):
             process.wait()
@@ -78,9 +83,9 @@ def _drain(process: subprocess.Popen[bytes]) -> bool:
                 raise
             process.wait()
             return True
-        deadline = time.monotonic() + _GRACE
+        until = min(deadline, time.monotonic() + _GRACE) if sig == signal.SIGTERM else deadline
         while members(group=process.pid):
-            if time.monotonic() >= deadline:
+            if time.monotonic() >= until:
                 break
             time.sleep(0.025)
         else:
@@ -97,20 +102,22 @@ class Command:
         cwd: Command working directory.
         env: Command environment.
         capture: Whether to pipe stdout and disable stdin.
-        timeout: Maximum command runtime in seconds, or no bound.
-        container: Whether argv starts a supported OCI runtime.
+        timeout: Maximum command lifetime including startup, or no bound, in seconds.
+        oci_runtime: The native OCI runtime, or None for a host command.
     """
 
     def __init__(
         self, argv: Sequence[str], *, cwd: Path, env: dict[str, str], capture: bool,
-        timeout: float | None = None, container: bool = False,
+        timeout: float | None = None, oci_runtime: str | None = None,
     ) -> None:
         self._control, control_write = os.pipe()
         status_read, self._status = os.pipe()
         self._writer = os.fdopen(control_write, "wb", buffering=0)
         self._reader = os.fdopen(status_read, "rb")
+        execution_deadline = time.monotonic() + timeout if timeout is not None else None
         self._deadline = (
-            time.monotonic() + timeout + _CLEANUP_TIMEOUT if timeout is not None else None
+            execution_deadline + _CLEANUP_TIMEOUT + _REPORT_GRACE
+            if execution_deadline is not None else None
         )
         try:
             self.process = subprocess.Popen(
@@ -123,7 +130,7 @@ class Command:
             )
             self._writer.write(json.dumps({
                 "argv": list(argv), "cwd": str(cwd), "env": env,
-                "timeout": timeout, "container": container,
+                "deadline": execution_deadline, "oci_runtime": oci_runtime,
             }).encode() + b"\n")
         except BaseException:
             self._writer.close()
@@ -131,7 +138,7 @@ class Command:
                 try:
                     self.wait()
                 except Exception as cleanup_error:
-                    from lightcone.engine.execution import ExecutionCancelled
+                    from lightcone.engine.sandbox.model import ExecutionCancelled
 
                     if not isinstance(cleanup_error, ExecutionCancelled):
                         raise
@@ -149,7 +156,7 @@ class Command:
         self, exc_type: type[BaseException] | None, exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        from lightcone.engine.execution import ExecutionCancelled
+        from lightcone.engine.sandbox.model import ExecutionCancelled
 
         if not self._reader.closed:
             self._writer.close()
@@ -160,16 +167,18 @@ class Command:
 
     def wait(self, cancelled: Callable[[], bool] | None = None) -> tuple[int, str]:
         """Wait for command completion; cancellation includes verified cleanup."""
-        from lightcone.engine.execution import ExecutionCancelled, ExecutionUncertain
+        from lightcone.engine.sandbox.model import ExecutionCancelled, ExecutionUncertain
 
         requested = self._writer.closed
-        deadline = time.monotonic() + _CLEANUP_TIMEOUT if requested else self._deadline
+        deadline = (
+            time.monotonic() + _CLEANUP_TIMEOUT + _REPORT_GRACE if requested else self._deadline
+        )
         try:
             while self.process.poll() is None:
                 if not requested and cancelled is not None and cancelled():
                     self._writer.close()
                     requested = True
-                    deadline = time.monotonic() + _CLEANUP_TIMEOUT
+                    deadline = time.monotonic() + _CLEANUP_TIMEOUT + _REPORT_GRACE
                 if deadline is not None and time.monotonic() >= deadline:
                     raise ExecutionUncertain("command cleanup did not finish")
                 time.sleep(0.025)
@@ -177,8 +186,11 @@ class Command:
             self._writer.close()
             try:
                 remaining = (
-                    _CLEANUP_TIMEOUT if deadline is None
-                    else max(0.0, deadline - time.monotonic())
+                    _CLEANUP_TIMEOUT + _REPORT_GRACE if deadline is None
+                    else min(
+                        _CLEANUP_TIMEOUT + _REPORT_GRACE,
+                        max(0.0, deadline - time.monotonic()),
+                    )
                 )
                 self.process.wait(timeout=remaining)
             except subprocess.TimeoutExpired as exc:
@@ -200,7 +212,7 @@ class Command:
         return int(report["returncode"]), str(report.get("note", ""))
 
     def _report(self) -> dict[str, Any]:
-        from lightcone.engine.execution import ExecutionUncertain
+        from lightcone.engine.sandbox.model import ExecutionUncertain
 
         try:
             with self._reader:
@@ -214,7 +226,9 @@ class Command:
             ) from exc
 
 
-def _container_cleanup(runtime: str, cidfile: Path, env: dict[str, str]) -> None:
+def _container_cleanup(
+    runtime: str, cidfile: Path, env: dict[str, str], *, deadline: float,
+) -> None:
     """Stop, inspect and remove exactly the container created by this command."""
     try:
         identity = cidfile.read_text().strip()
@@ -224,9 +238,12 @@ def _container_cleanup(runtime: str, cidfile: Path, env: dict[str, str]) -> None
         raise RuntimeError("container runtime did not publish a valid immutable container ID")
 
     def run(*args: str) -> subprocess.CompletedProcess[str]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("command cleanup deadline expired")
         return subprocess.run(
             [runtime, *args], env=env, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=2,
+            capture_output=True, text=True, timeout=remaining,
         )
 
     def running() -> bool:
@@ -243,7 +260,6 @@ def _container_cleanup(runtime: str, cidfile: Path, env: dict[str, str]) -> None
                 pass
             if running():
                 run("kill", identity)
-                deadline = time.monotonic() + 2
                 while running():
                     if time.monotonic() >= deadline:
                         raise RuntimeError(f"container {identity} remains running after kill")
@@ -273,6 +289,7 @@ def _supervise(control: int, status: int) -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     process: subprocess.Popen[bytes] | None = None
+    cleanup_deadline: float | None = None
     report: dict[str, Any] = {"returncode": 125}
     with os.fdopen(control, "rb", buffering=0) as channel, tempfile.TemporaryDirectory(
         prefix="lc-command-"
@@ -280,16 +297,18 @@ def _supervise(control: int, status: int) -> None:
         try:
             config = json.loads(channel.readline())
             argv = config["argv"]
-            cidfile = Path(directory) / "container"
-            if config["container"]:
-                argv[2:2] = ["--cidfile", str(cidfile)]
+            cidfile = Path(directory) / CIDFILE
+            oci_runtime = config["oci_runtime"]
             if stopped or select.select([channel], [], [], 0)[0]:
                 report["cancelled"] = True
                 return
+            if config["deadline"] is not None and time.monotonic() >= config["deadline"]:
+                report.update(returncode=124, note="command timed out before startup")
+                return
             process = subprocess.Popen(
-                argv, cwd=config["cwd"], env=config["env"], process_group=0,
+                argv, cwd=directory if oci_runtime else config["cwd"],
+                env=config["env"], process_group=0,
             )
-            started = time.monotonic()
             reason = ""
             # Keep the leader unreaped until group cleanup is complete, pinning
             # its PID/PGID against reuse. Unlike waitid(WNOWAIT), psutil also
@@ -300,25 +319,39 @@ def _supervise(control: int, status: int) -> None:
                     reason = "cancelled"
                     break
                 if (
-                    config["timeout"] is not None
-                    and time.monotonic() - started >= config["timeout"]
+                    config["deadline"] is not None
+                    and time.monotonic() >= config["deadline"]
                 ):
                     reason = "timed out"
                     break
-            if not reason and members(group=process.pid):
-                reason = "left background processes running"
+            # Helpers such as multiprocessing's resource_tracker finish after
+            # their parent closes its pipe. Give normal teardown a short grace.
+            exit_deadline = time.monotonic() + _EXIT_GRACE
+            while not reason and members(group=process.pid):
+                if stopped or select.select([channel], [], [], 0.025)[0]:
+                    reason = "cancelled"
+                elif (
+                    config["deadline"] is not None
+                    and time.monotonic() >= config["deadline"]
+                ):
+                    reason = "timed out"
+                elif time.monotonic() >= exit_deadline:
+                    reason = "left background processes running"
+            cleanup_deadline = time.monotonic() + _CLEANUP_TIMEOUT
             container_stopped = False
-            if config["container"]:
+            if oci_runtime:
                 # A runtime startup failure with no CID has not published a
                 # container; interruption in that window cannot prove the same.
                 if cidfile.exists() or reason:
-                    _container_cleanup(argv[0], cidfile, config["env"])
+                    _container_cleanup(
+                        oci_runtime, cidfile, config["env"], deadline=cleanup_deadline,
+                    )
                     # Podman removes its cidfile together with the container.
                     # Keep the verified outcome, not the file's later existence.
                     container_stopped = True
-            if not _drain(process):
+            if not _drain(process, deadline=cleanup_deadline):
                 raise RuntimeError("command processes remain alive after SIGKILL")
-            if config["container"] and not container_stopped and process.returncode != 125:
+            if oci_runtime and not container_stopped and process.returncode != 125:
                 raise RuntimeError("container runtime exited without recording its identity")
             report["returncode"] = process.returncode
             if reason == "cancelled":
@@ -332,7 +365,7 @@ def _supervise(control: int, status: int) -> None:
                 report["start_error"] = f"command could not start: {str(exc)[:2048]}"
             else:
                 try:
-                    _drain(process)
+                    _drain(process, deadline=cleanup_deadline)
                 except BaseException:
                     pass
                 report["error"] = f"cannot confirm command cleanup: {str(exc)[:2048]}"

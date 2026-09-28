@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Literal
 
 from lightcone.engine import assets, container, dataset, execution, identity, plan, project, sandbox
+from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
     ProjectError,
@@ -219,7 +220,7 @@ def execute(
     committed as part of an output that never produced it. The context's
     ``env_version`` is checked either side of the recipe, so a mid-run
     lock edit cannot be recorded as if it had been in force. The subprocess
-    boundary applies ``task.resources.time_seconds`` and drains owned processes
+    boundary applies the recipe's time limit and drains owned processes
     before reporting completion. CPU and memory scheduling happens upstream.
 
     Args:
@@ -239,6 +240,7 @@ def execute(
         ExecutionUncertain: Subprocess teardown could not be confirmed.
     """
     execution.check_cancelled()
+    resources = TaskResources.parse(task.resources)
     if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved)
 
@@ -270,7 +272,7 @@ def execute(
             prefix=uv_prefix(root),
             env=child_env(),
             output=output,
-            timeout=task.resources.time_seconds,
+            timeout=resources.time_seconds,
             cancelled=execution.cancelled,
         )
     finished_at = _now()

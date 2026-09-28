@@ -20,7 +20,13 @@ from pathlib import Path
 from typing import IO
 
 from lightcone.engine.sandbox import policy as policy_module
-from lightcone.engine.sandbox.model import Attestation, Backend, Capability, Policy
+from lightcone.engine.sandbox.model import (
+    Attestation,
+    Backend,
+    Capability,
+    ExecutionUncertain,
+    Policy,
+)
 from lightcone.engine.sandbox.processes import Command
 
 #: How much of the child's stderr to keep for the denial classifier. The
@@ -117,8 +123,6 @@ def scope(policy: Policy) -> Iterator[Policy]:
     Yields:
         The same policy, with its ``tmp_home`` removed on exit.
     """
-    from lightcone.engine.execution import ExecutionUncertain
-
     cleanup = True
     try:
         yield policy
@@ -175,6 +179,11 @@ def run(
     else:
         wrapped = [*prefix, *backend.wrap(policy, [*env_argv(policy), *argv])]
     attestation = backend.attest(policy)
+    oci_runtime = (
+        attestation.mechanism
+        if attestation.mechanism in {"podman", "docker", "podman-hpc"}
+        else None
+    )
     # `policy.env` is deliberately **not** merged here: it went inside
     # the wrap, above, via :func:`env_argv`. Everything *outside* the
     # rewrite has to keep the real environment — `uv` resolves its cache
@@ -189,7 +198,7 @@ def run(
 
     with Command(
         wrapped, cwd=cwd, env=child_env, capture=output is not None, timeout=timeout,
-        container=backend.contains_prefix,
+        oci_runtime=oci_runtime,
     ) as command:
         proc = command.process
         assert proc.stderr is not None  # Popen was given PIPE
@@ -230,7 +239,7 @@ def run(
             "lc could not set up the sandbox (see above) — this is an lc "
             "problem, not your command's"
         )
-    elif returncode == 125 and backend.contains_prefix:
+    elif returncode == 125 and oci_runtime is not None:
         # The runtimes reserve 125 for their own failures (a bad flag, a
         # vanished mount source): the command never ran, so the denial
         # heuristics have nothing to say about it.

@@ -48,7 +48,7 @@ def test_integral_astra_float_cpu_count_is_accepted_without_rounding() -> None:
     [
         {"cpus": 0}, {"cpus": True}, {"cpus": "4"}, {"cpus": None},
         {"memory": "0Gi"}, {"memory": "0.1B"}, {"memory": "16"}, {"memory": 16},
-        {"memory": "400m"},
+        {"memory": "400m"}, {"memory": None},
         {"time_limit": "0m"}, {"time_limit": ""}, {"time_limit": "5m2h"},
         {"time_limit": "unlimited"}, {"gpus": 1}, {"disk": "10Gi"}, {"ram": "1Gi"},
     ],
@@ -65,6 +65,13 @@ def test_internal_resource_models_remain_validated() -> None:
         TaskResources(memory_bytes=-1)
     with pytest.raises(ValidationError):
         TaskResources(time_seconds=0)
+
+
+def test_recipe_memory_uses_exact_bytes_without_decimal_context_rounding() -> None:
+    one_byte = "0.000000000931322574615478515625"
+    assert TaskResources.parse({"memory": f"{one_byte}Gi"}).memory_bytes == 1
+    with pytest.raises(ProjectError, match="exactly representable"):
+        TaskResources.parse({"memory": f"{one_byte}00000000000000001Gi"})
 
 
 def test_declared_requests_reserve_exact_cpu_and_memory_budgets() -> None:

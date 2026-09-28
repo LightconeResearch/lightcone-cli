@@ -179,6 +179,7 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
     remains available after the command finishes.
     """
     from lightcone.engine import run as engine_run
+    from lightcone.engine.execution import ExecutionInterrupted
     from lightcone.engine.project import current_project
 
     _require_cluster_id(cluster_id)
@@ -189,7 +190,7 @@ def run(cluster_id: str, command: tuple[str, ...]) -> None:
     try:
         outcome = engine_run.probe(current_project(), command, cluster_id=cluster_id)
     except KeyboardInterrupt as exc:
-        if getattr(exc, "execution_stopped", False):
+        if isinstance(exc, ExecutionInterrupted):
             click.echo(
                 "Interrupted; the command has stopped. The cluster remains available.", err=True,
             )
@@ -383,7 +384,9 @@ def materialize(
         try:
             report = engine.materialize(root, targets, cluster_id=cluster_id, refresh=refresh)
         except KeyboardInterrupt as exc:
-            if getattr(exc, "execution_stopped", False):
+            from lightcone.engine.execution import ExecutionInterrupted
+
+            if isinstance(exc, ExecutionInterrupted):
                 click.echo(
                     "Interrupted; recipes have stopped and uncommitted outputs were restored. "
                     "The cluster remains available.", err=True,

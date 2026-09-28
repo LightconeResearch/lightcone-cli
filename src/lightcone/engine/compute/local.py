@@ -388,31 +388,26 @@ class LocalProvider:
         self._retire(directory)
 
     def _stop(self, identity: Identity, directory: Path, record: dict[str, Any]) -> None:
+        from lightcone.engine.sandbox.processes import (
+            _CLEANUP_TIMEOUT,
+            has_custodian,
+        )
+        from lightcone.engine.sandbox.processes import members as session_members
+
         process = self._process(identity, directory, record)
         if process is None:
             return
-        members = []
-        for member in psutil.process_iter():
-            try:
-                if (
-                    member.uids().real == os.getuid()
-                    and os.getsid(member.pid) == process.pid
-                ):
-                    # Capture each birth identity while the owner still proves
-                    # this session is ours. psutil's signal methods check reuse.
-                    member.create_time()
-                    members.append(member)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
-                continue
+        # Capture birth identities while the owner establishes session custody.
+        members = session_members(session=process.pid)
         for member in members:
             try:
                 member.terminate()
             except psutil.NoSuchProcess:
                 pass
         for escalation in (False, True):
-            from lightcone.engine.sandbox.processes import has_custodian
-
-            grace = max(_STOP_GRACE, 16) if has_custodian(members) else _STOP_GRACE
+            grace = (
+                max(_STOP_GRACE, _CLEANUP_TIMEOUT + 1) if has_custodian(members) else _STOP_GRACE
+            )
             deadline = time.monotonic() + grace
             while members and time.monotonic() < deadline:
                 living = []
@@ -436,8 +431,6 @@ class LocalProvider:
             if process is not None:
                 # Commands have separate groups inside this session. The
                 # live owner establishes custody of newly created members.
-                from lightcone.engine.sandbox.processes import members as session_members
-
                 for member in session_members(session=process.pid):
                     try:
                         member.kill()

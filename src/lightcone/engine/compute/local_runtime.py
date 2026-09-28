@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from types import FrameType
 
+import psutil
+
 from lightcone.engine.compute.runtime import (
     SCHEDULER_CONFIG,
     create_security,
@@ -18,34 +20,43 @@ from lightcone.engine.compute.runtime import (
     read_private_json,
     write_private_json,
 )
+from lightcone.engine.sandbox.processes import _CLEANUP_TIMEOUT, has_custodian, members
 
 
 def _stop_session() -> None:
     """Give command custodians time to drain, then kill the allocation session."""
-    import psutil
-
-    from lightcone.engine.sandbox.processes import has_custodian, members
-
     owner = os.getpid()
-    remaining = [member for member in members(session=owner) if member.pid != owner]
-    for member in remaining:
-        try:
-            member.terminate()
-        except psutil.NoSuchProcess:
-            pass
+    remaining: list[psutil.Process] = []
     started = time.monotonic()
-    while remaining:
-        grace = 15 if has_custodian(remaining) else 2.5
-        if time.monotonic() - started >= grace:
-            break
-        time.sleep(0.05)
+    try:
         remaining = [member for member in members(session=owner) if member.pid != owner]
-    for member in remaining:
+        for member in remaining:
+            try:
+                member.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        while remaining:
+            grace = _CLEANUP_TIMEOUT if has_custodian(remaining) else 2.5
+            if time.monotonic() - started >= grace:
+                break
+            time.sleep(0.05)
+            remaining = [member for member in members(session=owner) if member.pid != owner]
+    except Exception:
+        # Enumeration can fail during shutdown. The original group is still
+        # ours; let its custodians drain their command groups before hard kill.
+        os.killpg(owner, signal.SIGTERM)
+        time.sleep(max(0.0, started + _CLEANUP_TIMEOUT - time.monotonic()))
+    finally:
         try:
-            member.kill()
-        except psutil.NoSuchProcess:
-            pass
-    os.kill(owner, signal.SIGKILL)
+            for member in remaining:
+                try:
+                    member.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        finally:
+            # This also covers workers the last enumeration could not observe.
+            # The owner was verified as session/group leader before startup.
+            os.killpg(owner, signal.SIGKILL)
 
 
 def main() -> None:

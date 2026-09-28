@@ -473,7 +473,9 @@ def test_shared_inputs_are_hashed_once_before_task_serialization(
         return real(path)
 
     class _Copied(_Inline):
-        def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
+        def submit(
+            self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
+        ) -> object:
             return fn(*pickle.loads(pickle.dumps(args)))
 
     monkeypatch.setattr(assets, "data_version", digest)
@@ -1114,6 +1116,30 @@ def test_resource_refusal_precedes_preparation_and_all_recipes(
     assert dataset.head(root) == before
     assert not dataset.status(root)
     assert not (root / "results/baseline/first.txt").exists()
+
+
+@pytest.mark.parametrize("resource_spec", [
+    "gpus: 1", "disk: 1Gi", "cpus: 0.5", "cpus: 0", "memory: null",
+])
+def test_execution_only_resources_do_not_block_read_only_commands(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, resource_spec: str,
+) -> None:
+    spec = _SPEC.replace(
+        "command: cat", f"resources: {{{resource_spec}}}\n      command: cat",
+    )
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    assert len(engine.status(root).outputs) == 2
+    assert set(engine.check(root, []).planned) == {"baseline/first", "baseline/second"}
+
+    _resource_cluster(monkeypatch)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("preparation began before execution requirements were validated")
+
+    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    with pytest.raises(ProjectError, match="baseline/second"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert not dataset.status(root)
 
 
 def test_empty_cluster_refuses_before_project_preparation(

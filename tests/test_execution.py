@@ -86,6 +86,14 @@ def _raise(error: Exception) -> None:
     raise error
 
 
+def _stay_authorized(seconds: float) -> str:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        execution.check_cancelled()
+        time.sleep(0.01)
+    return "completed"
+
+
 def _records(*, dask_scheduler: Any) -> dict[str, Any]:
     return dask_scheduler.extensions.get("lightcone-executions", {})
 
@@ -170,7 +178,7 @@ def test_duplicate_running_attempt_cannot_execute_or_finish_the_original_claim(
             )
             with pytest.raises(execution.ExecutionUncertain, match="previous attempt"):
                 duplicate.result(timeout=3)
-            assert execution._rpc(execution_client, run.id, "pending") == ["recipe"]
+            assert execution._rpc(execution_client, run.id, "pending").running == ("recipe",)
             assert not duplicate_effect.exists()
         finally:
             release.touch()
@@ -180,7 +188,7 @@ def test_duplicate_running_attempt_cannot_execute_or_finish_the_original_claim(
             # Rejecting the ambiguous duplicate may revoke the invocation before
             # the original completes. Only that original may acknowledge its stop.
             pass
-        assert execution._rpc(execution_client, run.id, "pending") == []
+        assert execution._rpc(execution_client, run.id, "pending").running == ()
 
 
 def test_late_dispatch_after_invocation_exit_cannot_recreate_authorization(
@@ -202,19 +210,18 @@ def test_missing_scheduler_state_refuses_both_replay_and_unstarted_tasks(
     execution_client: Client, tmp_path: Path,
 ) -> None:
     effects = tmp_path / "effects"
-    with pytest.raises(execution.ExecutionUncertain, match="confirm execution stopped"):
-        with execution.invocation(execution_client) as run:
-            run.submit(_effect, effects, key="recipe", resources=_RESOURCES).result()
-            execution_client.run_on_scheduler(_lose_state)
-            for key in ("recipe", "new-recipe"):
-                future = execution_client.submit(
-                    execution._call, run.id, key, _effect, effects,
-                    key=f"lost-state-{uuid4().hex}", pure=False,
-                )
-                with pytest.raises(execution.ExecutionUncertain, match="no longer registered"):
-                    future.result(timeout=3)
+    with execution.invocation(execution_client) as run:
+        run.submit(_effect, effects, key="recipe", resources=_RESOURCES).result()
+        execution_client.run_on_scheduler(_lose_state)
+        for key in ("recipe", "new-recipe"):
+            future = execution_client.submit(
+                execution._call, run.id, key, _effect, effects,
+                key=f"lost-state-{uuid4().hex}", pure=False,
+            )
+            with pytest.raises(execution.ExecutionUncertain, match="no longer registered"):
+                future.result(timeout=3)
     assert effects.read_text() == "executed\n"
-    assert not run.stopped
+    assert run.stopped  # The only admitted task returned its confirmed completion.
 
 
 def test_missing_scheduler_state_stops_running_work_without_claiming_confirmed_cleanup(
@@ -252,7 +259,7 @@ def test_lost_claim_response_never_starts_the_recipe_and_retains_its_unresolved_
             future = run.submit(_effect, effects, key="recipe", resources=_RESOURCES)
             with pytest.raises(TimeoutError, match="reply lost"):
                 future.result(timeout=3)
-            assert execution._rpc(execution_client, run.id, "pending") == ["recipe"]
+            assert execution._rpc(execution_client, run.id, "pending").running == ("recipe",)
     assert not effects.exists()
 
 
@@ -312,7 +319,7 @@ def test_driver_disconnect_revokes_execution_even_while_an_observer_remains_conn
     _wait_for(stopped)
     assert not execution._rpc(execution_client, run.id, "heartbeat")
     deadline = time.monotonic() + 3
-    while execution._rpc(execution_client, run.id, "pending"):
+    while execution._rpc(execution_client, run.id, "pending").running:
         assert time.monotonic() < deadline, "task never acknowledged that it stopped"
         time.sleep(0.01)
     execution._rpc(execution_client, run.id, "forget")
@@ -338,7 +345,7 @@ def test_function_exception_confirms_stop_but_does_not_authorize_reexecution(
         future = run.submit(_raise, ValueError("recipe failed"), key="recipe", resources=_RESOURCES)
         with pytest.raises(ValueError, match="recipe failed"):
             future.result(timeout=3)
-        assert execution._rpc(execution_client, run.id, "pending") == []
+        assert execution._rpc(execution_client, run.id, "pending").running == ()
         replay = execution_client.submit(
             execution._call, run.id, "recipe", _raise, AssertionError("must not execute"),
             pure=False,
@@ -359,8 +366,8 @@ def test_uncertain_task_remains_unresolved_after_context_exit(
             )
             with pytest.raises(execution.ExecutionUncertain, match="container may still"):
                 future.result(timeout=3)
-            assert execution._rpc(execution_client, run.id, "pending") == ["recipe"]
-    assert execution._rpc(execution_client, run.id, "pending") == ["recipe"]
+            assert execution._rpc(execution_client, run.id, "pending").uncertain == ("recipe",)
+    assert execution._rpc(execution_client, run.id, "pending").uncertain == ("recipe",)
     assert not execution._rpc(execution_client, run.id, "heartbeat")
     assert not run.stopped
 
@@ -384,3 +391,167 @@ def test_uncertain_cleanup_prevents_independent_tasks_from_using_released_dask_r
             error = later.exception(timeout=3)
     assert isinstance(error, execution.ExecutionCancelled)
     assert not effects.exists()
+
+
+def test_transient_heartbeat_and_monitor_failures_preserve_the_confirmed_lease(
+    execution_client: Client, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(execution, "_LEASE", 0.4)
+    request = execution._rpc
+    calls = {"heartbeat": 0, "active": 0}
+
+    def fail_once(*args: Any, **kwargs: Any) -> Any:
+        operation = args[2]
+        if operation in calls:
+            calls[operation] += 1
+            if calls[operation] == 1:
+                raise TimeoutError("temporary scheduler RPC failure")
+        return request(*args, **kwargs)
+
+    monkeypatch.setattr(execution, "_rpc", fail_once)
+    with execution.invocation(execution_client) as run:
+        future = run.submit(_stay_authorized, 0.8, key="recipe", resources=_RESOURCES)
+        assert future.result(timeout=3) == "completed"
+    assert calls["heartbeat"] > 2
+    assert calls["active"] > 2
+    assert run.stopped
+
+
+def test_unreachable_monitor_expires_its_last_grant_even_when_driver_heartbeats_continue(
+    execution_client: Client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(execution, "_LEASE", 0.3)
+    request = execution._rpc
+    failed_polls = 0
+
+    def lose_monitor(*args: Any, **kwargs: Any) -> Any:
+        nonlocal failed_polls
+        if args[2] == "active":
+            failed_polls += 1
+            raise TimeoutError("worker cannot reach scheduler")
+        return request(*args, **kwargs)
+
+    monkeypatch.setattr(execution, "_rpc", lose_monitor)
+    started, stopped = tmp_path / "started", tmp_path / "stopped"
+    with execution.invocation(execution_client) as run:
+        future = run.submit(_cooperate, started, stopped, key="recipe", resources=_RESOURCES)
+        with pytest.raises(execution.ExecutionCancelled, match="cancelled"):
+            future.result(timeout=3)
+    assert failed_polls > 1  # A single failed RPC did not revoke valid authorization.
+    assert stopped.exists()
+
+
+@pytest.mark.parametrize("operation", ["revoke", "forget"])
+def test_completed_results_survive_metadata_cleanup_rpc_failure(
+    execution_client: Client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str,
+) -> None:
+    request = execution._rpc
+    effects = tmp_path / "effects"
+
+    def lose_cleanup(*args: Any, **kwargs: Any) -> Any:
+        if args[2] == operation:
+            raise TimeoutError("scheduler unavailable during metadata cleanup")
+        return request(*args, **kwargs)
+
+    with execution.invocation(execution_client) as run:
+        result = run.submit(_effect, effects, key="recipe", resources=_RESOURCES).result(timeout=3)
+        monkeypatch.setattr(execution, "_rpc", lose_cleanup)
+    assert result.status == "ok"
+    assert effects.read_text() == "executed\n"
+    assert run.stopped
+
+
+def test_caught_submit_failure_cannot_manufacture_completion_from_an_empty_future_list(
+    execution_client: Client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, submit = execution._rpc, execution_client.submit
+    effects = tmp_path / "effects"
+
+    def accept_then_fail(*args: Any, **kwargs: Any) -> Any:
+        future = submit(*args, **kwargs)
+        future.result(timeout=3)
+        raise TimeoutError("submission accepted but its handle was lost")
+
+    def lose_revoke(*args: Any, **kwargs: Any) -> Any:
+        if args[2] == "revoke":
+            raise TimeoutError("cannot query accepted submissions")
+        return request(*args, **kwargs)
+
+    monkeypatch.setattr(execution_client, "submit", accept_then_fail)
+    monkeypatch.setattr(execution, "_rpc", lose_revoke)
+    with pytest.raises(execution.ExecutionUncertain, match="confirm execution stopped"):
+        with execution.invocation(execution_client) as run:
+            with pytest.raises(TimeoutError, match="handle was lost"):
+                run.submit(_effect, effects, key="recipe", resources=_RESOURCES)
+            assert not run.futures
+    assert effects.read_text() == "executed\n"
+    assert not run.stopped
+
+
+@pytest.mark.parametrize("submit", [False, True])
+def test_positive_task_completion_preserves_driver_error_during_cleanup_outage(
+    execution_client: Client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, submit: bool,
+) -> None:
+    request = execution._rpc
+    failure = ValueError("driver could not commit")
+
+    def lose_revoke(*args: Any, **kwargs: Any) -> Any:
+        if args[2] == "revoke":
+            raise TimeoutError("scheduler unavailable during cleanup")
+        return request(*args, **kwargs)
+
+    with pytest.raises(ValueError, match="could not commit") as caught:
+        with execution.invocation(execution_client) as run:
+            if submit:
+                run.submit(
+                    _effect, tmp_path / "effects", key="recipe", resources=_RESOURCES,
+                ).result()
+            monkeypatch.setattr(execution, "_rpc", lose_revoke)
+            raise failure
+    assert caught.value is failure
+    assert run.stopped
+
+
+def test_confirmed_revocation_and_drain_remain_valid_when_forgetting_receipts_fails(
+    execution_client: Client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = execution._rpc
+    started, stopped = tmp_path / "started", tmp_path / "stopped"
+    interruption = KeyboardInterrupt()
+
+    def lose_forget(*args: Any, **kwargs: Any) -> Any:
+        if args[2] == "forget":
+            raise TimeoutError("receipt cleanup reply lost")
+        return request(*args, **kwargs)
+
+    monkeypatch.setattr(execution, "_rpc", lose_forget)
+    with pytest.raises(execution.ExecutionInterrupted) as caught:
+        with execution.invocation(execution_client) as run:
+            run.submit(_cooperate, started, stopped, key="recipe", resources=_RESOURCES)
+            _wait_for(started)
+            raise interruption
+    assert caught.value.__cause__ is interruption
+    assert stopped.exists()
+    assert run.stopped
+
+
+def test_known_terminal_uncertainty_is_reported_without_polling_for_a_different_result(
+    execution_client: Client, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = execution._rpc
+
+    def refuse_polling(*args: Any, **kwargs: Any) -> Any:
+        if args[2] == "pending":
+            pytest.fail("a terminal uncertain receipt cannot become confirmed by waiting")
+        return request(*args, **kwargs)
+
+    monkeypatch.setattr(execution, "_rpc", refuse_polling)
+    with pytest.raises(execution.ExecutionUncertain, match="unconfirmed tasks: recipe"):
+        with execution.invocation(execution_client) as run:
+            future = run.submit(
+                _raise, execution.ExecutionUncertain("container still unaccounted for"),
+                key="recipe", resources=_RESOURCES,
+            )
+            with pytest.raises(execution.ExecutionUncertain, match="unaccounted"):
+                future.result(timeout=3)
+    assert not run.stopped

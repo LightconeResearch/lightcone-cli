@@ -66,9 +66,7 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
             except ProjectError:
                 raise
             except Exception as exc:
-                raise ProjectError(
-                    f"cluster execution failed: {exc}. {compute.UNSTOPPED}"
-                ) from exc
+                raise ProjectError(f"cluster execution failed: {exc}") from exc
             if not output.wait("probe"):
                 notes.append("remote output forwarding did not finish before its deadline")
     if warning := uv_scrub_warning():

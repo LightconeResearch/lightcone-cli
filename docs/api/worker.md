@@ -41,7 +41,7 @@ perform Dask resource admission.
   not enter the ordinary failed-output restore path: cleanup first establishes
   that writers have stopped, and uncertainty retains partial outputs.
 - **Task completion includes subprocess teardown.** The boundary owns process
-  and container cleanup, applies `task.resources.time_seconds`, and reports
+  and container cleanup, applies the parsed resource request's time limit, and reports
   uncertain teardown as an exception. A time limit that stops the recipe
   becomes an ordinary failed result. CPU and memory reservations are standard
   Dask scheduling constraints, not OS limits imposed by this module.

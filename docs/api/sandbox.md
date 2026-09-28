@@ -29,15 +29,21 @@ classification. Without a receiver, stdout remains inherited.
 `processes.Command` starts a small supervisor outside the sandbox. The supervisor
 owns the wrapped command's process group and watches a control pipe: worker death
 closes the pipe and triggers cleanup even when the worker cannot run `finally`.
-Timeouts and cancellation use the same TERM/KILL cleanup. A command that exits
-while leaving background processes is failed after those processes are stopped.
+Timeouts include command startup. Timeouts and cancellation use the same TERM/KILL
+cleanup, with one 15-second deadline shared by process and container operations.
+After the leader exits, short-lived helpers get up to one second to exit naturally.
+A command that still leaves background processes is failed after they are stopped.
 The unreaped leader pins the process-group ID until cleanup completes.
 
-OCI commands use a private `--cidfile`. Cleanup inspects that immutable container
-ID, stops or kills a running container, verifies it stopped, then removes it.
+The OCI backend adds `--cidfile` to its command. Its native client runs in the
+supervisor's private directory, while the payload's `--workdir` remains the project.
+The boundary passes the OCI runtime explicitly; containing a prefix alone does
+not imply container lifecycle behavior. Cleanup inspects the immutable container
+ID, stops or kills a running container, verifies it stopped, then attempts removal.
 An absent or unverifiable identity during interruption is uncertain, not success.
 Only confirmed cleanup allows an ordinary result or `ExecutionCancelled`;
 unconfirmed cleanup raises `ExecutionUncertain` and retains the temporary home.
+Both lifecycle exceptions are defined in `sandbox.model`, independently of Dask.
 Recipes must not detach into other process sessions. A hard-killed supervisor
 cannot guarantee cleanup of containers managed by an external runtime.
 

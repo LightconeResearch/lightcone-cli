@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import math
 import re
-from decimal import Decimal
 from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from lightcone.engine.project import ProjectError
+from lightcone.engine.units import duration_seconds, whole_bytes
 
 
 class TaskResources(BaseModel):
@@ -137,19 +137,14 @@ def _memory(value: object) -> int:
     unit = match[2].lower()
     exponent = 0 if unit == "b" else "kmgtpe".index(unit[0]) + 1
     factor: int = (1024 if "i" in unit else 1000) ** exponent
-    numerator, denominator = Decimal(match[1]).as_integer_ratio()
-    amount, remainder = divmod(numerator * factor, denominator)
-    if amount <= 0 or remainder:
-        raise ProjectError("recipe memory must be a positive whole number of bytes")
-    return amount
+    try:
+        return whole_bytes(match[1], factor)
+    except ValueError as exc:
+        raise ProjectError(f"recipe {exc}") from exc
 
 
 def _duration(value: object) -> int:
-    if not isinstance(value, str) or not (
-        match := re.fullmatch(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", value)
-    ):
-        raise ProjectError("recipe time_limit must be a duration, e.g. 30m, 1h30m, or 45s")
-    seconds = sum(int(part or 0) * unit for part, unit in zip(match.groups(), (86400, 3600, 60, 1)))
-    if seconds <= 0:
-        raise ProjectError("recipe time_limit must be positive")
-    return seconds
+    try:
+        return duration_seconds(value)
+    except ValueError as exc:
+        raise ProjectError(f"recipe time_limit: {exc}") from exc

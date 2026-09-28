@@ -466,9 +466,9 @@ def test_execution_interrupt_explains_how_to_stop_remote_work(
     from lightcone.engine import run as engine_run
 
     def interrupt(*args: object, **kwargs: object) -> None:
-        exc = KeyboardInterrupt()
-        exc.execution_stopped = stopped
-        raise exc
+        from lightcone.engine.execution import ExecutionInterrupted
+
+        raise ExecutionInterrupted() if stopped else KeyboardInterrupt()
 
     monkeypatch.setattr(engine_run, "probe", interrupt)
     monkeypatch.setattr(engine_materialize, "materialize", interrupt)

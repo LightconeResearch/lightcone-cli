@@ -49,6 +49,11 @@ def _table(headers: list[str], rows: list[list[str]]) -> None:
     Console(markup=False).print(table)
 
 
+def _duration(seconds: int) -> str:
+    minutes, remainder = divmod(seconds, 60)
+    return (f"{minutes}m" if minutes else "") + (f"{remainder}s" if remainder else "")
+
+
 @click.group()
 def compute() -> None:
     """Allocate resources, inspect clusters, and end allocations.
@@ -77,8 +82,8 @@ def resources(as_json: bool) -> None:
                     str(offer["resources"]["cpus"]),
                     f"{offer['resources']['memory']:g} GiB",
                     str(offer["max_nodes"]),
-                    f"{offer['time']['default_seconds'] // 60}m",
-                    f"{offer['time']['max_seconds'] // 60}m",
+                    _duration(offer["time"]["default_seconds"]),
+                    _duration(offer["time"]["max_seconds"]),
                     offer["startup"],
                 ]
                 for offer in data["offers"]
@@ -92,7 +97,7 @@ def resources(as_json: bool) -> None:
 @click.option("--memory", required=True, help="GiB per node; suffix + requests a minimum.")
 @click.option("--num-nodes", default=1, type=click.IntRange(min=1), show_default=True)
 @click.option(
-    "--time", "walltime", help="Requested walltime, e.g. 30m or 2h; defaults to the offer."
+    "--time", "walltime", help="Requested walltime, e.g. 30m or 1h30m; defaults to the offer."
 )
 @click.option(
     "--startup", type=click.Choice(["fast"]), help="Require a fast startup service class."

@@ -130,21 +130,29 @@ def test_recipe_resources_survive_graph_resolution(tmp_path: Path) -> None:
     )
     graph = _build(_project(tmp_path, spec))
     task = graph.tasks[("baseline", "fit")]
-    assert task.resources.cpus == 4
-    assert task.resources.memory_bytes == 6 * 1024**3
-    assert task.resources.time_seconds == 5400
-    unspecified = graph.tasks[("baseline", "report")].resources
-    assert unspecified.cpus == 1
-    assert unspecified.memory_bytes is None
+    assert task.resources == {"cpus": 4, "memory": "6Gi", "time_limit": "1h30m"}
+    assert graph.tasks[("baseline", "report")].resources == {}
 
 
-def test_unhonored_recipe_resources_refuse_graph_construction(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("declaration", "expected"),
+    [
+        ("gpus: 1", {"gpus": 1}),
+        ("disk: 10Gi", {"disk": "10Gi"}),
+        ("cpus: 0.5", {"cpus": 0.5}),
+        ("cpus: 0", {"cpus": 0}),
+        ("memory: null", {"memory": None}),
+    ],
+)
+def test_execution_support_does_not_limit_graph_construction(
+    tmp_path: Path, declaration: str, expected: dict[str, object],
+) -> None:
     spec = _SPEC.replace(
         "command: python src/fit.py",
-        "resources: {gpus: 1}\n      command: python src/fit.py",
+        f"resources: {{{declaration}}}\n      command: python src/fit.py",
     )
-    with pytest.raises(ProjectError, match="unsupported recipe resource.*gpus"):
-        _build(_project(tmp_path, spec))
+    task = _build(_project(tmp_path, spec)).tasks[("baseline", "fit")]
+    assert task.resources == expected
 
 
 def test_a_declared_input_resolves_to_its_source(tmp_path: Path) -> None:
@@ -299,7 +307,6 @@ def test_an_output_without_a_format_is_refused_by_name(tmp_path: Path) -> None:
 
 
 # ---- rendering a recipe ----------------------------------------------------
-
 
 
 

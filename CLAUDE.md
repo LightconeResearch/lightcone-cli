@@ -1786,8 +1786,10 @@ drains the invocation. Unconfirmed cleanup raises `ExecutionUncertain` and retai
 partial outputs; completing cleanup does not terminate the reusable allocation.
 
 **Recipe resources use standard Dask admission.** Preserve ASTRA `recipe.resources`
-in `plan.Task` as validated `TaskResources`: whole CPUs, memory bytes, and optional
-command walltime. Validate the whole selected graph before preparation or submission.
+in `plan.Task` as raw mappings so `status` and `--check` remain independent of
+executor support. Parse `TaskResources` at execution admission: whole CPUs, memory
+bytes, and optional command walltime. Validate the whole selected graph before
+preparation or submission, then pass reservations explicitly to submission.
 Workers advertise CPU/MEMORY; tasks reserve their declarations, with omitted RAM
 reserving a whole worker's memory and probes reserving both whole-worker budgets.
 Thread slots remain a separate concurrency cap. Reservations are cooperative, not

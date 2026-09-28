@@ -309,7 +309,8 @@ def test_a_remote_task_exception_is_an_engine_error_and_leaves_compute_available
     monkeypatch.setattr(container, "backend", lambda _: Unavailable())
     with pytest.raises(ProjectError, match="cluster execution failed") as raised:
         engine_run.probe(project, ["true"], cluster_id=cluster_id)
-    assert "did not stop the allocation" in str(raised.value)
+    assert "may still be running" not in str(raised.value)
+    assert "Stop the allocation" not in str(raised.value)
     with compute.connect(cluster_id) as client:
         assert client.scheduler_info()["workers"]
 

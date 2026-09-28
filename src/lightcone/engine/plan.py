@@ -26,9 +26,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
+from typing import Any
 
 from lightcone.engine import assets, identity
-from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.project import SPEC_FILENAME, ProjectError
 
 #: A task's identity within a run: which universe, which output.
@@ -52,7 +52,8 @@ class Task:
     produced_by: dict[str, Key]
     decisions: dict[str, str]
     definition_version: str
-    resources: TaskResources = field(default_factory=TaskResources)
+    #: ASTRA's declaration; executor support is checked only when executing.
+    resources: dict[str, Any] = field(default_factory=dict)
 
     @property
     def manifest_path(self) -> Path:
@@ -333,10 +334,7 @@ def _tasks(
             )
         except ValueError as e:
             raise ProjectError(f"output `{out.id}`: {e}") from e
-        try:
-            resources = TaskResources.parse((out.definition.get("recipe") or {}).get("resources"))
-        except ProjectError as e:
-            raise ProjectError(f"output `{out.id}`: {e}") from e
+        resources = dict((out.definition.get("recipe") or {}).get("resources") or {})
 
         tasks.append(
             Task(

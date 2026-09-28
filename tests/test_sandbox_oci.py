@@ -224,10 +224,12 @@ class _Recorder:
 
     def __init__(self, returncode: int = 0) -> None:
         self.argv: list[str] | None = None
+        self.options: dict[str, Any] = {}
         self.returncode = returncode
 
     def __call__(self, argv: list[str], **kwargs: Any) -> Any:
         self.argv = list(argv)
+        self.options = kwargs
         code = self.returncode
 
         class _Proc:
@@ -271,6 +273,8 @@ def test_a_world_backend_takes_the_prefix_inside(
 
     assert recorder.argv is not None
     assert recorder.argv[0] == "podman"
+    assert recorder.options["oci_runtime"] == "podman"
+    assert "--cidfile" in recorder.argv
     assert recorder.argv[recorder.argv.index(_IMAGE_ID) + 1 :] == [
         "uv", "run", "--locked", "--no-sync", "--project", str(root), "--",
         "bash", "-c", "true",
@@ -296,6 +300,20 @@ def test_a_host_backend_keeps_the_prefix_outside(
 
     assert recorder.argv is not None
     assert recorder.argv[:3] == ["uv", "run", "--"]
+    assert recorder.options["oci_runtime"] is None
+
+
+def test_a_world_backend_does_not_implicitly_get_oci_lifecycle(
+    root: Path, policy: Policy, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _Recorder(returncode=125)
+    monkeypatch.setattr(boundary, "Command", recorder)
+    outcome = boundary.run(
+        Unavailable(contains_prefix=True), policy, ["true"], cwd=root, env={},
+    )
+    assert recorder.options["oci_runtime"] is None
+    assert "--cidfile" not in recorder.argv
+    assert not any("runtime failed before the command ran" in note for note in outcome.notes)
 
 
 def test_exit_97_is_the_shims_only_under_landlock(

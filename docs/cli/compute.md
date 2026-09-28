@@ -55,7 +55,8 @@ connections are unavailable. No name registry is maintained.
 
 CPU quantities are logical CPUs **per node**, memory is **GiB per node**, and
 `--num-nodes` defaults to one. Bare quantities are exact; `4+` means at least four.
-Time accepts positive whole minutes or hours, such as `30m` or `2h`. Without
+Time accepts positive durations with day/hour/minute/second units, such as `30m`,
+`1h30m`, or `45s`. Without
 `--time`, the chosen offer's default applies. `fast` is a service class, not a
 queue-time promise. Limits apply to each allocation; aggregate quotas remain
 with the native backend.

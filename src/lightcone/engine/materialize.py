@@ -14,8 +14,9 @@ here to get wrong.
 **It owns git, alone.** Workers execute and return; the driver commits, in
 one thread, as results arrive. That is not a preference: concurrent git
 operations on one repository race on the index lock. The same loop
-restores what a completed failed task left behind. Unreported tasks may
-still be writing, so interruptions retain their partial files.
+restores what a completed failed task left behind. On interruption it restores
+unreported outputs only after confirming their writers stopped; otherwise it
+retains those partial files.
 
 One consequence, checked rather than assumed: a dependent starts as soon
 as its upstream's *worker* returns, which is milliseconds before the
@@ -41,6 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from lightcone.engine import assets, container, dataset, execution, identity, plan, project, worker
+from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
 
@@ -518,7 +520,7 @@ def materialize(
     scheduler: Scheduler | None = None
     try:
         with cluster_for_run(cluster_id) as scheduler:
-            scheduler.validate(graph.tasks.values())
+            requirements = scheduler.validate(graph.tasks.values())
             _fetch_inputs(root, graph, report)
             # Materialize is one of the two verbs allowed to build the image (the
             # other is `lc build`); the probe and the rerun entry point only find
@@ -580,6 +582,7 @@ def materialize(
                     foreign[key],
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
+                    resources=requirements[key],
                 )
 
             for result in scheduler.completed(list(pending.values())):
@@ -654,17 +657,18 @@ class Scheduler(Protocol):
         """Whether this invocation positively confirmed all claimed tasks stopped."""
         ...
 
-    def validate(self, tasks: Iterable[Task]) -> None:
-        """Refuse unsatisfiable resource requests before preparation or submission."""
+    def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
+        """Validate all requests and return their Dask resource reservations."""
         ...
 
-    def submit(self, fn: Any, *args: Any, key: str) -> Any:
+    def submit(self, fn: Any, *args: Any, key: str, resources: dict[str, float]) -> Any:
         """Schedule a call.
 
         Args:
             fn: The function to run.
             *args: Its arguments, upstream handles included.
             key: A display name for the task.
+            resources: Validated reservations for this task.
 
         Returns:
             A handle to pass to dependents.
@@ -697,20 +701,20 @@ class _Dask:
         """Expose positive cleanup confirmation after the connection context exits."""
         return self.invocation.stopped
 
-    def validate(self, tasks: Iterable[Task]) -> None:
+    def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
         """Require each selected task to fit a worker before any task starts."""
+        requests = {}
         for task in tasks:
             try:
-                task.resources.requirements(self.workers)
+                requests[task.key] = TaskResources.parse(task.resources).requirements(self.workers)
             except ProjectError as exc:
                 raise ProjectError(f"{_name(task.key)}: {exc}") from exc
+        return requests
 
-    def submit(self, fn: Any, *args: Any, key: str) -> Any:
+    def submit(self, fn: Any, *args: Any, key: str, resources: dict[str, float]) -> Any:
         """Submit an ordinary Dask task with a unique key and forwarded output."""
         from lightcone.engine.compute.output import call
 
-        task: Task = args[1]
-        resources = task.resources.requirements(self.workers)
         return self.invocation.submit(
             call, fn, self.output.topic, key, *args,
             key=key, resources=resources,
@@ -734,9 +738,7 @@ class _Dask:
         except ProjectError:
             raise
         except Exception as exc:
-            from lightcone.engine.compute import UNSTOPPED
-
-            raise ProjectError(f"cluster execution failed: {exc}. {UNSTOPPED}") from exc
+            raise ProjectError(f"cluster execution failed: {exc}") from exc
 
 
 @contextmanager

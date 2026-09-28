@@ -143,7 +143,8 @@ list:
 Catalog errors identify the invalid field, for example `offers.0.resources.cpus`.
 Unknown common fields and duplicate YAML keys are rejected. CPU and node counts
 must be positive integers; memory is in GiB and may be fractional if it is an
-exact number of bytes, and durations use minutes or hours such as `30m` or `2h`.
+exact number of bytes. Durations use ordered day/hour/minute/second units, such as
+`30m`, `1h30m`, or `45s`.
 
 Selection takes the first offer in catalog order that matches the request. An
 offer this host cannot provide is skipped: a local offer with more nodes, CPUs or
@@ -341,7 +342,8 @@ are rejected rather than ignored.
 before fetching inputs, preparing the environment, or starting a recipe. This
 also validates currently complete outputs, which workers may need to rebuild
 after an upstream change. Use `lc materialize --check` to inspect currency
-without allocation.
+without allocation. Read-only `status` and `--check` accept valid ASTRA resource
+declarations even when this executor cannot satisfy them.
 
 These are scheduling reservations, not per-recipe CPU or RAM enforcement.
 Recipes must respect their declarations; a subprocess can otherwise exceed
@@ -382,8 +384,9 @@ before retrying. The allocation remains available after ordinary cancellation.
 The existing Dask scheduler holds invocation claims and completion receipts.
 After a worker disappears, a replacement task cannot rerun a recipe whose result
 is uncertain. A completed task returns its original receipt. Loss of the client
-or its heartbeat revokes further work; a small command supervisor also stops the
-command if its worker dies. There is no automatic recovery or replay after an
+or expiry of its 15-second heartbeat lease revokes further work; brief RPC
+failures are retried within the last confirmed lease. A small command supervisor
+stops the command if its worker dies. There is no automatic recovery or replay after an
 uncertain execution, and no additional server or checkout state directory.
 
 Use one execution invocation per project at a time: there is no checkout lock
