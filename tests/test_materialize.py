@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,8 +23,10 @@ from typing import Any
 
 import pytest
 from conftest import _Inline
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from lightcone.engine import assets, dataset, identity
+from lightcone.engine import assets, dataset, identity, worker
 from lightcone.engine import materialize as engine
 from lightcone.engine.project import ProjectError, child_env
 from lightcone.engine.worker import TaskResult
@@ -634,35 +637,59 @@ def test_a_root_output_consumes_a_sub_analysis_output(
     assert engine.status(root).counts == {"current": 2, "behind": 0, "stale": 0}
 
 
-# ---- leaving the tree as clean as it was found -----------------------------
+_IDS = st.lists(st.sampled_from(["a", "ab", "b", "manifest", "json"]), min_size=1, max_size=3)
+_FORMATS = st.sampled_from(["txt", "b", "tar.gz", "b.txt", "manifest.json"])
 
 
-def test_a_scoped_output_stages_the_files_it_actually_wrote(tmp_path: Path) -> None:
-    """The pathspecs are what `git add` is given after a recipe runs, so
-    they have to name the file on disk. A sub-analysis output carries
-    ASTRA's qualified id, `<scope>.<local>`, while its file is
-    `results/<universe>/<scope>/<local>.<fmt>` — spelling the qualified id
-    into the name matched nothing, and the output went uncommitted."""
+@settings(max_examples=300, deadline=None)
+@given(declared=st.dictionaries(_IDS.map(".".join), _FORMATS, min_size=1, max_size=6),
+       stale=_FORMATS)
+def test_every_output_owns_exactly_its_own_files(declared: dict[str, str], stale: str) -> None:
+    """Root and qualified ids side by side — `a` beside `ab` and `a.b`, `a.b` beside
+    `a.b.c`, so one name is both an output and an analysis — with dotted
+    formats, each output having also left a payload in the `stale` format.
+    No two outputs share a payload or manifest path, the manifest does not
+    depend on the format, and what an output clears (the worker's sweep,
+    run for real) and stages (`_owned`, asked of git) is its own files and
+    never another output's."""
     from lightcone.engine.plan import Task
 
-    task = Task(
-        universe_id="baseline",
-        output_id="catalog.survey_properties",
-        output_path=assets.output_path(
-            tmp_path, "baseline", "catalog.survey_properties", "json"
-        ),
-        recipe="true",
-        inputs={},
-        produced_by={},
-        decisions={},
-        definition_version="v",
-    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        tasks = {
+            i: Task("u", i, assets.output_path(root, "u", i, fmt), "", {}, {}, {}, "")
+            for i, fmt in declared.items()
+        }
+        payloads = {t.output_path for t in tasks.values()}
+        manifests = {t.manifest_path for t in tasks.values()}
+        assert len(payloads) == len(manifests) == len(declared)
+        assert not payloads & manifests
+        for i, t in tasks.items():
+            other = assets.output_path(root, "u", i, stale)
+            assert assets.manifest_path(other.parent, i) == t.manifest_path
 
-    assert task.output_stem == "survey_properties"
-    assert engine._owned(tmp_path, task) == [
-        ":(glob)results/baseline/catalog/survey_properties.*",
-        ":(glob)results/baseline/catalog/.survey_properties.manifest.json*",
-    ]
+        leftovers = {assets.output_path(root, "u", i, stale) for i in declared}
+        everything = payloads | manifests | leftovers
+        for path in everything:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+
+        for i, task in tasks.items():
+            mine = {task.output_path, task.manifest_path, assets.output_path(root, "u", i, stale)}
+            staged = subprocess.run(
+                ["git", "ls-files", "-o", "-z", "--", *engine._owned(root, task)],
+                cwd=root, check=True, capture_output=True, text=True,
+            ).stdout.split("\0")
+            assert {root / s for s in staged if s} == mine
+
+            worker._clear(task)
+            assert {p for p in everything if not p.exists()} == mine
+            for path in mine:
+                path.touch()
+
+
+# ---- leaving the tree as clean as it was found -----------------------------
 
 
 def test_a_failing_recipe_commits_nothing_and_leaves_the_tree_clean(

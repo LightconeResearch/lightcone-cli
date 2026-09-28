@@ -224,21 +224,7 @@ def execute(
     if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved)
 
-    # Never the parent directory: siblings share it now, and under Dask
-    # they are being written concurrently. What this output owns is its
-    # manifest and any file named after it — the glob rather than the one
-    # declared path, so a spec that re-declares the output in another
-    # format leaves no stale payload behind. The stem, never the qualified
-    # id: a scoped output carries its scope in its id, and that scope is
-    # already the directory this globs. `<stem>.` needs a literal dot
-    # straight after the whole stem, and a stem cannot contain one, so it
-    # cannot reach a sibling, a longer id, another output's sidecar, or a
-    # scope directory of the same name.
-    task.output_path.parent.mkdir(parents=True, exist_ok=True)
-    task.manifest_path.unlink(missing_ok=True)
-    for stale in task.output_path.parent.glob(f"{task.output_stem}.*"):
-        if stale.is_file() or stale.is_symlink():
-            stale.unlink()
+    _clear(task)
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
     policy = container.policy_for(
@@ -317,6 +303,27 @@ def execute(
             notes=outcome.notes,
         )
     return TaskResult(task.key, "ok", data_version=data_version, notes=outcome.notes)
+
+def _clear(task: Task) -> None:
+    """Remove what an earlier run of *task* left: its manifest and any
+    file named after it.
+
+    Never the parent directory: siblings share it, and under Dask they
+    are being written concurrently. The glob rather than the one declared
+    path, so a spec that re-declares the output in another format leaves
+    no stale payload behind. The stem, never the qualified id: a scoped
+    output carries its scope in its id, and that scope is already the
+    directory this globs. `<stem>.` needs a literal dot straight after the
+    whole stem, and a stem cannot contain one, so it cannot reach a
+    sibling, a longer id, another output's sidecar, or a scope directory
+    of the same name.
+    """
+    task.output_path.parent.mkdir(parents=True, exist_ok=True)
+    task.manifest_path.unlink(missing_ok=True)
+    for stale in task.output_path.parent.glob(f"{task.output_stem}.*"):
+        if stale.is_file() or stale.is_symlink():
+            stale.unlink()
+
 
 
 def _now() -> str:
