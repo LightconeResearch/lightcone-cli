@@ -31,6 +31,7 @@ from lightcone.engine.compute.model import (
     Resources,
 )
 from lightcone.engine.compute.runtime import (
+    configured_directory,
     open_client,
     private_directory,
     read_private_json,
@@ -652,7 +653,58 @@ def test_local_plan_is_one_node_finite_cooperative_and_does_not_allocate(
         provider.plan(replace(offer, default_seconds=0), Request(1, 512 * 1024**2))
 
 
-def test_os_temporary_directory_alias_is_resolved_but_configured_paths_stay_strict(
+def test_local_allocation_reopens_through_symlinked_configured_roots(
+    provider: LocalProvider, tmp_path: Path,
+) -> None:
+    physical = private_directory(tmp_path / "physical-home", create=True)
+    alias = tmp_path / "home-alias"
+    alias.symlink_to(physical, target_is_directory=True)
+    connection = replace(
+        provider.connection,
+        launch={
+            "connection_root": str(alias / ".lightcone" / "compute"),
+            "scratch_root": str(alias / "scratch"),
+        },
+    )
+    launcher = LocalProvider(connection)
+    identity = _launch(launcher)
+    try:
+        scheduler = _ready(launcher, identity)
+        reopened = LocalProvider(connection)
+        assert reopened.root == physical / ".lightcone" / "compute" / connection.namespace
+        assert [snapshot.identity for snapshot in reopened.discover()] == [identity]
+        with reopened.connect(identity) as client:
+            assert client.scheduler_info()["id"] == scheduler["id"]
+            assert client.submit(sum, [2, 3]).result(timeout=5) == 5
+        metadata = read_private_json(reopened.root / identity.token / "launch.json")
+        assert metadata["scratch"] == str(physical / "scratch" / f"lc-{identity.token}")
+        assert private_directory(Path(metadata["scratch"])).is_dir()
+    finally:
+        LocalProvider(connection).terminate(identity)
+    _ended(launcher, identity)
+
+
+def test_local_managed_namespace_symlink_is_still_refused(
+    provider: LocalProvider, tmp_path: Path,
+) -> None:
+    root = private_directory(tmp_path / "configured-root", create=True)
+    alias = tmp_path / "root-alias"
+    alias.symlink_to(root, target_is_directory=True)
+    other = private_directory(tmp_path / "other-namespace", create=True)
+    (root / provider.connection.namespace).symlink_to(other, target_is_directory=True)
+    connection = replace(
+        provider.connection,
+        launch={**provider.connection.launch, "connection_root": str(alias)},
+    )
+    configured = LocalProvider(connection)
+    with pytest.raises(ComputeError, match="plain directory"):
+        _launch(configured)
+    with pytest.raises(ComputeError, match="plain directory"):
+        configured.discover()
+    assert list(other.iterdir()) == []
+
+
+def test_default_and_configured_scratch_aliases_are_resolved_without_resolving_python(
     provider: LocalProvider, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     physical = tmp_path / "physical"
@@ -669,11 +721,27 @@ def test_os_temporary_directory_alias_is_resolved_but_configured_paths_stay_stri
     plan = LocalProvider(connection).plan(offer, request)
     assert plan.details["scratch_root"] == str(physical)
     private_directory(Path(plan.details["scratch_root"]) / "default", create=True)
-    configured = replace(connection, launch={**connection.launch, "scratch_root": str(alias)})
-    strict = LocalProvider(configured).plan(offer, request)
-    assert strict.details["scratch_root"] == str(alias)
-    with pytest.raises(ComputeError, match="plain directory"):
-        private_directory(Path(strict.details["scratch_root"]) / "configured", create=True)
+    python = tmp_path / "python"
+    python.symlink_to(sys.executable)
+    configured = replace(connection, launch={
+        **connection.launch, "scratch_root": str(alias), "python": str(python),
+    })
+    plan = LocalProvider(configured).plan(offer, request)
+    assert plan.details["scratch_root"] == str(physical)
+    assert plan.details["python"] == str(python)
+    private_directory(Path(plan.details["scratch_root"]) / "configured", create=True)
+
+
+def test_configured_roots_reject_relative_parent_and_unresolvable_paths(tmp_path: Path) -> None:
+    for path in (Path("relative"), tmp_path / ".." / "parent"):
+        with pytest.raises(ComputeError, match="absolute path without"):
+            configured_directory(path)
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    # Python versions differ on whether non-strict resolution raises for loops;
+    # neither outcome may bypass validation before using allocation material.
+    with pytest.raises(ComputeError, match="cannot resolve compute root|plain directory"):
+        private_directory(configured_directory(loop), create=True)
 
 
 def test_local_plan_does_not_infer_policy_from_login_hostname_or_slurm_environment(

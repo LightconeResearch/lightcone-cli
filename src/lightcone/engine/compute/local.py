@@ -32,6 +32,7 @@ from lightcone.engine.compute.model import (
     validate_name,
 )
 from lightcone.engine.compute.runtime import (
+    configured_directory,
     open_client,
     private_directory,
     read_private_json,
@@ -66,7 +67,7 @@ class LocalProvider:
         root = connection.launch.get("connection_root", "~/.lightcone/compute")
         if not isinstance(root, str) or not root or any(ord(c) < 32 for c in root):
             raise ComputeError("local connection_root must be a nonempty path string")
-        self.root = Path(root).expanduser() / connection.namespace
+        self.root = configured_directory(Path(root)) / connection.namespace
 
     def plan(self, offer: Offer, request: Request) -> LaunchPlan:
         """Validate a one-node local offer without creating allocation files."""
@@ -103,14 +104,11 @@ class LocalProvider:
         if seconds <= 0 or seconds > offer.max_seconds:
             raise ComputeError("local allocations require a finite time within the offer's limit")
         python = Path(self.connection.launch.get("python", sys.executable)).expanduser()
-        scratch = Path(
-            self.connection.launch.get("scratch_root", str(Path(tempfile.gettempdir()).resolve()))
-        ).expanduser()
+        scratch = configured_directory(
+            Path(self.connection.launch.get("scratch_root", tempfile.gettempdir()))
+        )
         if not python.is_absolute() or not python.is_file() or not os.access(python, os.X_OK):
             raise ComputeError("the configured local Python must be an executable absolute path")
-        for path in (self.root, scratch):
-            if not path.is_absolute() or ".." in path.parts:
-                raise ComputeError("local connection and scratch roots must be absolute paths")
         return LaunchPlan(
             self.connection,
             offer,

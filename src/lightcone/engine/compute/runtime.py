@@ -13,6 +13,24 @@ from typing import Any
 from lightcone.engine.compute.model import ComputeError
 
 
+def configured_directory(path: Path) -> Path:
+    """Resolve a trusted configured root before appending managed allocation paths.
+
+    This accepts filesystem aliases in configuration, without weakening the
+    symlink and permission checks on allocation directories or credentials.
+
+    Raises:
+        ComputeError: If the root is relative, contains ``..``, or cannot resolve.
+    """
+    path = path.expanduser()
+    if not path.is_absolute() or ".." in path.parts:
+        raise ComputeError(f"compute root must be an absolute path without '..': {path}")
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ComputeError(f"cannot resolve compute root {path}: {exc}") from exc
+
+
 def private_directory(path: Path, *, create: bool = False) -> Path:
     """Check an owner-only directory without following symlinks.
 

@@ -1710,6 +1710,18 @@ default and two-hour maximum lifetime. It writes no catalog and starts no cluste
 Configured catalogs replace it completely; missing explicit paths and invalid
 files are errors. Execution still requires an explicitly launched cluster's name or ID.
 
+**Configured compute roots may be filesystem aliases.** Resolve connection and
+scratch roots before appending managed namespace, submission, or attempt paths.
+Keep symlink rejection within those managed paths and enforce private directory
+and credential permissions. Do not resolve Python executables: virtualenv paths
+must retain their environment identity. Never change existing ancestor permissions.
+
+**Slurm chooses the partition unless the catalog supplies one.** Submit a positive
+native `--time` request without choosing a default partition or inspecting site
+configuration during planning. NERSC routes requests by QoS and constraint.
+Walltime follows Slurm's native overrun and termination-grace policy; Lightcone
+does not independently guarantee a finite termination deadline for Slurm jobs.
+
 **Execution borrows a client and leaves the allocation alive.** Validate native
 identity and scheduler readiness. The driver keeps git and convergence. Use unique
 invocation task keys. Interrupted unreported outputs remain in place because a

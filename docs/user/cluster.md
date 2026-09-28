@@ -163,15 +163,16 @@ starts a standard `Worker`. A one-node allocation has both scheduler and worker.
 The scheduler consumes part of the offered resources; `task_slots_per_node`
 controls Dask task concurrency independently of the allocation's logical CPUs.
 Dask memory management is disabled because recipes run in external subprocesses;
-Slurm supplies allocation containment and memory enforcement. Planning reads
-the effective partition overrun policy and termination grace, rejects an unlimited
-overrun, and freezes the chosen partition. Native administrators can still change
-policy after submission.
+Slurm supplies allocation containment and memory enforcement. Lightcone always
+requests a finite native `--time`. Actual termination follows Slurm's
+`OverTimeLimit` and `KillWait` policy, which can permit an unlimited overrun.
+Lightcone does not impose an independent Slurm runtime deadline or require a
+preflight time-policy query.
 
-At NERSC, verify the resolved partition for every intended QOS/constraint pair:
-site routing can select the partition from the QOS, whereas this implementation
-freezes an explicit partition to establish its walltime policy. Inspect the
-submitted job's actual `Partition` during the deployment test.
+`config.partition` is optional. Lightcone passes `--partition` only when it is
+explicitly configured; otherwise the site selects the partition. Omit it at
+NERSC so site routing can select from the QOS and constraint. During deployment
+testing, inspect the submitted job's actual `Partition` with `scontrol show job`.
 [NERSC's workflow guidance](https://docs.nersc.gov/jobs/workflow/maestro/)
 describes its QOS-driven partition selection.
 
@@ -213,8 +214,12 @@ Direct recipes inherit the allocation workers' environment, not variables added
 to the invoking CLI after launch. Remote execution does not forward stdin.
 
 The catalog contains policy, not credentials or live state. Scheduler connection
-material is private and uses standard Dask TLS and scheduler files. The CLI's
-default catalog is hidden. For browser access, expose that same file through an
+material is private and uses standard Dask TLS and scheduler files. Configured
+connection and scratch roots can contain symlinks, including a symlinked home
+directory: Lightcone resolves the root before appending managed paths. Allocation
+directories and credential files still reject symlinks, retain ownership and
+ancestor-permission checks, and require modes `0700` and `0600`, respectively.
+The CLI's default catalog is hidden. For browser access, expose that same file through an
 existing API, or configure both clients to use one visible catalog with the CLI
 path override. Its location is independent of private connection files.
 

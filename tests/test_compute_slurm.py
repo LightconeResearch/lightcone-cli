@@ -117,14 +117,7 @@ def _native(
 
     def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append((argv, kwargs))
-        if argv[0] == "scontrol" and "config" in argv:
-            answer = answers.get("config", "OverTimeLimit = 0 min\nKillWait = 30 sec\n")
-        elif argv[0] == "scontrol" and "partition" in argv:
-            answer = answers.get(
-                "partition", "PartitionName=regular Default=YES OverTimeLimit=NONE\n"
-            )
-        else:
-            answer = answers[argv[0]]
+        answer = answers[argv[0]]
         if isinstance(answer, list):
             answer = answer.pop(0)
         if isinstance(answer, BaseException):
@@ -158,7 +151,10 @@ def _metadata(provider: slurm.SlurmProvider, *, restarts: int = 0, **changes: An
     return directory
 
 
-def test_plan_preserves_native_envelope(provider: slurm.SlurmProvider, offer: Offer) -> None:
+def test_plan_preserves_native_envelope_without_native_queries(
+    provider: slurm.SlurmProvider, offer: Offer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _native(monkeypatch, {})
     plan = provider.plan(offer, Request.parse("32+", "120+", num_nodes=2))
     assert plan.resources == Resources(256, 515396075520)
     assert plan.details["task_slots_per_node"] == 126
@@ -167,8 +163,34 @@ def test_plan_preserves_native_envelope(provider: slurm.SlurmProvider, offer: Of
     assert "--nodes=2" in plan.details["native_args"]
     assert "--time=01:00:00" in plan.details["native_args"]
     assert "--clusters=perlmutter" in plan.details["native_args"]
-    assert "--partition=regular" in plan.details["native_args"]
-    assert plan.details["time_policy"]["kill_wait_seconds"] == 30
+    assert not any(arg.startswith("--partition=") for arg in plan.details["native_args"])
+    assert "time_policy" not in plan.details
+    assert calls == []
+
+
+def test_plan_resolves_configured_roots_but_preserves_virtualenv_python(
+    provider: slurm.SlurmProvider, offer: Offer, tmp_path: Path,
+) -> None:
+    actual = tmp_path / "actual-home"
+    actual.mkdir()
+    alias = tmp_path / "home"
+    alias.symlink_to(actual, target_is_directory=True)
+    python = alias / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    connection = replace(
+        provider.connection,
+        launch={
+            **provider.connection.launch,
+            "python": str(python),
+            "connection_root": str(alias / "private"),
+            "scratch_root": str(alias / "scratch"),
+        },
+    )
+    plan = slurm.SlurmProvider(connection).plan(offer, Request.parse("256", "480"))
+    assert plan.details["connection_root"] == str(actual / "private")
+    assert plan.details["scratch_root"] == str(actual / "scratch")
+    assert plan.details["python"] == str(python)
 
 
 @pytest.mark.parametrize(
@@ -193,51 +215,22 @@ def test_plan_refuses_hidden_memory_rounding(provider: slurm.SlurmProvider, offe
         provider.plan(replace(offer, resources=Resources(256, 100001)), Request(256, 100001))
 
 
-@pytest.mark.parametrize(
-    "answers",
-    [
-        {"config": "OverTimeLimit = UNLIMITED\nKillWait = 30 sec\n"},
-        {"config": "OverTimeLimit = 0 min\nKillWait = UNKNOWN\n"},
-        {"partition": "PartitionName=regular Default=YES OverTimeLimit=UNLIMITED\n"},
-        {"partition": "PartitionName=regular Default=YES\n"},
-        {"partition": "PartitionName=regular Default=NO OverTimeLimit=0\n"},
-    ],
-)
-def test_plan_refuses_unbounded_or_unknown_native_time_policy(
+@pytest.mark.parametrize("submit", ["sbatch", "salloc"])
+def test_plan_includes_only_an_explicit_partition_and_requested_walltime(
     provider: slurm.SlurmProvider,
     offer: Offer,
     monkeypatch: pytest.MonkeyPatch,
-    answers: dict[str, str],
+    submit: str,
 ) -> None:
-    calls = _native(monkeypatch, answers)
-    with pytest.raises(ComputeError):
-        provider.plan(offer, Request.parse("256", "480"))
-    assert all(argv[0] == "scontrol" for argv, _ in calls)
-
-
-def test_plan_uses_partition_override_and_reports_native_grace(
-    provider: slurm.SlurmProvider,
-    offer: Offer,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _native(
-        monkeypatch,
-        {
-            "config": "OverTimeLimit = UNLIMITED\nKillWait = 45 sec\n",
-            "partition": "PartitionName=short Default=NO OverTimeLimit=2\n",
-        },
-    )
+    calls = _native(monkeypatch, {})
     plan = provider.plan(
-        replace(offer, config={**offer.config, "partition": "short"}),
-        Request.parse("256", "480"),
+        replace(offer, config={**offer.config, "partition": "short", "submit": submit}),
+        Request.parse("256", "480", time="30m"),
     )
     assert "--partition=short" in plan.details["native_args"]
-    assert plan.details["time_policy"] == {
-        "partition": "short",
-        "overtime_seconds": 120,
-        "kill_wait_seconds": 45,
-        "evidence": "native_configuration_at_plan",
-    }
+    assert "--time=00:30:00" in plan.details["native_args"]
+    assert plan.seconds == 1800
+    assert calls == []
 
 
 def test_plan_refuses_multiple_partitions(provider: slurm.SlurmProvider, offer: Offer) -> None:
@@ -405,7 +398,7 @@ def test_invalid_name_is_rejected_before_native_submission(
     plan = replace(provider.plan(offer, Request.parse("256", "480")), name=name)
     with pytest.raises(ComputeError, match="cluster names"):
         provider.launch(plan)
-    assert all(argv[0] == "scontrol" for argv, _ in calls)
+    assert calls == []
 
 
 def test_named_submission_recovers_from_history_when_sbatch_output_is_malformed(
@@ -675,6 +668,44 @@ def test_requeue_keeps_native_identity_but_uses_fresh_attempt(
     client.close.assert_called_once()
 
 
+@pytest.mark.parametrize("managed_symlink", [False, True])
+def test_connect_resolves_only_the_configured_root(
+    provider: slurm.SlurmProvider,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed_symlink: bool,
+) -> None:
+    actual = tmp_path / "actual-home"
+    actual.mkdir()
+    alias = tmp_path / "home"
+    alias.symlink_to(actual, target_is_directory=True)
+    connection = replace(
+        provider.connection,
+        launch={**provider.connection.launch, "connection_root": str(alias / "private")},
+    )
+    provider = slurm.SlurmProvider(connection)
+    directory = _metadata(provider)
+    assert directory == actual / "private" / NAMESPACE / f"123-{TOKEN}" / "attempt-0"
+    if managed_symlink:
+        moved = directory.with_name("moved")
+        directory.rename(moved)
+        directory.symlink_to(moved, target_is_directory=True)
+    _native(monkeypatch, {"scontrol": _control()})
+    client = MagicMock()
+    opened = MagicMock(return_value=client)
+    monkeypatch.setattr(slurm, "open_client", opened)
+    if managed_symlink:
+        with pytest.raises(ComputeError, match="not a plain directory"):
+            with provider.connect(IDENTITY):
+                pytest.fail("managed symlink must not connect")
+        opened.assert_not_called()
+    else:
+        with provider.connect(IDENTITY) as connected:
+            assert connected is client
+        opened.assert_called_once_with(directory, "Scheduler-test", timeout=10)
+        client.close.assert_called_once()
+
+
 @pytest.mark.parametrize("changes", [{"token": "a" * 32}, {"uid": 999999}, {"restarts": True}])
 def test_connect_refuses_wrong_or_untyped_identity_metadata(
     provider: slurm.SlurmProvider,
@@ -766,11 +797,30 @@ def test_worker_rendezvous_has_a_finite_deadline(
         asyncio.run(slurm_bootstrap.run(_bootstrap_args(tmp_path)))
 
 
+def test_bootstrap_refuses_a_managed_scratch_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key, value in _bootstrap_env(0).items():
+        monkeypatch.setenv(key, value)
+    args = _bootstrap_args(tmp_path)
+    root = private_directory(Path(args.scratch_root), create=True)
+    target = private_directory(tmp_path / "other", create=True)
+    (root / TOKEN).symlink_to(target, target_is_directory=True)
+    with pytest.raises(ComputeError, match="not a plain directory"):
+        asyncio.run(slurm_bootstrap.run(args))
+
+
+@pytest.mark.parametrize("symlink_roots", [False, True])
 def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_on_rank_one(
-    tmp_path: Path,
+    tmp_path: Path, symlink_roots: bool,
 ) -> None:
     """Exercise real Dask/TLS subprocesses locally; no native Slurm command is run."""
     args = _bootstrap_args(tmp_path)
+    if symlink_roots:
+        alias = tmp_path / "home-alias"
+        alias.symlink_to(tmp_path, target_is_directory=True)
+        args.connection_root = str(alias / "private")
+        args.scratch_root = str(alias / "scratch")
     # Both ranks run on this host; CI must not depend on hostname/mDNS resolution.
     loopback = [
         name

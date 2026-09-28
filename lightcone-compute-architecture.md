@@ -68,8 +68,9 @@ A practical workflow looks like this:
    results. Each execution leaves the cluster available for another command.
    Omitting the cluster is an error before execution or environment preparation.
 5. **Release it.** `lc compute down analysis` terminates the allocation, including
-   one still waiting in a queue. The configured or requested time limit also
-   ends supported allocations. Resources remain allocated while idle.
+   one still waiting in a queue. Time limits follow the provider's enforcement
+   policy; Slurm can permit overrun beyond the requested time. Resources remain
+   allocated while idle.
 
 When selection chooses a local offer, this same workflow creates
 a reusable `LocalCluster`. There is no automatic local execution mode and no
@@ -130,7 +131,7 @@ flags, optimizer, or resource lifecycle.
 | `num_nodes` | Exact number of homogeneous execution instances; positive integer, default 1. |
 | `resources.cpus` | Logical CPU allocation per instance. `32` selects an exact offered shape; `32+` accepts 32 or more. V1 accepts positive integer counts. |
 | `resources.memory` | Memory allocation per instance. `128` selects exactly 128 GiB; `128+` accepts at least that much. V1 uses positive numeric GiB values, normalized internally to bytes. |
-| `time` | Optional enforced active walltime per allocation attempt, including bootstrap, independent of the requesting CLI; native termination grace is disclosed separately. V1 accepts explicit `m`/`h` duration units. |
+| `time` | Optional requested active walltime per allocation attempt, including bootstrap; enforcement and overrun follow the provider's policy independently of the requesting CLI. V1 accepts explicit `m`/`h` duration units. |
 | `startup` | Optional `fast` filter on configured startup class. Omitted means either fast, batch, or unknown is eligible. |
 
 CPU and memory are required on `launch`; there is no hidden sizing default.
@@ -301,13 +302,21 @@ show its idle policy. It must reject a request containing `--time`; an idle time
 is not an active walltime limit. A future provider must implement the same
 meaning or be ineligible for that request.
 
-Walltime applies to one allocation attempt. Plans disclose native overrun and
-termination grace: Slurm can apply
-`OverTimeLimit` and `KillWait`. Verify a finite enforcement policy before exposing
-timed offers; unbounded overrun does not satisfy this contract. Administrative
-requeue starts a new attempt and can reset native walltime. Lightcone never
-requests automatic requeue, and an in-flight execution never follows the new
-attempt. [Slurm walltime enforcement](https://slurm.schedmd.com/slurm.conf.html#OPT_OverTimeLimit)
+Walltime applies to one allocation attempt. Local allocations enforce the managed
+owner's deadline. Slurm receives a finite `--time` request, but its
+`OverTimeLimit` and `KillWait` policy governs actual termination and can permit an
+unlimited overrun. Lightcone does not query or freeze that policy during planning
+and supplies no independent Slurm runtime deadline. Administrative requeue starts
+a new attempt and can reset native walltime. Lightcone never requests automatic
+requeue, and an in-flight execution never follows the new attempt.
+[Slurm walltime enforcement](https://slurm.schedmd.com/slurm.conf.html#OPT_OverTimeLimit)
+
+Only an explicitly configured `config.partition` produces a `--partition`
+argument. Otherwise Slurm and site policy select the partition; Lightcone does
+not infer one from the configured default. At NERSC, omit the partition to allow
+QOS/constraint routing. The actual assignment can be checked with native
+`scontrol show job` during deployment testing.
+[NERSC QOS-driven partition selection](https://docs.nersc.gov/jobs/workflow/maestro/)
 
 ## 3. Selection and the minimal CLI
 
@@ -670,7 +679,8 @@ Startup or runtime exceptions that exit a Slurm task nonzero let
 disconnects is not guaranteed to cause that outcome. The allocation can remain
 active with reduced capacity; `status` reports it as not ready under the fixed-size
 Slurm contract. There is no custom membership monitor or automatic repair loop.
-`down` and native walltime terminate the allocation independently of Dask health.
+`down` and native time-policy enforcement operate independently of Dask health;
+the requested walltime is subject to the site's overrun and termination grace.
 Graceful paths use Dask context cleanup; forced termination relies on Slurm's
 containment, not on Python cleanup necessarily running.
 [Slurm step behavior](https://slurm.schedmd.com/srun.html)
@@ -813,8 +823,11 @@ needed to validate attachment; do not duplicate the scheduler address in a custo
 Lightcone connection format. No file is used as authority for lifecycle state,
 worker counts, or readiness; any snapshots in Dask's file are not live evidence.
 
-Directories are `0700`, private files `0600`, with ownership/symlink checks and
-restrictive permissions established before Dask writes. Publish Lightcone-owned
+Configured connection and scratch roots are resolved before appending managed
+paths, allowing symlinked roots and home directories. Managed allocation and
+attempt paths still reject symlinks. Directories are `0700`, private files `0600`,
+with ownership and ancestor-permission checks and restrictive permissions
+established before Dask writes. Publish Lightcone-owned
 identity metadata atomically. Treat incomplete standard scheduler files as startup
 in progress and bound all credential/file waits; an existing file is not proof
 that the scheduler is reachable. Reuse Dask's scheduler-file reader where possible.
@@ -1216,9 +1229,9 @@ Begin with narrow proofs, not a framework:
 | CLI exits after accepted batch submission | Allocation independently survives and can be rediscovered. |
 | Detached interactive launch, logout, Jupyter/submit-host failure | Supported survival/failure boundaries established on NERSC. |
 | Worker startup failure or other nonzero Slurm task exit | Bounded bootstrap, propagated failure, and tested Slurm step cleanup. |
-| Clean worker exit, disconnection, or scheduler loss | Bounded caller waits; truthful reduced/unreachable Dask capacity even if allocation remains active; explicit `down` and native walltime still work. |
+| Clean worker exit, disconnection, or scheduler loss | Bounded caller waits; truthful reduced/unreachable Dask capacity even if allocation remains active; explicit `down` and native time-policy enforcement remain independent of Dask health. |
 | Standard Dask scheduler/worker composition | One worker per node, including a one-node allocation; stock lifecycle and no custom worker implementation or membership watchdog. |
-| Queued cancellation and walltime expiry | Allocation ends without requiring a Dask connection. |
+| Queued cancellation and native time-policy enforcement | Allocation termination needs no Dask connection; Slurm overtime and grace can extend the requested walltime. |
 | Slurm job reuse/requeue and stale credentials | Correct allocation/attempt match; no stale attachment. |
 | Lost submit response or Gateway interruption before scale | No blind resubmission; known ID or honest ambiguity. |
 | Gateway manual/idle lifetime with explicit `--time` | Ineligible unless native active-walltime enforcement is verified. |
@@ -1228,7 +1241,7 @@ Begin with narrow proofs, not a framework:
 | Driver cancellation/partition and Dask replay | No restoration or overlapping writes without proven exclusion. |
 
 The unresolved deployment questions are concrete: NERSC interactive detachment,
-explicit partition compatibility with QOS/constraint routing,
+site-selected partition routing for each QOS/constraint pair,
 CPU/memory enforcement and placement, browser submission capabilities, Gateway
 option/lifetime mappings, and execution writer fencing. None requires changing
 the agent-facing resource request or introducing a Lightcone management service.

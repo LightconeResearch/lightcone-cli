@@ -25,7 +25,12 @@ from lightcone.engine.compute.model import (
     positive_int,
     validate_name,
 )
-from lightcone.engine.compute.runtime import open_client, private_directory, read_private_json
+from lightcone.engine.compute.runtime import (
+    configured_directory,
+    open_client,
+    private_directory,
+    read_private_json,
+)
 
 _PREFIX = "lc-v1-"
 _COMMENT_PREFIX = "lightcone:v1:kind=dask:token="
@@ -63,9 +68,7 @@ def native_environment() -> dict[str, str]:
 
 def attempt_directory(connection: Connection, identity: Identity, restarts: int) -> Path:
     """Locate connection material for one native allocation incarnation and attempt."""
-    root = Path(str(connection.launch.get("connection_root", "")))
-    if not root.is_absolute() or ".." in root.parts:
-        raise ComputeError("Slurm connection_root must be an absolute path without '..'")
+    root = configured_directory(Path(str(connection.launch.get("connection_root", ""))))
     return (
         root
         / connection.namespace
@@ -144,7 +147,9 @@ class SlurmProvider:
         for name in ("python", "connection_root", "scratch_root", "cwd"):
             value = launch.get(name, str(Path.home()) if name == "cwd" else None)
             path = Path(_value(value, name))
-            if not path.is_absolute() or ".." in path.parts:
+            if name in {"connection_root", "scratch_root"}:
+                path = configured_directory(path)
+            elif not path.is_absolute() or ".." in path.parts:
                 raise ComputeError(f"Slurm {name} must be an absolute path without '..'")
             paths[name] = str(path)
         config = offer.config
@@ -176,7 +181,6 @@ class SlurmProvider:
         interface = launch.get("interface")
         if interface is not None:
             interface = _value(interface, "interface")
-        partition, time_policy = self._time_policy(config.get("partition"))
         seconds = request.seconds or offer.default_seconds
         hours, remainder = divmod(seconds, 3600)
         minutes, seconds_part = divmod(remainder, 60)
@@ -184,8 +188,12 @@ class SlurmProvider:
         for name in ("account", "qos", "constraint", "reservation"):
             if name in config:
                 args.append(f"--{name}={_value(config[name], name)}")
+        if "partition" in config:
+            partition = _value(config["partition"], "partition")
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", partition):
+                raise ComputeError("Slurm partition must name one native partition")
+            args.append(f"--partition={partition}")
         args += [
-            f"--partition={partition}",
             f"--nodes={request.num_nodes}",
             "--ntasks-per-node=1",
             f"--cpus-per-task={cpus}",
@@ -205,47 +213,8 @@ class SlurmProvider:
                 "task_slots_per_node": slots,
                 "cpu_bind": binding,
                 "interface": interface,
-                "time_policy": time_policy,
             },
         )
-
-    def _time_policy(self, configured_partition: object) -> tuple[str, dict[str, Any]]:
-        partition = None
-        if configured_partition is not None:
-            partition = _value(configured_partition, "partition")
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", partition):
-                raise ComputeError("Slurm partition must name one native partition")
-        config = self._command(["scontrol", *self._scope(), "show", "config"]).stdout
-        global_policy = dict(re.findall(r"(?m)^\s*(OverTimeLimit|KillWait)\s*=\s*(\S+)", config))
-        argv = ["scontrol", *self._scope(), "show", "partition"]
-        if partition:
-            argv.append(partition)
-        rows = self._command([*argv, "--oneliner"]).stdout.splitlines()
-        candidates = []
-        for line in rows:
-            values = dict(re.findall(r"(?:^|\s)([A-Za-z][A-Za-z0-9_/:]*)=(\S*)", line))
-            if (partition and values.get("PartitionName") == partition) or (
-                partition is None and values.get("Default") == "YES"
-            ):
-                candidates.append(values)
-        if len(candidates) != 1:
-            raise ComputeError("cannot establish one native partition and its time-limit policy")
-        selected = candidates[0]
-        partition = selected["PartitionName"]
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", partition):
-            raise ComputeError("Slurm returned an invalid partition name")
-        overtime = selected.get("OverTimeLimit", "")
-        if overtime == "NONE":
-            overtime = global_policy.get("OverTimeLimit", "")
-        kill_wait = global_policy.get("KillWait", "")
-        if not overtime.isdigit() or not kill_wait.isdigit():
-            raise ComputeError("Slurm timed offers require finite OverTimeLimit and KillWait")
-        return partition, {
-            "partition": partition,
-            "overtime_seconds": int(overtime) * 60,
-            "kill_wait_seconds": int(kill_wait),
-            "evidence": "native_configuration_at_plan",
-        }
 
     def _payload(self, plan: LaunchPlan, token: str) -> list[str]:
         details = plan.details

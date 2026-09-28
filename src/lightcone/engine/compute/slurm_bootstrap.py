@@ -15,6 +15,7 @@ from uuid import UUID
 
 from lightcone.engine.compute.model import ComputeError, Connection, Identity
 from lightcone.engine.compute.runtime import (
+    configured_directory,
     create_security,
     load_security,
     private_directory,
@@ -77,9 +78,7 @@ async def run(args: argparse.Namespace) -> None:
         "", identity.namespace, "slurm", launch={"connection_root": args.connection_root}
     )
     directory = attempt_directory(connection, identity, restarts)
-    scratch = Path(args.scratch_root)
-    if not scratch.is_absolute() or ".." in scratch.parts:
-        raise ComputeError("Slurm scratch_root must be an absolute path without '..'")
+    scratch = configured_directory(Path(args.scratch_root))
     scratch = private_directory(
         scratch / identity.token / f"attempt-{restarts}" / str(rank), create=True
     )

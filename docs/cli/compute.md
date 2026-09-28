@@ -60,6 +60,11 @@ Time accepts positive whole minutes or hours, such as `30m` or `2h`. Without
 queue-time promise. Limits apply to each allocation; aggregate quotas remain
 with the native backend.
 
+For Slurm, time is a finite native `--time` request. Slurm's overtime and
+termination-grace policy determines actual expiry and can allow unlimited
+overrun; Lightcone supplies no independent Slurm runtime deadline. A partition
+is passed only when explicitly set in the offer's configuration.
+
 The first eligible offer wins. An invalid configuration or failed submission is
 an error, with no automatic resubmission elsewhere. An uncertain submission error
 includes its token and any known cluster ID. Inspect existing allocations before

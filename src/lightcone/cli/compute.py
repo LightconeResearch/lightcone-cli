@@ -103,7 +103,7 @@ def resources(config_path: Path | None, as_json: bool) -> None:
 @click.option("--memory", required=True, help="GiB per node; suffix + requests a minimum.")
 @click.option("--num-nodes", default=1, type=click.IntRange(min=1), show_default=True)
 @click.option(
-    "--time", "walltime", help="Allocation lifetime, e.g. 30m or 2h; defaults to the offer."
+    "--time", "walltime", help="Requested walltime, e.g. 30m or 2h; defaults to the offer."
 )
 @click.option(
     "--startup", type=click.Choice(["fast"]), help="Require a fast startup service class."

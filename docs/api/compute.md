@@ -31,6 +31,16 @@ borrow clients through the common API. Provider settings stay behind that seam.
 identity checks. `local_runtime.py` and `slurm_bootstrap.py` compose stock Dask
 components; they do not define custom workers or membership protocols.
 
+Configured connection and scratch roots are resolved before managed paths are
+appended, so filesystem aliases such as a symlinked home directory are supported.
+Managed directories and credential files retain strict symlink, ownership, and
+permission checks, including modes `0700` and `0600`, respectively.
+
+Slurm planning includes a partition only when explicitly configured and does
+not query or freeze the site's time policy. Every launch requests a finite native
+`--time`; native overtime and termination grace govern actual expiry, with no
+independent Lightcone deadline or guarantee of a finite overrun.
+
 `Snapshot` distinguishes native allocation evidence from scheduler observations.
 No live allocation size is filled from today's catalog. Connection namespaces
 persist independently of offers, and IDs encode native incarnation evidence
