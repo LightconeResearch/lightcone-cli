@@ -647,7 +647,8 @@ _FORMATS = st.sampled_from(["txt", "b", "tar.gz", "b.txt", "manifest.json"])
 def test_every_output_owns_exactly_its_own_files(declared: dict[str, str], stale: str) -> None:
     """Root and qualified ids side by side — `a` beside `ab` and `a.b`, `a.b` beside
     `a.b.c`, so one name is both an output and an analysis — with dotted
-    formats, each output having also left a payload in the `stale` format.
+    formats, each output having also left a payload in the `stale` format and
+    a half-written manifest.
     No two outputs share a payload or manifest path, the manifest does not
     depend on the format, and what an output clears (the worker's sweep,
     run for real) and stages (`_owned`, asked of git) is its own files and
@@ -669,7 +670,8 @@ def test_every_output_owns_exactly_its_own_files(declared: dict[str, str], stale
             assert assets.manifest_path(other.parent, i) == t.manifest_path
 
         leftovers = {assets.output_path(root, "u", i, stale) for i in declared}
-        everything = payloads | manifests | leftovers
+        half_written = {m.with_name(m.name + ".tmp") for m in manifests}
+        everything = payloads | manifests | leftovers | half_written
         for path in everything:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
@@ -681,7 +683,8 @@ def test_every_output_owns_exactly_its_own_files(declared: dict[str, str], stale
                 ["git", "ls-files", "-o", "-z", "--", *engine._owned(root, task)],
                 cwd=root, check=True, capture_output=True, text=True,
             ).stdout.split("\0")
-            assert {root / s for s in staged if s} == mine
+            own_tmp = task.manifest_path.with_name(task.manifest_path.name + ".tmp")
+            assert {root / s for s in staged if s} == mine | {own_tmp}
 
             worker._clear(task)
             assert {p for p in everything if not p.exists()} == mine
