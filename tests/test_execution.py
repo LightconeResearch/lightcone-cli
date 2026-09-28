@@ -68,6 +68,8 @@ def _cooperate(started: Path, stopped: Path) -> None:
 def _cooperating_effect(started: Path, stopped: Path) -> None:
     with started.open("a") as stream:
         stream.write(get_worker().address + "\n")
+    # Publish readiness after closing the append, never during file creation.
+    started.with_suffix(".ready").touch()
     _cooperate(started, stopped)
 
 
@@ -140,7 +142,7 @@ def test_worker_loss_cannot_replay_effects_while_the_original_execution_still_ru
         future = run.submit(
             _cooperating_effect, started, stopped, key="recipe", resources=_RESOURCES,
         )
-        _wait_for(started)
+        _wait_for(started.with_suffix(".ready"))
         lost_worker = started.read_text().strip()
         _remove_worker(execution_client, lost_worker)
         with pytest.raises(execution.ExecutionUncertain, match="previous attempt"):
