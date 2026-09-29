@@ -143,8 +143,7 @@ list:
 Catalog errors identify the invalid field, for example `offers.0.resources.cpus`.
 Unknown common fields and duplicate YAML keys are rejected. CPU and node counts
 must be positive integers; memory is in GiB and may be fractional if it is an
-exact number of bytes. Durations use ordered day/hour/minute/second units, such as
-`30m`, `1h30m`, or `45s`.
+exact number of bytes, and durations use minutes or hours such as `30m` or `2h`.
 
 Selection takes the first offer in catalog order that matches the request. An
 offer this host cannot provide is skipped: a local offer with more nodes, CPUs or
@@ -309,47 +308,6 @@ per node. Ranks other than zero wait up to 120 seconds for the scheduler, which
 has as long to start. A failed check or timeout logs
 `Slurm Dask startup failed: …` to the submission log and exits nonzero. Look
 there when a job is active but never becomes ready.
-
-## Recipe resource requirements
-
-Declare each recipe's needs in `astra.yaml`:
-
-```yaml
-recipe:
-  command: python src/fit.py {output}
-  resources:
-    cpus: 4
-    memory: 8Gi
-    time_limit: 1h30m
-```
-
-Each recipe runs on one worker. Its CPU and memory request must fit that
-worker, even when the cluster has several nodes. Dask reserves both budgets
-while the task runs, so recipes can run together only when their combined
-requests fit. `task_slots_per_node` also caps concurrent tasks; it does not
-limit how many CPUs a single recipe may request.
-
-CPUs must be positive whole numbers and default to one. Memory needs units:
-`512Mi` and `8Gi` are binary sizes; `8GB` is decimal. Without a memory
-declaration, a recipe reserves the worker's entire memory budget, so only
-one such recipe runs per worker. `lc run` reserves an entire worker's CPU and
-memory budgets because its arbitrary command has no recipe declaration.
-Time limits accept combinations such as `1h30m` or `45s`; exceeding the limit
-stops the recipe and reports failure. Fractional CPUs, GPUs, and disk requests
-are rejected rather than ignored.
-
-`lc materialize` validates the complete selected graph against the cluster
-before fetching inputs, preparing the environment, or starting a recipe. This
-also validates currently complete outputs, which workers may need to rebuild
-after an upstream change. Use `lc materialize --check` to inspect currency
-without allocation. Read-only `status` and `--check` accept valid ASTRA resource
-declarations even when this executor cannot satisfy them.
-
-These are scheduling reservations, not per-recipe CPU or RAM enforcement.
-Recipes must respect their declarations; a subprocess can otherwise exceed
-its request. Slurm enforces the overall allocation, while local execution
-uses cooperative budgets. Leave capacity for the scheduler, workers, and other
-overhead when declaring recipe requirements.
 
 ## Execution requirements and limits
 

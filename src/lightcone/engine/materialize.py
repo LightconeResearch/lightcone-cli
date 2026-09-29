@@ -35,14 +35,13 @@ from __future__ import annotations
 import functools
 import json
 import re
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from lightcone.engine import assets, container, dataset, execution, identity, plan, project, worker
-from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
 
@@ -520,7 +519,6 @@ def materialize(
     scheduler: Scheduler | None = None
     try:
         with cluster_for_run(cluster_id) as scheduler:
-            requirements = scheduler.validate(graph.tasks.values())
             _fetch_inputs(root, graph, report)
             # Materialize is one of the two verbs allowed to build the image (the
             # other is `lc build`); the probe and the rerun entry point only find
@@ -582,7 +580,6 @@ def materialize(
                     foreign[key],
                     *[pending[dep] for dep in task.depends_on],
                     key=_name(key),
-                    resources=requirements[key],
                 )
 
             for result in scheduler.completed(list(pending.values())):
@@ -657,18 +654,13 @@ class Scheduler(Protocol):
         """Whether this invocation positively confirmed all claimed tasks stopped."""
         ...
 
-    def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
-        """Validate all requests and return their Dask resource reservations."""
-        ...
-
-    def submit(self, fn: Any, *args: Any, key: str, resources: dict[str, float]) -> Any:
+    def submit(self, fn: Any, *args: Any, key: str) -> Any:
         """Schedule a call.
 
         Args:
             fn: The function to run.
             *args: Its arguments, upstream handles included.
             key: A display name for the task.
-            resources: Validated reservations for this task.
 
         Returns:
             A handle to pass to dependents.
@@ -694,30 +686,19 @@ class _Dask:
     client: Any
     invocation: execution.Invocation
     output: Forwarder
-    workers: dict[str, Any]
 
     @property
     def stopped(self) -> bool:
         """Expose positive cleanup confirmation after the connection context exits."""
         return self.invocation.stopped
 
-    def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
-        """Require each selected task to fit a worker before any task starts."""
-        requests = {}
-        for task in tasks:
-            try:
-                requests[task.key] = TaskResources.parse(task.resources).requirements(self.workers)
-            except ProjectError as exc:
-                raise ProjectError(f"{_name(task.key)}: {exc}") from exc
-        return requests
-
-    def submit(self, fn: Any, *args: Any, key: str, resources: dict[str, float]) -> Any:
+    def submit(self, fn: Any, *args: Any, key: str) -> Any:
         """Submit an ordinary Dask task with a unique key and forwarded output."""
         from lightcone.engine.compute.output import call
 
         return self.invocation.submit(
             call, fn, self.output.topic, key, *args,
-            key=key, resources=resources,
+            key=key,
         )
 
     def completed(self, handles: list[Any]) -> Iterator[worker.TaskResult]:
@@ -759,7 +740,7 @@ def cluster_for_run(cluster_id: str) -> Iterator[Scheduler]:
             forwarding(client, stdout="stderr") as output,
             execution.invocation(client) as invocation,
         ):
-            yield _Dask(client, invocation, output, client.scheduler_info()["workers"])
+            yield _Dask(client, invocation, output)
 
 
 def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:

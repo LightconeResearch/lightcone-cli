@@ -206,7 +206,7 @@ class Invocation:
     _submissions: int = 0
 
     def submit(
-        self, function: Callable[..., Any], *args: Any, key: str, resources: dict[str, float],
+        self, function: Callable[..., Any], *args: Any, key: str,
     ) -> Any:
         """Claim each logical task inside its worker before it can mutate files."""
         # A submit failure may follow native acceptance. Count it before the
@@ -214,7 +214,7 @@ class Invocation:
         self._submissions += 1
         future = self.client.submit(
             _call, self.id, key, function, *args,
-            key=f"lc-{self.id}-{key}", pure=False, retries=0, resources=resources,
+            key=f"lc-{self.id}-{key}", pure=False, retries=0,
         )
         self.futures.append(future)
         return future

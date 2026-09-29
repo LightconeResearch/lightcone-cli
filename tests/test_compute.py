@@ -29,7 +29,6 @@ from lightcone.engine.compute.model import (
     Startup,
     TimeLimits,
     UnavailableOfferError,
-    duration,
     memory_bytes,
     validate_name,
 )
@@ -363,25 +362,6 @@ def test_memory_conversion_does_not_round_fractional_bytes() -> None:
     assert memory_bytes("0.000000000931322574615478515625") == 1
     with pytest.raises(ComputeError, match="exactly representable"):
         memory_bytes("0.000000000931322574615478515625000000000000000001")
-
-
-@pytest.mark.parametrize(
-    ("value", "seconds"),
-    [("1h30m", 5400), ("45s", 45), ("2d3h4m5s", 183845)],
-)
-def test_allocation_and_recipe_durations_use_the_same_units(value: str, seconds: int) -> None:
-    from lightcone.engine.execution_resources import TaskResources
-
-    assert duration(value) == seconds
-    assert TimeLimits(default=value, max="3d").default_seconds == seconds
-    assert Request.parse("1", "1", time=value).seconds == seconds
-    assert TaskResources.parse({"time_limit": value}).time_seconds == seconds
-
-
-@pytest.mark.parametrize("value", ["", "0s", "1.5h", "30m1h", "1h30", 60, True])
-def test_allocation_duration_refuses_ambiguous_or_zero_values(value: object) -> None:
-    with pytest.raises(ComputeError):
-        duration(value)
 
 
 @pytest.mark.parametrize("size", [1, GIB // 2, 8 * GIB, 2**80 + 1])
@@ -755,16 +735,6 @@ def test_cli_resources_dry_run_launch_down(catalog: Path, provider: MagicMock) -
     result = runner.invoke(main, ["compute", "down", IDENTITY.encode(), "--json"])
     assert result.exit_code == 0, result.output
     provider.terminate.assert_called_once_with(IDENTITY)
-
-
-def test_cli_resources_preserves_seconds(catalog: Path) -> None:
-    data = yaml.safe_load(catalog.read_text())
-    data["offers"][0]["time"] = {"default": "45s", "max": "1m30s"}
-    catalog.write_text(yaml.safe_dump(data))
-    result = CliRunner().invoke(main, ["compute", "resources"])
-    assert result.exit_code == 0, result.output
-    assert "45s" in result.output
-    assert "1m30s" in result.output
 
 
 def test_cli_launch_name_output_can_be_captured_without_json(

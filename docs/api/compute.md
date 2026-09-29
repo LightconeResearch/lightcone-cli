@@ -114,28 +114,6 @@ unintended reuse across commands. There is no worker-selection layer, per-worker
 preflight orchestration, source fingerprinting, or login-node guard. Driver-side
 preparation and the existing task runtime/sandbox checks remain in their owners.
 
-Workers advertise standard Dask `CPU` and `MEMORY` resources; memory is measured
-in bytes. `engine.execution_resources.TaskResources` validates ASTRA's
-`recipe.resources` into whole CPUs, bytes, and optional walltime seconds at
-execution admission. `plan.Task` preserves the ASTRA mapping so read-only
-classification does not impose executor restrictions. `requirements(workers)`
-checks that one worker can satisfy it and returns the resource dictionary used
-by `Client.submit`.
-An omitted memory request reserves the full homogeneous worker budget;
-`whole_worker=True` reserves CPU and memory for a probe. Unsupported GPU/disk
-requests and fractional CPUs fail before execution.
-
-The materialize scheduler validates every selected task before preparation or
-submission, preventing earlier tasks from starting before a later impossible
-request is discovered, then passes each task's reservation explicitly to
-submission. Allocation and task requests share byte and duration conversion
-utilities; their models remain distinct because allocation selection supports
-minimum quantities and node counts. Standard Dask scheduling accounts for
-concurrent CPU and memory reservations; Dask execution-thread counts remain a
-separate concurrency cap. Reservations do not impose hard limits on recipe
-subprocesses. Task walltime uses the subprocess boundary's timeout and teardown,
-independent of the native allocation's lifetime.
-
 `output.py` transports byte chunks through standard Dask events so detached
 workers' output reaches the invoking CLI. It uses the borrowed client's event
 topic, which the schedulers lc launches drop as soon as the client disconnects

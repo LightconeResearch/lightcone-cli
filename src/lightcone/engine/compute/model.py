@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
-from decimal import Decimal, localcontext
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Annotated, Any, Literal, Protocol, Self
 from uuid import UUID
 
@@ -23,7 +23,6 @@ from pydantic import (
 )
 
 from lightcone.engine.project import ProjectError
-from lightcone.engine.units import duration_seconds, whole_bytes
 
 GIB = 1024**3
 
@@ -44,11 +43,11 @@ class UnavailableOfferError(ComputeError):
 
 
 def duration(value: object) -> int:
-    """Parse an explicit positive duration into seconds."""
-    try:
-        return duration_seconds(value)
-    except ValueError as exc:
-        raise ComputeError(str(exc)) from exc
+    """Parse an explicit positive whole-minute/hour duration into seconds."""
+    match = re.fullmatch(r"([1-9][0-9]*)([mh])", str(value))
+    if match is None:
+        raise ComputeError("duration must be a positive number of minutes or hours, e.g. 30m or 1h")
+    return int(match[1]) * (60 if match[2] == "m" else 3600)
 
 
 def memory_bytes(value: object) -> int:
@@ -56,9 +55,13 @@ def memory_bytes(value: object) -> int:
     if isinstance(value, bool) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", str(value)):
         raise ComputeError("memory must be a positive number of GiB")
     try:
-        return whole_bytes(str(value), GIB)
-    except ValueError as exc:
-        raise ComputeError("memory must be positive GiB exactly representable in bytes") from exc
+        numerator, denominator = Decimal(str(value)).as_integer_ratio()
+    except InvalidOperation as exc:
+        raise ComputeError("memory must be a positive number of GiB") from exc
+    amount, remainder = divmod(numerator * GIB, denominator)
+    if amount <= 0 or remainder:
+        raise ComputeError("memory must be positive GiB exactly representable in bytes")
+    return amount
 
 
 def gib_from_bytes(value: int) -> Decimal:

@@ -1785,16 +1785,6 @@ Any driver failure while tasks are outstanding (a failed commit included) first
 drains the invocation. Unconfirmed cleanup raises `ExecutionUncertain` and retains
 partial outputs; completing cleanup does not terminate the reusable allocation.
 
-**Recipe resources use standard Dask admission.** Preserve ASTRA `recipe.resources`
-in `plan.Task` as raw mappings so `status` and `--check` remain independent of
-executor support. Parse `TaskResources` at execution admission: whole CPUs, memory
-bytes, and optional command walltime. Validate the whole selected graph before
-preparation or submission, then pass reservations explicitly to submission.
-Workers advertise CPU/MEMORY; tasks reserve their declarations, with omitted RAM
-reserving a whole worker's memory and probes reserving both whole-worker budgets.
-Thread slots remain a separate concurrency cap. Reservations are cooperative, not
-per-command OS CPU/RAM limits; unsupported GPU/disk requests fail explicitly.
-
 **One catalog selector, `LC_COMPUTE_CONFIG` (2026-09).** `lc compute --config`
 was removed: `run` and `materialize` resolve clusters through the catalog too,
 and a per-invocation override on one command group launched allocations those

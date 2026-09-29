@@ -18,7 +18,7 @@ is responsibility and contract, not every signature.
 | [`worker`](worker.md) | Making one output; the rerun entry point | impure |
 | [`materialize`](materialize.md) | The driver: gates, scheduling, the save/restore loop, status | impure |
 | [`compute`](compute.md) | Resource requests, native allocation lifecycle, borrowed Dask clients | impure |
-| [`execution` & `execution_resources`](compute.md) | Invocation claims, completion receipts, cleanup confirmation, task resource admission | mixed |
+| [`execution`](compute.md) | Invocation claims, completion receipts, cleanup confirmation | mixed |
 | [`sandbox`](sandbox.md) | The exec boundary: policy, backends, attestation, denials | mixed |
 | [`image` & `container`](container.md) | The container hatch: declaration → image → archive → runtime | pure / impure |
 | [`crate`](crate.md) | The publication view: the repo as an RO-Crate | pure |

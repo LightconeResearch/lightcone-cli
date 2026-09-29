@@ -54,10 +54,6 @@ never touched, under any flag.
   uncertain, outputs stay in place: stop the allocation by its full ID and verify
   its commands and containers have stopped before repairing results. See
   [execution limits](../user/cluster.md#execution-requirements-and-limits).
-- **Honors recipe resources.** CPU and memory requests must fit one worker and
-  are reserved through standard Dask scheduling; time limits stop overrunning
-  commands. The whole selected graph is checked before preparation or submission.
-  See [recipe resource requirements](../user/cluster.md#recipe-resource-requirements).
 - **Fetches what it needs.** Declared inputs whose annexed content is
   not in this clone are fetched before anything hashes.
 - **Commits as it goes.** Each output lands in its own commit, written

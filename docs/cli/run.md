@@ -40,7 +40,6 @@ that variable to an existing cluster. Set command-specific values inside the
 command, for example `lc run "$CLUSTER" -- env NAME=value python script.py`.
 Containerized commands use the image's environment and the sandbox overlays.
 
-The command reserves one worker's full CPU and memory budgets for its duration.
 Interrupting the CLI requests cancellation and waits for command cleanup; the
 cluster remains available. If cleanup cannot be confirmed, the error says so.
 Stop the allocation using `lc compute down` with its full ID (names can be reused)
