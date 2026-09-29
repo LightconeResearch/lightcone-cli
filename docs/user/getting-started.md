@@ -250,8 +250,8 @@ the record of what your results were computed with.
 ## 5. Materialize
 
 Launch the built-in local offer; no compute configuration is needed. It provides
-all usable CPUs and RAM for 30 minutes. Keep the returned ID in `CLUSTER` for this
-walkthrough. Configured remote offers coexist with that default. A catalog can
+all usable CPUs and RAM, and stops once it has had no work for 30 minutes. Keep
+the returned ID in `CLUSTER` for this walkthrough. Configured remote offers coexist with that default. A catalog can
 override the local budget, disable local compute, or provide explicit local offers;
 see [Running on a Cluster](cluster.md). NERSC login nodes automatically refuse local
 compute; use a compute node in an interactive allocation or a configured Slurm offer.

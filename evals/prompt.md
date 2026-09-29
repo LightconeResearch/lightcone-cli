@@ -53,9 +53,9 @@ inspect `lc compute status` and reuse it rather than launching another.
 existing cluster. Launch's `--wait` defaults to a 300-second readiness timeout;
 `--timeout SECONDS` overrides it. A waiting launch that fails reports the accepted
 cluster ID and leaves the allocation unchanged: inspect it before retrying.
-The default local lifetime is 30 minutes; `--time` overrides it up to two hours
-for the built-in offer. After expiry, launch again; the name `local` can be reused,
-but the immutable ID changes.
+A local cluster ends after 30 minutes without task activity; running work keeps
+it alive, and `--time` adds a hard lifetime that ends it even mid-run. After it
+ends, launch again; the name `local` can be reused, but the immutable ID changes.
 
 Compute configuration is `~/.lightcone/compute.yaml`, or the file selected by
 `LC_COMPUTE_CONFIG`. Its `local.resources` mapping can override the built-in CPU/RAM

@@ -259,6 +259,11 @@ class SlurmProvider:
         if interface is not None:
             interface = _value(interface, "interface")
         seconds = request.seconds or offer.time.default_seconds
+        if seconds is None or offer.time.idle is not None:
+            raise ComputeError(
+                "Slurm allocations end at their native walltime: "
+                "set the offer's time.default and remove time.idle"
+            )
         hours, remainder = divmod(seconds, 3600)
         minutes, seconds_part = divmod(remainder, 60)
         args = self._scope()

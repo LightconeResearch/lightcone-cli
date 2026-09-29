@@ -307,22 +307,36 @@ class Connection(ComputeModel):
 
 
 class TimeLimits(ComputeModel):
-    """Configured durations with derived seconds for native allocation requests."""
+    """How an allocation ends: a hard walltime, an idle timeout, or both.
 
-    default: Duration
-    max: Duration
+    ``default`` and ``max`` bound the walltime; ``idle`` ends an allocation
+    once its scheduler has had no task activity for that long. Each is
+    optional, but an allocation must have some way to end.
+    """
+
+    default: Duration | None = None
+    max: Duration | None = None
+    idle: Duration | None = None
 
     @property
-    def default_seconds(self) -> int:
-        return duration(self.default)
+    def default_seconds(self) -> int | None:
+        return None if self.default is None else duration(self.default)
 
     @property
-    def max_seconds(self) -> int:
-        return duration(self.max)
+    def max_seconds(self) -> int | None:
+        return None if self.max is None else duration(self.max)
+
+    @property
+    def idle_seconds(self) -> int | None:
+        return None if self.idle is None else duration(self.idle)
 
     @model_validator(mode="after")
     def ordered_limits(self) -> Self:
-        if self.default_seconds > self.max_seconds:
+        if self.default is None and self.idle is None:
+            raise ValueError("time needs a default walltime or an idle timeout")
+        if self.default is not None and self.max is not None and (
+            duration(self.default) > duration(self.max)
+        ):
             raise ValueError("default time exceeds its maximum")
         return self
 
@@ -412,7 +426,8 @@ class LaunchPlan(ComputeModel):
     connection: Connection
     offer: Offer
     request: Request
-    seconds: PositiveInt
+    seconds: PositiveInt | None
+    idle_seconds: PositiveInt | None = None
     details: dict[str, Any] = Field(default_factory=dict)
     name: str | None = None
 
@@ -435,6 +450,7 @@ class LaunchPlan(ComputeModel):
             "num_nodes": self.num_nodes,
             "resources": self.resources.as_dict(),
             "time_seconds": self.seconds,
+            "idle_seconds": self.idle_seconds,
             "startup": self.offer.startup.class_,
             "launch": self.details,
         }

@@ -17,12 +17,13 @@ It owns no service, registry, or saved current-cluster selection.
 | `Provider` | `plan`, `launch`, `discover`, `inspect`, `connect`, `terminate`. |
 
 `Catalog.load()` defaults to `~/.lightcone/compute.yaml`. The built-in `local`
-offer uses detected usable CPUs and RAM, one node, fast startup, and a 30-minute
-default/two-hour maximum lifetime. `local.resources` overrides its CPU/RAM budget;
+offer uses detected usable CPUs and RAM, one node, fast startup, and no walltime:
+it ends after 30 minutes without task activity. `local.resources` overrides its
+CPU/RAM budget and `local.time` its time limits;
 `local.enabled: false` blocks local launch and execution while retaining connections
 for inspection and termination. Remote catalogs retain the implicit local offer
 unless disabled. Explicit local connections supply their own offers instead and
-cannot be combined with `local.resources`. GPU offers require explicit configuration.
+cannot be combined with `local.resources` or `local.time`. GPU offers require explicit configuration.
 Loading creates no configuration file or allocation.
 The effective local policy also disables local offers on recognized NERSC login
 nodes: nonempty `NERSC_HOST` and a short hostname matching `login[0-9]+`.
@@ -48,8 +49,12 @@ duplicate and non-string mapping keys before model validation. Provider-specific
 Units are explicit. `Resources.memory_gib` stores exact decimal GiB (the YAML key
 is `memory`), and `memory_bytes` derives an exact integer. Native observations use
 `Resources.from_bytes(...)`; requests store `Request.memory_bytes`. `TimeLimits`
-keeps the configured `default` and `max` duration strings and exposes
-`default_seconds` and `max_seconds`. `Startup.class_` corresponds to YAML `class`.
+keeps the configured `default`, `max`, and `idle` duration strings, each optional
+but requiring a `default` or an `idle`, and exposes `default_seconds`,
+`max_seconds`, and `idle_seconds` (`None` when unset). A `LaunchPlan` carries the
+resolved hard walltime as `seconds` and the idle timeout as `idle_seconds`, either
+of which may be `None` for a local plan; Slurm plans always have `seconds` and
+never `idle_seconds`. `Startup.class_` corresponds to YAML `class`.
 Connection names exist only as catalog mapping keys, referenced by `Offer.connection`.
 
 Compute memory accepts bare GiB quantities and SkyPilot-style binary units:
@@ -257,6 +262,7 @@ management; callers must respect the documented execution limits. Containers
 managed outside that process group can survive local teardown.
 
 Tests cover deterministic selection, malformed identities and catalogs, partial
-native failures, acceptance ambiguity, PID reuse, detached local lifetime, standard
+native failures, acceptance ambiguity, PID reuse, detached local walltime and idle
+expiry, standard
 Dask bootstrap, and explicit execution through borrowed clients. Slurm command
 contracts are simulated; a real NERSC submission remains a deployment check.

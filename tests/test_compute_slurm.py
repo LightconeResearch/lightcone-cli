@@ -310,6 +310,17 @@ def test_plan_includes_only_an_explicit_partition_and_requested_walltime(
     assert calls == []
 
 
+@pytest.mark.parametrize("time", [
+    TimeLimits(idle="30m"), TimeLimits(default="1h", max="4h", idle="30m"),
+])
+def test_plan_refuses_an_offer_that_would_end_on_idle(
+    provider: slurm.SlurmProvider, offer: Offer, time: TimeLimits,
+) -> None:
+    # Only the native walltime ends a Slurm allocation; an ignored idle timeout would lie.
+    with pytest.raises(ComputeError, match="native walltime"):
+        provider.plan(offer.replace(time=time), Request.parse("256", "480", time="30m"))
+
+
 def test_plan_refuses_multiple_partitions(provider: slurm.SlurmProvider, offer: Offer) -> None:
     with pytest.raises(ComputeError, match="one native partition"):
         provider.plan(

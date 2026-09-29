@@ -269,9 +269,11 @@ def test_missing_default_catalog_exposes_stable_local_resources_without_writing_
     offer = first.offers[0]
     assert (offer.name, offer.connection) == ("local", "local")
     assert (offer.resources.cpus, offer.resources.memory_bytes, offer.max_nodes) == (1, GIB, 1)
-    assert (offer.time.default_seconds, offer.time.max_seconds, offer.startup.class_) == (
-        1800, 7200, "fast",
+    # No hard lifetime: the built-in offer ends after 30 minutes without task activity.
+    assert (offer.time.default_seconds, offer.time.max_seconds, offer.time.idle_seconds) == (
+        None, None, 1800,
     )
+    assert offer.startup.class_ == "fast"
     monkeypatch.setattr("dask.system.CPU_COUNT", 1)
     monkeypatch.setattr("distributed.system.MEMORY_LIMIT", GIB)
     runner = CliRunner()
@@ -285,10 +287,13 @@ def test_missing_default_catalog_exposes_stable_local_resources_without_writing_
     assert json.loads(planned.output)["plan"]["offer"] == "local"
     assert list(default_home.iterdir()) == []
     service = compute.Compute()
-    assert service.plan(Request.parse("1", "1", time="2h", startup="fast")).seconds == 7200
+    idle = service.plan(Request.parse("1", "1", startup="fast"))
+    assert (idle.seconds, idle.idle_seconds) == (None, 1800)
+    # An explicit hard lifetime has no built-in maximum, and the idle timeout still applies.
+    both = service.plan(Request.parse("1", "1", time="3h"))
+    assert (both.seconds, both.idle_seconds) == (10800, 1800)
     for request in (
-        Request.parse("2", "1"), Request.parse("1", "2"),
-        Request.parse("1", "1", num_nodes=2), Request.parse("1", "1", time="3h"),
+        Request.parse("2", "1"), Request.parse("1", "2"), Request.parse("1", "1", num_nodes=2),
     ):
         with pytest.raises(ComputeError, match="no configured offer"):
             service.plan(request)
@@ -639,6 +644,26 @@ def test_builtin_name_conflicts_identify_the_catalog_and_remedy(
     assert f"rename the configured {kind}" in str(error.value)
 
 
+def test_local_time_replaces_the_builtin_idle_timeout(
+    default_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dask.system.CPU_COUNT", 8)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 16 * GIB)
+    path = default_home / "compute.yaml"
+    path.write_text("version: 1\nlocal:\n  time: {idle: 1h, max: 8h}\n")
+    monkeypatch.setenv("LC_COMPUTE_CONFIG", str(path))
+    service = compute.Compute()
+    plan = service.plan_local()
+    assert (plan.seconds, plan.idle_seconds) == (None, 3600)
+    assert plan.as_dict()["idle_seconds"] == 3600
+    assert service.plan_local(time="8h").seconds == 8 * 3600
+    with pytest.raises(ComputeError, match="no local offer matches"):
+        service.plan_local(time="9h")
+    listed = CliRunner().invoke(main, ["compute", "resources"])
+    assert listed.exit_code == 0, listed.output
+    assert "IDLE" in listed.output and "60m" in listed.output
+
+
 def test_disabled_builtin_does_not_reserve_remote_offer_names(catalog: Path) -> None:
     data = yaml.safe_load(catalog.read_text())
     data["offers"][0]["name"] = "local"
@@ -662,10 +687,12 @@ def test_explicit_local_offers_keep_their_sizes_and_replace_the_implicit_offer(
     plan = service.plan_local()
     assert (plan.offer.name, plan.name, plan.resources.cpus) == ("quick", "local", 4)
     assert plan.resources.memory_bytes == 8 * GIB
-    data["local"]["resources"] = {"cpus": 2, "memory": 2}
-    catalog.write_text(yaml.safe_dump(data))
-    with pytest.raises(ComputeError, match="cannot be combined with explicit local"):
-        Catalog.load()
+    for setting, value in (
+        ("resources", {"cpus": 2, "memory": 2}), ("time", {"idle": "1h"}),
+    ):
+        catalog.write_text(yaml.safe_dump({**data, "local": {setting: value}}))
+        with pytest.raises(ComputeError, match="cannot be combined with explicit local"):
+            Catalog.load()
 
 
 def test_configured_local_budget_still_must_fit_host_capacity(
@@ -809,7 +836,7 @@ def test_catalog_uses_the_public_models_and_roundtrips_without_an_adapter(catalo
     assert dumped["offers"][0]["resources"] == {
         "cpus": 4, "memory": Decimal(8), "accelerators": None,
     }
-    assert dumped["offers"][0]["time"] == {"default": "30m", "max": "2h"}
+    assert dumped["offers"][0]["time"] == {"default": "30m", "max": "2h", "idle": None}
     assert Catalog.model_validate(dumped) == loaded
     assert Catalog.model_validate_json(loaded.model_dump_json(by_alias=True)) == loaded
 
@@ -958,8 +985,8 @@ def test_borrowed_client_only_detaches(catalog: Path, provider: MagicMock) -> No
 
 
 @pytest.mark.parametrize("mutation", [
-    "version_missing", "namespace", "context", "offer", "limits", "reference", "unknown",
-    "resources_extra", "time_extra", "startup_extra", "connection_extra",
+    "version_missing", "namespace", "context", "offer", "limits", "unbounded", "reference",
+    "unknown", "resources_extra", "time_extra", "startup_extra", "connection_extra",
 ])
 def test_invalid_catalog_is_rejected(catalog: Path, mutation: str) -> None:
     data = yaml.safe_load(catalog.read_text())
@@ -976,6 +1003,8 @@ def test_invalid_catalog_is_rejected(catalog: Path, mutation: str) -> None:
         data["offers"][1]["name"] = "quick"
     elif mutation == "limits":
         data["offers"][0]["time"]["default"] = "3h"
+    elif mutation == "unbounded":
+        data["offers"][0]["time"] = {"max": "2h"}
     elif mutation == "reference":
         data["offers"][0]["connection"] = "missing"
     elif mutation == "connection_extra":

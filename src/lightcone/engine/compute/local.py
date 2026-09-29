@@ -210,8 +210,9 @@ class LocalProvider:
                     "local GPU offers require an explicit nonempty CUDA_VISIBLE_DEVICES mask"
                 )
         seconds = request.seconds if request.seconds is not None else offer.time.default_seconds
-        if seconds <= 0 or seconds > offer.time.max_seconds:
-            raise ComputeError("local allocations require a finite time within the offer's limit")
+        limit = offer.time.max_seconds
+        if seconds is not None and limit is not None and seconds > limit:
+            raise ComputeError("the requested time exceeds the local offer's maximum")
         python = Path(self.connection.launch.get("python", sys.executable)).expanduser()
         scratch = configured_directory(
             Path(self.connection.launch.get("scratch_root", tempfile.gettempdir()))
@@ -223,6 +224,7 @@ class LocalProvider:
             offer=offer,
             request=request,
             seconds=seconds,
+            idle_seconds=offer.time.idle_seconds,
             details={
                 "python": str(python),
                 "connection_root": str(self.root),
@@ -268,7 +270,8 @@ class LocalProvider:
             startup_read = _above_stdio(startup_read)
             startup_write = _above_stdio(startup_write)
             launch = {
-                "deadline": started + plan.seconds,
+                "deadline": None if plan.seconds is None else started + plan.seconds,
+                "idle_timeout": plan.idle_seconds,
                 "task_slots": plan.details["task_slots_per_node"],
                 "scratch": str(scratch),
                 "identity": "",

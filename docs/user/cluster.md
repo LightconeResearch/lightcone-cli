@@ -9,8 +9,12 @@ present. `lc materialize --check` and `lc status` remain local project inspectio
 
 No configuration is needed on a fresh installation. `lc compute launch` uses all
 detected usable logical CPUs and RAM on this machine and names the cluster `local`.
-The default lifetime is 30 minutes, with a maximum of two hours. Use `--time` to
-change the lifetime. GPUs require explicit offers; see [GPU allocations](#gpu-allocations).
+A local cluster has no fixed lifetime: it ends after 30 minutes without task
+activity, so a two-hour recipe finishes normally and the cluster stops 30 minutes
+later if no further work arrives. Running or queued tasks keep it alive; connecting
+a client or checking its status does not. Use `--time` to add a hard lifetime, which
+ends the cluster even while work is running, or `lc compute down` to stop it now.
+GPUs require explicit offers; see [GPU allocations](#gpu-allocations).
 
 ```bash
 lc compute resources
@@ -45,8 +49,8 @@ Only one local cluster can run per user on each machine. A launch checks the
 process table for a running local cluster of yours and refuses if it finds one,
 including one launched through a different name, catalog, namespace, or
 connection root. End the existing cluster before launching another; once its
-owner process exits, including on failure or walltime expiry, a new launch
-proceeds. A refusal identifies the running cluster and its original catalog and
+owner process exits, including on failure, idle expiry, or walltime expiry, a
+new launch proceeds. A refusal identifies the running cluster and its original catalog and
 connection root. Use that catalog to inspect or stop the cluster if the current
 catalog no longer includes its connection. If the cluster's record is missing or
 damaged, the refusal names its process ID instead, to stop with `kill`.
@@ -56,8 +60,10 @@ started outside it.
 An allocation owns a detached process session and standard `LocalCluster`: one
 worker process with `task_slots_per_node` threads, and a scheduler that listens
 on `127.0.0.1` over TLS. Its own logs are discarded; a startup failure is kept
-and shown as the reason by `lc compute status`. At its time limit the whole
+and shown as the reason by `lc compute status`. At its walltime the whole
 process session is killed with SIGKILL, so a recipe still running stops mid-write.
+When the idle timeout closes the scheduler, no task is running, and the session
+ends the same way.
 `down` sends SIGTERM, waits three seconds, then sends SIGKILL.
 Private process locators are checked against the native boot UUID, UID, process
 session, and exact command containing the allocation's random token before
@@ -128,6 +134,15 @@ Both CPU and memory are required in `local.resources`; omit that block to use
 detected capacity. The same capacity validation applies to configured budgets.
 This controls the default offer, not hard OS resource limits.
 
+`local.time` replaces the default offer's time limits, for example a longer idle
+timeout with a ceiling on `--time`:
+
+```yaml
+version: 1
+local:
+  time: {idle: 1h, max: 8h}
+```
+
 NERSC login nodes are guarded without setup. For other sites, or to disable local
 compute on every node using the catalog, set:
 
@@ -151,7 +166,7 @@ creates no configuration file.
 By default, a built-in `local` connection and offer accompany remote offers, with
 configured offers taking selection priority. If the catalog already defines local
 connections, those offers replace the implicit local offer; omit `local.resources`
-and size those offers directly. The no-resource shortcut selects the first eligible
+and `local.time`, and size and time those offers directly. The no-resource shortcut selects the first eligible
 local offer and defaults its cluster name to `local`.
 
 Resource requests can select the built-in local offer when no earlier remote
@@ -175,7 +190,7 @@ offers:
     connection: workstation
     resources: {cpus: 4, memory: 8}
     max_nodes: 1
-    time: {default: 30m, max: 2h}
+    time: {idle: 30m}
     startup: {class: fast}
 ```
 
@@ -196,8 +211,11 @@ and an ordered `offers` list. Connections and offers default to empty:
   optional `context`, and optional provider `launch` settings. Namespaces must
   be unique, and so must each provider/`context` pair.
 - An offer has a unique `name`, the `connection` it uses, per-node `resources`
-  (`cpus`, `memory`, and optional `accelerators`), `max_nodes`, and `time` with a
-  `default` no longer than its `max`. `startup` is optional (`fast`, `batch`, or the default
+  (`cpus`, `memory`, and optional `accelerators`), `max_nodes`, and `time`. `time`
+  holds an optional walltime `default`, no longer than an optional `max`, and an
+  optional `idle` timeout; it needs a `default` or an `idle`, so every allocation
+  can end. Local offers end at whichever limit comes first. Slurm offers need a
+  `default` and refuse `idle`. `startup` is optional (`fast`, `batch`, or the default
   `unknown`), written either as a bare class or as `{class: …, source: …}`.
   `config` holds provider-specific settings.
 
@@ -420,7 +438,7 @@ For local GPUs, add an offer to the [workstation catalog above](#customize-resou
     connection: workstation
     resources: {cpus: 4, memory: 8GB, accelerators: 'GPU:1'}
     max_nodes: 1
-    time: {default: 30m, max: 2h}
+    time: {idle: 30m}
     startup: fast
 ```
 
@@ -513,7 +531,7 @@ CUDA mask is empty. `lc run` reserves the worker's entire CPU, memory, and GPU
 budgets; direct and podman-hpc probes inherit that allocation mask.
 
 Recipe `time_limit` is not supported and is refused before preparation or
-execution. Set the allocation lifetime with `lc compute launch --time` instead.
+execution. Bound the allocation instead, with `lc compute launch --time`.
 Fractional CPU/GPU counts, GPU model requests inside a recipe, and disk requests
 are also rejected rather than ignored.
 

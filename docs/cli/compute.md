@@ -13,16 +13,17 @@ lc compute down CLUSTER [--json]
 
 With no resource flags, `lc compute launch` starts the default local CPU offer,
 names the cluster `local`, and uses all detected usable logical CPUs and RAM.
-The built-in offer has one node, fast startup, a 30-minute default lifetime, and
-a two-hour maximum. `--name` and `--time` override the name and lifetime.
+The built-in offer has one node, fast startup, and no fixed lifetime: it ends
+after 30 minutes without task activity. `--name` overrides the name, and `--time`
+adds a hard lifetime that ends the cluster even while work is running.
 CPU and RAM are cooperative scheduling budgets, not exclusive reservations.
 GPUs still require explicit offers and, locally, a `CUDA_VISIBLE_DEVICES` mask.
 
 `~/.lightcone/compute.yaml` configures resource offers; `LC_COMPUTE_CONFIG` selects
 another file for all compute and execution commands. The top-level `local` block
-can override the built-in CPU/RAM budget or disable local compute. Without an
-explicit local connection, the built-in local offer is appended after configured
-offers. Catalogs with explicit local connections use their own offers instead;
+can override the built-in CPU/RAM budget or time limits, or disable local compute.
+Without an explicit local connection, the built-in local offer is appended after
+configured offers. Catalogs with explicit local connections use their own offers instead;
 the shortcut chooses the first eligible local offer. See
 [local configuration](../user/cluster.md#customize-resource-offers).
 Missing explicit paths and invalid catalogs are errors. Loading a catalog or
@@ -36,7 +37,7 @@ See [local allocations](../user/cluster.md#local-allocations) for detection deta
 
 | Command | Behavior |
 |---|---|
-| `resources` | Ordered available offers, per-node shape, node limit, default/maximum time, and startup class. Free capacity remains unknown. |
+| `resources` | Ordered available offers, per-node shape, node limit, default/maximum walltime, idle timeout, and startup class. Free capacity remains unknown. |
 | `launch` | Resolve one resource request and submit exactly once; print only the cluster name to stdout on acceptance. |
 | `launch --wait` | Submit once, then wait for all expected workers. `--timeout` sets the readiness deadline (default 300 seconds). |
 | `launch --dry-run` | Show the resolved shape and native launch parameters without allocation. |
@@ -83,11 +84,26 @@ maintain SkyPilot's accelerator alias registry: use the labels configured in
 
 Time accepts positive durations with day/hour/minute/second units, such as `30m`,
 `1h30m`, or `45s`. Without
-`--time`, the chosen offer's default applies. `fast` is a service class, not a
-queue-time promise. Limits apply to each allocation; aggregate quotas remain
-with the native backend.
+`--time`, the chosen offer's default walltime applies, if it has one. `fast` is a
+service class, not a queue-time promise. Limits apply to each allocation; aggregate
+quotas remain with the native backend.
 
-For Slurm, time is a finite native `--time` request. Slurm's overtime and
+A local allocation ends at its walltime, after its idle timeout, or at whichever
+comes first when it has both. The idle timeout is Dask's scheduler
+`idle-timeout`: running or queued tasks keep the allocation alive, and new work
+restarts the countdown; connected clients and `status` queries do not. When it
+expires, the allocation ends, and both its name and this machine's one local
+allocation are free again. A walltime ends the allocation even during active work.
+`down` still ends it at once.
+
+For Slurm, time is a finite native `--time` request, so a Slurm offer needs a
+`time.default` and cannot declare `time.idle`:
+
+```text
+Error: Slurm allocations end at their native walltime: set the offer's time.default and remove time.idle
+```
+
+Slurm's overtime and
 termination-grace policy determines actual expiry and can allow unlimited
 overrun; Lightcone supplies no independent Slurm runtime deadline. A partition
 is passed only when explicitly set in the offer's configuration.

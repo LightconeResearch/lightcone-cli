@@ -63,6 +63,7 @@ class LocalSettings(ComputeModel):
 
     enabled: bool = True
     resources: Resources | None = None
+    time: TimeLimits | None = None
 
     @model_validator(mode="after")
     def cpu_only(self) -> Self:
@@ -139,10 +140,10 @@ class Catalog(ComputeModel):
         if local_disabled_reason(local.enabled) is not None:
             local = local.replace(enabled=False)
         explicit = any(connection.provider == "local" for connection in connections.values())
-        if explicit and local.resources is not None:
+        if explicit and (local.resources is not None or local.time is not None):
             raise ComputeError(
-                "local.resources cannot be combined with explicit local connections; "
-                "set their offer resources instead"
+                "local.resources and local.time cannot be combined with explicit local "
+                "connections; set their offers' resources and time instead"
             )
         if not explicit:
             if "local" in connections:
@@ -164,9 +165,10 @@ class Catalog(ComputeModel):
                 resources = local.resources or Resources.from_bytes(
                     cpus=CPU_COUNT, memory_bytes=MEMORY_LIMIT,
                 )
+                # Interactive work comes and goes: end when idle, not at a fixed age.
                 offers.append(Offer(
                     name="local", connection="local", resources=resources,
-                    max_nodes=1, time=TimeLimits(default="30m", max="2h"),
+                    max_nodes=1, time=local.time or TimeLimits(idle="30m"),
                     startup=Startup(class_="fast"),
                 ))
         if not local.enabled:

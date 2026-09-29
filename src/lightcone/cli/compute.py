@@ -44,13 +44,15 @@ def _table(headers: list[str], rows: list[list[str]]) -> None:
     from rich.console import Console
     from rich.table import Table
 
-    table = Table(*headers, box=None, padding=(0, 2))
+    table = Table(*headers, box=None, padding=(0, 1))
     for row in rows:
         table.add_row(*row)
     Console(markup=False).print(table)
 
 
-def _duration(seconds: int) -> str:
+def _duration(seconds: int | None) -> str:
+    if seconds is None:
+        return "-"
     minutes, remainder = divmod(seconds, 60)
     return (f"{minutes}m" if minutes else "") + (f"{remainder}s" if remainder else "")
 
@@ -61,8 +63,9 @@ def compute() -> None:
 
     Read LC_COMPUTE_CONFIG or ~/.lightcone/compute.yaml. A built-in local
     offer follows configured offers unless local compute is disabled or
-    explicit local connections supply their own offers. Local compute is
-    automatically disabled on recognized NERSC login nodes.
+    explicit local connections supply their own offers; it ends after 30
+    minutes without task activity rather than at a fixed age. Local compute
+    is automatically disabled on recognized NERSC login nodes.
     """
 
 
@@ -78,7 +81,10 @@ def resources(as_json: bool) -> None:
             click.echo(json.dumps(data))
             return
         _table(
-            ["OFFER", "CPUS", "MEMORY", "GPUS", "MAX NODES", "DEFAULT", "MAX TIME", "STARTUP"],
+            [
+                "OFFER", "CPUS", "MEMORY", "GPUS", "MAX NODES",
+                "DEFAULT", "MAX TIME", "IDLE", "STARTUP",
+            ],
             [
                 [
                     offer["name"],
@@ -91,6 +97,7 @@ def resources(as_json: bool) -> None:
                     str(offer["max_nodes"]),
                     _duration(offer["time"]["default_seconds"]),
                     _duration(offer["time"]["max_seconds"]),
+                    _duration(offer["time"]["idle_seconds"]),
                     offer["startup"],
                 ]
                 for offer in data["offers"]
@@ -107,7 +114,8 @@ def resources(as_json: bool) -> None:
               help="Accelerator NAME[:COUNT] per node, e.g. A100:4 or GPU:1; 0 requests CPU only.")
 @click.option("--num-nodes", default=1, type=click.IntRange(min=1), show_default=True)
 @click.option(
-    "--time", "walltime", help="Requested walltime, e.g. 30m or 1h30m; defaults to the offer."
+    "--time", "walltime",
+    help="Hard walltime, e.g. 30m or 1h30m, even during active work; defaults to the offer's.",
 )
 @click.option(
     "--startup", type=click.Choice(["fast"]), help="Require a fast startup service class."

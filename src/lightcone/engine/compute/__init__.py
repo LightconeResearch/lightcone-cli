@@ -115,6 +115,7 @@ class Compute:
                     "time": {
                         "default_seconds": offer.time.default_seconds,
                         "max_seconds": offer.time.max_seconds,
+                        "idle_seconds": offer.time.idle_seconds,
                     },
                     "startup": offer.startup.class_,
                 }
@@ -148,7 +149,8 @@ class Compute:
             return None
         if request.startup is not None and request.startup != offer.startup.class_:
             return None
-        if request.seconds is not None and request.seconds > offer.time.max_seconds:
+        limit = offer.time.max_seconds
+        if request.seconds is not None and limit is not None and request.seconds > limit:
             return None
         if (
             offer.resources.cpus < request.cpus
