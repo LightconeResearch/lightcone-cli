@@ -13,11 +13,12 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import psutil
 import pytest
 
+from lightcone.engine import gpu
 from lightcone.engine.compute import Compute, slurm, slurm_bootstrap
 from lightcone.engine.compute.catalog import Catalog
 from lightcone.engine.compute.model import (
@@ -96,6 +97,7 @@ def _control(
         f"JobId=123 JobName=lc-v1-{name} UserId=alice({owner}) JobState={state}\n"
         f"   Comment={comment} \n"
         f"   NumNodes=2 NumCPUs=512 CPUs/Task=256 MinMemoryNode=480G Restarts={restarts} "
+        "ReqTRES=cpu=512,mem=960G,node=2 "
         "SubmitTime=2026-09-27T10:00:00 StartTime=2026-09-27T10:00:05 Reason=None\n"
     )
 
@@ -167,6 +169,59 @@ def test_plan_preserves_native_envelope_without_native_queries(
     assert not any(arg.startswith("--partition=") for arg in plan.details["native_args"])
     assert "time_policy" not in plan.details
     assert calls == []
+
+
+@pytest.mark.parametrize("submit", ["sbatch", "salloc"])
+def test_gpu_plan_requests_per_node_devices_for_the_allocation_and_step(
+    provider: slurm.SlurmProvider, offer: Offer, submit: str,
+) -> None:
+    offer = offer.replace(
+        resources=offer.resources.replace(accelerators={"GPU": 4}),
+        config={**offer.config, "submit": submit, "constraint": "gpu"},
+    )
+    plan = provider.plan(offer, Request.parse("256", "480", gpus="GPU:4", num_nodes=2))
+    assert "--gres=gpu:4" in plan.details["native_args"]
+    assert "--constraint=gpu" in plan.details["native_args"]
+    payload = provider._payload(plan, TOKEN)
+    assert "--gres=gpu:4" in payload
+    assert "--ntasks-per-node=1" in payload
+    assert payload[payload.index("--gpus") + 1] == "4"
+
+
+def test_named_accelerator_uses_explicit_native_gres_mapping(
+    provider: slurm.SlurmProvider, offer: Offer,
+) -> None:
+    offer = offer.replace(resources=offer.resources.replace(accelerators={"A100": 4}))
+    request = Request.parse("256", "480", gpus="A100:4", num_nodes=2)
+    with pytest.raises(ComputeError, match="requires its native gpu_type"):
+        provider.plan(offer, request)
+    offer = offer.replace(config={**offer.config, "gpu_type": "a100_80gb"})
+    plan = provider.plan(offer, request)
+    assert "--gres=gpu:a100_80gb:4" in plan.details["native_args"]
+    assert "--gres=gpu:a100_80gb:4" in provider._payload(plan, TOKEN)
+    assert plan.resources.accelerator_name == "A100"
+
+
+@pytest.mark.parametrize("gpu_type", ["", "a100:4", "a100,v100", "two types", 4])
+def test_slurm_gpu_type_must_be_one_native_type(
+    provider: slurm.SlurmProvider, offer: Offer, gpu_type: object,
+) -> None:
+    offer = offer.replace(
+        resources=offer.resources.replace(accelerators={"A100": 4}),
+        config={**offer.config, "gpu_type": gpu_type},
+    )
+    with pytest.raises(ComputeError, match="one native GPU GRES type"):
+        provider.plan(offer, Request.parse("256", "480", gpus="A100:4"))
+
+
+def test_cpu_offer_cannot_request_a_gpu_type(
+    provider: slurm.SlurmProvider, offer: Offer,
+) -> None:
+    with pytest.raises(ComputeError, match="requires accelerator resources"):
+        provider.plan(
+            offer.replace(config={**offer.config, "gpu_type": "a100"}),
+            Request.parse("256", "480"),
+        )
 
 
 def test_default_launch_assumes_a_shared_home_and_node_local_scratch(
@@ -696,6 +751,37 @@ def test_discovery_preserves_allocations_with_unknown_native_resource_evidence(
     assert snapshot.evidence == "unknown"
 
 
+@pytest.mark.parametrize("native,expected,name", [
+    ("TresPerNode=gres/gpu:4", 4, "GPU"),
+    ("TresPerNode=gres/gpu:a100:4", 4, "a100"),
+    ("TresPerNode=gres/gpu:4090:2", 2, "4090"),
+    ("TresPerNode=gres/gpu:a100:2,gres/gpu:v100:2", 4, "GPU"),
+    ("Gres=gpu:a100:2", 2, "a100"),
+    ("Gres=(null)", 0, None),
+    ("ReqTRES=cpu=512,mem=960G,node=2", 0, None),
+    ("ReqTRES=cpu=512,mem=960G,node=2,gres/gpu=8", None, None),
+    ("TresPerNode=gres/gpu:unknown", None, None),
+    ("TresPerNode=gres/gpu:a100/80gb:2", None, None),
+    ("TresPerNode=gres/gpu:1.5", None, None),
+    ("TresPerNode=gres/gpu:4,gres/gpu:a100:4", None, None),
+    ("", None, None),
+])
+def test_gpu_discovery_reports_only_native_per_node_evidence(
+    provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch,
+    native: str, expected: int | None, name: str | None,
+) -> None:
+    control = _control().replace("ReqTRES=cpu=512,mem=960G,node=2", native)
+    _native(monkeypatch, {"squeue": _live(), "scontrol": control})
+    snapshot, = provider.discover()
+    if expected is None:
+        assert snapshot.resources is None
+        assert snapshot.evidence == "unknown"
+    else:
+        assert snapshot.resources is not None and snapshot.resources.gpus == expected
+        assert snapshot.resources.accelerator_name == name
+        assert snapshot.evidence == "requested"
+
+
 def test_native_query_failure_is_not_an_empty_list(
     provider: slurm.SlurmProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -909,6 +995,7 @@ def _bootstrap_args(tmp_path: Path) -> argparse.Namespace:
         num_nodes=2,
         cpus=1,
         memory_bytes=64 * 1024**2,
+        gpus=0,
         task_slots=1,
         interface=None,
     )
@@ -916,6 +1003,7 @@ def _bootstrap_args(tmp_path: Path) -> argparse.Namespace:
 
 def _bootstrap_env(rank: int) -> dict[str, str]:
     return {
+        "CUDA_VISIBLE_DEVICES": "",
         "SLURM_JOB_ID": "123",
         "SLURM_PROCID": str(rank),
         "SLURM_NTASKS": "2",
@@ -936,14 +1024,83 @@ def test_bootstrap_refuses_mismatched_native_envelope(
         slurm_bootstrap._allocation(_bootstrap_args(tmp_path))
 
 
+@pytest.mark.parametrize("native,visible_count,valid", [
+    ("", 2, False), ("unknown", 2, False), ("1", 2, False),
+    ("2", 0, False), ("2", 1, False), ("2", 2, True), ("4", 4, True),
+])
+def test_gpu_bootstrap_requires_native_and_cuda_capacity_without_rewriting_the_mask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    native: str, visible_count: int, valid: bool,
+) -> None:
+    for key, value in _bootstrap_env(0).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("SLURM_GPUS_ON_NODE", native)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,3")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+
+    def devices() -> tuple[str, ...]:
+        assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "1,3"
+        return tuple(f"GPU-{i}" for i in range(visible_count))
+
+    monkeypatch.setattr(gpu, "visible_devices", devices)
+    args = _bootstrap_args(tmp_path)
+    args.gpus = 2
+    if valid:
+        _, _, rank = slurm_bootstrap._allocation(args)
+        assert rank == 0
+    else:
+        with pytest.raises(ComputeError, match="GPUs"):
+            slurm_bootstrap._allocation(args)
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "1,3"
+
+
+def test_gpu_worker_advertises_verified_capacity_with_the_native_mask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import distributed
+
+    args = _bootstrap_args(tmp_path)
+    args.gpus = 2
+    for key, value in _bootstrap_env(1).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("SLURM_GPUS_ON_NODE", "2")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,3")
+    monkeypatch.setattr(gpu, "visible_devices", lambda: ("GPU-first", "GPU-second"))
+    connection = Connection(
+        namespace=NAMESPACE, provider="slurm", launch={"connection_root": args.connection_root},
+    )
+    directory = private_directory(slurm.attempt_directory(connection, IDENTITY, 0), create=True)
+    write_private_json(directory / "identity.json", {
+        "namespace": NAMESPACE, "native_id": "123", "token": TOKEN, "uid": os.getuid(),
+        "restarts": 0, "num_nodes": 2, "cpus": 1, "memory_bytes": args.memory_bytes,
+        "gpus": 2, "task_slots": 1,
+    })
+    monkeypatch.setattr(slurm_bootstrap, "load_security", lambda _: None)
+    worker = MagicMock()
+    worker.__aenter__ = AsyncMock(return_value=worker)
+    worker.finished = AsyncMock()
+    factory = MagicMock(return_value=worker)
+    monkeypatch.setattr(distributed, "Worker", factory)
+
+    asyncio.run(slurm_bootstrap.run(args))
+
+    assert factory.call_args.kwargs["resources"] == {
+        "CPU": 1, "MEMORY": args.memory_bytes, "GPU": 2,
+    }
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "1,3"
+
+
 def test_worker_rendezvous_has_a_finite_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for key, value in _bootstrap_env(1).items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(slurm_bootstrap, "_STARTUP_TIMEOUT", 0)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "an-ambient-GPU")
     with pytest.raises(ComputeError, match="timed out"):
         asyncio.run(slurm_bootstrap.run(_bootstrap_args(tmp_path)))
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == ""
 
 
 def test_bootstrap_defaults_scratch_to_the_node_temporary_directory(
@@ -1032,6 +1189,7 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
         workers = client.scheduler_info()["workers"]
         assert {worker["name"] for worker in workers.values()} == {"lightcone-0", "lightcone-1"}
         assert all(worker["nthreads"] == 1 for worker in workers.values())
+        assert all(worker["resources"]["GPU"] == 0 for worker in workers.values())
         assert client.submit(sum, [2, 3]).result(timeout=5) == 5
         assert client.scheduler_info()["address"].startswith("tls://127.0.0.1:")
         assert all(address.startswith("tls://127.0.0.1:") for address in workers)

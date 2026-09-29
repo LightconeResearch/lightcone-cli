@@ -7,7 +7,9 @@ here with nothing spawned and no runtime installed.
 
 from __future__ import annotations
 
+import csv
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -183,6 +185,40 @@ def test_runtimes_differ_only_in_their_spellings(root: Path, policy: Policy) -> 
     }  # fmt: skip
     p, d, h = ([a for a in argv if a not in strip] for argv in (podman, docker, hpc))
     assert p == d == h
+
+
+@pytest.mark.parametrize("runtime", ["podman", "docker", "podman-hpc"])
+def test_gpu_flags_name_only_the_requested_devices(
+    root: Path, policy: Policy, runtime: str,
+) -> None:
+    devices = "GPU-first,GPU-second"
+    selected = replace(policy, env={**policy.env, "CUDA_VISIBLE_DEVICES": devices})
+    backend = _backend(root, runtime)
+    argv = backend.wrap(selected, ["true"])
+    assert argv == backend.wrap(selected, ["true"])
+    assert f"--env=CUDA_VISIBLE_DEVICES={devices}" in argv
+    if runtime == "podman-hpc":
+        assert "--gpu" in argv
+    elif runtime == "docker":
+        assert next(csv.reader([argv[argv.index("--gpus") + 1]])) == [f"device={devices}"]
+    else:
+        assert [arg for arg in argv if arg.startswith("--device=")] == [
+            "--device=nvidia.com/gpu=GPU-first", "--device=nvidia.com/gpu=GPU-second",
+        ]
+    assert "all" not in argv
+    assert "--device=nvidia.com/gpu=all" not in argv
+
+
+@pytest.mark.parametrize("runtime", ["podman", "docker", "podman-hpc"])
+def test_cpu_containers_do_not_request_gpu_access(root: Path, policy: Policy, runtime: str) -> None:
+    policy = replace(policy, env={**policy.env, "NVIDIA_VISIBLE_DEVICES": "all"})
+    argv = _backend(root, runtime).wrap(policy, ["true"])
+    assert "--env=CUDA_VISIBLE_DEVICES=" in argv
+    assert "--env=NVIDIA_VISIBLE_DEVICES=void" in argv
+    assert "--env=NVIDIA_VISIBLE_DEVICES=all" not in argv
+    assert policy.env["NVIDIA_VISIBLE_DEVICES"] == "all"
+    assert "--gpu" not in argv and "--gpus" not in argv
+    assert not any(arg.startswith("--device=") for arg in argv)
 
 
 def test_the_environment_is_an_allowlist_never_ambient(

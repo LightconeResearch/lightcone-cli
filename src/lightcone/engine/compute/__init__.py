@@ -102,7 +102,10 @@ class Compute:
         """Describe configured policy, without inventing live free capacity."""
         return {
             "schema_version": 1,
-            "units": {"cpus": "logical CPUs per node", "memory": "GiB per node"},
+            "units": {
+                "cpus": "logical CPUs per node", "memory": "GiB per node",
+                "accelerators": "type and count per node",
+            },
             "offers": [
                 {
                     "name": offer.name,
@@ -141,6 +144,12 @@ class Compute:
                 if request.min_memory
                 else offer.resources.memory_bytes != request.memory_bytes
             ):
+                continue
+            if request.accelerators is None:
+                matches_accelerators = offer.resources.accelerators is None
+            else:
+                matches_accelerators = request.accelerators.matches(offer.resources.accelerators)
+            if not matches_accelerators:
                 continue
             try:
                 provider = self.provider(self.catalog.connections[offer.connection])

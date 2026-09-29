@@ -471,7 +471,9 @@ def test_shared_inputs_are_hashed_once_before_task_serialization(
         return real(path)
 
     class _Copied(_Inline):
-        def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
+        def submit(
+            self, fn: Callable[..., object], *args: object, key: str, resources: dict[str, float],
+        ) -> object:
             return fn(*pickle.loads(pickle.dumps(args)))
 
     monkeypatch.setattr(assets, "data_version", digest)
@@ -1060,6 +1062,142 @@ def test_the_recorded_command_holds_on_a_fresh_clone(
 # ---- the scheduler seam ----------------------------------------------------
 
 
+def _resource_cluster(
+    monkeypatch: pytest.MonkeyPatch, *, workers: int = 1, gpus: int = 0,
+) -> None:
+    from distributed import Client, LocalCluster
+
+    from lightcone.engine import compute
+
+    @contextmanager
+    def connect(cluster_id: str) -> Iterator[Any]:
+        with LocalCluster(
+            n_workers=workers, threads_per_worker=4, processes=False,
+            dashboard_address=None, resources={"CPU": 4, "MEMORY": 2 * 1024**3, "GPU": gpus},
+        ) as cluster, Client(cluster, set_as_default=False) as client:
+            yield client
+
+    monkeypatch.setattr(compute, "connect", connect)
+
+
+@pytest.mark.parametrize("resource_spec", ["cpus: 5", "memory: 3Gi"])
+def test_resource_refusal_precedes_preparation_and_all_recipes(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, resource_spec: str,
+) -> None:
+    spec = _SPEC.replace(
+        "command: cat", f"resources: {{{resource_spec}}}\n      command: cat"
+    )
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    before = dataset.head(root)
+    _resource_cluster(monkeypatch)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("preparation began before all resource requests were validated")
+
+    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    monkeypatch.setattr(engine.container, "runtime_for_run", unexpected)
+    with pytest.raises(ProjectError, match="baseline/second:.*no worker"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert dataset.head(root) == before
+    assert not dataset.status(root)
+    assert not (root / "results/baseline/first.txt").exists()
+
+
+@pytest.mark.parametrize("resource_spec", [
+    "gpus: 1", "disk: 1Gi", "cpus: 0.5", "cpus: 0", "memory: null", "time_limit: 1s",
+])
+def test_execution_only_resources_do_not_block_read_only_commands(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, resource_spec: str,
+) -> None:
+    spec = _SPEC.replace(
+        "command: cat", f"resources: {{{resource_spec}}}\n      command: cat",
+    )
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    assert len(engine.status(root).outputs) == 2
+    assert set(engine.check(root, []).planned) == {"baseline/first", "baseline/second"}
+
+    _resource_cluster(monkeypatch)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("preparation began before execution requirements were validated")
+
+    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    with pytest.raises(ProjectError, match="baseline/second"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert not dataset.status(root)
+
+
+def test_empty_cluster_refuses_before_project_preparation(
+    root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _resource_cluster(monkeypatch, workers=0)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("preparation began without an available worker")
+
+    monkeypatch.setattr(engine, "_fetch_inputs", unexpected)
+    with pytest.raises(ProjectError, match="no workers"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert not dataset.status(root)
+
+
+@pytest.mark.parametrize(
+    ("resource_spec", "gpus", "expected_parallelism"),
+    [
+        ("cpus: 3, memory: 256Mi", 0, 1),
+        ("cpus: 1, memory: 1Gi", 0, 2),
+        ("cpus: 1, memory: 256Mi, gpus: 1", 2, 1),
+    ],
+)
+def test_real_dask_respects_recipe_resource_reservations(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+    resource_spec: str, gpus: int, expected_parallelism: int,
+) -> None:
+    # Four Dask threads would run all four subprocesses together without
+    # resource reservations. Each independent output records its live interval.
+    spec = 'version: "0.0.13"\nname: analysis\ninputs: []\noutputs:\n' + "".join(
+        f"  - id: task{index}\n"
+        "    type: metric\n"
+        "    format: json\n"
+        "    recipe:\n"
+        f"      resources: {{{resource_spec}}}\n"
+        "      command: python src/work.py {output}\n"
+        for index in range(4)
+    )
+    root = analysis(spec, files={"src/work.py": """
+        import json
+        import os
+        import sys
+        import time
+        from pathlib import Path
+        start = time.monotonic()
+        time.sleep(0.5)
+        Path(sys.argv[1]).write_text(json.dumps([
+            start, time.monotonic(), os.environ.get("CUDA_VISIBLE_DEVICES"),
+        ]))
+    """})
+    from lightcone.engine import gpu
+
+    monkeypatch.setattr(gpu, "visible_devices", lambda: ("GPU-first", "GPU-second"))
+    monkeypatch.setattr(gpu, "device_paths", lambda: ())
+    _resource_cluster(monkeypatch, gpus=gpus)
+
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    assert report.ok and len(report.made) == 4
+    events = []
+    for path in (root / "results/baseline").glob("task*.json"):
+        start, finish, visible = json.loads(path.read_text())
+        assert visible == ("GPU-first" if gpus else "")
+        events.extend([(start, 1), (finish, -1)])
+    live = peak = 0
+    for _, change in sorted(events):
+        live += change
+        peak = max(peak, live)
+    assert peak == expected_parallelism
+    assert not dataset.status(root)
+
+
 def test_a_real_cluster_still_fits_through_the_seam(root: Path, cluster_id: str) -> None:
     """The one test that starts Dask. The seam is only worth having if the
     thing it abstracts still goes through it."""
@@ -1084,7 +1222,8 @@ def test_a_processes_cluster_fits_through_the_seam(
     @contextmanager
     def processes(cluster_id: str) -> Iterator[Any]:
         with LocalCluster(
-            n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None
+            n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None,
+            resources={"CPU": 1, "MEMORY": 1024**3},
         ) as cluster:
             with Client(cluster, set_as_default=False) as client:
                 yield client
@@ -1320,3 +1459,4 @@ def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: No
     assert any(".second.manifest.json" in w for w in report.warnings)
     document = (root / "ro-crate-metadata.json").read_text()
     assert "results/baseline/second.txt" not in document
+

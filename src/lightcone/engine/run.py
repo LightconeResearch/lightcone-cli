@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from lightcone.engine import container, sandbox
+from lightcone.engine import container, gpu, sandbox
+from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.project import (
     SPEC_FILENAME,
     ProjectError,
@@ -51,13 +52,17 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
     require_uv()
     paths = input_paths(project, read_spec(project))
     with compute.connect(cluster_id) as client:
+        resources = TaskResources().requirements(
+            client.scheduler_info()["workers"], whole_worker=True,
+        )
         runtime = container.runtime_for_run(project, build=False)
         notes = [f"uv: {warning}" for warning in container.converge(runtime)]
         invocation = uuid4().hex
         with forwarding(client) as output:
             future = client.submit(
                 call, _probe, output.topic, "probe", runtime, paths, tuple(command),
-                key=f"lc-{invocation}-probe", pure=False,
+                int(resources.get("GPU", 0)),
+                key=f"lc-{invocation}-probe", pure=False, resources=resources,
             )
             try:
                 outcome: sandbox.Outcome = future.result()
@@ -76,10 +81,17 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
 
 def _probe(
     runtime: container.Runtime, paths: list[Path], command: tuple[str, ...],
+    gpu_count: int,
     *, output: Callable[[str, bytes], None],
 ) -> sandbox.Outcome:
     """Execute the prepared probe; the driver alone converges its environment."""
-    built = container.policy_for(runtime, paths)
+    gpu_devices = gpu.visible_devices()[:gpu_count] if gpu_count else ()
+    if len(gpu_devices) < gpu_count:
+        raise ProjectError(
+            f"probe reserved {gpu_count} GPUs but this worker can access "
+            f"only {len(gpu_devices)} CUDA devices"
+        )
+    built = container.policy_for(runtime, paths, gpu_devices=gpu_devices)
     with sandbox.scope(built) as policy:
         outcome = sandbox.run(
             container.backend(runtime), policy, command, cwd=runtime.root,

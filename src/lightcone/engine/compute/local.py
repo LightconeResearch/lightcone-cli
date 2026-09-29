@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 
 import psutil
 
+from lightcone.engine import gpu
 from lightcone.engine.compute.model import (
     ComputeError,
     Connection,
@@ -41,6 +42,7 @@ from lightcone.engine.compute.runtime import (
     read_private_json,
     write_private_json,
 )
+from lightcone.engine.project import ProjectError
 
 _OWNER_MODULE = "lightcone.engine.compute.local_runtime"
 _STOP_GRACE = 3.0
@@ -104,6 +106,21 @@ class LocalProvider:
 
         if offer.resources.cpus > CPU_COUNT or offer.resources.memory_bytes > MEMORY_LIMIT:
             raise UnavailableOfferError("the local offer exceeds this host's CPU or RAM capacity")
+        try:
+            inventory = gpu.inventory() if offer.resources.gpus else ()
+        except ProjectError as exc:
+            raise UnavailableOfferError(str(exc)) from exc
+        accelerator = offer.resources.accelerator_name or "GPU"
+        available = tuple(
+            device for device in inventory
+            if accelerator.casefold() == "gpu" or device.name.casefold() == accelerator.casefold()
+        )
+        if len(available) < offer.resources.gpus:
+            raise UnavailableOfferError(
+                f"the local offer exceeds this host's visible CUDA capacity for {accelerator}"
+            )
+        selected = available[:offer.resources.gpus]
+        names = {device.name for device in selected}
         seconds = request.seconds if request.seconds is not None else offer.time.default_seconds
         if seconds <= 0 or seconds > offer.time.max_seconds:
             raise ComputeError("local allocations require a finite time within the offer's limit")
@@ -123,7 +140,9 @@ class LocalProvider:
                 "connection_root": str(self.root),
                 "scratch_root": str(scratch),
                 "task_slots_per_node": slots,
-                "resource_enforcement": "cooperative; no exclusive CPU or RAM reservation",
+                "gpu_devices": tuple(device.uuid for device in selected),
+                "accelerator_name": next(iter(names)) if len(names) == 1 else "GPU",
+                "resource_enforcement": "cooperative; no exclusive CPU, RAM, or GPU reservation",
                 "termination_grace_seconds": _STOP_GRACE,
             },
         )
@@ -134,6 +153,11 @@ class LocalProvider:
             raise ComputeError("local launch plan belongs to a different connection or node count")
         if plan.name is not None:
             validate_name(plan.name)
+        devices = tuple(plan.details["gpu_devices"])
+        if len(devices) != plan.resources.gpus or (
+            devices and not set(devices).issubset(gpu.visible_devices())
+        ):
+            raise UnavailableOfferError("the local plan's selected CUDA GPUs are no longer visible")
         boot = _boot_identity()
         token = uuid4().hex
         directory = private_directory(self.root / token, create=True)
@@ -160,6 +184,7 @@ class LocalProvider:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
                 close_fds=True,
+                env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(devices)},
             )
             identity = Identity(
                 namespace=self.connection.namespace, native_id=str(process.pid), token=token,
@@ -174,6 +199,8 @@ class LocalProvider:
                 "host": identity.host,
                 "cpus": plan.resources.cpus,
                 "memory": plan.resources.memory_bytes,
+                "gpus": plan.resources.gpus,
+                "accelerator_name": plan.details["accelerator_name"],
             }
             write_private_json(directory / "identity.json", record)
             # The child waits for this file before publishing its TLS connection.
@@ -233,6 +260,10 @@ class LocalProvider:
             raise ComputeError("the private locator does not match this local allocation identity")
         positive_int(record.get("cpus"), "recorded local cpus")
         positive_int(record.get("memory"), "recorded local memory")
+        if type(record.get("gpus")) is not int or record["gpus"] < 0:
+            raise ComputeError("recorded local gpus must be a nonnegative integer")
+        if not isinstance(record.get("accelerator_name"), str) or not record["accelerator_name"]:
+            raise ComputeError("recorded local accelerator_name must be a nonempty string")
         return directory, record
 
     def _process(
@@ -347,7 +378,7 @@ class LocalProvider:
         except psutil.NoSuchProcess:
             process = None
             native_state = "not-running"
-        reason = "CPU and RAM budgets are cooperative, not exclusive OS reservations"
+        reason = "CPU, RAM, and GPU budgets are cooperative, not exclusive OS reservations"
         if process is None and (directory / "error.json").exists():
             reason = str(read_private_json(directory / "error.json").get("error", ""))
         return Snapshot(
@@ -355,6 +386,8 @@ class LocalProvider:
             phase="active" if process is not None else "ended",
             resources=Resources.from_bytes(
                 cpus=int(record["cpus"]), memory_bytes=int(record["memory"]),
+                gpus=record["gpus"],
+                accelerator_name=record["accelerator_name"],
             ),
             num_nodes=1,
             evidence="configured",

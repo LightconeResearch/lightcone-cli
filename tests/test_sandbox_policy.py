@@ -238,6 +238,29 @@ def test_the_entropy_sources_stay_read_only(built: policy_module.Policy) -> None
             assert device not in built.write, node
 
 
+@pytest.mark.parametrize("containerized", [False, True])
+@pytest.mark.parametrize("devices", [(), ("GPU-first", "GPU-second")])
+def test_gpu_policy_sets_command_visibility_without_changing_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    containerized: bool, devices: tuple[str, ...],
+) -> None:
+    from lightcone.engine import gpu
+
+    project = tmp_path / "project"
+    project.mkdir()
+    device = tmp_path / "nvidia0"
+    device.touch()
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "native-allocation")
+    monkeypatch.setattr(gpu, "device_paths", lambda: (device,))
+    with scope(policy_module.exec_policy(
+        project, containerized=containerized, gpu_devices=devices,
+    )) as built:
+        assert built.env["CUDA_VISIBLE_DEVICES"] == ",".join(devices)
+        assert (device in built.write) == (bool(devices) and not containerized)
+        assert Path("/dev") not in built.write
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "native-allocation"
+
+
 def test_proc_and_sys_are_not_restricted(built: policy_module.Policy) -> None:
     """Real tools write them — /proc/self/oom_score_adj, coredump_filter,
     MPI and CUDA runtimes poking /sys — and none of it is a channel

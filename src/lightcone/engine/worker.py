@@ -35,7 +35,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from lightcone.engine import assets, container, dataset, identity, plan, project, sandbox
+from lightcone.engine import assets, container, dataset, gpu, identity, plan, project, sandbox
+from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
     ProjectError,
@@ -227,6 +228,13 @@ def execute(
         ``ok`` with the output's ``data_version``, or ``failed``. Commits
         nothing and never touches git beyond reading HEAD.
     """
+    resources = TaskResources.parse(task.resources)
+    gpu_devices = gpu.visible_devices()[:resources.gpus] if resources.gpus else ()
+    if len(gpu_devices) < resources.gpus:
+        raise ProjectError(
+            f"recipe requests {resources.gpus} GPUs but this worker can access "
+            f"only {len(gpu_devices)} CUDA devices"
+        )
     if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved)
 
@@ -246,7 +254,7 @@ def execute(
 
     read_paths = [p for p in task.inputs.values() if p.exists()]
     policy = container.policy_for(
-        context.runtime, read_paths, write_dir=task.output_path.parent
+        context.runtime, read_paths, write_dir=task.output_path.parent, gpu_devices=gpu_devices,
     )
     started_at = _now()
     with sandbox.scope(policy):

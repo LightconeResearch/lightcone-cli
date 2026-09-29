@@ -32,6 +32,7 @@ from collections.abc import Iterable, Sequence
 from fnmatch import fnmatch
 from pathlib import Path
 
+from lightcone.engine import gpu
 from lightcone.engine.sandbox.model import Policy
 
 #: The utility tier of the exec allowlist. A maintained policy
@@ -182,6 +183,7 @@ def exec_policy(
     env_dir: Path | None = None,
     containerized: bool = False,
     write_dir: Path | None = None,
+    gpu_devices: Sequence[str] = (),
 ) -> Policy:
     """Build what a sandboxed command may touch.
 
@@ -211,6 +213,7 @@ def exec_policy(
             directory holding its output file, shared with the siblings
             declared beside it. Absent for a probe, which has no analysis
             node and gets the project's own ``results/`` whole.
+        gpu_devices: CUDA device UUIDs allocated to this command; empty hides GPUs.
 
     Returns:
         The policy. The in-tree write scope is granted only if it exists —
@@ -234,6 +237,8 @@ def exec_policy(
         (tmp_home / sub).mkdir(parents=True, exist_ok=True)
 
     in_tree_write = write_dir if write_dir is not None else project / "results"
+    overlay = home_overlay(tmp_home, env_dir, containerized=containerized)
+    overlay["CUDA_VISIBLE_DEVICES"] = ",".join(gpu_devices)
     if containerized:
         # Declared spellings, not realpaths — the one shape that keeps
         # its paths unresolved. These become mount *destinations*, and a
@@ -246,14 +251,15 @@ def exec_policy(
             write=_declared([tmp_home, in_tree_write]),
             execute=(),
             tmp_home=tmp_home,
-            env=home_overlay(tmp_home, env_dir, containerized=True),
+            env=overlay,
         )
 
     python = _venv_python(env_dir)
     # EXECUTE on the interpreter *file*; READ on the install root beside
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
-    write = _existing([tmp_home, in_tree_write, *_write_roots(project)])
+    devices = gpu.device_paths() if gpu_devices else ()
+    write = _existing([tmp_home, in_tree_write, *_write_roots(project), *devices])
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 
     return Policy(
@@ -261,7 +267,7 @@ def exec_policy(
         write=write,
         execute=_existing(_exec_set(env_dir, python)),
         tmp_home=tmp_home,
-        env=home_overlay(tmp_home, env_dir),
+        env=overlay,
     )
 
 

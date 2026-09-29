@@ -100,6 +100,44 @@ def _value(value: object, name: str) -> str:
     return value
 
 
+def _native_gpus(row: Mapping[str, str]) -> tuple[str, int] | None:
+    """Read a per-node GPU count, never divide an aggregate into invented grants."""
+    for field, prefix in (("TresPerNode", "gres/"), ("Gres", "")):
+        value = row.get(field, "")
+        counts = []
+        names = set()
+        for entry in value.split(","):
+            if not entry.startswith(f"{prefix}gpu"):
+                continue
+            match = re.fullmatch(
+                rf"{prefix}gpu(?::([A-Za-z0-9][A-Za-z0-9_.-]*))?[:=]([0-9]+)", entry,
+            )
+            if match is None:
+                return None
+            names.add(match[1] or "GPU")
+            counts.append(int(match[2]))
+        if counts:
+            if "GPU" in names and len(names) > 1:
+                return None  # A total plus typed subcounts must not be double-counted.
+            return next(iter(names)) if len(names) == 1 else "GPU", sum(counts)
+        if field == "Gres" and value in {"(null)", "N/A", "none"}:
+            return "GPU", 0
+    # Complete native TRES with no GPU entry proves a CPU-only job. An
+    # aggregate GPU total does not prove a homogeneous per-node allocation.
+    for field in ("ReqTRES", "AllocTRES"):
+        value = row.get(field, "")
+        if value and value not in {"(null)", "N/A"}:
+            entries = value.split(",")
+            if any(entry.startswith("gres/gpu") for entry in entries):
+                return None
+            if all("=" in entry for entry in entries) and any(
+                entry.startswith("cpu=") for entry in entries
+            ):
+                return "GPU", 0
+            return None
+    return None
+
+
 class SlurmProvider:
     """Submit, observe, and cancel allocations using the selected Slurm authority."""
 
@@ -185,11 +223,26 @@ class SlurmProvider:
             "qos",
             "constraint",
             "reservation",
+            "gpu_type",
         }:
             raise ComputeError(f"unknown Slurm offer settings: {', '.join(sorted(extra))}")
         submit = config.get("submit", "sbatch")
         if submit not in {"sbatch", "salloc"}:
             raise ComputeError("Slurm submit must be sbatch or salloc")
+        gpu_type = config.get("gpu_type")
+        if gpu_type is not None:
+            if not isinstance(gpu_type, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]*", gpu_type,
+            ):
+                raise ComputeError("Slurm gpu_type must name one native GPU GRES type")
+            if not offer.resources.gpus:
+                raise ComputeError("Slurm gpu_type requires accelerator resources")
+        elif (offer.resources.accelerator_name or "GPU").casefold() != "gpu":
+            raise ComputeError("a named Slurm accelerator offer requires its native gpu_type")
+        gres = (
+            f"gpu:{gpu_type + ':' if gpu_type else ''}{offer.resources.gpus}"
+            if offer.resources.gpus else "none"
+        )
         cpus, memory = offer.resources.cpus, offer.resources.memory_bytes
         if memory % _MIB:
             raise ComputeError("Slurm offer memory must be an exact whole number of MiB")
@@ -223,6 +276,8 @@ class SlurmProvider:
             f"--time={hours:02}:{minutes:02}:{seconds_part:02}",
             f"--chdir={paths['cwd']}",
         ]
+        if offer.resources.gpus:
+            args.append(f"--gres={gres}")
         return LaunchPlan(
             connection=self.connection,
             offer=offer,
@@ -231,6 +286,7 @@ class SlurmProvider:
             details={
                 "submit": submit,
                 "native_args": args,
+                "gres": gres,
                 **paths,
                 "task_slots_per_node": slots,
                 "interface": interface,
@@ -244,6 +300,7 @@ class SlurmProvider:
             f"--ntasks={plan.num_nodes}",
             "--ntasks-per-node=1",
             f"--cpus-per-task={plan.resources.cpus}",
+            f"--gres={details['gres']}",
             # One process per node holds the whole allocation, so binding to
             # exactly its allocated hardware threads is the only useful mask.
             "--cpu-bind=threads",
@@ -264,6 +321,8 @@ class SlurmProvider:
             str(plan.resources.cpus),
             "--memory-bytes",
             str(plan.resources.memory_bytes),
+            "--gpus",
+            str(plan.resources.gpus),
             "--task-slots",
             str(details["task_slots_per_node"]),
         ]
@@ -495,11 +554,16 @@ class SlurmProvider:
         nodes = int(nodes_text) if nodes_text.isdigit() and int(nodes_text) > 0 else None
         cpus = row.get("CPUs/Task", "")
         memory = re.fullmatch(r"([0-9]+)([KMGT]?)", row.get("MinMemoryNode", ""))
+        accelerators = _native_gpus(row)
         resources = None
-        if cpus.isdigit() and int(cpus) > 0 and memory and int(memory[1]) > 0:
+        if (
+            cpus.isdigit() and int(cpus) > 0 and memory and int(memory[1]) > 0
+            and accelerators is not None
+        ):
             scale = {"": _MIB, "K": 1024, "M": _MIB, "G": 1024**3, "T": 1024**4}
             resources = Resources.from_bytes(
-                cpus=int(cpus), memory_bytes=int(memory[1]) * scale[memory[2]]
+                cpus=int(cpus), memory_bytes=int(memory[1]) * scale[memory[2]],
+                accelerator_name=accelerators[0], gpus=accelerators[1],
             )
         return Snapshot(
             identity=identity,

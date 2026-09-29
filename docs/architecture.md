@@ -41,6 +41,7 @@ lc materialize "$CLUSTER"
   │  plan: astra validate + resolve  →  Graph of Tasks
   │        (no tasks → converge the crate and stop; nothing connects)
   │  connect: native identity + Dask readiness
+  │  admit: each task's CPU, memory, and GPU request fits a worker
   │  fetch: git annex get (declared inputs not in this clone)
   │  converge: uv.lock ⇄ .venv   (and the image, containerized)
   ├─► workers: reset output file → sandbox → recipe → hash → manifest
@@ -64,6 +65,13 @@ The division of labor is strict and load-bearing:
   unreadable manifest — all come back as a state, so one failure
   doesn't abort every task in flight, and a run reports *all* its
   independent failures.
+- **Dask accounts for task resources.** Workers advertise CPU, memory, and GPU
+  budgets; submissions reserve the recipe's requirements. CPU and memory
+  reservations coordinate scheduling rather than imposing per-recipe OS limits.
+  Recipe `time_limit` is explicitly refused; allocation walltime remains supported.
+  A GPU recipe reserves the worker's full GPU budget and exposes only its
+  requested devices through a per-command CUDA mask. CPU recipes expose none;
+  probes reserve and expose the whole worker budget.
 - **Values are resolved once and handed down.** HEAD, the container
   runtime, and the foreign-write facts are read by the driver and
   passed to workers as values — a worker that asked git itself could
@@ -135,9 +143,9 @@ Because every backend is a pure argv rewrite, all of them are testable
 on a host that can't run them, and the manifest's `hermeticity` field
 records what was *actually* enforced — never what should have been.
 
-There is one policy, `exec_policy`: probe and recipe get exactly the
-same thing (tree read-only apart from `results/`), so "works under
-`lc run`" and "works as a recipe" stay the same fact.
+There is one policy builder, `exec_policy`: probes and recipes share environment
+and filesystem rules, with write scope and GPU visibility supplied by the caller.
+Probes expose their reserved worker's GPUs; recipes expose their declared count.
 
 ## The container hatch
 
@@ -157,17 +165,26 @@ config-blob id, never a tag.
 `engine.compute` owns allocation lifecycle through a small provider protocol.
 A YAML catalog supplies ordered resource offers and stable native service
 namespaces. When the implicit default file is absent, a built-in local catalog
-provides one CPU and 1 GiB without setup. An explicit catalog replaces that default;
+provides one CPU and 1 GiB without setup, plus GPU offers grouped by model when
+Linux CUDA discovery succeeds. An explicit catalog replaces those defaults;
 missing explicit paths and invalid files remain errors. No catalog is written and
 no allocation starts until `compute launch` resolves resources and submits once. Slurm queries
 and validated local OS identities are authoritative for allocations; Dask is the
 authority for connected workers. Private scheduler/TLS files are connection
 material, not a registry.
 
+Allocation requests use SkyPilot-style CPU/memory exact or minimum quantities
+and one accelerator type/count. Providers translate those requests into native
+allocations; Lightcone does not depend on SkyPilot or carry its GPU alias registry.
+An isolated stdlib CUDA probe discovers native device UUIDs and model names;
+stock Dask workers remain unchanged. GPU container access uses each runtime's
+native mechanism. See [GPU setup](user/cluster.md#gpu-allocations).
+
 `compute.connect(CLUSTER_ID)` borrows a standard Dask client and closes only that
 client on exit. Both execution commands require a cluster ID. The materialization
-scheduler keeps its `submit`/`completed` seam. Driver preparation and existing
-task runtime/sandbox checks remain unchanged. Tasks use ordinary Dask scheduling;
+scheduler validates resource requests, then keeps its `submit`/`completed` seam.
+Driver preparation and existing task runtime/sandbox checks remain unchanged.
+Tasks use ordinary Dask scheduling;
 there is no separate worker-selection or preflight layer, or site-marker guard. No execution command implicitly allocates compute.
 See [compute internals](api/compute.md) and [deployment limits](user/cluster.md).
 

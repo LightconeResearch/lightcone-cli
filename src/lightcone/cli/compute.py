@@ -49,6 +49,11 @@ def _table(headers: list[str], rows: list[list[str]]) -> None:
     Console(markup=False).print(table)
 
 
+def _duration(seconds: int) -> str:
+    minutes, remainder = divmod(seconds, 60)
+    return (f"{minutes}m" if minutes else "") + (f"{remainder}s" if remainder else "")
+
+
 @click.group()
 def compute() -> None:
     """Allocate resources, inspect clusters, and end allocations.
@@ -70,15 +75,19 @@ def resources(as_json: bool) -> None:
             click.echo(json.dumps(data))
             return
         _table(
-            ["OFFER", "CPUS", "MEMORY", "MAX NODES", "DEFAULT", "MAX TIME", "STARTUP"],
+            ["OFFER", "CPUS", "MEMORY", "GPUS", "MAX NODES", "DEFAULT", "MAX TIME", "STARTUP"],
             [
                 [
                     offer["name"],
                     str(offer["resources"]["cpus"]),
                     f"{offer['resources']['memory']:g} GiB",
+                    ", ".join(
+                        f"{name}:{count}"
+                        for name, count in (offer["resources"]["accelerators"] or {}).items()
+                    ) or "-",
                     str(offer["max_nodes"]),
-                    f"{offer['time']['default_seconds'] // 60}m",
-                    f"{offer['time']['max_seconds'] // 60}m",
+                    _duration(offer["time"]["default_seconds"]),
+                    _duration(offer["time"]["max_seconds"]),
                     offer["startup"],
                 ]
                 for offer in data["offers"]
@@ -89,10 +98,13 @@ def resources(as_json: bool) -> None:
 @compute.command()
 @click.option("--name", help="Cluster name; defaults to a generated short name.")
 @click.option("--cpus", required=True, help="Logical CPUs per node; suffix + requests a minimum.")
-@click.option("--memory", required=True, help="GiB per node; suffix + requests a minimum.")
+@click.option("--memory", required=True,
+              help="Memory per node, e.g. 16 or 16GB; suffix + requests a minimum.")
+@click.option("--gpus", default="0", show_default=True,
+              help="Accelerator NAME[:COUNT] per node, e.g. A100:4 or GPU:1; 0 requests CPU only.")
 @click.option("--num-nodes", default=1, type=click.IntRange(min=1), show_default=True)
 @click.option(
-    "--time", "walltime", help="Requested walltime, e.g. 30m or 2h; defaults to the offer."
+    "--time", "walltime", help="Requested walltime, e.g. 30m or 1h30m; defaults to the offer."
 )
 @click.option(
     "--startup", type=click.Choice(["fast"]), help="Require a fast startup service class."
@@ -103,6 +115,7 @@ def launch(
     name: str | None,
     cpus: str,
     memory: str,
+    gpus: str,
     num_nodes: int,
     walltime: str | None,
     startup: str | None,
@@ -119,6 +132,7 @@ def launch(
             Request.parse(
                 cpus,
                 memory,
+                gpus=gpus,
                 num_nodes=num_nodes,
                 time=walltime,
                 startup=startup,

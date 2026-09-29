@@ -5,7 +5,7 @@ No project is required for these commands.
 
 ```text
 lc compute resources [--json]
-lc compute launch --cpus VALUE --memory VALUE
+lc compute launch --cpus VALUE --memory VALUE [--gpus NAME[:COUNT]|0]
     [--name NAME] [--num-nodes N] [--time DURATION] [--startup fast] [--dry-run] [--json]
 lc compute status [CLUSTER] [--wait] [--timeout SECONDS] [--json]
 lc compute down CLUSTER [--json]
@@ -15,6 +15,10 @@ Without configuration, `resources` exposes a built-in `local` offer: one CPU,
 1 GiB, one node, fast startup, and a 30-minute default lifetime (two-hour maximum).
 Launch it with `lc compute launch --cpus 1 --memory 1`; execution still requires
 the returned cluster name or its full immutable ID.
+On Linux, visible NVIDIA GPUs also produce local GPU offers, grouped by model.
+Use the accelerator names and counts shown by `resources`, or `GPU:N` to request
+any model with exactly N GPUs per node. GPU discovery failure leaves the CPU
+offer available.
 
 `~/.lightcone/compute.yaml`, when present, replaces this built-in catalog.
 `LC_COMPUTE_CONFIG` selects another file for both compute and execution commands,
@@ -53,9 +57,21 @@ durable reference to that allocation. Use the full immutable `id` from launch or
 status JSON to address one allocation directly, including when unrelated
 connections are unavailable. No name registry is maintained.
 
-CPU quantities are logical CPUs **per node**, memory is **GiB per node**, and
-`--num-nodes` defaults to one. Bare quantities are exact; `4+` means at least four.
-Time accepts positive whole minutes or hours, such as `30m` or `2h`. Without
+Resource quantities are **per node**, and `--num-nodes` defaults to one. CPU and
+memory requests follow SkyPilot's exact/minimum convention: `4` is exact and `4+`
+means at least four. Compute memory uses binary units: `16`, `16GB`, and `16GiB`
+all mean 16 GiB; `16GB+` permits a larger offer.
+
+`--gpus A100:4` requests exactly four GPUs from an offer whose accelerator type is `A100`;
+`--gpus A100` means one, `--gpus GPU:4` accepts any GPU model, and the default
+`--gpus 0` selects CPU-only offers. Names match case-insensitively. GPU counts
+are positive whole numbers, with no `+` or fractional form. Lightcone does not
+maintain SkyPilot's accelerator alias registry: copy local model names from
+`resources` or use `GPU:N`. Catalog shapes use `accelerators: A100:4` or
+`accelerators: {A100: 4}`. See [GPU allocations](../user/cluster.md#gpu-allocations).
+
+Time accepts positive durations with day/hour/minute/second units, such as `30m`,
+`1h30m`, or `45s`. Without
 `--time`, the chosen offer's default applies. `fast` is a service class, not a
 queue-time promise. Limits apply to each allocation; aggregate quotas remain
 with the native backend.
@@ -86,7 +102,9 @@ scheduler credentials:
 
 `phase` is `pending`, `active`, `stopping`, `ended`, or `unknown`. `allocation`
 holds `num_nodes`, per-node `resources`, and their `evidence` (`configured`,
-`requested`, or `unknown`). `dask` is observed separately: `observation`
+`requested`, or `unknown`). Resource objects contain `cpus`, `memory` in GiB,
+and `accelerators` as a one-entry type/count mapping, or `null` for CPU-only shapes.
+`dask` is observed separately: `observation`
 (`unverified`, `reachable`, or `unreachable`), `ready`, and `workers`. A
 discovery that partially succeeds still exits 1. Native errors, invalid
 requests, and readiness timeouts also exit 1.

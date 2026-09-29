@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from types import FrameType
 
+from lightcone.engine.compute.model import ComputeError
 from lightcone.engine.compute.runtime import (
     SCHEDULER_CONFIG,
     create_security,
@@ -54,6 +55,13 @@ def main() -> None:
         from distributed import LocalCluster
 
         security = create_security(directory)
+        allocation = read_private_json(directory / "identity.json")
+        gpus = int(allocation["gpus"])
+        if gpus:
+            from lightcone.engine.gpu import visible_devices
+
+            if len(visible_devices()) != gpus:
+                raise ComputeError("visible CUDA GPUs do not match the local allocation envelope")
         with dask.config.set(SCHEDULER_CONFIG), LocalCluster(  # type: ignore[no-untyped-call]
             n_workers=1,
             threads_per_worker=int(launch["task_slots"]),
@@ -73,6 +81,9 @@ def main() -> None:
             # Recipes use subprocesses: Dask's Python-process RSS cannot enforce
             # their RAM envelope. Local resource limits are explicitly cooperative.
             memory_limit=0,
+            resources={
+                "CPU": int(allocation["cpus"]), "MEMORY": int(allocation["memory"]), "GPU": gpus,
+            },
             silence_logs=50,
         ) as cluster:
             write_private_json(

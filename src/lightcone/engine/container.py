@@ -29,6 +29,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -408,7 +409,8 @@ def converge(runtime: Runtime) -> list[str]:
 
 
 def policy_for(
-    runtime: Runtime, read_paths: list[Path], *, write_dir: Path | None = None
+    runtime: Runtime, read_paths: list[Path], *, write_dir: Path | None = None,
+    gpu_devices: Sequence[str] = (),
 ) -> sandbox.Policy:
     """Build the exec policy for a resolved runtime.
 
@@ -422,6 +424,7 @@ def policy_for(
         runtime: The resolved runtime.
         read_paths: Declared inputs, as :func:`sandbox.exec_policy` takes.
         write_dir: The directory a recipe's output lands in; absent for a probe.
+        gpu_devices: Allocated CUDA device UUIDs to expose to this command.
 
     Returns:
         The policy for this world.
@@ -432,6 +435,7 @@ def policy_for(
         env_dir=runtime.env_dir,
         containerized=runtime.mode == "containerized",
         write_dir=write_dir,
+        gpu_devices=gpu_devices,
     )
 
 
@@ -682,5 +686,4 @@ def _machine_preflight(root: Path) -> None:
             f"empty. Share it:\n  podman machine stop\n"
             f"  podman machine set --volume {root}\n  podman machine start"
         )
-
 

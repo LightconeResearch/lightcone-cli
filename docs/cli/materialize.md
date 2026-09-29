@@ -56,6 +56,13 @@ never touched, under any flag.
   already belong to a newer allocation), and confirm its recipes have
   stopped before cleaning results. Local containers may need separate
   termination through their runtime; see [execution limits](../user/cluster.md#execution-requirements-and-limits).
+- **Honors recipe resources.** CPU, memory, and GPU requests must fit one worker
+  and are reserved through standard Dask scheduling. GPU recipes run one at a
+  time per worker and see only their requested devices. Recipes without `gpus`
+  see none. The whole selected graph is checked
+  before preparation or submission. Recipe `time_limit` is unsupported and
+  refused; allocation walltime remains supported.
+  See [recipe resource requirements](../user/cluster.md#recipe-resource-requirements).
 - **Fetches what it needs.** Declared inputs whose annexed content is
   not in this clone are fetched before anything hashes.
 - **Commits as it goes.** Each output lands in its own commit, written

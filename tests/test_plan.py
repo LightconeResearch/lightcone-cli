@@ -122,6 +122,39 @@ def test_an_output_addresses_its_own_file(tmp_path: Path) -> None:
     assert "results/baseline/fit.json" in task.recipe
 
 
+def test_recipe_resources_survive_graph_resolution(tmp_path: Path) -> None:
+    spec = _SPEC.replace(
+        "command: python src/fit.py",
+        "resources: {cpus: 4, memory: 6Gi, time_limit: 1h30m}\n"
+        "      command: python src/fit.py",
+    )
+    graph = _build(_project(tmp_path, spec))
+    task = graph.tasks[("baseline", "fit")]
+    assert task.resources == {"cpus": 4, "memory": "6Gi", "time_limit": "1h30m"}
+    assert graph.tasks[("baseline", "report")].resources == {}
+
+
+@pytest.mark.parametrize(
+    ("declaration", "expected"),
+    [
+        ("gpus: 1", {"gpus": 1}),
+        ("disk: 10Gi", {"disk": "10Gi"}),
+        ("cpus: 0.5", {"cpus": 0.5}),
+        ("cpus: 0", {"cpus": 0}),
+        ("memory: null", {"memory": None}),
+    ],
+)
+def test_execution_support_does_not_limit_graph_construction(
+    tmp_path: Path, declaration: str, expected: dict[str, object],
+) -> None:
+    spec = _SPEC.replace(
+        "command: python src/fit.py",
+        f"resources: {{{declaration}}}\n      command: python src/fit.py",
+    )
+    task = _build(_project(tmp_path, spec)).tasks[("baseline", "fit")]
+    assert task.resources == expected
+
+
 def test_a_declared_input_resolves_to_its_source(tmp_path: Path) -> None:
     task = _build(_project(tmp_path)).tasks[("baseline", "fit")]
     assert task.inputs == {"catalog": tmp_path / "data" / "catalog.fits"}
@@ -274,8 +307,6 @@ def test_an_output_without_a_format_is_refused_by_name(tmp_path: Path) -> None:
 
 
 # ---- rendering a recipe ----------------------------------------------------
-
-
 
 
 

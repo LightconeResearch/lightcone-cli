@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, localcontext
 from typing import Annotated, Any, Literal, Protocol, Self
 from uuid import UUID
 
@@ -19,10 +19,12 @@ from pydantic import (
     Field,
     PlainSerializer,
     ValidationError,
+    model_serializer,
     model_validator,
 )
 
 from lightcone.engine.project import ProjectError
+from lightcone.engine.units import duration_seconds, whole_bytes
 
 GIB = 1024**3
 
@@ -43,25 +45,24 @@ class UnavailableOfferError(ComputeError):
 
 
 def duration(value: object) -> int:
-    """Parse an explicit positive whole-minute/hour duration into seconds."""
-    match = re.fullmatch(r"([1-9][0-9]*)([mh])", str(value))
-    if match is None:
-        raise ComputeError("duration must be a positive number of minutes or hours, e.g. 30m or 1h")
-    return int(match[1]) * (60 if match[2] == "m" else 3600)
+    """Parse an explicit positive duration into seconds."""
+    try:
+        return duration_seconds(value)
+    except ValueError as exc:
+        raise ComputeError(str(exc)) from exc
 
 
 def memory_bytes(value: object) -> int:
-    """Convert positive decimal GiB to an exact integer number of bytes."""
-    if isinstance(value, bool) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", str(value)):
-        raise ComputeError("memory must be a positive number of GiB")
+    """Parse SkyPilot compute memory: bare GiB or binary KB/MB/GB/TB/PB units."""
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([KMGTPE]I?B|B)?", str(value), re.IGNORECASE)
+    if isinstance(value, bool) or match is None:
+        raise ComputeError("memory must be positive GiB or a quantity with KB/MB/GB/TB/PB units")
+    unit = (match[2] or "GB").upper().replace("I", "")
+    units = {"B": 1, **{f"{prefix}B": 1024**index for index, prefix in enumerate("KMGTPE", 1)}}
     try:
-        numerator, denominator = Decimal(str(value)).as_integer_ratio()
-    except InvalidOperation as exc:
-        raise ComputeError("memory must be a positive number of GiB") from exc
-    amount, remainder = divmod(numerator * GIB, denominator)
-    if amount <= 0 or remainder:
-        raise ComputeError("memory must be positive GiB exactly representable in bytes")
-    return amount
+        return whole_bytes(match[1], units[unit])
+    except ValueError as exc:
+        raise ComputeError("memory must be positive GiB exactly representable in bytes") from exc
 
 
 def gib_from_bytes(value: int) -> Decimal:
@@ -124,10 +125,10 @@ def _gib(value: object) -> Decimal:
     # digits when applying the same quantity rules as the CLI.
     literal = format(value, "f") if isinstance(value, Decimal) else value
     try:
-        memory_bytes(literal)
+        size = memory_bytes(literal)
     except ComputeError as exc:
         raise ValueError(str(exc)) from exc
-    return Decimal(str(literal))
+    return gib_from_bytes(size)
 
 
 def _duration(value: str) -> str:
@@ -161,24 +162,76 @@ class ComputeModel(BaseModel):
         return type(self).model_validate({**self.model_dump(), **changes})
 
 
+class Accelerator(ComputeModel):
+    """One accelerator type and whole-device count, using SkyPilot's notation."""
+
+    name: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")]
+    count: PositiveInt = 1
+
+    @model_validator(mode="before")
+    @classmethod
+    def shorthand(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9_.-]*)(?::([1-9][0-9]*))?", value)
+            if match is None:
+                raise ValueError("accelerators must be NAME[:COUNT] with a positive whole count")
+            return {"name": match[1], "count": int(match[2] or 1)}
+        if isinstance(value, dict) and not ("name" in value and set(value) <= {"name", "count"}):
+            if len(value) != 1:
+                raise ValueError("accelerators must specify exactly one type and whole count")
+            name, count = next(iter(value.items()))
+            return {"name": name, "count": count}
+        return value
+
+    @model_serializer
+    def serialize(self) -> dict[str, int]:
+        """Use the same single-type mapping in native records and public output."""
+        return {self.name: self.count}
+
+    def matches(self, available: Accelerator | None) -> bool:
+        """Match exact counts and types; the generic GPU name accepts any type."""
+        return available is not None and self.count == available.count and (
+            self.name.casefold() == "gpu" or self.name.casefold() == available.name.casefold()
+        )
+
+
 class Resources(ComputeModel):
     """A per-node resource envelope with explicitly named memory units."""
 
     cpus: Count
     memory_gib: GiB = Field(validation_alias="memory", serialization_alias="memory")
+    accelerators: Accelerator | None = None
+
+    @property
+    def gpus(self) -> int:
+        return self.accelerators.count if self.accelerators is not None else 0
+
+    @property
+    def accelerator_name(self) -> str | None:
+        return self.accelerators.name if self.accelerators is not None else None
 
     @property
     def memory_bytes(self) -> int:
         return memory_bytes(format(self.memory_gib, "f"))
 
     @classmethod
-    def from_bytes(cls, *, cpus: int, memory_bytes: int) -> Self:
+    def from_bytes(
+        cls, *, cpus: int, memory_bytes: int, gpus: int = 0, accelerator_name: str = "GPU",
+    ) -> Self:
         """Represent native byte counts exactly, independently of Decimal precision."""
-        return cls(cpus=cpus, memory_gib=gib_from_bytes(memory_bytes))
+        if type(gpus) is not int or gpus < 0:
+            raise ValueError("gpus must be a nonnegative whole count")
+        return cls(
+            cpus=cpus, memory_gib=gib_from_bytes(memory_bytes),
+            accelerators=Accelerator(name=accelerator_name, count=gpus) if gpus else None,
+        )
 
-    def as_dict(self) -> dict[str, int | float]:
+    def as_dict(self) -> dict[str, Any]:
         """Render public memory in GiB."""
-        return {"cpus": self.cpus, "memory": self.memory_bytes / GIB}
+        return {
+            "cpus": self.cpus, "memory": self.memory_bytes / GIB,
+            "accelerators": self.accelerators.model_dump() if self.accelerators else None,
+        }
 
 
 class Request(ComputeModel):
@@ -186,11 +239,20 @@ class Request(ComputeModel):
 
     cpus: PositiveInt
     memory_bytes: PositiveInt
+    accelerators: Accelerator | None = None
     num_nodes: PositiveInt = 1
     min_cpus: bool = False
     min_memory: bool = False
     seconds: PositiveInt | None = None
     startup: Literal["fast"] | None = None
+
+    @property
+    def gpus(self) -> int:
+        return self.accelerators.count if self.accelerators is not None else 0
+
+    @property
+    def accelerator_name(self) -> str | None:
+        return self.accelerators.name if self.accelerators is not None else None
 
     @classmethod
     def parse(
@@ -198,6 +260,7 @@ class Request(ComputeModel):
         cpus: str,
         memory: str,
         *,
+        gpus: str = "0",
         num_nodes: int = 1,
         time: str | None = None,
         startup: str | None = None,
@@ -207,6 +270,7 @@ class Request(ComputeModel):
             return cls.model_validate({
                 "cpus": positive_int(cpus.removesuffix("+"), "cpus"),
                 "memory_bytes": memory_bytes(memory.removesuffix("+")),
+                "accelerators": None if gpus == "0" else gpus,
                 "num_nodes": positive_int(num_nodes, "num_nodes"),
                 "min_cpus": cpus.endswith("+"),
                 "min_memory": memory.endswith("+"),
@@ -223,6 +287,7 @@ class Request(ComputeModel):
             "resources": {
                 "cpus": f"{self.cpus}{'+' if self.min_cpus else ''}",
                 "memory": f"{gib_from_bytes(self.memory_bytes):f}{'+' if self.min_memory else ''}",
+                "accelerators": self.accelerators.model_dump() if self.accelerators else None,
             },
             "time_seconds": self.seconds,
             "startup": self.startup,

@@ -81,7 +81,21 @@ class OCIBackend:
         # host-layout collision `_write_roots` documents for direct mode.
         mounts = [f"--volume={path.resolve()}:{path}:ro" for path in policy.read]
         mounts += [f"--volume={path.resolve()}:{path}:rw" for path in policy.write]
-        overlay = [f"--env={k}={v}" for k, v in sorted(policy.env.items())]
+        devices = policy.env.get("CUDA_VISIBLE_DEVICES", "")
+        environment = dict(policy.env)
+        if not devices:
+            # CUDA images may default to all devices under an NVIDIA runtime.
+            environment["NVIDIA_VISIBLE_DEVICES"] = "void"
+        overlay = [f"--env={k}={v}" for k, v in sorted(environment.items())]
+        gpu_flags = []
+        if devices:
+            if self.runtime == "podman-hpc":
+                gpu_flags = ["--gpu"]
+            elif self.runtime == "docker":
+                # Docker parses this argument as CSV, including its quotes.
+                gpu_flags = ["--gpus", f'"device={devices}"']
+            else:
+                gpu_flags = [f"--device=nvidia.com/gpu={device}" for device in devices.split(",")]
         return [
             self.runtime, "run", "--rm",
             "--entrypoint", "",
@@ -97,6 +111,7 @@ class OCIBackend:
             # would rewrite the user's own file contexts on disk.
             "--security-opt", "label=disable",
             *self.user_flags,
+            *gpu_flags,
             *mounts,
             "--tmpfs", "/tmp:rw,exec",
             "--shm-size", "1g",

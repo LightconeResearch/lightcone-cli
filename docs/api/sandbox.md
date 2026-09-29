@@ -18,13 +18,25 @@ plus `lightcone/_sandbox_exec.py`, the Landlock shim.
 | `Capability` | What this host can do — `detect()`'s answer, the only `sys.platform` branch. |
 | `Attestation` | What was actually enforced, derived from the flags applied — never from what the matrix says should have happened. |
 | `Backend.wrap(policy, argv)` | The pure rewrite. `contains_prefix` declares whether the uv hop rides inside (a container is a world; a host mechanism trusts host plumbing). |
-| `exec_policy(...)` | The one policy: probe and recipe get the same thing. Building it is where the impurity lives (the per-run private `$HOME`); `scope()` owns its cleanup. |
+| `exec_policy(...)` | Shared policy builder with caller-supplied write scope and GPU UUIDs. Building it creates a private `$HOME`; `scope()` owns its cleanup. |
 | `Unavailable` | A real backend that wraps to the same argv and attests `fs: open`. Saying so is the caller's job; pretending is nobody's. |
 | `denial.explain()` / `denial.trailer()` | Best-guess remedies (allowed to return nothing) and the unconditional trailer on every nonzero sandboxed exit. |
 
 An optional output receiver gets stdout/stderr byte chunks. Capturing output never
 decodes or normalizes stdout; only the retained stderr tail is decoded for denial
 classification. Without a receiver, stdout remains inherited.
+
+`exec_policy(..., gpu_devices=...)` carries allocated CUDA UUIDs into the command's
+`CUDA_VISIBLE_DEVICES`, with an empty mask for CPU-only execution. Direct policies
+grant existing NVIDIA character device nodes only for GPU commands. Native
+permissions still apply; the CUDA mask controls cooperative visibility, not
+hostile-code device isolation. No worker-wide environment mutation is involved.
+
+The pure OCI rewrite requests UUIDs through Docker's `--gpus device=...`, Podman's
+`--device=nvidia.com/gpu=UUID`, or podman-hpc's `--gpu` plus the CUDA mask. CPU
+containers also set `NVIDIA_VISIBLE_DEVICES=void`, overriding GPU-enabled image
+defaults. Runtime prerequisites are documented under
+[GPU allocations](../user/cluster.md#gpu-allocations).
 
 ## What must stay true
 
