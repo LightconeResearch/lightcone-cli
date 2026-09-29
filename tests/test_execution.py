@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -52,9 +53,9 @@ def _wait_for_release(started: Path, release: Path) -> str:
     return "original"
 
 
-def _cooperate(started: Path, stopped: Path) -> None:
+def _cooperate(started: Path, stopped: Path, timeout: float = 5) -> None:
     started.touch()
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + timeout
     while not execution.cancelled():
         if time.monotonic() > deadline:
             raise AssertionError("task did not observe its invocation's cancellation")
@@ -394,9 +395,13 @@ def test_uncertain_cleanup_prevents_later_tasks_from_starting(
 def test_transient_heartbeat_and_monitor_failures_preserve_the_confirmed_lease(
     execution_client: Client, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(execution, "_LEASE", 0.4)
+    # A CI runner may pause for longer than the old 400 ms test lease. Keep
+    # actual lease renewal under test without mistaking that pause for an outage.
+    lease = 3.0
+    monkeypatch.setattr(execution, "_LEASE", lease)
     request = execution._rpc
     calls = {"heartbeat": 0, "active": 0}
+    recovered = {operation: threading.Event() for operation in calls}
 
     def fail_once(*args: Any, **kwargs: Any) -> Any:
         operation = args[2]
@@ -404,12 +409,17 @@ def test_transient_heartbeat_and_monitor_failures_preserve_the_confirmed_lease(
             calls[operation] += 1
             if calls[operation] == 1:
                 raise TimeoutError("temporary scheduler RPC failure")
-        return request(*args, **kwargs)
+        result = request(*args, **kwargs)
+        if operation in recovered and result:
+            recovered[operation].set()
+        return result
 
     monkeypatch.setattr(execution, "_rpc", fail_once)
     with execution.invocation(execution_client) as run:
-        future = run.submit(_stay_authorized, 0.8, key="recipe")
-        assert future.result(timeout=3) == "completed"
+        future = run.submit(_stay_authorized, 2 * lease, key="recipe")
+        for operation, event in recovered.items():
+            assert event.wait(timeout=10), f"{operation} did not recover after its failed RPC"
+        assert future.result(timeout=10) == "completed"
     assert calls["heartbeat"] > 2
     assert calls["active"] > 2
     assert run.stopped
@@ -418,23 +428,40 @@ def test_transient_heartbeat_and_monitor_failures_preserve_the_confirmed_lease(
 def test_unreachable_monitor_expires_its_last_grant_even_when_driver_heartbeats_continue(
     execution_client: Client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(execution, "_LEASE", 0.3)
+    monkeypatch.setattr(execution, "_LEASE", 3.0)
     request = execution._rpc
     failed_polls = 0
+    monitor_ready = threading.Event()
+    disconnected = threading.Event()
+    driver_renewed = threading.Event()
 
     def lose_monitor(*args: Any, **kwargs: Any) -> Any:
         nonlocal failed_polls
-        if args[2] == "active":
+        operation = args[2]
+        if operation == "active" and disconnected.is_set():
             failed_polls += 1
             raise TimeoutError("worker cannot reach scheduler")
-        return request(*args, **kwargs)
+        result = request(*args, **kwargs)
+        if operation == "active" and result:
+            monitor_ready.set()
+        if operation == "heartbeat" and disconnected.is_set() and result:
+            driver_renewed.set()
+        return result
 
     monkeypatch.setattr(execution, "_rpc", lose_monitor)
     started, stopped = tmp_path / "started", tmp_path / "stopped"
     with execution.invocation(execution_client) as run:
-        future = run.submit(_cooperate, started, stopped, key="recipe")
+        future = run.submit(_cooperate, started, stopped, 15, key="recipe")
+        _wait_for(started)
+        # Inject the partition only after startup and a confirmed worker grant.
+        assert monitor_ready.wait(timeout=10)
+        disconnected.set()
+        assert driver_renewed.wait(timeout=10)
         with pytest.raises(execution.ExecutionCancelled, match="cancelled"):
-            future.result(timeout=3)
+            future.result(timeout=10)
+        # The worker expired its own last grant while the scheduler still
+        # authorizes the invocation through successful driver heartbeats.
+        assert request(execution_client, run.id, "active") > 0
     assert failed_polls > 1  # A single failed RPC did not revoke valid authorization.
     assert stopped.exists()
 
