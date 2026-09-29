@@ -38,16 +38,32 @@ This project is driven by two CLIs — use them rather than improvising:
     - When a recipe fails, `lc materialize` reports which output failed
       and why; fix the script or the spec, commit, and re-run.
 
-Allocate compute before running commands or recipes. A fresh installation exposes
-a built-in local offer with no setup: `lc compute launch --cpus 1 --memory 1`.
-Add `--name analysis` to choose a name, or omit it to receive a generated short name.
-Replace `<cluster_id>` in these commands with the returned name or a full immutable
-ID from the launch or status JSON output (`--json`).
-Wait for readiness with `lc compute status <cluster_id> --wait`, then reuse the
-cluster with `run` and `materialize`; neither creates compute automatically.
-If the 30-minute allocation expires, launch another and use its new name.
-A configured catalog replaces the default offers; inspect `lc compute resources`
-if the request does not match.
+Allocate compute before running commands or recipes: `lc compute launch --wait`.
+With no CPU/memory flags, this starts a cluster named `local` using all detected
+usable CPUs and RAM on this machine and waits until it is ready. No configuration
+is needed. GPUs still require explicit offers. Add `--name analysis` to choose
+another name. Replace `<cluster_id>` in these commands with the returned name
+(normally `local`) or a full immutable ID from launch or status JSON (`--json`).
+Reuse the cluster with `run` and `materialize`; neither creates compute automatically.
+
+Only one local cluster can run per user on this machine, even with different names
+or catalogs. If one already exists, inspect `lc compute status` and reuse it rather
+than launching another. `lc compute status <cluster_id> --wait` waits for an
+existing cluster. Launch's `--wait` defaults to a 300-second readiness timeout;
+`--timeout SECONDS` overrides it. A waiting launch that fails reports the accepted
+cluster ID and leaves the allocation unchanged: inspect it before retrying.
+The default local lifetime is 30 minutes; `--time` overrides it up to two hours
+for the built-in offer. After expiry, launch again; the name `local` can be reused,
+but the immutable ID changes.
+
+Compute configuration is `~/.lightcone/compute.yaml`, or the file selected by
+`LC_COMPUTE_CONFIG`. Its `local.resources` mapping can override the built-in CPU/RAM
+budget (for example, `{cpus: 4, memory: 8GiB}`). Explicit local connections use
+their own offers instead. Remote offers otherwise coexist with the default local
+offer. If `local.enabled: false` is configured, respect that policy: local launch
+and execution are disabled. Inspect `lc compute resources` and supply both
+`--cpus` and `--memory` to select a configured remote allocation; `--wait` works
+there too. The no-resource shortcut never selects remote compute automatically.
 
 ## Recipe template grammar
 
