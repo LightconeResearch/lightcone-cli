@@ -127,21 +127,23 @@ Workers advertise standard Dask `CPU`, `MEMORY`, and `GPU` resources; memory is 
 in bytes. `engine.execution_resources.TaskResources` validates ASTRA's
 `recipe.resources` into whole CPUs, bytes, and a whole GPU count at
 execution admission. `plan.Task` preserves the ASTRA mapping so read-only
-classification does not impose executor restrictions. `requirements(workers)`
-checks that one worker can satisfy it and returns the resource dictionary used
-by `Client.submit`.
-An omitted memory request reserves the full homogeneous worker budget;
-`whole_worker=True` reserves CPU, memory, and GPUs for a probe. Recipe GPU counts
-default to zero; a GPU recipe reserves the full GPU budget of a fitting worker
+classification does not impose executor restrictions. `worker_capacities(workers)`
+normalizes advertised budgets once; `requirements(capacities)` checks that one
+worker can satisfy a task and returns its `Client.submit` resource dictionary.
+Omitted memory adds no `MEMORY` reservation. `whole_worker=True` reserves CPU,
+memory, and GPUs for a probe. Recipe GPU counts default to zero; a GPU recipe
+reserves the full GPU budget of a fitting worker
 and inherits its whole allocation mask. The requested count is a minimum, not a
 visibility limit. This serializes GPU recipes per worker without device assignment.
 Unsupported disk/type requests and fractional CPU/GPU counts fail before execution.
 
-The materialize scheduler validates every selected task before preparation or
-submission, preventing earlier tasks from starting before a later impossible
-request is discovered, then passes each task's reservation explicitly to
-submission. Allocation and task requests share byte conversion utilities; their
-models remain distinct because allocation selection supports minimum quantities
+The driver reuses the read-only classification walk before admission. Known
+current or unrefreshed behind outputs become `TaskResult` values, without Dask
+submission or resource reservations. Tasks that may execute, including dependents
+of potentially rebuilt outputs, have their resource requests validated before
+preparation. Workers recheck actual upstream digests and may still skip a reserved
+task if its inputs prove unchanged. Allocation and task requests share byte
+conversion utilities; their models remain distinct because allocation selection supports minimum quantities
 and node counts. Standard Dask scheduling accounts for
 concurrent CPU, memory, and GPU reservations; Dask execution-thread counts remain a
 separate concurrency cap. Reservations do not impose hard limits on recipe
@@ -150,7 +152,9 @@ preparation or execution; allocation walltime remains supported.
 
 Recipe memory remains ASTRA-style: `8Gi` is binary, `8GB` is decimal, and units
 are required. Allocation memory follows the compute convention above; keep the
-two parsers' contracts explicit even though they share exact byte arithmetic.
+two parsers' contracts explicit even though they share exact byte arithmetic in
+`units.py`. Allocation duration parsing stays in `compute.model.duration`, raising
+`ValueError` for Pydantic; `Request.parse` converts it to `ComputeError`.
 
 ## GPU allocation and visibility
 
@@ -167,8 +171,11 @@ custom Dask worker.
 The sandbox's `use_gpus` policy option inherits the worker's mask for GPU commands
 and supplies an empty mask for CPU commands, without modifying the reusable
 worker's environment. Direct GPU policies grant native NVIDIA character devices.
-Container GPU execution uses podman-hpc's `--gpu`; ordinary Docker and Podman GPU
-requests are refused. Native permissions and cgroups remain authoritative.
+Container GPU execution uses podman-hpc's `--gpu`. Explicit GPU recipes on ordinary
+Docker or Podman are refused before image preparation; probes use a CPU policy and
+report that GPU access is unavailable while retaining their whole-worker reservation.
+Native permissions and cgroups remain authoritative. NVIDIA devices, including UVM,
+must already exist; policy construction does not load drivers or create devices.
 See [GPU deployment requirements](../user/cluster.md#gpu-allocations).
 
 ## Execution output and teardown

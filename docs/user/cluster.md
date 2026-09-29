@@ -350,7 +350,10 @@ CUDA_VISIBLE_DEVICES=0 lc compute launch --cpus 4 --memory 8GB --gpus GPU:1
 Lightcone freezes the nonempty mask and `CUDA_DEVICE_ORDER`, if set, at launch.
 You are responsible for matching the catalog's count and model to those devices;
 Lightcone does not verify them. Local allocations do not reserve GPUs exclusively
-against other allocations or programs on the host.
+against other allocations or programs on the host. Before launch, the host must
+have loaded the NVIDIA driver and created its character devices, including UVM.
+Lightcone grants existing device nodes and does not initialize them; see
+[NVIDIA's device setup utility](https://github.com/NVIDIA/nvidia-modprobe/blob/main/nvidia-modprobe.1.m4).
 
 On Slurm, the offer's `config.gpu_type` maps its catalog label to a native GRES
 type. For example, add this offer with settings adjusted to your site:
@@ -382,10 +385,16 @@ permissions remain authoritative.
 
 Containerized GPU execution currently supports **podman-hpc** through its native
 `--gpu` option. See [NERSC's GPU container guidance](https://docs.nersc.gov/development/containers/podman-hpc/overview/#using-nvidia-gpus-in-podman-hpc).
-GPU requests with ordinary Docker or Podman are explicitly refused. CPU execution
-continues to support all three runtimes and sets `NVIDIA_VISIBLE_DEVICES=void` to
-override GPU-enabled image defaults. Physical GPU execution remains a deployment
+Recipes explicitly requesting GPUs with ordinary Docker or Podman are refused
+before image preparation. `lc run` probes on those runtimes remain usable on a
+GPU cluster: they run without GPUs and report that limitation. CPU execution
+supports all three runtimes and sets `NVIDIA_VISIBLE_DEVICES=void` to override
+GPU-enabled image defaults. Physical GPU execution remains a deployment
 validation step.
+
+A standalone GPU rerun needs a device mask in its own environment, for example
+`CUDA_VISIBLE_DEVICES=0 datalad rerun`. It does not inherit an old allocation's
+mask or reserve devices through Dask.
 
 ## Recipe resource requirements
 
@@ -408,9 +417,8 @@ limit how many CPUs a single recipe may request.
 
 CPUs must be positive whole numbers and default to one. Memory needs units:
 `512Mi` and `8Gi` are binary sizes; `8GB` is decimal, unlike compute memory.
-Bare quantities are not accepted. Without a memory
-declaration, a recipe reserves the worker's entire memory budget, so only
-one such recipe runs per worker.
+Bare quantities are not accepted. Without a memory declaration, no RAM is
+reserved: CPU requests and `task_slots_per_node` control concurrency.
 
 Recipe `gpus` is a nonnegative whole count, defaulting to zero; accelerator type
 selection belongs to cluster allocation. A GPU recipe reserves the worker's
@@ -419,17 +427,18 @@ requested count is a minimum capacity requirement: the command inherits the
 worker's whole allocated CUDA mask and may see more GPUs than requested. CPU
 recipes may still run alongside it when CPU, memory, and task slots permit; their
 CUDA mask is empty. `lc run` reserves the worker's entire CPU, memory, and GPU
-budgets and inherits that same allocation mask.
+budgets; direct and podman-hpc probes inherit that allocation mask.
 
 Recipe `time_limit` is not supported and is refused before preparation or
 execution. Set the allocation lifetime with `lc compute launch --time` instead.
 Fractional CPU/GPU counts, GPU model requests inside a recipe, and disk requests
 are also rejected rather than ignored.
 
-`lc materialize` validates the complete selected graph against the cluster
-before fetching inputs, preparing the environment, or starting a recipe. This
-also validates currently complete outputs, which workers may need to rebuild
-after an upstream change. Use `lc materialize --check` to inspect currency
+`lc materialize` first classifies the selected graph, then checks resources for
+outputs that may rebuild before preparation or submission. Already-current or
+unrefreshed behind outputs reserve nothing. Dependents of an output that may
+change still need resources; the worker may later skip them if the actual
+upstream digest is unchanged. Use `lc materialize --check` to inspect currency
 without allocation. Read-only `status` and `--check` accept valid ASTRA resource
 declarations even when this executor cannot satisfy them.
 
@@ -438,6 +447,14 @@ Recipes must respect their declarations; a subprocess can otherwise exceed
 its request. Slurm enforces the overall allocation, while local execution
 uses cooperative budgets. Leave capacity for the scheduler, workers, and other
 overhead when declaring recipe requirements.
+
+A CPU reservation does not set numerical-library thread counts. Local clusters
+use Dask's Nanny defaults of `1` for `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and
+`OPENBLAS_NUM_THREADS` when those variables are unset. Set the variables before
+`lc compute launch`, or in the recipe command, to choose another value. See
+[Dask's defaults](https://docs.dask.org/en/stable/configuration.html#distributed.nanny.pre-spawn-environ.OMP_NUM_THREADS)
+and [environment precedence](https://distributed.dask.org/en/stable/_modules/distributed/nanny.html).
+Slurm workers run directly without a Nanny and inherit the job's thread settings.
 
 ## Execution requirements and limits
 

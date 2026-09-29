@@ -22,7 +22,9 @@ retain direct terminal output. The driver submits each cluster task with its
 CPU, memory, and GPU reservations. Before resetting outputs, `execute` validates
 resource syntax and builds the command policy with GPU access enabled only when
 the recipe requests it. Standalone reruns apply the same checks but do not perform
-Dask resource admission. Recipe `time_limit` is explicitly refused.
+Dask resource admission. GPU reruns require an explicit `CUDA_VISIBLE_DEVICES` in
+the rerun environment, for example `CUDA_VISIBLE_DEVICES=0 datalad rerun`. Recipe
+`time_limit` is explicitly refused.
 
 ## Key symbols
 

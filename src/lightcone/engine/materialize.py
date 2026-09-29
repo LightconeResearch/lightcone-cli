@@ -6,10 +6,10 @@ The driver's three jobs, and the order matters.
 committed together with the code that produced it, so a run that began
 with uncommitted changes could not honestly say which code that was.
 
-**It hands the graph to Dask and gets out of the way.** Every task is
-submitted with its upstream futures as arguments, so the ordering, the
-parallelism, and the scheduling are Dask's — there is no ready-set loop
-here to get wrong.
+**It hands the work to Dask and gets out of the way.** Tasks that may run
+receive upstream futures or already-current results as arguments, so the
+ordering, parallelism, and scheduling are Dask's — there is no ready-set
+loop here to get wrong.
 
 **It owns git, alone.** Workers execute and return; the driver commits, in
 one thread, as results arrive. That is not a preference: concurrent git
@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
 from lightcone.engine import assets, container, dataset, identity, plan, project, worker
-from lightcone.engine.execution_resources import TaskResources
+from lightcone.engine.execution_resources import TaskResources, worker_capacities
 from lightcone.engine.plan import Graph, Key, Task
 from lightcone.engine.project import ProjectError
 
@@ -174,10 +174,31 @@ def _classified(
         first.
     """
     graph, env_version, _ = _graph(root, targets, report)
-    versions = assets.Versions()
-    would_run: set[Key] = set()
     unfetched: set[str] = set()
+    classified = _classify_graph(
+        root, graph, env_version, refresh=refresh,
+        versions=assets.Versions(), unfetched=unfetched,
+    )
+    if unfetched:
+        report.warnings.append(
+            "reported as out of date because their content is not in this "
+            f"clone, not because they changed: {', '.join(sorted(unfetched))}. "
+            "`lc materialize` fetches declared inputs before executing "
+            "recipes. Compute is required for outputs whose inputs cannot yet be checked."
+        )
+    return classified
 
+
+def _classify_graph(
+    root: Path, graph: Graph, env_version: str, *, refresh: bool,
+    versions: assets.Versions, unfetched: set[str],
+) -> list[tuple[Key, assets.Verdict, assets.Manifest | None, dataset.LastWrite | None]]:
+    """Predict which outputs may run, using the same walk for checks and admission.
+
+    Dependents of an output that may run are conservatively included: only the
+    worker can know whether rebuilding that input actually changed its bytes.
+    """
+    would_run: set[Key] = set()
     classified = []
     for key in graph.order():
         task = graph.tasks[key]
@@ -197,13 +218,6 @@ def _classified(
             would_run.add(key)
         classified.append((key, verdict, manifest, foreign))
 
-    if unfetched:
-        report.warnings.append(
-            "reported as out of date because their content is not in this "
-            f"clone, not because they changed: {', '.join(sorted(unfetched))}. "
-            "`lc materialize` fetches declared inputs before it decides "
-            "anything, so there this resolves itself."
-        )
     return classified
 
 
@@ -516,13 +530,22 @@ def materialize(
         # maintainer. Nothing is submitted, so no allocation is needed.
         _converge_crate(root, report, full, dsid)
         return report
+    versions = assets.Versions()
+    classified = _classify_graph(
+        root, graph, env_version, refresh=refresh, versions=versions, unfetched=set(),
+    )
     with cluster_for_run(cluster_id) as scheduler:
-        requirements = scheduler.validate(graph.tasks.values())
+        requirements = scheduler.validate(
+            graph.tasks[key] for key, verdict, _, _ in classified
+            if verdict.calls_for_a_remake(refresh=refresh)
+        )
         _fetch_inputs(root, graph, report)
         # Materialize is one of the two verbs allowed to build the image (the
         # other is `lc build`); the probe and the rerun entry point only find
         # one. Resolved once, then handed to every task — the HEAD discipline.
-        runtime = container.runtime_for_run(root, build=True)
+        runtime = container.runtime_for_run(
+            root, build=True, use_gpus=any(r.get("GPU", 0) for r in requirements.values()),
+        )
         # Converge the environment: workers pass `--no-sync`, so this is the
         # only place on a run's path where it is made to match the lock. (A
         # rerun does not come through here; its entry point converges too.)
@@ -533,7 +556,6 @@ def materialize(
         # because attestation is a fact about the run (and empty is an
         # answer, not a failure); one content-hash memo because a declared
         # input shared by several outputs is the same bytes every time.
-        versions = assets.Versions()
         for path in {
             path
             for task in graph.tasks.values()
@@ -552,40 +574,38 @@ def materialize(
             runtime=runtime,
             uv_version=project.uv_version(root),
         )
-        # The history question is the driver's to answer — workers have no
-        # git, by design — so each task is told up front whether its
-        # directory was last written by something other than its own run
-        # record. A foreign write contradicts the manifest, and a worker that
-        # trusted the recorded digest would skip the output forever. Guarded
-        # on the manifest's presence, as `_classified` is: without one the
-        # answer is dead — the output is remade regardless — and each ask is
-        # a git process.
-        foreign = {
-            key: _foreign_write(root, task) if task.manifest_path.is_file() else None
-            for key, task in graph.tasks.items()
-        }
         pending: dict[Key, Any] = {}
-        # Futures retain dependency ordering; task placement belongs to the
-        # selected cluster, while commits stay in this one driver thread.
-        for key in graph.order():
+        handles = []
+        # Current outputs are values, not Dask tasks: they need no allocation
+        # resources. Futures for everything that may run retain dependency order.
+        for key, verdict, manifest, foreign in classified:
             task = graph.tasks[key]
+            if not verdict.calls_for_a_remake(refresh=refresh):
+                assert manifest is not None and verdict.status != "stale"
+                result = worker.TaskResult(
+                    key, verdict.status, data_version=manifest.data_version, reason=verdict.why,
+                )
+                pending[key] = result
+                _consume(root, task, result, dsid, runtime, report)
+                continue
             pending[key] = scheduler.submit(
                 worker.materialize,
                 root,
                 task,
                 context,
                 refresh,
-                foreign[key],
+                foreign,
                 *[pending[dep] for dep in task.depends_on],
                 key=_name(key),
                 resources=requirements[key],
             )
+            handles.append(pending[key])
         from lightcone.engine.compute import UNSTOPPED
 
         # An unreported task can still have a running subprocess. Leave its
         # partial files in place on interruption rather than restoring over it.
-        outstanding = len(pending)
-        for result in scheduler.completed(list(pending.values())):
+        outstanding = len(handles)
+        for result in scheduler.completed(handles):
             outstanding -= 1
             try:
                 _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
@@ -690,10 +710,11 @@ class _Dask:
 
     def validate(self, tasks: Iterable[Task]) -> dict[Key, dict[str, float]]:
         """Require each selected task to fit a worker before any task starts."""
+        capacities = worker_capacities(self.workers)
         requests = {}
         for task in tasks:
             try:
-                requests[task.key] = TaskResources.parse(task.resources).requirements(self.workers)
+                requests[task.key] = TaskResources.parse(task.resources).requirements(capacities)
             except ProjectError as exc:
                 raise ProjectError(f"{_name(task.key)}: {exc}") from exc
         return requests
@@ -750,7 +771,7 @@ def cluster_for_run(cluster_id: str) -> Iterator[Scheduler]:
 
 
 def _fetch_inputs(root: Path, graph: Graph, report: MaterializeReport) -> None:
-    """Bring declared inputs' bytes into this clone before anything hashes.
+    """Bring declared inputs' bytes into this clone before workers hash or execute.
 
     lc fetches rather than telling anyone to — the storage invariant —
     and only here: ``--check`` and ``status`` are read-only verbs that

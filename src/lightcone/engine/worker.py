@@ -417,7 +417,9 @@ def main(argv: list[str]) -> int:
         # This one-task run resolves its own runtime and HEAD, because it
         # *is* the driver here — the rule is that each is read once by
         # whoever owns the run, not that a worker never reads them.
-        runtime = container.runtime_for_run(root, build=False)
+        runtime = container.runtime_for_run(
+            root, build=False, use_gpus=TaskResources.parse(task.resources).gpus > 0,
+        )
         container.converge(runtime)
         result = execute(
             root,

@@ -752,14 +752,20 @@ def test_discovery_preserves_allocations_with_unknown_native_resource_evidence(
 
 @pytest.mark.parametrize("native,expected,name", [
     ("TresPerNode=gres/gpu:4", 4, "GPU"),
+    ("TresPerNode=gres:gpu:4", 4, "GPU"),
+    ("TresPerNode=gpu:4", 4, "GPU"),
     ("TresPerNode=gres/gpu:a100:4", 4, "a100"),
+    ("TresPerNode=gres:gpu:a100:4", 4, "a100"),
     ("TresPerNode=gres/gpu:4090:2", 2, "4090"),
     ("TresPerNode=gres/gpu:a100:2,gres/gpu:v100:2", 4, "GPU"),
     ("Gres=gpu:a100:2", 2, "a100"),
     ("Gres=(null)", 0, None),
     ("ReqTRES=cpu=512,mem=960G,node=2", 0, None),
+    ("TRES=cpu=512,mem=960G,node=2", 0, None),
     ("ReqTRES=cpu=512,mem=960G,node=2,gres/gpu=8", None, None),
+    ("TRES=cpu=512,mem=960G,node=2,gres/gpu=8", None, None),
     ("TresPerNode=gres/gpu:unknown", None, None),
+    ("TresPerNode=gres:gpu:unknown TRES=cpu=512,mem=960G,node=2", None, None),
     ("TresPerNode=gres/gpu:a100/80gb:2", None, None),
     ("TresPerNode=gres/gpu:1.5", None, None),
     ("TresPerNode=gres/gpu:4,gres/gpu:a100:4", None, None),
@@ -1043,11 +1049,11 @@ def test_gpu_bootstrap_requires_native_capacity_without_probing_or_rewriting_the
     if valid:
         _, _, rank = slurm_bootstrap._allocation(args)
         assert rank == 0
-        assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
     else:
         with pytest.raises(ComputeError, match="GPUs"):
             slurm_bootstrap._allocation(args)
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "1,3"
+    assert os.environ["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
     probe.assert_not_called()
 
 
@@ -1079,6 +1085,7 @@ def test_gpu_worker_advertises_native_capacity_with_the_native_mask(
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("SLURM_GPUS_ON_NODE", "2")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,3")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
     connection = Connection(
         namespace=NAMESPACE, provider="slurm", launch={"connection_root": args.connection_root},
     )
@@ -1101,6 +1108,7 @@ def test_gpu_worker_advertises_native_capacity_with_the_native_mask(
         "CPU": 1, "MEMORY": args.memory_bytes, "GPU": 2,
     }
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "1,3"
+    assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
 
 
 def test_worker_rendezvous_has_a_finite_deadline(
@@ -1166,7 +1174,8 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
         )
     argv = [sys.executable, "-P", "-m", "lightcone.engine.compute.slurm_bootstrap"]
     for key, value in vars(args).items():
-        if value is not None:
+        # CPU-only submissions can omit the optional GPU count.
+        if value is not None and key != "gpus":
             argv += ["--" + key.replace("_", "-"), str(value)]
     connection = Connection(
         namespace=NAMESPACE, provider="slurm", launch={"connection_root": args.connection_root}

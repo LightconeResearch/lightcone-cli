@@ -25,10 +25,13 @@ driver's stderr, independently of success or failure, leaving stdout for the rep
 ## The run's order, and why
 
 1. **Read-only project checks before connecting** — tool, committer, dirty-tree,
-   spec and lock errors do not require a reachable cluster to report.
+   spec and lock errors do not require a reachable cluster to report. The shared
+   classification walk identifies outputs already current or left behind.
 2. **Explicit cluster before preparing the environment** — validate native
-   allocation identity, connect, and validate every selected task's CPU/memory/GPU
-   request before fetching inputs or building an image.
+   allocation identity, connect, and validate CPU/memory/GPU requests for tasks
+   that may execute. Known skips become values without resource reservations;
+   dependents of potentially rebuilt outputs still need admission. Explicit GPU
+   recipes must also have a supported runtime before any image build.
    The dirty refusal has already run: in
    containerized mode the converge can commit an image archive, and
    `dataset.save` commits the whole index; on a dirty tree the user's

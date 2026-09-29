@@ -19,12 +19,13 @@ from pydantic import (
     Field,
     PlainSerializer,
     ValidationError,
+    field_validator,
     model_serializer,
     model_validator,
 )
 
 from lightcone.engine.project import ProjectError
-from lightcone.engine.units import duration_seconds, whole_bytes
+from lightcone.engine.units import whole_bytes
 
 GIB = 1024**3
 
@@ -45,11 +46,15 @@ class UnavailableOfferError(ComputeError):
 
 
 def duration(value: object) -> int:
-    """Parse an explicit positive duration into seconds."""
-    try:
-        return duration_seconds(value)
-    except ValueError as exc:
-        raise ComputeError(str(exc)) from exc
+    """Parse ordered day/hour/minute/second components, raising ValueError."""
+    if not isinstance(value, str) or not (
+        match := re.fullmatch(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", value)
+    ):
+        raise ValueError("duration must use explicit units, e.g. 30m, 1h30m, or 45s")
+    seconds = sum(int(part or 0) * unit for part, unit in zip(match.groups(), (86400, 3600, 60, 1)))
+    if seconds <= 0:
+        raise ValueError("duration must be positive")
+    return seconds
 
 
 def memory_bytes(value: object) -> int:
@@ -132,10 +137,7 @@ def _gib(value: object) -> Decimal:
 
 
 def _duration(value: str) -> str:
-    try:
-        duration(value)
-    except ComputeError as exc:
-        raise ValueError(str(exc)) from exc
+    duration(value)
     return value
 
 
@@ -168,6 +170,13 @@ class Accelerator(ComputeModel):
     name: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")]
     count: PositiveInt = 1
 
+    @field_validator("name")
+    @classmethod
+    def unambiguous_name(cls, value: str) -> str:
+        if value in {"name", "count"}:
+            raise ValueError("accelerator names cannot be reserved fields 'name' or 'count'")
+        return value
+
     @model_validator(mode="before")
     @classmethod
     def shorthand(cls, value: Any) -> Any:
@@ -176,7 +185,7 @@ class Accelerator(ComputeModel):
             if match is None:
                 raise ValueError("accelerators must be NAME[:COUNT] with a positive whole count")
             return {"name": match[1], "count": int(match[2] or 1)}
-        if isinstance(value, dict) and not ("name" in value and set(value) <= {"name", "count"}):
+        if isinstance(value, dict) and not value.keys() & {"name", "count"}:
             if len(value) != 1:
                 raise ValueError("accelerators must specify exactly one type and whole count")
             name, count = next(iter(value.items()))
@@ -246,14 +255,6 @@ class Request(ComputeModel):
     seconds: PositiveInt | None = None
     startup: Literal["fast"] | None = None
 
-    @property
-    def gpus(self) -> int:
-        return self.accelerators.count if self.accelerators is not None else 0
-
-    @property
-    def accelerator_name(self) -> str | None:
-        return self.accelerators.name if self.accelerators is not None else None
-
     @classmethod
     def parse(
         cls,
@@ -279,6 +280,8 @@ class Request(ComputeModel):
             })
         except ValidationError as exc:
             raise ComputeError(f"invalid compute request:\n{validation_message(exc)}") from exc
+        except ValueError as exc:
+            raise ComputeError(str(exc)) from exc
 
     def as_dict(self) -> dict[str, Any]:
         """Render the request without native provider settings."""

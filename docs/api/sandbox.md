@@ -32,9 +32,10 @@ CUDA mask. Direct GPU policies grant existing NVIDIA character device nodes.
 Native permissions still apply; visibility is cooperative, and the reusable
 worker's environment is never modified.
 
-The pure OCI rewrite adds podman-hpc's `--gpu` for GPU commands. Ordinary Docker
-and Podman GPU execution is explicitly refused. CPU containers remain supported
-on all runtimes and set `NVIDIA_VISIBLE_DEVICES=void` to override image defaults.
+The pure OCI rewrite adds podman-hpc's `--gpu` for GPU commands. Runtime selection
+refuses explicit GPU recipes with ordinary Docker or Podman; probes on those
+runtimes receive a CPU policy and an explanatory note. CPU containers remain
+supported on all runtimes and set `NVIDIA_VISIBLE_DEVICES=void` to override image defaults.
 See [GPU allocations](../user/cluster.md#gpu-allocations).
 
 ## What must stay true

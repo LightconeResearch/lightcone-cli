@@ -268,7 +268,7 @@ def test_gpu_policy_refuses_a_missing_mask_before_creating_private_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-    with pytest.raises(ProjectError, match="nonempty allocation CUDA_VISIBLE_DEVICES"):
+    with pytest.raises(ProjectError, match="nonempty CUDA_VISIBLE_DEVICES"):
         policy_module.exec_policy(tmp_path, containerized=True, use_gpus=True)
     assert not (tmp_path / ".lightcone").exists()
 

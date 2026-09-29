@@ -1127,6 +1127,30 @@ def test_execution_only_resources_do_not_block_read_only_commands(
     assert not dataset.status(root)
 
 
+
+@pytest.mark.parametrize("runtime_name", ["docker", "podman"])
+def test_gpu_runtime_refusal_precedes_image_build_and_all_recipes(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, runtime_name: str,
+) -> None:
+    spec = _SPEC.replace("command: cat", "resources: {gpus: 1}\n      command: cat")
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    _resource_cluster(monkeypatch, gpus=1)
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text() + "\n[tool.lightcone.image]\napt-install = []\n")
+    dataset.save(root, [pyproject], "declare a container image")
+    monkeypatch.setattr(engine.container, "runtime_name", lambda _: runtime_name)
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("image preparation began for an unsupported GPU runtime")
+
+    monkeypatch.setattr(engine.container.image, "tag", unexpected)
+    before = dataset.head(root)
+    with pytest.raises(ProjectError, match="GPU containers require podman-hpc"):
+        engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert dataset.head(root) == before
+    assert not dataset.status(root)
+    assert not (root / "results/baseline/first.txt").exists()
+
 def test_empty_cluster_refuses_before_project_preparation(
     root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1144,6 +1168,7 @@ def test_empty_cluster_refuses_before_project_preparation(
 @pytest.mark.parametrize(
     ("resource_spec", "gpus", "expected_parallelism"),
     [
+        ("", 0, 4),
         ("cpus: 3, memory: 256Mi", 0, 1),
         ("cpus: 1, memory: 1Gi", 0, 2),
         ("cpus: 1, memory: 256Mi, gpus: 1", 2, 1),
@@ -1194,6 +1219,42 @@ def test_real_dask_respects_recipe_resource_reservations(
     assert peak == expected_parallelism
     assert not dataset.status(root)
 
+
+
+def test_current_gpu_output_needs_no_gpu_to_build_a_cpu_dependent(
+    analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _SPEC.replace("command: echo", "resources: {gpus: 1}\n      command: echo")
+    root = analysis(spec, universes={"baseline": _UNIVERSE})
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    _resource_cluster(monkeypatch, gpus=1)
+    assert engine.materialize(root, ["first"], cluster_id=CLUSTER_ID).made == ["baseline/first"]
+    original = (root / "results/baseline/.first.manifest.json").read_bytes()
+
+    _resource_cluster(monkeypatch)
+    report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
+    assert report.ok
+    assert report.current == ["baseline/first"]
+    assert report.made == ["baseline/second"]
+    assert (root / "results/baseline/.first.manifest.json").read_bytes() == original
+    assert not dataset.status(root)
+
+
+def test_current_outputs_are_not_submitted_to_dask(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine.materialize(root, [], cluster_id=CLUSTER_ID)
+
+    class NoExecution(_Inline):
+        def validate(self, tasks: Any) -> dict[Any, Any]:
+            assert not list(tasks)
+            return {}
+
+        def submit(self, *args: Any, **kwargs: Any) -> Any:
+            pytest.fail("a current output was submitted to Dask")
+
+    _cluster(monkeypatch, NoExecution())
+    assert len(engine.materialize(root, [], cluster_id=CLUSTER_ID).current) == 2
 
 def test_a_real_cluster_still_fits_through_the_seam(root: Path, cluster_id: str) -> None:
     """The one test that starts Dask. The seam is only worth having if the

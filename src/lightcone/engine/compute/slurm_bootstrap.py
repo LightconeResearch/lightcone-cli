@@ -68,8 +68,6 @@ def _allocation(args: argparse.Namespace) -> tuple[Identity, int, int]:
             raise ComputeError("native per-node GPUs do not match the allocation envelope")
         if not os.environ.get("CUDA_VISIBLE_DEVICES"):
             raise ComputeError("GPU allocations require a native CUDA_VISIBLE_DEVICES mask")
-        # Slurm/NVML numbers devices in PCI order; CUDA's default is different.
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     restarts = os.environ.get("SLURM_RESTART_COUNT", "0")
     if not restarts.isdigit():
         raise ComputeError("invalid native Slurm restart count")
@@ -85,7 +83,10 @@ async def run(args: argparse.Namespace) -> None:
     from distributed import Scheduler, Worker
 
     identity, restarts, rank = _allocation(args)
-    if not args.gpus:
+    if args.gpus:
+        # Slurm/NVML numbers devices in PCI order; CUDA's default is different.
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    else:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
     connection = Connection(
         namespace=identity.namespace, provider="slurm",
@@ -170,8 +171,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("submission", "namespace", "connection-root"):
         parser.add_argument(f"--{name}", required=True)
-    for name in ("num-nodes", "cpus", "memory-bytes", "gpus", "task-slots"):
+    for name in ("num-nodes", "cpus", "memory-bytes", "task-slots"):
         parser.add_argument(f"--{name}", required=True, type=int)
+    parser.add_argument("--gpus", default=0, type=int)
     parser.add_argument("--scratch-root")
     parser.add_argument("--interface")
     args = parser.parse_args()

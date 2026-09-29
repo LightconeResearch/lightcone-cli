@@ -31,9 +31,14 @@ from lightcone.engine.sandbox.model import Attestation, Capability, Policy
 OCIRuntime = Literal["podman", "docker", "podman-hpc"]
 
 
+def supports_gpus(runtime: str) -> bool:
+    """Whether the runtime can preserve the native allocation's GPU assignment."""
+    return runtime == "podman-hpc"
+
+
 def require_gpu_runtime(runtime: str) -> None:
     """Refuse runtimes that need device translation outside the native allocation."""
-    if runtime != "podman-hpc":
+    if not supports_gpus(runtime):
         raise ProjectError(
             "GPU containers require podman-hpc; Docker/Podman GPUs are not supported"
         )

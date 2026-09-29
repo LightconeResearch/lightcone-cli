@@ -399,6 +399,12 @@ def test_accelerator_alternatives_are_not_silently_treated_as_capacity(value: ob
         Resources.model_validate({"cpus": 1, "memory": 1, "accelerators": value})
 
 
+@pytest.mark.parametrize("value", [{"count": 2}, {"name": 2}, "count:2", "name:2"])
+def test_accelerator_field_names_are_not_misread_as_device_types(value: object) -> None:
+    with pytest.raises(ValidationError):
+        Resources.model_validate({"cpus": 1, "memory": 1, "accelerators": value})
+
+
 @pytest.mark.parametrize("count", [-1, 0, True, 0.5, "1", None])
 def test_accelerator_envelopes_require_positive_integer_counts(count: object) -> None:
     with pytest.raises(ValidationError):
@@ -419,10 +425,10 @@ def test_accelerator_types_and_counts_survive_native_and_request_roundtrips() ->
     assert Resources.model_validate_json(resource.model_dump_json(by_alias=True)) == resource
     assert resource.replace(cpus=4).accelerators == Accelerator(name="A100", count=4)
     request = Request.parse("8", "16", gpus="A100:2")
-    assert request.gpus == 2 and request.accelerator_name == "A100"
+    assert request.accelerators == Accelerator(name="A100", count=2)
     assert request.as_dict()["resources"]["accelerators"] == {"A100": 2}
-    assert Request.parse("8", "16", gpus="A100").gpus == 1
-    assert Request.parse("8", "16").gpus == 0
+    assert Request.parse("8", "16", gpus="A100").accelerators == Accelerator(name="A100", count=1)
+    assert Request.parse("8", "16").accelerators is None
 
 
 def test_numeric_native_accelerator_names_remain_types() -> None:
@@ -509,8 +515,12 @@ def test_allocation_durations_accept_compound_units(value: str, seconds: int) ->
 
 @pytest.mark.parametrize("value", ["", "0s", "1.5h", "30m1h", "1h30", 60, True])
 def test_allocation_duration_refuses_ambiguous_or_zero_values(value: object) -> None:
-    with pytest.raises(ComputeError):
+    with pytest.raises(ValueError):
         duration(value)
+    with pytest.raises(ValidationError):
+        TimeLimits(default=value, max="3d")
+    with pytest.raises(ComputeError):
+        Request.parse("1", "1", time=value)
 
 
 @pytest.mark.parametrize("size", [1, GIB // 2, 8 * GIB, 2**80 + 1])

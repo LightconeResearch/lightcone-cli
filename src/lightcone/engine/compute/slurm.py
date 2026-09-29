@@ -102,15 +102,17 @@ def _value(value: object, name: str) -> str:
 
 def _native_gpus(row: Mapping[str, str]) -> tuple[str, int] | None:
     """Read a per-node GPU count, never divide an aggregate into invented grants."""
-    for field, prefix in (("TresPerNode", "gres/"), ("Gres", "")):
+    for field in ("TresPerNode", "Gres"):
         value = row.get(field, "")
         counts = []
         names = set()
         for entry in value.split(","):
-            if not entry.startswith(f"{prefix}gpu"):
+            if field == "TresPerNode":
+                entry = entry.removeprefix("gres/").removeprefix("gres:")
+            if not entry.startswith("gpu"):
                 continue
             match = re.fullmatch(
-                rf"{prefix}gpu(?::([A-Za-z0-9][A-Za-z0-9_.-]*))?[:=]([0-9]+)", entry,
+                r"gpu(?::([A-Za-z0-9][A-Za-z0-9_.-]*))?[:=]([0-9]+)", entry,
             )
             if match is None:
                 return None
@@ -124,7 +126,7 @@ def _native_gpus(row: Mapping[str, str]) -> tuple[str, int] | None:
             return "GPU", 0
     # Complete native TRES with no GPU entry proves a CPU-only job. An
     # aggregate GPU total does not prove a homogeneous per-node allocation.
-    for field in ("ReqTRES", "AllocTRES"):
+    for field in ("ReqTRES", "AllocTRES", "TRES"):
         value = row.get(field, "")
         if value and value not in {"(null)", "N/A"}:
             entries = value.split(",")

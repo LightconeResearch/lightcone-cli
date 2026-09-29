@@ -40,8 +40,9 @@ lc materialize "$CLUSTER"
   │  refuse: dirty tree
   │  plan: astra validate + resolve  →  Graph of Tasks
   │        (no tasks → converge the crate and stop; nothing connects)
+  │  classify: current/behind outputs become values; other outputs may run
   │  connect: native identity + Dask readiness
-  │  admit: each task's CPU, memory, and GPU request fits a worker
+  │  admit: resource requests for outputs that may run fit a worker
   │  fetch: git annex get (declared inputs not in this clone)
   │  converge: uv.lock ⇄ .venv   (and the image, containerized)
   ├─► workers: reset output file → sandbox → recipe → hash → manifest
@@ -58,20 +59,22 @@ The division of labor is strict and load-bearing:
   `TaskResult`; the driver commits as results arrive, in one thread.
   Concurrent git operations race on the index lock — this split is not
   a preference.
-- **Dask owns the ordering.** Every task is submitted with its
-  upstream futures as arguments; there is no ready-set loop or
+- **Dask owns the ordering.** Tasks that may execute are submitted with their
+  upstream futures or already-current values as arguments; there is no ready-set loop or
   hand-rolled topological sort on the execution path.
 - **The worker never raises.** A recipe failure, a gate failure, an
   unreadable manifest — all come back as a state, so one failure
   doesn't abort every task in flight, and a run reports *all* its
   independent failures.
 - **Dask accounts for task resources.** Workers advertise CPU, memory, and GPU
-  budgets; submissions reserve the recipe's requirements. CPU and memory
-  reservations coordinate scheduling rather than imposing per-recipe OS limits.
+  budgets; submissions reserve the recipe's requirements. Omitted memory adds no
+  RAM reservation. These coordinate scheduling rather than imposing per-recipe
+  OS limits or numerical-library thread counts.
   Recipe `time_limit` is explicitly refused; allocation walltime remains supported.
   A GPU recipe reserves the worker's full GPU budget and inherits its allocation
   mask, even when it requests fewer GPUs. CPU recipes expose none; probes reserve
-  the whole worker budget and inherit the allocation mask.
+  the whole worker budget. Direct and podman-hpc probes use the allocation mask,
+  while ordinary Docker and Podman probes use no GPUs.
 - **Values are resolved once and handed down.** HEAD, the container
   runtime, and the foreign-write facts are read by the driver and
   passed to workers as values — a worker that asked git itself could
@@ -145,8 +148,8 @@ records what was *actually* enforced — never what should have been.
 
 There is one policy builder, `exec_policy`: probes and recipes share environment
 and filesystem rules, with write scope and GPU visibility supplied by the caller.
-GPU recipes and probes inherit the worker's allocation mask; CPU commands get an
-empty mask.
+GPU recipes and supported probes inherit the worker's allocation mask; CPU
+commands get an empty mask.
 
 ## The container hatch
 

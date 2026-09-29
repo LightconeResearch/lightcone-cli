@@ -36,8 +36,8 @@ Source: `src/lightcone/engine/plan.py`.
   mapping. A valid declaration remains readable by `status` and
   `materialize --check` even when this executor cannot honor it. Execution
   validates supported requirements through `TaskResources.parse` and checks
-  cluster capacity before materialize prepares the project or submits any
-  task. No worker placement or executor-specific resource validation belongs
+  cluster capacity for tasks that may execute before preparing the project.
+  Already-current outputs need no resource admission. No worker placement or executor-specific resource validation belongs
   in this module.
 - **The layout is flat and path-addressed.**
   `results/<universe>/<id>.<format>`, and the path in a

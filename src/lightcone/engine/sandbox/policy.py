@@ -236,7 +236,11 @@ def exec_policy(
     """
     gpu_mask = os.environ.get("CUDA_VISIBLE_DEVICES", "") if use_gpus else ""
     if use_gpus and not gpu_mask:
-        raise ProjectError("GPU execution requires a nonempty allocation CUDA_VISIBLE_DEVICES mask")
+        raise ProjectError(
+            "GPU execution requires a nonempty CUDA_VISIBLE_DEVICES mask. "
+            "Slurm sets it for GPU jobs; for a local rerun, select your devices explicitly, "
+            "for example: CUDA_VISIBLE_DEVICES=0 datalad rerun"
+        )
     env_dir = env_dir if env_dir is not None else project / ".venv"
     # The containerized HOME lives under the project's own (gitignored)
     # `.lightcone/`, not the system temp dir: it is a mount source, and

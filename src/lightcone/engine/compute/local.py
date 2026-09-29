@@ -252,6 +252,8 @@ class LocalProvider:
             raise ComputeError("the private locator does not match this local allocation identity")
         positive_int(record.get("cpus"), "recorded local cpus")
         positive_int(record.get("memory"), "recorded local memory")
+        record.setdefault("gpus", 0)
+        record.setdefault("accelerator_name", "GPU")
         if type(record.get("gpus")) is not int or record["gpus"] < 0:
             raise ComputeError("recorded local gpus must be a nonnegative integer")
         if not isinstance(record.get("accelerator_name"), str) or not record["accelerator_name"]:

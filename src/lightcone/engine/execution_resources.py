@@ -69,17 +69,17 @@ class TaskResources(BaseModel):
             raise ProjectError(f"invalid recipe resources: {detail}") from exc
 
     def requirements(
-        self, workers: dict[str, Any], *, whole_worker: bool = False
+        self, capacities: set[tuple[float, float, float]], *, whole_worker: bool = False
     ) -> dict[str, float]:
         """Choose Dask resource reservations that fit an individual worker.
 
         Args:
-            workers: The ``workers`` mapping from Dask's scheduler information.
+            capacities: Validated worker budgets from :func:`worker_capacities`.
             whole_worker: Reserve a worker's entire CPU, memory, and GPU budget for
                 an arbitrary command without declared resource requirements.
 
         Returns:
-            Dask's numeric ``CPU``, ``MEMORY``, and optional ``GPU`` reservations.
+            Dask's numeric ``CPU`` and optional ``MEMORY`` and ``GPU`` reservations.
             GPU recipes reserve the worker's full GPU budget, so only one GPU
             recipe uses that worker's native device mask at a time. The requested
             count is a minimum capacity, not a per-command visibility limit.
@@ -88,55 +88,29 @@ class TaskResources(BaseModel):
             ProjectError: Capacity is unknown, a request cannot fit, or an
                 unspecified budget is ambiguous across heterogeneous workers.
         """
-        capacities: set[tuple[float, float, float]] = set()
-        for info in workers.values():
-            resources = info.get("resources", {}) if isinstance(info, dict) else {}
-            values = []
-            for name in ("CPU", "MEMORY", "GPU"):
-                value = (
-                    resources.get(name, 0 if name == "GPU" else None)
-                    if isinstance(resources, dict) else None
-                )
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not math.isfinite(value)
-                    or (value < 0 if name == "GPU" else value <= 0)
-                    or not float(value).is_integer()
-                ):
-                    raise ProjectError(
-                        "cluster workers must advertise positive whole CPU and MEMORY budgets "
-                        "and a nonnegative whole GPU count; "
-                        "relaunch the cluster with the current Lightcone installation"
-                    )
-                values.append(float(value))
-            capacities.add((values[0], values[1], values[2]))
-        if not capacities:
-            raise ProjectError("cluster has no workers available for execution")
         if (
-            (whole_worker or self.memory_bytes is None)
+            whole_worker
             and len({(cpus, memory) for cpus, memory, _ in capacities}) != 1
         ):
             raise ProjectError(
-                "unspecified task resources require workers with identical CPU and memory budgets"
+                "whole-worker probes require workers with identical CPU and memory budgets"
             )
         available_cpus, available_memory, _ = next(iter(capacities))
-        requested = {
-            "CPU": available_cpus if whole_worker else float(self.cpus),
-            "MEMORY": (
-                available_memory
-                if whole_worker or self.memory_bytes is None
-                else float(self.memory_bytes)
-            ),
-        }
+        requested = {"CPU": available_cpus if whole_worker else float(self.cpus)}
+        if whole_worker:
+            requested["MEMORY"] = available_memory
+        elif self.memory_bytes is not None:
+            requested["MEMORY"] = float(self.memory_bytes)
         matches = {
             gpus for cpus, memory, gpus in capacities
-            if cpus >= requested["CPU"] and memory >= requested["MEMORY"] and gpus >= self.gpus
+            if cpus >= requested["CPU"]
+            and memory >= requested.get("MEMORY", 0)
+            and gpus >= self.gpus
         }
         if not matches:
             raise ProjectError(
                 f"task needs {requested['CPU']:g} CPUs and "
-                f"{requested['MEMORY'] / 1024**3:g} GiB and {self.gpus} GPUs on one worker; "
+                f"{requested.get('MEMORY', 0) / 1024**3:g} GiB and {self.gpus} GPUs on one worker; "
                 "no worker in this cluster can satisfy that request"
             )
         if self.gpus or whole_worker:
@@ -147,6 +121,40 @@ class TaskResources(BaseModel):
             if gpus := next(iter(matches)):
                 requested["GPU"] = gpus
         return requested
+
+
+def worker_capacities(workers: dict[str, Any]) -> set[tuple[float, float, float]]:
+    """Read distinct CPU, memory and GPU budgets once from scheduler information.
+
+    Raises:
+        ProjectError: No workers are available or their resource budgets are invalid.
+    """
+    capacities: set[tuple[float, float, float]] = set()
+    for info in workers.values():
+        resources = info.get("resources", {}) if isinstance(info, dict) else {}
+        values = []
+        for name in ("CPU", "MEMORY", "GPU"):
+            value = (
+                resources.get(name, 0 if name == "GPU" else None)
+                if isinstance(resources, dict) else None
+            )
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or (value < 0 if name == "GPU" else value <= 0)
+                or not float(value).is_integer()
+            ):
+                raise ProjectError(
+                    "cluster workers must advertise positive whole CPU and MEMORY budgets "
+                    "and a nonnegative whole GPU count; "
+                    "relaunch the cluster with the current Lightcone installation"
+                )
+            values.append(float(value))
+        capacities.add((values[0], values[1], values[2]))
+    if not capacities:
+        raise ProjectError("cluster has no workers available for execution")
+    return capacities
 
 
 def _memory(value: object) -> int:

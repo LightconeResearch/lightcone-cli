@@ -55,7 +55,7 @@ def main() -> None:
 
         security = create_security(directory)
         allocation = read_private_json(directory / "identity.json")
-        gpus = int(allocation["gpus"])
+        gpus = int(allocation.get("gpus", 0))
         if not gpus:
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
         with dask.config.set(SCHEDULER_CONFIG), LocalCluster(  # type: ignore[no-untyped-call]

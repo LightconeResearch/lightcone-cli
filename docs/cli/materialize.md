@@ -20,8 +20,8 @@ cluster that is not active with every expected worker connected is refused
 cluster. Project validation and the dirty-tree check run before connecting to
 compute. A run whose spec selects no outputs still takes the CLUSTER argument
 but never connects to it: it only updates the publication view. A run whose
-outputs are all current does connect, because each output's state is decided
-on the cluster.
+outputs are all current still validates the cluster connection, but submits no
+Dask tasks and reserves no recipe resources.
 
 With no targets, everything the spec declares, across every universe.
 A target narrows the run to an output and whatever it depends on:
@@ -59,12 +59,13 @@ never touched, under any flag.
 - **Honors recipe resources.** CPU, memory, and GPU requests must fit one worker
   and are reserved through standard Dask scheduling. GPU recipes run one at a
   time per worker and inherit the whole allocation's CUDA mask, which may expose
-  more GPUs than requested. Recipes without `gpus` see none. The whole selected
-  graph is checked before preparation or submission. Recipe `time_limit` is
-  unsupported and refused; allocation walltime remains supported.
+  more GPUs than requested. Recipes without `gpus` see none. Resource checks apply
+  to outputs that may rebuild; already-current outputs need no reservation.
+  Omitted memory reserves no RAM, so CPU requests and task slots control concurrency.
+  Recipe `time_limit` is unsupported and refused; allocation walltime remains supported.
   See [recipe resource requirements](../user/cluster.md#recipe-resource-requirements).
 - **Fetches what it needs.** Declared inputs whose annexed content is
-  not in this clone are fetched before anything hashes.
+  not in this clone are fetched before workers hash or execute.
 - **Commits as it goes.** Each output lands in its own commit, written
   by the driver in one thread while other recipes keep running.
 - **Forwards recipe diagnostics.** Recipe stdout and stderr reach the invoking

@@ -21,7 +21,7 @@ from typing import Any
 from uuid import uuid4
 
 from lightcone.engine import container, sandbox
-from lightcone.engine.execution_resources import TaskResources
+from lightcone.engine.execution_resources import TaskResources, worker_capacities
 from lightcone.engine.project import (
     SPEC_FILENAME,
     ProjectError,
@@ -53,15 +53,20 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
     paths = input_paths(project, read_spec(project))
     with compute.connect(cluster_id) as client:
         resources = TaskResources().requirements(
-            client.scheduler_info()["workers"], whole_worker=True,
+            worker_capacities(client.scheduler_info()["workers"]), whole_worker=True,
         )
         runtime = container.runtime_for_run(project, build=False)
         notes = [f"uv: {warning}" for warning in container.converge(runtime)]
+        use_gpus = resources.get("GPU", 0) > 0 and runtime.supports_gpus
+        if resources.get("GPU", 0) > 0 and not use_gpus:
+            notes.append(
+                f"GPU access is not supported by {runtime.runtime}; this probe runs without GPUs"
+            )
         invocation = uuid4().hex
         with forwarding(client) as output:
             future = client.submit(
                 call, _probe, output.topic, "probe", runtime, paths, tuple(command),
-                resources.get("GPU", 0) > 0,
+                use_gpus,
                 key=f"lc-{invocation}-probe", pure=False, resources=resources,
             )
             try:

@@ -226,6 +226,51 @@ with connect(sys.argv[2]) as client:
     assert Compute().discover() == ([], {})
 
 
+def test_cpu_allocation_without_gpu_fields_remains_discoverable_and_stoppable(
+    provider: LocalProvider,
+) -> None:
+    identity = _launch(provider)
+    try:
+        _ready(provider, identity)
+        path = provider.root / identity.token / "identity.json"
+        record = read_private_json(path)
+        del record["gpus"], record["accelerator_name"]
+        write_private_json(path, record)
+
+        snapshot, = provider.discover()
+        assert snapshot.identity == identity
+        assert snapshot.resources is not None
+        assert snapshot.resources.gpus == 0
+        assert snapshot.resources.accelerator_name is None
+        with provider.connect(identity) as client:
+            assert client.submit(sum, [1, 2]).result(timeout=5) == 3
+    finally:
+        provider.terminate(identity)
+    _ended(provider, identity)
+
+
+@pytest.mark.parametrize("threads", [None, "2"])
+def test_local_workers_keep_native_dask_thread_defaults_and_launch_overrides(
+    provider: LocalProvider, monkeypatch: pytest.MonkeyPatch, threads: str | None,
+) -> None:
+    names = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")
+    for name in names:
+        if threads is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, threads)
+    identity = _launch(provider)
+    try:
+        _ready(provider, identity)
+        with provider.connect(identity) as client:
+            actual = client.submit(lambda: {name: os.environ.get(name) for name in names}).result(
+                timeout=5,
+            )
+        assert actual == dict.fromkeys(names, threads or "1")
+    finally:
+        provider.terminate(identity)
+
+
 def test_named_local_allocation_is_discovered_and_name_can_be_reused_after_down(
     provider: LocalProvider, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -920,9 +965,9 @@ def test_local_gpu_offers_are_unavailable_outside_linux(
         provider.plan(offer, Request.parse("1", "0.5", gpus="GPU:1"))
 
 
-@pytest.mark.parametrize("gpus", [0, 2])
+@pytest.mark.parametrize("gpus", [None, 0, 2])
 def test_local_runtime_advertises_configured_resources_and_preserves_native_gpu_mask(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gpus: int,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gpus: int | None,
 ) -> None:
     import distributed
 
@@ -932,7 +977,10 @@ def test_local_runtime_advertises_configured_resources_and_preserves_native_gpu_
         "identity": "allocation", "deadline": time.monotonic() + 60,
         "task_slots": 1, "scratch": str(scratch),
     })
-    write_private_json(directory / "identity.json", {"cpus": 1, "memory": 1024**3, "gpus": gpus})
+    record = {"cpus": 1, "memory": 1024**3}
+    if gpus is not None:
+        record["gpus"] = gpus
+    write_private_json(directory / "identity.json", record)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,1")
     monkeypatch.setattr(sys, "argv", ["local_runtime", str(directory)])
     monkeypatch.setattr(os, "getsid", lambda _: os.getpid())
@@ -950,5 +998,5 @@ def test_local_runtime_advertises_configured_resources_and_preserves_native_gpu_
     monkeypatch.setattr(distributed, "LocalCluster", cluster)
 
     local_runtime.main()
-    assert cluster.call_args.kwargs["resources"] == {"CPU": 1, "MEMORY": 1024**3, "GPU": gpus}
+    assert cluster.call_args.kwargs["resources"] == {"CPU": 1, "MEMORY": 1024**3, "GPU": gpus or 0}
     assert os.environ["CUDA_VISIBLE_DEVICES"] == ("3,1" if gpus else "")
