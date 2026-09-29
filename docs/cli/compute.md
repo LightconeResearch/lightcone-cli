@@ -15,10 +15,9 @@ Without configuration, `resources` exposes a built-in `local` offer: one CPU,
 1 GiB, one node, fast startup, and a 30-minute default lifetime (two-hour maximum).
 Launch it with `lc compute launch --cpus 1 --memory 1`; execution still requires
 the returned cluster name or its full immutable ID.
-On Linux, visible NVIDIA GPUs also produce local GPU offers, grouped by model.
-Use the accelerator names and counts shown by `resources`, or `GPU:N` to request
-any model with exactly N GPUs per node. GPU discovery failure leaves the CPU
-offer available.
+GPU offers require an explicit catalog. On Linux, local GPU launches also require
+an externally configured `CUDA_VISIBLE_DEVICES` mask; Lightcone does not discover
+GPU hardware. See [GPU allocations](../user/cluster.md#gpu-allocations).
 
 `~/.lightcone/compute.yaml`, when present, replaces this built-in catalog.
 `LC_COMPUTE_CONFIG` selects another file for both compute and execution commands,
@@ -66,7 +65,7 @@ all mean 16 GiB; `16GB+` permits a larger offer.
 `--gpus A100` means one, `--gpus GPU:4` accepts any GPU model, and the default
 `--gpus 0` selects CPU-only offers. Names match case-insensitively. GPU counts
 are positive whole numbers, with no `+` or fractional form. Lightcone does not
-maintain SkyPilot's accelerator alias registry: copy local model names from
+maintain SkyPilot's accelerator alias registry: use the labels configured in
 `resources` or use `GPU:N`. Catalog shapes use `accelerators: A100:4` or
 `accelerators: {A100: 4}`. See [GPU allocations](../user/cluster.md#gpu-allocations).
 

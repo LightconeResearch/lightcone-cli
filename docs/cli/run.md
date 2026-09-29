@@ -40,8 +40,8 @@ command, for example `lc run "$CLUSTER" -- env NAME=value python script.py`.
 Containerized commands use the image's environment and the sandbox overlays.
 
 The command reserves one worker's full CPU, memory, and GPU budgets for its duration.
-Its CUDA mask exposes only the reserved devices; a CPU-only allocation exposes
-none, even on a host with GPUs. A recipe instead declares its GPU count explicitly.
+It inherits the allocation's whole CUDA mask; a CPU-only allocation exposes none,
+even on a host with GPUs. A recipe declares its minimum GPU count explicitly.
 See [GPU allocations](../user/cluster.md#gpu-allocations) for container prerequisites.
 
 Interrupting the CLI detaches its client; the remote command may still be running.

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox import policy as policy_module
 from lightcone.engine.sandbox.boundary import scope
 from lightcone.engine.sandbox.model import EXEC_ALLOWLIST_VERSION
@@ -239,26 +240,47 @@ def test_the_entropy_sources_stay_read_only(built: policy_module.Policy) -> None
 
 
 @pytest.mark.parametrize("containerized", [False, True])
-@pytest.mark.parametrize("devices", [(), ("GPU-first", "GPU-second")])
+@pytest.mark.parametrize("use_gpus", [False, True])
 def test_gpu_policy_sets_command_visibility_without_changing_the_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    containerized: bool, devices: tuple[str, ...],
+    containerized: bool, use_gpus: bool,
 ) -> None:
-    from lightcone.engine import gpu
-
     project = tmp_path / "project"
     project.mkdir()
     device = tmp_path / "nvidia0"
     device.touch()
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "native-allocation")
-    monkeypatch.setattr(gpu, "device_paths", lambda: (device,))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,0")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    monkeypatch.setattr(policy_module, "_gpu_device_paths", lambda: (device,))
     with scope(policy_module.exec_policy(
-        project, containerized=containerized, gpu_devices=devices,
+        project, containerized=containerized, use_gpus=use_gpus,
     )) as built:
-        assert built.env["CUDA_VISIBLE_DEVICES"] == ",".join(devices)
-        assert (device in built.write) == (bool(devices) and not containerized)
+        assert built.env["CUDA_VISIBLE_DEVICES"] == ("2,0" if use_gpus else "")
+        if use_gpus:
+            assert built.env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+        assert (device in built.write) == (use_gpus and not containerized)
         assert Path("/dev") not in built.write
-    assert os.environ["CUDA_VISIBLE_DEVICES"] == "native-allocation"
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "2,0"
+    assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+
+
+def test_gpu_policy_refuses_a_missing_mask_before_creating_private_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    with pytest.raises(ProjectError, match="nonempty allocation CUDA_VISIBLE_DEVICES"):
+        policy_module.exec_policy(tmp_path, containerized=True, use_gpus=True)
+    assert not (tmp_path / ".lightcone").exists()
+
+
+def test_only_nvidia_character_nodes_are_granted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("nvidia0", "nvidiactl", "nvidia-user-file", "unrelated"):
+        (tmp_path / name).touch()
+    monkeypatch.setattr(policy_module, "_DEVICE_ROOT", tmp_path)
+    monkeypatch.setattr(Path, "is_char_device", lambda p: p.name in {"nvidia0", "nvidiactl"})
+    assert policy_module._gpu_device_paths() == (tmp_path / "nvidia0", tmp_path / "nvidiactl")
 
 
 def test_proc_and_sys_are_not_restricted(built: policy_module.Policy) -> None:

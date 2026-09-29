@@ -1176,10 +1176,7 @@ def test_real_dask_respects_recipe_resource_reservations(
             start, time.monotonic(), os.environ.get("CUDA_VISIBLE_DEVICES"),
         ]))
     """})
-    from lightcone.engine import gpu
-
-    monkeypatch.setattr(gpu, "visible_devices", lambda: ("GPU-first", "GPU-second"))
-    monkeypatch.setattr(gpu, "device_paths", lambda: ())
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,0")
     _resource_cluster(monkeypatch, gpus=gpus)
 
     report = engine.materialize(root, [], cluster_id=CLUSTER_ID)
@@ -1188,7 +1185,7 @@ def test_real_dask_respects_recipe_resource_reservations(
     events = []
     for path in (root / "results/baseline").glob("task*.json"):
         start, finish, visible = json.loads(path.read_text())
-        assert visible == ("GPU-first" if gpus else "")
+        assert visible == ("2,0" if gpus else "")
         events.extend([(start, 1), (finish, -1)])
     live = peak = 0
     for _, change in sorted(events):
@@ -1459,4 +1456,3 @@ def test_an_output_the_spec_dropped_is_excluded_and_named(root: Path, inline: No
     assert any(".second.manifest.json" in w for w in report.warnings)
     document = (root / "ro-crate-metadata.json").read_text()
     assert "results/baseline/second.txt" not in document
-

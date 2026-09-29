@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from lightcone.engine import container, gpu, sandbox
+from lightcone.engine import container, sandbox
 from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.project import (
     SPEC_FILENAME,
@@ -61,7 +61,7 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
         with forwarding(client) as output:
             future = client.submit(
                 call, _probe, output.topic, "probe", runtime, paths, tuple(command),
-                int(resources.get("GPU", 0)),
+                resources.get("GPU", 0) > 0,
                 key=f"lc-{invocation}-probe", pure=False, resources=resources,
             )
             try:
@@ -81,17 +81,11 @@ def probe(project: Path, command: Sequence[str], *, cluster_id: str) -> sandbox.
 
 def _probe(
     runtime: container.Runtime, paths: list[Path], command: tuple[str, ...],
-    gpu_count: int,
+    use_gpus: bool,
     *, output: Callable[[str, bytes], None],
 ) -> sandbox.Outcome:
     """Execute the prepared probe; the driver alone converges its environment."""
-    gpu_devices = gpu.visible_devices()[:gpu_count] if gpu_count else ()
-    if len(gpu_devices) < gpu_count:
-        raise ProjectError(
-            f"probe reserved {gpu_count} GPUs but this worker can access "
-            f"only {len(gpu_devices)} CUDA devices"
-        )
-    built = container.policy_for(runtime, paths, gpu_devices=gpu_devices)
+    built = container.policy_for(runtime, paths, use_gpus=use_gpus)
     with sandbox.scope(built) as policy:
         outcome = sandbox.run(
             container.backend(runtime), policy, command, cwd=runtime.root,

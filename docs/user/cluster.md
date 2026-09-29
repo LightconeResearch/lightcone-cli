@@ -12,10 +12,8 @@ No configuration is needed on a fresh installation. When
 one logical CPU, 1 GiB, one node, and fast startup. Its default lifetime is
 30 minutes, with a maximum of two hours. This creates no catalog file and starts
 no processes until you launch a cluster.
-On Linux, detected NVIDIA GPUs add a `local-gpu` offer, or `local-gpu-1`,
-`local-gpu-2`, and so on for different models. Each groups the visible devices
-of one model and keeps the same small CPU/memory defaults. Use a custom catalog
-for larger CPU or RAM budgets. See [GPU allocations](#gpu-allocations).
+Use a custom catalog for larger CPU or RAM budgets and for GPU offers.
+See [GPU allocations](#gpu-allocations).
 
 ```bash
 lc compute resources
@@ -315,7 +313,7 @@ Each worker's files go under `<scratch>/<token>/attempt-<restarts>/<rank>`.
 
 Before starting Dask, every rank checks that Slurm gave it what the plan
 requested: the node count, CPUs per task and its actual CPU affinity, and memory
-per node. GPU allocations also validate the native GPU count and CUDA visibility.
+per node. GPU allocations also validate Slurm's native GPU count.
 Ranks other than zero wait up to 120 seconds for the scheduler, which
 has as long to start. A failed check or timeout logs
 `Slurm Dask startup failed: …` to the submission log and exits nonzero. Look
@@ -323,26 +321,39 @@ there when a job is active but never becomes ready.
 
 ## GPU allocations
 
-GPU support currently covers whole NVIDIA CUDA devices on Linux. MIG devices,
-fractional GPUs, and other accelerator vendors are not supported. CPU-only use
-does not require CUDA. Discovery respects the allocation's native CUDA mask and
-does not initialize CUDA in the reusable Dask worker.
+GPU support uses NVIDIA CUDA devices on Linux. `lc compute resources` shows
+configured accelerator types and counts; Lightcone does not probe CUDA or discover
+local hardware. There is no fractional GPU or MIG management.
 
-`lc compute resources` shows available accelerator types and counts. Requests
-use SkyPilot-style `NAME[:COUNT]`: `--gpus A100` means one A100,
-`--gpus A100:4` means exactly four, and `--gpus GPU:4` accepts any model with
-exactly four. Names match case-insensitively; GPU counts do not accept `+`.
-Omitting `--gpus`, or passing `0`, selects CPU-only offers.
+Requests use SkyPilot-style `NAME[:COUNT]`: `--gpus A100` means one A100,
+`--gpus A100:4` means exactly four, and `--gpus GPU:4` accepts any configured model
+with exactly four. Names are case-insensitive catalog labels; GPU counts do not
+accept `+`. Omitting `--gpus`, or passing `0`, selects CPU-only offers.
 
-Names are catalog labels, without an accelerator alias registry. Local discovery
-uses native model names with whitespace and punctuation normalized to hyphens, for example
-`NVIDIA-A100-SXM4-80GB`. Copy the type shown by `resources`, or use `GPU:N`.
-Local allocations do not reserve GPUs exclusively against other allocations or
-programs on the host.
+For local GPUs, add an offer to the [workstation catalog above](#customize-resource-offers):
 
-For example, a Slurm site could expose this additional offer under `offers`.
-The account, shape, constraint, and native GPU type must be adjusted to the site;
-this is an illustrative configuration, not a tested hardware deployment:
+```yaml
+  - name: workstation-gpu
+    connection: workstation
+    resources: {cpus: 4, memory: 8GB, accelerators: 'GPU:1'}
+    max_nodes: 1
+    time: {default: 30m, max: 2h}
+    startup: fast
+```
+
+Set the devices available to that allocation when launching it:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 lc compute launch --cpus 4 --memory 8GB --gpus GPU:1
+```
+
+Lightcone freezes the nonempty mask and `CUDA_DEVICE_ORDER`, if set, at launch.
+You are responsible for matching the catalog's count and model to those devices;
+Lightcone does not verify them. Local allocations do not reserve GPUs exclusively
+against other allocations or programs on the host.
+
+On Slurm, the offer's `config.gpu_type` maps its catalog label to a native GRES
+type. For example, add this offer with settings adjusted to your site:
 
 ```yaml
 - name: gpu-batch
@@ -357,28 +368,24 @@ this is an illustrative configuration, not a tested hardware deployment:
     gpu_type: a100
 ```
 
-With such an offer configured, inspect its plan before launching:
-
 ```bash
 lc compute launch --cpus 32 --memory 128GB --gpus A100:4 --dry-run
 ```
 
-GPU commands receive selected device UUIDs through `CUDA_VISIBLE_DEVICES`.
-CPU recipes receive an empty mask. This is cooperative device selection;
-native OS/cgroup permissions remain the access boundary. Container runtimes
-also need their normal GPU integration:
+This is an illustrative shape, not a tested site configuration. Slurm allocates
+GPUs through GRES; Lightcone checks the native count and passes Slurm's CUDA mask
+through unchanged, using `CUDA_DEVICE_ORDER=PCI_BUS_ID`.
 
-- **Docker:** install the NVIDIA Container Toolkit; Lightcone supplies explicit
-  UUIDs through `--gpus`. See [NVIDIA's Docker setup](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html#configuring-docker).
-- **Podman:** configure NVIDIA CDI with UUID device names. Lightcone supplies
-  `--device=nvidia.com/gpu=UUID`; see [NVIDIA's CDI guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html).
-- **podman-hpc:** Lightcone adds `--gpu` and the selected CUDA mask; see
-  [NERSC's GPU container guidance](https://docs.nersc.gov/development/containers/podman-hpc/overview/#using-nvidia-gpus-in-podman-hpc).
+GPU commands inherit the allocation's whole CUDA mask. CPU commands receive an
+empty mask. These are cooperative visibility settings; native OS and cgroup
+permissions remain authoritative.
 
-CPU containers also override `NVIDIA_VISIBLE_DEVICES` to `void`, so a CUDA image's
-default cannot enable GPU injection. GPU discovery, reservations, masks, and
-runtime arguments are tested with simulated inventories and real subprocesses;
-physical GPU execution has not yet been validated.
+Containerized GPU execution currently supports **podman-hpc** through its native
+`--gpu` option. See [NERSC's GPU container guidance](https://docs.nersc.gov/development/containers/podman-hpc/overview/#using-nvidia-gpus-in-podman-hpc).
+GPU requests with ordinary Docker or Podman are explicitly refused. CPU execution
+continues to support all three runtimes and sets `NVIDIA_VISIBLE_DEVICES=void` to
+override GPU-enabled image defaults. Physical GPU execution remains a deployment
+validation step.
 
 ## Recipe resource requirements
 
@@ -407,11 +414,12 @@ one such recipe runs per worker.
 
 Recipe `gpus` is a nonnegative whole count, defaulting to zero; accelerator type
 selection belongs to cluster allocation. A GPU recipe reserves the worker's
-entire GPU budget, so only one GPU recipe runs on that worker at a time, while
-its command sees only the requested number of devices. CPU recipes may still
-run alongside it when CPU, memory, and task slots permit; their CUDA mask is
-empty. `lc run` reserves the worker's entire CPU, memory, and GPU budgets and
-exposes only those reserved GPUs.
+entire GPU budget, so only one GPU recipe runs on that worker at a time. The
+requested count is a minimum capacity requirement: the command inherits the
+worker's whole allocated CUDA mask and may see more GPUs than requested. CPU
+recipes may still run alongside it when CPU, memory, and task slots permit; their
+CUDA mask is empty. `lc run` reserves the worker's entire CPU, memory, and GPU
+budgets and inherits that same allocation mask.
 
 Recipe `time_limit` is not supported and is refused before preparation or
 execution. Set the allocation lifetime with `lc compute launch --time` instead.

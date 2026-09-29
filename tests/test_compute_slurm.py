@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock
 import psutil
 import pytest
 
-from lightcone.engine import gpu
 from lightcone.engine.compute import Compute, slurm, slurm_bootstrap
 from lightcone.engine.compute.catalog import Catalog
 from lightcone.engine.compute.model import (
@@ -1024,13 +1023,12 @@ def test_bootstrap_refuses_mismatched_native_envelope(
         slurm_bootstrap._allocation(_bootstrap_args(tmp_path))
 
 
-@pytest.mark.parametrize("native,visible_count,valid", [
-    ("", 2, False), ("unknown", 2, False), ("1", 2, False),
-    ("2", 0, False), ("2", 1, False), ("2", 2, True), ("4", 4, True),
+@pytest.mark.parametrize("native,valid", [
+    ("", False), ("unknown", False), ("1", False), ("2", True), ("4", True),
 ])
-def test_gpu_bootstrap_requires_native_and_cuda_capacity_without_rewriting_the_mask(
+def test_gpu_bootstrap_requires_native_capacity_without_probing_or_rewriting_the_mask(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    native: str, visible_count: int, valid: bool,
+    native: str, valid: bool,
 ) -> None:
     for key, value in _bootstrap_env(0).items():
         monkeypatch.setenv(key, value)
@@ -1038,24 +1036,39 @@ def test_gpu_bootstrap_requires_native_and_cuda_capacity_without_rewriting_the_m
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,3")
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
 
-    def devices() -> tuple[str, ...]:
-        assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
-        assert os.environ["CUDA_VISIBLE_DEVICES"] == "1,3"
-        return tuple(f"GPU-{i}" for i in range(visible_count))
-
-    monkeypatch.setattr(gpu, "visible_devices", devices)
+    probe = MagicMock(side_effect=AssertionError("Slurm bootstrap must not probe CUDA"))
+    monkeypatch.setattr(subprocess, "run", probe)
     args = _bootstrap_args(tmp_path)
     args.gpus = 2
     if valid:
         _, _, rank = slurm_bootstrap._allocation(args)
         assert rank == 0
+        assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
     else:
         with pytest.raises(ComputeError, match="GPUs"):
             slurm_bootstrap._allocation(args)
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "1,3"
+    probe.assert_not_called()
 
 
-def test_gpu_worker_advertises_verified_capacity_with_the_native_mask(
+@pytest.mark.parametrize("mask", [None, ""])
+def test_gpu_bootstrap_requires_a_nonempty_native_mask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mask: str | None,
+) -> None:
+    for key, value in _bootstrap_env(0).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("SLURM_GPUS_ON_NODE", "2")
+    if mask is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    args = _bootstrap_args(tmp_path)
+    args.gpus = 2
+    with pytest.raises(ComputeError, match="native CUDA_VISIBLE_DEVICES mask"):
+        slurm_bootstrap._allocation(args)
+
+
+def test_gpu_worker_advertises_native_capacity_with_the_native_mask(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import distributed
@@ -1066,7 +1079,6 @@ def test_gpu_worker_advertises_verified_capacity_with_the_native_mask(
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("SLURM_GPUS_ON_NODE", "2")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,3")
-    monkeypatch.setattr(gpu, "visible_devices", lambda: ("GPU-first", "GPU-second"))
     connection = Connection(
         namespace=NAMESPACE, provider="slurm", launch={"connection_root": args.connection_root},
     )

@@ -32,7 +32,7 @@ from collections.abc import Iterable, Sequence
 from fnmatch import fnmatch
 from pathlib import Path
 
-from lightcone.engine import gpu
+from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox.model import Policy
 
 #: The utility tier of the exec allowlist. A maintained policy
@@ -175,6 +175,18 @@ _HOME_LAYOUT = {
     "TMPDIR": ".tmp",
 }
 
+_DEVICE_ROOT = Path("/dev")
+
+
+def _gpu_device_paths() -> tuple[Path, ...]:
+    """Grant existing NVIDIA character devices, retaining native OS/cgroup limits."""
+    candidates = [
+        *(_DEVICE_ROOT / name for name in ("nvidiactl", "nvidia-uvm", "nvidia-uvm-tools")),
+        *_DEVICE_ROOT.glob("nvidia[0-9]*"),
+        *(_DEVICE_ROOT / "nvidia-caps").glob("*"),
+    ]
+    return tuple(sorted(path for path in candidates if path.is_char_device()))
+
 
 def exec_policy(
     project: Path,
@@ -183,7 +195,7 @@ def exec_policy(
     env_dir: Path | None = None,
     containerized: bool = False,
     write_dir: Path | None = None,
-    gpu_devices: Sequence[str] = (),
+    use_gpus: bool = False,
 ) -> Policy:
     """Build what a sandboxed command may touch.
 
@@ -213,7 +225,7 @@ def exec_policy(
             directory holding its output file, shared with the siblings
             declared beside it. Absent for a probe, which has no analysis
             node and gets the project's own ``results/`` whole.
-        gpu_devices: CUDA device UUIDs allocated to this command; empty hides GPUs.
+        use_gpus: Inherit the allocation's CUDA mask; otherwise hide GPUs.
 
     Returns:
         The policy. The in-tree write scope is granted only if it exists —
@@ -222,6 +234,9 @@ def exec_policy(
         disk; the caller owns removing it (see
         :func:`~lightcone.engine.sandbox.boundary.scope`).
     """
+    gpu_mask = os.environ.get("CUDA_VISIBLE_DEVICES", "") if use_gpus else ""
+    if use_gpus and not gpu_mask:
+        raise ProjectError("GPU execution requires a nonempty allocation CUDA_VISIBLE_DEVICES mask")
     env_dir = env_dir if env_dir is not None else project / ".venv"
     # The containerized HOME lives under the project's own (gitignored)
     # `.lightcone/`, not the system temp dir: it is a mount source, and
@@ -238,7 +253,9 @@ def exec_policy(
 
     in_tree_write = write_dir if write_dir is not None else project / "results"
     overlay = home_overlay(tmp_home, env_dir, containerized=containerized)
-    overlay["CUDA_VISIBLE_DEVICES"] = ",".join(gpu_devices)
+    overlay["CUDA_VISIBLE_DEVICES"] = gpu_mask
+    if use_gpus and "CUDA_DEVICE_ORDER" in os.environ:
+        overlay["CUDA_DEVICE_ORDER"] = os.environ["CUDA_DEVICE_ORDER"]
     if containerized:
         # Declared spellings, not realpaths — the one shape that keeps
         # its paths unresolved. These become mount *destinations*, and a
@@ -258,7 +275,7 @@ def exec_policy(
     # EXECUTE on the interpreter *file*; READ on the install root beside
     # it, for the stdlib. See :func:`_venv_python` and :func:`_stdlib_root`.
     stdlib = _stdlib_root(python)
-    devices = gpu.device_paths() if gpu_devices else ()
+    devices = _gpu_device_paths() if use_gpus else ()
     write = _existing([tmp_home, in_tree_write, *_write_roots(project), *devices])
     read = _existing([project, *read_paths, *stdlib, *(Path(p) for p in _OS_READ_BASELINE)])
 

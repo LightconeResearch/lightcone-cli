@@ -18,10 +18,9 @@ It owns no service, registry, or saved current-cluster selection.
 
 `Catalog.load()` defaults to `~/.lightcone/compute.yaml`. When that implicit file
 is absent, the built-in catalog exposes a `local` offer: one CPU, 1 GiB, one node,
-fast startup, 30-minute default and two-hour maximum lifetime. Successful Linux
-CUDA discovery adds one GPU offer per native model: `local-gpu` for one model,
-or `local-gpu-1`, `local-gpu-2`, etc. GPU discovery failure preserves the CPU offer.
-It creates no configuration file or allocation. Configured catalogs replace it completely.
+fast startup, 30-minute default and two-hour maximum lifetime. GPU offers require
+an explicit catalog. It creates no configuration file or allocation. Configured
+catalogs replace it completely.
 Missing paths selected through an argument or `LC_COMPUTE_CONFIG`, unreadable
 files, and invalid catalogs remain errors. Stable connection namespaces let
 separate invocations discover and attach to the same local allocations.
@@ -133,10 +132,10 @@ checks that one worker can satisfy it and returns the resource dictionary used
 by `Client.submit`.
 An omitted memory request reserves the full homogeneous worker budget;
 `whole_worker=True` reserves CPU, memory, and GPUs for a probe. Recipe GPU counts
-default to zero; a GPU recipe reserves the full GPU budget of a fitting worker,
-while exposing only the requested device count. This serializes GPU recipes per
-worker without a device-assignment service. Unsupported disk/type requests and
-fractional CPU/GPU counts fail before execution.
+default to zero; a GPU recipe reserves the full GPU budget of a fitting worker
+and inherits its whole allocation mask. The requested count is a minimum, not a
+visibility limit. This serializes GPU recipes per worker without device assignment.
+Unsupported disk/type requests and fractional CPU/GPU counts fail before execution.
 
 The materialize scheduler validates every selected task before preparation or
 submission, preventing earlier tasks from starting before a later impossible
@@ -153,29 +152,24 @@ Recipe memory remains ASTRA-style: `8Gi` is binary, `8GB` is decimal, and units
 are required. Allocation memory follows the compute convention above; keep the
 two parsers' contracts explicit even though they share exact byte arithmetic.
 
-## GPU discovery and visibility
+## GPU allocation and visibility
 
-`engine.gpu.inventory()` uses a short isolated stdlib process to query the CUDA
-Driver API for native UUIDs and model names, respecting `CUDA_VISIBLE_DEVICES`.
-`visible_devices()` returns those UUIDs; `device_paths()` lists NVIDIA character
-device nodes for direct sandbox grants. CUDA is never initialized in the reusable
-worker, and no additional GPU Python dependency or custom Dask worker is needed.
-Missing drivers produce an empty inventory. Discovery rejects invalid identities,
-driver failures, and partitioned MIG devices rather than inventing capacity.
+Local GPU offers require Linux and an explicit nonempty `CUDA_VISIBLE_DEVICES`.
+Planning freezes that mask and optional `CUDA_DEVICE_ORDER`; launch passes them
+to the worker unchanged. Count and model are catalog declarations, not hardware
+observations. The built-in local offer remains CPU-only.
 
-Local launch selects devices matching the offer, freezes their UUID mask in the
-allocation environment, and checks the visible count before starting Dask. Slurm
-validates native GPU capacity and CUDA visibility before advertising the offer's
-GPU budget. Workers check recipe visibility before resetting output files.
-Slurm bootstrap sets `CUDA_DEVICE_ORDER=PCI_BUS_ID` before discovery so CUDA
-interprets native numeric masks in Slurm/NVML's device order.
-Probes receive the reserved GPU count explicitly and never expose excess native
-devices. CPU commands receive an empty CUDA mask without GPU discovery.
+Slurm requests native GPU GRES and validates `SLURM_GPUS_ON_NODE` before
+advertising the worker's GPU budget. Bootstrap preserves Slurm's CUDA mask and
+sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`. There is no CUDA probe, device inventory, or
+custom Dask worker.
 
-The sandbox applies masks per command, preserving the worker's shared environment.
-OCI backends request native device injection by UUID; direct policies grant known
-NVIDIA device nodes. Visibility is cooperative, with native permissions and cgroups
-still authoritative. See [GPU deployment requirements](../user/cluster.md#gpu-allocations).
+The sandbox's `use_gpus` policy option inherits the worker's mask for GPU commands
+and supplies an empty mask for CPU commands, without modifying the reusable
+worker's environment. Direct GPU policies grant native NVIDIA character devices.
+Container GPU execution uses podman-hpc's `--gpu`; ordinary Docker and Podman GPU
+requests are refused. Native permissions and cgroups remain authoritative.
+See [GPU deployment requirements](../user/cluster.md#gpu-allocations).
 
 ## Execution output and teardown
 

@@ -13,7 +13,7 @@ from lightcone.engine.units import whole_bytes
 
 
 class TaskResources(BaseModel):
-    """Reserve CPU, memory, and GPU capacity on stock Dask workers."""
+    """Reserve CPU, memory, and minimum GPU capacity on stock Dask workers."""
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
@@ -81,7 +81,8 @@ class TaskResources(BaseModel):
         Returns:
             Dask's numeric ``CPU``, ``MEMORY``, and optional ``GPU`` reservations.
             GPU recipes reserve the worker's full GPU budget, so only one GPU
-            recipe uses that worker's device mask at a time.
+            recipe uses that worker's native device mask at a time. The requested
+            count is a minimum capacity, not a per-command visibility limit.
 
         Raises:
             ProjectError: Capacity is unknown, a request cannot fit, or an

@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from lightcone.engine import assets, container, dataset, gpu, identity, plan, project, sandbox
+from lightcone.engine import assets, container, dataset, identity, plan, project, sandbox
 from lightcone.engine.execution_resources import TaskResources
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
@@ -229,12 +229,6 @@ def execute(
         nothing and never touches git beyond reading HEAD.
     """
     resources = TaskResources.parse(task.resources)
-    gpu_devices = gpu.visible_devices()[:resources.gpus] if resources.gpus else ()
-    if len(gpu_devices) < resources.gpus:
-        raise ProjectError(
-            f"recipe requests {resources.gpus} GPUs but this worker can access "
-            f"only {len(gpu_devices)} CUDA devices"
-        )
     if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved)
 
@@ -247,17 +241,18 @@ def execute(
     # cannot reach a sibling, a longer id, another output's sidecar, or a
     # scope directory of the same name.
     task.output_path.parent.mkdir(parents=True, exist_ok=True)
-    task.manifest_path.unlink(missing_ok=True)
-    for stale in task.output_path.parent.glob(f"{task.output_id}.*"):
-        if stale.is_file() or stale.is_symlink():
-            stale.unlink()
-
     read_paths = [p for p in task.inputs.values() if p.exists()]
     policy = container.policy_for(
-        context.runtime, read_paths, write_dir=task.output_path.parent, gpu_devices=gpu_devices,
+        context.runtime, read_paths, write_dir=task.output_path.parent,
+        use_gpus=resources.gpus > 0,
     )
-    started_at = _now()
     with sandbox.scope(policy):
+        # Validate device visibility and container support before removing outputs.
+        task.manifest_path.unlink(missing_ok=True)
+        for stale in task.output_path.parent.glob(f"{task.output_id}.*"):
+            if stale.is_file() or stale.is_symlink():
+                stale.unlink()
+        started_at = _now()
         outcome = sandbox.run(
             container.backend(context.runtime),
             policy,

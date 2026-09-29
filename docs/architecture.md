@@ -69,9 +69,9 @@ The division of labor is strict and load-bearing:
   budgets; submissions reserve the recipe's requirements. CPU and memory
   reservations coordinate scheduling rather than imposing per-recipe OS limits.
   Recipe `time_limit` is explicitly refused; allocation walltime remains supported.
-  A GPU recipe reserves the worker's full GPU budget and exposes only its
-  requested devices through a per-command CUDA mask. CPU recipes expose none;
-  probes reserve and expose the whole worker budget.
+  A GPU recipe reserves the worker's full GPU budget and inherits its allocation
+  mask, even when it requests fewer GPUs. CPU recipes expose none; probes reserve
+  the whole worker budget and inherit the allocation mask.
 - **Values are resolved once and handed down.** HEAD, the container
   runtime, and the foreign-write facts are read by the driver and
   passed to workers as values — a worker that asked git itself could
@@ -145,7 +145,8 @@ records what was *actually* enforced — never what should have been.
 
 There is one policy builder, `exec_policy`: probes and recipes share environment
 and filesystem rules, with write scope and GPU visibility supplied by the caller.
-Probes expose their reserved worker's GPUs; recipes expose their declared count.
+GPU recipes and probes inherit the worker's allocation mask; CPU commands get an
+empty mask.
 
 ## The container hatch
 
@@ -165,9 +166,9 @@ config-blob id, never a tag.
 `engine.compute` owns allocation lifecycle through a small provider protocol.
 A YAML catalog supplies ordered resource offers and stable native service
 namespaces. When the implicit default file is absent, a built-in local catalog
-provides one CPU and 1 GiB without setup, plus GPU offers grouped by model when
-Linux CUDA discovery succeeds. An explicit catalog replaces those defaults;
-missing explicit paths and invalid files remain errors. No catalog is written and
+provides one CPU and 1 GiB without setup. GPU offers need an explicit catalog,
+which replaces the built-in defaults. Missing explicit paths and invalid files
+remain errors. No catalog is written and
 no allocation starts until `compute launch` resolves resources and submits once. Slurm queries
 and validated local OS identities are authoritative for allocations; Dask is the
 authority for connected workers. Private scheduler/TLS files are connection
@@ -176,9 +177,9 @@ material, not a registry.
 Allocation requests use SkyPilot-style CPU/memory exact or minimum quantities
 and one accelerator type/count. Providers translate those requests into native
 allocations; Lightcone does not depend on SkyPilot or carry its GPU alias registry.
-An isolated stdlib CUDA probe discovers native device UUIDs and model names;
-stock Dask workers remain unchanged. GPU container access uses each runtime's
-native mechanism. See [GPU setup](user/cluster.md#gpu-allocations).
+Stock Dask workers inherit the allocation's native CUDA mask; Lightcone does not
+probe GPU hardware. Container GPU access uses podman-hpc's native `--gpu` option.
+See [GPU setup](user/cluster.md#gpu-allocations).
 
 `compute.connect(CLUSTER_ID)` borrows a standard Dask client and closes only that
 client on exit. Both execution commands require a cluster ID. The materialization

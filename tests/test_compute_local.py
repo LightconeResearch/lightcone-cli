@@ -21,7 +21,6 @@ from uuid import uuid4
 import psutil
 import pytest
 
-from lightcone.engine import gpu
 from lightcone.engine.compute import Compute, local, local_runtime
 from lightcone.engine.compute.catalog import Catalog
 from lightcone.engine.compute.local import LocalProvider
@@ -41,7 +40,6 @@ from lightcone.engine.compute.runtime import (
     read_private_json,
     write_private_json,
 )
-from lightcone.engine.project import ProjectError
 
 
 @pytest.fixture
@@ -815,63 +813,78 @@ def test_local_plan_does_not_infer_policy_from_login_hostname_or_slurm_environme
 
 
 @pytest.mark.parametrize("gpus", [0, 1])
-def test_local_gpu_plan_freezes_devices_and_publishes_the_selected_envelope(
+@pytest.mark.parametrize("order", [None, "PCI_BUS_ID", "FASTEST_FIRST"])
+def test_local_gpu_plan_freezes_native_mask_and_publishes_the_configured_envelope(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch, gpus: int,
+    order: str | None,
 ) -> None:
-    devices = (f"GPU-{uuid4()}", f"GPU-{uuid4()}")
-    visible = MagicMock(return_value=tuple(gpu.Device(item, "NVIDIA-A100") for item in devices))
-    monkeypatch.setattr(gpu, "inventory", visible)
+    monkeypatch.setattr(sys, "platform", "linux")
+    # Mask interpretation and agreement with the catalog belong to the operator.
+    mask = "GPU-opaque,3"
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    if order is None:
+        monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", order)
+    probe = MagicMock(side_effect=AssertionError("local GPU planning must not probe hardware"))
+    monkeypatch.setattr(local.subprocess, "run", probe)
     offer = Offer(
         name="gpu", connection="workstation",
-        resources=Resources.from_bytes(cpus=1, memory_bytes=512 * 1024**2, gpus=gpus),
+        resources=Resources.from_bytes(
+            cpus=1, memory_bytes=512 * 1024**2, gpus=gpus, accelerator_name="A100",
+        ),
         max_nodes=1, time=TimeLimits(default="1m", max="1m"),
     )
     plan = provider.plan(offer, Request.parse("1", "0.5", gpus=f"GPU:{gpus}" if gpus else "0"))
-    assert plan.details["gpu_devices"] == devices[:gpus]
+    assert plan.details["cuda_visible_devices"] == (mask if gpus else "")
+    assert plan.details["cuda_device_order"] == order
     assert not provider.root.exists()
     monkeypatch.setattr(local, "_boot_identity", lambda: str(uuid4()))
     popen = MagicMock(return_value=SimpleNamespace(pid=12345))
     monkeypatch.setattr(local.subprocess, "Popen", popen)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "an-ambient-mask")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "changed-after-planning")
 
     identity = provider.launch(plan)
 
-    assert popen.call_args.kwargs["env"]["CUDA_VISIBLE_DEVICES"] == ",".join(devices[:gpus])
+    assert popen.call_args.kwargs["env"]["CUDA_VISIBLE_DEVICES"] == (mask if gpus else "")
+    assert popen.call_args.kwargs["env"].get("CUDA_DEVICE_ORDER") == order
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "an-ambient-mask"
+    assert os.environ["CUDA_DEVICE_ORDER"] == "changed-after-planning"
     record = read_private_json(provider.root / identity.token / "identity.json")
     assert record["gpus"] == gpus
     monkeypatch.setattr(provider, "_process", lambda *_: None)
     snapshot = provider.inspect(identity)
     assert snapshot.resources is not None and snapshot.resources.gpus == gpus
-    assert snapshot.resources.accelerator_name == ("NVIDIA-A100" if gpus else None)
-    assert visible.call_count == (2 if gpus else 0)
+    assert snapshot.resources.accelerator_name == ("A100" if gpus else None)
+    probe.assert_not_called()
 
 
-def test_local_gpu_capacity_is_checked_at_plan_and_again_before_spawn(
+@pytest.mark.parametrize("mask", [None, ""])
+def test_local_gpu_offers_require_an_explicit_nonempty_native_mask(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
+    mask: str | None,
 ) -> None:
-    device = f"GPU-{uuid4()}"
+    monkeypatch.setattr(sys, "platform", "linux")
+    if mask is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     offer = Offer(
         name="gpu", connection="workstation",
         resources=Resources.from_bytes(cpus=1, memory_bytes=512 * 1024**2, gpus=1),
         max_nodes=1, time=TimeLimits(default="1m", max="1m"),
     )
     request = Request.parse("1", "0.5", gpus="GPU:1")
-    monkeypatch.setattr(gpu, "inventory", lambda: ())
-    with pytest.raises(ComputeError, match="visible CUDA capacity for GPU"):
+    with pytest.raises(ComputeError, match="nonempty CUDA_VISIBLE_DEVICES"):
         provider.plan(offer, request)
-    monkeypatch.setattr(gpu, "inventory", lambda: (gpu.Device(device, "NVIDIA-A100"),))
-    plan = provider.plan(offer, request)
-    monkeypatch.setattr(gpu, "inventory", lambda: (gpu.Device(f"GPU-{uuid4()}", "NVIDIA-A100"),))
-    with pytest.raises(ComputeError, match="no longer visible"):
-        provider.launch(plan)
     assert not provider.root.exists()
 
 
-def test_unavailable_local_gpu_driver_does_not_hide_a_later_slurm_offer(
+def test_unconfigured_local_gpu_mask_does_not_hide_a_later_slurm_offer(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(gpu, "inventory", MagicMock(side_effect=ProjectError("CUDA driver failed")))
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     local_offer = Offer(
         name="local-gpu", connection="workstation",
         resources=Resources.from_bytes(cpus=1, memory_bytes=512 * 1024**2, gpus=1),
@@ -891,39 +904,25 @@ def test_unavailable_local_gpu_driver_does_not_hide_a_later_slurm_offer(
     assert not provider.root.exists()
 
 
-@pytest.mark.parametrize("requested,count,expected", [
-    ("nvidia-a100", 1, (1,)), ("GPU", 2, (0, 1)), ("A100", 1, ()),
-])
-def test_local_named_accelerators_match_native_models_without_guessing_aliases(
+def test_local_gpu_offers_are_unavailable_outside_linux(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
-    requested: str, count: int, expected: tuple[int, ...],
 ) -> None:
-    devices = (
-        gpu.Device(f"GPU-{uuid4()}", "NVIDIA-H100"),
-        gpu.Device(f"GPU-{uuid4()}", "NVIDIA-A100"),
-        gpu.Device(f"GPU-{uuid4()}", "NVIDIA-A100"),
-    )
-    monkeypatch.setattr(gpu, "inventory", lambda: devices)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     offer = Offer(
         name="gpu", connection="workstation",
         resources=Resources.from_bytes(
-            cpus=1, memory_bytes=512 * 1024**2, gpus=count, accelerator_name=requested,
+            cpus=1, memory_bytes=512 * 1024**2, gpus=1,
         ),
         max_nodes=1, time=TimeLimits(default="1m", max="1m"),
     )
-    request = Request.parse("1", "0.5", gpus=f"{requested}:{count}")
-    if not expected:
-        with pytest.raises(ComputeError, match="visible CUDA capacity for A100"):
-            provider.plan(offer, request)
-        return
-    plan = provider.plan(offer, request)
-    assert plan.details["gpu_devices"] == tuple(devices[index].uuid for index in expected)
-    assert plan.details["accelerator_name"] == ("NVIDIA-A100" if count == 1 else "GPU")
+    with pytest.raises(ComputeError, match="GPU allocations require Linux"):
+        provider.plan(offer, Request.parse("1", "0.5", gpus="GPU:1"))
 
 
-@pytest.mark.parametrize("visible_count", [0, 1, 2])
-def test_local_runtime_verifies_gpu_visibility_before_advertising_resources(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, visible_count: int,
+@pytest.mark.parametrize("gpus", [0, 2])
+def test_local_runtime_advertises_configured_resources_and_preserves_native_gpu_mask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gpus: int,
 ) -> None:
     import distributed
 
@@ -933,7 +932,8 @@ def test_local_runtime_verifies_gpu_visibility_before_advertising_resources(
         "identity": "allocation", "deadline": time.monotonic() + 60,
         "task_slots": 1, "scratch": str(scratch),
     })
-    write_private_json(directory / "identity.json", {"cpus": 1, "memory": 1024**3, "gpus": 1})
+    write_private_json(directory / "identity.json", {"cpus": 1, "memory": 1024**3, "gpus": gpus})
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,1")
     monkeypatch.setattr(sys, "argv", ["local_runtime", str(directory)])
     monkeypatch.setattr(os, "getsid", lambda _: os.getpid())
     monkeypatch.setattr(os, "getpgrp", os.getpid)
@@ -945,18 +945,10 @@ def test_local_runtime_verifies_gpu_visibility_before_advertising_resources(
         if signum == signal.SIGTERM else None,
     )
     monkeypatch.setattr(local_runtime, "create_security", lambda _: None)
-    monkeypatch.setattr(
-        gpu, "visible_devices", lambda: tuple(f"GPU-{i}" for i in range(visible_count)),
-    )
     cluster = MagicMock()
     cluster.return_value.__enter__.return_value.scheduler.id = "Scheduler-gpu"
     monkeypatch.setattr(distributed, "LocalCluster", cluster)
 
-    if visible_count != 1:
-        with pytest.raises(ComputeError, match="CUDA GPUs do not match"):
-            local_runtime.main()
-        cluster.assert_not_called()
-        assert not (directory / "connection.json").exists()
-    else:
-        local_runtime.main()
-        assert cluster.call_args.kwargs["resources"] == {"CPU": 1, "MEMORY": 1024**3, "GPU": 1}
+    local_runtime.main()
+    assert cluster.call_args.kwargs["resources"] == {"CPU": 1, "MEMORY": 1024**3, "GPU": gpus}
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == ("3,1" if gpus else "")

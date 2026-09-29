@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 from types import FrameType
 
-from lightcone.engine.compute.model import ComputeError
 from lightcone.engine.compute.runtime import (
     SCHEDULER_CONFIG,
     create_security,
@@ -57,11 +56,8 @@ def main() -> None:
         security = create_security(directory)
         allocation = read_private_json(directory / "identity.json")
         gpus = int(allocation["gpus"])
-        if gpus:
-            from lightcone.engine.gpu import visible_devices
-
-            if len(visible_devices()) != gpus:
-                raise ComputeError("visible CUDA GPUs do not match the local allocation envelope")
+        if not gpus:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
         with dask.config.set(SCHEDULER_CONFIG), LocalCluster(  # type: ignore[no-untyped-call]
             n_workers=1,
             threads_per_worker=int(launch["task_slots"]),

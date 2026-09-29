@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from lightcone.engine import gpu
 from lightcone.engine.compute.model import ComputeError, Connection, Identity
 from lightcone.engine.compute.runtime import (
     SCHEDULER_CONFIG,
@@ -67,10 +66,10 @@ def _allocation(args: argparse.Namespace) -> tuple[Identity, int, int]:
         native_gpus = os.environ.get("SLURM_GPUS_ON_NODE", "")
         if not native_gpus.isdigit() or int(native_gpus) < args.gpus:
             raise ComputeError("native per-node GPUs do not match the allocation envelope")
+        if not os.environ.get("CUDA_VISIBLE_DEVICES"):
+            raise ComputeError("GPU allocations require a native CUDA_VISIBLE_DEVICES mask")
         # Slurm/NVML numbers devices in PCI order; CUDA's default is different.
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        if len(gpu.visible_devices()) < args.gpus:
-            raise ComputeError("visible CUDA GPUs are fewer than the allocation envelope")
     restarts = os.environ.get("SLURM_RESTART_COUNT", "0")
     if not restarts.isdigit():
         raise ComputeError("invalid native Slurm restart count")

@@ -1727,10 +1727,10 @@ and use it for every native ownership check and filter.
 **Local compute needs no setup.** An absent implicit `~/.lightcone/compute.yaml`
 selects a built-in local catalog: one CPU, 1 GiB, one node, fast startup, 30-minute
 default and two-hour maximum lifetime. It writes no catalog and starts no cluster.
-Linux CUDA discovery adds GPU offers grouped by native model (`local-gpu`, or
-`local-gpu-1`, etc. for mixed models), retaining those CPU/RAM defaults. Discovery
-failure must not disable the CPU offer. Explicit local allocations remain
-cooperative; they do not reserve a device against other host programs/allocations.
+GPU offers require an explicit catalog and, for local launches, a nonempty
+`CUDA_VISIBLE_DEVICES` mask on Linux. No GPU auto-discovery. Local GPU capacity and
+model labels are configured, not hardware-verified; allocations do not reserve
+devices exclusively against other host programs or allocations.
 Configured catalogs replace it completely; missing explicit paths and invalid
 files are errors. Execution still requires an explicitly launched cluster's name or ID.
 
@@ -1763,10 +1763,10 @@ uses binary units: bare `32`, `32GB`, and `32GiB` agree. Catalog resources use
 one `accelerators: NAME[:COUNT]` or a one-entry mapping; CLI `--gpus A100:4`,
 `A100`, or generic `GPU:4` selects an exact positive whole count, while `0`
 means CPU only. Type matching is case-insensitive; no GPU `+`, fractions, or
-global model alias registry. Local discovery reports native names with whitespace
-and punctuation normalized to hyphens (e.g. `NVIDIA-A100-SXM4-80GB`). Named Slurm offers must map
-their public label to the site's GRES type through `config.gpu_type`; generic
-`GPU` offers may omit that setting. Preserve native evidence in observations.
+global model alias registry. Local accelerator labels are trusted configuration.
+Named Slurm offers must map their public label to the site's GRES type through
+`config.gpu_type`; generic `GPU` offers may omit that setting. Preserve native
+evidence in observations.
 
 **Configured compute roots may be filesystem aliases.** Resolve connection and
 scratch roots before appending managed namespace, submission, or attempt paths.
@@ -1802,28 +1802,25 @@ or submission, then pass reservations explicitly to submission. Recipe `time_lim
 is unsupported and must fail explicitly; allocation walltime remains supported.
 Workers advertise CPU/MEMORY/GPU; tasks reserve their declarations, with omitted RAM
 reserving a whole worker's memory and probes reserving all whole-worker budgets.
-GPU recipes reserve the worker's full GPU budget, one GPU recipe at a time, while
-their commands see only their requested count. Recipe `gpus` defaults to zero and
-does not select a model. Recipe memory retains ASTRA units (`8Gi` binary,
+GPU recipes reserve the worker's full GPU budget, one GPU recipe at a time, and
+inherit its whole allocation mask. Recipe `gpus` is a minimum capacity requirement,
+not a visibility limit; it defaults to zero and does not select a model. Recipe memory retains ASTRA units (`8Gi` binary,
 `8GB` decimal, no bare quantities), independently of compute's SkyPilot units.
 Thread slots remain a separate concurrency cap. Reservations are cooperative, not
 per-command OS CPU/RAM limits; unsupported disk/model requests and fractional
 CPU/GPU counts fail explicitly.
 
-**GPU discovery and visibility stay native and per-command.** `engine.gpu` probes
-the CUDA Driver API in an isolated stdlib process, respecting native masks and
-returning UUIDs/model names without initializing CUDA in a reusable worker. No
-new Python GPU dependency or custom Dask worker. Whole NVIDIA GPUs on Linux only;
-MIG/fractional GPUs and other vendors are unsupported. Verify requested devices
-before deleting outputs. Set the command policy's CUDA mask; never mutate the
-shared worker environment. CPU commands get an empty mask, and probes expose only
-their reserved count, even if the native mask is larger. Direct policies grant
-known NVIDIA character nodes; native permissions/cgroups still govern access.
-OCI uses Docker's explicit UUID `--gpus` (CSV quoting for multiple devices), Podman
-CDI UUID device names, or podman-hpc `--gpu` plus the CUDA mask. CPU containers
-override `NVIDIA_VISIBLE_DEVICES=void` to defeat image defaults. The CUDA mask is
-cooperative visibility, not a security claim. Physical GPU execution remains
-unvalidated; tests simulate inventory and check real subprocess masks/native argv.
+**GPU visibility comes from the allocation, not device discovery.** No CUDA probe,
+UUID inventory, MIG detection, model verification, or custom Dask worker. Local
+launch freezes the externally supplied nonempty CUDA mask and optional device
+order. Slurm validates native GPU counts, preserves its mask, and sets
+`CUDA_DEVICE_ORDER=PCI_BUS_ID`. `exec_policy(use_gpus=True)` inherits that whole
+mask; CPU commands get an empty one. Never mutate the reusable worker's environment.
+Direct GPU policies grant native NVIDIA character nodes; OS permissions and cgroups
+remain authoritative. Container GPU execution supports podman-hpc `--gpu` only;
+ordinary Docker/Podman GPU requests fail explicitly. CPU containers remain supported
+on all runtimes and set `NVIDIA_VISIBLE_DEVICES=void`. Physical GPU execution remains
+unvalidated; tests check real subprocess masks and native argv without GPU hardware.
 
 **One catalog selector, `LC_COMPUTE_CONFIG` (2026-09).** `lc compute --config`
 was removed: `run` and `materialize` resolve clusters through the catalog too,

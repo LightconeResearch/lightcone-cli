@@ -29,7 +29,6 @@ import shutil
 import sys
 import tarfile
 import tempfile
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -410,7 +409,7 @@ def converge(runtime: Runtime) -> list[str]:
 
 def policy_for(
     runtime: Runtime, read_paths: list[Path], *, write_dir: Path | None = None,
-    gpu_devices: Sequence[str] = (),
+    use_gpus: bool = False,
 ) -> sandbox.Policy:
     """Build the exec policy for a resolved runtime.
 
@@ -424,18 +423,22 @@ def policy_for(
         runtime: The resolved runtime.
         read_paths: Declared inputs, as :func:`sandbox.exec_policy` takes.
         write_dir: The directory a recipe's output lands in; absent for a probe.
-        gpu_devices: Allocated CUDA device UUIDs to expose to this command.
+        use_gpus: Inherit the allocation's CUDA mask; otherwise hide GPUs.
 
     Returns:
         The policy for this world.
     """
+    if use_gpus and runtime.mode == "containerized":
+        from lightcone.engine.sandbox.oci import require_gpu_runtime
+
+        require_gpu_runtime(runtime.runtime)
     return sandbox.exec_policy(
         runtime.root,
         read_paths=read_paths,
         env_dir=runtime.env_dir,
         containerized=runtime.mode == "containerized",
         write_dir=write_dir,
-        gpu_devices=gpu_devices,
+        use_gpus=use_gpus,
     )
 
 

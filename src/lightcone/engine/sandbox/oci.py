@@ -22,12 +22,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox.boundary import SANDBOX_ENV
 from lightcone.engine.sandbox.model import Attestation, Capability, Policy
 
 #: The runtimes this backend can speak for — the one statement of the
 #: set, so the type does not get hand-copied out of step at its uses.
 OCIRuntime = Literal["podman", "docker", "podman-hpc"]
+
+
+def require_gpu_runtime(runtime: str) -> None:
+    """Refuse runtimes that need device translation outside the native allocation."""
+    if runtime != "podman-hpc":
+        raise ProjectError(
+            "GPU containers require podman-hpc; Docker/Podman GPUs are not supported"
+        )
 
 
 @dataclass(frozen=True)
@@ -81,21 +90,16 @@ class OCIBackend:
         # host-layout collision `_write_roots` documents for direct mode.
         mounts = [f"--volume={path.resolve()}:{path}:ro" for path in policy.read]
         mounts += [f"--volume={path.resolve()}:{path}:rw" for path in policy.write]
-        devices = policy.env.get("CUDA_VISIBLE_DEVICES", "")
+        gpu_mask = policy.env.get("CUDA_VISIBLE_DEVICES", "")
         environment = dict(policy.env)
-        if not devices:
+        if not gpu_mask:
             # CUDA images may default to all devices under an NVIDIA runtime.
             environment["NVIDIA_VISIBLE_DEVICES"] = "void"
         overlay = [f"--env={k}={v}" for k, v in sorted(environment.items())]
         gpu_flags = []
-        if devices:
-            if self.runtime == "podman-hpc":
-                gpu_flags = ["--gpu"]
-            elif self.runtime == "docker":
-                # Docker parses this argument as CSV, including its quotes.
-                gpu_flags = ["--gpus", f'"device={devices}"']
-            else:
-                gpu_flags = [f"--device=nvidia.com/gpu={device}" for device in devices.split(",")]
+        if gpu_mask:
+            require_gpu_runtime(self.runtime)
+            gpu_flags = ["--gpu"]
         return [
             self.runtime, "run", "--rm",
             "--entrypoint", "",

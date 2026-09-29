@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from decimal import Decimal, localcontext
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -34,7 +35,6 @@ from lightcone.engine.compute.model import (
     memory_bytes,
     validate_name,
 )
-from lightcone.engine.gpu import Device
 
 NAMESPACE = "5a9d058c-7c6e-4e2a-919b-786f1148536c"
 IDENTITY = Identity(namespace=NAMESPACE, native_id="1234", token="abc")
@@ -42,7 +42,6 @@ IDENTITY = Identity(namespace=NAMESPACE, native_id="1234", token="abc")
 
 @pytest.fixture
 def default_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setattr("lightcone.engine.gpu.inventory", lambda: ())
     expanduser = Path.expanduser
 
     def expand(path: Path) -> Path:
@@ -456,51 +455,27 @@ def test_accelerator_selection_honors_type_and_exact_count(
         compute.Compute().plan(Request.parse("4", "8", gpus="A100:4"))
 
 
-def test_builtin_gpu_offer_is_optional_and_does_not_replace_cpu_offer(
+def test_builtin_catalog_stays_cpu_only_without_probing_native_gpus(
     default_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("lightcone.engine.gpu.inventory", lambda: (
-        Device("GPU-one", "A100"), Device("GPU-two", "A100"),
-    ))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    probe = MagicMock(side_effect=AssertionError("catalog loading must not probe GPU hardware"))
+    monkeypatch.setattr(subprocess, "run", probe)
     loaded = Catalog.load()
     assert [(offer.name, offer.resources.gpus) for offer in loaded.offers] == [
-        ("local", 0), ("local-gpu", 2),
+        ("local", 0),
     ]
-    assert loaded.offers[1].connection == loaded.offers[0].connection
-    assert loaded.offers[1].resources.accelerator_name == "A100"
+    probe.assert_not_called()
     assert not list(default_home.iterdir())
-
-
-def test_failed_optional_gpu_discovery_keeps_builtin_cpu_offer(
-    default_home: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def failed() -> tuple[Device, ...]:
-        raise ComputeError("CUDA driver could not enumerate visible devices")
-
-    monkeypatch.setattr("lightcone.engine.gpu.inventory", failed)
-    assert [(offer.name, offer.resources.gpus) for offer in Catalog.load().offers] == [("local", 0)]
-
-
-def test_builtin_mixed_gpu_inventory_exposes_each_model_separately(
-    default_home: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("lightcone.engine.gpu.inventory", lambda: (
-        Device("GPU-one", "H100"), Device("GPU-two", "A100"), Device("GPU-three", "H100"),
-    ))
-    loaded = Catalog.load()
-    assert [(offer.name, offer.resources.as_dict()["accelerators"]) for offer in loaded.offers] == [
-        ("local", None), ("local-gpu-1", {"A100": 1}), ("local-gpu-2", {"H100": 2}),
-    ]
 
 
 def test_configured_catalogs_do_not_probe_local_gpus(
     catalog: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def unexpected() -> tuple[Device, ...]:
-        pytest.fail("configured catalogs must not discover ambient local GPUs")
-
-    monkeypatch.setattr("lightcone.engine.gpu.inventory", unexpected)
+    probe = MagicMock(side_effect=AssertionError("catalog loading must not probe GPU hardware"))
+    monkeypatch.setattr(subprocess, "run", probe)
     assert Catalog.load().offers
+    probe.assert_not_called()
 
 
 def test_cli_gpu_request_and_resource_output(catalog: Path, provider: MagicMock) -> None:

@@ -19,7 +19,6 @@ from uuid import UUID, uuid4
 
 import psutil
 
-from lightcone.engine import gpu
 from lightcone.engine.compute.model import (
     ComputeError,
     Connection,
@@ -42,7 +41,6 @@ from lightcone.engine.compute.runtime import (
     read_private_json,
     write_private_json,
 )
-from lightcone.engine.project import ProjectError
 
 _OWNER_MODULE = "lightcone.engine.compute.local_runtime"
 _STOP_GRACE = 3.0
@@ -106,21 +104,15 @@ class LocalProvider:
 
         if offer.resources.cpus > CPU_COUNT or offer.resources.memory_bytes > MEMORY_LIMIT:
             raise UnavailableOfferError("the local offer exceeds this host's CPU or RAM capacity")
-        try:
-            inventory = gpu.inventory() if offer.resources.gpus else ()
-        except ProjectError as exc:
-            raise UnavailableOfferError(str(exc)) from exc
-        accelerator = offer.resources.accelerator_name or "GPU"
-        available = tuple(
-            device for device in inventory
-            if accelerator.casefold() == "gpu" or device.name.casefold() == accelerator.casefold()
-        )
-        if len(available) < offer.resources.gpus:
-            raise UnavailableOfferError(
-                f"the local offer exceeds this host's visible CUDA capacity for {accelerator}"
-            )
-        selected = available[:offer.resources.gpus]
-        names = {device.name for device in selected}
+        mask = ""
+        if offer.resources.gpus:
+            if sys.platform != "linux":
+                raise UnavailableOfferError("local GPU allocations require Linux")
+            mask = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            if not mask:
+                raise UnavailableOfferError(
+                    "local GPU offers require an explicit nonempty CUDA_VISIBLE_DEVICES mask"
+                )
         seconds = request.seconds if request.seconds is not None else offer.time.default_seconds
         if seconds <= 0 or seconds > offer.time.max_seconds:
             raise ComputeError("local allocations require a finite time within the offer's limit")
@@ -140,8 +132,8 @@ class LocalProvider:
                 "connection_root": str(self.root),
                 "scratch_root": str(scratch),
                 "task_slots_per_node": slots,
-                "gpu_devices": tuple(device.uuid for device in selected),
-                "accelerator_name": next(iter(names)) if len(names) == 1 else "GPU",
+                "cuda_visible_devices": mask,
+                "cuda_device_order": os.environ.get("CUDA_DEVICE_ORDER"),
                 "resource_enforcement": "cooperative; no exclusive CPU, RAM, or GPU reservation",
                 "termination_grace_seconds": _STOP_GRACE,
             },
@@ -153,11 +145,6 @@ class LocalProvider:
             raise ComputeError("local launch plan belongs to a different connection or node count")
         if plan.name is not None:
             validate_name(plan.name)
-        devices = tuple(plan.details["gpu_devices"])
-        if len(devices) != plan.resources.gpus or (
-            devices and not set(devices).issubset(gpu.visible_devices())
-        ):
-            raise UnavailableOfferError("the local plan's selected CUDA GPUs are no longer visible")
         boot = _boot_identity()
         token = uuid4().hex
         directory = private_directory(self.root / token, create=True)
@@ -174,6 +161,11 @@ class LocalProvider:
         )
         process: subprocess.Popen[bytes] | None = None
         identity: Identity | None = None
+        environment = {**os.environ, "CUDA_VISIBLE_DEVICES": plan.details["cuda_visible_devices"]}
+        if plan.details["cuda_device_order"] is None:
+            environment.pop("CUDA_DEVICE_ORDER", None)
+        else:
+            environment["CUDA_DEVICE_ORDER"] = plan.details["cuda_device_order"]
         try:
             # This allocation outlives a command; the ordinary run-to-completion
             # subprocess seam cannot own it. Logs are discarded rather than grow.
@@ -184,7 +176,7 @@ class LocalProvider:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
                 close_fds=True,
-                env={**os.environ, "CUDA_VISIBLE_DEVICES": ",".join(devices)},
+                env=environment,
             )
             identity = Identity(
                 namespace=self.connection.namespace, native_id=str(process.pid), token=token,
@@ -200,7 +192,7 @@ class LocalProvider:
                 "cpus": plan.resources.cpus,
                 "memory": plan.resources.memory_bytes,
                 "gpus": plan.resources.gpus,
-                "accelerator_name": plan.details["accelerator_name"],
+                "accelerator_name": plan.resources.accelerator_name or "GPU",
             }
             write_private_json(directory / "identity.json", record)
             # The child waits for this file before publishing its TLS connection.

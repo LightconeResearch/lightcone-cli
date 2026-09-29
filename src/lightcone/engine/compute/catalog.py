@@ -10,9 +10,6 @@ from typing import Annotated, Any, Self
 import yaml
 from pydantic import Field, ValidationError, model_validator
 
-from lightcone.engine import gpu
-from lightcone.engine.project import ProjectError
-
 from .model import (
     ComputeError,
     ComputeModel,
@@ -91,29 +88,15 @@ class Catalog(ComputeModel):
         except FileNotFoundError as exc:
             if configured or path.is_symlink():
                 raise ComputeError(f"cannot read compute catalog {path}: {exc}") from exc
-            local = Offer(
-                name="local", connection="local",
-                resources=Resources(cpus=1, memory_gib=Decimal(1)),
-                max_nodes=1, time=TimeLimits(default="30m", max="2h"),
-                startup=Startup(class_="fast"),
-            )
-            offers = [local]
-            try:
-                devices = gpu.inventory()
-            except ProjectError:
-                devices = ()  # Optional discovery must not disable CPU-only execution.
-            names = sorted({device.name for device in devices})
-            for index, name in enumerate(names, 1):
-                offers.append(local.replace(
-                    name="local-gpu" if len(names) == 1 else f"local-gpu-{index}",
-                    resources=local.resources.replace(accelerators={
-                        name: sum(device.name == name for device in devices),
-                    }),
-                ))
             return cls(
                 version=1,
                 connections={"local": Connection(namespace=_LOCAL_NAMESPACE, provider="local")},
-                offers=offers,
+                offers=[Offer(
+                    name="local", connection="local",
+                    resources=Resources(cpus=1, memory_gib=Decimal(1)),
+                    max_nodes=1, time=TimeLimits(default="30m", max="2h"),
+                    startup=Startup(class_="fast"),
+                )],
             )
         except (OSError, UnicodeError, yaml.YAMLError) as exc:
             raise ComputeError(f"cannot read compute catalog {path}: {exc}") from exc

@@ -7,7 +7,6 @@ here with nothing spawned and no runtime installed.
 
 from __future__ import annotations
 
-import csv
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from lightcone.engine.project import ProjectError
 from lightcone.engine.sandbox import boundary, exec_policy
 from lightcone.engine.sandbox.boundary import Unavailable
 from lightcone.engine.sandbox.model import Policy
@@ -187,26 +187,29 @@ def test_runtimes_differ_only_in_their_spellings(root: Path, policy: Policy) -> 
     assert p == d == h
 
 
-@pytest.mark.parametrize("runtime", ["podman", "docker", "podman-hpc"])
-def test_gpu_flags_name_only_the_requested_devices(
-    root: Path, policy: Policy, runtime: str,
+def test_podman_hpc_preserves_the_allocation_mask_and_enables_native_gpu_support(
+    root: Path, policy: Policy,
 ) -> None:
-    devices = "GPU-first,GPU-second"
-    selected = replace(policy, env={**policy.env, "CUDA_VISIBLE_DEVICES": devices})
-    backend = _backend(root, runtime)
+    devices = "2,0"
+    selected = replace(policy, env={
+        **policy.env, "CUDA_VISIBLE_DEVICES": devices, "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+    })
+    backend = _backend(root, "podman-hpc")
     argv = backend.wrap(selected, ["true"])
     assert argv == backend.wrap(selected, ["true"])
     assert f"--env=CUDA_VISIBLE_DEVICES={devices}" in argv
-    if runtime == "podman-hpc":
-        assert "--gpu" in argv
-    elif runtime == "docker":
-        assert next(csv.reader([argv[argv.index("--gpus") + 1]])) == [f"device={devices}"]
-    else:
-        assert [arg for arg in argv if arg.startswith("--device=")] == [
-            "--device=nvidia.com/gpu=GPU-first", "--device=nvidia.com/gpu=GPU-second",
-        ]
-    assert "all" not in argv
-    assert "--device=nvidia.com/gpu=all" not in argv
+    assert "--env=CUDA_DEVICE_ORDER=PCI_BUS_ID" in argv
+    assert "--gpu" in argv
+    assert not any(arg.startswith("--device=") for arg in argv)
+
+
+@pytest.mark.parametrize("runtime", ["podman", "docker"])
+def test_generic_gpu_containers_are_explicitly_refused(
+    root: Path, policy: Policy, runtime: str,
+) -> None:
+    selected = replace(policy, env={**policy.env, "CUDA_VISIBLE_DEVICES": "2,0"})
+    with pytest.raises(ProjectError, match="GPU containers require podman-hpc"):
+        _backend(root, runtime).wrap(selected, ["true"])
 
 
 @pytest.mark.parametrize("runtime", ["podman", "docker", "podman-hpc"])
