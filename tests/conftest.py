@@ -28,21 +28,24 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
-@pytest.fixture(scope="session")
-def local_allocation_lock_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Give each test session a lock root shared with its independent launchers."""
-    return tmp_path_factory.mktemp("local-allocation-locks")
-
-
 @pytest.fixture
-def local_allocation_lock(
-    local_allocation_lock_root: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Exercise the lifetime lock without contending with other test sessions."""
+def local_allocation_scope(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Count only this session's local allocations, never the developer's or another suite's.
+
+    Returns:
+        The session's base temporary directory, for independent launchers to scope by.
+    """
     from lightcone.engine.compute import local
 
-    monkeypatch.setattr(local, "_LOCK_ROOT", local_allocation_lock_root)
+    root = tmp_path_factory.getbasetemp()
+    owners = local._running_owners
+    monkeypatch.setattr(
+        local, "_running_owners", lambda: [o for o in owners() if o[1].is_relative_to(root)],
+    )
     monkeypatch.delenv("NERSC_HOST", raising=False)
+    return root
 
 
 @pytest.fixture(autouse=True)

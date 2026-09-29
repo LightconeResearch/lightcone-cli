@@ -221,21 +221,24 @@ command. A driver that exits before every task reports says so with
 `UNSTOPPED`: closing a client cannot prove that a remote subprocess stopped. Probes preserve both streams;
 materialization sends recipe output to stderr to leave stdout for its report.
 
-A host-local OS file lock limits local allocations to one per user, independent of
-connection roots and namespaces. The launcher acquires it before spawning and passes
-the descriptor to the detached owner, which retains it for its lifetime. The lock
-resides under the account's home directory at
-`.lightcone/local-locks/<boot-uuid>/allocation.lock`, independently of `HOME`,
-`TMPDIR`, and catalog paths. Its boot UUID keeps hosts with a shared home separate.
-The file is never unlinked; OS process exit releases the lock without stale-lock
-cleanup. Advisory metadata identifies the owning cluster, catalog, and connection
-root when a competing launch is refused.
-The account-home filesystem must support `flock`; the login-node guard alone
-does not establish filesystem support on an interactive compute node.
+Local allocations are limited to one per user on each machine, independent of
+connection roots and namespaces. Before spawning, the launcher scans the process
+table for a live owner of the same user: a session leader running `-P -m
+lightcone.engine.compute.local_runtime <directory>`, which excludes workers forked
+from it. The process table spans every catalog and connection root and needs no
+file lock, which some shared home filesystems, NERSC's included, do not support.
+The owner's directory argument locates its identity record, so a refused launch
+names the running cluster, its connection root, and the catalog it was launched
+with. A record not yet written means the owner is still starting; one that is
+missing or unreadable after that never recovers, so the refusal names the
+owner's PID instead. Two limits are accepted rather than closed with a lock:
+launches that overlap can both pass the scan, and the scan covers one PID
+namespace, so a container sharing the home directory does not see the host's
+owner.
 
 A startup pipe lets the owner proceed only after the launcher publishes its
 identity and launch records. If the launcher dies before completing publication,
-the pipe closes and the owner exits, releasing the lock. Failures before identity
+the pipe closes and the owner exits. Failures before identity
 publication remove the launcher's private files; a published identity remains
 inspectable after a startup failure.
 

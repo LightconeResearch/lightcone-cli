@@ -41,13 +41,18 @@ Use `lc compute status NAME` for resource details and Dask readiness.
 ## Local allocations
 
 Local resources are cooperative limits, not an exclusive CPU/RAM reservation.
-Only one local cluster can run per user on each machine. An OS lock held by the
-detached owner prevents concurrent launches, including through different names,
-catalogs, namespaces, or connection roots. End the existing cluster before
-launching another. The lock releases when its owner exits, including on failure
-or walltime expiry. A refusal identifies the owning cluster and its original
-catalog and connection root. Use that catalog to inspect or stop the cluster if
-the current catalog no longer includes its connection.
+Only one local cluster can run per user on each machine. A launch checks the
+process table for a running local cluster of yours and refuses if it finds one,
+including one launched through a different name, catalog, namespace, or
+connection root. End the existing cluster before launching another; once its
+owner process exits, including on failure or walltime expiry, a new launch
+proceeds. A refusal identifies the running cluster and its original catalog and
+connection root. Use that catalog to inspect or stop the cluster if the current
+catalog no longer includes its connection. If the cluster's record is missing or
+damaged, the refusal names its process ID instead, to stop with `kill`.
+Launches that overlap can both succeed, and the check sees only the processes
+visible where `lc` runs: a launch inside a container does not see a cluster
+started outside it.
 An allocation owns a detached process session and standard `LocalCluster`: one
 worker process with `task_slots_per_node` threads, and a scheduler that listens
 on `127.0.0.1` over TLS. Its own logs are discarded; a startup failure is kept
@@ -70,11 +75,6 @@ The guard permits compute nodes such as `nid200021`, including interactive
 sessions. A `SLURM_JOB_ID` variable does not exempt a login node.
 See NERSC's [environment conventions](https://docs.nersc.gov/environment/) and
 [interactive sessions](https://docs.nersc.gov/connect/vscode/).
-
-Local startup also requires `flock` support in the account home, where the
-singleton lock lives. NERSC documents that its compute-node home mounts do not
-support `flock`, so this separate requirement can prevent local startup there;
-the Slurm provider does not use that lock.
 
 A local connection's optional `launch` settings are `connection_root` (default
 `~/.lightcone/compute`), `scratch_root` (default: the temporary directory),

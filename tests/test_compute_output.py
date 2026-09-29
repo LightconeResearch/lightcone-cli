@@ -19,7 +19,7 @@ from lightcone.engine.compute import Compute
 from lightcone.engine.compute.model import GIB, Request
 from lightcone.engine.sandbox.boundary import _STDERR_TAIL_BYTES, _Tail, write_output
 
-pytestmark = pytest.mark.usefixtures("local_allocation_lock")
+pytestmark = pytest.mark.usefixtures("local_allocation_scope")
 
 
 @pytest.fixture

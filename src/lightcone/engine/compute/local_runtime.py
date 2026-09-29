@@ -26,8 +26,6 @@ def main() -> None:
     os.umask(0o077)
     directory = private_directory(Path(sys.argv[1]))
     launch = read_private_json(directory / "launch.json")
-    # Keep the inherited lock until process exit, but exclude worker execs.
-    os.set_inheritable(int(launch["lock_fd"]), False)
     startup_fd = int(launch["startup_fd"])
     os.set_inheritable(startup_fd, False)
     if os.getsid(0) != os.getpid() or os.getpgrp() != os.getpid():

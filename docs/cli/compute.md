@@ -105,8 +105,9 @@ name only once ready; JSON adds `ready: true`. A timeout or startup failure exit
 or terminates the accepted allocation.
 
 Only one local cluster may run per user on a machine, across names, namespaces,
-and configured roots. Concurrent launches are serialized by an OS lifetime lock;
-a second launch fails until the existing cluster ends.
+and configured roots. A launch that finds one of your local clusters running in
+the process table fails until that cluster ends; launches that overlap can both
+succeed.
 
 `--json` emits versioned (`schema_version: 1`), allowlisted data without
 scheduler credentials:

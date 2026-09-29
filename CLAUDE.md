@@ -2141,7 +2141,17 @@ unlinks before writing; a new tampering test should too.
   own offers. Login-node catalogs disable local launch and execution through
   `local.enabled: false`. Inspection and termination stay available. One local
   allocation per user per machine is enforced across catalogs and connection
-  roots by an OS lock held throughout the detached owner's lifetime.
+  roots by scanning the process table for a live owner before launch
+  (`local._running_owners`: a session leader of this user running
+  `_OWNER_ARGS`, the command launch and `_process` share). This replaced an
+  `flock` held for the owner's lifetime, because NERSC home filesystems do
+  not support `flock`. Accepted residue: overlapping launches can both start,
+  and the scan covers one PID namespace, so a container sharing the home
+  does not see the host's owner. A missing identity record is transient
+  ("retry shortly"); an unreadable one is not, so that refusal names the PID.
+  The suite scopes the scan to its own temporary tree
+  (`local_allocation_scope`), so a developer's running cluster does not refuse
+  test launches.
 
 - **The engine is the host's uv tool, never a project dependency**
   (2026-08, reversing spec §2's engine-in-lock rule and deleting layer 3).
