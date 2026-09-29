@@ -7,6 +7,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,39 @@ from lightcone.engine.compute.runtime import (
 _OWNER_MODULE = "lightcone.engine.compute.local_runtime"
 _STOP_GRACE = 3.0
 _RETIRED = "ended.json"
+
+
+@contextmanager
+def _allocation_lock() -> Iterator[int]:
+    """Hold a per-user, host-local lock across catalogs and detached owner lifetime."""
+    import fcntl
+
+    # Deliberately independent of TMPDIR, connection namespaces and configured roots.
+    # Resolve /tmp for macOS, where it is an alias of /private/tmp.
+    root = private_directory(Path("/tmp").resolve() / f"lightcone-local-{os.getuid()}", create=True)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            root / "allocation.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600,
+        )
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise ComputeError("local allocation lock must be a private file owned by you")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ComputeError(
+                "a local cluster is already running or starting for this user on this machine; "
+                "stop it with lc compute down before launching another"
+            ) from exc
+        yield descriptor
+    except OSError as exc:
+        raise ComputeError(f"cannot acquire the local allocation lock: {exc}") from exc
+    finally:
+        if descriptor is not None:
+            # Do not unlock: the detached owner inherits this same open file description.
+            os.close(descriptor)
 
 
 def _boot_identity() -> str:
@@ -145,6 +179,16 @@ class LocalProvider:
             raise ComputeError("local launch plan belongs to a different connection or node count")
         if plan.name is not None:
             validate_name(plan.name)
+        with _allocation_lock() as lock_fd:
+            # Also recognize allocations launched before the lifetime lock existed.
+            if self.discover():
+                raise ComputeError(
+                    "a local cluster is already running; stop it before launching another"
+                )
+            return self._launch_locked(plan, lock_fd)
+
+    def _launch_locked(self, plan: LaunchPlan, lock_fd: int) -> Identity:
+        """Transfer the singleton lock to the allocation owner before releasing our copy."""
         boot = _boot_identity()
         token = uuid4().hex
         directory = private_directory(self.root / token, create=True)
@@ -157,6 +201,7 @@ class LocalProvider:
                 "task_slots": plan.details["task_slots_per_node"],
                 "scratch": str(scratch),
                 "identity": "",
+                "lock_fd": lock_fd,
             },
         )
         process: subprocess.Popen[bytes] | None = None
@@ -176,6 +221,7 @@ class LocalProvider:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
                 close_fds=True,
+                pass_fds=(lock_fd,),
                 env=environment,
             )
             identity = Identity(
@@ -203,6 +249,7 @@ class LocalProvider:
                     "task_slots": plan.details["task_slots_per_node"],
                     "scratch": str(scratch),
                     "identity": identity.encode(),
+                    "lock_fd": lock_fd,
                 },
             )
             return identity

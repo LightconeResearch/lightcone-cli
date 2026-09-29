@@ -169,8 +169,10 @@ config-blob id, never a tag.
 `engine.compute` owns allocation lifecycle through a small provider protocol.
 A YAML catalog supplies ordered resource offers and stable native service
 namespaces. When the implicit default file is absent, a built-in local catalog
-provides one CPU and 1 GiB without setup. GPU offers need an explicit catalog,
-which replaces the built-in defaults. Missing explicit paths and invalid files
+provides all detected usable CPUs and RAM without setup. The `local` policy can
+override that budget or disable local compute. Remote catalogs retain the default
+local offer; explicit local connections supply their own offers. GPU offers need
+an explicit catalog. Missing explicit paths and invalid files
 remain errors. No catalog is written and
 no allocation starts until `compute launch` resolves resources and submits once. Slurm queries
 and validated local OS identities are authoritative for allocations; Dask is the

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -96,9 +97,9 @@ def resources(as_json: bool) -> None:
 
 
 @compute.command()
-@click.option("--name", help="Cluster name; defaults to a generated short name.")
-@click.option("--cpus", required=True, help="Logical CPUs per node; suffix + requests a minimum.")
-@click.option("--memory", required=True,
+@click.option("--name", help="Cluster name; defaults to local for the shortcut, else a short name.")
+@click.option("--cpus", help="Logical CPUs per node; suffix + requests a minimum.")
+@click.option("--memory",
               help="Memory per node, e.g. 16 or 16GB; suffix + requests a minimum.")
 @click.option("--gpus", default="0", show_default=True,
               help="Accelerator NAME[:COUNT] per node, e.g. A100:4 or GPU:1; 0 requests CPU only.")
@@ -110,35 +111,48 @@ def resources(as_json: bool) -> None:
     "--startup", type=click.Choice(["fast"]), help="Require a fast startup service class."
 )
 @click.option("--dry-run", is_flag=True, help="Resolve the launch without allocating compute.")
+@click.option("--wait", is_flag=True, help="Wait until the new cluster is ready for execution.")
+@click.option("--timeout", type=click.FloatRange(min=0, min_open=True),
+              help="Readiness deadline in seconds (default: 300); requires --wait.")
 @click.option("--json", "as_json", is_flag=True, help="Emit structured output.")
 def launch(
     name: str | None,
-    cpus: str,
-    memory: str,
+    cpus: str | None,
+    memory: str | None,
     gpus: str,
     num_nodes: int,
     walltime: str | None,
     startup: str | None,
     dry_run: bool,
+    wait: bool,
+    timeout: float | None,
     as_json: bool,
 ) -> None:
-    """Create one new cluster from a provider-independent resource request."""
+    """Create a cluster; omit CPU and memory to use the default local offer."""
     from lightcone.engine.compute import Compute
-    from lightcone.engine.compute.model import Request
+    from lightcone.engine.compute.model import ComputeError, Request
 
     with _errors(as_json):
+        if timeout is not None and not wait:
+            raise ComputeError("--timeout requires --wait")
+        if timeout is not None and not math.isfinite(timeout):
+            raise ComputeError("timeout must be finite and positive")
+        if dry_run and wait:
+            raise ComputeError("--wait cannot be combined with --dry-run")
+        if (cpus is None) != (memory is None):
+            raise ComputeError("supply both --cpus and --memory, or omit both for local compute")
         service = Compute()
-        plan = service.plan(
-            Request.parse(
-                cpus,
-                memory,
-                gpus=gpus,
-                num_nodes=num_nodes,
-                time=walltime,
-                startup=startup,
-            ),
-            name=name,
-        )
+        if cpus is None or memory is None:
+            plan = service.plan_local(
+                name=name, time=walltime, gpus=gpus, num_nodes=num_nodes, startup=startup,
+            )
+        else:
+            plan = service.plan(
+                Request.parse(
+                    cpus, memory, gpus=gpus, num_nodes=num_nodes, time=walltime, startup=startup,
+                ),
+                name=name,
+            )
         data: dict[str, Any] = {"schema_version": 1, "plan": plan.as_dict()}
         if dry_run:
             if as_json:
@@ -148,11 +162,26 @@ def launch(
             return
         identity = service.launch(plan)
         data.update(id=identity.encode(), name=identity.name, accepted=True)
+        if wait:
+            if not as_json:
+                click.echo(
+                    f"Allocation accepted: {identity.name}. Waiting for readiness.", err=True,
+                )
+            try:
+                snapshot = service.status(identity.encode(), wait=True, timeout=timeout or 300)
+                if not snapshot.ready:
+                    raise ComputeError(
+                        f"cluster {identity.name} is {snapshot.phase}: {snapshot.reason}",
+                    )
+            except ComputeError as exc:
+                raise ComputeError(str(exc), cluster_id=identity.encode()) from exc
+            data["ready"] = True
         if as_json:
             click.echo(json.dumps(data))
         else:
             click.echo(identity.name)
             click.echo(
+                f"Cluster {identity.name} is ready." if wait else
                 f"Allocation accepted. Use lc compute status {identity.name} --wait for readiness.",
                 err=True,
             )

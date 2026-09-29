@@ -20,7 +20,9 @@ from uuid import uuid4
 
 import psutil
 import pytest
+from click.testing import CliRunner
 
+from lightcone.cli.commands import main
 from lightcone.engine.compute import Compute, local, local_runtime
 from lightcone.engine.compute.catalog import Catalog
 from lightcone.engine.compute.local import LocalProvider
@@ -64,6 +66,68 @@ def _launch(provider: LocalProvider, *, seconds: int = 60) -> Identity:
     return provider.launch(
         provider.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2, seconds=seconds))
     )
+
+
+def test_singleton_survives_cli_exit_and_spans_names_and_connection_roots(
+    provider: LocalProvider, tmp_path: Path,
+) -> None:
+    # Independent launchers compete for the same host/user lock, with distinct catalogs.
+    script = """
+import json, sys
+from lightcone.engine.compute.local import LocalProvider
+from lightcone.engine.compute.model import (
+    Connection, ComputeError, Offer, Request, Resources, TimeLimits,
+)
+p = LocalProvider(Connection.model_validate_json(sys.argv[1]))
+offer = Offer(name='small', connection='workstation', resources=Resources(cpus=1, memory_gib=0.5),
+              max_nodes=1, time=TimeLimits(default='1m', max='1m'))
+plan = p.plan(offer, Request(cpus=1, memory_bytes=512 * 1024**2)).replace(name=sys.argv[2])
+input()
+try:
+    print(json.dumps({'id': p.launch(plan).encode()}))
+except ComputeError as exc:
+    print(json.dumps({'error': str(exc)}))
+"""
+    other = LocalProvider(provider.connection.replace(
+        namespace=str(uuid4()), launch={"connection_root": str(tmp_path / "other")},
+    ))
+    providers = [provider, other]
+    processes = [subprocess.Popen(
+        [sys.executable, "-c", script, item.connection.model_dump_json(), f"local-{index}"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ) for index, item in enumerate(providers)]
+    identities: list[tuple[LocalProvider, Identity]] = []
+    try:
+        for process in processes:
+            assert process.stdin is not None
+            process.stdin.write("go\n")
+            process.stdin.flush()
+        results = []
+        for item, process in zip(providers, processes):
+            stdout, stderr = process.communicate(timeout=20)
+            assert process.returncode == 0, stderr
+            result = json.loads(stdout)
+            results.append(result)
+            if "id" in result:
+                identities.append((item, Identity.decode(result["id"])))
+        assert len(identities) == 1, results
+        assert "already running or starting" in next(r["error"] for r in results if "error" in r)
+        owner, identity = identities[0]
+        _ready(owner, identity)
+        with pytest.raises(ComputeError, match="already running"):
+            _launch(other)
+        owner.terminate(identity)
+        _ended(owner, identity)
+        replacement = _launch(other)
+        identities.append((other, replacement))
+        _ready(other, replacement)
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+        for item, identity in identities:
+            item.terminate(identity)
 
 
 def _ready(provider: LocalProvider, identity: Identity) -> dict[str, object]:
@@ -195,9 +259,16 @@ def test_builtin_allocation_can_be_reopened_in_another_process_without_a_catalog
 
     monkeypatch.setattr(Path, "expanduser", expand)
     monkeypatch.delenv("LC_COMPUTE_CONFIG", raising=False)
-    service = Compute()
-    identity = service.launch(service.plan(Request(cpus=1, memory_bytes=GIB, seconds=60)))
+    monkeypatch.setattr("dask.system.CPU_COUNT", 1)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", GIB)
+    result = CliRunner().invoke(main, [
+        "compute", "launch", "--wait", "--time", "1m", "--timeout", "20", "--json",
+    ])
+    data = json.loads(result.stdout)
+    identity = Identity.decode(data["id"])
     try:
+        assert result.exit_code == 0, result.output
+        assert data["ready"] and data["name"] == "local"
         script = """
 import sys
 from pathlib import Path
@@ -500,22 +571,20 @@ def test_command_line_access_denial_requires_confirmed_exit(
 def test_failed_spawn_and_unpublished_launch_do_not_hide_healthy_allocations(
     provider: LocalProvider, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    popen = subprocess.Popen
+    with monkeypatch.context() as patch:
+        def fail(argv: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+            if "lightcone.engine.compute.local_runtime" in argv:
+                raise OSError("configured interpreter cannot execute")
+            return popen(argv, **kwargs)
+
+        patch.setattr("lightcone.engine.compute.local.subprocess.Popen", fail)
+        with pytest.raises(ComputeError, match="cannot execute"):
+            _launch(provider)
+    # A failed spawn must release the singleton lock as well as its private files.
     identity = _launch(provider)
     try:
         _ready(provider, identity)
-        before = set(provider.root.iterdir())
-        popen = subprocess.Popen
-        with monkeypatch.context() as patch:
-            def fail(argv: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
-                if "lightcone.engine.compute.local_runtime" in argv:
-                    raise OSError("configured interpreter cannot execute")
-                # macOS also uses Popen for its native boot-identity query.
-                return popen(argv, **kwargs)
-
-            patch.setattr("lightcone.engine.compute.local.subprocess.Popen", fail)
-            with pytest.raises(ComputeError, match="cannot execute"):
-                _launch(provider)
-        assert set(provider.root.iterdir()) == before
         # A launcher interrupted before identity publication can also leave a
         # directory. This is not a published allocation or a discovery error.
         interrupted = private_directory(provider.root / uuid4().hex, create=True)

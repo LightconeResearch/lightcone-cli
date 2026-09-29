@@ -57,12 +57,13 @@ def default_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def catalog(default_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "compute.yaml"
     path.write_text(
         yaml.safe_dump(
             {
                 "version": 1,
+                "local": {"enabled": False},
                 "connections": {"test": {"namespace": NAMESPACE, "provider": "fake"}},
                 "offers": [
                     {
@@ -251,6 +252,8 @@ def test_incomplete_discovery_cannot_establish_names_but_full_ids_still_work(
 def test_missing_default_catalog_exposes_stable_local_resources_without_writing_files(
     default_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("dask.system.CPU_COUNT", 1)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", GIB)
     first, second = Catalog.load(), Catalog.load()
     assert first == second
     assert set(first.connections) == {"local"}
@@ -291,7 +294,7 @@ def test_missing_default_catalog_exposes_stable_local_resources_without_writing_
     assert list(default_home.iterdir()) == []
 
 
-def test_configured_catalogs_replace_the_builtin_and_obey_path_precedence(
+def test_configured_catalogs_can_disable_local_and_obey_path_precedence(
     catalog: Path, default_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LC_COMPUTE_CONFIG", raising=False)
@@ -299,11 +302,10 @@ def test_configured_catalogs_replace_the_builtin_and_obey_path_precedence(
     default.parent.mkdir()
     default.write_text(catalog.read_text())
     configured = Catalog.load()
-    assert set(configured.connections) == {"test"}
+    assert set(configured.connections) == {"test", "local"}
     assert [offer.name for offer in configured.offers] == ["quick", "large"]
-    # An empty configured catalog explicitly exposes nothing; the builtin is
-    # never merged into it, whether selected by default, environment, or option.
-    default.write_text("version: 1\nconnections: {}\noffers: []\n")
+    # Disabled local connections remain available for inspection and termination.
+    default.write_text("version: 1\nlocal: {enabled: false}\nconnections: {}\noffers: []\n")
     assert Catalog.load().offers == []
     monkeypatch.setenv("LC_COMPUTE_CONFIG", str(catalog))
     assert Catalog.load() == configured
@@ -473,6 +475,127 @@ def test_builtin_catalog_stays_cpu_only_without_probing_native_gpus(
     ]
     probe.assert_not_called()
     assert not list(default_home.iterdir())
+
+
+def test_local_shortcut_uses_detected_capacity_without_writing_files(
+    default_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dask.system.CPU_COUNT", 6)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 7 * GIB + 123)
+    result = CliRunner().invoke(main, ["compute", "launch", "--dry-run", "--json"])
+    assert result.exit_code == 0, result.output
+    plan = compute.Compute().plan_local()
+    assert plan.name == "local"
+    assert plan.resources.cpus == 6
+    assert plan.resources.memory_bytes == 7 * GIB + 123
+    assert plan.details["task_slots_per_node"] == 6
+    assert json.loads(result.stdout)["plan"] == plan.as_dict()
+    assert not list(default_home.iterdir())
+
+
+def test_local_config_overrides_default_and_survives_disabling(
+    default_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dask.system.CPU_COUNT", 8)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 16 * GIB)
+    path = default_home / "compute.yaml"
+    path.write_text("version: 1\nlocal:\n  resources: {cpus: 2, memory: 3}\n")
+    monkeypatch.setenv("LC_COMPUTE_CONFIG", str(path))
+    service = compute.Compute()
+    plan = service.plan_local(name="sandbox", time="1h")
+    assert (plan.name, plan.resources.cpus, plan.resources.memory_bytes) == ("sandbox", 2, 3 * GIB)
+    assert plan.seconds == 3600
+    connection = plan.connection
+    path.write_text("version: 1\nlocal: {enabled: false}\n")
+    disabled = compute.Compute()
+    assert not disabled.resources()["offers"]
+    assert disabled.catalog.connection_for(connection.namespace) == connection
+    with pytest.raises(ComputeError, match="disabled"):
+        disabled.plan_local()
+    with pytest.raises(ComputeError, match="disabled"):
+        disabled.launch(plan)
+    with pytest.raises(ComputeError, match="no configured offer"):
+        disabled.plan(Request.parse("2", "3"))
+
+
+def test_catalog_adds_local_after_remote_offers_and_shortcut_never_selects_remote(
+    catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    data.pop("local")
+    catalog.write_text(yaml.safe_dump(data))
+    monkeypatch.setattr("dask.system.CPU_COUNT", 4)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 8 * GIB)
+    service = compute.Compute()
+    assert [offer.name for offer in service.catalog.offers] == ["quick", "large", "local"]
+    assert service.plan(Request.parse("4", "8")).offer.name == "quick"
+    assert service.plan_local().connection.provider == "local"
+    with pytest.raises(ComputeError, match="no local offer"):
+        service.plan_local(num_nodes=2)
+    provider.launch.assert_not_called()
+
+
+def test_explicit_local_offers_keep_their_sizes_and_replace_the_implicit_offer(
+    catalog: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    data["local"] = {"enabled": True}
+    data["connections"]["test"]["provider"] = "local"
+    catalog.write_text(yaml.safe_dump(data))
+    monkeypatch.setattr("dask.system.CPU_COUNT", 8)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 16 * GIB)
+    service = compute.Compute()
+    assert set(service.catalog.connections) == {"test"}
+    plan = service.plan_local()
+    assert (plan.offer.name, plan.name, plan.resources.cpus) == ("quick", "local", 4)
+    assert plan.resources.memory_bytes == 8 * GIB
+    data["local"]["resources"] = {"cpus": 2, "memory": 2}
+    catalog.write_text(yaml.safe_dump(data))
+    with pytest.raises(ComputeError, match="cannot be combined with explicit local"):
+        Catalog.load()
+
+
+def test_configured_local_budget_still_must_fit_host_capacity(
+    catalog: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    data["local"] = {"resources": {"cpus": 8, "memory": 16}}
+    catalog.write_text(yaml.safe_dump(data))
+    monkeypatch.setattr("dask.system.CPU_COUNT", 4)
+    monkeypatch.setattr("distributed.system.MEMORY_LIMIT", 8 * GIB)
+    result = CliRunner().invoke(main, ["compute", "launch", "--dry-run", "--json"])
+    assert result.exit_code == 1
+    assert "exceeds this host's CPU or RAM capacity" in json.loads(result.stdout)["error"]
+
+
+@pytest.mark.parametrize("settings, message", [
+    ({"enabled": "false"}, "local.enabled"),
+    ({"resources": {"cpus": 0, "memory": 1}}, "local.resources.cpus"),
+    ({"resources": {"cpus": 1, "memory": 1, "accelerators": "GPU:1"}}, "GPU offers"),
+])
+def test_local_policy_validation(catalog: Path, settings: object, message: str) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    data["local"] = settings
+    catalog.write_text(yaml.safe_dump(data))
+    with pytest.raises(ComputeError, match=message):
+        Catalog.load()
+
+
+def test_disabled_policy_blocks_explicit_local_offers_and_execution_but_allows_down(
+    catalog: Path, provider: MagicMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = yaml.safe_load(catalog.read_text())
+    data["connections"]["test"]["provider"] = "local"
+    catalog.write_text(yaml.safe_dump(data))
+    monkeypatch.setitem(compute.PROVIDERS, "local", lambda connection: provider)
+    service = compute.Compute()
+    assert service.catalog.offers == []
+    with pytest.raises(ComputeError, match="disabled"):
+        with compute.connect(IDENTITY.encode()):
+            pytest.fail("borrowed disabled local compute")
+    provider.connect.assert_not_called()
+    service.down(IDENTITY.encode())
+    provider.terminate.assert_called_once_with(IDENTITY)
 
 
 def test_configured_catalogs_do_not_probe_local_gpus(
@@ -851,6 +974,7 @@ def test_invalid_catalog_encoding_is_a_structured_error(catalog: Path) -> None:
 @pytest.mark.parametrize("setting", ["connection_root", "scratch_root", "python"])
 def test_local_catalog_path_types_fail_without_a_traceback(catalog: Path, setting: str) -> None:
     data = yaml.safe_load(catalog.read_text())
+    data["local"] = {"enabled": True}
     data["connections"]["test"]["provider"] = "local"
     data["connections"]["test"]["launch"] = {setting: None}
     catalog.write_text(yaml.safe_dump(data))
@@ -937,6 +1061,61 @@ def test_cli_launch_name_output_can_be_captured_without_json(
     assert json.loads(result.stdout)["id"] == identity.encode()
     assert json.loads(result.stdout)["name"] == "analysis"
     provider.terminate.assert_called_once_with(identity)
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_cli_launch_wait_returns_only_after_ready(
+    catalog: Path, provider: MagicMock, as_json: bool,
+) -> None:
+    result = CliRunner().invoke(main, [
+        "compute", "launch", "--cpus", "4", "--memory", "8", "--wait",
+        *(["--json"] if as_json else []),
+    ])
+    assert result.exit_code == 0, result.output
+    provider.launch.assert_called_once()
+    provider.inspect.assert_called_once_with(IDENTITY)
+    provider.connect.assert_called_once()
+    if as_json:
+        data = json.loads(result.stdout)
+        assert data["accepted"] and data["ready"]
+        assert data["id"] == IDENTITY.encode()
+    else:
+        assert result.stdout == IDENTITY.name + "\n"
+        assert "is ready" in result.stderr
+
+
+@pytest.mark.parametrize("phase", ["pending", "stopping", "ended"])
+def test_cli_launch_wait_failure_keeps_accepted_id_and_never_resubmits(
+    catalog: Path, provider: MagicMock, phase: str,
+) -> None:
+    provider.inspect.return_value.phase = phase
+    result = CliRunner().invoke(main, [
+        "compute", "launch", "--cpus", "4", "--memory", "8",
+        "--wait", "--timeout", "0.01", "--json",
+    ])
+    assert result.exit_code == 1, result.output
+    data = json.loads(result.stdout)
+    assert data["id"] == IDENTITY.encode()
+    assert "error" in data
+    provider.launch.assert_called_once()
+    provider.terminate.assert_not_called()
+
+
+@pytest.mark.parametrize("flags, message", [
+    (["--timeout", "1"], "requires --wait"),
+    (["--wait", "--timeout", "inf"], "finite"),
+    (["--wait", "--timeout", "nan"], "finite"),
+    (["--wait", "--dry-run"], "cannot be combined"),
+    (["--cpus", "1"], "both --cpus and --memory"),
+    (["--memory", "1"], "both --cpus and --memory"),
+])
+def test_cli_launch_rejects_invalid_flags_before_submission(
+    catalog: Path, provider: MagicMock, flags: list[str], message: str,
+) -> None:
+    result = CliRunner().invoke(main, ["compute", "launch", *flags, "--json"])
+    assert result.exit_code == 1, result.output
+    assert message in json.loads(result.stdout)["error"]
+    provider.launch.assert_not_called()
 
 
 def test_cli_partial_failure_and_ambiguous_submit(catalog: Path, provider: MagicMock) -> None:

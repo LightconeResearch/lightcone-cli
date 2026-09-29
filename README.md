@@ -32,8 +32,7 @@ cd my-analysis
 uv add numpy
 # When you are done with your edits, commit:
 git add -A && git commit -m "First analysis"
-CLUSTER=$(lc compute launch --cpus 1 --memory 1)
-lc compute status "$CLUSTER" --wait
+CLUSTER=$(lc compute launch --wait)
 # Generate outputs with full provenance tracking
 lc materialize "$CLUSTER"
 lc compute down "$CLUSTER"

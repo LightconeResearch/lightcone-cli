@@ -250,13 +250,12 @@ the record of what your results were computed with.
 ## 5. Materialize
 
 Launch the built-in local offer; no compute configuration is needed. It provides
-one CPU and 1 GiB for 30 minutes. Keep the returned ID in `CLUSTER` for this
+all usable CPUs and RAM for 30 minutes. Keep the returned ID in `CLUSTER` for this
 walkthrough. If you already have a compute catalog, its offers replace that default;
 see [Running on a Cluster](cluster.md).
 
 ```bash
-CLUSTER=$(lc compute launch --cpus 1 --memory 1 --json | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-lc compute status "$CLUSTER" --wait
+CLUSTER=$(lc compute launch --wait --json | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 ```
 
 Execution always requires this cluster ID. `lc materialize --check` can inspect

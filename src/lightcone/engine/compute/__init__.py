@@ -15,6 +15,7 @@ from .model import (
     Connection,
     Identity,
     LaunchPlan,
+    Offer,
     Provider,
     ProviderFactory,
     Request,
@@ -127,34 +128,10 @@ class Compute:
             validate_name(name)
         unavailable: list[str] = []
         for offer in self.catalog.offers:
-            if request.num_nodes > offer.max_nodes:
-                continue
-            if request.startup is not None and request.startup != offer.startup.class_:
-                continue
-            if request.seconds is not None and request.seconds > offer.time.max_seconds:
-                continue
-            if (
-                offer.resources.cpus < request.cpus
-                if request.min_cpus
-                else offer.resources.cpus != request.cpus
-            ):
-                continue
-            if (
-                offer.resources.memory_bytes < request.memory_bytes
-                if request.min_memory
-                else offer.resources.memory_bytes != request.memory_bytes
-            ):
-                continue
-            if request.accelerators is None:
-                matches_accelerators = offer.resources.accelerators is None
-            else:
-                matches_accelerators = request.accelerators.matches(offer.resources.accelerators)
-            if not matches_accelerators:
-                continue
             try:
-                provider = self.provider(self.catalog.connections[offer.connection])
-                plan = provider.plan(offer, request)
-                return plan.replace(name=name)
+                plan = self._plan_offer(offer, request, name)
+                if plan is not None:
+                    return plan
             except UnavailableOfferError as exc:
                 unavailable.append(f"{offer.name}: {exc}")
         raise ComputeError(
@@ -162,8 +139,70 @@ class Compute:
             + ("; " + "; ".join(unavailable) if unavailable else "")
         )
 
+    def _plan_offer(
+        self, offer: Offer, request: Request, name: str | None,
+    ) -> LaunchPlan | None:
+        """Match one shape and validate its provider without allocating anything."""
+        connection = self.catalog.connections[offer.connection]
+        if connection.provider == "local" and not self.catalog.local.enabled:
+            return None
+        if request.num_nodes > offer.max_nodes:
+            return None
+        if request.startup is not None and request.startup != offer.startup.class_:
+            return None
+        if request.seconds is not None and request.seconds > offer.time.max_seconds:
+            return None
+        if (
+            offer.resources.cpus < request.cpus
+            if request.min_cpus else offer.resources.cpus != request.cpus
+        ):
+            return None
+        if (
+            offer.resources.memory_bytes < request.memory_bytes
+            if request.min_memory else offer.resources.memory_bytes != request.memory_bytes
+        ):
+            return None
+        if request.accelerators is None:
+            matches = offer.resources.accelerators is None
+        else:
+            matches = request.accelerators.matches(offer.resources.accelerators)
+        if not matches:
+            return None
+        return self.provider(connection).plan(offer, request).replace(name=name)
+
+    def plan_local(
+        self, *, name: str | None = None, time: str | None = None,
+        gpus: str = "0", num_nodes: int = 1, startup: str | None = None,
+    ) -> LaunchPlan:
+        """Plan the first usable local offer, without considering remote backends."""
+        if not self.catalog.local.enabled:
+            raise ComputeError("local compute is disabled by the compute configuration")
+        name = "local" if name is None else name
+        validate_name(name)
+        unavailable: list[str] = []
+        for offer in self.catalog.offers:
+            connection = self.catalog.connections[offer.connection]
+            if connection.provider != "local":
+                continue
+            request = Request.parse(
+                str(offer.resources.cpus), f"{offer.resources.memory_bytes}B",
+                gpus=gpus, num_nodes=num_nodes, time=time, startup=startup,
+            )
+            try:
+                plan = self._plan_offer(offer, request, name)
+                if plan is not None:
+                    return plan
+            except UnavailableOfferError as exc:
+                unavailable.append(f"{offer.name}: {exc}")
+        raise ComputeError(
+            "no local offer matches; configure local resources or supply --cpus and --memory "
+            "for a remote allocation" + ("; " + "; ".join(unavailable) if unavailable else "")
+        )
+
     def launch(self, plan: LaunchPlan) -> Identity:
         """Choose an unused name from native observations, then submit exactly once."""
+        if plan.connection.provider == "local" and not self.catalog.local.enabled:
+            raise ComputeError("local compute is disabled by the compute configuration")
         if plan.name is not None:
             validate_name(plan.name)
         snapshots, errors = self.discover()
@@ -252,7 +291,13 @@ def connect(cluster_id: str, *, timeout: float = 10) -> Iterator[Any]:
     """Borrow a validated standard Dask client; detach without closing its cluster."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise ComputeError("timeout must be finite and positive")
-    provider, identity = Compute().resolve(cluster_id)
+    service = Compute()
+    provider, identity = service.resolve(cluster_id)
+    connection = service.catalog.connection_for(identity.namespace)
+    if connection.provider == "local" and not service.catalog.local.enabled:
+        raise ComputeError(
+            "local compute is disabled by the compute configuration", cluster_id=identity.encode(),
+        )
     snapshot = provider.inspect(identity)
     if snapshot.phase != "active":
         raise ComputeError(
