@@ -236,6 +236,34 @@ def test_the_environment_is_an_allowlist_never_ambient(
     assert "--env=LC_SANDBOX=podman" in argv
 
 
+@pytest.mark.parametrize("recipe", [False, True], ids=["probe", "recipe"])
+@pytest.mark.parametrize("configured", [False, True], ids=["unset", "configured"])
+def test_container_commands_preserve_worker_numerical_thread_settings(
+    root: Path, monkeypatch: pytest.MonkeyPatch, recipe: bool, configured: bool,
+) -> None:
+    values = {"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "3"}
+    for key, value in values.items():
+        if configured:
+            monkeypatch.setenv(key, value)
+        else:
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "not-forwarded")
+    write_dir = root / "results" / "baseline" if recipe else None
+    if write_dir is not None:
+        write_dir.mkdir()
+    with boundary.scope(
+        exec_policy(
+            root, env_dir=root / ".lightcone" / "venv",
+            containerized=True, write_dir=write_dir,
+        )
+    ) as built:
+        argv = _backend(root).wrap(built, ["true"])
+    for key, value in values.items():
+        forwarded = [arg for arg in argv if arg.startswith(f"--env={key}=")]
+        assert forwarded == ([f"--env={key}={value}"] if configured else [])
+    assert not any("AWS_SECRET_ACCESS_KEY" in arg for arg in argv)
+
+
 def test_no_host_resolved_env_binary_in_the_argv(root: Path, policy: Policy) -> None:
     """The overlay travels as `--env` flags: a host path for `env` (NixOS
     keeps it under /run/current-system/sw) need not exist in the image,

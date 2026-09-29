@@ -348,6 +348,11 @@ def home_overlay(tmp_home: Path, env_dir: Path, *, containerized: bool = False) 
     }
     if containerized:
         overlay["UV_PROJECT_ENVIRONMENT"] = str(env_dir)
+        # Dask's Nanny configures these on the worker. Containers do not
+        # inherit them, so carry the effective values across the boundary.
+        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            if name in os.environ:
+                overlay[name] = os.environ[name]
     return overlay
 
 

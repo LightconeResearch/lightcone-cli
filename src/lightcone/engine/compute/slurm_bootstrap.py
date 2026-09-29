@@ -1,4 +1,4 @@
-"""One stock Dask worker per Slurm rank, with a scheduler alongside rank zero."""
+"""One Dask nanny per Slurm rank, with a scheduler alongside rank zero."""
 
 from __future__ import annotations
 
@@ -79,8 +79,8 @@ def _allocation(args: argparse.Namespace) -> tuple[Identity, int, int]:
 
 
 async def run(args: argparse.Namespace) -> None:
-    """Run standard asynchronous Scheduler/Worker contexts for this native rank."""
-    from distributed import Scheduler, Worker
+    """Run standard asynchronous Scheduler/Nanny contexts for this native rank."""
+    from distributed import Nanny, Scheduler
 
     identity, restarts, rank = _allocation(args)
     if args.gpus:
@@ -113,6 +113,7 @@ async def run(args: argparse.Namespace) -> None:
     worker_options = {
         **address,
         "nthreads": args.task_slots,
+        # Recipes run in subprocesses whose RSS Dask does not account for.
         "memory_limit": 0,
         "resources": {"CPU": args.cpus, "MEMORY": args.memory_bytes, "GPU": args.gpus},
         "local_directory": str(scratch),
@@ -139,7 +140,9 @@ async def run(args: argparse.Namespace) -> None:
             write_private_json(
                 directory / "identity.json", {**identity_values, "scheduler_id": scheduler.id}
             )
-            async with Worker(scheduler.address, security=security, **worker_options):
+            # The nanny keeps worker exits out of the scheduler process and
+            # supplies Dask's numerical-library thread defaults to recipes.
+            async with Nanny(scheduler.address, security=security, **worker_options):
                 await scheduler.finished()  # type: ignore[no-untyped-call]
         finally:
             await scheduler.close()
@@ -160,10 +163,10 @@ async def run(args: argparse.Namespace) -> None:
             raise ComputeError("scheduler rendezvous belongs to another allocation attempt")
         break
     security = load_security(directory)
-    async with Worker(
+    async with Nanny(
         scheduler_file=str(directory / "scheduler.json"), security=security, **worker_options
-    ) as worker:
-        await worker.finished()
+    ) as nanny:
+        await nanny.finished()
 
 
 def main() -> None:

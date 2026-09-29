@@ -244,16 +244,37 @@ class; it does not guarantee a queue wait. Inspect the resolved plan before laun
 lc compute launch --cpus 32+ --memory 128+ --num-nodes 2 --time 1h --dry-run
 ```
 
-One allocation contains one `srun` step with one process per node, bound with
-`--cpu-bind=threads` to exactly the hardware threads Slurm allocated. Rank zero
-composes standard Dask `Scheduler` and `Worker` objects, and every other rank
-starts a standard `Worker`. A one-node allocation has both scheduler and worker.
+One allocation contains one `srun` step with one rank per node, bound with
+`--cpu-bind=threads` to exactly the hardware threads Slurm allocated. Each rank
+starts a standard Dask `Nanny`, which supervises a separate `Worker` process.
+Rank zero also runs the scheduler, so a worker process exiting does not take the
+scheduler with it. A one-node allocation has both scheduler and worker.
 Neither serves a dashboard or any other HTTP route.
 The scheduler consumes part of the offered resources; `task_slots_per_node`
 controls Dask task concurrency independently of the allocation's logical CPUs.
-Dask memory management is disabled because recipes run in external subprocesses;
-Slurm supplies allocation containment and memory enforcement. Lightcone always
-requests a finite native `--time`. Actual termination follows Slurm's
+
+Dask's Nanny defaults `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and
+`OPENBLAS_NUM_THREADS` to `1`, preventing each concurrent recipe from requesting
+the whole node's numerical-library threads. Values explicitly set in the launch
+environment take precedence and also reach containerized recipes. For recipes
+that need more threads, set those values before launching and declare enough
+recipe CPUs for each task; `task_slots_per_node` can further cap concurrency. See
+[Dask's Nanny environment settings](https://distributed.dask.org/en/stable/worker.html#nanny).
+
+The Nanny restarts an exited worker, and Dask can reschedule its tasks. The step
+uses `--kill-on-bad-exit=0 --wait=0` so an exited rank does not itself trigger
+termination of the remaining ranks. This does not provide complete failure
+isolation: site OOM policy can still kill the step or allocation, and the
+scheduler and Nanny processes are not restarted if they die. Dask memory
+management remains disabled because it does not account for the recipe
+subprocesses' memory. Reduce task concurrency for memory-heavy recipes; there is
+no per-recipe memory limit. A lost worker can also leave a recipe subprocess
+running while Dask reschedules its task, so retries do not guarantee exclusive
+access to output files. New commands still require every expected worker to be
+connected. See [Dask's failure behavior](https://distributed.dask.org/en/stable/resilience.html)
+and [Slurm's step termination settings](https://slurm.schedmd.com/srun.html).
+
+Lightcone always requests a finite native `--time`. Actual termination follows Slurm's
 `OverTimeLimit` and `KillWait` policy, which can permit an unlimited overrun.
 Lightcone does not impose an independent Slurm runtime deadline or require a
 preflight time-policy query.
@@ -448,13 +469,14 @@ its request. Slurm enforces the overall allocation, while local execution
 uses cooperative budgets. Leave capacity for the scheduler, workers, and other
 overhead when declaring recipe requirements.
 
-A CPU reservation does not set numerical-library thread counts. Local clusters
-use Dask's Nanny defaults of `1` for `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and
-`OPENBLAS_NUM_THREADS` when those variables are unset. Set the variables before
-`lc compute launch`, or in the recipe command, to choose another value. See
+A CPU reservation does not set numerical-library thread counts. Local and Slurm
+clusters use Dask's Nanny defaults of `1` for `OMP_NUM_THREADS`, `MKL_NUM_THREADS`,
+and `OPENBLAS_NUM_THREADS` when those variables are unset. Container recipes
+receive the worker's effective values too. Set the variables before
+`lc compute launch`, or in the recipe command, to choose another value, and
+declare enough recipe CPUs for those threads. See
 [Dask's defaults](https://docs.dask.org/en/stable/configuration.html#distributed.nanny.pre-spawn-environ.OMP_NUM_THREADS)
 and [environment precedence](https://distributed.dask.org/en/stable/_modules/distributed/nanny.html).
-Slurm workers run directly without a Nanny and inherit the job's thread settings.
 
 ## Execution requirements and limits
 

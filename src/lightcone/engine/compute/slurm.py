@@ -303,10 +303,11 @@ class SlurmProvider:
             "--ntasks-per-node=1",
             f"--cpus-per-task={plan.resources.cpus}",
             f"--gres={details['gres']}",
-            # One process per node holds the whole allocation, so binding to
-            # exactly its allocated hardware threads is the only useful mask.
+            # Each rank and its worker inherit the node's allocated CPU mask.
             "--cpu-bind=threads",
-            "--kill-on-bad-exit=1",
+            # Losing a rank must not terminate healthy ranks and the scheduler.
+            "--kill-on-bad-exit=0",
+            "--wait=0",
             details["python"],
             "-P",
             "-m",

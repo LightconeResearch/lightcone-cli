@@ -62,6 +62,22 @@ borrow clients through the common API. Provider settings stay behind that seam.
 identity checks. `local_runtime.py` and `slurm_bootstrap.py` compose stock Dask
 components; they do not define custom workers or membership protocols.
 
+The Slurm bootstrap runs one stock `Nanny` per rank, each with a separate worker
+process; rank zero also hosts the scheduler. The Nanny restarts an exited worker
+and supplies Dask's default `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and
+`OPENBLAS_NUM_THREADS` values of `1`, preserving explicit launch environment
+values. Sandbox policy forwards those effective values into recipe containers.
+`memory_limit=0` remains deliberate: Dask's worker memory accounting excludes
+the external recipe subprocesses. The payload uses
+`srun --kill-on-bad-exit=0 --wait=0` to avoid terminating healthy ranks merely
+because another rank exited. Site OOM policy can still terminate the step or
+allocation, and there is no recovery for a dead scheduler or Nanny. Dask can
+reschedule lost tasks, but surviving recipe subprocesses are not fenced from
+those retries. Connection readiness still requires every expected worker.
+See [Dask's Nanny](https://distributed.dask.org/en/stable/worker.html#nanny),
+[Dask resilience](https://distributed.dask.org/en/stable/resilience.html), and
+[Slurm's `srun` options](https://slurm.schedmd.com/srun.html).
+
 Configured connection and scratch roots are resolved before managed paths are
 appended, so filesystem aliases such as a symlinked home directory are supported.
 Managed directories and credential files retain strict symlink, ownership, and
@@ -179,6 +195,10 @@ must already exist; policy construction does not load drivers or create devices.
 See [GPU deployment requirements](../user/cluster.md#gpu-allocations).
 
 ## Execution output and teardown
+
+The driver still saves each output in its own Git/annex commit while Dask runs
+the submitted graph. This serial storage work can dominate many short recipes;
+adding workers does not accelerate it.
 
 `output.py` transports byte chunks through standard Dask events so detached
 workers' output reaches the invoking CLI. It uses the borrowed client's event

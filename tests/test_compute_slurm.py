@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -360,7 +361,8 @@ def test_sbatch_launch_owns_payload_and_scrubs_ambient_overrides(
     assert script.startswith("#!/bin/bash\nset -euo pipefail\numask 077\n")
     payload = shlex.split(script.splitlines()[-1])
     assert payload[:2] == ["exec", "srun"]
-    assert "--kill-on-bad-exit=1" in payload and "--overlap" not in payload
+    assert "--kill-on-bad-exit=0" in payload and "--overlap" not in payload
+    assert "--wait=0" in payload
     assert "--cpu-bind=threads" in payload
     assert "--ntasks=2" in payload
     python = payload.index(sys.executable)
@@ -1100,7 +1102,7 @@ def test_gpu_worker_advertises_native_capacity_with_the_native_mask(
     worker.__aenter__ = AsyncMock(return_value=worker)
     worker.finished = AsyncMock()
     factory = MagicMock(return_value=worker)
-    monkeypatch.setattr(distributed, "Worker", factory)
+    monkeypatch.setattr(distributed, "Nanny", factory)
 
     asyncio.run(slurm_bootstrap.run(args))
 
@@ -1183,6 +1185,12 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
     directory = slurm.attempt_directory(connection, IDENTITY, 0)
     processes = []
     client = None
+    environment = dict(os.environ)
+    thread_variables = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")
+    for variable in thread_variables:
+        environment.pop(variable, None)
+    # Explicit launch settings still take precedence over Dask's defaults.
+    environment["OMP_NUM_THREADS"] = "2"
     try:
         for rank in (1, 0):
             with (tmp_path / f"rank-{rank}.log").open("wb") as log:
@@ -1190,7 +1198,7 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
                     subprocess.Popen(
                         argv,
                         cwd=tmp_path,
-                        env={**os.environ, **_bootstrap_env(rank)},
+                        env={**environment, **_bootstrap_env(rank)},
                         stdin=subprocess.DEVNULL,
                         stdout=log,
                         stderr=subprocess.STDOUT,
@@ -1206,7 +1214,11 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
             time.sleep(0.1)
         metadata = read_private_json(directory / "identity.json")
         client = open_client(directory, metadata["scheduler_id"], timeout=5)
-        client.wait_for_workers(2, timeout=10)
+        try:
+            client.wait_for_workers(2, timeout=20)
+        except TimeoutError:
+            logs = "\n".join((tmp_path / f"rank-{rank}.log").read_text() for rank in (0, 1))
+            pytest.fail(f"bootstrap failed to start workers: {logs}")
         workers = client.scheduler_info()["workers"]
         assert {worker["name"] for worker in workers.values()} == {"lightcone-0", "lightcone-1"}
         assert all(worker["nthreads"] == 1 for worker in workers.values())
@@ -1221,6 +1233,45 @@ def test_standard_bootstrap_starts_scheduler_and_worker_on_rank_zero_and_worker_
         assert set(client.run(lambda dask_worker: dask_worker.http_server.address).values()) == {
             "127.0.0.1"
         }
+        assert all(worker["nanny"] for worker in workers.values())
+        for variable in thread_variables:
+            expected = "2" if variable == "OMP_NUM_THREADS" else "1"
+            # A fresh recipe-style subprocess must inherit the worker's limits.
+            observed = client.run(
+                lambda key: subprocess.check_output(
+                    [sys.executable, "-P", "-c", "import os; print(os.environ['" + key + "'])"],
+                    text=True,
+                ).strip(),
+                variable,
+            )
+            assert set(observed.values()) == {expected}
+        # Kill each worker, including rank zero's: its nanny and the scheduler
+        # must survive, the other worker must stay available, and capacity returns.
+        for rank in (0, 1):
+            workers = client.scheduler_info()["workers"]
+            address = next(
+                address for address, info in workers.items() if info["name"] == f"lightcone-{rank}"
+            )
+            peer = next(address_ for address_ in workers if address_ != address)
+            pid = client.run(os.getpid, workers=[address])[address]
+            assert pid not in {process.pid for process in processes}
+            os.kill(pid, signal.SIGKILL)
+            assert client.submit(sum, [3, 4], workers=[peer], pure=False).result(timeout=5) == 7
+            deadline = time.monotonic() + 20
+            while True:
+                info = client.scheduler_info()
+                recovered = info["workers"]
+                if len(recovered) == 2 and address not in recovered:
+                    break
+                assert time.monotonic() < deadline, "nanny did not replace the killed worker"
+                time.sleep(0.1)
+            assert info["id"] == metadata["scheduler_id"]
+            assert peer in recovered
+            assert all(process.poll() is None for process in processes)
+            replacement = next(address_ for address_ in recovered if address_ != peer)
+            assert recovered[replacement]["resources"] == workers[address]["resources"]
+            future = client.submit(sum, [4, 5], workers=[replacement], pure=False)
+            assert future.result(timeout=5) == 9
         client.shutdown()
         client = None
         for process in processes:

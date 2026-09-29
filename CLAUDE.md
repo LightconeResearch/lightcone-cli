@@ -187,7 +187,7 @@ src/lightcone/              # namespace — NO __init__.py
     │   ├── local.py        # local provider: validated OS process identities
     │   ├── local_runtime.py  # the detached LocalCluster owner
     │   ├── slurm.py        # Slurm provider: native commands, JobName + Comment
-    │   ├── slurm_bootstrap.py  # one stock Dask process per Slurm rank
+    │   ├── slurm_bootstrap.py  # stock Dask Nanny per rank; rank zero hosts scheduler
     │   └── output.py       # recipe bytes through Dask events
     ├── sandbox/            # the exec boundary
     │   ├── __init__.py     # the public surface (detect, run, scope, the types)
@@ -1748,6 +1748,19 @@ already is. `connection_root` defaults to `~/.lightcone/compute`
 is chosen by the bootstrap on each node (`tempfile.gettempdir()`), never frozen
 from the driver's temporary directory.
 
+**Slurm supervises workers through stock Dask Nannies (2026-09).** Each rank
+runs a Nanny and its separate worker process; rank zero also hosts the scheduler.
+Nanny defaults `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, and `OPENBLAS_NUM_THREADS`
+to `1`, preserving explicit launch environment values, and sandbox policy passes
+the effective values into recipe containers. The step sets
+`--kill-on-bad-exit=0 --wait=0` so a rank exit alone does not terminate the others.
+This is worker-process recovery, not complete recipe isolation: site OOM policy
+may still kill a step or job; dead schedulers and Nannies are not restarted;
+Dask retries are not fenced from surviving recipe subprocesses. Keep
+`memory_limit=0` because Dask does not account for subprocess RSS. New commands
+still require all expected workers. Serial per-output Git/annex commits remain
+the driver's responsibility; changing that persistence/provenance model is deferred.
+
 **Compute uses one shared Pydantic model family.** `Catalog` loads directly into
 the `Connection`, `Offer`, `Resources`, `TimeLimits`, and `Startup` objects used by
 providers; do not introduce parallel configuration classes. Memory units are explicit:
@@ -1812,10 +1825,10 @@ not a visibility limit; it defaults to zero and does not select a model. Recipe
 memory retains ASTRA units (`8Gi` binary, `8GB` decimal, no bare quantities),
 independently of compute's SkyPilot units.
 Thread slots remain a separate concurrency cap. Reservations are cooperative, not
-per-command OS CPU/RAM limits or BLAS thread counts. Local Nanny defaults keep
-OMP/MKL/OPENBLAS threads at one unless the launch environment overrides them; Slurm
-uses direct workers and the job environment. Unsupported disk/model requests and
-fractional CPU/GPU counts fail explicitly. Exact bytes are shared in `units.py`;
+per-command OS CPU/RAM limits or BLAS thread counts. Local and Slurm Nanny defaults
+keep OMP/MKL/OPENBLAS threads at one unless the launch environment overrides them;
+sandbox policy forwards the effective values into containers. Unsupported
+disk/model requests and fractional CPU/GPU counts fail explicitly. Exact bytes are shared in `units.py`;
 allocation durations are parsed in `compute.model`, with error conversion only
 at the CLI request boundary.
 
