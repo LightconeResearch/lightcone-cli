@@ -120,14 +120,21 @@ class Command:
             if execution_deadline is not None else None
         )
         try:
-            self.process = subprocess.Popen(
-                [sys.executable, "-P", str(Path(__file__)), str(self._control), str(self._status)],
-                pass_fds=(self._control, self._status),
-                stdin=subprocess.DEVNULL if capture else None,
-                stdout=subprocess.PIPE if capture else None,
-                stderr=subprocess.PIPE,
-                bufsize=0,
-            )
+            try:
+                self.process = subprocess.Popen(
+                    [sys.executable, "-P", str(Path(__file__)),
+                     str(self._control), str(self._status)],
+                    pass_fds=(self._control, self._status),
+                    stdin=subprocess.DEVNULL if capture else None,
+                    stdout=subprocess.PIPE if capture else None,
+                    stderr=subprocess.PIPE,
+                    bufsize=0,
+                )
+            finally:
+                # Only the custodian owns these ends. In particular, keeping
+                # its report writer here would prevent EOF during failed setup.
+                os.close(self._control)
+                os.close(self._status)
             self._writer.write(json.dumps({
                 "argv": list(argv), "cwd": str(cwd), "env": env,
                 "deadline": execution_deadline, "oci_runtime": oci_runtime,
@@ -145,9 +152,6 @@ class Command:
             else:
                 self._reader.close()
             raise
-        finally:
-            os.close(self._control)
-            os.close(self._status)
 
     def __enter__(self) -> Self:
         return self

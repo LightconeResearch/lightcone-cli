@@ -92,6 +92,54 @@ def _gone(pid: int) -> bool:
         return True
 
 
+def test_failed_configuration_handoff_reaps_custodian_without_waiting_for_pipe_eof(
+    tmp_path: Path,
+) -> None:
+    # Bound the reproduction in another process: the old constructor retained
+    # the report pipe's writer and blocked forever while reading its child reply.
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import sys
+from pathlib import Path
+import psutil
+from lightcone.engine.sandbox.processes import Command
+
+try:
+    Command([sys.executable, '-c', "open('started', 'w').close()"],
+            cwd=Path(sys.argv[1]), env={'INVALID': object()}, capture=False)
+except OSError:
+    pass
+else:
+    raise AssertionError('unserializable configuration was accepted')
+assert not psutil.Process().children(), 'custodian was not reaped'
+""", str(tmp_path)], capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "started").exists()
+
+
+def test_custodian_spawn_failure_closes_all_pipe_descriptors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightcone.engine.sandbox import processes
+
+    pipe = os.pipe
+    descriptors: list[int] = []
+
+    def record_pipe() -> tuple[int, int]:
+        pair = pipe()
+        descriptors.extend(pair)
+        return pair
+
+    monkeypatch.setattr(processes.os, "pipe", record_pipe)
+    monkeypatch.setattr(processes.subprocess, "Popen", Mock(side_effect=OSError("spawn failed")))
+    with pytest.raises(OSError, match="spawn failed"):
+        Command([sys.executable], cwd=tmp_path, env=dict(os.environ), capture=False)
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
 def test_timeout_escalates_ignoring_command(tmp_path: Path) -> None:
     pidfile = tmp_path / "pid"
     outcome = run(
