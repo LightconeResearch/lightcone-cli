@@ -24,21 +24,17 @@ retain direct terminal output.
 
 | Symbol | Role |
 |---|---|
-| `materialize(root, task, context, ...)` | The unit: classify → reset → sandbox → recipe → check the payload → hash → manifest. Returns ordinary failures as `TaskResult`; propagates execution safety exceptions. |
-| `execute(root, task, input_versions, context)` | Run a recipe unconditionally with cancellation checks, then record its payload and manifest. |
-| `TaskResult` | `ok` / `current` / `behind` / `failed` / `blocked`, the output's `data_version`, reason, and diagnostic notes. `.usable` is what dependents check. |
+| `materialize(task, versions, ...)` | The unit: classify → reset → sandbox → recipe → check the payload → hash → manifest. Returns a `TaskResult`, always. |
+| `TaskResult` | `ok` / `current` / `behind` / `failed` / `blocked`, the output's `data_version`, and the attestation. `.usable` is what dependents check. |
 | `main(argv)` | The rerun entry point: guards, converges the project environment from the commit's own lock, resolves its own HEAD and runtime, executes. |
 | `lc_version()` | The engine version every manifest records. |
 
 ## What must stay true
 
-- **Ordinary recipe failures are results.** Independent tasks continue so
-  the driver can report all their failures. `ExecutionCancelled` and
-  `ExecutionUncertain` instead propagate and abort the invocation. They must
-  not enter the ordinary failed-output restore path: cleanup first establishes
-  that writers have stopped, and uncertainty retains partial outputs.
-- **Task completion includes subprocess teardown.** The boundary owns process
-  and container cleanup and reports uncertain teardown as an exception.
+- **The worker never raises** — enforced at the unit boundary, so the
+  contract holds for failure modes nobody enumerated. Raising would
+  make Dask abort every task in flight; reporting all independent
+  failures in one run is most of what owning the loop buys.
 - **`data_version` is computed here, before anything is staged** — the
   dependent's argument *is* this return value, so the digest must
   exist while the files are still unannexed. Deriving it from

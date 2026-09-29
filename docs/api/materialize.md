@@ -18,7 +18,7 @@ driver's stderr, independently of success or failure, leaving stdout for the rep
 | `check(root, targets, *, refresh)` | The same classification without executing, committing, or fetching. Exempt from the dirty refusal. |
 | `status(root)` | The report: every output's state and provenance commit, plus the mode/image/sandbox header facts. |
 | `MaterializeReport` / `StatusReport` | The JSON surfaces; `ok` and `up_to_date` first. |
-| `cluster_for_run(cluster_id)` | Borrow the cluster; expose submission, completion, and positive cleanup confirmation. |
+| `cluster_for_run(cluster_id)` | Borrow the cluster; the submit/completed scheduler seam (`submit`, `completed`). |
 | `run_record(...)` / `datalad_run_subject(...)` | The commit message `datalad rerun` replays, and the one spelling of its subject line — shared with the foreign-write comparator, because two strings here would drift. |
 | `_engine_requirement()` | How a record pins its engine: by version for a release, by source commit (hatch-vcs) for a dev build. |
 
@@ -44,11 +44,9 @@ driver's stderr, independently of success or failure, leaving stdout for the rep
    worse than either answer. The populated input-hash memo travels with each
    task; independent worker processes do not rehash shared inputs. Unreadable
    inputs still fail only the tasks that need them.
-6. **Save on `ok`, restore reported failures** — on interruption or a driver
-   error, first revoke and drain the invocation. Restore submitted, unconsumed
-   outputs only when the scheduler seam reports positive cleanup confirmation.
-   Otherwise retain them: an exception is not evidence that a writer stopped.
-   Separate invocations must still not write the same project concurrently.
+6. **Save on `ok`, restore reported failures** — unreported outputs are retained
+   after interruption because their tasks may still be writing. Allocation
+   management does not provide concurrent-writer or cancellation guarantees.
 
 ## What must stay true
 
@@ -76,6 +74,6 @@ driver's stderr, independently of success or failure, leaving stdout for the rep
 ## Tests
 
 `tests/test_materialize.py` — real repositories, real recipes, a real
-`LocalCluster` for scheduling and lifecycle checks, real `datalad rerun` for
+`LocalCluster` through the seam exactly once, real `datalad rerun` for
 the record's whole claim. `cluster_for_run` is the one monkeypatch
 point for allocation-free tests.

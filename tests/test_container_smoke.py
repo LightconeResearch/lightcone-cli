@@ -19,17 +19,14 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
-from lightcone.engine import assets, container, dataset, image, sandbox
+from lightcone.engine import assets, container, dataset, image
 from lightcone.engine import materialize as engine
 from lightcone.engine import run as engine_run
-from lightcone.engine.project import ProjectError, child_env, uv_prefix
-from lightcone.engine.sandbox.oci import OCIBackend
+from lightcone.engine.project import ProjectError, child_env
 
 REQUIRED_ENV = "LC_CONTAINER_TESTS_REQUIRED"
 
@@ -211,44 +208,6 @@ def test_the_probe_and_its_boundary(runtime: str, cproject: Path, cluster_id: st
         cluster_id=cluster_id,
     )
     assert loopback.returncode == 0
-
-
-def test_timeout_stops_and_removes_a_sigterm_ignoring_container(
-    runtime: str, cproject: Path,
-) -> None:
-    resolved, _ = container.build(cproject)
-    container.converge(resolved)
-    backend = container.backend(resolved)
-    assert isinstance(backend, OCIBackend)
-    name = f"lc-timeout-test-{uuid4().hex}"
-    backend = replace(backend, user_flags=(*backend.user_flags, "--name", name))
-    try:
-        with sandbox.scope(container.policy_for(resolved, [])) as policy:
-            outcome = sandbox.run(
-                backend, policy,
-                ["python", "-c", (
-                    "import signal,time; from pathlib import Path; "
-                    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                    "Path('results/timeout-started').touch(); time.sleep(60)"
-                )], cwd=cproject, env=child_env(), prefix=uv_prefix(cproject), timeout=5,
-            )
-        assert (cproject / "results/timeout-started").exists(), "container command never started"
-        assert outcome.returncode == 124
-        assert any("timed out" in note for note in outcome.notes)
-        inspected = subprocess.run(
-            [runtime, "inspect", name], capture_output=True, timeout=10,
-        )
-        assert inspected.returncode != 0, "timed-out container was not removed"
-        # A failed inspection alone could mean the runtime is unavailable.
-        remaining = subprocess.run(
-            [runtime, "ps", "--all", "--quiet", "--filter", f"name={name}"],
-            capture_output=True, check=True, timeout=10,
-        )
-        assert not remaining.stdout.strip()
-    finally:
-        subprocess.run(
-            [runtime, "rm", "--force", name], capture_output=True, timeout=15,
-        )
 
 
 # ---- lc materialize ---------------------------------------------------------

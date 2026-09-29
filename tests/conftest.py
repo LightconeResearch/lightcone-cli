@@ -151,11 +151,7 @@ class _Inline:
     are the upstream results themselves, exactly what the worker expects.
     """
 
-    stopped = True  # Calls are synchronous; no remote work can survive the fixture.
-
-    def submit(
-        self, fn: Callable[..., object], *args: object, key: str,
-    ) -> object:
+    def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
         return fn(*args)
 
     def completed(self, handles: list[object]) -> Iterator[object]:
@@ -184,7 +180,7 @@ def cluster_id(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     from lightcone.engine import compute
 
     with LocalCluster(
-        n_workers=1, threads_per_worker=2, processes=False, dashboard_address=None,
+        n_workers=1, threads_per_worker=2, processes=False, dashboard_address=None
     ) as cluster:
         @contextmanager
         def connect(value: str) -> Iterator[Client]:

@@ -18,11 +18,11 @@ has never built one.
 Keep this module cheap to import: no click, no rich. It is on the
 ``python -m`` path of every rerun, and of every task in every run.
 
-Recipe failures return results, so independent tasks can finish and report
-their own failures. Cancellation and uncertain execution propagate instead:
-the driver must stop the invocation and establish that its writers have stopped
-before it can restore partial outputs. Cluster task resource reservations belong
-to the scheduler; the subprocess boundary enforces each recipe's time limit.
+Nothing here writes to git, and nothing here raises. A task that fails
+returns a result saying so, because Dask propagates an exception to every
+dependent and "who actually failed" would stop being answerable —
+reporting every independent failure in one run is most of the point of
+owning the loop.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from lightcone.engine import assets, container, dataset, execution, identity, plan, project, sandbox
+from lightcone.engine import assets, container, dataset, identity, plan, project, sandbox
 from lightcone.engine.plan import Key, Task
 from lightcone.engine.project import (
     ProjectError,
@@ -58,7 +58,7 @@ _SHELL = "bash"
 
 @dataclass(frozen=True)
 class TaskResult:
-    """A completed task's outcome, passed to its dependents."""
+    """What one task did. Returned, never raised, and handed to dependents."""
 
     key: Key
     status: Literal["ok", "current", "behind", "failed", "blocked"]
@@ -126,9 +126,10 @@ def materialize(
 ) -> TaskResult:
     """Make *task* if it needs making. What Dask submits, once per task.
 
-    Ordinary failures become task results so independent outputs can continue.
-    Cancellation and uncertain execution abort the invocation: treating either
-    as an ordinary failure could restore files while a subprocess still writes.
+    Where "the worker never raises" is enforced. Dask re-raises a task's
+    exception in the driver, which would abort every other task in flight,
+    so the contract is absolute — and one assembled from individually
+    guarded call sites is only as true as the last person to add one.
 
     Args:
         root: The project root.
@@ -145,17 +146,11 @@ def materialize(
         output: Optional receiver forwarding recipe stdout and stderr bytes.
 
     Returns:
-        The output's result, including ordinary recipe failures.
-
-    Raises:
-        ExecutionCancelled: The invocation revoked this task's authorization.
-        ExecutionUncertain: A writer may still be running; retain its outputs.
+        What happened. Never raises.
     """
     try:
         return _materialize(root, task, context, refresh, foreign, upstream, output)
-    except (execution.ExecutionCancelled, execution.ExecutionUncertain):
-        raise
-    except Exception as e:  # Ordinary recipe failures remain per-output results.
+    except Exception as e:  # the contract is that this function returns
         return TaskResult(task.key, "failed", reason=f"{type(e).__name__}: {e}")
 
 
@@ -218,8 +213,7 @@ def execute(
     left from a previous run would otherwise enter the content hash and be
     committed as part of an output that never produced it. The context's
     ``env_version`` is checked either side of the recipe, so a mid-run
-    lock edit cannot be recorded as if it had been in force. The subprocess
-    boundary drains owned processes before reporting completion.
+    lock edit cannot be recorded as if it had been in force.
 
     Args:
         root: The project root.
@@ -232,12 +226,7 @@ def execute(
     Returns:
         ``ok`` with the output's ``data_version``, or ``failed``. Commits
         nothing and never touches git beyond reading HEAD.
-
-    Raises:
-        ExecutionCancelled: The invocation revoked this task's authorization.
-        ExecutionUncertain: Subprocess teardown could not be confirmed.
     """
-    execution.check_cancelled()
     if moved := _gate(root, context.env_version):
         return TaskResult(task.key, "failed", reason=moved)
 
@@ -269,11 +258,8 @@ def execute(
             prefix=uv_prefix(root),
             env=child_env(),
             output=output,
-            cancelled=execution.cancelled,
         )
     finished_at = _now()
-
-    execution.check_cancelled()
 
     if outcome.returncode != 0:
         return TaskResult(

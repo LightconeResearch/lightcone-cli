@@ -24,7 +24,6 @@ from typing import Literal
 
 from lightcone.engine.sandbox.boundary import SANDBOX_ENV
 from lightcone.engine.sandbox.model import Attestation, Capability, Policy
-from lightcone.engine.sandbox.processes import CIDFILE
 
 #: The runtimes this backend can speak for — the one statement of the
 #: set, so the type does not get hand-copied out of step at its uses.
@@ -84,12 +83,7 @@ class OCIBackend:
         mounts += [f"--volume={path.resolve()}:{path}:rw" for path in policy.write]
         overlay = [f"--env={k}={v}" for k, v in sorted(policy.env.items())]
         return [
-            # The custodian retains the native record until it has inspected
-            # the immutable container ID and confirmed the payload stopped.
-            self.runtime, "run",
-            # The supervisor runs this native client in a private directory;
-            # --workdir below independently sets the payload's project cwd.
-            "--cidfile", CIDFILE,
+            self.runtime, "run", "--rm",
             "--entrypoint", "",
             # The rootfs is read-only so a write outside the declared set
             # is a loud denial rather than bytes vanishing with the

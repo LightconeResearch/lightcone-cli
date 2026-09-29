@@ -440,7 +440,7 @@ def test_a_run_with_nothing_to_make_needs_no_cluster(
 
 
 @pytest.mark.parametrize("failing", ["baseline/first", "baseline/second"])
-def test_a_failed_commit_restores_unconsumed_outputs_after_confirmed_stop(
+def test_a_failed_commit_says_whether_remote_tasks_may_still_run(
     root: Path, monkeypatch: pytest.MonkeyPatch, failing: str,
 ) -> None:
     _cluster(monkeypatch, _Inline())
@@ -455,10 +455,8 @@ def test_a_failed_commit_restores_unconsumed_outputs_after_confirmed_stop(
     monkeypatch.setattr(dataset, "save", fail)
     with pytest.raises(ProjectError, match="git commit failed") as raised:
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
-    assert str(raised.value) == "git commit failed"
-    assert not dataset.status(root)
-    assert (root / "results/baseline/first.txt").exists() == (failing == "baseline/second")
-    assert not (root / "results/baseline/second.txt").exists()
+    # Only the first output leaves another one outstanding.
+    assert ("did not stop the allocation" in str(raised.value)) == (failing == "baseline/first")
 
 def test_shared_inputs_are_hashed_once_before_task_serialization(
     analysis: Callable[..., Path], monkeypatch: pytest.MonkeyPatch,
@@ -473,9 +471,7 @@ def test_shared_inputs_are_hashed_once_before_task_serialization(
         return real(path)
 
     class _Copied(_Inline):
-        def submit(
-            self, fn: Callable[..., object], *args: object, key: str,
-        ) -> object:
+        def submit(self, fn: Callable[..., object], *args: object, key: str) -> object:
             return fn(*pickle.loads(pickle.dumps(args)))
 
     monkeypatch.setattr(assets, "data_version", digest)
@@ -733,42 +729,27 @@ def test_a_rebuild_that_fails_puts_the_previous_output_back(
     assert not dataset.status(root)
 
 
-@pytest.mark.parametrize("failure", ["confirmed", "uncertain", "masked", "second_interrupt"])
-def test_interrupted_outputs_are_restored_only_after_confirmed_stop(
-    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch, failure: str,
+def test_an_interrupted_run_retains_what_never_reported(
+    root: Path, inline: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A completed sibling keeps its commit; unconfirmed writers retain their files."""
-    from lightcone.engine.execution import ExecutionUncertain
-
-    uncertain = failure != "confirmed"
-
+    """A sibling that already saved keeps its commit; the output still in
+    flight may still have a writer, so its partial files are retained."""
     engine.materialize(root, [], cluster_id=CLUSTER_ID)
     (root / "astra.yaml").write_text(_SPEC.replace("echo {decisions.method}", "echo changed"))
     dataset.save(root, [root], "edit both recipes")
 
     class _Interrupted(_Inline):
-        stopped = not uncertain
-
         def completed(self, handles: list[Any]) -> Iterator[TaskResult]:
             yield handles[0]
-            if failure == "masked":
-                raise RuntimeError("client close masked uncertain cleanup")
-            if failure == "uncertain":
-                raise ExecutionUncertain("worker disappeared without acknowledging stop")
             raise KeyboardInterrupt
 
     _cluster(monkeypatch, _Interrupted())
 
-    expected = {"masked": RuntimeError, "uncertain": ExecutionUncertain}.get(
-        failure, KeyboardInterrupt,
-    )
-    with pytest.raises(expected):
+    with pytest.raises(KeyboardInterrupt):
         engine.materialize(root, [], cluster_id=CLUSTER_ID)
 
-    assert bool(dataset.status(root)) is uncertain
-    assert (root / "results/baseline/second.txt").read_text() == (
-        "changed\n" if uncertain else "alpha\n"
-    )
+    assert dataset.status(root)
+    assert (root / "results/baseline/second.txt").read_text() == "changed\n"
 
 
 # ---- the commit message ----------------------------------------------------
@@ -1103,7 +1084,7 @@ def test_a_processes_cluster_fits_through_the_seam(
     @contextmanager
     def processes(cluster_id: str) -> Iterator[Any]:
         with LocalCluster(
-            n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None,
+            n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None
         ) as cluster:
             with Client(cluster, set_as_default=False) as client:
                 yield client

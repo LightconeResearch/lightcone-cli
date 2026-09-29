@@ -382,33 +382,43 @@ class LocalProvider:
             client.close(timeout=min(timeout, 5))
 
     def terminate(self, identity: Identity) -> None:
-        """Terminate the validated allocation session even if Dask is wedged."""
+        """Terminate the validated allocation process group even if Dask is wedged."""
         directory, record = self._record(identity)
         self._stop(identity, directory, record)
         self._retire(directory)
 
     def _stop(self, identity: Identity, directory: Path, record: dict[str, Any]) -> None:
-        from lightcone.engine.sandbox.processes import (
-            _CLEANUP_TIMEOUT,
-            has_custodian,
-        )
-        from lightcone.engine.sandbox.processes import members as session_members
-
         process = self._process(identity, directory, record)
         if process is None:
             return
-        # Capture birth identities while the owner establishes session custody.
-        members = session_members(session=process.pid)
-        for member in members:
+        members = []
+        for member in psutil.process_iter():
             try:
-                member.terminate()
-            except psutil.NoSuchProcess:
+                if (
+                    member.uids().real == os.getuid()
+                    and os.getpgid(member.pid) == process.pid
+                    and os.getsid(member.pid) == process.pid
+                ):
+                    # Capture each birth identity while the owner still proves
+                    # this session is ours. psutil's signal methods check reuse.
+                    member.create_time()
+                    members.append(member)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+                continue
+        process = self._process(identity, directory, record)
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
                 pass
+        else:
+            for member in members:
+                try:
+                    member.terminate()
+                except psutil.NoSuchProcess:
+                    pass
         for escalation in (False, True):
-            grace = (
-                max(_STOP_GRACE, _CLEANUP_TIMEOUT + 1) if has_custodian(members) else _STOP_GRACE
-            )
-            deadline = time.monotonic() + grace
+            deadline = time.monotonic() + _STOP_GRACE
             while members and time.monotonic() < deadline:
                 living = []
                 for member in members:
@@ -429,13 +439,12 @@ class LocalProvider:
                 )
             process = self._process(identity, directory, record)
             if process is not None:
-                # Commands have separate groups inside this session. The
-                # live owner establishes custody of newly created members.
-                for member in session_members(session=process.pid):
-                    try:
-                        member.kill()
-                    except psutil.NoSuchProcess:
-                        pass
+                try:
+                    # A live, verified owner also covers children created while
+                    # stopping. Its finalizer provides the same group-wide kill.
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             for member in members:
                 try:
                     # The owner may have exited first. Never signal its old PGID

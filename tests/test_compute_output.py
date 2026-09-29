@@ -10,10 +10,8 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import uuid4
 
-import psutil
 import pytest
 
 from lightcone.engine import sandbox
@@ -93,90 +91,38 @@ def test_probe_uses_allocation_environment_and_accepts_explicit_command_variable
         assert result.stdout == expected
 
 
-@pytest.mark.parametrize(
-    "stop_signal", [signal.SIGINT, signal.SIGKILL], ids=["interrupt", "client-loss"],
-)
-def test_interrupt_or_client_loss_stops_command_and_keeps_cluster_usable(
-    analysis: Callable[..., Path], detached_cluster: str, stop_signal: signal.Signals,
+def test_interrupt_warns_that_the_remote_command_may_still_run(
+    analysis: Callable[..., Path], detached_cluster: str,
 ) -> None:
     root = analysis("version: '0.0.13'\nname: analysis\ninputs: []\noutputs: []\n")
     started = root / "results/started"
-    cli = [sys.executable, "-c", "from lightcone.cli.commands import main; main()",
-           "run", detached_cluster, "--"]
     process = subprocess.Popen(
         [
-            *cli, "python", "-c",
-            "from pathlib import Path; import os, signal, time; "
-            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-            "Path('results/started').write_text(str(os.getpid())); time.sleep(60)",
+            sys.executable, "-c", "from lightcone.cli.commands import main; main()",
+            "run", detached_cluster, "--", "python", "-c",
+            "from pathlib import Path; import time; "
+            "Path('results/started').touch(); time.sleep(30)",
         ],
         cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
-    remote: psutil.Process | None = None
     try:
         deadline = time.monotonic() + 15
-        while not started.exists() or not started.read_text():
+        while not started.exists():
             if process.poll() is not None:
                 pytest.fail(process.communicate()[1].decode(errors="replace"))
             if time.monotonic() >= deadline:
                 pytest.fail("remote command did not start")
             time.sleep(0.05)
-        remote = psutil.Process(int(started.read_text()))
-        remote.create_time()
-        process.send_signal(stop_signal)
-        _, stderr = process.communicate(timeout=30)
+        process.send_signal(signal.SIGINT)
+        _, stderr = process.communicate(timeout=15)
         assert process.returncode != 0
-        if stop_signal == signal.SIGINT:
-            assert b"the command has stopped" in stderr
-            assert b"may still be running" not in stderr
-        deadline = time.monotonic() + (0 if stop_signal == signal.SIGINT else 30)
-        while True:
-            try:
-                alive = remote.is_running() and remote.status() != psutil.STATUS_ZOMBIE
-            except psutil.NoSuchProcess:
-                alive = False
-            if not alive:
-                break
-            assert time.monotonic() < deadline, "the departed CLI left its command running"
-            time.sleep(0.05)
+        assert b"may still be running" in stderr
+        assert f"lc compute down {detached_cluster}".encode() in stderr
         assert Compute().status(detached_cluster).phase == "active"
-        again = subprocess.run(
-            [*cli, "python", "-c", "print('still usable')"],
-            cwd=root, capture_output=True, timeout=30,
-        )
-        assert again.returncode == 0, again.stderr.decode(errors="replace")
-        assert again.stdout == b"still usable\n"
     finally:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
-        if remote is not None and remote.is_running():
-            try:
-                remote.kill()
-            except psutil.NoSuchProcess:
-                pass
-
-
-def test_failed_output_completion_marker_preserves_execution_uncertainty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import distributed
-
-    from lightcone.engine.compute.output import call
-    from lightcone.engine.execution import ExecutionUncertain
-
-    uncertainty = ExecutionUncertain("container termination could not be confirmed")
-
-    def execute(*, output: Callable[[str, bytes], None]) -> None:
-        raise uncertainty
-
-    def log_event(*args: object) -> None:
-        raise OSError("scheduler disconnected")
-
-    monkeypatch.setattr(distributed, "get_worker", lambda: SimpleNamespace(log_event=log_event))
-    with pytest.raises(ExecutionUncertain) as raised:
-        call(execute, "topic", "probe")
-    assert raised.value is uncertainty
 
 
 def test_dask_cleans_output_history_after_the_borrowed_client_disconnects(

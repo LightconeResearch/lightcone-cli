@@ -457,29 +457,21 @@ def test_check_explains_that_a_cluster_id_is_not_a_target(runner: CliRunner) -> 
 
 @pytest.mark.parametrize("command", ["run", "materialize"])
 @pytest.mark.parametrize("cluster", [CLUSTER_ID, "analysis"])
-@pytest.mark.parametrize("stopped", [False, True])
 def test_execution_interrupt_explains_how_to_stop_remote_work(
     runner: CliRunner, project: Path, monkeypatch: pytest.MonkeyPatch, command: str,
-    cluster: str, stopped: bool,
+    cluster: str,
 ) -> None:
     from lightcone.engine import materialize as engine_materialize
     from lightcone.engine import run as engine_run
 
     def interrupt(*args: object, **kwargs: object) -> None:
-        from lightcone.engine.execution import ExecutionInterrupted
-
-        raise ExecutionInterrupted() if stopped else KeyboardInterrupt()
+        raise KeyboardInterrupt
 
     monkeypatch.setattr(engine_run, "probe", interrupt)
     monkeypatch.setattr(engine_materialize, "materialize", interrupt)
     args = [command, cluster, "--", "true"] if command == "run" else [command, cluster]
     result = runner.invoke(main, args)
     assert result.exit_code != 0
-    if stopped:
-        assert "stopped" in result.output
-        assert "remains available" in result.output
-        assert "lc compute down" not in result.output
-        return
     target = cluster if cluster == CLUSTER_ID else "<full-id>"
     assert f"lc compute down {target}" in result.output
     if cluster != CLUSTER_ID:

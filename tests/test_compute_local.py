@@ -367,7 +367,7 @@ def test_owner_shutdown_drains_recipes_without_a_waiting_cli(provider: LocalProv
         _ready(provider, identity)
         child = _ignoring_recipe(provider, identity)
         os.kill(int(identity.native_id), signal.SIGTERM)
-        _ended(provider, identity, timeout=20)
+        _ended(provider, identity, timeout=10)
         deadline = time.monotonic() + 3
         while child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
             assert time.monotonic() < deadline
@@ -376,53 +376,6 @@ def test_owner_shutdown_drains_recipes_without_a_waiting_cli(provider: LocalProv
         provider.terminate(identity)
         if child is not None and child.is_running():
             child.kill()
-
-
-@pytest.mark.parametrize("after_capture", [False, True])
-def test_owner_walltime_still_hard_kills_when_process_enumeration_fails(
-    after_capture: bool,
-) -> None:
-    script = f"""
-import os, signal, subprocess, sys, time
-from lightcone.engine.compute import local_runtime
-
-after_capture = {after_capture!r}
-called = False
-def fail(**kwargs):
-    global called
-    if after_capture and not called:
-        called = True
-        return [local_runtime.psutil.Process(child.pid)]
-    raise RuntimeError('process enumeration unavailable')
-
-child = subprocess.Popen([sys.executable, '-c',
-    "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-    "print('ready',flush=True); time.sleep(60)"], stdout=subprocess.PIPE,
-    process_group=0 if after_capture else os.getpgrp())
-assert child.stdout.readline() == b'ready\\n'
-print(child.pid, flush=True)
-local_runtime.members = fail
-local_runtime._CLEANUP_TIMEOUT = .1
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-signal.signal(signal.SIGALRM, lambda *_: local_runtime._stop_session())
-signal.setitimer(signal.ITIMER_REAL, .1)
-time.sleep(60)
-"""
-    owner = subprocess.Popen(
-        [sys.executable, "-c", script], start_new_session=True, stdout=subprocess.PIPE,
-    )
-    assert owner.stdout is not None
-    child = psutil.Process(int(owner.stdout.readline()))
-    try:
-        assert owner.wait(timeout=5) == -signal.SIGKILL
-        assert not child.is_running() or child.status() == psutil.STATUS_ZOMBIE
-    finally:
-        if owner.poll() is None:
-            owner.kill()
-        owner.wait(timeout=5)
-        if child.is_running():
-            child.kill()
-        owner.stdout.close()
 
 
 def test_termination_escalates_captured_children_when_owner_exits_first(
@@ -434,7 +387,7 @@ def test_termination_escalates_captured_children_when_owner_exits_first(
 import signal, subprocess, sys, time
 child = subprocess.Popen([sys.executable, '-c',
     "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-    "print('ready',flush=True); time.sleep(120)"], stdout=subprocess.PIPE, process_group=0)
+    "print('ready',flush=True); time.sleep(120)"], stdout=subprocess.PIPE)
 assert child.stdout.readline() == b'ready\\n'
 print(child.pid, flush=True)
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
@@ -445,7 +398,6 @@ time.sleep(120)
     )
     assert owner.stdout is not None
     child = psutil.Process(int(owner.stdout.readline()))
-    assert os.getpgid(child.pid) != owner.pid
     process = psutil.Process(owner.pid)
     identity = Identity(
         namespace=provider.connection.namespace, native_id=str(owner.pid), token=uuid4().hex,

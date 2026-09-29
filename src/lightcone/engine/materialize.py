@@ -14,9 +14,8 @@ here to get wrong.
 **It owns git, alone.** Workers execute and return; the driver commits, in
 one thread, as results arrive. That is not a preference: concurrent git
 operations on one repository race on the index lock. The same loop
-restores what a completed failed task left behind. On interruption it restores
-unreported outputs only after confirming their writers stopped; otherwise it
-retains those partial files.
+restores what a completed failed task left behind. Unreported tasks may
+still be writing, so interruptions retain their partial files.
 
 One consequence, checked rather than assumed: a dependent starts as soon
 as its upstream's *worker* returns, which is milliseconds before the
@@ -515,97 +514,94 @@ def materialize(
         # maintainer. Nothing is submitted, so no allocation is needed.
         _converge_crate(root, report, full, dsid)
         return report
-    unreported: set[Key] = set()
-    scheduler: Scheduler | None = None
-    try:
-        with cluster_for_run(cluster_id) as scheduler:
-            _fetch_inputs(root, graph, report)
-            # Materialize is one of the two verbs allowed to build the image (the
-            # other is `lc build`); the probe and the rerun entry point only find
-            # one. Resolved once, then handed to every task — the HEAD discipline.
-            runtime = container.runtime_for_run(root, build=True)
-            # Converge the environment: workers pass `--no-sync`, so this is the
-            # only place on a run's path where it is made to match the lock. (A
-            # rerun does not come through here; its entry point converges too.)
-            report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
-            # The run's driver-resolved facts, each read once: HEAD because the
-            # driver commits as outputs land and a per-task read would stamp
-            # later manifests with a commit this run created; the uv probe
-            # because attestation is a fact about the run (and empty is an
-            # answer, not a failure); one content-hash memo because a declared
-            # input shared by several outputs is the same bytes every time.
-            versions = assets.Versions()
-            for path in {
-                path
-                for task in graph.tasks.values()
-                for name, path in task.inputs.items()
-                if name not in task.produced_by
-            }:
-                try:
-                    versions.of(path)
-                except Exception:
-                    # Keep unreadable-input failures inside the tasks that need them.
-                    pass
-            context = worker.RunContext(
-                env_version=env_version,
-                head=dataset.head(root),
-                versions=versions,
-                runtime=runtime,
-                uv_version=project.uv_version(root),
+    with cluster_for_run(cluster_id) as scheduler:
+        _fetch_inputs(root, graph, report)
+        # Materialize is one of the two verbs allowed to build the image (the
+        # other is `lc build`); the probe and the rerun entry point only find
+        # one. Resolved once, then handed to every task — the HEAD discipline.
+        runtime = container.runtime_for_run(root, build=True)
+        # Converge the environment: workers pass `--no-sync`, so this is the
+        # only place on a run's path where it is made to match the lock. (A
+        # rerun does not come through here; its entry point converges too.)
+        report.warnings.extend(f"uv: {w}" for w in container.converge(runtime))
+        # The run's driver-resolved facts, each read once: HEAD because the
+        # driver commits as outputs land and a per-task read would stamp
+        # later manifests with a commit this run created; the uv probe
+        # because attestation is a fact about the run (and empty is an
+        # answer, not a failure); one content-hash memo because a declared
+        # input shared by several outputs is the same bytes every time.
+        versions = assets.Versions()
+        for path in {
+            path
+            for task in graph.tasks.values()
+            for name, path in task.inputs.items()
+            if name not in task.produced_by
+        }:
+            try:
+                versions.of(path)
+            except Exception:
+                # Keep unreadable-input failures inside the tasks that need them.
+                pass
+        context = worker.RunContext(
+            env_version=env_version,
+            head=dataset.head(root),
+            versions=versions,
+            runtime=runtime,
+            uv_version=project.uv_version(root),
+        )
+        # The history question is the driver's to answer — workers have no
+        # git, by design — so each task is told up front whether its
+        # directory was last written by something other than its own run
+        # record. A foreign write contradicts the manifest, and a worker that
+        # trusted the recorded digest would skip the output forever. Guarded
+        # on the manifest's presence, as `_classified` is: without one the
+        # answer is dead — the output is remade regardless — and each ask is
+        # a git process.
+        foreign = {
+            key: _foreign_write(root, task) if task.manifest_path.is_file() else None
+            for key, task in graph.tasks.items()
+        }
+        pending: dict[Key, Any] = {}
+        # Futures retain dependency ordering; task placement belongs to the
+        # selected cluster, while commits stay in this one driver thread.
+        for key in graph.order():
+            task = graph.tasks[key]
+            pending[key] = scheduler.submit(
+                worker.materialize,
+                root,
+                task,
+                context,
+                refresh,
+                foreign[key],
+                *[pending[dep] for dep in task.depends_on],
+                key=_name(key),
             )
-            # The history question is the driver's to answer — workers have no
-            # git, by design — so each task is told up front whether its
-            # directory was last written by something other than its own run
-            # record. A foreign write contradicts the manifest, and a worker that
-            # trusted the recorded digest would skip the output forever. Guarded
-            # on the manifest's presence, as `_classified` is: without one the
-            # answer is dead — the output is remade regardless — and each ask is
-            # a git process.
-            foreign = {
-                key: _foreign_write(root, task) if task.manifest_path.is_file() else None
-                for key, task in graph.tasks.items()
-            }
-            pending: dict[Key, Any] = {}
-            # Futures retain dependency ordering; task placement belongs to the
-            # selected cluster, while commits stay in this one driver thread.
-            for key in graph.order():
-                task = graph.tasks[key]
-                unreported.add(key)
-                pending[key] = scheduler.submit(
-                    worker.materialize,
-                    root,
-                    task,
-                    context,
-                    refresh,
-                    foreign[key],
-                    *[pending[dep] for dep in task.depends_on],
-                    key=_name(key),
-                )
+        from lightcone.engine.compute import UNSTOPPED
 
-            for result in scheduler.completed(list(pending.values())):
+        # An unreported task can still have a running subprocess. Leave its
+        # partial files in place on interruption rather than restoring over it.
+        outstanding = len(pending)
+        for result in scheduler.completed(list(pending.values())):
+            outstanding -= 1
+            try:
                 _consume(root, graph.tasks[result.key], result, dsid, runtime, report)
-                unreported.discard(result.key)
-            # The tree was clean at the start-of-run refusal and save/restore
-            # keeps `results/` clean, so anything dirty *now* was edited while
-            # the graph ran — and every manifest records the starting commit,
-            # which no longer describes that code. A warning, never a manifest
-            # field: the driver does not rewrite files the worker owns.
-            if edited := dataset.status(root):
-                names = ", ".join(sorted(path for _, path in edited))
-                report.warnings.append(
-                    f"edited while the run was in flight: {names} — the manifests "
-                    "record the starting commit, which no longer describes this code"
-                )
-            _converge_crate(root, report, full, dsid)
-            return report
-
-    except BaseException:
-        # An outer context's error can mask an uncertain cleanup. Require a
-        # positive acknowledgment, independent of which exception reached us.
-        if scheduler is not None and scheduler.stopped:
-            for key in unreported:
-                dataset.restore(root, _owned(root, graph.tasks[key]))
-        raise
+            except Exception as exc:
+                if not outstanding:
+                    raise
+                raise ProjectError(f"{exc}. {UNSTOPPED}") from exc
+        # The tree was clean at the start-of-run refusal and save/restore
+        # keeps `results/` clean, so anything dirty *now* was edited while
+        # the graph ran — and every manifest records the starting commit,
+        # which no longer describes that code. A warning, never a manifest
+        # field: the driver does not rewrite files the worker owns.
+        if edited := dataset.status(root):
+            names = ", ".join(sorted(path for _, path in edited))
+            report.warnings.append(
+                f"edited while the run was in flight: {names} — the manifests "
+                "record the starting commit, which no longer describes this code"
+            )
+        _converge_crate(root, report, full, dsid)
+        return report
 
 
 def _consume(
@@ -649,11 +645,6 @@ class Scheduler(Protocol):
     they land, keeping the commit logic independent of the provider.
     """
 
-    @property
-    def stopped(self) -> bool:
-        """Whether this invocation positively confirmed all claimed tasks stopped."""
-        ...
-
     def submit(self, fn: Any, *args: Any, key: str) -> Any:
         """Schedule a call.
 
@@ -687,11 +678,6 @@ class _Dask:
     invocation: execution.Invocation
     output: Forwarder
 
-    @property
-    def stopped(self) -> bool:
-        """Expose positive cleanup confirmation after the connection context exits."""
-        return self.invocation.stopped
-
     def submit(self, fn: Any, *args: Any, key: str) -> Any:
         """Submit an ordinary Dask task with a unique key and forwarded output."""
         from lightcone.engine.compute.output import call
@@ -719,7 +705,9 @@ class _Dask:
         except ProjectError:
             raise
         except Exception as exc:
-            raise ProjectError(f"cluster execution failed: {exc}") from exc
+            from lightcone.engine.compute import UNSTOPPED
+
+            raise ProjectError(f"cluster execution failed: {exc}. {UNSTOPPED}") from exc
 
 
 @contextmanager

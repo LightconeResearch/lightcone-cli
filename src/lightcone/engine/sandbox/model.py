@@ -26,16 +26,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
-from lightcone.engine.project import ProjectError
-
-
-class ExecutionUncertain(ProjectError):  # noqa: N818
-    """Command cleanup is unconfirmed; retain any files it could still write."""
-
-
-class ExecutionCancelled(ProjectError):  # noqa: N818
-    """Execution was revoked and its command has stopped."""
-
 #: Bumped when the meaning of the exec allowlist changes. It is recorded
 #: in the attestation, so a run stays interpretable after the list
 #: grows — the allowlist is a maintained policy surface.

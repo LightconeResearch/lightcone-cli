@@ -114,37 +114,28 @@ unintended reuse across commands. There is no worker-selection layer, per-worker
 preflight orchestration, source fingerprinting, or login-node guard. Driver-side
 preparation and the existing task runtime/sandbox checks remain in their owners.
 
+`engine.execution` prevents automatic replay of side effects. The driver registers
+an invocation in the existing Dask scheduler; before running a recipe or probe,
+its worker must receive an atomic claim for that task. A repeated claim, missing
+invocation state, or absent driver client fails before the command runs. This also
+refuses recomputation when a completed result was lost: Lightcone does not store
+or recover results.
+`retries=0` alone cannot prevent [Dask's recomputation after worker loss](https://distributed.dask.org/en/stable/resilience.html).
+There are no leases, heartbeats, command supervisors, or separate execution service.
+This guard prevents automatic replay within an invocation; it does not lock the
+project against another invocation or prove that a disconnected worker stopped.
+The context removes its record on exit; later invocations prune records left by
+disconnected clients. Removing a record cannot authorize a later claim.
+
 `output.py` transports byte chunks through standard Dask events so detached
 workers' output reaches the invoking CLI. It uses the borrowed client's event
 topic, which the schedulers lc launches drop as soon as the client disconnects
 (`runtime.SCHEDULER_CONFIG`), rather than retaining a separate topic for every
-command. Output-delivery errors cannot replace an execution-safety exception.
-Probes preserve both streams;
+command. A driver that exits before every task reports says so with
+`UNSTOPPED`: closing a client cannot prove that a remote subprocess stopped. Probes preserve both streams;
 materialization sends recipe output to stderr to leave stdout for its report.
 
-`engine.execution.invocation` owns a short renewable authorization in the existing
-scheduler. Each task claims its logical key before touching files. Completion
-receipts preserve the original result if Dask recomputes a lost result; a running
-or uncertain claim refuses replay and revokes the invocation. Missing state also
-refuses execution. This uses ordinary tasks and `run_on_scheduler`, without a
-custom worker, service, project lock, or persistent execution registry.
-Driver heartbeats and worker authorization polls retry transient RPC failures
-within the last confirmed 15-second lease. A failed RPC does not extend that
-lease; explicit revocation, missing state, or expiry stops execution.
-
-On exit the invocation revokes admission, cancels pending futures, and waits for
-claimed tasks to acknowledge cleanup. Dask cancellation alone is insufficient:
-running tasks poll authorization and the subprocess boundary stops their commands.
-Only a positive `Invocation.stopped` flag permits restoring unconsumed outputs;
-an exception from closing another context cannot manufacture that confirmation.
-Without positive completion evidence, scheduler loss or an unacknowledged attempt
-raises `ExecutionUncertain` and retains outputs. Known terminal uncertainty is
-reported immediately. A finished task already confirms command cleanup and receipt
-publication, so metadata cleanup failures cannot discard its result. Receipts are
-removed best-effort after confirmed cleanup; uncertain records remain
-until the allocation ends. They are not a recovery log for a later invocation.
-
-Local teardown drains the allocation's validated process session rather than
+Local teardown drains the allocation's validated process group rather than
 assuming the owner's exit proves every child stopped. Boot UUID, UID, process
 session and the exact command containing a random allocation token establish
 identity without depending on hostname or wall-clock creation time. Discovery
@@ -154,11 +145,9 @@ are cleaned up, and incomplete locator directories do not hide healthy allocatio
 An allocation verified as ended, by `down` or by discovery, is retired: its TLS
 material, scheduler files and scratch are removed, and a marker lets discovery
 skip it unread. Its identity record stays, so a full ID still reports `ended`.
-Concurrent invocations writing the same project remain unsupported. Command
-cleanup covers process groups and native OCI container identities; recipes must
-not daemonize into new sessions. Killing the command supervisor can leave an
-external runtime's container alive, so an uncertain execution requires native
-verification before output repair.
+Cancellation and concurrent project writers are not made safe by allocation
+management; callers must respect the documented execution limits. Containers
+managed outside that process group can survive local teardown.
 
 Tests cover deterministic selection, malformed identities and catalogs, partial
 native failures, acceptance ambiguity, PID reuse, detached local lifetime, standard
